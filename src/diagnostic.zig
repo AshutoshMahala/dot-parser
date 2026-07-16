@@ -1,0 +1,567 @@
+//! WDP diagnostic primitives (IMPLEMENTATION_PLAN.md, milestone 1, step 2).
+//!
+//! Diagnostic identities follow the Waddling Diagnostic Protocol (WDP)
+//! v0.1.0-draft: `namespace:Severity.Component.Primary.Sequence`, where the
+//! namespace is this library (`dot_parser`, WDP part 7), the component is the
+//! internal module that reported the problem, and sequence numbers follow the
+//! WDP part 6 conventions (001 MISSING, 002 MISMATCH, 003 INVALID,
+//! 009 UNSUPPORTED, 026 EXHAUSTED; 031+ project-specific).
+//!
+//! Design constraints from the requirements:
+//! - Diagnostics are structured data; the library never prints, formats, or
+//!   terminates (R-FUNC-005). Presentation is entirely the consumer's job —
+//!   implement `Sink` to route diagnostics into any logger or reporter.
+//!   `console.zig` ships one out-of-the-box renderer; the core never calls it.
+//! - No allocation anywhere in this module (R-MEM-001). Summaries and hints
+//!   are static strings; `Details` carries only primitives and static names.
+//! - No mutable module state (R-ROB-003). Diagnostics flow through
+//!   caller-owned sinks and bags.
+//! - Compact IDs are precomputed at compile time (R-DIAG-001/R-DIAG-004);
+//!   there is no runtime hashing, catalog, or message template machinery.
+
+const std = @import("std");
+const location = @import("location.zig");
+
+/// WDP part 7 namespace (error boundary) for every diagnostic this library
+/// emits. Codes are unique within this boundary.
+pub const namespace = "dot_parser";
+
+/// Precomputed WDP part 7 namespace hash for `namespace` ("wdpns-v1" seed).
+pub const namespace_hash: [5]u8 = computeNamespaceHash(namespace);
+
+/// WDP severity alphabet (WDP part 1). The enum value is the WDP priority.
+pub const Severity = enum(u4) {
+    trace = 0,
+    info = 1,
+    completed = 2,
+    success = 3,
+    help = 4,
+    warning = 5,
+    critical = 6,
+    blocked = 7,
+    err = 8,
+
+    /// The single-character WDP severity code.
+    pub fn letter(self: Severity) u8 {
+        return switch (self) {
+            .trace => 'T',
+            .info => 'I',
+            .completed => 'K',
+            .success => 'S',
+            .help => 'H',
+            .warning => 'W',
+            .critical => 'C',
+            .blocked => 'B',
+            .err => 'E',
+        };
+    }
+
+    /// WDP priority, 0 (trace) through 8 (error).
+    pub fn priority(self: Severity) u4 {
+        return @intFromEnum(self);
+    }
+
+    /// Only E and B block the operation that reported them (WDP part 1 §5).
+    pub fn isBlocking(self: Severity) bool {
+        return self == .err or self == .blocked;
+    }
+
+    pub const Tone = enum { negative, positive, neutral };
+
+    pub fn tone(self: Severity) Tone {
+        return switch (self) {
+            .err, .blocked, .critical, .warning => .negative,
+            .success, .completed => .positive,
+            .help, .info, .trace => .neutral,
+        };
+    }
+};
+
+/// WDP component: the internal module that reported the diagnostic. The
+/// library itself is identified by `namespace`, not by the component.
+pub const Component = enum {
+    lexer,
+    parser,
+    validation,
+    resource,
+    profile,
+
+    /// PascalCase display form used inside structured codes.
+    pub fn name(self: Component) []const u8 {
+        return switch (self) {
+            .lexer => "Lexer",
+            .parser => "Parser",
+            .validation => "Validation",
+            .resource => "Resource",
+            .profile => "Profile",
+        };
+    }
+};
+
+/// WDP primary: the failure domain within a component.
+pub const Primary = enum {
+    byte,
+    syntax,
+    operator,
+    capacity,
+    feature,
+
+    /// PascalCase display form used inside structured codes.
+    pub fn name(self: Primary) []const u8 {
+        return switch (self) {
+            .byte => "Byte",
+            .syntax => "Syntax",
+            .operator => "Operator",
+            .capacity => "Capacity",
+            .feature => "Feature",
+        };
+    }
+};
+
+/// The provisional diagnostic registry for milestone 1.
+///
+/// Exact sequence assignments may change during `0.x`, but each one is
+/// unique, documented here, and covered by the registry test below
+/// (R-DIAG-005).
+pub const Code = enum {
+    /// E.Lexer.Byte.003 (INVALID) — a byte cannot begin any token.
+    lexer_invalid_byte,
+    /// E.Parser.Syntax.001 (MISSING) — a required syntax element is absent.
+    parser_missing_element,
+    /// E.Parser.Syntax.003 (INVALID) — the token found violates the grammar.
+    parser_unexpected_token,
+    /// E.Parser.Syntax.031 (UNEXPECTED_END, project-specific) — input ended
+    /// mid-document. Matches the parser example in WDP part 6 §9.5.
+    parser_unexpected_end,
+    /// E.Validation.Operator.002 (MISMATCH) — edge operator does not match
+    /// the document's graph kind.
+    validation_operator_mismatch,
+    /// E.Profile.Feature.009 (UNSUPPORTED) — valid DOT was recognized but is
+    /// not supported by this milestone/build profile (R-MOD-006).
+    profile_unsupported_feature,
+    /// E.Resource.Capacity.026 (EXHAUSTED) — a caller-configured capacity was
+    /// reached; distinct from invalid syntax (R-ROB-002).
+    resource_capacity_exhausted,
+
+    /// Comptime metadata for one diagnostic code. All strings are static.
+    pub const Info = struct {
+        severity: Severity,
+        component: Component,
+        primary: Primary,
+        /// WDP sequence, 1–999.
+        sequence: u16,
+        /// Conventional or project-specific sequence name (WDP part 6).
+        alias: []const u8,
+        /// What went wrong.
+        summary: []const u8,
+        /// What the user can do about it.
+        hint: []const u8,
+    };
+
+    pub fn info(self: Code) Info {
+        return switch (self) {
+            .lexer_invalid_byte => .{
+                .severity = .err,
+                .component = .lexer,
+                .primary = .byte,
+                .sequence = 3,
+                .alias = "INVALID",
+                .summary = "input byte cannot begin any DOT token",
+                .hint = "this milestone accepts bare ASCII identifiers ([A-Za-z_][A-Za-z0-9_]*), '{', '}', ';', '--', '->', and whitespace",
+            },
+            .parser_missing_element => .{
+                .severity = .err,
+                .component = .parser,
+                .primary = .syntax,
+                .sequence = 1,
+                .alias = "MISSING",
+                .summary = "a required syntax element is missing",
+                .hint = "the milestone grammar is: graph { statement* } where a statement is 'a;' or 'a -- b;'",
+            },
+            .parser_unexpected_token => .{
+                .severity = .err,
+                .component = .parser,
+                .primary = .syntax,
+                .sequence = 3,
+                .alias = "INVALID",
+                .summary = "unexpected token",
+                .hint = "the milestone grammar is: graph { statement* } where a statement is 'a;' or 'a -- b;'",
+            },
+            .parser_unexpected_end => .{
+                .severity = .err,
+                .component = .parser,
+                .primary = .syntax,
+                .sequence = 31,
+                .alias = "UNEXPECTED_END",
+                .summary = "input ended before the document was complete",
+                .hint = "check for an unclosed '{' or a truncated final statement",
+            },
+            .validation_operator_mismatch => .{
+                .severity = .err,
+                .component = .validation,
+                .primary = .operator,
+                .sequence = 2,
+                .alias = "MISMATCH",
+                .summary = "edge operator does not match the graph kind",
+                .hint = "an undirected document ('graph') connects nodes with '--'; '->' is only valid in a 'digraph'",
+            },
+            .profile_unsupported_feature => .{
+                .severity = .err,
+                .component = .profile,
+                .primary = .feature,
+                .sequence = 9,
+                .alias = "UNSUPPORTED",
+                .summary = "recognized DOT feature is not supported by this profile",
+                .hint = "this is valid DOT, but the feature is deferred to a later milestone or excluded from this build",
+            },
+            .resource_capacity_exhausted => .{
+                .severity = .err,
+                .component = .resource,
+                .primary = .capacity,
+                .sequence = 26,
+                .alias = "EXHAUSTED",
+                .summary = "a configured capacity was exhausted before the document finished",
+                .hint = "raise the corresponding limit or provide larger caller-owned storage; the input itself may still be valid",
+            },
+        };
+    }
+
+    pub fn severity(self: Code) Severity {
+        return self.info().severity;
+    }
+
+    /// The WDP structured code in display form, e.g. "E.Parser.Syntax.003".
+    pub fn structured(self: Code) []const u8 {
+        return switch (self) {
+            inline else => |code| comptime structuredText(code),
+        };
+    }
+
+    /// The WDP compact ID (part 5): xxHash3 of the uppercased structured
+    /// code, low 40 bits, Base62. Precomputed at compile time.
+    pub fn compactId(self: Code) [5]u8 {
+        return switch (self) {
+            inline else => |code| comptime computeCompactId(structuredText(code)),
+        };
+    }
+
+    /// The fully qualified compact ID (WDP part 7 §5.2):
+    /// `namespace_hash-code_hash`, e.g. "4aF9x-V6a0B". Precomputed.
+    pub fn qualifiedCompactId(self: Code) [11]u8 {
+        return switch (self) {
+            inline else => |code| comptime namespace_hash ++
+                [1]u8{'-'} ++ computeCompactId(structuredText(code)),
+        };
+    }
+
+    fn structuredText(comptime code: Code) []const u8 {
+        const i = code.info();
+        return std.fmt.comptimePrint("{c}.{s}.{s}.{d:0>3}", .{
+            i.severity.letter(), i.component.name(), i.primary.name(), i.sequence,
+        });
+    }
+};
+
+const base62_alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+fn base62Encode(hash: u64) [5]u8 {
+    var value: u64 = hash & 0xFF_FFFF_FFFF; // low 40 bits (bytes 0-4)
+    var out: [5]u8 = undefined;
+    var i: usize = 5;
+    while (i > 0) {
+        i -= 1;
+        out[i] = base62_alphabet[@intCast(value % 62)];
+        value /= 62;
+    }
+    return out;
+}
+
+/// Compute a WDP part 5 compact ID from a structured code (parts 1–4).
+///
+/// Input is normalized to uppercase; caller passes the display form. Usable
+/// at compile time and runtime; the registry only uses it at compile time.
+pub fn computeCompactId(code_text: []const u8) [5]u8 {
+    // "wdp-v1" zero-padded to 8 bytes, little-endian (WDP part 5 §4.5).
+    const wdp_seed: u64 = 0x000031762D706477;
+
+    var upper_buf: [64]u8 = undefined;
+    std.debug.assert(code_text.len <= upper_buf.len);
+    for (code_text, 0..) |byte, i| upper_buf[i] = std.ascii.toUpper(byte);
+
+    return base62Encode(std.hash.XxHash3.hash(wdp_seed, upper_buf[0..code_text.len]));
+}
+
+/// Compute a WDP part 7 namespace hash. Unlike code hashes, namespaces are
+/// hashed as-is (no uppercase normalization) with the "wdpns-v1" seed.
+pub fn computeNamespaceHash(namespace_text: []const u8) [5]u8 {
+    const wdpns_seed: u64 = 0x31762D736E706477;
+    return base62Encode(std.hash.XxHash3.hash(wdpns_seed, namespace_text));
+}
+
+/// Typed, allocation-free context accompanying a diagnostic
+/// (R-FUNC-005: structured data, no preformatted messages).
+///
+/// String fields hold static names supplied by the emitter (token names,
+/// feature names, limit names) — never source text and never runtime-built
+/// strings.
+pub const Details = union(enum) {
+    none,
+    /// For `lexer_invalid_byte`: the offending byte.
+    invalid_byte: u8,
+    /// For parser codes: what the parser expected and what it found.
+    expected_found: ExpectedFound,
+    /// For `profile_unsupported_feature`: the recognized feature.
+    unsupported_feature: []const u8,
+    /// For `resource_capacity_exhausted`: which limit was hit.
+    capacity: Capacity,
+
+    pub const ExpectedFound = struct {
+        expected: []const u8,
+        found: []const u8,
+    };
+
+    pub const Capacity = struct {
+        resource: []const u8,
+        limit: usize,
+    };
+};
+
+/// One reported problem: identity, where, and typed context.
+pub const Diagnostic = struct {
+    code: Code,
+    span: location.Span,
+    details: Details = .none,
+};
+
+pub const SinkError = error{DiagnosticSinkFailure};
+
+/// A caller-owned destination for diagnostics (R-FUNC-008).
+/// The pointed-to context must outlive every emit call.
+pub const Sink = struct {
+    context: ?*anyopaque,
+    emit_fn: *const fn (context: ?*anyopaque, diagnostic: Diagnostic) SinkError!void,
+
+    pub fn emit(self: Sink, diagnostic: Diagnostic) SinkError!void {
+        return self.emit_fn(self.context, diagnostic);
+    }
+};
+
+/// A fixed-capacity diagnostic bag with bounded-overflow policy: the first
+/// `capacity` diagnostics are retained and later ones are counted in
+/// `omitted` (R-FUNC-008). Never allocates; never fails.
+pub fn FixedBag(comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+
+        entries: [capacity]Diagnostic = undefined,
+        len: usize = 0,
+        /// How many diagnostics arrived after the bag was full.
+        omitted: usize = 0,
+
+        pub fn push(self: *Self, diagnostic: Diagnostic) void {
+            if (self.len < capacity) {
+                self.entries[self.len] = diagnostic;
+                self.len += 1;
+            } else {
+                self.omitted += 1;
+            }
+        }
+
+        /// The retained diagnostics, in emission order.
+        pub fn items(self: *const Self) []const Diagnostic {
+            return self.entries[0..self.len];
+        }
+
+        pub fn reset(self: *Self) void {
+            self.len = 0;
+            self.omitted = 0;
+        }
+
+        pub fn sink(self: *Self) Sink {
+            return .{ .context = self, .emit_fn = emitOpaque };
+        }
+
+        fn emitOpaque(context: ?*anyopaque, diagnostic: Diagnostic) SinkError!void {
+            const self: *Self = @ptrCast(@alignCast(context.?));
+            self.push(diagnostic);
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const expect = std.testing.expect;
+const expectEqual = std.testing.expectEqual;
+const expectEqualStrings = std.testing.expectEqualStrings;
+
+test "severity alphabet matches WDP part 1" {
+    try expectEqual(@as(u8, 'E'), Severity.err.letter());
+    try expectEqual(@as(u8, 'B'), Severity.blocked.letter());
+    try expectEqual(@as(u8, 'C'), Severity.critical.letter());
+    try expectEqual(@as(u8, 'W'), Severity.warning.letter());
+    try expectEqual(@as(u8, 'H'), Severity.help.letter());
+    try expectEqual(@as(u8, 'S'), Severity.success.letter());
+    try expectEqual(@as(u8, 'K'), Severity.completed.letter());
+    try expectEqual(@as(u8, 'I'), Severity.info.letter());
+    try expectEqual(@as(u8, 'T'), Severity.trace.letter());
+
+    // Priority ordering: T(0) < I < K < S < H < W < C < B < E(8).
+    try expectEqual(@as(u4, 8), Severity.err.priority());
+    try expectEqual(@as(u4, 0), Severity.trace.priority());
+    try expect(Severity.warning.priority() < Severity.critical.priority());
+
+    // Blocking and tone.
+    try expect(Severity.err.isBlocking());
+    try expect(Severity.blocked.isBlocking());
+    try expect(!Severity.critical.isBlocking());
+    try expectEqual(Severity.Tone.negative, Severity.warning.tone());
+    try expectEqual(Severity.Tone.positive, Severity.completed.tone());
+    try expectEqual(Severity.Tone.neutral, Severity.help.tone());
+}
+
+test "structured codes follow the documented registry" {
+    try expectEqualStrings("E.Lexer.Byte.003", Code.lexer_invalid_byte.structured());
+    try expectEqualStrings("E.Parser.Syntax.001", Code.parser_missing_element.structured());
+    try expectEqualStrings("E.Parser.Syntax.003", Code.parser_unexpected_token.structured());
+    try expectEqualStrings("E.Parser.Syntax.031", Code.parser_unexpected_end.structured());
+    try expectEqualStrings("E.Validation.Operator.002", Code.validation_operator_mismatch.structured());
+    try expectEqualStrings("E.Profile.Feature.009", Code.profile_unsupported_feature.structured());
+    try expectEqualStrings("E.Resource.Capacity.026", Code.resource_capacity_exhausted.structured());
+}
+
+test "registry is coherent: unique identities, valid fields (R-DIAG-005)" {
+    const codes = std.enums.values(Code);
+    for (codes, 0..) |a, i| {
+        const ia = a.info();
+
+        // Sequence range: 001–999; 000 is reserved by WDP part 4.
+        try expect(ia.sequence >= 1 and ia.sequence <= 999);
+
+        // Component and primary must satisfy ^[A-Z][a-zA-Z0-9]{0,15}$.
+        try expectValidWdpName(ia.component.name());
+        try expectValidWdpName(ia.primary.name());
+
+        // Summaries and hints are the user-facing payload; never empty.
+        try expect(ia.summary.len > 0);
+        try expect(ia.hint.len > 0);
+
+        // Alias is SCREAMING_SNAKE_CASE starting with a letter.
+        try expect(ia.alias.len > 0);
+        try expect(std.ascii.isUpper(ia.alias[0]));
+        for (ia.alias) |byte| {
+            try expect(std.ascii.isUpper(byte) or std.ascii.isDigit(byte) or byte == '_');
+        }
+
+        // No two codes may share an identity or a compact ID.
+        for (codes[i + 1 ..]) |b| {
+            const ib = b.info();
+            const same_identity = ia.severity == ib.severity and
+                ia.component == ib.component and
+                ia.primary == ib.primary and ia.sequence == ib.sequence;
+            try expect(!same_identity);
+            try expect(!std.mem.eql(u8, &a.compactId(), &b.compactId()));
+        }
+    }
+}
+
+test "namespace follows WDP part 7 conventions" {
+    // Lowercase snake_case, starting with a letter, 1-16 chars.
+    try expect(namespace.len >= 1 and namespace.len <= 16);
+    try expect(std.ascii.isLower(namespace[0]));
+    for (namespace) |byte| {
+        try expect(std.ascii.isLower(byte) or std.ascii.isDigit(byte) or byte == '_');
+    }
+}
+
+fn expectValidWdpName(name: []const u8) !void {
+    try expect(name.len >= 1 and name.len <= 16);
+    try expect(std.ascii.isUpper(name[0]));
+    for (name) |byte| try expect(std.ascii.isAlphanumeric(byte));
+}
+
+test "compact IDs match the official WDP test vectors" {
+    // wdp-specs/test-vectors/data/compact-ids.json
+    try expectEqualStrings("V6a0B", &computeCompactId("E.AUTH.TOKEN.001"));
+    try expectEqualStrings("KF52S", &computeCompactId("W.DATABASE.CONNECTION.027"));
+    try expectEqualStrings("l3i4I", &computeCompactId("E.A.B.001"));
+    try expectEqualStrings("fnOQk", &computeCompactId("T.PROFILER.TIMER.999"));
+    try expectEqualStrings("Unzd9", &computeCompactId("I.HTTP2SERVER.REQUEST.001"));
+    // Case-insensitive: display form hashes identically to canonical form.
+    try expectEqualStrings("V6a0B", &computeCompactId("E.Auth.Token.001"));
+}
+
+test "namespace hashes match the official WDP test vectors" {
+    // wdp-specs/test-vectors/data/namespaces.json
+    try expectEqualStrings("05o5h", &computeNamespaceHash("auth_lib"));
+    try expectEqualStrings("oFN7q", &computeNamespaceHash("user_service"));
+    try expectEqualStrings("XPb13", &computeNamespaceHash("my_app"));
+    try expectEqualStrings("ECjXV", &computeNamespaceHash("a"));
+}
+
+test "qualified compact ID is namespace_hash-code_hash (part 7 §5.2)" {
+    const qualified = Code.parser_unexpected_token.qualifiedCompactId();
+    try expectEqual(@as(usize, 11), qualified.len);
+    try expectEqualStrings(&namespace_hash, qualified[0..5]);
+    try expectEqual(@as(u8, '-'), qualified[5]);
+    const code_id = Code.parser_unexpected_token.compactId();
+    try expectEqualStrings(&code_id, qualified[6..11]);
+}
+
+test "fixed bag retains the first diagnostics and counts the rest" {
+    var bag: FixedBag(2) = .{};
+    const sink = bag.sink();
+
+    const diagnostic: Diagnostic = .{
+        .code = .parser_unexpected_token,
+        .span = .{ .start = .{ .byte_offset = 4, .line = 1, .byte_column = 5 }, .byte_len = 2 },
+    };
+    try sink.emit(diagnostic);
+    try sink.emit(diagnostic);
+    try sink.emit(diagnostic);
+
+    try expectEqual(@as(usize, 2), bag.items().len);
+    try expectEqual(@as(usize, 1), bag.omitted);
+    try expectEqual(Code.parser_unexpected_token, bag.items()[0].code);
+
+    bag.reset();
+    try expectEqual(@as(usize, 0), bag.items().len);
+    try expectEqual(@as(usize, 0), bag.omitted);
+}
+
+test "zero-capacity bag only counts" {
+    var bag: FixedBag(0) = .{};
+    bag.push(.{ .code = .parser_unexpected_end, .span = .{ .start = .start, .byte_len = 0 } });
+    try expectEqual(@as(usize, 0), bag.items().len);
+    try expectEqual(@as(usize, 1), bag.omitted);
+}
+
+test "direct sink receives diagnostics without retention" {
+    const Counter = struct {
+        count: usize = 0,
+        fn emit(context: ?*anyopaque, diagnostic: Diagnostic) SinkError!void {
+            _ = diagnostic;
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.count += 1;
+        }
+    };
+    var counter: Counter = .{};
+    const sink: Sink = .{ .context = &counter, .emit_fn = Counter.emit };
+    try sink.emit(.{ .code = .lexer_invalid_byte, .span = .{ .start = .start, .byte_len = 1 } });
+    try sink.emit(.{ .code = .lexer_invalid_byte, .span = .{ .start = .start, .byte_len = 1 } });
+    try expectEqual(@as(usize, 2), counter.count);
+}
+
+test "failing sink propagates its error" {
+    const Rejecting = struct {
+        fn emit(context: ?*anyopaque, diagnostic: Diagnostic) SinkError!void {
+            _ = context;
+            _ = diagnostic;
+            return error.DiagnosticSinkFailure;
+        }
+    };
+    const sink: Sink = .{ .context = null, .emit_fn = Rejecting.emit };
+    const result = sink.emit(.{ .code = .parser_unexpected_end, .span = .{ .start = .start, .byte_len = 0 } });
+    try std.testing.expectError(error.DiagnosticSinkFailure, result);
+}
