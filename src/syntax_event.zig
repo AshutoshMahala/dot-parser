@@ -1,4 +1,4 @@
-//! Private syntax-event contract (IMPLEMENTATION_PLAN.md, milestone 1, step 4).
+//! Private syntax-event contract (milestone 1, step 4).
 //!
 //! This is the provisional seam between the parser (producer) and syntax
 //! consumers such as the borrowed-tree builder. It is NOT public API: it is

@@ -1,4 +1,4 @@
-//! Source positions (IMPLEMENTATION_PLAN.md, milestone 1, step 1).
+//! Source positions (milestone 1, step 1).
 //!
 //! Conventions, tested below:
 //! - `byte_offset` is zero-based.
@@ -45,6 +45,55 @@ pub const Span = struct {
         return source[self.start.byte_offset..self.endOffset()];
     }
 };
+
+/// A compact borrowed source range: byte offset and length only, 8 bytes.
+///
+/// This is the retained-data representation (R-MEM-008): full positions —
+/// line and column — are not stored per retained element; they are derived
+/// on demand via `locate` (or, later, an optional source-index side table).
+/// The u32 fields limit retained sources to 4 GiB; producers must use the
+/// checked `fromSpan` narrowing.
+pub const Range = struct {
+    start: u32,
+    len: u32,
+
+    /// Zero-based offset one past the last byte of the range.
+    pub fn endOffset(self: Range) usize {
+        return @as(usize, self.start) + self.len;
+    }
+
+    /// The source bytes this range covers. `source` must be the same buffer
+    /// the range was produced from.
+    pub fn slice(self: Range, source: []const u8) []const u8 {
+        return source[self.start..self.endOffset()];
+    }
+
+    /// Checked narrowing from a full span; null when the source position
+    /// does not fit the 4 GiB retained-range limit.
+    pub fn fromSpan(span: Span) ?Range {
+        const start = std.math.cast(u32, span.start.byte_offset) orelse return null;
+        const len = std.math.cast(u32, span.byte_len) orelse return null;
+        return .{ .start = start, .len = len };
+    }
+
+    /// Rehydrate a full span, deriving line and column by scanning `source`
+    /// (O(start); intended for diagnostic emission, where positions are
+    /// needed rarely).
+    pub fn toSpan(self: Range, source: []const u8) Span {
+        return .{ .start = locate(source, self.start), .byte_len = self.len };
+    }
+};
+
+/// Recompute the full location of `byte_offset` by scanning `source` from
+/// the start. O(byte_offset) — the deliberate trade of the compact-range
+/// policy: retained data stays small and positions are computed only when
+/// a diagnostic or tool actually needs one (R-MEM-008).
+pub fn locate(source: []const u8, byte_offset: usize) Location {
+    std.debug.assert(byte_offset <= source.len);
+    var tracker: Tracker = .{};
+    tracker.advanceSlice(source[0..byte_offset]);
+    return tracker.location;
+}
 
 /// Constant-size newline-aware position tracker (R-MEM-008:
 /// tracking the current position needs only this struct, never a line index).
@@ -184,4 +233,41 @@ test "span end offset and slicing" {
     };
     try expectEqual(@as(usize, 9), span.endOffset());
     try std.testing.expectEqualStrings("a", span.slice(source));
+}
+
+test "range slices and converts to and from spans" {
+    const source = "graph {\n  a -- b;\n}";
+    const span: Span = .{
+        .start = .{ .byte_offset = 10, .line = 2, .byte_column = 3 },
+        .byte_len = 1,
+    };
+
+    const range = Range.fromSpan(span).?;
+    try expectEqual(@as(u32, 10), range.start);
+    try expectEqual(@as(usize, 11), range.endOffset());
+    try std.testing.expectEqualStrings("a", range.slice(source));
+
+    // Rehydration derives the identical full position by scanning.
+    try expectEqual(span, range.toSpan(source));
+}
+
+test "range narrowing is checked" {
+    if (@sizeOf(usize) <= @sizeOf(u32)) return error.SkipZigTest;
+    const too_far: Span = .{
+        .start = .{
+            .byte_offset = @as(usize, std.math.maxInt(u32)) + 1,
+            .line = 1,
+            .byte_column = 1,
+        },
+        .byte_len = 0,
+    };
+    try expectEqual(@as(?Range, null), Range.fromSpan(too_far));
+}
+
+test "locate recomputes positions across newline styles" {
+    const source = "a\r\nb\rc\nd";
+    try expectEqual(Location.start, locate(source, 0));
+    try expectEqual(Location{ .byte_offset = 3, .line = 2, .byte_column = 1 }, locate(source, 3));
+    try expectEqual(Location{ .byte_offset = 7, .line = 4, .byte_column = 1 }, locate(source, 7));
+    try expectEqual(Location{ .byte_offset = 8, .line = 4, .byte_column = 2 }, locate(source, 8));
 }

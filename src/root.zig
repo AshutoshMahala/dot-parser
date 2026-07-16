@@ -36,4 +36,5 @@ test {
     // public façade lands, per PROJECT_STRUCTURE).
     _ = @import("syntax_event.zig");
     _ = @import("parser.zig");
+    _ = @import("syntax.zig");
 }

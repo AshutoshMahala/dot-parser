@@ -1,4 +1,4 @@
-//! Raw-byte lexer (IMPLEMENTATION_PLAN.md, milestone 1, step 3).
+//! Raw-byte lexer (milestone 1, step 3).
 //!
 //! Recognizes only the milestone-1 subset: the source keyword `graph` (which
 //! maps to the `undigraph` kind at reading time), bare ASCII identifiers,

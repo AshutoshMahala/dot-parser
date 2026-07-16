@@ -1,4 +1,4 @@
-//! WDP diagnostic primitives (IMPLEMENTATION_PLAN.md, milestone 1, step 2).
+//! WDP diagnostic primitives (milestone 1, step 2).
 //!
 //! Diagnostic identities follow the Waddling Diagnostic Protocol (WDP)
 //! v0.1.0-draft: `namespace:Severity.Component.Primary.Sequence`, where the

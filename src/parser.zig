@@ -1,4 +1,4 @@
-//! Parser state machine (IMPLEMENTATION_PLAN.md, milestone 1, step 5).
+//! Parser state machine (milestone 1, step 5).
 //!
 //! Milestone grammar:
 //!

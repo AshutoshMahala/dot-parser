@@ -27,8 +27,7 @@ graph {
 
 Everything else (`digraph`, `strict`, graph names, comments, quoted/numeral/
 HTML IDs, attributes, edge chains, ports, subgraphs, …) is deliberately
-deferred to later vertical slices — see
-[docs/architecture/IMPLEMENTATION_PLAN.md](docs/architecture/IMPLEMENTATION_PLAN.md).
+deferred to later vertical slices.
 
 ## Building
 
@@ -45,7 +44,6 @@ generated in memory — reading it is the application's job.
 
 ## Design documents
 
-- [docs/architecture/IMPLEMENTATION_PLAN.md](docs/architecture/IMPLEMENTATION_PLAN.md)
 - [docs/architecture/PROJECT_STRUCTURE.md](docs/architecture/PROJECT_STRUCTURE.md)
 
 ## License
