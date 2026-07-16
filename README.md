@@ -29,6 +29,50 @@ Everything else (`digraph`, `strict`, graph names, comments, quoted/numeral/
 HTML IDs, attributes, edge chains, ports, subgraphs, …) is deliberately
 deferred to later vertical slices.
 
+## Usage
+
+```zig
+const dot = @import("dot_parser");
+
+var bag: dot.FixedDiagnosticBag(16) = .{};
+var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
+defer checked.deinit(allocator);
+
+if (checked.documentValid()) {
+    const tree = checked.tree.?;
+    var i: usize = 0;
+    while (tree.statementAt(i)) |statement| : (i += 1) {
+        switch (statement) {
+            .node => |node| std.log.info("node {s}", .{tree.text(node.identifier)}),
+            .edge => |edge| std.log.info("edge {s} {s} {s}", .{
+                tree.text(edge.left),
+                edge.operator.lexeme(),
+                tree.text(edge.right),
+            }),
+        }
+    }
+}
+```
+
+`parseBorrowed` and `validate` are also available as separate stages. For
+heap-free operation, give the same call a fixed buffer and capacity hints:
+
+```zig
+var buffer: [4096]u8 = undefined;
+var fba = std.heap.FixedBufferAllocator.init(&buffer);
+var bag: dot.FixedDiagnosticBag(8) = .{};
+var checked = dot.parseAndValidate(fba.allocator(), source, bag.sink(), .{
+    .parse = .{
+        .max_statements = 32,
+        .tree_capacities = .{ .statements = 32, .nodes = 32, .edges = 32 },
+    },
+});
+// release everything at once by resetting the buffer
+```
+
+The source bytes are borrowed: keep them alive and unchanged for as long as
+the returned tree is used.
+
 ## Building
 
 Requires Zig **0.16.0** or newer.

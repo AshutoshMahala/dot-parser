@@ -458,6 +458,16 @@ pub const Diagnostic = struct {
 
 pub const SinkError = error{DiagnosticSinkFailure};
 
+/// Whether every diagnostic a pass emitted actually reached the caller's
+/// sink. Reported by each phase separately from its outcome, so a failure
+/// of the reporting infrastructure neither masks nor hides behind the
+/// original result.
+pub const Delivery = enum {
+    complete,
+    /// The sink rejected at least one diagnostic; that diagnostic is lost.
+    failed,
+};
+
 /// A caller-owned destination for diagnostics (R-FUNC-008).
 /// The pointed-to context must outlive every emit call.
 pub const Sink = struct {

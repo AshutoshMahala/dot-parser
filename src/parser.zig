@@ -82,13 +82,7 @@ pub const Outcome = union(enum) {
 
 /// Whether every diagnostic emitted during a parse actually reached the
 /// caller's diagnostic sink.
-pub const DiagnosticDelivery = enum {
-    complete,
-    /// The caller's sink rejected at least one diagnostic; that diagnostic
-    /// is lost. Reported separately so a failure of the reporting
-    /// infrastructure neither masks nor hides behind the parse outcome.
-    failed,
-};
+pub const DiagnosticDelivery = diagnostic.Delivery;
 
 pub const Result = struct {
     outcome: Outcome,

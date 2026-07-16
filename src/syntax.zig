@@ -75,6 +75,11 @@ pub const Statement = union(enum) {
 /// after `Builder.toTree`; safe to read concurrently while its memory and
 /// the borrowed source stay alive (R-CON-003).
 pub const Tree = struct {
+    /// The borrowed source this tree was parsed from; every range below
+    /// indexes it. Caller-owned and must outlive the tree (R-MEM-004).
+    /// Storing it here makes tree/source pairings unforgeable for consumers
+    /// such as validation.
+    source: []const u8,
     kind: GraphKind,
     /// Range of the document keyword that declared the kind.
     keyword: location.Range,
@@ -110,6 +115,11 @@ pub const Tree = struct {
         return self.statement(self.order[order_index]);
     }
 
+    /// The source text a range of this tree covers.
+    pub fn text(self: *const Tree, range: location.Range) []const u8 {
+        return range.slice(self.source);
+    }
+
     /// Bulk release (R-MEM-005): three frees, no per-node walk. Pass the
     /// allocator the builder used. Arena and fixed-buffer users may skip
     /// this and reset their arena/buffer instead.
@@ -127,21 +137,28 @@ pub const Tree = struct {
 /// ## Lifecycle
 ///
 /// ```text
-/// idle --beginDocument--> building --endDocument--> committed --toTree--> idle
-///                            │                                    │ (error)
-///                            └──abortDocument--> aborted <────────┘
+/// idle --beginDocument--> building --endDocument--> committed
+///                            │                          │
+///                            │ abortDocument            │ toTree (ok or error)
+///                            ▼                          ▼
+///                         terminal <────────────────────┘
+///                            │ reset(source)
+///                            ▼
+///                          idle
 /// ```
 ///
-/// - `abortDocument` releases staged storage and is terminal; call `reset`
-///   to reuse the builder afterwards.
+/// - A builder is bound to one source buffer; `reset(source)` rebinds it
+///   for the next document (and is required between documents).
+/// - `abortDocument` releases staged storage and is terminal.
 /// - `toTree` consumes the committed document **even on error**: a failed
-///   transfer releases everything and lands in `.aborted`, so a retry can
-///   never observe a partial tree. On success the builder returns to
-///   `.idle`, empty and reusable.
+///   transfer releases everything; a retry can never observe a partial
+///   tree.
 /// - Contract-order violations are programmer errors and assert in safe
 ///   builds.
 pub const Builder = struct {
     allocator: std.mem.Allocator,
+    /// The source the parsed document borrows from; embedded into the tree.
+    source: []const u8,
     kind: GraphKind = .undigraph,
     keyword: location.Range = .{ .start = 0, .len = 0 },
     order: std.ArrayList(StatementId) = .empty,
@@ -157,10 +174,10 @@ pub const Builder = struct {
         SourceOffsetOverflow,
     };
 
-    const Phase = enum { idle, building, committed, aborted };
+    const Phase = enum { idle, building, committed, terminal };
 
-    pub fn init(allocator: std.mem.Allocator) Builder {
-        return .{ .allocator = allocator };
+    pub fn init(allocator: std.mem.Allocator, source: []const u8) Builder {
+        return .{ .allocator = allocator, .source = source };
     }
 
     pub const Capacities = struct {
@@ -173,8 +190,12 @@ pub const Builder = struct {
     /// the build performs no further allocation and `toTree` is copy-free —
     /// the intended mode for fixed-buffer users, who typically derive the
     /// numbers from the same budget as `parser.Options.max_statements`.
-    pub fn initCapacity(allocator: std.mem.Allocator, capacities: Capacities) Error!Builder {
-        var builder = init(allocator);
+    pub fn initCapacity(
+        allocator: std.mem.Allocator,
+        source: []const u8,
+        capacities: Capacities,
+    ) Error!Builder {
+        var builder = init(allocator, source);
         errdefer builder.deinit();
         try builder.order.ensureTotalCapacityPrecise(allocator, capacities.statements);
         try builder.nodes.ensureTotalCapacityPrecise(allocator, capacities.nodes);
@@ -190,10 +211,11 @@ pub const Builder = struct {
         self.* = undefined;
     }
 
-    /// Return the builder to `.idle` for reuse from any phase, clearing
-    /// staged statements but keeping allocated capacity for the next
-    /// document (aborts have already released storage).
-    pub fn reset(self: *Builder) void {
+    /// Rebind the builder to `source` and return it to `.idle` for the next
+    /// document, clearing staged statements but keeping allocated capacity
+    /// (aborts have already released storage). Required between documents.
+    pub fn reset(self: *Builder, source: []const u8) void {
+        self.source = source;
         self.order.clearRetainingCapacity();
         self.nodes.clearRetainingCapacity();
         self.edges.clearRetainingCapacity();
@@ -201,23 +223,25 @@ pub const Builder = struct {
     }
 
     /// Take ownership of the finished tree. Valid once per committed
-    /// document. On error the builder aborts (storage released, `.aborted`);
-    /// it never stays committed with partial contents.
+    /// document; the builder is terminal afterwards (on success *and* on
+    /// error — a failed transfer releases everything and never leaves a
+    /// partially consumed committed builder). `reset` restores reuse.
     pub fn toTree(self: *Builder) Error!Tree {
         std.debug.assert(self.phase == .committed);
         errdefer {
             self.order.clearAndFree(self.allocator);
             self.nodes.clearAndFree(self.allocator);
             self.edges.clearAndFree(self.allocator);
-            self.phase = .aborted;
+            self.phase = .terminal;
         }
         const order = try self.order.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(order);
         const nodes = try self.nodes.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(nodes);
         const edges = try self.edges.toOwnedSlice(self.allocator);
-        self.phase = .idle;
+        self.phase = .terminal;
         return .{
+            .source = self.source,
             .kind = self.kind,
             .keyword = self.keyword,
             .order = order,
@@ -275,7 +299,7 @@ pub const Builder = struct {
         self.order.clearAndFree(self.allocator);
         self.nodes.clearAndFree(self.allocator);
         self.edges.clearAndFree(self.allocator);
-        self.phase = .aborted;
+        self.phase = .terminal;
     }
 
     fn toRange(span: location.Span) Error!location.Range {
@@ -307,7 +331,7 @@ const parser = @import("parser.zig");
 const diagnostic = @import("diagnostic.zig");
 
 fn parseIntoTree(allocator: std.mem.Allocator, source: []const u8) !Tree {
-    var builder = Builder.init(allocator);
+    var builder = Builder.init(allocator, source);
     defer builder.deinit();
     var bag: diagnostic.FixedBag(4) = .{};
     const result = parser.parse(source, &builder, bag.sink(), .{});
@@ -334,6 +358,8 @@ test "tree preserves statement order, kinds, and borrowed ranges" {
 
     const first = tree.statementAt(0).?.node;
     try expectEqualStrings("a", first.identifier.slice(source));
+    try expectEqualStrings("a", tree.text(first.identifier));
+    try expectEqualStrings(source, tree.source);
 
     const edge = tree.statementAt(1).?.edge;
     try expectEqual(EdgeOperator.undirected, edge.operator);
@@ -381,7 +407,7 @@ test "tree outlives the builder and the parser state" {
     const source = "graph { x; }";
     var tree = blk: {
         // Builder and parser state die inside this block.
-        var builder = Builder.init(std.testing.allocator);
+        var builder = Builder.init(std.testing.allocator, source);
         defer builder.deinit();
         var bag: diagnostic.FixedBag(4) = .{};
         const result = parser.parse(source, &builder, bag.sink(), .{});
@@ -397,7 +423,8 @@ test "fixed buffer with exact capacities allocates nothing after init" {
     var buffer: [1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
 
-    var builder = try Builder.initCapacity(fba.allocator(), .{
+    const source = "graph { a; a -- b; b; }";
+    var builder = try Builder.initCapacity(fba.allocator(), source, .{
         .statements = 3,
         .nodes = 2,
         .edges = 1,
@@ -406,7 +433,7 @@ test "fixed buffer with exact capacities allocates nothing after init" {
     const high_water = fba.end_index;
 
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = parser.parse("graph { a; a -- b; b; }", &builder, bag.sink(), .{});
+    const result = parser.parse(source, &builder, bag.sink(), .{});
     try expect(result.outcome == .success);
 
     var tree = try builder.toTree();
@@ -425,21 +452,17 @@ test "undersized fixed buffer aborts the parse with a sink failure" {
     var buffer: [64]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
 
-    var builder = Builder.init(fba.allocator());
+    const source = "graph { a; b; c; d; e; f; g; h; i; j; k; }";
+    var builder = Builder.init(fba.allocator(), source);
     defer builder.deinit();
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = parser.parse(
-        "graph { a; b; c; d; e; f; g; h; i; j; k; }",
-        &builder,
-        bag.sink(),
-        .{},
-    );
+    const result = parser.parse(source, &builder, bag.sink(), .{});
 
     try expect(result.outcome == .sink_failure);
     try expectEqual(anyerror.OutOfMemory, result.outcome.sink_failure);
     // The abort released staged storage; the builder is terminal until reset.
     try expectEqual(@as(usize, 0), builder.order.items.len);
-    try expect(builder.phase == .aborted);
+    try expect(builder.phase == .terminal);
 }
 
 test "allocation failure at every point aborts cleanly without leaks" {
@@ -450,7 +473,7 @@ test "allocation failure at every point aborts cleanly without leaks" {
             std.testing.allocator,
             .{ .fail_index = fail_index },
         );
-        var builder = Builder.init(failing.allocator());
+        var builder = Builder.init(failing.allocator(), source);
         defer builder.deinit();
         var bag: diagnostic.FixedBag(4) = .{};
         const result = parser.parse(source, &builder, bag.sink(), .{});
@@ -464,12 +487,12 @@ test "allocation failure at every point aborts cleanly without leaks" {
                 return; // full success reached; earlier indices covered failures
             } else |err| {
                 try expectEqual(Builder.Error.OutOfMemory, err);
-                try expect(builder.phase == .aborted);
+                try expect(builder.phase == .terminal);
                 try expectEqual(@as(usize, 0), builder.order.items.len);
             }
         } else {
             try expect(result.outcome == .sink_failure);
-            try expect(builder.phase == .aborted);
+            try expect(builder.phase == .terminal);
         }
         // std.testing.allocator fails the test on any leak.
     }
@@ -489,7 +512,7 @@ test "toTree failure is terminal, complete, and recoverable via reset" {
             std.testing.allocator,
             .{ .fail_index = fail_index, .resize_fail_index = 0 },
         );
-        var builder = Builder.init(failing.allocator());
+        var builder = Builder.init(failing.allocator(), source);
         defer builder.deinit();
         var bag: diagnostic.FixedBag(4) = .{};
         const result = parser.parse(source, &builder, bag.sink(), .{});
@@ -501,13 +524,13 @@ test "toTree failure is terminal, complete, and recoverable via reset" {
         } else |_| {
             observed_transfer_failure = true;
             // Never a half-consumed committed builder.
-            try expect(builder.phase == .aborted);
+            try expect(builder.phase == .terminal);
             try expectEqual(@as(usize, 0), builder.order.items.len);
             try expectEqual(@as(usize, 0), builder.nodes.items.len);
             try expectEqual(@as(usize, 0), builder.edges.items.len);
 
             // Reset restores a genuinely reusable builder.
-            builder.reset();
+            builder.reset(source);
             try expect(builder.phase == .idle);
         }
     }
@@ -515,20 +538,21 @@ test "toTree failure is terminal, complete, and recoverable via reset" {
 }
 
 test "aborted builder is reusable after reset" {
-    var builder = Builder.init(std.testing.allocator);
+    const bad_source = "graph { a; b; @ }";
+    var builder = Builder.init(std.testing.allocator, bad_source);
     defer builder.deinit();
     var bag: diagnostic.FixedBag(4) = .{};
 
     // Invalid document: statements staged, then aborted (terminal).
-    const failed = parser.parse("graph { a; b; @ }", &builder, bag.sink(), .{});
+    const failed = parser.parse(bad_source, &builder, bag.sink(), .{});
     try expect(failed.outcome == .invalid_syntax);
-    try expect(builder.phase == .aborted);
+    try expect(builder.phase == .terminal);
     try expectEqual(@as(usize, 0), builder.order.items.len);
 
-    // Reset, then actually parse a second document with the same builder.
-    builder.reset();
-    bag.reset();
+    // Rebind to a second document with the same builder.
     const source = "graph { ok; }";
+    builder.reset(source);
+    bag.reset();
     const succeeded = parser.parse(source, &builder, bag.sink(), .{});
     try expect(succeeded.outcome == .success);
 
@@ -537,17 +561,18 @@ test "aborted builder is reusable after reset" {
     try expectEqualStrings("ok", tree.statementAt(0).?.node.identifier.slice(source));
 }
 
-test "builder is reusable immediately after a successful toTree" {
-    var builder = Builder.init(std.testing.allocator);
+test "builder is reusable after toTree via reset" {
+    const first_source = "graph { a; }";
+    var builder = Builder.init(std.testing.allocator, first_source);
     defer builder.deinit();
 
-    const first_source = "graph { a; }";
     var bag: diagnostic.FixedBag(4) = .{};
     try expect(parser.parse(first_source, &builder, bag.sink(), .{}).outcome == .success);
     var first = try builder.toTree();
     defer first.deinit(std.testing.allocator);
 
     const second_source = "graph { b; c; }";
+    builder.reset(second_source);
     try expect(parser.parse(second_source, &builder, bag.sink(), .{}).outcome == .success);
     var second = try builder.toTree();
     defer second.deinit(std.testing.allocator);
@@ -560,7 +585,7 @@ test "builder is reusable immediately after a successful toTree" {
 
 test "builder driven directly through the event contract" {
     const source = "graph { n; }";
-    var builder = Builder.init(std.testing.allocator);
+    var builder = Builder.init(std.testing.allocator, source);
     defer builder.deinit();
 
     try builder.beginDocument(.{

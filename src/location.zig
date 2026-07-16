@@ -39,10 +39,13 @@ pub const Span = struct {
         return self.start.byte_offset + self.byte_len;
     }
 
-    /// The source bytes this span covers. `source` must be the same buffer
-    /// the span was produced from.
+    /// The source bytes this span covers. `source` must be the buffer the
+    /// span was produced from; safe builds assert the span lies within it
+    /// (overflow-free bounds check) rather than slicing out of bounds.
     pub fn slice(self: Span, source: []const u8) []const u8 {
-        return source[self.start.byte_offset..self.endOffset()];
+        std.debug.assert(self.start.byte_offset <= source.len);
+        std.debug.assert(self.byte_len <= source.len - self.start.byte_offset);
+        return source[self.start.byte_offset..][0..self.byte_len];
     }
 };
 
@@ -57,23 +60,32 @@ pub const Range = struct {
     start: u32,
     len: u32,
 
-    /// Zero-based offset one past the last byte of the range.
-    pub fn endOffset(self: Range) usize {
-        return @as(usize, self.start) + self.len;
+    /// Zero-based offset one past the last byte of the range. Computed in
+    /// u64, so it cannot overflow even for hand-constructed ranges on
+    /// 32-bit targets.
+    pub fn endOffset(self: Range) u64 {
+        return @as(u64, self.start) + self.len;
     }
 
-    /// The source bytes this range covers. `source` must be the same buffer
-    /// the range was produced from.
+    /// The source bytes this range covers. `source` must be the buffer the
+    /// range was produced from; safe builds assert the range lies within it
+    /// (overflow-free bounds check) rather than slicing out of bounds.
     pub fn slice(self: Range, source: []const u8) []const u8 {
-        return source[self.start..self.endOffset()];
+        const end = self.endOffset();
+        std.debug.assert(end <= source.len);
+        return source[self.start..@intCast(end)];
     }
 
-    /// Checked narrowing from a full span; null when the source position
-    /// does not fit the 4 GiB retained-range limit.
+    /// Checked narrowing from a full span; null unless the whole range —
+    /// including its one-past-end offset — fits the 4 GiB retained domain,
+    /// so `endOffset` of an accepted range can never leave u32.
     pub fn fromSpan(span: Span) ?Range {
-        const start = std.math.cast(u32, span.start.byte_offset) orelse return null;
-        const len = std.math.cast(u32, span.byte_len) orelse return null;
-        return .{ .start = start, .len = len };
+        const end = std.math.add(usize, span.start.byte_offset, span.byte_len) catch return null;
+        if (end > std.math.maxInt(u32)) return null;
+        return .{
+            .start = @intCast(span.start.byte_offset),
+            .len = @intCast(span.byte_len),
+        };
     }
 
     /// Rehydrate a full span, deriving line and column by scanning `source`
@@ -94,6 +106,22 @@ pub fn locate(source: []const u8, byte_offset: usize) Location {
     tracker.advanceSlice(source[0..byte_offset]);
     return tracker.location;
 }
+
+/// Derives full positions for ascending ranges incrementally: one shared
+/// scan instead of one scan per query, so a source-ordered pass (like
+/// validation) pays O(source) total no matter how many diagnostics it
+/// emits.
+pub const PositionCursor = struct {
+    tracker: Tracker = .{},
+
+    /// The full span of `range`. Ranges must be requested in non-decreasing
+    /// `start` order against the same `source` the ranges were produced from.
+    pub fn spanFor(self: *PositionCursor, source: []const u8, range: Range) Span {
+        std.debug.assert(range.start >= self.tracker.location.byte_offset);
+        self.tracker.advanceSlice(source[self.tracker.location.byte_offset..range.start]);
+        return .{ .start = self.tracker.location, .byte_len = range.len };
+    }
+};
 
 /// Constant-size newline-aware position tracker (R-MEM-008:
 /// tracking the current position needs only this struct, never a line index).
@@ -244,7 +272,7 @@ test "range slices and converts to and from spans" {
 
     const range = Range.fromSpan(span).?;
     try expectEqual(@as(u32, 10), range.start);
-    try expectEqual(@as(usize, 11), range.endOffset());
+    try expectEqual(@as(u64, 11), range.endOffset());
     try std.testing.expectEqualStrings("a", range.slice(source));
 
     // Rehydration derives the identical full position by scanning.
@@ -264,10 +292,45 @@ test "range narrowing is checked" {
     try expectEqual(@as(?Range, null), Range.fromSpan(too_far));
 }
 
+test "range narrowing rejects ends beyond the retained domain" {
+    // start and len each fit u32 on their own; their sum does not.
+    const straddling: Span = .{
+        .start = .{
+            .byte_offset = std.math.maxInt(u32) - 1,
+            .line = 1,
+            .byte_column = 1,
+        },
+        .byte_len = 2,
+    };
+    try expectEqual(@as(?Range, null), Range.fromSpan(straddling));
+
+    // The exact boundary is still accepted: end == maxInt(u32).
+    const boundary: Span = .{
+        .start = .{
+            .byte_offset = std.math.maxInt(u32) - 1,
+            .line = 1,
+            .byte_column = 1,
+        },
+        .byte_len = 1,
+    };
+    try expectEqual(@as(u64, std.math.maxInt(u32)), Range.fromSpan(boundary).?.endOffset());
+}
+
 test "locate recomputes positions across newline styles" {
     const source = "a\r\nb\rc\nd";
     try expectEqual(Location.start, locate(source, 0));
     try expectEqual(Location{ .byte_offset = 3, .line = 2, .byte_column = 1 }, locate(source, 3));
     try expectEqual(Location{ .byte_offset = 7, .line = 4, .byte_column = 1 }, locate(source, 7));
     try expectEqual(Location{ .byte_offset = 8, .line = 4, .byte_column = 2 }, locate(source, 8));
+}
+
+test "position cursor matches locate for ascending queries" {
+    const source = "graph {\n  a -> b;\r\n  c -> d;\n}";
+    var cursor: PositionCursor = .{};
+    for ([_]u32{ 0, 12, 23 }) |offset| {
+        const range: Range = .{ .start = offset, .len = 2 };
+        const span = cursor.spanFor(source, range);
+        try expectEqual(locate(source, offset), span.start);
+        try expectEqual(@as(usize, 2), span.byte_len);
+    }
 }

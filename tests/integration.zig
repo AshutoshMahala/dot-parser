@@ -159,6 +159,137 @@ test "consumer sees a structured failure for deferred DOT features" {
     );
 }
 
+test "milestone acceptance through the public façade" {
+    const source = "graph {\n    a -> b;\n    c -> d;\n}";
+    var bag: dot.FixedDiagnosticBag(8) = .{};
+    var checked = dot.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});
+    defer checked.deinit(std.testing.allocator);
+
+    // Parsing succeeds (the engine is kind-agnostic) …
+    try std.testing.expect(checked.outcome == .success);
+    try std.testing.expectEqual(@as(usize, 2), checked.tree.?.statementCount());
+
+    // … and validation completes with both violations, in source order.
+    try std.testing.expect(!checked.documentValid());
+    try std.testing.expect(checked.validation.?.completed);
+    try std.testing.expectEqual(@as(usize, 2), checked.validation.?.diagnostics_emitted);
+    try std.testing.expectEqual(@as(usize, 2), bag.items().len);
+
+    const first = bag.items()[0];
+    try std.testing.expectEqualStrings("E.Validation.Operator.002", first.code.structured());
+    try std.testing.expectEqualStrings("->", first.span.slice(source));
+    try std.testing.expectEqual(@as(usize, 2), first.span.start.line);
+    try std.testing.expect(
+        first.span.start.byte_offset < bag.items()[1].span.start.byte_offset,
+    );
+}
+
+test "parseBorrowed returns a caller-owned tree over borrowed source" {
+    const source = "graph { a; a -- b; }";
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+    var parsed = dot.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
+    defer parsed.deinit(std.testing.allocator);
+
+    try std.testing.expect(parsed.outcome == .success);
+    const tree = parsed.tree.?;
+    try std.testing.expectEqual(dot.GraphKind.undigraph, tree.kind);
+    try std.testing.expectEqual(@as(usize, 2), tree.statementCount());
+    try std.testing.expectEqualStrings(
+        "a",
+        tree.statementAt(0).?.node.identifier.slice(source),
+    );
+    const edge = tree.statementAt(1).?.edge;
+    try std.testing.expectEqual(dot.EdgeOperator.undirected, edge.operator);
+    try std.testing.expectEqualStrings("b", edge.right.slice(source));
+}
+
+test "façade surfaces parse failures with a null tree and a filled bag" {
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+    var parsed = dot.parseBorrowed(std.testing.allocator, "digraph { a -> b; }", bag.sink(), .{});
+    defer parsed.deinit(std.testing.allocator);
+
+    try std.testing.expect(parsed.outcome == .unsupported_feature);
+    try std.testing.expect(parsed.tree == null);
+    try std.testing.expectEqual(
+        dot.diagnostic.Feature.digraph_document,
+        bag.items()[0].details.unsupported_feature,
+    );
+
+    // The one-shot reports the same failure with no validation attempted.
+    var check_bag: dot.FixedDiagnosticBag(4) = .{};
+    var checked = dot.parseAndValidate(std.testing.allocator, "digraph {}", check_bag.sink(), .{});
+    defer checked.deinit(std.testing.allocator);
+    try std.testing.expect(checked.outcome == .unsupported_feature);
+    try std.testing.expect(checked.validation == null);
+    try std.testing.expect(!checked.documentValid());
+}
+
+test "a fully valid document checks clean through the façade" {
+    const source = "graph { a; b; a -- b; }";
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+    var checked = dot.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});
+    defer checked.deinit(std.testing.allocator);
+
+    try std.testing.expect(checked.outcome == .success);
+    try std.testing.expect(checked.documentValid());
+    try std.testing.expectEqual(@as(usize, 0), bag.items().len);
+    try std.testing.expectEqual(dot.diagnostic.Delivery.complete, checked.diagnostic_delivery);
+}
+
+test "capacity hints enable fixed-buffer parsing through the façade" {
+    const source = "graph { a; a -- b; b; }";
+    var buffer: [1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+    var checked = dot.parseAndValidate(fba.allocator(), source, bag.sink(), .{
+        .parse = .{
+            .max_statements = 3,
+            .tree_capacities = .{ .statements = 3, .nodes = 2, .edges = 1 },
+        },
+    });
+
+    try std.testing.expect(checked.outcome == .success);
+    try std.testing.expect(checked.documentValid());
+    try std.testing.expectEqual(@as(usize, 3), checked.tree.?.statementCount());
+    // Fixed-buffer bulk release: reset the allocator instead of deinit.
+    fba.reset();
+}
+
+test "storage failures surface as the public taxonomy, not sink errors" {
+    const source = "graph { a; b; c; d; e; f; g; h; }";
+    var buffer: [64]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+    var parsed = dot.parseBorrowed(fba.allocator(), source, bag.sink(), .{});
+    defer parsed.deinit(fba.allocator());
+
+    try std.testing.expect(parsed.outcome == .storage_failure);
+    try std.testing.expectEqual(dot.StorageFailure.out_of_memory, parsed.outcome.storage_failure);
+    try std.testing.expect(parsed.tree == null);
+}
+
+test "a rejecting sink during validation merges into the one-shot delivery" {
+    const Rejecting = struct {
+        fn emit(context: ?*anyopaque, d: dot.Diagnostic) dot.DiagnosticSinkError!void {
+            _ = context;
+            _ = d;
+            return error.DiagnosticSinkFailure;
+        }
+    };
+    const sink: dot.DiagnosticSink = .{ .context = null, .emit_fn = Rejecting.emit };
+
+    // Parsing succeeds (emits nothing); validation emits one mismatch that
+    // the sink rejects — the loss must surface in the merged delivery.
+    var checked = dot.parseAndValidate(std.testing.allocator, "graph { a -> b; }", sink, .{});
+    defer checked.deinit(std.testing.allocator);
+
+    try std.testing.expect(checked.outcome == .success);
+    try std.testing.expect(!checked.documentValid());
+    try std.testing.expectEqual(dot.diagnostic.Delivery.failed, checked.diagnostic_delivery);
+}
+
 test "location tracking is exposed for consumers" {
     var tracker: dot.location.Tracker = .{};
     tracker.advanceSlice("graph {\r\n  a;\n");

@@ -23,12 +23,13 @@ dot-parser/
 ├── LICENSE-APACHE
 ├── LICENSE-MIT
 ├── README.md
-├── REQUIREMENTS.md
 ├── src/
 │   ├── root.zig
 │   ├── location.zig
 │   ├── diagnostic.zig
+│   ├── console.zig
 │   ├── lexer.zig
+│   ├── syntax_event.zig
 │   ├── parser.zig
 │   ├── syntax.zig
 │   └── validate.zig
@@ -42,8 +43,7 @@ dot-parser/
 │   └── fixed_buffer.zig
 └── docs/
     └── architecture/
-        ├── PROJECT_STRUCTURE.md
-        └── IMPLEMENTATION_PLAN.md
+        └── PROJECT_STRUCTURE.md
 ```
 
 Unit tests should live beside the code they exercise. `tests/integration.zig`
