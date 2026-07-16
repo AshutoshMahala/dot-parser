@@ -121,6 +121,32 @@ test "compact IDs are exposed and match the WDP spec vectors" {
     try std.testing.expectEqual(@as(u8, '-'), qualified[5]);
 }
 
+test "consumer can lex the milestone document from caller-supplied bytes" {
+    const source = "graph { a -- b; }";
+    var lexer = dot.lexer.Lexer.init(source);
+
+    const expected = [_]dot.lexer.Token.Tag{
+        .keyword_graph, .left_brace, .identifier,  .edge_undirected,
+        .identifier,    .semicolon,  .right_brace, .eof,
+    };
+    for (expected) |tag| {
+        const result = lexer.next();
+        try std.testing.expect(result == .token);
+        try std.testing.expectEqual(tag, result.token.tag);
+    }
+}
+
+test "consumer sees a structured failure for deferred DOT features" {
+    var lexer = dot.lexer.Lexer.init("digraph D { a -> b; }");
+    const result = lexer.next();
+    try std.testing.expect(result == .failure);
+    try std.testing.expectEqual(dot.Code.profile_unsupported_feature, result.failure.code);
+    try std.testing.expectEqualStrings(
+        "digraph document",
+        result.failure.details.unsupported_feature,
+    );
+}
+
 test "location tracking is exposed for consumers" {
     var tracker: dot.location.Tracker = .{};
     tracker.advanceSlice("graph {\r\n  a;\n");

@@ -8,6 +8,7 @@ const std = @import("std");
 
 pub const location = @import("location.zig");
 pub const diagnostic = @import("diagnostic.zig");
+pub const lexer = @import("lexer.zig");
 
 /// Default console presentation for diagnostics — one way to render, shipped
 /// out of the box. Consumers bring their own reporting by implementing
@@ -30,4 +31,7 @@ pub const FixedDiagnosticBag = diagnostic.FixedBag;
 
 test {
     std.testing.refAllDecls(@This());
+    // Private, provisional modules are not exported but their unit tests
+    // still run (the syntax-event sink stays private per PROJECT_STRUCTURE).
+    _ = @import("syntax_event.zig");
 }
