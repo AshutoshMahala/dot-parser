@@ -32,6 +32,8 @@ pub const FixedDiagnosticBag = diagnostic.FixedBag;
 test {
     std.testing.refAllDecls(@This());
     // Private, provisional modules are not exported but their unit tests
-    // still run (the syntax-event sink stays private per PROJECT_STRUCTURE).
+    // still run (the syntax-event sink and parser stay private until the
+    // public façade lands, per PROJECT_STRUCTURE).
     _ = @import("syntax_event.zig");
+    _ = @import("parser.zig");
 }

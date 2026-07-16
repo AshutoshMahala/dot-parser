@@ -10,10 +10,13 @@
 //! - State is instance-owned (R-ROB-003); no OS or filesystem access.
 //! - Every `next` call either consumes input or returns a terminal result
 //!   (`eof` or a failure); the lexer cannot loop forever.
-//! - Valid-but-deferred DOT constructs (`digraph`, `strict`, comments,
-//!   quoted/numeral/HTML/non-ASCII identifiers, attributes, ports, …) are
-//!   reported as structured `profile_unsupported_feature` failures, distinct
-//!   from bytes that are invalid in any DOT document (R-MOD-006).
+//! - Introducers of recognized-but-deferred DOT constructs (`digraph`,
+//!   `strict`, comments, quoted/numeral/HTML/non-ASCII identifiers,
+//!   attributes, ports, …) are reported as structured
+//!   `profile_unsupported_feature` failures, distinct from bytes that are
+//!   invalid in any DOT document (R-MOD-006). Detection stops at the
+//!   introducer: neither the construct's body nor the remaining input is
+//!   checked, so an unsupported result makes no whole-input validity claim.
 
 const std = @import("std");
 const location = @import("location.zig");

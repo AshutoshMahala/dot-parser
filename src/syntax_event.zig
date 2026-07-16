@@ -23,13 +23,18 @@
 //! endDocument | abortDocument        // exactly one terminal event
 //! ```
 //!
-//! - `beginDocument` is always the first event when any event is emitted.
+//! - `beginDocument` is the first event whenever any event is emitted, with
+//!   one cleanup exception below.
 //! - Statement events arrive in the order they appear in the source.
 //! - `endDocument` commits: the document parsed completely.
 //! - `abortDocument` ends the document without commit (R-MOD-011). The
 //!   parser cannot roll back work a sink already performed; sinks needing
 //!   atomic output must stage internally and discard on abort.
 //! - No event follows the terminal event.
+//! - **Cleanup exception:** if `beginDocument` itself fails, the parser
+//!   still calls `abortDocument(.sink_failure)` so the sink can release
+//!   partially initialized state. Such a sink observes a lone abort with no
+//!   preceding begin — the only sequence in which begin is not first.
 //!
 //! ## Failure propagation
 //!

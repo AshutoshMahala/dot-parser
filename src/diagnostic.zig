@@ -211,8 +211,8 @@ pub const Code = enum {
                 .primary = .feature,
                 .sequence = 9,
                 .alias = "UNSUPPORTED",
-                .summary = "recognized DOT feature is not supported by this profile",
-                .hint = "this is valid DOT, but the feature is deferred to a later milestone or excluded from this build",
+                .summary = "recognized DOT construct is not supported by this profile",
+                .hint = "this construct is recognized DOT syntax that this milestone or build does not process; parsing stopped at this boundary, so the rest of the input has not been checked",
             },
             .resource_capacity_exhausted => .{
                 .severity = .err,
