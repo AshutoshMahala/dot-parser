@@ -134,6 +134,9 @@ fn Machine(comptime EventsPtr: type) type {
         options: Options,
         statements: usize = 0,
         delivery: DiagnosticDelivery = .complete,
+        /// Span of the document's `{`, once consumed — the related location
+        /// reported when the input ends inside the body.
+        open_brace_span: ?location.Span = null,
         /// True once `beginDocument` has been issued; from then on every
         /// exit path must emit a terminal event.
         begun: bool = false,
@@ -180,14 +183,17 @@ fn Machine(comptime EventsPtr: type) type {
                             }) catch |err| return self.sinkFailure(err);
                             state = .open;
                         },
-                        else => return self.unexpected("'graph'", token),
+                        else => return self.unexpected(.{ .graph_keyword = true }, .document_header, token),
                     },
                     .open => switch (token.tag) {
-                        .left_brace => state = .statement,
+                        .left_brace => {
+                            self.open_brace_span = token.span;
+                            state = .statement;
+                        },
                         // `graph G {` is valid DOT with a graph name;
                         // deferred to slice 2.
-                        .identifier => return self.unsupportedAt(token.span, "graph name"),
-                        else => return self.unexpected("'{'", token),
+                        .identifier => return self.unsupportedAt(token.span, .graph_name),
+                        else => return self.unexpected(.{ .left_brace = true }, .document_header, token),
                     },
                     .statement => switch (token.tag) {
                         .identifier => {
@@ -196,7 +202,7 @@ fn Machine(comptime EventsPtr: type) type {
                                     .code = .resource_capacity_exhausted,
                                     .span = token.span,
                                     .details = .{ .capacity = .{
-                                        .resource = "statements",
+                                        .resource = .statements,
                                         .limit = self.options.max_statements,
                                     } },
                                 });
@@ -207,8 +213,8 @@ fn Machine(comptime EventsPtr: type) type {
                         },
                         .right_brace => state = .epilogue,
                         // `{ … }` here is a valid-DOT anonymous subgraph.
-                        .left_brace => return self.unsupportedAt(token.span, "subgraph"),
-                        else => return self.unexpected("an identifier or '}'", token),
+                        .left_brace => return self.unsupportedAt(token.span, .subgraph),
+                        else => return self.unexpected(.{ .identifier = true, .right_brace = true }, .document_body, token),
                     },
                     .after_identifier => switch (token.tag) {
                         .semicolon => {
@@ -228,9 +234,9 @@ fn Machine(comptime EventsPtr: type) type {
                         // A statement boundary without `;` is valid DOT
                         // (semicolons are optional there); deferred.
                         .identifier, .right_brace, .left_brace => {
-                            return self.unsupportedAt(token.span, "optional semicolons");
+                            return self.unsupportedAt(token.span, .optional_semicolons);
                         },
-                        else => return self.unexpected("';', '--', or '->'", token),
+                        else => return self.unexpected(.{ .semicolon = true, .undirected_operator = true, .directed_operator = true }, .statement, token),
                     },
                     .edge_right => switch (token.tag) {
                         .identifier => {
@@ -238,8 +244,8 @@ fn Machine(comptime EventsPtr: type) type {
                             state = .edge_terminate;
                         },
                         // `a -- { … }` is a valid-DOT subgraph endpoint.
-                        .left_brace => return self.unsupportedAt(token.span, "subgraph"),
-                        else => return self.unexpected("an identifier", token),
+                        .left_brace => return self.unsupportedAt(token.span, .subgraph),
+                        else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
                     },
                     .edge_terminate => switch (token.tag) {
                         .semicolon => {
@@ -253,19 +259,19 @@ fn Machine(comptime EventsPtr: type) type {
                         },
                         // `a -- b -- c` is a valid-DOT edge chain; deferred.
                         .edge_undirected, .edge_directed => {
-                            return self.unsupportedAt(token.span, "edge chain");
+                            return self.unsupportedAt(token.span, .edge_chain);
                         },
                         .identifier, .right_brace, .left_brace => {
-                            return self.unsupportedAt(token.span, "optional semicolons");
+                            return self.unsupportedAt(token.span, .optional_semicolons);
                         },
-                        else => return self.unexpected("';'", token),
+                        else => return self.unexpected(.{ .semicolon = true }, .statement_terminator, token),
                     },
                     .epilogue => switch (token.tag) {
                         .eof => {
                             self.events.endDocument() catch |err| return self.sinkFailure(err);
                             return self.finish(.success);
                         },
-                        else => return self.unexpected("end of input", token),
+                        else => return self.unexpected(.{ .end_of_input = true }, .document_epilogue, token),
                     },
                 }
             }
@@ -305,18 +311,35 @@ fn Machine(comptime EventsPtr: type) type {
             return self.finish(.{ .sink_failure = err });
         }
 
-        fn unexpected(self: *Self, expected: []const u8, token: lex.Token) Result {
+        fn unexpected(
+            self: *Self,
+            expected: std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false),
+            context: diagnostic.ParseContext,
+            token: lex.Token,
+        ) Result {
+            const found = tokenItem(token.tag);
+            // The end of input inside the body traces back to the `{` that
+            // is still open (typed relation; renderers word it).
+            const related: ?diagnostic.Related = if (found == .end_of_input)
+                (if (self.open_brace_span) |span|
+                    .{ .span = span, .role = .opened_here }
+                else
+                    null)
+            else
+                null;
             return self.fail(.{
-                .code = if (token.tag == .eof) .parser_unexpected_end else .parser_unexpected_token,
+                .code = if (found == .end_of_input) .parser_unexpected_end else .parser_unexpected_token,
                 .span = token.span,
-                .details = .{ .expected_found = .{
-                    .expected = expected,
-                    .found = tokenName(token.tag),
+                .details = .{ .unexpected = .{
+                    .expected = diagnostic.ExpectedSet.init(expected),
+                    .found = found,
+                    .context = context,
+                    .related = related,
                 } },
             });
         }
 
-        fn unsupportedAt(self: *Self, span: location.Span, feature: []const u8) Result {
+        fn unsupportedAt(self: *Self, span: location.Span, feature: diagnostic.Feature) Result {
             return self.fail(.{
                 .code = .profile_unsupported_feature,
                 .span = span,
@@ -326,16 +349,18 @@ fn Machine(comptime EventsPtr: type) type {
     };
 }
 
-fn tokenName(tag: lex.Token.Tag) []const u8 {
+/// Map lexer token tags into the stable diagnostic vocabulary; diagnostics
+/// must not depend on lexer types (dependency direction).
+fn tokenItem(tag: lex.Token.Tag) diagnostic.SyntaxItem {
     return switch (tag) {
-        .keyword_graph => "'graph'",
-        .identifier => "an identifier",
-        .edge_undirected => "'--'",
-        .edge_directed => "'->'",
-        .left_brace => "'{'",
-        .right_brace => "'}'",
-        .semicolon => "';'",
-        .eof => "end of input",
+        .keyword_graph => .graph_keyword,
+        .identifier => .identifier,
+        .edge_undirected => .undirected_operator,
+        .edge_directed => .directed_operator,
+        .left_brace => .left_brace,
+        .right_brace => .right_brace,
+        .semicolon => .semicolon,
+        .eof => .end_of_input,
     };
 }
 
@@ -442,6 +467,32 @@ test "fail-fast means the bag contains exactly one diagnostic" {
     try expectAborted("graph @ }", .invalid_syntax);
 }
 
+test "missing opening brace reports the typed expected set and context" {
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    try expect(parse("graph ; }", &events, bag.sink(), .{}).outcome == .invalid_syntax);
+
+    const unexpected = bag.items()[0].details.unexpected;
+    try expect(unexpected.expected.contains(.left_brace));
+    try expectEqual(@as(usize, 1), unexpected.expected.count());
+    try expectEqual(diagnostic.SyntaxItem.semicolon, unexpected.found);
+    try expectEqual(diagnostic.ParseContext.document_header, unexpected.context);
+    try expect(unexpected.related == null);
+}
+
+test "unexpected end of input points back to the unclosed brace" {
+    const source = "graph { a";
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    try expect(parse(source, &events, bag.sink(), .{}).outcome == .invalid_syntax);
+
+    const unexpected = bag.items()[0].details.unexpected;
+    try expectEqual(diagnostic.SyntaxItem.end_of_input, unexpected.found);
+    const related = unexpected.related.?;
+    try expectEqual(diagnostic.Related.Role.opened_here, related.role);
+    try expectEqualStrings("{", related.span.slice(source));
+}
+
 test "named graph is the deferred graph-name feature, not malformed" {
     var events: Recording = .{};
     var bag: Bag = .{};
@@ -450,7 +501,7 @@ test "named graph is the deferred graph-name feature, not malformed" {
 
     const failure = bag.items()[0];
     try expectEqual(diagnostic.Code.profile_unsupported_feature, failure.code);
-    try expectEqualStrings("graph name", failure.details.unsupported_feature);
+    try expectEqual(diagnostic.Feature.graph_name, failure.details.unsupported_feature);
     try expectEqualStrings("G", failure.span.slice("graph G { }"));
 
     try expectAborted("graph G { }", .unsupported_feature);
@@ -463,18 +514,19 @@ test "missing edge endpoint is invalid syntax at the terminator" {
 
     const failure = bag.items()[0];
     try expectEqual(diagnostic.Code.parser_unexpected_token, failure.code);
-    try expectEqualStrings("an identifier", failure.details.expected_found.expected);
-    try expectEqualStrings("';'", failure.details.expected_found.found);
+    try expect(failure.details.unexpected.expected.contains(.identifier));
+    try expectEqual(diagnostic.SyntaxItem.semicolon, failure.details.unexpected.found);
+    try expectEqual(diagnostic.ParseContext.edge_endpoint, failure.details.unexpected.context);
 }
 
 test "trailing tokens after the document are invalid" {
     var events: Recording = .{};
     var bag: Bag = .{};
     try expect(parse("graph { a; } b", &events, bag.sink(), .{}).outcome == .invalid_syntax);
-    try expectEqualStrings(
-        "end of input",
-        bag.items()[0].details.expected_found.expected,
-    );
+    const failure = bag.items()[0];
+    try expect(failure.details.unexpected.expected.contains(.end_of_input));
+    try expectEqual(diagnostic.SyntaxItem.identifier, failure.details.unexpected.found);
+    try expectEqual(diagnostic.ParseContext.document_epilogue, failure.details.unexpected.context);
 
     // The document must not commit: the terminal event is an abort.
     const recorded = events.recorded();
@@ -518,8 +570,8 @@ test "failures before a supported header emit no events but do fill the bag" {
     var digraph_bag: Bag = .{};
     const digraph_result = parse("digraph { a -> b; }", &digraph_events, digraph_bag.sink(), .{});
     try expect(digraph_result.outcome == .unsupported_feature);
-    try expectEqualStrings(
-        "digraph document",
+    try expectEqual(
+        diagnostic.Feature.digraph_document,
         digraph_bag.items()[0].details.unsupported_feature,
     );
     try expectEqual(@as(usize, 0), digraph_events.recorded().len);
@@ -546,24 +598,24 @@ test "unsupported outcome is a boundary, not a whole-input validity claim" {
     var bag: Bag = .{};
     const result = parse("digraph @", &events, bag.sink(), .{});
     try expect(result.outcome == .unsupported_feature);
-    try expectEqualStrings("digraph document", bag.items()[0].details.unsupported_feature);
+    try expectEqual(diagnostic.Feature.digraph_document, bag.items()[0].details.unsupported_feature);
 }
 
 test "recognized-but-deferred constructs mid-document abort as unsupported" {
     inline for (.{
-        .{ "graph { a -- b -- c; }", "edge chain" },
-        .{ "graph { a -- { b }; }", "subgraph" },
-        .{ "graph { { a } }", "subgraph" },
-        .{ "graph { a b; }", "optional semicolons" },
-        .{ "graph { a }", "optional semicolons" },
-        .{ "graph { a -- b }", "optional semicolons" },
-        .{ "graph { A -> B }", "optional semicolons" },
-        .{ "graph { a -> b [color=red]; }", "attribute list" },
+        .{ "graph { a -- b -- c; }", diagnostic.Feature.edge_chain },
+        .{ "graph { a -- { b }; }", diagnostic.Feature.subgraph },
+        .{ "graph { { a } }", diagnostic.Feature.subgraph },
+        .{ "graph { a b; }", diagnostic.Feature.optional_semicolons },
+        .{ "graph { a }", diagnostic.Feature.optional_semicolons },
+        .{ "graph { a -- b }", diagnostic.Feature.optional_semicolons },
+        .{ "graph { A -> B }", diagnostic.Feature.optional_semicolons },
+        .{ "graph { a -> b [color=red]; }", diagnostic.Feature.attribute_list },
     }) |case| {
         var events: Recording = .{};
         var bag: Bag = .{};
         try expect(parse(case[0], &events, bag.sink(), .{}).outcome == .unsupported_feature);
-        try expectEqualStrings(case[1], bag.items()[0].details.unsupported_feature);
+        try expectEqual(case[1], bag.items()[0].details.unsupported_feature);
         try expectAborted(case[0], .unsupported_feature);
     }
 }
@@ -576,7 +628,7 @@ test "statement limit is a resource outcome, distinct from invalid syntax" {
 
     const failure = bag.items()[0];
     try expectEqual(diagnostic.Code.resource_capacity_exhausted, failure.code);
-    try expectEqualStrings("statements", failure.details.capacity.resource);
+    try expectEqual(diagnostic.Capacity.Resource.statements, failure.details.capacity.resource);
     try expectEqual(@as(usize, 1), failure.details.capacity.limit);
 
     const recorded = events.recorded();

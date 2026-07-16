@@ -301,28 +301,151 @@ pub fn computeNamespaceHash(namespace_text: []const u8) [5]u8 {
 /// Typed, allocation-free context accompanying a diagnostic
 /// (R-FUNC-005: structured data, no preformatted messages).
 ///
-/// String fields hold static names supplied by the emitter (token names,
-/// feature names, limit names) — never source text and never runtime-built
-/// strings.
+/// Every payload is a plain value type — enums, bytes, spans — safe to copy
+/// and retain in a `FixedBag`. No variant stores a pointer or slice, so a
+/// retained diagnostic has no lifetime of its own; the only indirection is
+/// `location.Span`, which indexes the single source buffer the operation ran
+/// over (multi-source diagnostics would need a source-identity field; out of
+/// scope for now). Wording lives in renderers/catalogs, never here —
+/// localization, consistent phrasing, and telemetry all want typed values.
 pub const Details = union(enum) {
     none,
     /// For `lexer_invalid_byte`: the offending byte.
     invalid_byte: u8,
-    /// For parser codes: what the parser expected and what it found.
-    expected_found: ExpectedFound,
-    /// For `profile_unsupported_feature`: the recognized feature.
-    unsupported_feature: []const u8,
-    /// For `resource_capacity_exhausted`: which limit was hit.
+    /// For `parser_unexpected_token` and `parser_unexpected_end`.
+    unexpected: Unexpected,
+    /// For `validation_operator_mismatch`.
+    operator_mismatch: OperatorMismatch,
+    /// For `profile_unsupported_feature`.
+    unsupported_feature: Feature,
+    /// For `resource_capacity_exhausted`.
     capacity: Capacity,
+};
 
-    pub const ExpectedFound = struct {
-        expected: []const u8,
-        found: []const u8,
+/// Stable diagnostic-layer vocabulary for grammar-level constructs.
+/// Deliberately NOT the lexer's token tags: diagnostics must not depend on
+/// the lexer (dependency direction), and token tags are an implementation
+/// detail that may diverge from user-facing grammar concepts.
+pub const SyntaxItem = enum(u8) {
+    graph_keyword,
+    identifier,
+    left_brace,
+    right_brace,
+    semicolon,
+    undirected_operator,
+    directed_operator,
+    end_of_input,
+};
+
+/// An inline, allocation-free, deterministic set of expected constructs.
+pub const ExpectedSet = std.EnumSet(SyntaxItem);
+
+/// The grammar position where a parser failure occurred. These are stable
+/// grammar concepts, not internal state-machine names, so parser refactors
+/// do not become observable API changes.
+pub const ParseContext = enum(u8) {
+    document_header,
+    document_body,
+    statement,
+    edge_endpoint,
+    statement_terminator,
+    document_epilogue,
+};
+
+/// A secondary source location related to a diagnostic. The role is typed;
+/// renderers map it to (possibly localized) text.
+pub const Related = struct {
+    span: location.Span,
+    role: Role,
+
+    pub const Role = enum(u8) {
+        /// A still-open delimiter this failure traces back to.
+        opened_here,
+        /// The declaration that established the violated expectation.
+        declared_here,
     };
+};
 
-    pub const Capacity = struct {
-        resource: []const u8,
-        limit: usize,
+pub const Unexpected = struct {
+    expected: ExpectedSet,
+    found: SyntaxItem,
+    context: ParseContext,
+    related: ?Related = null,
+};
+
+pub const OperatorMismatch = struct {
+    /// The operator the document kind requires.
+    expected: Operator,
+    /// The operator actually written.
+    found: Operator,
+    /// Where the document declared its graph kind.
+    declaration: location.Span,
+
+    pub const Operator = enum(u8) { undirected, directed };
+};
+
+/// Recognized-but-deferred DOT features. Non-exhaustive (`_`) so the set can
+/// grow without forcing every downstream switch to be exhaustive; consumers
+/// aggregate, test, and render on the enum, never on spelled-out strings.
+pub const Feature = enum(u16) {
+    digraph_document,
+    graph_name,
+    strict_modifier,
+    subgraph,
+    node_attribute_statement,
+    edge_attribute_statement,
+    quoted_identifier,
+    html_identifier,
+    numeral_identifier,
+    non_ascii_identifier,
+    comment,
+    attribute_list,
+    attribute_assignment,
+    port_or_compass,
+    edge_chain,
+    optional_semicolons,
+    _,
+
+    /// Canonical English display name. Renderers may localize instead.
+    pub fn name(self: Feature) []const u8 {
+        return switch (self) {
+            .digraph_document => "digraph document",
+            .graph_name => "graph name",
+            .strict_modifier => "strict modifier",
+            .subgraph => "subgraph",
+            .node_attribute_statement => "node attribute statement",
+            .edge_attribute_statement => "edge attribute statement",
+            .quoted_identifier => "quoted identifier",
+            .html_identifier => "HTML-like identifier",
+            .numeral_identifier => "numeral identifier",
+            .non_ascii_identifier => "non-ASCII identifier",
+            .comment => "comment",
+            .attribute_list => "attribute list",
+            .attribute_assignment => "attribute assignment",
+            .port_or_compass => "port or compass point",
+            .edge_chain => "edge chain",
+            .optional_semicolons => "optional semicolons",
+            _ => "unrecognized feature",
+        };
+    }
+};
+
+pub const Capacity = struct {
+    resource: Resource,
+    limit: usize,
+
+    /// Which caller-configured capacity was exhausted. Non-exhaustive for
+    /// the same growth reason as `Feature`.
+    pub const Resource = enum(u8) {
+        statements,
+        _,
+
+        pub fn name(self: Resource) []const u8 {
+            return switch (self) {
+                .statements => "statement",
+                _ => "resource",
+            };
+        }
     };
 };
 

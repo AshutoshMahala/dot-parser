@@ -27,7 +27,39 @@ pub fn main(init: std.process.Init) !void {
             .start = .{ .byte_offset = 14, .line = 2, .byte_column = 7 },
             .byte_len = 2,
         },
-        .details = .{ .expected_found = .{ .expected = "'--'", .found = "'->'" } },
+        .details = .{ .operator_mismatch = .{
+            .expected = .undirected,
+            .found = .directed,
+            .declaration = .{
+                .start = .{ .byte_offset = 0, .line = 1, .byte_column = 1 },
+                .byte_len = 5,
+            },
+        } },
+    });
+
+    // What the parser will report when the input ends inside the body.
+    try sink.emit(.{
+        .code = .parser_unexpected_end,
+        .span = .{
+            .start = .{ .byte_offset = 21, .line = 2, .byte_column = 14 },
+            .byte_len = 0,
+        },
+        .details = .{ .unexpected = .{
+            .expected = dot.diagnostic.ExpectedSet.init(.{
+                .semicolon = true,
+                .undirected_operator = true,
+                .directed_operator = true,
+            }),
+            .found = .end_of_input,
+            .context = .statement,
+            .related = .{
+                .span = .{
+                    .start = .{ .byte_offset = 6, .line = 1, .byte_column = 7 },
+                    .byte_len = 1,
+                },
+                .role = .opened_here,
+            },
+        } },
     });
 
     // What the lexer will report for a byte it cannot start a token with.

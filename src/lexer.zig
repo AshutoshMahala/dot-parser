@@ -49,12 +49,12 @@ pub const Result = union(enum) {
 /// DOT keywords that are valid DOT but deferred beyond milestone 1. They are
 /// detected so the failure names the feature instead of degrading into a
 /// generic syntax error (R-MOD-006).
-const deferred_keywords = [_]struct { word: []const u8, feature: []const u8 }{
-    .{ .word = "digraph", .feature = "digraph document" },
-    .{ .word = "strict", .feature = "strict modifier" },
-    .{ .word = "subgraph", .feature = "subgraph" },
-    .{ .word = "node", .feature = "node attribute statement" },
-    .{ .word = "edge", .feature = "edge attribute statement" },
+const deferred_keywords = [_]struct { word: []const u8, feature: diagnostic.Feature }{
+    .{ .word = "digraph", .feature = .digraph_document },
+    .{ .word = "strict", .feature = .strict_modifier },
+    .{ .word = "subgraph", .feature = .subgraph },
+    .{ .word = "node", .feature = .node_attribute_statement },
+    .{ .word = "edge", .feature = .edge_attribute_statement },
 };
 
 pub const Lexer = struct {
@@ -80,28 +80,28 @@ pub const Lexer = struct {
             'A'...'Z', 'a'...'z', '_' => self.identifierOrKeyword(),
             '-' => self.dash(),
             // Valid DOT, deferred to later slices (R-MOD-006 detectors).
-            '0'...'9' => unsupported(start, 1, "numeral identifier"),
+            '0'...'9' => unsupported(start, 1, .numeral_identifier),
             // A leading '.' is a DOT numeral only when a digit follows
             // (grammar: `-?(.[0-9]+ | [0-9]+(.[0-9]*)?)`); a bare '.' is
             // invalid in any DOT document.
             '.' => if (self.peek(1)) |after| switch (after) {
-                '0'...'9' => unsupported(start, 2, "numeral identifier"),
+                '0'...'9' => unsupported(start, 2, .numeral_identifier),
                 else => self.invalidByte(),
             } else self.invalidByte(),
-            '"' => unsupported(start, 1, "quoted identifier"),
-            '<' => unsupported(start, 1, "HTML-like identifier"),
-            '[', ']', ',' => unsupported(start, 1, "attribute list"),
-            '=' => unsupported(start, 1, "attribute assignment"),
-            ':' => unsupported(start, 1, "port or compass point"),
-            '#' => unsupported(start, 1, "comment"),
+            '"' => unsupported(start, 1, .quoted_identifier),
+            '<' => unsupported(start, 1, .html_identifier),
+            '[', ']', ',' => unsupported(start, 1, .attribute_list),
+            '=' => unsupported(start, 1, .attribute_assignment),
+            ':' => unsupported(start, 1, .port_or_compass),
+            '#' => unsupported(start, 1, .comment),
             '/' => if (self.peek(1)) |after| switch (after) {
-                '/', '*' => unsupported(start, 2, "comment"),
+                '/', '*' => unsupported(start, 2, .comment),
                 else => self.invalidByte(),
             } else self.invalidByte(),
             // DOT permits bytes 0x80–0xFF in unquoted identifiers
             // ([a-zA-Z\200-\377]); milestone 1 is ASCII-only, so this is a
             // deferred feature, not malformed input.
-            0x80...0xFF => unsupported(start, 1, "non-ASCII identifier"),
+            0x80...0xFF => unsupported(start, 1, .non_ascii_identifier),
             else => self.invalidByte(),
         };
     }
@@ -152,7 +152,7 @@ pub const Lexer = struct {
         // such rather than splitting it into a token plus an error.
         if (self.peek(len)) |after| {
             if (after >= 0x80) {
-                return unsupported(start, len + 1, "non-ASCII identifier");
+                return unsupported(start, len + 1, .non_ascii_identifier);
             }
         }
 
@@ -198,9 +198,9 @@ pub const Lexer = struct {
             },
             // A '-' introducing a digit is a negative DOT numeral; `-.` is
             // one only when a digit follows the '.'.
-            '0'...'9' => return unsupported(start, 2, "numeral identifier"),
+            '0'...'9' => return unsupported(start, 2, .numeral_identifier),
             '.' => if (self.peek(2)) |third| switch (third) {
-                '0'...'9' => return unsupported(start, 3, "numeral identifier"),
+                '0'...'9' => return unsupported(start, 3, .numeral_identifier),
                 else => {},
             },
             else => {},
@@ -217,7 +217,7 @@ pub const Lexer = struct {
         } };
     }
 
-    fn unsupported(start: location.Location, byte_len: usize, feature: []const u8) Result {
+    fn unsupported(start: location.Location, byte_len: usize, feature: diagnostic.Feature) Result {
         return .{ .failure = .{
             .code = .profile_unsupported_feature,
             .span = .{ .start = start, .byte_len = byte_len },
@@ -241,11 +241,11 @@ fn expectToken(lexer: *Lexer, tag: Token.Tag, text: []const u8) !void {
     try expectEqualStrings(text, result.token.span.slice(lexer.source));
 }
 
-fn expectUnsupported(lexer: *Lexer, feature: []const u8) !void {
+fn expectUnsupported(lexer: *Lexer, feature: diagnostic.Feature) !void {
     const result = lexer.next();
     try expect(result == .failure);
     try expectEqual(diagnostic.Code.profile_unsupported_feature, result.failure.code);
-    try expectEqualStrings(feature, result.failure.details.unsupported_feature);
+    try expectEqual(feature, result.failure.details.unsupported_feature);
 }
 
 fn expectInvalidByte(lexer: *Lexer, byte: u8) !void {
@@ -292,7 +292,7 @@ test "DOT keywords are case-independent" {
     try expectToken(&mixed, .keyword_graph, "Graph");
 
     var deferred = Lexer.init("DiGraph");
-    try expectUnsupported(&deferred, "digraph document");
+    try expectUnsupported(&deferred, .digraph_document);
 }
 
 test "identifiers may contain underscores and digits after the first byte" {
@@ -366,14 +366,14 @@ test "a dot without a following digit is invalid, not a numeral" {
 test "non-ASCII bytes are the deferred identifier range, not invalid input" {
     // DOT unquoted identifiers may use bytes \200-\377.
     var leading = Lexer.init("\xC3\xA9");
-    try expectUnsupported(&leading, "non-ASCII identifier");
+    try expectUnsupported(&leading, .non_ascii_identifier);
 
     // One identifier running into the non-ASCII range is reported whole,
     // not split into an ASCII identifier plus an error.
     var mixed = Lexer.init("caf\xC3\xA9");
     const result = mixed.next();
     try expect(result == .failure);
-    try expectEqualStrings("non-ASCII identifier", result.failure.details.unsupported_feature);
+    try expectEqual(diagnostic.Feature.non_ascii_identifier, result.failure.details.unsupported_feature);
     try expectEqual(@as(usize, 0), result.failure.span.start.byte_offset);
 
     // Control bytes below 0x80 remain invalid, as before.
@@ -383,25 +383,25 @@ test "non-ASCII bytes are the deferred identifier range, not invalid input" {
 
 test "recognized deferred features are unsupported, not invalid" {
     inline for (.{
-        .{ "digraph D", "digraph document" },
-        .{ "strict graph", "strict modifier" },
-        .{ "subgraph s", "subgraph" },
-        .{ "node [", "node attribute statement" },
-        .{ "edge [", "edge attribute statement" },
-        .{ "\"quoted\"", "quoted identifier" },
-        .{ "<html>", "HTML-like identifier" },
-        .{ "[color=red]", "attribute list" },
-        .{ "]", "attribute list" },
-        .{ ",", "attribute list" },
-        .{ "=", "attribute assignment" },
-        .{ ":n", "port or compass point" },
-        .{ "# comment", "comment" },
-        .{ "// comment", "comment" },
-        .{ "/* comment */", "comment" },
-        .{ "123", "numeral identifier" },
-        .{ ".5", "numeral identifier" },
-        .{ "-1", "numeral identifier" },
-        .{ "-.5", "numeral identifier" },
+        .{ "digraph D", diagnostic.Feature.digraph_document },
+        .{ "strict graph", diagnostic.Feature.strict_modifier },
+        .{ "subgraph s", diagnostic.Feature.subgraph },
+        .{ "node [", diagnostic.Feature.node_attribute_statement },
+        .{ "edge [", diagnostic.Feature.edge_attribute_statement },
+        .{ "\"quoted\"", diagnostic.Feature.quoted_identifier },
+        .{ "<html>", diagnostic.Feature.html_identifier },
+        .{ "[color=red]", diagnostic.Feature.attribute_list },
+        .{ "]", diagnostic.Feature.attribute_list },
+        .{ ",", diagnostic.Feature.attribute_list },
+        .{ "=", diagnostic.Feature.attribute_assignment },
+        .{ ":n", diagnostic.Feature.port_or_compass },
+        .{ "# comment", diagnostic.Feature.comment },
+        .{ "// comment", diagnostic.Feature.comment },
+        .{ "/* comment */", diagnostic.Feature.comment },
+        .{ "123", diagnostic.Feature.numeral_identifier },
+        .{ ".5", diagnostic.Feature.numeral_identifier },
+        .{ "-1", diagnostic.Feature.numeral_identifier },
+        .{ "-.5", diagnostic.Feature.numeral_identifier },
     }) |case| {
         var lexer = Lexer.init(case[0]);
         try expectUnsupported(&lexer, case[1]);

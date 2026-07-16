@@ -9,13 +9,21 @@ test "consumer can collect diagnostics through a fixed bag" {
     const sink = bag.sink();
 
     // Simulate what validating `graph { a -> b; c -> d; }` will emit.
+    const declaration: dot.Span = .{
+        .start = .{ .byte_offset = 0, .line = 1, .byte_column = 1 },
+        .byte_len = 5,
+    };
     try sink.emit(.{
         .code = .validation_operator_mismatch,
         .span = .{
             .start = .{ .byte_offset = 10, .line = 2, .byte_column = 7 },
             .byte_len = 2,
         },
-        .details = .{ .expected_found = .{ .expected = "'--'", .found = "'->'" } },
+        .details = .{ .operator_mismatch = .{
+            .expected = .undirected,
+            .found = .directed,
+            .declaration = declaration,
+        } },
     });
     try sink.emit(.{
         .code = .validation_operator_mismatch,
@@ -23,7 +31,11 @@ test "consumer can collect diagnostics through a fixed bag" {
             .start = .{ .byte_offset = 21, .line = 3, .byte_column = 7 },
             .byte_len = 2,
         },
-        .details = .{ .expected_found = .{ .expected = "'--'", .found = "'->'" } },
+        .details = .{ .operator_mismatch = .{
+            .expected = .undirected,
+            .found = .directed,
+            .declaration = declaration,
+        } },
     });
 
     try std.testing.expectEqual(@as(usize, 2), bag.items().len);
@@ -53,7 +65,7 @@ test "consumer can render a diagnostic into caller-owned memory" {
             .start = .{ .byte_offset = 0, .line = 1, .byte_column = 1 },
             .byte_len = 7,
         },
-        .details = .{ .unsupported_feature = "digraph document" },
+        .details = .{ .unsupported_feature = .digraph_document },
     }, &writer);
 
     const text = writer.buffered();
@@ -75,11 +87,11 @@ test "consumer can render boxed output in unicode and ascii styles" {
     }};
 
     try dot.console.renderBoxedList(&diagnostics, 0, .{ .source_name = "pipe" }, &writer);
-    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "┌─ Error 1 ─── [dot_parser:E.Parser.Syntax.003]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "┌─ Error 1 ─── [dot_parser:E.Parser.Syntax.003 (INVALID)]") != null);
 
     var ascii_writer = std.Io.Writer.fixed(&buffer);
     try dot.console.renderBoxedList(&diagnostics, 0, .{ .source_name = "pipe", .style = .ascii }, &ascii_writer);
-    try std.testing.expect(std.mem.indexOf(u8, ascii_writer.buffered(), "-- Error 1 - [dot_parser:E.Parser.Syntax.003]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ascii_writer.buffered(), "-- Error 1 - [dot_parser:E.Parser.Syntax.003 (INVALID)]") != null);
 }
 
 test "consumer can bring their own reporter through the sink interface" {
@@ -141,8 +153,8 @@ test "consumer sees a structured failure for deferred DOT features" {
     const result = lexer.next();
     try std.testing.expect(result == .failure);
     try std.testing.expectEqual(dot.Code.profile_unsupported_feature, result.failure.code);
-    try std.testing.expectEqualStrings(
-        "digraph document",
+    try std.testing.expectEqual(
+        dot.diagnostic.Feature.digraph_document,
         result.failure.details.unsupported_feature,
     );
 }
