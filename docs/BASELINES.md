@@ -20,8 +20,8 @@ runners are too noisy for regression gating without dedicated hardware.
 Revisit that decision if stable benchmark hardware becomes available.
 
 Provenance: the milestone-1 numbers were recorded 2026-07-17 at commit
-`d48ae20`; the slice-2 numbers were recorded 2026-07-18 on the pre-tag
-`0.1.0` working tree (stamp the commit hash when tagging). **Cross-run
+`d48ae20`; the slice-2 numbers were recorded 2026-07-18 at commit
+`32d6838` (the `0.1.0` code). **Cross-run
 medians on this machine vary by roughly ±8%** even with the warm-up/median
 methodology — repeated same-day runs have produced 281–304 MiB/s default
 and 333–356 MiB/s hinted. Treat a fresh measurement inside that band as

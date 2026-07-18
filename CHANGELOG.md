@@ -3,7 +3,7 @@
 Notable changes to dot-parser. During `0.x`, minor versions may break
 compatibility; deprecations and breaks are called out here.
 
-## 0.1.0 — unreleased
+## 0.1.0 — 2026-07-18
 
 First tagged release: an end-to-end DOT subset from bytes to a validated,
 borrowed syntax document.
