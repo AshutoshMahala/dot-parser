@@ -12,10 +12,10 @@ const warmup_rounds = 2;
 const rounds = 9;
 
 pub fn main(init: std.process.Init) !void {
-    const gpa = init.arena.allocator();
+    const arena_allocator = init.arena.allocator();
 
     var source_builder: std.ArrayList(u8) = .empty;
-    try source_builder.appendSlice(gpa, "graph {\n");
+    try source_builder.appendSlice(arena_allocator, "graph {\n");
     var line_buffer: [64]u8 = undefined;
     var i: usize = 0;
     while (i < statement_count) : (i += 1) {
@@ -23,9 +23,9 @@ pub fn main(init: std.process.Init) !void {
             try std.fmt.bufPrint(&line_buffer, "n{d};\n", .{i})
         else
             try std.fmt.bufPrint(&line_buffer, "n{d} -- n{d};\n", .{ i - 1, i });
-        try source_builder.appendSlice(gpa, line);
+        try source_builder.appendSlice(arena_allocator, line);
     }
-    try source_builder.appendSlice(gpa, "}\n");
+    try source_builder.appendSlice(arena_allocator, "}\n");
     const source = source_builder.items;
 
     var stdout_buffer: [4096]u8 = undefined;

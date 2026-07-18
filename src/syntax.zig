@@ -393,7 +393,8 @@ pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
     comptime {
         for ([_]usize{ capacities.statements, capacities.nodes, capacities.edges }) |capacity| {
             if (capacity > std.math.maxInt(Index)) {
-                @compileError("FixedDocumentStorage: capacity exceeds the statement index width (u32)");
+                @compileError("FixedDocumentStorage: capacity exceeds the statement index width (" ++
+                    @typeName(Index) ++ ")");
             }
         }
     }

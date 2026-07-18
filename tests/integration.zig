@@ -448,15 +448,15 @@ test "valid corpus parses to the expected statements, deterministically" {
             try std.testing.expectEqualStrings(expected_text, actual);
         }
 
-        // Determinism: a second run reproduces the same document shape.
+        // Determinism: a second run reproduces the identical document —
+        // order, pools, and borrowed ranges, not just the shape.
         var second_bag: dot.FixedDiagnosticBag(4) = .{};
         var second = dot.parseAndValidate(std.testing.allocator, entry.source, second_bag.sink(), .{});
         defer second.deinit(std.testing.allocator);
-        var second_shape: [32]u8 = undefined;
-        try std.testing.expectEqualStrings(
-            entry.shape,
-            documentShape(&second.document.?, &second_shape),
-        );
+        const second_document = &second.document.?;
+        try std.testing.expectEqualSlices(dot.StatementId, document.order, second_document.order);
+        try std.testing.expectEqualSlices(dot.NodeStatement, document.nodes, second_document.nodes);
+        try std.testing.expectEqualSlices(dot.EdgeStatement, document.edges, second_document.edges);
     }
 }
 
@@ -514,6 +514,10 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
     while (!smith.eos()) {
         const chunk = try input.addManyAsSlice(gpa, smith.value(u6));
         smith.bytes(chunk);
+        // Defense-in-depth input cap: Zig's fuzz engine bounds input size
+        // implicitly, but this harness may also run under other engines
+        // (libFuzzer, AFL) that do not.
+        if (input.items.len >= 1 << 20) break;
     }
 
     var bag: dot.FixedDiagnosticBag(4) = .{};
@@ -533,7 +537,9 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
         .storage_failure => {},
     }
 
-    // Determinism: a second run over the same bytes agrees.
+    // Determinism: a second run over the same bytes agrees — not just on
+    // the outcome class and count, but on every diagnostic's identity and
+    // position, and on the parsed statements when both succeed.
     var second_bag: dot.FixedDiagnosticBag(4) = .{};
     var second = dot.parseAndValidate(gpa, input.items, second_bag.sink(), .{
         .parse = .{ .max_statements = 4096 },
@@ -544,6 +550,18 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
         std.meta.activeTag(second.outcome),
     );
     try std.testing.expectEqual(bag.items().len, second_bag.items().len);
+    for (bag.items(), second_bag.items()) |first_diag, second_diag| {
+        try std.testing.expectEqual(first_diag.code, second_diag.code);
+        try std.testing.expectEqual(first_diag.span.start, second_diag.span.start);
+        try std.testing.expectEqual(first_diag.span.byte_len, second_diag.span.byte_len);
+    }
+    if (checked.document) |*first_document| {
+        try std.testing.expectEqualSlices(
+            dot.StatementId,
+            first_document.order,
+            second.document.?.order,
+        );
+    }
 
     // The fixed-storage twin must terminate on the same bytes too.
     var pools: dot.FixedDocumentStorage(.{ .statements = 64, .nodes = 64, .edges = 64 }) = .{};
