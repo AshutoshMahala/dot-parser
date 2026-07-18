@@ -1,0 +1,3 @@
+# The CRLF corpus fixture intentionally preserves carriage returns;
+# exempt it from whitespace checks without normalizing its bytes.
+tests/corpus/valid/crlf.dot -text whitespace=cr-at-eol

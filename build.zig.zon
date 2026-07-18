@@ -9,8 +9,13 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "tests",
+        "examples",
+        "bench",
+        "docs",
         "LICENSE-APACHE",
         "LICENSE-MIT",
         "README.md",
+        ".gitattributes",
     },
 }

@@ -31,6 +31,8 @@ deferred to later vertical slices.
 
 ## Usage
 
+### Just parse and check
+
 ```zig
 const dot = @import("dot_parser");
 
@@ -54,8 +56,29 @@ if (checked.documentValid()) {
 }
 ```
 
-`parseBorrowed` and `validate` are also available as separate stages. For
-fixed-memory operation, hand `parseBorrowedIn` your own pools — no
+### Build a linter
+
+`parseBorrowed` and `validate` are separate stages, and the document is a
+plain source-ordered view — ranges slice your buffer, and full positions
+are derived only when you ask:
+
+```zig
+// A tiny lint: flag node names longer than 8 bytes.
+var statements = document.statements();
+while (statements.next()) |statement| switch (statement) {
+    .node => |node| if (node.identifier.len > 8) {
+        const where = node.identifier.toSpan(document.source).start;
+        std.log.warn("{d}:{d}: long node name '{s}'", .{
+            where.line, where.byte_column, document.text(node.identifier),
+        });
+    },
+    .edge => {},
+};
+```
+
+### Use fixed memory
+
+For fixed-memory operation, hand `parseBorrowedIn` your own pools — no
 allocator, nothing grows, and capacity is visible in the declarations:
 
 ```zig
@@ -78,8 +101,15 @@ if (parsed.outcome == .success) {
 `std.heap.FixedBufferAllocator` with `document_capacities` hints, if an
 allocator fits your architecture better.)
 
+### Integrate a graph engine
+
+Coming in a later slice: a consumer-neutral `DotIR` plus adapter contracts,
+so engines consume normalized semantics rather than surface syntax.
+
 The source bytes are borrowed: keep them alive and unchanged for as long as
-the returned document is used.
+the returned document is used. See [examples/](examples/) for runnable
+versions of these paths and [docs/BASELINES.md](docs/BASELINES.md) for
+measured performance.
 
 ## Building
 

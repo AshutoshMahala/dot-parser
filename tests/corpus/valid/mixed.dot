@@ -1,0 +1,6 @@
+graph {
+    hub;
+    hub -- leaf1;
+    hub -- leaf2;
+    leaf1;
+}

@@ -731,6 +731,12 @@ test "failing beginDocument still receives the cleanup abort" {
     );
 }
 
+test "parser state stays small (R-PERF-005 parser-state-size regression guard)" {
+    // The whole machine — lexer, continuation state, options, bookkeeping —
+    // must remain a small constant, independent of input size.
+    try expect(@sizeOf(Machine(*Recording)) <= 320);
+}
+
 test "step is terminal-idempotent after success and after failure" {
     var events: Recording = .{};
     var bag: Bag = .{};

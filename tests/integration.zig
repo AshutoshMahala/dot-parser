@@ -352,6 +352,205 @@ test "the discard sink makes ignoring diagnostics explicit" {
     try std.testing.expect(parsed.outcome == .invalid_syntax);
 }
 
+// ---------------------------------------------------------------------------
+// Corpus tests (PROJECT_STRUCTURE.md test level 3): reusable DOT inputs,
+// grouped by expected outcome class.
+// ---------------------------------------------------------------------------
+
+/// A well-formed fixture with its expected parse, so a regression that
+/// silently drops or reorders statements cannot pass on outcome class alone.
+const ValidEntry = struct {
+    name: []const u8,
+    source: []const u8,
+    /// Statement kinds in source order: 'n' node, 'e' edge.
+    shape: []const u8,
+    nodes: usize,
+    edges: usize,
+    /// Text of the first statement's identifier/left endpoint (null when
+    /// the document is empty).
+    first_text: ?[]const u8,
+};
+
+const valid_corpus = [_]ValidEntry{
+    .{ .name = "minimal", .source = @embedFile("corpus/valid/minimal.dot"), .shape = "", .nodes = 0, .edges = 0, .first_text = null },
+    .{ .name = "nodes", .source = @embedFile("corpus/valid/nodes.dot"), .shape = "nnn", .nodes = 3, .edges = 0, .first_text = "alpha" },
+    .{ .name = "edges", .source = @embedFile("corpus/valid/edges.dot"), .shape = "eee", .nodes = 0, .edges = 3, .first_text = "a" },
+    .{ .name = "mixed", .source = @embedFile("corpus/valid/mixed.dot"), .shape = "neen", .nodes = 2, .edges = 2, .first_text = "hub" },
+    .{ .name = "crlf", .source = @embedFile("corpus/valid/crlf.dot"), .shape = "ne", .nodes = 1, .edges = 1, .first_text = "a" },
+};
+
+/// A malformed fixture with the exact diagnostic it must produce.
+const InvalidEntry = struct {
+    name: []const u8,
+    source: []const u8,
+    code: dot.Code,
+    /// Byte offset of the diagnostic's primary span.
+    offset: usize,
+};
+
+const invalid_corpus = [_]InvalidEntry{
+    .{ .name = "truncated", .source = @embedFile("corpus/invalid/truncated.dot"), .code = .parser_unexpected_end, .offset = 7 },
+    .{ .name = "missing_brace", .source = @embedFile("corpus/invalid/missing_brace.dot"), .code = .parser_unexpected_token, .offset = 6 },
+    .{ .name = "invalid_byte", .source = @embedFile("corpus/invalid/invalid_byte.dot"), .code = .lexer_invalid_byte, .offset = 8 },
+    .{ .name = "trailing", .source = @embedFile("corpus/invalid/trailing.dot"), .code = .parser_unexpected_token, .offset = 13 },
+    .{ .name = "missing_endpoint", .source = @embedFile("corpus/invalid/missing_endpoint.dot"), .code = .parser_unexpected_token, .offset = 13 },
+};
+
+/// A valid-but-deferred fixture with the exact feature it must name.
+const UnsupportedEntry = struct {
+    name: []const u8,
+    source: []const u8,
+    feature: dot.diagnostic.Feature,
+};
+
+const unsupported_corpus = [_]UnsupportedEntry{
+    .{ .name = "digraph", .source = @embedFile("corpus/unsupported/digraph.dot"), .feature = .digraph_document },
+    .{ .name = "graph_name", .source = @embedFile("corpus/unsupported/graph_name.dot"), .feature = .graph_name },
+    .{ .name = "subgraph", .source = @embedFile("corpus/unsupported/subgraph.dot"), .feature = .subgraph },
+    .{ .name = "optional_semicolon", .source = @embedFile("corpus/unsupported/optional_semicolon.dot"), .feature = .optional_semicolons },
+    .{ .name = "edge_chain", .source = @embedFile("corpus/unsupported/edge_chain.dot"), .feature = .edge_chain },
+};
+
+fn documentShape(document: *const dot.Document, buffer: []u8) []const u8 {
+    var length: usize = 0;
+    var statements = document.statements();
+    while (statements.next()) |statement| : (length += 1) {
+        buffer[length] = switch (statement) {
+            .node => 'n',
+            .edge => 'e',
+        };
+    }
+    return buffer[0..length];
+}
+
+test "valid corpus parses to the expected statements, deterministically" {
+    for (valid_corpus) |entry| {
+        errdefer std.debug.print("corpus fixture: valid/{s}\n", .{entry.name});
+
+        var bag: dot.FixedDiagnosticBag(4) = .{};
+        var checked = dot.parseAndValidate(std.testing.allocator, entry.source, bag.sink(), .{});
+        defer checked.deinit(std.testing.allocator);
+        try std.testing.expect(checked.outcome == .success);
+        try std.testing.expect(checked.documentValid());
+        try std.testing.expectEqual(@as(usize, 0), bag.items().len);
+
+        // Semantic expectations, not just the outcome class.
+        const document = &checked.document.?;
+        var shape_buffer: [32]u8 = undefined;
+        try std.testing.expectEqualStrings(entry.shape, documentShape(document, &shape_buffer));
+        try std.testing.expectEqual(entry.nodes, document.nodes.len);
+        try std.testing.expectEqual(entry.edges, document.edges.len);
+        if (entry.first_text) |expected_text| {
+            const actual = switch (document.statementAt(0).?) {
+                .node => |node| document.text(node.identifier),
+                .edge => |edge| document.text(edge.left),
+            };
+            try std.testing.expectEqualStrings(expected_text, actual);
+        }
+
+        // Determinism: a second run reproduces the same document shape.
+        var second_bag: dot.FixedDiagnosticBag(4) = .{};
+        var second = dot.parseAndValidate(std.testing.allocator, entry.source, second_bag.sink(), .{});
+        defer second.deinit(std.testing.allocator);
+        var second_shape: [32]u8 = undefined;
+        try std.testing.expectEqualStrings(
+            entry.shape,
+            documentShape(&second.document.?, &second_shape),
+        );
+    }
+}
+
+test "invalid corpus fails with the expected diagnostic and terminates" {
+    for (invalid_corpus) |entry| {
+        errdefer std.debug.print("corpus fixture: invalid/{s}\n", .{entry.name});
+
+        var bag: dot.FixedDiagnosticBag(4) = .{};
+        var checked = dot.parseAndValidate(std.testing.allocator, entry.source, bag.sink(), .{});
+        defer checked.deinit(std.testing.allocator);
+        try std.testing.expect(checked.outcome == .invalid_syntax);
+        try std.testing.expect(checked.document == null);
+        try std.testing.expectEqual(@as(usize, 1), bag.items().len);
+
+        const failure = bag.items()[0];
+        try std.testing.expectEqual(entry.code, failure.code);
+        try std.testing.expectEqual(entry.offset, failure.span.start.byte_offset);
+    }
+}
+
+test "unsupported corpus names the exact deferred feature" {
+    for (unsupported_corpus) |entry| {
+        errdefer std.debug.print("corpus fixture: unsupported/{s}\n", .{entry.name});
+
+        var bag: dot.FixedDiagnosticBag(4) = .{};
+        var checked = dot.parseAndValidate(std.testing.allocator, entry.source, bag.sink(), .{});
+        defer checked.deinit(std.testing.allocator);
+        try std.testing.expect(checked.outcome == .unsupported_feature);
+        try std.testing.expectEqual(@as(usize, 1), bag.items().len);
+        try std.testing.expectEqual(entry.feature, bag.items()[0].details.unsupported_feature);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fuzzing (PROJECT_STRUCTURE.md test level 4). Runs as a smoke test in a
+// normal `zig build test`. Verified real-fuzzing invocation on Zig 0.16.0:
+//
+//     zig build -Doptimize=ReleaseFast test --fuzz=1000
+//
+// (The Debug fuzz runner in Zig 0.16.0 fails with a StackTrace type
+// mismatch inside std's test runner — a toolchain issue, not a library
+// one; use the ReleaseFast form above.)
+// ---------------------------------------------------------------------------
+
+test "fuzz: arbitrary bytes terminate without crashing, leaking, or diverging" {
+    try std.testing.fuzz({}, fuzzParse, .{});
+}
+
+fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
+    _ = context;
+    const gpa = std.testing.allocator;
+
+    var input: std.ArrayList(u8) = .empty;
+    defer input.deinit(gpa);
+    while (!smith.eos()) {
+        const chunk = try input.addManyAsSlice(gpa, smith.value(u6));
+        smith.bytes(chunk);
+    }
+
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+    var checked = dot.parseAndValidate(gpa, input.items, bag.sink(), .{
+        .parse = .{ .max_statements = 4096 },
+    });
+    defer checked.deinit(gpa);
+
+    // Invariants: reaching here means termination; failures explain
+    // themselves; success produces a document.
+    switch (checked.outcome) {
+        .success => try std.testing.expect(checked.document != null),
+        .invalid_syntax, .unsupported_feature, .resource_exhausted => {
+            try std.testing.expect(checked.document == null);
+            try std.testing.expect(bag.items().len >= 1);
+        },
+        .storage_failure => {},
+    }
+
+    // Determinism: a second run over the same bytes agrees.
+    var second_bag: dot.FixedDiagnosticBag(4) = .{};
+    var second = dot.parseAndValidate(gpa, input.items, second_bag.sink(), .{
+        .parse = .{ .max_statements = 4096 },
+    });
+    defer second.deinit(gpa);
+    try std.testing.expectEqual(
+        std.meta.activeTag(checked.outcome),
+        std.meta.activeTag(second.outcome),
+    );
+    try std.testing.expectEqual(bag.items().len, second_bag.items().len);
+
+    // The fixed-storage twin must terminate on the same bytes too.
+    var pools: dot.FixedDocumentStorage(.{ .statements = 64, .nodes = 64, .edges = 64 }) = .{};
+    var fixed_bag: dot.FixedDiagnosticBag(4) = .{};
+    _ = dot.parseBorrowedIn(input.items, pools.storage(), fixed_bag.sink(), .{});
+}
+
 test "location tracking is exposed for consumers" {
     var tracker: dot.location.Tracker = .{};
     tracker.advanceSlice("graph {\r\n  a;\n");
