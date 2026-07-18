@@ -28,7 +28,8 @@ strict digraph Routes {
 
 Everything else (comments, quoted/numeral/HTML IDs, attributes, edge
 chains, ports, subgraphs, …) is deliberately deferred to later vertical
-slices.
+slices. The authoritative construct-by-construct table is
+[docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
 
 ## Usage
 
@@ -125,9 +126,18 @@ The library target has no OS, network, or filesystem dependency: it parses
 caller-supplied bytes, so input can come from a file, a pipe, a socket, or
 generated in memory — reading it is the application's job.
 
-## Design documents
+## Documentation
 
-- [docs/architecture/PROJECT_STRUCTURE.md](docs/architecture/PROJECT_STRUCTURE.md)
+- Checking whether your DOT files will parse? →
+  [Supported DOT syntax](docs/SUPPORTED_SYNTAX.md)
+- Deciding who owns what, or working without an allocator? →
+  [Ownership and memory](docs/OWNERSHIP.md)
+- Handling results, or telling malformed apart from not-yet-supported? →
+  [Outcomes and diagnostics](docs/OUTCOMES.md)
+- Learning by running code? → [examples/](examples/)
+- Performance numbers → [Baselines](docs/BASELINES.md) ·
+  Architecture → [Project structure](docs/architecture/PROJECT_STRUCTURE.md) ·
+  Release history → [Changelog](CHANGELOG.md)
 
 ## License
 

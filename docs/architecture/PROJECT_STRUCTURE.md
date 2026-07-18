@@ -1,10 +1,10 @@
-# Proposed Project Structure
+# Project Structure
 
-Status: discussion draft 0.1  
-Date: 2026-07-15
+Status: living document — updated as slices land  
+Last updated: 2026-07-18 (slice 2: directed documents)
 
-This structure assumes the implementation language is Zig. The package remains
-a standalone DOT-language library and must not depend on Zigraph.
+The package is a standalone Zig DOT-language library and must not depend on
+Zigraph.
 
 ## Design rule
 
@@ -12,14 +12,13 @@ Start with a small physical layout and split modules only when responsibilities
 actually grow. Architectural boundaries are important from the first commit;
 having one file per hypothetical future feature is not.
 
-## Initial vertical-slice layout
-
-Create only these implementation files for the first anonymous-undigraph slice:
+## Current layout
 
 ```text
 dot-parser/
 ├── build.zig
 ├── build.zig.zon
+├── CHANGELOG.md
 ├── LICENSE-APACHE
 ├── LICENSE-MIT
 ├── README.md
@@ -36,21 +35,32 @@ dot-parser/
 ├── tests/
 │   ├── integration.zig
 │   └── corpus/
+│       ├── README.md          (corpus governance)
 │       ├── valid/
-│       └── invalid/
+│       ├── invalid/
+│       └── unsupported/       (recognized-but-deferred constructs)
 ├── examples/
 │   ├── parse_undigraph.zig
-│   └── fixed_buffer.zig
+│   ├── fixed_buffer.zig
+│   └── diagnostics_demo.zig
+├── bench/
+│   └── throughput.zig
 └── docs/
-    └── architecture/
-        └── PROJECT_STRUCTURE.md
+    ├── SUPPORTED_SYNTAX.md
+    ├── OWNERSHIP.md
+    ├── OUTCOMES.md
+    ├── BASELINES.md
+    ├── architecture/
+    │   └── PROJECT_STRUCTURE.md
+    └── internal/              (contributor-facing requirements and questions)
 ```
 
-Unit tests should live beside the code they exercise. `tests/integration.zig`
-tests the public API, and `tests/corpus` holds reusable DOT inputs once inline
-test strings become unwieldy.
+Unit tests live beside the code they exercise. `tests/integration.zig`
+tests the public API exactly as an external consumer, and `tests/corpus`
+holds reusable DOT inputs grouped by expected outcome class (see its
+README for the governance rules).
 
-## Initial file responsibilities
+## File responsibilities
 
 ### `src/root.zig`
 
@@ -83,13 +93,18 @@ in the initial core.
 
 ### `src/lexer.zig`
 
-The raw-byte lexer and token cursor. For milestone 1 it recognizes:
+The raw-byte lexer and token cursor. It recognizes:
 
-- `graph`.
+- Every DOT keyword (`graph`, `digraph`, `strict`, and the deferred
+  `subgraph`/`node`/`edge`), case-independently. Keywords always tokenize;
+  whether one is legal in its position is the parser's decision.
 - Bare ASCII identifiers.
 - `{`, `}`, `;`, `--`, and `->`.
-- Whitespace and physical line endings.
-- End of input and invalid bytes/tokens.
+- Whitespace and physical line endings (LF, CRLF, standalone CR).
+- End of input and invalid bytes.
+- Introducers of deferred *lexical* constructs (quoted/HTML/numeral/
+  non-ASCII identifiers, comments, attribute punctuation, ports), reported
+  as typed unsupported-feature failures.
 
 It borrows source spans, performs no hidden allocation, and owns no AST types.
 
@@ -105,25 +120,27 @@ rewriting the grammar.
 
 ### `src/syntax.zig`
 
-The borrowed, index-based syntax tree and its builder. The builder is the first
-consumer of the private syntax-event contract.
+The borrowed, index-based syntax document (`Document`) and its two builders
+(allocator-backed and fixed-storage). The builders are the first consumers
+of the private syntax-event contract.
 
-Milestone 1 syntax data includes:
+Document data includes:
 
-- Document kind (`undigraph`).
+- Document kind (`undigraph` or `digraph`), the `strict` marker, and the
+  optional graph name.
 - Ordered statement IDs.
 - Node statements.
 - Edge statements with the written operator and endpoint spans.
 
-The syntax tree preserves written statements. It does not synthesize implicit
+The document preserves written statements. It does not synthesize implicit
 nodes from an edge statement.
 
 ### `src/validate.zig`
 
 Validation over syntax data. It completes after independent validation errors
-and writes them to a caller-supplied diagnostic sink or bag. In milestone 1 it
-validates that an undigraph uses `--`; multiple written `->` edges yield multiple
-diagnostics.
+and writes them to a caller-supplied diagnostic sink or bag. The current rule
+is kind-agnostic: an `undigraph` requires `--` and a `digraph` requires `->`;
+every mismatched edge yields its own diagnostic.
 
 ## Target layout after responsibilities grow
 
@@ -242,9 +259,10 @@ Use four complementary levels:
 1. **Unit tests:** colocated with location, lexer, parser, storage, and validation
    code.
 2. **Public integration tests:** exercise only imports from `root.zig`.
-3. **Corpus tests:** valid and invalid DOT files with expected diagnostics.
-4. **Property/fuzz tests:** added after the first deterministic vertical slice;
-   every discovered regression becomes a permanent small test.
+3. **Corpus tests:** DOT files grouped by outcome class (valid, invalid,
+   unsupported) with expected statements, diagnostics, or features.
+4. **Property/fuzz tests:** `std.testing.fuzz` harness with determinism
+   checks; every discovered regression becomes a permanent small test.
 
 Every module that accepts memory must be tested with a deliberately undersized
 fixed buffer. Every parser boundary should be tested with input truncated at

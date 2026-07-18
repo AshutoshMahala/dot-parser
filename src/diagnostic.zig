@@ -1,11 +1,19 @@
 //! WDP diagnostic primitives (milestone 1, step 2).
 //!
+//! ## Specification pin (R-DIAG-006)
+//!
 //! Diagnostic identities follow the Waddling Diagnostic Protocol (WDP)
-//! v0.1.0-draft: `namespace:Severity.Component.Primary.Sequence`, where the
-//! namespace is this library (`dot_parser`, WDP part 7), the component is the
-//! internal module that reported the problem, and sequence numbers follow the
-//! WDP part 6 conventions (001 MISSING, 002 MISMATCH, 003 INVALID,
-//! 009 UNSUPPORTED, 026 EXHAUSTED; 031+ project-specific).
+//! **version 0.1.0-draft** at **conformance Level 2 (Namespaced)**:
+//! structured codes (parts 1–4), compact IDs (part 5), and namespaces
+//! (part 7), plus the informative part 6 sequence conventions and part 10
+//! presentation palette. Codes read
+//! `namespace:Severity.Component.Primary.Sequence`, where the namespace is
+//! this library (`dot_parser`), the component is the internal module that
+//! reported the problem, and sequences follow part 6 (001 MISSING,
+//! 002 MISMATCH, 003 INVALID, 009 UNSUPPORTED, 026 EXHAUSTED; 031+
+//! project-specific). The hashing algorithms are verified against the
+//! spec's test vectors below; upgrading the WDP baseline requires
+//! re-verifying those vectors and reviewing every published identity.
 //!
 //! Design constraints from the requirements:
 //! - Diagnostics are structured data; the library never prints, formats, or
@@ -120,11 +128,14 @@ pub const Primary = enum {
     }
 };
 
-/// The provisional diagnostic registry for milestone 1.
+/// The diagnostic registry.
 ///
-/// Exact sequence assignments may change during `0.x`, but each one is
-/// unique, documented here, and covered by the registry test below
-/// (R-DIAG-005).
+/// Published codes are stable: identities are append-only and a sequence
+/// number is never reused or renumbered, even across `0.x` versions — a
+/// recorded diagnostic keeps its meaning (R-DIAG-005). Each code is unique,
+/// documented here, and covered by the registry test below. (The registry
+/// was provisional until two vertical slices had exercised it; it froze
+/// with the 0.1.0 release.)
 pub const Code = enum {
     /// E.Lexer.Byte.003 (INVALID) — a byte cannot begin any token.
     lexer_invalid_byte,

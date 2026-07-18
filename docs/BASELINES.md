@@ -19,6 +19,14 @@ These are manually recorded reference measurements, not CI gates: CI
 runners are too noisy for regression gating without dedicated hardware.
 Revisit that decision if stable benchmark hardware becomes available.
 
+Provenance: the milestone-1 numbers were recorded 2026-07-17 at commit
+`d48ae20`; the slice-2 numbers were recorded 2026-07-18 on the pre-tag
+`0.1.0` working tree (stamp the commit hash when tagging). **Cross-run
+medians on this machine vary by roughly ±8%** even with the warm-up/median
+methodology — repeated same-day runs have produced 281–304 MiB/s default
+and 333–356 MiB/s hinted. Treat a fresh measurement inside that band as
+noise, not as a regression or improvement.
+
 ## Throughput (parse + validate end-to-end, median of 9)
 
 | Configuration | Median | Spread (min–max) | Throughput | Per statement |
@@ -57,17 +65,32 @@ growth slack; general allocators reclaim it, fixed pools never create it.
 
 ## Binary size
 
-| Artifact | Size |
-| --- | --- |
-| `diagnostics_demo`, ReleaseSmall, native macOS | 184 KB (includes Zig std startup and the console renderer) |
-| — after the excerpt-renderer overhaul (2026-07-18) | 197 KB (+13 KB: source excerpts, ANSI palette, summary block, TTY detection in the demo) |
+`diagnostics_demo` is a hosted example, not a measurement of the parser
+core. On Zig 0.16.0 / aarch64-macOS at ReleaseSmall it occupies
+201,392 bytes (196.7 KiB; 184 KB at milestone 1, before the
+excerpt-renderer overhaul). A substantial portion is the hosted runtime
+selected by its full `std.process.Init` entry point, which initializes
+allocator, environment, preopen, and threaded-I/O facilities. The
+remaining incremental size cannot be attributed solely to the parser: it
+includes parsing, validation, the console renderer, diagnostic catalogs,
+example control flow, and any standard-library paths made reachable by
+them.
+
+`libdot_parser.a` measures 2,312 bytes (native) / 788 bytes
+(riscv32-freestanding) because the library exports no eagerly
+materialized ABI roots — the archive holds only a symbol table and a
+near-empty object file. This is packaging metadata, not a measurement of
+consumed parser code: Zig compiles lazily, and code materializes in the
+*consumer's* compilation when it references the module.
 
 Command: `zig build examples -Doptimize=ReleaseSmall` (binaries land in
 `zig-out/bin/`; the run output is printed as a side effect).
 
-Freestanding library-size and RAM figures for the embedded profiles are
-deferred until the compile-time profile work fixes a target configuration
-(R-PORT-002 requires recording them once the board and build are chosen).
+Meaningful embedded size measurements require a freestanding executable
+that calls a specific parser profile with a concrete entry point, storage
+policy, and diagnostic sink — deferred until the compile-time profile
+work fixes a target configuration (R-PORT-002 records those figures once
+the board and build are chosen).
 
 ## Notes
 

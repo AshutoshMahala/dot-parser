@@ -16,6 +16,7 @@
         "LICENSE-APACHE",
         "LICENSE-MIT",
         "README.md",
+        "CHANGELOG.md",
         ".gitattributes",
     },
 }
