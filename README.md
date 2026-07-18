@@ -39,15 +39,15 @@ var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
 defer checked.deinit(allocator);
 
 if (checked.documentValid()) {
-    const tree = checked.tree.?;
-    var i: usize = 0;
-    while (tree.statementAt(i)) |statement| : (i += 1) {
+    const document = checked.document.?;
+    var statements = document.statements();
+    while (statements.next()) |statement| {
         switch (statement) {
-            .node => |node| std.log.info("node {s}", .{tree.text(node.identifier)}),
+            .node => |node| std.log.info("node {s}", .{document.text(node.identifier)}),
             .edge => |edge| std.log.info("edge {s} {s} {s}", .{
-                tree.text(edge.left),
+                document.text(edge.left),
                 edge.operator.lexeme(),
-                tree.text(edge.right),
+                document.text(edge.right),
             }),
         }
     }
@@ -55,23 +55,31 @@ if (checked.documentValid()) {
 ```
 
 `parseBorrowed` and `validate` are also available as separate stages. For
-heap-free operation, give the same call a fixed buffer and capacity hints:
+fixed-memory operation, hand `parseBorrowedIn` your own pools — no
+allocator, nothing grows, and capacity is visible in the declarations:
 
 ```zig
-var buffer: [4096]u8 = undefined;
-var fba = std.heap.FixedBufferAllocator.init(&buffer);
+var storage: dot.FixedDocumentStorage(.{
+    .statements = 32,
+    .nodes = 32,
+    .edges = 16,
+}) = .{};
 var bag: dot.FixedDiagnosticBag(8) = .{};
-var checked = dot.parseAndValidate(fba.allocator(), source, bag.sink(), .{
-    .parse = .{
-        .max_statements = 32,
-        .tree_capacities = .{ .statements = 32, .nodes = 32, .edges = 32 },
-    },
-});
-// release everything at once by resetting the buffer
+
+const parsed = dot.parseBorrowedIn(source, storage.storage(), bag.sink(), .{});
+if (parsed.outcome == .success) {
+    const validation = dot.validate(&parsed.document.?, bag.sink(), .{});
+    _ = validation;
+}
+// release by reusing or discarding the storage — there is nothing to free
 ```
 
+(The allocator-based calls also accept arenas and
+`std.heap.FixedBufferAllocator` with `document_capacities` hints, if an
+allocator fits your architecture better.)
+
 The source bytes are borrowed: keep them alive and unchanged for as long as
-the returned tree is used.
+the returned document is used.
 
 ## Building
 

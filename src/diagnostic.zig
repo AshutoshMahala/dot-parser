@@ -104,6 +104,7 @@ pub const Primary = enum {
     syntax,
     operator,
     capacity,
+    memory,
     feature,
 
     /// PascalCase display form used inside structured codes.
@@ -113,6 +114,7 @@ pub const Primary = enum {
             .syntax => "Syntax",
             .operator => "Operator",
             .capacity => "Capacity",
+            .memory => "Memory",
             .feature => "Feature",
         };
     }
@@ -142,6 +144,9 @@ pub const Code = enum {
     /// E.Resource.Capacity.026 (EXHAUSTED) — a caller-configured capacity was
     /// reached; distinct from invalid syntax (R-ROB-002).
     resource_capacity_exhausted,
+    /// E.Resource.Memory.026 (EXHAUSTED) — the allocator could not provide
+    /// memory for the retained document.
+    resource_memory_exhausted,
 
     /// Comptime metadata for one diagnostic code. All strings are static.
     pub const Info = struct {
@@ -222,6 +227,15 @@ pub const Code = enum {
                 .alias = "EXHAUSTED",
                 .summary = "a configured capacity was exhausted before the document finished",
                 .hint = "raise the corresponding limit or provide larger caller-owned storage; the input itself may still be valid",
+            },
+            .resource_memory_exhausted => .{
+                .severity = .err,
+                .component = .resource,
+                .primary = .memory,
+                .sequence = 26,
+                .alias = "EXHAUSTED",
+                .summary = "memory for the retained document was exhausted",
+                .hint = "provide a larger allocator or arena, or parse into fixed pools sized for the document; the input itself may still be valid",
             },
         };
     }
@@ -438,11 +452,24 @@ pub const Capacity = struct {
     /// the same growth reason as `Feature`.
     pub const Resource = enum(u8) {
         statements,
+        /// Caller-provided pools (`parseBorrowedIn`).
+        statement_pool,
+        node_pool,
+        edge_pool,
+        /// The document's statement index width.
+        statement_index,
+        /// The 4 GiB retained source-range domain.
+        source_range,
         _,
 
         pub fn name(self: Resource) []const u8 {
             return switch (self) {
                 .statements => "statement",
+                .statement_pool => "statement pool",
+                .node_pool => "node pool",
+                .edge_pool => "edge pool",
+                .statement_index => "statement index",
+                .source_range => "source range",
                 _ => "resource",
             };
         }
@@ -478,6 +505,16 @@ pub const Sink = struct {
         return self.emit_fn(self.context, diagnostic);
     }
 };
+
+/// A sink that explicitly drops every diagnostic, for callers that
+/// genuinely do not want them. Explicit disposal beats a hidden overload:
+/// the choice is visible and greppable at the call site.
+pub const discard: Sink = .{ .context = null, .emit_fn = discardEmit };
+
+fn discardEmit(context: ?*anyopaque, d: Diagnostic) SinkError!void {
+    _ = context;
+    _ = d;
+}
 
 /// A fixed-capacity diagnostic bag with bounded-overflow policy: the first
 /// `capacity` diagnostics are retained and later ones are counted in
@@ -684,6 +721,13 @@ test "direct sink receives diagnostics without retention" {
     try sink.emit(.{ .code = .lexer_invalid_byte, .span = .{ .start = .start, .byte_len = 1 } });
     try sink.emit(.{ .code = .lexer_invalid_byte, .span = .{ .start = .start, .byte_len = 1 } });
     try expectEqual(@as(usize, 2), counter.count);
+}
+
+test "the discard sink accepts and drops everything" {
+    try discard.emit(.{
+        .code = .parser_unexpected_end,
+        .span = .{ .start = .start, .byte_len = 0 },
+    });
 }
 
 test "failing sink propagates its error" {

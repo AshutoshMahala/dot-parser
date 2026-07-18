@@ -40,9 +40,11 @@
 //!   features, not as malformed input (R-MOD-006). The parse makes no
 //!   validity claim beyond that boundary.
 //!
-//! Only a run-to-completion `parse` is exposed for now; the state machine is
-//! instance-owned so `next`/`pump` drivers can be added later without
-//! rewriting the grammar (PROJECT_STRUCTURE.md).
+//! Only a run-to-completion `parse` is exposed for now, but the machine is
+//! genuinely resumable: all continuation state (grammar state and the spans
+//! of the statement in flight) lives in the machine struct, and progress is
+//! made one `step` (one token) at a time — `next`/`pump`/cancellation
+//! drivers are wrappers over `step`, not a parser rewrite (R-MOD-010).
 
 const std = @import("std");
 const location = @import("location.zig");
@@ -115,7 +117,7 @@ pub fn parse(
         .diagnostics = diagnostics,
         .options = options,
     };
-    return machine.run();
+    return machine.runToCompletion();
 }
 
 fn Machine(comptime EventsPtr: type) type {
@@ -134,6 +136,23 @@ fn Machine(comptime EventsPtr: type) type {
         /// True once `beginDocument` has been issued; from then on every
         /// exit path must emit a terminal event.
         begun: bool = false,
+        /// Latched once a terminal result is produced. Further `step` calls
+        /// return it unchanged — no re-emitted events or diagnostics — so
+        /// bounded drivers can safely over-call `step`.
+        terminal: ?Result = null,
+
+        // Continuation state. Everything a suspended parse needs lives in
+        // the machine itself — never in `runToCompletion` locals — so
+        // `next`/`pump` drivers can be layered on `step` without touching
+        // the grammar (R-MOD-010 groundwork).
+        state: State = .keyword,
+        /// First identifier of the statement being parsed.
+        left: location.Span = undefined,
+        /// Operator of the edge statement being parsed.
+        operator: syntax_event.EdgeOperator = undefined,
+        operator_span: location.Span = undefined,
+        /// Right endpoint of the edge statement being parsed.
+        right: location.Span = undefined,
 
         const State = enum {
             /// Expect the document keyword.
@@ -152,127 +171,134 @@ fn Machine(comptime EventsPtr: type) type {
             epilogue,
         };
 
-        fn run(self: *Self) Result {
-            var state: State = .keyword;
-            var left: location.Span = undefined;
-            var operator: syntax_event.EdgeOperator = undefined;
-            var operator_span: location.Span = undefined;
-            var right: location.Span = undefined;
-
+        fn runToCompletion(self: *Self) Result {
             while (true) {
-                const token = switch (self.tokens.next()) {
-                    .token => |token| token,
-                    .failure => |failure| return self.fail(failure),
-                };
-
-                switch (state) {
-                    .keyword => switch (token.tag) {
-                        .keyword_graph => {
-                            // The source keyword `graph` maps to the
-                            // `undigraph` kind at reading time.
-                            self.begun = true;
-                            self.events.beginDocument(.{
-                                .kind = .undigraph,
-                                .keyword_span = token.span,
-                            }) catch |err| return self.sinkFailure(err);
-                            state = .open;
-                        },
-                        else => return self.unexpected(.{ .graph_keyword = true }, .document_header, token),
-                    },
-                    .open => switch (token.tag) {
-                        .left_brace => {
-                            self.open_brace_span = token.span;
-                            state = .statement;
-                        },
-                        // `graph G {` is valid DOT with a graph name;
-                        // deferred to slice 2.
-                        .identifier => return self.unsupportedAt(token.span, .graph_name),
-                        else => return self.unexpected(.{ .left_brace = true }, .document_header, token),
-                    },
-                    .statement => switch (token.tag) {
-                        .identifier => {
-                            if (self.statements == self.options.max_statements) {
-                                return self.fail(.{
-                                    .code = .resource_capacity_exhausted,
-                                    .span = token.span,
-                                    .details = .{ .capacity = .{
-                                        .resource = .statements,
-                                        .limit = self.options.max_statements,
-                                    } },
-                                });
-                            }
-                            self.statements += 1;
-                            left = token.span;
-                            state = .after_identifier;
-                        },
-                        .right_brace => state = .epilogue,
-                        // `{ … }` here is a valid-DOT anonymous subgraph.
-                        .left_brace => return self.unsupportedAt(token.span, .subgraph),
-                        else => return self.unexpected(.{ .identifier = true, .right_brace = true }, .document_body, token),
-                    },
-                    .after_identifier => switch (token.tag) {
-                        .semicolon => {
-                            self.events.nodeStatement(.{
-                                .identifier = left,
-                            }) catch |err| return self.sinkFailure(err);
-                            state = .statement;
-                        },
-                        .edge_undirected, .edge_directed => {
-                            operator = switch (token.tag) {
-                                .edge_undirected => .undirected,
-                                else => .directed,
-                            };
-                            operator_span = token.span;
-                            state = .edge_right;
-                        },
-                        // A statement boundary without `;` is valid DOT
-                        // (semicolons are optional there); deferred.
-                        .identifier, .right_brace, .left_brace => {
-                            return self.unsupportedAt(token.span, .optional_semicolons);
-                        },
-                        else => return self.unexpected(.{ .semicolon = true, .undirected_operator = true, .directed_operator = true }, .statement, token),
-                    },
-                    .edge_right => switch (token.tag) {
-                        .identifier => {
-                            right = token.span;
-                            state = .edge_terminate;
-                        },
-                        // `a -- { … }` is a valid-DOT subgraph endpoint.
-                        .left_brace => return self.unsupportedAt(token.span, .subgraph),
-                        else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
-                    },
-                    .edge_terminate => switch (token.tag) {
-                        .semicolon => {
-                            self.events.edgeStatement(.{
-                                .left = left,
-                                .operator = operator,
-                                .operator_span = operator_span,
-                                .right = right,
-                            }) catch |err| return self.sinkFailure(err);
-                            state = .statement;
-                        },
-                        // `a -- b -- c` is a valid-DOT edge chain; deferred.
-                        .edge_undirected, .edge_directed => {
-                            return self.unsupportedAt(token.span, .edge_chain);
-                        },
-                        .identifier, .right_brace, .left_brace => {
-                            return self.unsupportedAt(token.span, .optional_semicolons);
-                        },
-                        else => return self.unexpected(.{ .semicolon = true }, .statement_terminator, token),
-                    },
-                    .epilogue => switch (token.tag) {
-                        .eof => {
-                            self.events.endDocument() catch |err| return self.sinkFailure(err);
-                            return self.finish(.success);
-                        },
-                        else => return self.unexpected(.{ .end_of_input = true }, .document_epilogue, token),
-                    },
-                }
+                if (self.step()) |result| return result;
             }
         }
 
+        /// Consume one token and advance the grammar by one transition.
+        /// Returns null while the parse can continue, or the terminal
+        /// result. This is the unit a bounded `pump` driver will meter.
+        /// Terminal-idempotent: once a terminal result exists, it is
+        /// returned unchanged without consuming input or emitting anything.
+        fn step(self: *Self) ?Result {
+            if (self.terminal) |result| return result;
+            const token = switch (self.tokens.next()) {
+                .token => |token| token,
+                .failure => |failure| return self.fail(failure),
+            };
+
+            switch (self.state) {
+                .keyword => switch (token.tag) {
+                    .keyword_graph => {
+                        // The source keyword `graph` maps to the
+                        // `undigraph` kind at reading time.
+                        self.begun = true;
+                        self.events.beginDocument(.{
+                            .kind = .undigraph,
+                            .keyword_span = token.span,
+                        }) catch |err| return self.sinkFailure(err);
+                        self.state = .open;
+                    },
+                    else => return self.unexpected(.{ .graph_keyword = true }, .document_header, token),
+                },
+                .open => switch (token.tag) {
+                    .left_brace => {
+                        self.open_brace_span = token.span;
+                        self.state = .statement;
+                    },
+                    // `graph G {` is valid DOT with a graph name;
+                    // deferred to slice 2.
+                    .identifier => return self.unsupportedAt(token.span, .graph_name),
+                    else => return self.unexpected(.{ .left_brace = true }, .document_header, token),
+                },
+                .statement => switch (token.tag) {
+                    .identifier => {
+                        if (self.statements == self.options.max_statements) {
+                            return self.fail(.{
+                                .code = .resource_capacity_exhausted,
+                                .span = token.span,
+                                .details = .{ .capacity = .{
+                                    .resource = .statements,
+                                    .limit = self.options.max_statements,
+                                } },
+                            });
+                        }
+                        self.statements += 1;
+                        self.left = token.span;
+                        self.state = .after_identifier;
+                    },
+                    .right_brace => self.state = .epilogue,
+                    // `{ … }` here is a valid-DOT anonymous subgraph.
+                    .left_brace => return self.unsupportedAt(token.span, .subgraph),
+                    else => return self.unexpected(.{ .identifier = true, .right_brace = true }, .document_body, token),
+                },
+                .after_identifier => switch (token.tag) {
+                    .semicolon => {
+                        self.events.nodeStatement(.{
+                            .identifier = self.left,
+                        }) catch |err| return self.sinkFailure(err);
+                        self.state = .statement;
+                    },
+                    .edge_undirected, .edge_directed => {
+                        self.operator = switch (token.tag) {
+                            .edge_undirected => .undirected,
+                            else => .directed,
+                        };
+                        self.operator_span = token.span;
+                        self.state = .edge_right;
+                    },
+                    // A statement boundary without `;` is valid DOT
+                    // (semicolons are optional there); deferred.
+                    .identifier, .right_brace, .left_brace => {
+                        return self.unsupportedAt(token.span, .optional_semicolons);
+                    },
+                    else => return self.unexpected(.{ .semicolon = true, .undirected_operator = true, .directed_operator = true }, .statement, token),
+                },
+                .edge_right => switch (token.tag) {
+                    .identifier => {
+                        self.right = token.span;
+                        self.state = .edge_terminate;
+                    },
+                    // `a -- { … }` is a valid-DOT subgraph endpoint.
+                    .left_brace => return self.unsupportedAt(token.span, .subgraph),
+                    else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
+                },
+                .edge_terminate => switch (token.tag) {
+                    .semicolon => {
+                        self.events.edgeStatement(.{
+                            .left = self.left,
+                            .operator = self.operator,
+                            .operator_span = self.operator_span,
+                            .right = self.right,
+                        }) catch |err| return self.sinkFailure(err);
+                        self.state = .statement;
+                    },
+                    // `a -- b -- c` is a valid-DOT edge chain; deferred.
+                    .edge_undirected, .edge_directed => {
+                        return self.unsupportedAt(token.span, .edge_chain);
+                    },
+                    .identifier, .right_brace, .left_brace => {
+                        return self.unsupportedAt(token.span, .optional_semicolons);
+                    },
+                    else => return self.unexpected(.{ .semicolon = true }, .statement_terminator, token),
+                },
+                .epilogue => switch (token.tag) {
+                    .eof => {
+                        self.events.endDocument() catch |err| return self.sinkFailure(err);
+                        return self.finish(.success);
+                    },
+                    else => return self.unexpected(.{ .end_of_input = true }, .document_epilogue, token),
+                },
+            }
+            return null;
+        }
+
         fn finish(self: *Self, outcome: Outcome) Result {
-            return .{ .outcome = outcome, .diagnostic_delivery = self.delivery };
+            const result: Result = .{ .outcome = outcome, .diagnostic_delivery = self.delivery };
+            self.terminal = result;
+            return result;
         }
 
         /// Report a failure diagnostic through the caller's sink, honoring
@@ -680,6 +706,40 @@ test "failing beginDocument still receives the cleanup abort" {
         syntax_event.AbortReason.sink_failure,
         recorded[0].abort_document,
     );
+}
+
+test "step is terminal-idempotent after success and after failure" {
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    var machine: Machine(*Recording) = .{
+        .tokens = lex.Lexer.init("graph { a; }"),
+        .events = &events,
+        .diagnostics = bag.sink(),
+        .options = .{},
+    };
+    const result = machine.runToCompletion();
+    try expect(result.outcome == .success);
+
+    // Over-calling step re-returns the latched result without new events.
+    const recorded_len = events.recorded().len;
+    const again = machine.step().?;
+    try expect(again.outcome == .success);
+    try expectEqual(recorded_len, events.recorded().len);
+
+    var failed_events: Recording = .{};
+    var failed_bag: Bag = .{};
+    var failed_machine: Machine(*Recording) = .{
+        .tokens = lex.Lexer.init("graph {"),
+        .events = &failed_events,
+        .diagnostics = failed_bag.sink(),
+        .options = .{},
+    };
+    try expect(failed_machine.runToCompletion().outcome == .invalid_syntax);
+    const failed_len = failed_events.recorded().len;
+    const bag_len = failed_bag.items().len;
+    try expect(failed_machine.step().?.outcome == .invalid_syntax);
+    try expectEqual(failed_len, failed_events.recorded().len);
+    try expectEqual(bag_len, failed_bag.items().len);
 }
 
 test "a failing diagnostic sink is surfaced as delivery failure, not masked" {

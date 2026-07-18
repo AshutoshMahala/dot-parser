@@ -1,14 +1,14 @@
 //! Validation over syntax data (milestone 1, step 7).
 //!
 //! Validation is an analysis pass, not fail-fast control flow (R-FUNC-008):
-//! it examines the whole tree, continues after every independent violation,
+//! it examines the whole document, continues after every independent violation,
 //! and reports each one through the caller's diagnostic sink in
 //! deterministic source order (R-PORT-005). Completing the pass and the
 //! document being valid are separate facts — `Result` reports both.
 //!
-//! The tree is never modified; consumers that want to tolerate or downgrade
+//! The document is never modified; consumers that want to tolerate or downgrade
 //! specific rules filter at their sink (the uniform reporting surface) and
-//! keep working with the same tree. Sink filtering is presentation policy —
+//! keep working with the same document. Sink filtering is presentation policy —
 //! it does not change `document_valid`; rule-level policy that decides
 //! whether a rule contributes to validity belongs to future `Options`.
 //!
@@ -19,7 +19,7 @@
 //! that legality policy lives. Each mismatch carries the operator's full
 //! position and the document's kind declaration as a typed relation.
 //!
-//! Positions are derived, not stored: the tree keeps compact ranges, and a
+//! Positions are derived, not stored: the document keeps compact ranges, and a
 //! `location.PositionCursor` rehydrates line/column with one shared O(source)
 //! scan across all diagnostics (R-MEM-008).
 
@@ -32,33 +32,62 @@ const syntax = @import("syntax.zig");
 /// stay stable.
 pub const Options = struct {};
 
-pub const Result = struct {
-    /// The pass examined every statement. Distinct from validity: a
-    /// completed pass may have found any number of violations (R-FUNC-008).
-    completed: bool,
-    /// No rule violations were found. Meaningful only when `completed`.
-    document_valid: bool,
-    /// How many diagnostics the pass emitted. A fixed bag may retain fewer;
-    /// its `omitted` counter accounts for the difference (bounded-bag
-    /// policy: first diagnostics retained, the rest counted).
-    diagnostics_emitted: usize,
-    /// Whether every emitted diagnostic reached the sink. A failing sink
-    /// does not stop the analysis; the loss is reported here.
-    diagnostic_delivery: diagnostic.Delivery,
+/// How the pass ended. Tagged, so meaningless combinations (such as an
+/// incomplete-but-valid pass) are unrepresentable. The `budget_exhausted`
+/// and `cancelled` variants are declared now so downstream switches handle
+/// them from day one, but they are not produced until validation budgets
+/// and cooperative cancellation land.
+pub const Outcome = union(enum) {
+    /// The pass examined every statement (R-FUNC-008). Any number of
+    /// violations may have been found — completion is not validity.
+    completed: Completed,
+    /// Future: a validation work budget stopped the pass early.
+    budget_exhausted: Partial,
+    /// Future: cooperative cancellation stopped the pass early.
+    cancelled: Partial,
+
+    pub const Completed = struct {
+        /// No rule violations were found.
+        document_valid: bool,
+        /// Violations reported. A fixed bag may retain fewer; its `omitted`
+        /// counter accounts for the difference (bounded-bag policy: first
+        /// diagnostics retained, the rest counted).
+        violations: usize,
+    };
+
+    pub const Partial = struct {
+        violations_so_far: usize,
+    };
 };
 
-/// Validate `tree` against the milestone rules, emitting diagnostics into
-/// `diagnostics`. Positions are derived from the source the tree itself
+pub const Result = struct {
+    outcome: Outcome,
+    /// Whether every emitted diagnostic reached the sink. A failing sink
+    /// does not stop the analysis; the loss is reported here, on its own
+    /// axis.
+    diagnostic_delivery: diagnostic.Delivery,
+
+    /// True only for a completed pass that found no violations.
+    pub fn documentValid(self: *const Result) bool {
+        return switch (self.outcome) {
+            .completed => |completed| completed.document_valid,
+            .budget_exhausted, .cancelled => false,
+        };
+    }
+};
+
+/// Validate `document` against the milestone rules, emitting diagnostics into
+/// `diagnostics`. Positions are derived from the source the document itself
 /// borrows — there is no separate source parameter to mismatch.
 pub fn validate(
-    tree: *const syntax.Tree,
+    document: *const syntax.Document,
     diagnostics: diagnostic.Sink,
     options: Options,
 ) Result {
     _ = options;
-    const source = tree.source;
+    const source = document.source;
 
-    const expected: syntax.EdgeOperator = switch (tree.kind) {
+    const expected: syntax.EdgeOperator = switch (document.kind) {
         .undigraph => .undirected,
         .digraph => .directed,
     };
@@ -70,13 +99,13 @@ pub fn validate(
 
     // The edge pool is in source order, so diagnostics come out in source
     // order and the position cursor advances monotonically (one shared scan).
-    for (tree.edges) |edge| {
+    for (document.edges) |edge| {
         if (edge.operator == expected) continue;
 
         if (declaration == null) {
             // The kind declaration precedes every edge; derive it on the
             // first violation, before the cursor moves past it.
-            declaration = cursor.spanFor(source, tree.keyword);
+            declaration = cursor.spanFor(source, document.keyword);
         }
         const operator_span = cursor.spanFor(source, edge.operator_range);
 
@@ -95,9 +124,10 @@ pub fn validate(
     }
 
     return .{
-        .completed = true,
-        .document_valid = emitted == 0,
-        .diagnostics_emitted = emitted,
+        .outcome = .{ .completed = .{
+            .document_valid = emitted == 0,
+            .violations = emitted,
+        } },
         .diagnostic_delivery = delivery,
     };
 }
@@ -122,26 +152,26 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 const parser = @import("parser.zig");
 const syntax_event = @import("syntax_event.zig");
 
-fn buildTree(source: []const u8) !syntax.Tree {
+fn buildDocument(source: []const u8) !syntax.Document {
     var builder = syntax.Builder.init(std.testing.allocator, source);
     defer builder.deinit();
     var bag: diagnostic.FixedBag(4) = .{};
     const result = parser.parse(source, &builder, bag.sink(), .{});
     if (result.outcome != .success) return error.ParseFailed;
-    return builder.toTree();
+    return builder.toDocument();
 }
 
 test "the milestone acceptance case: two mismatches, both reported" {
     const source = "graph {\n  a -> b;\n  c -> d;\n}";
-    var tree = try buildTree(source);
-    defer tree.deinit(std.testing.allocator);
+    var document = try buildDocument(source);
+    defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(8) = .{};
-    const result = validate(&tree, bag.sink(), .{});
+    const result = validate(&document, bag.sink(), .{});
 
-    try expect(result.completed);
-    try expect(!result.document_valid);
-    try expectEqual(@as(usize, 2), result.diagnostics_emitted);
+    try expect(result.outcome == .completed);
+    try expect(!result.documentValid());
+    try expectEqual(@as(usize, 2), result.outcome.completed.violations);
     try expectEqual(diagnostic.Delivery.complete, result.diagnostic_delivery);
     try expectEqual(@as(usize, 2), bag.items().len);
 
@@ -167,38 +197,38 @@ test "the milestone acceptance case: two mismatches, both reported" {
 
 test "a valid undigraph completes with an empty bag" {
     const source = "graph { a -- b; b -- c; }";
-    var tree = try buildTree(source);
-    defer tree.deinit(std.testing.allocator);
+    var document = try buildDocument(source);
+    defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = validate(&tree, bag.sink(), .{});
+    const result = validate(&document, bag.sink(), .{});
 
-    try expect(result.completed);
-    try expect(result.document_valid);
-    try expectEqual(@as(usize, 0), result.diagnostics_emitted);
+    try expect(result.outcome == .completed);
+    try expect(result.documentValid());
+    try expectEqual(@as(usize, 0), result.outcome.completed.violations);
     try expectEqual(@as(usize, 0), bag.items().len);
 }
 
 test "an empty document is valid" {
     const source = "graph { }";
-    var tree = try buildTree(source);
-    defer tree.deinit(std.testing.allocator);
+    var document = try buildDocument(source);
+    defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = validate(&tree, bag.sink(), .{});
-    try expect(result.completed);
-    try expect(result.document_valid);
+    const result = validate(&document, bag.sink(), .{});
+    try expect(result.outcome == .completed);
+    try expect(result.documentValid());
 }
 
 test "validation continues past valid edges between violations" {
     const source = "graph { a -> b; c -- d; e -> f; }";
-    var tree = try buildTree(source);
-    defer tree.deinit(std.testing.allocator);
+    var document = try buildDocument(source);
+    defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(8) = .{};
-    const result = validate(&tree, bag.sink(), .{});
+    const result = validate(&document, bag.sink(), .{});
 
-    try expectEqual(@as(usize, 2), result.diagnostics_emitted);
+    try expectEqual(@as(usize, 2), result.outcome.completed.violations);
     try expectEqual(@as(usize, 2), bag.items().len);
     // The two violations are the first and third edges.
     try expect(bag.items()[0].span.start.byte_offset < bag.items()[1].span.start.byte_offset);
@@ -206,7 +236,7 @@ test "validation continues past valid edges between violations" {
 
 test "the rule is kind-agnostic: a digraph flags '--'" {
     // No digraph header parses yet, so drive the builder directly — the
-    // validator only sees the tree, exactly as designed.
+    // validator only sees the document, exactly as designed.
     const source = "digraph { a -- b; c -> d; }";
     var builder = syntax.Builder.init(std.testing.allocator, source);
     defer builder.deinit();
@@ -234,14 +264,14 @@ test "the rule is kind-agnostic: a digraph flags '--'" {
         .right = span(23, 1),
     });
     try builder.endDocument();
-    var tree = try builder.toTree();
-    defer tree.deinit(std.testing.allocator);
+    var document = try builder.toDocument();
+    defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = validate(&tree, bag.sink(), .{});
+    const result = validate(&document, bag.sink(), .{});
 
-    try expect(!result.document_valid);
-    try expectEqual(@as(usize, 1), result.diagnostics_emitted);
+    try expect(!result.documentValid());
+    try expectEqual(@as(usize, 1), result.outcome.completed.violations);
     const failure = bag.items()[0];
     try expectEqualStrings("--", failure.span.slice(source));
     try expectEqual(
@@ -253,15 +283,15 @@ test "the rule is kind-agnostic: a digraph flags '--'" {
 
 test "a full bag bounds retention, not the analysis" {
     const source = "graph { a -> b; c -> d; e -> f; }";
-    var tree = try buildTree(source);
-    defer tree.deinit(std.testing.allocator);
+    var document = try buildDocument(source);
+    defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(1) = .{};
-    const result = validate(&tree, bag.sink(), .{});
+    const result = validate(&document, bag.sink(), .{});
 
     // The pass still examined everything and counted every violation …
-    try expect(result.completed);
-    try expectEqual(@as(usize, 3), result.diagnostics_emitted);
+    try expect(result.outcome == .completed);
+    try expectEqual(@as(usize, 3), result.outcome.completed.violations);
     // … while the bag retained the first and counted the overflow.
     try expectEqual(@as(usize, 1), bag.items().len);
     try expectEqual(@as(usize, 2), bag.omitted);
@@ -269,8 +299,8 @@ test "a full bag bounds retention, not the analysis" {
 
 test "a failing sink is reported without stopping the analysis" {
     const source = "graph { a -> b; c -> d; }";
-    var tree = try buildTree(source);
-    defer tree.deinit(std.testing.allocator);
+    var document = try buildDocument(source);
+    defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     const Rejecting = struct {
         fn emit(context: ?*anyopaque, d: diagnostic.Diagnostic) diagnostic.SinkError!void {
@@ -280,18 +310,18 @@ test "a failing sink is reported without stopping the analysis" {
         }
     };
     const sink: diagnostic.Sink = .{ .context = null, .emit_fn = Rejecting.emit };
-    const result = validate(&tree, sink, .{});
+    const result = validate(&document, sink, .{});
 
-    try expect(result.completed);
-    try expect(!result.document_valid);
-    try expectEqual(@as(usize, 2), result.diagnostics_emitted);
+    try expect(result.outcome == .completed);
+    try expect(!result.documentValid());
+    try expectEqual(@as(usize, 2), result.outcome.completed.violations);
     try expectEqual(diagnostic.Delivery.failed, result.diagnostic_delivery);
 }
 
-test "policy filtering happens at the sink without touching the tree" {
+test "policy filtering happens at the sink without touching the document" {
     const source = "graph { a -> b; }";
-    var tree = try buildTree(source);
-    defer tree.deinit(std.testing.allocator);
+    var document = try buildDocument(source);
+    defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     // A dialect-tolerant consumer: drops operator mismatches, keeps the rest.
     const Filtering = struct {
@@ -303,24 +333,24 @@ test "policy filtering happens at the sink without touching the tree" {
     };
     var filter: Filtering = .{};
     const sink: diagnostic.Sink = .{ .context = &filter, .emit_fn = Filtering.emit };
-    const result = validate(&tree, sink, .{});
+    const result = validate(&document, sink, .{});
 
     // The pass still reports the document as invalid under default rules;
-    // what the consumer surfaces is their policy. The tree is untouched.
-    try expect(!result.document_valid);
+    // what the consumer surfaces is their policy. The document is untouched.
+    try expect(!result.documentValid());
     try expectEqual(@as(usize, 0), filter.kept);
-    try expectEqual(@as(usize, 1), tree.edges.len);
+    try expectEqual(@as(usize, 1), document.edges.len);
 }
 
 test "repeated validation is deterministic" {
     const source = "graph { a -> b; c -- d; e -> f; }";
-    var tree = try buildTree(source);
-    defer tree.deinit(std.testing.allocator);
+    var document = try buildDocument(source);
+    defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var first_bag: diagnostic.FixedBag(8) = .{};
     var second_bag: diagnostic.FixedBag(8) = .{};
-    const first = validate(&tree, first_bag.sink(), .{});
-    const second = validate(&tree, second_bag.sink(), .{});
+    const first = validate(&document, first_bag.sink(), .{});
+    const second = validate(&document, second_bag.sink(), .{});
 
     try expectEqual(first, second);
     try expectEqual(first_bag.items().len, second_bag.items().len);

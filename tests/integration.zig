@@ -167,12 +167,12 @@ test "milestone acceptance through the public façade" {
 
     // Parsing succeeds (the engine is kind-agnostic) …
     try std.testing.expect(checked.outcome == .success);
-    try std.testing.expectEqual(@as(usize, 2), checked.tree.?.statementCount());
+    try std.testing.expectEqual(@as(usize, 2), checked.document.?.statementCount());
 
     // … and validation completes with both violations, in source order.
     try std.testing.expect(!checked.documentValid());
-    try std.testing.expect(checked.validation.?.completed);
-    try std.testing.expectEqual(@as(usize, 2), checked.validation.?.diagnostics_emitted);
+    try std.testing.expect(checked.validation.?.outcome == .completed);
+    try std.testing.expectEqual(@as(usize, 2), checked.validation.?.outcome.completed.violations);
     try std.testing.expectEqual(@as(usize, 2), bag.items().len);
 
     const first = bag.items()[0];
@@ -184,32 +184,32 @@ test "milestone acceptance through the public façade" {
     );
 }
 
-test "parseBorrowed returns a caller-owned tree over borrowed source" {
+test "parseBorrowed returns a caller-owned document over borrowed source" {
     const source = "graph { a; a -- b; }";
     var bag: dot.FixedDiagnosticBag(4) = .{};
     var parsed = dot.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
     defer parsed.deinit(std.testing.allocator);
 
     try std.testing.expect(parsed.outcome == .success);
-    const tree = parsed.tree.?;
-    try std.testing.expectEqual(dot.GraphKind.undigraph, tree.kind);
-    try std.testing.expectEqual(@as(usize, 2), tree.statementCount());
+    const document = parsed.document.?;
+    try std.testing.expectEqual(dot.GraphKind.undigraph, document.kind);
+    try std.testing.expectEqual(@as(usize, 2), document.statementCount());
     try std.testing.expectEqualStrings(
         "a",
-        tree.statementAt(0).?.node.identifier.slice(source),
+        document.statementAt(0).?.node.identifier.slice(source),
     );
-    const edge = tree.statementAt(1).?.edge;
+    const edge = document.statementAt(1).?.edge;
     try std.testing.expectEqual(dot.EdgeOperator.undirected, edge.operator);
     try std.testing.expectEqualStrings("b", edge.right.slice(source));
 }
 
-test "façade surfaces parse failures with a null tree and a filled bag" {
+test "façade surfaces parse failures with a null document and a filled bag" {
     var bag: dot.FixedDiagnosticBag(4) = .{};
     var parsed = dot.parseBorrowed(std.testing.allocator, "digraph { a -> b; }", bag.sink(), .{});
     defer parsed.deinit(std.testing.allocator);
 
     try std.testing.expect(parsed.outcome == .unsupported_feature);
-    try std.testing.expect(parsed.tree == null);
+    try std.testing.expect(parsed.document == null);
     try std.testing.expectEqual(
         dot.diagnostic.Feature.digraph_document,
         bag.items()[0].details.unsupported_feature,
@@ -245,13 +245,13 @@ test "capacity hints enable fixed-buffer parsing through the façade" {
     var checked = dot.parseAndValidate(fba.allocator(), source, bag.sink(), .{
         .parse = .{
             .max_statements = 3,
-            .tree_capacities = .{ .statements = 3, .nodes = 2, .edges = 1 },
+            .document_capacities = .{ .statements = 3, .nodes = 2, .edges = 1 },
         },
     });
 
     try std.testing.expect(checked.outcome == .success);
     try std.testing.expect(checked.documentValid());
-    try std.testing.expectEqual(@as(usize, 3), checked.tree.?.statementCount());
+    try std.testing.expectEqual(@as(usize, 3), checked.document.?.statementCount());
     // Fixed-buffer bulk release: reset the allocator instead of deinit.
     fba.reset();
 }
@@ -267,7 +267,11 @@ test "storage failures surface as the public taxonomy, not sink errors" {
 
     try std.testing.expect(parsed.outcome == .storage_failure);
     try std.testing.expectEqual(dot.StorageFailure.out_of_memory, parsed.outcome.storage_failure);
-    try std.testing.expect(parsed.tree == null);
+    try std.testing.expect(parsed.document == null);
+
+    // Storage failures are explained through the sink like any failure.
+    try std.testing.expectEqual(@as(usize, 1), bag.items().len);
+    try std.testing.expectEqual(dot.Code.resource_memory_exhausted, bag.items()[0].code);
 }
 
 test "a rejecting sink during validation merges into the one-shot delivery" {
@@ -288,6 +292,64 @@ test "a rejecting sink during validation merges into the one-shot delivery" {
     try std.testing.expect(checked.outcome == .success);
     try std.testing.expect(!checked.documentValid());
     try std.testing.expectEqual(dot.diagnostic.Delivery.failed, checked.diagnostic_delivery);
+}
+
+test "parseBorrowedIn parses into caller slices with no allocator" {
+    const source = "graph { a; a -- b; b; }";
+    var storage: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8 }) = .{};
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+
+    const parsed = dot.parseBorrowedIn(source, storage.storage(), bag.sink(), .{});
+    try std.testing.expect(parsed.outcome == .success);
+
+    const document = parsed.document.?;
+    try std.testing.expectEqual(@as(usize, 3), document.statementCount());
+
+    var iterator = document.statements();
+    try std.testing.expectEqualStrings("a", document.text(iterator.next().?.node.identifier));
+    try std.testing.expect(iterator.next().? == .edge);
+
+    // Validation works identically on fixed-storage documents.
+    const validation = dot.validate(&document, bag.sink(), .{});
+    try std.testing.expect(validation.documentValid());
+}
+
+test "parseBorrowedIn reports pool exhaustion as a storage failure" {
+    var ids: [1]dot.StatementId = undefined;
+    var nodes: [1]dot.NodeStatement = undefined;
+    var edges: [1]dot.EdgeStatement = undefined;
+
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+    const parsed = dot.parseBorrowedIn("graph { a; b; }", .{
+        .statement_ids = &ids,
+        .nodes = &nodes,
+        .edges = &edges,
+    }, bag.sink(), .{});
+
+    try std.testing.expect(parsed.outcome == .storage_failure);
+    try std.testing.expectEqual(dot.StorageFailure.pool_exhausted, parsed.outcome.storage_failure);
+    try std.testing.expect(parsed.document == null);
+
+    // The diagnostic names the exhausted pool and its capacity.
+    try std.testing.expectEqual(@as(usize, 1), bag.items().len);
+    const failure = bag.items()[0];
+    try std.testing.expectEqual(dot.Code.resource_capacity_exhausted, failure.code);
+    try std.testing.expectEqual(
+        dot.diagnostic.Capacity.Resource.node_pool,
+        failure.details.capacity.resource,
+    );
+    try std.testing.expectEqual(@as(usize, 1), failure.details.capacity.limit);
+}
+
+test "the discard sink makes ignoring diagnostics explicit" {
+    var parsed = dot.parseBorrowed(
+        std.testing.allocator,
+        "graph {",
+        dot.diagnostic.discard,
+        .{},
+    );
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expect(parsed.outcome == .invalid_syntax);
 }
 
 test "location tracking is exposed for consumers" {

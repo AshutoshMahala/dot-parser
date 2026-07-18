@@ -6,19 +6,19 @@
 //! of them (R-ARCH-006):
 //!
 //! - `parseBorrowed` / `parseAndValidate` / `validate` — the front door.
-//! - `Tree` and friends — what linters and analyzers actually program
+//! - `Document` and friends — what linters and analyzers actually program
 //!   against: statements in source order, compact borrowed ranges.
 //! - `location`, `diagnostic`, `console`, `lexer` — the underlying modules,
 //!   exported whole for consumers that need them.
 //!
-//! The syntax-event sink, parser driver, and tree builder remain private and
+//! The syntax-event sink, parser driver, and document builder remain private and
 //! provisional; they are reachable only through the façade until the
 //! contract stabilizes (PROJECT_STRUCTURE.md).
 //!
 //! ## Ownership at a glance
 //!
 //! - `source` is caller-owned and borrowed: every range and span indexes it,
-//!   and it must outlive any returned tree (R-MEM-004).
+//!   and it must outlive any returned document (R-MEM-004).
 //! - Trees use the explicit caller allocator; release with `deinit` (bulk,
 //!   no per-node walk) or by resetting the caller's arena (R-MEM-005).
 //! - Diagnostics flow into the caller's sink — one uniform reporting surface
@@ -54,10 +54,10 @@ pub const DiagnosticSink = diagnostic.Sink;
 pub const DiagnosticSinkError = diagnostic.SinkError;
 pub const FixedDiagnosticBag = diagnostic.FixedBag;
 
-// The borrowed syntax tree and its vocabulary.
+// The borrowed syntax document and its vocabulary.
 pub const GraphKind = syntax_impl.GraphKind;
 pub const EdgeOperator = syntax_impl.EdgeOperator;
-pub const Tree = syntax_impl.Tree;
+pub const Document = syntax_impl.Document;
 pub const Statement = syntax_impl.Statement;
 pub const StatementId = syntax_impl.StatementId;
 pub const NodeStatement = syntax_impl.NodeStatement;
@@ -67,33 +67,37 @@ pub const EdgeStatement = syntax_impl.EdgeStatement;
 pub const ValidateOptions = validate_impl.Options;
 pub const ValidationResult = validate_impl.Result;
 
-pub const TreeCapacities = struct {
-    statements: usize = 0,
-    nodes: usize = 0,
-    edges: usize = 0,
-};
+pub const DocumentCapacities = syntax_impl.Capacities;
+pub const DocumentStorage = syntax_impl.DocumentStorage;
+pub const FixedDocumentStorage = syntax_impl.FixedDocumentStorage;
 
 pub const ParseOptions = struct {
     /// Maximum number of statements before the parse stops with a
     /// `resource_exhausted` outcome. A statement/output capacity bound, not
     /// a total-work budget (work is one linear scan of the input).
     max_statements: usize = std.math.maxInt(usize),
-    /// Preallocate the tree's pools. With capacities that cover the
+    /// Preallocate the document's pools. With capacities that cover the
     /// document, the build performs no allocation after the pools are
     /// reserved — the intended mode for fixed-buffer allocators. Fixed-
     /// buffer callers typically derive the numbers from `max_statements`.
-    tree_capacities: TreeCapacities = .{},
+    document_capacities: DocumentCapacities = .{},
 };
 
-/// Why tree storage could not hold the document. A façade-level taxonomy:
+/// Why document storage could not hold the document. A façade-level taxonomy:
 /// the private event-sink machinery never leaks into the public API.
 pub const StorageFailure = enum {
-    /// The tree allocator ran out of memory.
+    /// The document allocator ran out of memory.
     out_of_memory,
-    /// More statements of one kind than the tree's index width addresses.
+    /// A caller-provided fixed pool filled up (`parseBorrowedIn`).
+    pool_exhausted,
+    /// More statements of one kind than the document's index width addresses.
     statement_index_overflow,
     /// A source position beyond the retained-range limit (4 GiB).
     source_offset_overflow,
+    /// An unexpected internal failure — please report a bug. Never produced
+    /// by the documented builder error sets; exists so an unmapped future
+    /// error is visible instead of being mislabeled.
+    internal,
 };
 
 /// The public parse outcome. Diagnostics explaining failures travel through
@@ -107,28 +111,28 @@ pub const ParseOutcome = union(enum) {
     unsupported_feature,
     /// A caller-configured limit was reached; the input may still be valid.
     resource_exhausted,
-    /// Tree storage could not hold the document.
+    /// Document storage could not hold the document.
     storage_failure: StorageFailure,
 };
 
-/// Result of `parseBorrowed`. The tree is present exactly when
+/// Result of `parseBorrowed`. The document is present exactly when
 /// `outcome == .success` and is owned by the caller.
 pub const ParseResult = struct {
-    tree: ?Tree = null,
+    document: ?Document = null,
     outcome: ParseOutcome,
     diagnostic_delivery: diagnostic.Delivery,
 
     pub fn deinit(self: *ParseResult, allocator: std.mem.Allocator) void {
-        if (self.tree) |*tree| tree.deinit(allocator);
+        if (self.document) |*document| syntax_impl.deinitOwnedDocument(document, allocator);
         self.* = undefined;
     }
 };
 
 /// Parse one DOT document from caller-owned bytes into a borrowed syntax
-/// tree.
+/// document.
 ///
-/// - `source` must stay alive and unchanged for as long as the tree is used.
-/// - `allocator` owns the tree's storage (arena, fixed buffer, or GPA).
+/// - `source` must stay alive and unchanged for as long as the document is used.
+/// - `allocator` owns the document's storage (arena, fixed buffer, or GPA).
 /// - Failure diagnostics are emitted into `diagnostics`; the parser is
 ///   fail-fast, so a failure bag holds one entry today.
 pub fn parseBorrowed(
@@ -137,10 +141,10 @@ pub fn parseBorrowed(
     diagnostics: diagnostic.Sink,
     options: ParseOptions,
 ) ParseResult {
-    var builder = makeBuilder(allocator, source, options.tree_capacities) catch |err| {
+    var builder = makeBuilder(allocator, source, options.document_capacities) catch |err| {
         return .{
             .outcome = .{ .storage_failure = storageFailure(err) },
-            .diagnostic_delivery = .complete,
+            .diagnostic_delivery = emitStorageDiagnostic(diagnostics, err, null, .complete),
         };
     };
     defer builder.deinit();
@@ -162,21 +166,31 @@ pub fn parseBorrowed(
             .outcome = .resource_exhausted,
             .diagnostic_delivery = result.diagnostic_delivery,
         },
-        // The façade's only event sink is the tree builder, so a sink
+        // The façade's only event sink is the document builder, so a sink
         // failure here is by definition a storage failure.
         .sink_failure => |err| return .{
             .outcome = .{ .storage_failure = storageFailure(err) },
-            .diagnostic_delivery = result.diagnostic_delivery,
+            .diagnostic_delivery = emitStorageDiagnostic(
+                diagnostics,
+                err,
+                builder.failure_info,
+                result.diagnostic_delivery,
+            ),
         },
     }
-    const tree = builder.toTree() catch |err| {
+    const document = builder.toDocument() catch |err| {
         return .{
             .outcome = .{ .storage_failure = storageFailure(err) },
-            .diagnostic_delivery = result.diagnostic_delivery,
+            .diagnostic_delivery = emitStorageDiagnostic(
+                diagnostics,
+                err,
+                builder.failure_info,
+                result.diagnostic_delivery,
+            ),
         };
     };
     return .{
-        .tree = tree,
+        .document = document,
         .outcome = .success,
         .diagnostic_delivery = result.diagnostic_delivery,
     };
@@ -185,7 +199,7 @@ pub fn parseBorrowed(
 fn makeBuilder(
     allocator: std.mem.Allocator,
     source: []const u8,
-    capacities: TreeCapacities,
+    capacities: DocumentCapacities,
 ) syntax_impl.Builder.Error!syntax_impl.Builder {
     if (capacities.statements == 0 and capacities.nodes == 0 and capacities.edges == 0) {
         return syntax_impl.Builder.init(allocator, source);
@@ -197,27 +211,123 @@ fn makeBuilder(
     });
 }
 
-/// Map the tree builder's error set into the public storage taxonomy.
+/// Map the document builders' error sets into the public storage taxonomy.
+/// Exhaustive over the documented sets; anything else surfaces as
+/// `.internal` rather than being mislabeled (honest telemetry).
 fn storageFailure(err: anyerror) StorageFailure {
     return switch (err) {
+        error.OutOfMemory => .out_of_memory,
+        error.PoolExhausted => .pool_exhausted,
         error.StatementIndexOverflow => .statement_index_overflow,
         error.SourceOffsetOverflow => .source_offset_overflow,
-        else => .out_of_memory,
+        else => .internal,
     };
 }
 
-/// Validate a parsed tree against the milestone rules. Positions come from
-/// the source the tree itself borrows — there is no separate source
+/// Storage failures are failures like any other: they are explained through
+/// the diagnostic sink (uniform reporting surface), with the builder's
+/// recorded detail naming the exhausted pool/limit and where it happened.
+/// `.internal` failures emit nothing (there is no truthful diagnostic to
+/// give); the outcome still reports them.
+fn emitStorageDiagnostic(
+    diagnostics: diagnostic.Sink,
+    err: anyerror,
+    info: ?syntax_impl.StorageFailureInfo,
+    delivery: diagnostic.Delivery,
+) diagnostic.Delivery {
+    const span: location.Span = if (info) |i| i.span else .{ .start = .start, .byte_len = 0 };
+    const d: diagnostic.Diagnostic = switch (storageFailure(err)) {
+        .out_of_memory => .{
+            .code = .resource_memory_exhausted,
+            .span = span,
+        },
+        .pool_exhausted, .statement_index_overflow, .source_offset_overflow => .{
+            .code = .resource_capacity_exhausted,
+            .span = span,
+            .details = if (info) |i|
+                (if (i.capacity) |capacity| .{ .capacity = capacity } else .none)
+            else
+                .none,
+        },
+        .internal => return delivery,
+    };
+    diagnostics.emit(d) catch return .failed;
+    return delivery;
+}
+
+/// Validate a parsed document against the milestone rules. Positions come from
+/// the source the document itself borrows — there is no separate source
 /// parameter to mismatch. Validation is a complete analysis pass: it
 /// continues past every violation and reports all of them into
 /// `diagnostics` in source order; the result separates pass completion from
 /// document validity (R-FUNC-008).
 pub fn validate(
-    tree: *const Tree,
+    document: *const Document,
     diagnostics: diagnostic.Sink,
     options: ValidateOptions,
 ) ValidationResult {
-    return validate_impl.validate(tree, diagnostics, options);
+    return validate_impl.validate(document, diagnostics, options);
+}
+
+pub const FixedParseOptions = struct {
+    /// See `ParseOptions.max_statements`. Capacity needs no option here:
+    /// the caller's pools are the capacity.
+    max_statements: usize = std.math.maxInt(usize),
+};
+
+/// Result of `parseBorrowedIn`. Unlike `ParseResult` there is deliberately
+/// no `deinit`: the document is backed entirely by the caller's storage —
+/// release it by reusing or discarding that storage.
+pub const FixedParseResult = struct {
+    document: ?Document = null,
+    outcome: ParseOutcome,
+    diagnostic_delivery: diagnostic.Delivery,
+};
+
+/// Parse one DOT document into caller-provided fixed pools: no allocator,
+/// nothing grows, failure is deterministic (`storage_failure` with
+/// `.pool_exhausted` when a pool fills). The embedded-first sibling of
+/// `parseBorrowed` (R-MEM-003); same parser, same grammar, different
+/// storage policy.
+pub fn parseBorrowedIn(
+    source: []const u8,
+    storage: DocumentStorage,
+    diagnostics: diagnostic.Sink,
+    options: FixedParseOptions,
+) FixedParseResult {
+    var builder = syntax_impl.FixedBuilder.init(source, storage);
+    const result = parser_impl.parse(source, &builder, diagnostics, .{
+        .max_statements = options.max_statements,
+    });
+    switch (result.outcome) {
+        .success => {},
+        .invalid_syntax => return .{
+            .outcome = .invalid_syntax,
+            .diagnostic_delivery = result.diagnostic_delivery,
+        },
+        .unsupported_feature => return .{
+            .outcome = .unsupported_feature,
+            .diagnostic_delivery = result.diagnostic_delivery,
+        },
+        .resource_exhausted => return .{
+            .outcome = .resource_exhausted,
+            .diagnostic_delivery = result.diagnostic_delivery,
+        },
+        .sink_failure => |err| return .{
+            .outcome = .{ .storage_failure = storageFailure(err) },
+            .diagnostic_delivery = emitStorageDiagnostic(
+                diagnostics,
+                err,
+                builder.failure_info,
+                result.diagnostic_delivery,
+            ),
+        },
+    }
+    return .{
+        .document = builder.toDocument(),
+        .outcome = .success,
+        .diagnostic_delivery = result.diagnostic_delivery,
+    };
 }
 
 pub const CheckOptions = struct {
@@ -226,9 +336,9 @@ pub const CheckOptions = struct {
 };
 
 /// Result of `parseAndValidate`. `validation` is present exactly when
-/// parsing succeeded (a tree exists to validate).
+/// parsing succeeded (a document exists to validate).
 pub const CheckResult = struct {
-    tree: ?Tree = null,
+    document: ?Document = null,
     outcome: ParseOutcome,
     validation: ?ValidationResult = null,
     diagnostic_delivery: diagnostic.Delivery,
@@ -236,11 +346,11 @@ pub const CheckResult = struct {
     /// The document parsed completely AND validation found no violations.
     pub fn documentValid(self: *const CheckResult) bool {
         const validation = self.validation orelse return false;
-        return validation.completed and validation.document_valid;
+        return validation.documentValid();
     }
 
     pub fn deinit(self: *CheckResult, allocator: std.mem.Allocator) void {
-        if (self.tree) |*tree| tree.deinit(allocator);
+        if (self.document) |*document| syntax_impl.deinitOwnedDocument(document, allocator);
         self.* = undefined;
     }
 };
@@ -256,7 +366,7 @@ pub fn parseAndValidate(
     options: CheckOptions,
 ) CheckResult {
     var parsed = parseBorrowed(allocator, source, diagnostics, options.parse);
-    if (parsed.tree == null) {
+    if (parsed.document == null) {
         return .{
             .outcome = parsed.outcome,
             .diagnostic_delivery = parsed.diagnostic_delivery,
@@ -264,7 +374,7 @@ pub fn parseAndValidate(
     }
 
     const validation = validate_impl.validate(
-        &parsed.tree.?,
+        &parsed.document.?,
         diagnostics,
         options.validation,
     );
@@ -272,7 +382,7 @@ pub fn parseAndValidate(
         validation.diagnostic_delivery == .failed) .failed else .complete;
 
     return .{
-        .tree = parsed.tree,
+        .document = parsed.document,
         .outcome = .success,
         .validation = validation,
         .diagnostic_delivery = delivery,
@@ -282,7 +392,7 @@ pub fn parseAndValidate(
 test {
     std.testing.refAllDecls(@This());
     // Private, provisional modules are not exported but their unit tests
-    // still run (the syntax-event sink, parser driver, and tree builder stay
+    // still run (the syntax-event sink, parser driver, and document builder stay
     // private per PROJECT_STRUCTURE until the contract stabilizes).
     _ = @import("syntax_event.zig");
     _ = @import("parser.zig");
