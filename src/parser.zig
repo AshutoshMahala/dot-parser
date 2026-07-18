@@ -208,9 +208,18 @@ fn Machine(comptime EventsPtr: type) type {
                         self.open_brace_span = token.span;
                         self.state = .statement;
                     },
-                    // `graph G {` is valid DOT with a graph name;
-                    // deferred to slice 2.
-                    .identifier => return self.unsupportedAt(token.span, .graph_name),
+                    // `graph G {` is valid DOT with a graph name; deferred
+                    // to slice 2. DOT keywords are only reserved
+                    // positionally, so `graph graph {` is a graph literally
+                    // named "graph" — the same deferred feature, not
+                    // malformed input (R-MOD-006). Other deferred keywords
+                    // (`digraph`, `strict`, …) never reach the parser: the
+                    // lexer reports them as unsupported features itself, so
+                    // keyword recognition responsibility lives entirely in
+                    // the lexer.
+                    .identifier, .keyword_graph => {
+                        return self.unsupportedAt(token.span, .graph_name);
+                    },
                     else => return self.unexpected(.{ .left_brace = true }, .document_header, token),
                 },
                 .statement => switch (token.tag) {
@@ -320,6 +329,8 @@ fn Machine(comptime EventsPtr: type) type {
                 .invalid_syntax => .invalid_syntax,
                 .unsupported_feature => .unsupported_feature,
                 .resource_exhausted => .resource_exhausted,
+                // `fail` only handles diagnostic-classified failures; event
+                // sink failures route through `sinkFailure` exclusively.
                 .sink_failure => unreachable,
             });
         }
@@ -525,6 +536,18 @@ test "named graph is the deferred graph-name feature, not malformed" {
     try expectEqualStrings("G", failure.span.slice("graph G { }"));
 
     try expectAborted("graph G { }", .unsupported_feature);
+}
+
+test "a keyword used as a graph name is the deferred feature, not malformed" {
+    // DOT keywords are only positionally reserved: `graph graph {}` is a
+    // valid document whose name is "graph".
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    const result = parse("graph graph { }", &events, bag.sink(), .{});
+    try expect(result.outcome == .unsupported_feature);
+    try expectEqual(diagnostic.Feature.graph_name, bag.items()[0].details.unsupported_feature);
+    try expectEqualStrings("graph", bag.items()[0].span.slice("graph graph { }"));
+    try expectEqual(@as(usize, 6), bag.items()[0].span.start.byte_offset);
 }
 
 test "missing edge endpoint is invalid syntax at the terminator" {

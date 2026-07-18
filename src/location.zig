@@ -73,6 +73,8 @@ pub const Range = struct {
     pub fn slice(self: Range, source: []const u8) []const u8 {
         const end = self.endOffset();
         std.debug.assert(end <= source.len);
+        // The narrowing is sound because of the assert: end <= source.len,
+        // and a slice length always fits usize.
         return source[self.start..@intCast(end)];
     }
 

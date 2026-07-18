@@ -31,8 +31,20 @@ const Diagnostic = diagnostic.Diagnostic;
 const Details = diagnostic.Details;
 const Severity = diagnostic.Severity;
 
-/// Column where labeled-section content starts ("Suggestion:" + one space).
-const label_column = 12;
+/// Column where labeled-section content starts: derived from the widest
+/// label (plus colon and one space) so adding a longer label can never
+/// silently misalign the sections.
+const label_column = blk: {
+    var widest: usize = 0;
+    for ([_][]const u8{
+        "Where",    "Detail",    "Note",    "Suggestion", "Trace",
+        "Info",     "Completed", "Success", "Help",       "Warning",
+        "Critical", "Blocked",   "Error",
+    }) |label| {
+        widest = @max(widest, label.len);
+    }
+    break :blk widest + 2;
+};
 
 /// Options for the numbered renderers.
 pub const RenderOptions = struct {

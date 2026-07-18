@@ -385,8 +385,23 @@ pub const DocumentStorage = struct {
 };
 
 /// Comptime sugar over `DocumentStorage`: a struct that owns the pools.
+///
+/// The capacity is committed eagerly: the pools are inline arrays, so the
+/// declared variable occupies the full capacity wherever it lives (stack,
+/// static, or heap via `allocator.create`). Budget with `byte_size`.
 pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
+    comptime {
+        for ([_]usize{ capacities.statements, capacities.nodes, capacities.edges }) |capacity| {
+            if (capacity > std.math.maxInt(Index)) {
+                @compileError("FixedDocumentStorage: capacity exceeds the statement index width (u32)");
+            }
+        }
+    }
     return struct {
+        /// Total bytes this storage occupies — for comptime RAM budgeting,
+        /// e.g. `comptime assert(Storage.byte_size <= ram_budget)`.
+        pub const byte_size = @sizeOf(@This());
+
         statement_ids: [capacities.statements]StatementId = undefined,
         nodes: [capacities.nodes]NodeStatement = undefined,
         edges: [capacities.edges]EdgeStatement = undefined,
@@ -892,6 +907,13 @@ test "fixed document storage sugar owns the pools" {
     try expect(parser.parse(source, &builder, bag.sink(), .{}).outcome == .success);
     const document = builder.toDocument();
     try expectEqualStrings("--", document.text(document.statementAt(0).?.edge.operator_range));
+}
+
+test "fixed document storage exposes its comptime byte size" {
+    const Storage = FixedDocumentStorage(.{ .statements = 32, .nodes = 32, .edges = 16 });
+    try expectEqual(@sizeOf(Storage), Storage.byte_size);
+    try expect(Storage.byte_size >= 32 * @sizeOf(StatementId) +
+        32 * @sizeOf(NodeStatement) + 16 * @sizeOf(EdgeStatement));
 }
 
 test "statement iterator walks source order" {

@@ -101,7 +101,7 @@ pub const Lexer = struct {
             // DOT permits bytes 0x80–0xFF in unquoted identifiers
             // ([a-zA-Z\200-\377]); milestone 1 is ASCII-only, so this is a
             // deferred feature, not malformed input.
-            0x80...0xFF => unsupported(start, 1, .non_ascii_identifier),
+            0x80...0xFF => self.nonAsciiIdentifier(start, 0),
             else => self.invalidByte(),
         };
     }
@@ -152,7 +152,7 @@ pub const Lexer = struct {
         // such rather than splitting it into a token plus an error.
         if (self.peek(len)) |after| {
             if (after >= 0x80) {
-                return unsupported(start, len + 1, .non_ascii_identifier);
+                return self.nonAsciiIdentifier(start, len);
             }
         }
 
@@ -206,6 +206,20 @@ pub const Lexer = struct {
             else => {},
         };
         return self.invalidByte();
+    }
+
+    /// Span the complete identifier run (ASCII identifier bytes and the
+    /// deferred 0x80–0xFF range) so a renderer underlines the whole
+    /// construct, not just its first non-ASCII byte.
+    fn nonAsciiIdentifier(self: *const Lexer, start: location.Location, prefix_len: usize) Result {
+        var len = prefix_len + 1;
+        while (self.peek(len)) |byte| : (len += 1) {
+            switch (byte) {
+                'A'...'Z', 'a'...'z', '0'...'9', '_', 0x80...0xFF => {},
+                else => break,
+            }
+        }
+        return unsupported(start, len, .non_ascii_identifier);
     }
 
     fn invalidByte(self: *Lexer) Result {
@@ -369,12 +383,20 @@ test "non-ASCII bytes are the deferred identifier range, not invalid input" {
     try expectUnsupported(&leading, .non_ascii_identifier);
 
     // One identifier running into the non-ASCII range is reported whole,
-    // not split into an ASCII identifier plus an error.
-    var mixed = Lexer.init("caf\xC3\xA9");
+    // not split into an ASCII identifier plus an error — and the span
+    // covers the complete run, not just the first non-ASCII byte.
+    var mixed = Lexer.init("caf\xC3\xA9 x");
     const result = mixed.next();
     try expect(result == .failure);
     try expectEqual(diagnostic.Feature.non_ascii_identifier, result.failure.details.unsupported_feature);
     try expectEqual(@as(usize, 0), result.failure.span.start.byte_offset);
+    try expectEqual(@as(usize, 5), result.failure.span.byte_len);
+
+    // A leading multi-byte identifier is spanned whole as well.
+    var leading_run = Lexer.init("\xC3\xA9tat;");
+    const leading_result = leading_run.next();
+    try expect(leading_result == .failure);
+    try expectEqual(@as(usize, 5), leading_result.failure.span.byte_len);
 
     // Control bytes below 0x80 remain invalid, as before.
     var control = Lexer.init("\x7f");
