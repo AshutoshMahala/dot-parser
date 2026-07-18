@@ -78,20 +78,25 @@ test "consumer can render boxed output in unicode and ascii styles" {
     var buffer: [2048]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
 
+    const source = "graph} a; }";
     const diagnostics = [_]dot.Diagnostic{.{
         .code = .parser_unexpected_token,
         .span = .{
-            .start = .{ .byte_offset = 4, .line = 1, .byte_column = 5 },
+            .start = .{ .byte_offset = 5, .line = 1, .byte_column = 6 },
             .byte_len = 1,
         },
     }};
 
-    try dot.console.renderBoxedList(&diagnostics, 0, .{ .source_name = "pipe" }, &writer);
-    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "┌─ Error 1 ─── [dot_parser:E.Parser.Syntax.003 (INVALID)]") != null);
+    try dot.console.renderBoxedList(&diagnostics, 0, .{ .source_name = "pipe", .source = source }, &writer);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "┌─ Error 1: unexpected token") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "│ pipe:1:6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "│ 1 │ graph} a; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "└─ E1 ─ [dot_parser:E.Parser.Syntax.003]") != null);
 
     var ascii_writer = std.Io.Writer.fixed(&buffer);
     try dot.console.renderBoxedList(&diagnostics, 0, .{ .source_name = "pipe", .style = .ascii }, &ascii_writer);
-    try std.testing.expect(std.mem.indexOf(u8, ascii_writer.buffered(), "-- Error 1 - [dot_parser:E.Parser.Syntax.003 (INVALID)]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ascii_writer.buffered(), "-- Error 1: unexpected token") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ascii_writer.buffered(), "-- E1 - [dot_parser:E.Parser.Syntax.003]") != null);
 }
 
 test "consumer can bring their own reporter through the sink interface" {

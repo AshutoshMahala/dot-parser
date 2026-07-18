@@ -10,54 +10,60 @@
 //! render however they want. Nothing in the core references this module, so
 //! the linker drops it entirely when it is unused.
 //!
-//! The numbered renderers use uniform labeled sections, one per line, all at
-//! the same level:
+//! The boxed renderer is message-first and shows annotated source excerpts
+//! when the presenter passes the source bytes:
 //!
 //! ```text
-//! Error:      <summary>
-//! Where:      <source>:<line>:<column>
-//! Detail:     <typed payload, worded here>
-//! Note:       <related location, worded here>
-//! Suggestion: <registry hint>
+//! ┌─ Error 1: edge operator does not match the graph kind
+//! │ example.dot:2:7
+//! │
+//! │ 1 │ graph {
+//! │   │ ───── the document is undirected because of this keyword
+//! │ 2 │     a -> b;
+//! │   │       ^^ expected '--', found '->'
+//! │
+//! │ Hint: change '->' to '--', or declare the document with 'digraph'
+//! └─ E1 ─ [dot_parser:E.Validation.Operator.002]
 //! ```
 //!
-//! Sections without content are omitted; no section is more special than
-//! another.
+//! Without source bytes the same box degrades to compact location lines.
+//! The WDP structured code closes every box (searchable identity); the
+//! sequence alias and qualified compact ID (WDP part 7 §5.2) appear only
+//! with `verbose = true`. Colors follow the WDP presentation guidance
+//! (part 10 §3.1) and are off by default; the presenter decides whether
+//! the output is a terminal — this module never probes file descriptors.
 
 const std = @import("std");
 const diagnostic = @import("diagnostic.zig");
+const location = @import("location.zig");
 
 const Diagnostic = diagnostic.Diagnostic;
 const Details = diagnostic.Details;
 const Severity = diagnostic.Severity;
 
-/// Column where labeled-section content starts: derived from the widest
-/// label (plus colon and one space) so adding a longer label can never
-/// silently misalign the sections.
-const label_column = blk: {
-    var widest: usize = 0;
-    for ([_][]const u8{
-        "Where",    "Detail",    "Note",    "Suggestion", "Trace",
-        "Info",     "Completed", "Success", "Help",       "Warning",
-        "Critical", "Blocked",   "Error",
-    }) |label| {
-        widest = @max(widest, label.len);
-    }
-    break :blk widest + 2;
-};
-
-/// Options for the numbered renderers.
+/// Options for the boxed renderers.
 pub const RenderOptions = struct {
-    /// Name shown in the Where section ("name:line:column"). The core never
+    /// Name shown in the location line ("name:line:column"). The core never
     /// learns file names (R-MOD-003), so the presenter supplies one.
     source_name: []const u8 = "<input>",
+    /// The source bytes the diagnostics' spans index. When present, boxes
+    /// show annotated source excerpts; when null (or when a span does not
+    /// fit the given bytes), boxes fall back to compact location lines.
+    source: ?[]const u8 = null,
     /// Visual style. `.unicode` draws a box; `.ascii` is plain 7-bit output
     /// for terminals and logs that cannot render box-drawing characters.
     style: Style = .unicode,
-    /// Number of '─' characters in the unicode closing rule.
+    /// ANSI severity colors per WDP part 10 §3.1. Off by default: the
+    /// presenter performs its own TTY detection and opts in.
+    color: Color = .none,
+    /// Also show the sequence alias and the fully qualified compact ID
+    /// (`namespace_hash-code_hash`) in the closing line.
+    verbose: bool = false,
+    /// Number of fill characters in the summary block's closing rule.
     rule_width: usize = 54,
 
     pub const Style = enum { unicode, ascii };
+    pub const Color = enum { none, ansi };
 };
 
 /// Render one diagnostic as compact log-style text, e.g.:
@@ -93,26 +99,9 @@ pub fn render(d: Diagnostic, writer: anytype) !void {
     try writer.print("  help: {s}\n", .{info.hint});
 }
 
-/// Render one diagnostic as a numbered block of labeled sections.
-///
-/// `.unicode` style:
-///
-/// ```text
-/// ┌─ Error 1 ─── [dot_parser:E.Validation.Operator.002 (MISMATCH)] -> xnOyw-In71I
-/// │
-/// │ Error:      edge operator does not match the graph kind
-/// │ Where:      example.dot:2:7
-/// │ Detail:     expected '--', found '->'
-/// │ Note:       graph kind declared at 1:1
-/// │ Suggestion: an undirected document ('graph') connects nodes with '--'; ...
-/// │
-/// └────────────────────────────────────────────────────── E1
-/// ```
-///
-/// `.ascii` style carries the same sections without the box frame.
-///
-/// The header shows the WDP structured code with its sequence alias and the
-/// fully qualified compact ID (`namespace_hash-code_hash`, WDP part 7 §5.2).
+/// Render one diagnostic as a numbered box: message-first header, location,
+/// an annotated source excerpt (when `options.source` is set), a hint, and
+/// a labeled closing line carrying the WDP structured code.
 pub fn renderBoxed(
     d: Diagnostic,
     number: usize,
@@ -120,33 +109,64 @@ pub fn renderBoxed(
     writer: anytype,
 ) !void {
     const info = d.code.info();
-    const qualified_id = d.code.qualifiedCompactId();
+    const g = Glyphs.of(options.style);
+    const pal = Palette.of(options.color, info.severity);
 
-    switch (options.style) {
-        .unicode => {
-            try writer.print("┌─ {s} {d} ─── [{s}:{s} ({s})] -> {s}\n", .{
-                severityTitle(info.severity), number,     diagnostic.namespace,
-                d.code.structured(),          info.alias, &qualified_id,
-            });
-            try writer.writeAll("│\n");
-            try writeSections("│ ", d, info, options, writer);
-            try writer.writeAll("│\n");
-            try writer.writeAll("└");
-            for (0..options.rule_width) |_| try writer.writeAll("─");
-            try writer.print(" {c}{d}\n", .{ info.severity.letter(), number });
-        },
-        .ascii => {
-            try writer.print("-- {s} {d} - [{s}:{s} ({s})] -> {s}\n", .{
-                severityTitle(info.severity), number,     diagnostic.namespace,
-                d.code.structured(),          info.alias, &qualified_id,
-            });
-            try writeSections("   ", d, info, options, writer);
-        },
+    // Header: the human-readable message is the first thing the eye lands
+    // on; protocol identity waits at the closing line.
+    try writer.print("{s}{s} {s} {d}:{s} ", .{
+        pal.frame, g.open, severityTitle(info.severity), number, pal.reset,
+    });
+    try writeHeadline(d, info, writer);
+    try writer.writeAll("\n");
+
+    try writeRail(g, pal, writer);
+    try writer.print("{s}:{d}:{d}\n", .{
+        options.source_name, d.span.start.line, d.span.start.byte_column,
+    });
+
+    if (excerptSource(d, options)) |source| {
+        try writeBlankRail(g, pal, writer);
+        try writeExcerpt(d, source, g, pal, writer);
+        try writeBlankRail(g, pal, writer);
+    } else {
+        // Compact fallback: the typed payload and the related location as
+        // unlabeled lines — the header already says what kind of line each
+        // one is.
+        if (d.details != .none) {
+            try writeRail(g, pal, writer);
+            try writeDetailValue(d.details, writer);
+            try writer.writeAll("\n");
+        }
+        if (hasNote(d.details)) {
+            try writeRail(g, pal, writer);
+            try writeNoteValue(d.details, writer);
+            try writer.writeAll("\n");
+        }
+    }
+
+    try writeRail(g, pal, writer);
+    try writer.print("{s}Hint:{s} ", .{ pal.hint, pal.reset });
+    try writeHint(d.details, info, writer);
+    try writer.writeAll("\n");
+
+    // Closing line: the box's number tag pairs the closer with its opener
+    // (boxes grow tall with excerpts), followed by the searchable identity.
+    try writer.print("{s}{s} {c}{d} {s}{s} [{s}:{s}", .{
+        pal.frame, g.close,   info.severity.letter(), number,
+        g.tick,    pal.reset, diagnostic.namespace,   d.code.structured(),
+    });
+    if (options.verbose) {
+        const qualified_id = d.code.qualifiedCompactId();
+        try writer.print(" ({s})] -> {s}\n", .{ info.alias, &qualified_id });
+    } else {
+        try writer.writeAll("]\n");
     }
 }
 
-/// Render a list of diagnostics as numbered blocks followed by a one-line
-/// summary. `omitted` is the overflow count from a `FixedBag` (0 if none).
+/// Render a list of diagnostics as numbered boxes. When the list holds more
+/// than one diagnostic — or when a `FixedBag` overflowed (`omitted` > 0) —
+/// a summary block follows; a single complete diagnostic speaks for itself.
 pub fn renderBoxedList(
     diagnostics: []const Diagnostic,
     omitted: usize,
@@ -155,68 +175,440 @@ pub fn renderBoxedList(
 ) !void {
     var errors: usize = 0;
     var warnings: usize = 0;
+    var worst: Severity = .trace;
     for (diagnostics, 0..) |d, index| {
         if (index != 0) try writer.writeAll("\n");
         try renderBoxed(d, index + 1, options, writer);
-        switch (d.code.severity()) {
+        const severity = d.code.severity();
+        if (@intFromEnum(severity) > @intFromEnum(worst)) worst = severity;
+        switch (severity) {
             .err, .blocked, .critical => errors += 1,
             .warning => warnings += 1,
             else => {},
         }
     }
+
+    if (diagnostics.len <= 1 and omitted == 0) return;
     if (diagnostics.len != 0) try writer.writeAll("\n");
-    try writer.print("Summary: {d} error(s), {d} warning(s), {d} total", .{
-        errors, warnings, diagnostics.len,
-    });
+
+    const g = Glyphs.of(options.style);
+    const pal = Palette.of(options.color, worst);
+    try writer.print("{s}{s} Summary{s}\n", .{ pal.frame, g.summary_open, pal.reset });
+    try writer.print("{s}{s}{s} ", .{ pal.frame, g.summary_rail, pal.reset });
+    if (errors == 0 and warnings == 0) {
+        try writer.print("{d} diagnostic{s}", .{ diagnostics.len, plural(diagnostics.len) });
+    } else {
+        if (errors > 0) try writer.print("{d} error{s}", .{ errors, plural(errors) });
+        if (warnings > 0) {
+            if (errors > 0) try writer.writeAll(", ");
+            try writer.print("{d} warning{s}", .{ warnings, plural(warnings) });
+        }
+    }
     if (omitted > 0) {
-        try writer.print(" (+{d} omitted, capacity reached)", .{omitted});
+        try writer.print(" ({d} more omitted: diagnostic bag is full)", .{omitted});
     }
     try writer.writeAll("\n");
+    try writer.print("{s}{s}", .{ pal.frame, g.summary_close });
+    try writeRepeat(writer, g.summary_fill, options.rule_width);
+    try writer.print("{s}\n", .{pal.reset});
 }
 
 // ---------------------------------------------------------------------------
-// Labeled sections
+// Box building blocks
 // ---------------------------------------------------------------------------
 
-fn writeSections(
-    comptime prefix: []const u8,
+/// Frame characters for the two visual styles. ASCII output has no rail —
+/// content is indented instead — so its "rail" is plain spaces.
+const Glyphs = struct {
+    open: []const u8,
+    rail: []const u8,
+    close: []const u8,
+    tick: []const u8,
+    gutter: []const u8,
+    secondary_underline: []const u8,
+    gap: []const u8,
+    clip: []const u8,
+    /// Display width of `clip`, for underline alignment.
+    clip_width: usize,
+    summary_open: []const u8,
+    summary_rail: []const u8,
+    summary_close: []const u8,
+    summary_fill: []const u8,
+
+    fn of(style: RenderOptions.Style) Glyphs {
+        return switch (style) {
+            .unicode => .{
+                .open = "┌─",
+                .rail = "│",
+                .close = "└─",
+                .tick = "─",
+                .gutter = "│",
+                .secondary_underline = "─",
+                .gap = "⋯",
+                .clip = "…",
+                .clip_width = 1,
+                .summary_open = "╔═",
+                .summary_rail = "║",
+                .summary_close = "╚",
+                .summary_fill = "═",
+            },
+            .ascii => .{
+                .open = "--",
+                .rail = "  ",
+                .close = "--",
+                .tick = "-",
+                .gutter = "|",
+                .secondary_underline = "-",
+                .gap = "...",
+                .clip = "...",
+                .clip_width = 3,
+                .summary_open = "==",
+                .summary_rail = "  ",
+                .summary_close = "=",
+                .summary_fill = "=",
+            },
+        };
+    }
+};
+
+/// ANSI escape prefixes per element, empty when color is off. The severity
+/// colors are the WDP presentation palette (part 10 §3.1); secondary
+/// annotations use the Info color and the hint label uses the Help color.
+const Palette = struct {
+    frame: []const u8 = "",
+    secondary: []const u8 = "",
+    hint: []const u8 = "",
+    reset: []const u8 = "",
+
+    fn of(color: RenderOptions.Color, severity: Severity) Palette {
+        return switch (color) {
+            .none => .{},
+            .ansi => .{
+                .frame = severityAnsi(severity),
+                .secondary = severityAnsi(.info),
+                .hint = severityAnsi(.help),
+                .reset = "\x1b[0m",
+            },
+        };
+    }
+};
+
+/// WDP part 10 §3.1 terminal colors, verbatim.
+fn severityAnsi(severity: Severity) []const u8 {
+    return switch (severity) {
+        .err => "\x1b[1;31m",
+        .blocked => "\x1b[31m",
+        .critical => "\x1b[1;33m",
+        .warning => "\x1b[33m",
+        .help => "\x1b[32m",
+        .success => "\x1b[1;32m",
+        .completed => "\x1b[32m",
+        .info => "\x1b[36m",
+        .trace => "\x1b[2;34m",
+    };
+}
+
+fn writeRail(g: Glyphs, pal: Palette, writer: anytype) !void {
+    try writer.print("{s}{s}{s} ", .{ pal.frame, g.rail, pal.reset });
+}
+
+fn writeBlankRail(g: Glyphs, pal: Palette, writer: anytype) !void {
+    try writer.print("{s}{s}{s}\n", .{ pal.frame, std.mem.trimEnd(u8, g.rail, " "), pal.reset });
+}
+
+fn writeRepeat(writer: anytype, glyph: []const u8, count: usize) !void {
+    for (0..count) |_| try writer.writeAll(glyph);
+}
+
+fn plural(count: usize) []const u8 {
+    return if (count == 1) "" else "s";
+}
+
+/// The message shown in the header. Wording lives here, in the renderer;
+/// most codes use their registry summary, a few are sharpened by the typed
+/// payload.
+fn writeHeadline(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !void {
+    switch (d.details) {
+        .unsupported_feature => |feature| {
+            try writer.print("unsupported DOT construct: {s}", .{feature.name()});
+        },
+        else => try writer.writeAll(info.summary),
+    }
+}
+
+/// The hint line: synthesized from the typed payload when it is derivable,
+/// otherwise the registry's static hint. Extend one payload at a time as
+/// contextual wording is developed; the fallback keeps every code covered.
+fn writeHint(details: Details, info: diagnostic.Code.Info, writer: anytype) !void {
+    switch (details) {
+        .operator_mismatch => |mismatch| switch (mismatch.expected) {
+            .directed => try writer.writeAll(
+                "change '--' to '->', or declare the document with 'graph'",
+            ),
+            .undirected => try writer.writeAll(
+                "change '->' to '--', or declare the document with 'digraph'",
+            ),
+        },
+        else => try writer.writeAll(info.hint),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Source excerpts
+// ---------------------------------------------------------------------------
+
+/// Maximum excerpt content width; longer lines are windowed around the span
+/// with clip markers. This is a hard requirement, not polish: a minified
+/// document can be one multi-megabyte line.
+const max_view = 60;
+
+/// Returns the source to excerpt from, or null when the box must fall back
+/// to compact lines: no source given, or a span that does not fit it (a
+/// mismatched source must degrade, never crash the renderer).
+fn excerptSource(d: Diagnostic, options: RenderOptions) ?[]const u8 {
+    const source = options.source orelse return null;
+    if (!spanFits(d.span, source)) return null;
+    if (secondarySpan(d.details)) |span| {
+        if (!spanFits(span, source)) return null;
+    }
+    return source;
+}
+
+fn spanFits(span: location.Span, source: []const u8) bool {
+    return span.start.byte_offset <= source.len and
+        span.byte_len <= source.len - span.start.byte_offset;
+}
+
+/// The secondary annotated location, if the payload carries one.
+fn secondarySpan(details: Details) ?location.Span {
+    return switch (details) {
+        .operator_mismatch => |mismatch| mismatch.declaration,
+        .unexpected => |unexpected| if (unexpected.related) |related| related.span else null,
+        else => null,
+    };
+}
+
+const Annotation = struct {
+    span: location.Span,
+    primary: bool,
+};
+
+const View = struct {
+    line_start: usize,
+    start: usize,
+    end: usize,
+    clipped_left: bool,
+    clipped_right: bool,
+};
+
+/// Write the annotated excerpt windows: each annotated line once, one
+/// underline row per annotation, a gap marker between non-adjacent lines.
+fn writeExcerpt(
     d: Diagnostic,
-    info: diagnostic.Code.Info,
-    options: RenderOptions,
+    source: []const u8,
+    g: Glyphs,
+    pal: Palette,
     writer: anytype,
 ) !void {
-    try writeLabel(prefix, severityTitle(info.severity), writer);
-    try writer.print("{s}\n", .{info.summary});
-
-    try writeLabel(prefix, "Where", writer);
-    try writer.print("{s}:{d}:{d}\n", .{
-        options.source_name, d.span.start.line, d.span.start.byte_column,
-    });
-
-    if (d.details != .none) {
-        try writeLabel(prefix, "Detail", writer);
-        try writeDetailValue(d.details, writer);
-        try writer.writeAll("\n");
+    // Every current payload carries at most one secondary span; grow this
+    // (and the sort below) when a payload gains more related locations.
+    var annotations: [2]Annotation = undefined;
+    var count: usize = 0;
+    if (secondarySpan(d.details)) |span| {
+        annotations[count] = .{ .span = span, .primary = false };
+        count += 1;
+    }
+    annotations[count] = .{ .span = d.span, .primary = true };
+    count += 1;
+    if (count == 2 and
+        annotations[0].span.start.byte_offset > annotations[1].span.start.byte_offset)
+    {
+        std.mem.swap(Annotation, &annotations[0], &annotations[1]);
     }
 
-    if (hasNote(d.details)) {
-        try writeLabel(prefix, "Note", writer);
-        try writeNoteValue(d.details, writer);
-        try writer.writeAll("\n");
+    var gutter_width: usize = 0;
+    for (annotations[0..count]) |annotation| {
+        gutter_width = @max(gutter_width, digits(annotation.span.start.line));
     }
 
-    try writeLabel(prefix, "Suggestion", writer);
-    try writer.print("{s}\n", .{info.hint});
+    var previous_line: usize = 0;
+    var view: View = undefined;
+    for (annotations[0..count]) |annotation| {
+        const line = annotation.span.start.line;
+        if (line != previous_line) {
+            if (previous_line != 0 and line > previous_line + 1) {
+                try writeRail(g, pal, writer);
+                try writer.print("{s}\n", .{g.gap});
+            }
+            view = viewFor(source, annotation.span.start.byte_offset);
+            try writeRail(g, pal, writer);
+            try writeUnsigned(writer, line, gutter_width);
+            try writer.print(" {s} ", .{g.gutter});
+            if (view.clipped_left) try writer.writeAll(g.clip);
+            try writer.writeAll(source[view.start..view.end]);
+            if (view.clipped_right) try writer.writeAll(g.clip);
+            try writer.writeAll("\n");
+            previous_line = line;
+        }
+        try writeUnderline(d, annotation, view, source, gutter_width, g, pal, writer);
+    }
 }
 
-fn writeLabel(comptime prefix: []const u8, label: []const u8, writer: anytype) !void {
-    try writer.print(prefix ++ "{s}:", .{label});
-    var column = label.len + 1;
-    while (column < label_column) : (column += 1) try writer.writeAll(" ");
+/// The visible window of the line containing `offset`: the whole line when
+/// it fits, else a `max_view`-byte window that keeps the span in sight.
+///
+/// Line boundaries must agree with `location.Tracker`: LF, CRLF, and
+/// standalone CR each terminate one physical line — otherwise a diagnostic's
+/// line number and the excerpted content would contradict each other.
+fn viewFor(source: []const u8, offset: usize) View {
+    var line_start = offset;
+    while (line_start > 0 and !lineBoundaryBefore(source, line_start)) line_start -= 1;
+    var line_end = offset;
+    while (line_end < source.len and
+        source[line_end] != '\n' and source[line_end] != '\r') line_end += 1;
+
+    var start = line_start;
+    var end = line_end;
+    if (line_end - line_start > max_view) {
+        const column = offset - line_start;
+        if (column > max_view - 20) {
+            start = offset - (max_view / 2);
+        }
+        end = @min(line_end, start + max_view);
+    }
+    return .{
+        .line_start = line_start,
+        .start = start,
+        .end = end,
+        .clipped_left = start > line_start,
+        .clipped_right = end < line_end,
+    };
 }
 
-/// The Detail section content for each typed payload. Wording lives here,
-/// in the renderer, never in the diagnostic data.
+/// True when the byte before `i` ends a line: LF always; CR only when it is
+/// standalone (the CR of a CRLF pair belongs to the LF's terminator).
+fn lineBoundaryBefore(source: []const u8, i: usize) bool {
+    const previous = source[i - 1];
+    if (previous == '\n') return true;
+    if (previous == '\r') return i >= source.len or source[i] != '\n';
+    return false;
+}
+
+fn writeUnderline(
+    d: Diagnostic,
+    annotation: Annotation,
+    view: View,
+    source: []const u8,
+    gutter_width: usize,
+    g: Glyphs,
+    pal: Palette,
+    writer: anytype,
+) !void {
+    try writeRail(g, pal, writer);
+    try writeRepeat(writer, " ", gutter_width);
+    try writer.print(" {s} ", .{g.gutter});
+    if (view.clipped_left) try writeRepeat(writer, " ", g.clip_width);
+
+    // Mirror the line's own bytes for padding — a tab where the line has a
+    // tab, a space elsewhere — so the underline aligns under any
+    // indentation without column arithmetic. Assumes one byte is one display
+    // cell, which holds for the ASCII-only milestone; when multi-byte
+    // identifiers land (quoted/HTML/non-ASCII), this needs display-width
+    // awareness.
+    const offset = annotation.span.start.byte_offset;
+    for (source[view.start..@min(offset, view.end)]) |byte| {
+        try writer.writeAll(if (byte == '\t') "\t" else " ");
+    }
+
+    // At least one mark (zero-width spans point at a position, e.g. end of
+    // input), at most the visible remainder of the window.
+    const visible = if (offset < view.end) view.end - offset else 0;
+    const marks = @max(1, @min(annotation.span.byte_len, visible));
+    const style = if (annotation.primary) pal.frame else pal.secondary;
+    try writer.writeAll(style);
+    if (annotation.primary) {
+        try writeRepeat(writer, "^", marks);
+        if (d.details != .none) {
+            try writer.writeAll(" ");
+            try writePrimaryLabel(d.details, writer);
+        }
+    } else {
+        try writeRepeat(writer, g.secondary_underline, marks);
+        try writer.writeAll(" ");
+        try writeSecondaryLabel(d.details, writer);
+    }
+    try writer.print("{s}\n", .{pal.reset});
+}
+
+/// The role-named label under the primary span. The offending text sits
+/// directly above the carets, so labels never repeat what was found.
+fn writePrimaryLabel(details: Details, writer: anytype) !void {
+    switch (details) {
+        .none => unreachable,
+        .invalid_byte => |byte| {
+            if (std.ascii.isPrint(byte)) {
+                try writer.print("byte 0x{X:0>2} ('{c}') is not valid in DOT", .{ byte, byte });
+            } else {
+                try writer.print("byte 0x{X:0>2} is not valid in DOT", .{byte});
+            }
+        },
+        .unexpected => |unexpected| {
+            try writer.writeAll("expected ");
+            try writeExpectedSet(unexpected.expected, writer);
+        },
+        .operator_mismatch => |mismatch| {
+            try writer.print("expected {s}, found {s}", .{
+                operatorName(mismatch.expected), operatorName(mismatch.found),
+            });
+        },
+        .unsupported_feature => {
+            try writer.writeAll("the parse stopped at this deferred construct");
+        },
+        .capacity => |capacity| {
+            try writer.print("{s} limit of {d} reached here", .{
+                capacity.resource.name(), capacity.limit,
+            });
+        },
+    }
+}
+
+/// The role-named label under a secondary span.
+fn writeSecondaryLabel(details: Details, writer: anytype) !void {
+    switch (details) {
+        .operator_mismatch => |mismatch| switch (mismatch.expected) {
+            .undirected => try writer.writeAll(
+                "the document is undirected because of this keyword",
+            ),
+            .directed => try writer.writeAll(
+                "the document is directed because of this keyword",
+            ),
+        },
+        .unexpected => |unexpected| switch (unexpected.related.?.role) {
+            .opened_here => try writer.writeAll("opened here, never closed"),
+            .declared_here => try writer.writeAll("declared here"),
+        },
+        else => unreachable,
+    }
+}
+
+fn digits(value: usize) usize {
+    var remaining = value;
+    var count: usize = 1;
+    while (remaining >= 10) : (remaining /= 10) count += 1;
+    return count;
+}
+
+fn writeUnsigned(writer: anytype, value: usize, width: usize) !void {
+    try writeRepeat(writer, " ", width -| digits(value));
+    try writer.print("{d}", .{value});
+}
+
+// ---------------------------------------------------------------------------
+// Payload wording (shared by the compact renderer and the fallback path)
+// ---------------------------------------------------------------------------
+
+/// The detail content for each typed payload. Wording lives here, in the
+/// renderer, never in the diagnostic data.
 fn writeDetailValue(details: Details, writer: anytype) !void {
     switch (details) {
         .none => unreachable,
@@ -258,7 +650,7 @@ fn hasNote(details: Details) bool {
     };
 }
 
-/// The Note section content: secondary locations related to the failure.
+/// The note content: secondary locations related to the failure.
 fn writeNoteValue(details: Details, writer: anytype) !void {
     switch (details) {
         .unexpected => |unexpected| {
@@ -350,7 +742,7 @@ fn severityWord(severity: Severity) []const u8 {
     };
 }
 
-/// Title-case English severity word for headers and section labels.
+/// Title-case English severity word for headers.
 fn severityTitle(severity: Severity) []const u8 {
     return switch (severity) {
         .trace => "Trace",
@@ -370,8 +762,16 @@ fn severityTitle(severity: Severity) []const u8 {
 // ---------------------------------------------------------------------------
 
 const expect = std.testing.expect;
+const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const Code = diagnostic.Code;
+
+fn spanAt(offset: usize, line: usize, column: usize, len: usize) location.Span {
+    return .{
+        .start = .{ .byte_offset = offset, .line = line, .byte_column = column },
+        .byte_len = len,
+    };
+}
 
 test "render produces informative text" {
     var buffer: [512]u8 = undefined;
@@ -379,7 +779,7 @@ test "render produces informative text" {
 
     try render(.{
         .code = .validation_operator_mismatch,
-        .span = .{ .start = .{ .byte_offset = 13, .line = 2, .byte_column = 7 }, .byte_len = 2 },
+        .span = spanAt(13, 2, 7, 2),
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
             .found = .directed,
@@ -401,7 +801,7 @@ test "unexpected details render the expected set, context, and relation" {
 
     try render(.{
         .code = .parser_unexpected_end,
-        .span = .{ .start = .{ .byte_offset = 9, .line = 1, .byte_column = 10 }, .byte_len = 0 },
+        .span = spanAt(9, 1, 10, 0),
         .details = .{ .unexpected = .{
             .expected = diagnostic.ExpectedSet.init(.{
                 .semicolon = true,
@@ -410,10 +810,7 @@ test "unexpected details render the expected set, context, and relation" {
             }),
             .found = .end_of_input,
             .context = .statement,
-            .related = .{
-                .span = .{ .start = .{ .byte_offset = 6, .line = 1, .byte_column = 7 }, .byte_len = 1 },
-                .role = .opened_here,
-            },
+            .related = .{ .span = spanAt(6, 1, 7, 1), .role = .opened_here },
         } },
     }, &writer);
 
@@ -422,13 +819,178 @@ test "unexpected details render the expected set, context, and relation" {
     try expect(std.mem.indexOf(u8, text, "note: unclosed delimiter opened at 1:7") != null);
 }
 
-test "boxed render shows every section as a uniform labeled line" {
+test "boxed excerpt annotates both spans with role labels" {
+    const source = "graph {\n    a -> b;\n}";
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    try renderBoxed(.{
+        .code = .validation_operator_mismatch,
+        .span = spanAt(14, 2, 7, 2),
+        .details = .{ .operator_mismatch = .{
+            .expected = .undirected,
+            .found = .directed,
+            .declaration = spanAt(0, 1, 1, 5),
+        } },
+    }, 1, .{ .source_name = "example.dot", .source = source }, &writer);
+
+    const text = writer.buffered();
+    try expect(std.mem.startsWith(u8, text, "┌─ Error 1: edge operator does not match the graph kind\n"));
+    try expect(std.mem.indexOf(u8, text, "│ example.dot:2:7\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│ 1 │ graph {\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│   │ ───── the document is undirected because of this keyword\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│ 2 │     a -> b;\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│   │       ^^ expected '--', found '->'\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│ Hint: change '->' to '--', or declare the document with 'digraph'\n") != null);
+    try expect(std.mem.indexOf(u8, text, "└─ E1 ─ [dot_parser:E.Validation.Operator.002]\n") != null);
+
+    // Default view carries no alias and no compact ID.
+    const qualified_id = Code.validation_operator_mismatch.qualifiedCompactId();
+    try expect(std.mem.indexOf(u8, text, "(MISMATCH)") == null);
+    try expect(std.mem.indexOf(u8, text, &qualified_id) == null);
+}
+
+test "non-adjacent excerpt lines are separated by a gap marker" {
+    const source = "graph {\n    a;\n    a -- b";
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    try renderBoxed(.{
+        .code = .parser_unexpected_end,
+        .span = spanAt(source.len, 3, 11, 0),
+        .details = .{ .unexpected = .{
+            .expected = diagnostic.ExpectedSet.init(.{
+                .semicolon = true,
+                .identifier = true,
+                .right_brace = true,
+            }),
+            .found = .end_of_input,
+            .context = .statement_terminator,
+            .related = .{ .span = spanAt(6, 1, 7, 1), .role = .opened_here },
+        } },
+    }, 1, .{ .source = source }, &writer);
+
+    const text = writer.buffered();
+    try expect(std.mem.indexOf(u8, text, "│ 1 │ graph {\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│   │       ─ opened here, never closed\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│ ⋯\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│ 3 │     a -- b\n") != null);
+    // Zero-width span: a single caret one column past the last byte.
+    try expect(std.mem.indexOf(u8, text, "│   │           ^ expected an identifier, '}' or ';'\n") != null);
+}
+
+test "same-line annotations render the line once with stacked underlines" {
+    const source = "graph { a -> b; }";
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    try renderBoxed(.{
+        .code = .validation_operator_mismatch,
+        .span = spanAt(10, 1, 11, 2),
+        .details = .{ .operator_mismatch = .{
+            .expected = .undirected,
+            .found = .directed,
+            .declaration = spanAt(0, 1, 1, 5),
+        } },
+    }, 1, .{ .source = source }, &writer);
+
+    const text = writer.buffered();
+    try expectEqual(@as(usize, 1), std.mem.count(u8, text, "graph { a -> b; }"));
+    try expect(std.mem.indexOf(u8, text, "│   │ ───── the document is undirected") != null);
+    try expect(std.mem.indexOf(u8, text, "│   │           ^^ expected '--', found '->'") != null);
+}
+
+test "underline padding mirrors tabs so carets stay aligned" {
+    const source = "graph {\n\ta -> b;\n}";
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    try renderBoxed(.{
+        .code = .validation_operator_mismatch,
+        .span = spanAt(11, 2, 4, 2),
+        .details = .{ .operator_mismatch = .{
+            .expected = .undirected,
+            .found = .directed,
+            .declaration = spanAt(0, 1, 1, 5),
+        } },
+    }, 1, .{ .source = source }, &writer);
+
+    try expect(std.mem.indexOf(u8, writer.buffered(), "│ \t  ^^ ") != null);
+}
+
+test "long lines are clamped to a window around the span" {
+    const source = "graph { " ++ ("x" ** 80) ++ " -- b; }";
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    try renderBoxed(.{
+        .code = .parser_unexpected_token,
+        .span = spanAt(8 + 80 + 1, 1, 8 + 80 + 2, 2),
+        .details = .{ .unexpected = .{
+            .expected = diagnostic.ExpectedSet.init(.{ .semicolon = true }),
+            .found = .undirected_operator,
+            .context = .statement,
+        } },
+    }, 1, .{ .source = source }, &writer);
+
+    const text = writer.buffered();
+    try expect(std.mem.indexOf(u8, text, "…") != null);
+    try expect(std.mem.indexOf(u8, text, "^^ expected ';'") != null);
+    // The 80-byte identifier must not be shown whole.
+    try expect(std.mem.indexOf(u8, text, "x" ** 61) == null);
+}
+
+test "CR-only line endings excerpt the same line the tracker counted" {
+    // location.Tracker treats standalone CR as a line terminator (its
+    // documented policy); the excerpt scanner must agree, or a diagnostic's
+    // line number and its excerpted content would contradict each other.
+    const source = "graph {\r    a -> b;\r}";
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    try renderBoxed(.{
+        .code = .validation_operator_mismatch,
+        .span = spanAt(14, 2, 7, 2),
+        .details = .{ .operator_mismatch = .{
+            .expected = .undirected,
+            .found = .directed,
+            .declaration = spanAt(0, 1, 1, 5),
+        } },
+    }, 1, .{ .source = source }, &writer);
+
+    const text = writer.buffered();
+    try expect(std.mem.indexOf(u8, text, "│ 1 │ graph {\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│ 2 │     a -> b;\n") != null);
+    try expect(std.mem.indexOf(u8, text, "\r") == null);
+}
+
+test "carriage returns never leak into excerpts" {
+    const source = "graph {\r\n    a -> b;\r\n}";
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    try renderBoxed(.{
+        .code = .validation_operator_mismatch,
+        .span = spanAt(15, 2, 7, 2),
+        .details = .{ .operator_mismatch = .{
+            .expected = .undirected,
+            .found = .directed,
+            .declaration = spanAt(0, 1, 1, 5),
+        } },
+    }, 1, .{ .source = source }, &writer);
+
+    const text = writer.buffered();
+    try expect(std.mem.indexOf(u8, text, "│ 2 │     a -> b;\n") != null);
+    try expect(std.mem.indexOf(u8, text, "\r") == null);
+}
+
+test "without source bytes the box degrades to compact lines" {
     var buffer: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
 
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = .{ .start = .{ .byte_offset = 13, .line = 2, .byte_column = 7 }, .byte_len = 2 },
+        .span = spanAt(13, 2, 7, 2),
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
             .found = .directed,
@@ -437,71 +999,147 @@ test "boxed render shows every section as a uniform labeled line" {
     }, 1, .{ .source_name = "example.dot" }, &writer);
 
     const text = writer.buffered();
-    const qualified_id = Code.validation_operator_mismatch.qualifiedCompactId();
-
-    try expect(std.mem.startsWith(u8, text, "┌─ Error 1 ─── [dot_parser:E.Validation.Operator.002 (MISMATCH)] -> "));
-    try expect(std.mem.indexOf(u8, text, &qualified_id) != null);
-    try expect(std.mem.indexOf(u8, text, "│ Error:      edge operator does not match the graph kind") != null);
-    try expect(std.mem.indexOf(u8, text, "│ Where:      example.dot:2:7") != null);
-    try expect(std.mem.indexOf(u8, text, "│ Detail:     expected '--', found '->'") != null);
-    try expect(std.mem.indexOf(u8, text, "│ Note:       graph kind declared at 1:1") != null);
-    try expect(std.mem.indexOf(u8, text, "│ Suggestion: an undirected document") != null);
-    try expect(std.mem.indexOf(u8, text, "─ E1\n") != null);
+    try expect(std.mem.startsWith(u8, text, "┌─ Error 1: edge operator does not match the graph kind\n"));
+    try expect(std.mem.indexOf(u8, text, "│ example.dot:2:7\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│ expected '--', found '->'\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│ graph kind declared at 1:1\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│ Hint: ") != null);
+    try expect(std.mem.indexOf(u8, text, "└─ E1 ─ [dot_parser:E.Validation.Operator.002]\n") != null);
 }
 
-test "ascii render style is 7-bit clean with the same sections" {
+test "a mismatched source degrades instead of crashing the renderer" {
     var buffer: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
 
     try renderBoxed(.{
         .code = .parser_unexpected_token,
-        .span = .{ .start = .{ .byte_offset = 4, .line = 1, .byte_column = 5 }, .byte_len = 1 },
-        .details = .{ .unexpected = .{
-            .expected = diagnostic.ExpectedSet.init(.{ .semicolon = true }),
-            .found = .right_brace,
-            .context = .statement_terminator,
-        } },
-    }, 1, .{ .source_name = "example.dot", .style = .ascii }, &writer);
+        .span = spanAt(100, 9, 9, 2),
+    }, 1, .{ .source = "short" }, &writer);
+
+    try expect(std.mem.indexOf(u8, writer.buffered(), "┌─ Error 1: unexpected token") != null);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "│ 9 │") == null);
+}
+
+test "unsupported constructs put the feature name in the headline" {
+    const source = "graph { subgraph s { b } }";
+    var buffer: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    try renderBoxed(.{
+        .code = .profile_unsupported_feature,
+        .span = spanAt(8, 1, 9, 8),
+        .details = .{ .unsupported_feature = .subgraph },
+    }, 1, .{ .source = source }, &writer);
 
     const text = writer.buffered();
-    try expect(std.mem.startsWith(u8, text, "-- Error 1 - [dot_parser:E.Parser.Syntax.003 (INVALID)] -> "));
-    try expect(std.mem.indexOf(u8, text, "   Error:      unexpected token") != null);
-    try expect(std.mem.indexOf(u8, text, "   Where:      example.dot:1:5") != null);
-    try expect(std.mem.indexOf(u8, text, "   Detail:     while parsing a statement terminator: expected ';', found '}'") != null);
-    try expect(std.mem.indexOf(u8, text, "   Suggestion: ") != null);
+    try expect(std.mem.startsWith(u8, text, "┌─ Error 1: unsupported DOT construct: subgraph\n"));
+    try expect(std.mem.indexOf(u8, text, "^^^^^^^^ the parse stopped at this deferred construct\n") != null);
+}
+
+test "verbose adds the alias and qualified compact ID to the closing line" {
+    var buffer: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    try renderBoxed(.{
+        .code = .validation_operator_mismatch,
+        .span = spanAt(13, 2, 7, 2),
+    }, 2, .{ .verbose = true }, &writer);
+
+    const qualified_id = Code.validation_operator_mismatch.qualifiedCompactId();
+    const text = writer.buffered();
+    try expect(std.mem.indexOf(u8, text, "└─ E2 ─ [dot_parser:E.Validation.Operator.002 (MISMATCH)] -> ") != null);
+    try expect(std.mem.indexOf(u8, text, &qualified_id) != null);
+}
+
+test "ascii style is 7-bit clean with the same structure" {
+    const source = "graph {\n    a -> b;\n}";
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    try renderBoxed(.{
+        .code = .validation_operator_mismatch,
+        .span = spanAt(14, 2, 7, 2),
+        .details = .{ .operator_mismatch = .{
+            .expected = .undirected,
+            .found = .directed,
+            .declaration = spanAt(0, 1, 1, 5),
+        } },
+    }, 1, .{ .source_name = "example.dot", .source = source, .style = .ascii }, &writer);
+
+    const text = writer.buffered();
+    try expect(std.mem.startsWith(u8, text, "-- Error 1: edge operator does not match the graph kind\n"));
+    try expect(std.mem.indexOf(u8, text, "   1 | graph {\n") != null);
+    try expect(std.mem.indexOf(u8, text, "   2 |     a -> b;\n") != null);
+    try expect(std.mem.indexOf(u8, text, "^^ expected '--', found '->'\n") != null);
+    try expect(std.mem.indexOf(u8, text, "-- E1 - [dot_parser:E.Validation.Operator.002]\n") != null);
     for (text) |byte| try expect(byte < 0x80);
 }
 
-test "boxed list numbers diagnostics and summarizes" {
+test "ansi colors follow the WDP palette and reset cleanly" {
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    try renderBoxed(.{
+        .code = .validation_operator_mismatch,
+        .span = spanAt(13, 2, 7, 2),
+    }, 1, .{ .color = .ansi }, &writer);
+
+    const text = writer.buffered();
+    // Error severity is bold red (part 10 §3.1); the hint label is the
+    // Help green; every escape is closed by a reset.
+    try expect(std.mem.indexOf(u8, text, "\x1b[1;31m") != null);
+    try expect(std.mem.indexOf(u8, text, "\x1b[32mHint:\x1b[0m") != null);
+    try expect(std.mem.count(u8, text, "\x1b[0m") >= std.mem.count(u8, text, "\x1b[1;31m"));
+
+    var plain_buffer: [2048]u8 = undefined;
+    var plain_writer = std.Io.Writer.fixed(&plain_buffer);
+    try renderBoxed(.{
+        .code = .validation_operator_mismatch,
+        .span = spanAt(13, 2, 7, 2),
+    }, 1, .{}, &plain_writer);
+    try expect(std.mem.indexOf(u8, plain_writer.buffered(), "\x1b") == null);
+}
+
+test "a list of two or more diagnostics closes with a summary block" {
     var buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
 
     const diagnostics = [_]Diagnostic{
-        .{
-            .code = .validation_operator_mismatch,
-            .span = .{ .start = .{ .byte_offset = 10, .line = 2, .byte_column = 7 }, .byte_len = 2 },
-        },
-        .{
-            .code = .validation_operator_mismatch,
-            .span = .{ .start = .{ .byte_offset = 21, .line = 3, .byte_column = 7 }, .byte_len = 2 },
-        },
+        .{ .code = .validation_operator_mismatch, .span = spanAt(10, 2, 7, 2) },
+        .{ .code = .validation_operator_mismatch, .span = spanAt(21, 3, 7, 2) },
     };
     try renderBoxedList(&diagnostics, 3, .{}, &writer);
 
     const text = writer.buffered();
-    try expect(std.mem.indexOf(u8, text, "Error 1") != null);
-    try expect(std.mem.indexOf(u8, text, "Error 2") != null);
-    try expect(std.mem.indexOf(u8, text, "─ E1\n") != null);
-    try expect(std.mem.indexOf(u8, text, "─ E2\n") != null);
-    try expect(std.mem.indexOf(u8, text, "<input>:2:7") != null);
-    try expect(std.mem.indexOf(u8, text, "Summary: 2 error(s), 0 warning(s), 2 total (+3 omitted, capacity reached)") != null);
+    try expect(std.mem.indexOf(u8, text, "┌─ Error 1:") != null);
+    try expect(std.mem.indexOf(u8, text, "┌─ Error 2:") != null);
+    try expect(std.mem.indexOf(u8, text, "└─ E1 ─ [") != null);
+    try expect(std.mem.indexOf(u8, text, "└─ E2 ─ [") != null);
+    try expect(std.mem.indexOf(u8, text, "╔═ Summary\n║ 2 errors (3 more omitted: diagnostic bag is full)\n╚═") != null);
 }
 
-test "boxed list with no diagnostics prints only the summary" {
+test "a single complete diagnostic renders no summary block" {
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+
+    const diagnostics = [_]Diagnostic{
+        .{ .code = .validation_operator_mismatch, .span = spanAt(10, 2, 7, 2) },
+    };
+    try renderBoxedList(&diagnostics, 0, .{}, &writer);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "Summary") == null);
+
+    // But a single diagnostic with omissions is an incomplete story: the
+    // summary block carries the omission count.
+    var omitted_writer = std.Io.Writer.fixed(&buffer);
+    try renderBoxedList(&diagnostics, 2, .{}, &omitted_writer);
+    try expect(std.mem.indexOf(u8, omitted_writer.buffered(), "║ 1 error (2 more omitted: diagnostic bag is full)") != null);
+}
+
+test "an empty list renders nothing" {
     var buffer: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
     try renderBoxedList(&.{}, 0, .{}, &writer);
-    try expectEqualStrings("Summary: 0 error(s), 0 warning(s), 0 total\n", writer.buffered());
+    try expectEqualStrings("", writer.buffered());
 }
 
 test "render shows non-printable bytes as hex only" {

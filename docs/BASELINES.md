@@ -60,6 +60,7 @@ growth slack; general allocators reclaim it, fixed pools never create it.
 | Artifact | Size |
 | --- | --- |
 | `diagnostics_demo`, ReleaseSmall, native macOS | 184 KB (includes Zig std startup and the console renderer) |
+| — after the excerpt-renderer overhaul (2026-07-18) | 197 KB (+13 KB: source excerpts, ANSI palette, summary block, TTY detection in the demo) |
 
 Command: `zig build examples -Doptimize=ReleaseSmall` (binaries land in
 `zig-out/bin/`; the run output is printed as a side effect).

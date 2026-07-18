@@ -23,9 +23,15 @@ pub fn main(init: std.process.Init) !void {
     var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
     defer checked.deinit(allocator);
 
+    const stdout_file: std.Io.File = .stdout();
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
+    var stdout_file_writer: std.Io.File.Writer = .init(stdout_file, init.io, &stdout_buffer);
     const stdout = &stdout_file_writer.interface;
+
+    // Terminal capability is the presenter's decision, never the library's:
+    // detect it here and opt in, so pipes and logs stay escape-free.
+    const color: dot.console.RenderOptions.Color =
+        if (stdout_file.supportsAnsiEscapeCodes(init.io) catch false) .ansi else .none;
 
     try stdout.print("parsed: {s}, document valid: {}\n\n", .{
         @tagName(checked.outcome), checked.documentValid(),
@@ -33,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
     try dot.console.renderBoxedList(
         bag.items(),
         bag.omitted,
-        .{ .source_name = "example.dot" },
+        .{ .source_name = "example.dot", .source = source, .color = color },
         stdout,
     );
     try stdout.flush();
