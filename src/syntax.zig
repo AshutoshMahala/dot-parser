@@ -92,8 +92,13 @@ pub const Document = struct {
     /// such as validation.
     source: []const u8,
     kind: GraphKind,
+    /// True when the document carries the `strict` modifier (retained as
+    /// written; its duplicate-edge semantics are semantic resolution).
+    strict: bool,
     /// Range of the document keyword that declared the kind.
     keyword: location.Range,
+    /// The document's name, when one was written.
+    name: ?location.Range,
     /// Statement identities in source order.
     order: []const StatementId,
     /// Node-statement pool, in source order.
@@ -179,7 +184,9 @@ pub const Builder = struct {
     /// The source the parsed document borrows from; embedded into the document.
     source: []const u8,
     kind: GraphKind = .undigraph,
+    strict: bool = false,
     keyword: location.Range = .{ .start = 0, .len = 0 },
+    name: ?location.Range = null,
     order: std.ArrayList(StatementId) = .empty,
     nodes: std.ArrayList(NodeStatement) = .empty,
     edges: std.ArrayList(EdgeStatement) = .empty,
@@ -260,7 +267,9 @@ pub const Builder = struct {
         return .{
             .source = self.source,
             .kind = self.kind,
+            .strict = self.strict,
             .keyword = self.keyword,
+            .name = self.name,
             .order = order,
             .nodes = nodes,
             .edges = edges,
@@ -273,7 +282,9 @@ pub const Builder = struct {
         std.debug.assert(self.phase == .idle);
         self.phase = .building;
         self.kind = event.kind;
+        self.strict = event.strict;
         self.keyword = try self.range(event.keyword_span);
+        self.name = if (event.name_span) |name_span| try self.range(name_span) else null;
     }
 
     pub fn nodeStatement(self: *Builder, statement_event: syntax_event.NodeStatement) Error!void {
@@ -428,7 +439,9 @@ pub const FixedBuilder = struct {
     source: []const u8,
     storage: DocumentStorage,
     kind: GraphKind = .undigraph,
+    strict: bool = false,
     keyword: location.Range = .{ .start = 0, .len = 0 },
+    name: ?location.Range = null,
     order_len: usize = 0,
     nodes_len: usize = 0,
     edges_len: usize = 0,
@@ -472,7 +485,9 @@ pub const FixedBuilder = struct {
         return .{
             .source = self.source,
             .kind = self.kind,
+            .strict = self.strict,
             .keyword = self.keyword,
+            .name = self.name,
             .order = self.storage.statement_ids[0..self.order_len],
             .nodes = self.storage.nodes[0..self.nodes_len],
             .edges = self.storage.edges[0..self.edges_len],
@@ -485,7 +500,9 @@ pub const FixedBuilder = struct {
         std.debug.assert(self.phase == .idle);
         self.phase = .building;
         self.kind = event.kind;
+        self.strict = event.strict;
         self.keyword = try self.range(event.keyword_span);
+        self.name = if (event.name_span) |name_span| try self.range(name_span) else null;
     }
 
     fn range(self: *FixedBuilder, span: location.Span) Error!location.Range {

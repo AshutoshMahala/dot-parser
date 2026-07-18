@@ -342,6 +342,11 @@ pub const Details = union(enum) {
 /// detail that may diverge from user-facing grammar concepts.
 pub const SyntaxItem = enum(u8) {
     graph_keyword,
+    digraph_keyword,
+    strict_keyword,
+    subgraph_keyword,
+    node_keyword,
+    edge_keyword,
     identifier,
     left_brace,
     right_brace,
@@ -401,9 +406,19 @@ pub const OperatorMismatch = struct {
 /// Recognized-but-deferred DOT features. Non-exhaustive (`_`) so the set can
 /// grow without forcing every downstream switch to be exhaustive; consumers
 /// aggregate, test, and render on the enum, never on spelled-out strings.
+///
+/// Discriminants are append-only and never reused: once a feature ships, its
+/// variant stays for diagnostic compatibility, marked legacy below. Legacy
+/// variants are never emitted by the current profile, but they keep their
+/// display names in `name` so a recorded diagnostic replayed through a
+/// current renderer still reads correctly — the legacy marker governs
+/// discriminant stability, not display (R-DIAG-005).
 pub const Feature = enum(u16) {
+    /// Legacy (implemented in slice 2): kept for its discriminant only.
     digraph_document,
+    /// Legacy (implemented in slice 2): kept for its discriminant only.
     graph_name,
+    /// Legacy (implemented in slice 2): kept for its discriminant only.
     strict_modifier,
     subgraph,
     node_attribute_statement,
@@ -417,7 +432,9 @@ pub const Feature = enum(u16) {
     attribute_assignment,
     port_or_compass,
     edge_chain,
+    /// Legacy (implemented in slice 2): kept for its discriminant only.
     optional_semicolons,
+    graph_attribute_statement,
     _,
 
     /// Canonical English display name. Renderers may localize instead.
@@ -439,6 +456,7 @@ pub const Feature = enum(u16) {
             .port_or_compass => "port or compass point",
             .edge_chain => "edge chain",
             .optional_semicolons => "optional semicolons",
+            .graph_attribute_statement => "graph attribute statement",
             _ => "unrecognized feature",
         };
     }

@@ -235,36 +235,9 @@ test "validation continues past valid edges between violations" {
 }
 
 test "the rule is kind-agnostic: a digraph flags '--'" {
-    // No digraph header parses yet, so drive the builder directly — the
-    // validator only sees the document, exactly as designed.
+    // Since slice 2, this runs end-to-end from source text.
     const source = "digraph { a -- b; c -> d; }";
-    var builder = syntax.Builder.init(std.testing.allocator, source);
-    defer builder.deinit();
-
-    const span = struct {
-        fn at(offset: usize, len: usize) location.Span {
-            return .{
-                .start = .{ .byte_offset = offset, .line = 1, .byte_column = offset + 1 },
-                .byte_len = len,
-            };
-        }
-    }.at;
-
-    try builder.beginDocument(.{ .kind = .digraph, .keyword_span = span(0, 7) });
-    try builder.edgeStatement(.{
-        .left = span(10, 1),
-        .operator = .undirected,
-        .operator_span = span(12, 2),
-        .right = span(15, 1),
-    });
-    try builder.edgeStatement(.{
-        .left = span(18, 1),
-        .operator = .directed,
-        .operator_span = span(20, 2),
-        .right = span(23, 1),
-    });
-    try builder.endDocument();
-    var document = try builder.toDocument();
+    var document = try buildDocument(source);
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(4) = .{};

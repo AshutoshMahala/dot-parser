@@ -294,6 +294,11 @@ fn writeExpectedSet(set: diagnostic.ExpectedSet, writer: anytype) !void {
 fn itemName(item: diagnostic.SyntaxItem) []const u8 {
     return switch (item) {
         .graph_keyword => "'graph'",
+        .digraph_keyword => "'digraph'",
+        .strict_keyword => "'strict'",
+        .subgraph_keyword => "'subgraph'",
+        .node_keyword => "'node'",
+        .edge_keyword => "'edge'",
         .identifier => "an identifier",
         .left_brace => "'{'",
         .right_brace => "'}'",

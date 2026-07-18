@@ -7,27 +7,28 @@ performing layout and without depending on any particular graph engine.
 > **Status: experimental `0.x`.** Backward compatibility is not promised and
 > breaking changes are expected.
 
-## First goal (in progress)
+## Current support (growing by vertical slices)
 
-One narrow end-to-end vertical slice before broadening the grammar:
+The grammar grows one narrow end-to-end slice at a time:
 
 ```dot
-graph {
-    a;
-    b;
-    a -- b;
+strict digraph Routes {
+    hub -> a
+    hub -> b;
+    hub;
 }
 ```
 
-- Exactly one anonymous root `graph` document (the source keyword `graph`
-  maps to the library kind `undigraph`).
-- Bare ASCII identifiers, node statements, single-edge statements,
-  semicolons.
+- One root document: `graph` or `digraph`, optionally `strict`, optionally
+  named (the source keyword `graph` maps to the library kind `undigraph`;
+  in this library `graph` always means "either kind").
+- Bare ASCII identifiers, node statements, single-edge statements;
+  semicolons are optional, as in Graphviz.
 - Borrowed source spans, explicit caller memory, fixed-buffer operation.
 
-Everything else (`digraph`, `strict`, graph names, comments, quoted/numeral/
-HTML IDs, attributes, edge chains, ports, subgraphs, …) is deliberately
-deferred to later vertical slices.
+Everything else (comments, quoted/numeral/HTML IDs, attributes, edge
+chains, ports, subgraphs, …) is deliberately deferred to later vertical
+slices.
 
 ## Usage
 

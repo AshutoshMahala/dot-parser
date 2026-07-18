@@ -63,14 +63,14 @@ test "consumer can render a diagnostic into caller-owned memory" {
         .code = .profile_unsupported_feature,
         .span = .{
             .start = .{ .byte_offset = 0, .line = 1, .byte_column = 1 },
-            .byte_len = 7,
+            .byte_len = 8,
         },
-        .details = .{ .unsupported_feature = .digraph_document },
+        .details = .{ .unsupported_feature = .subgraph },
     }, &writer);
 
     const text = writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, text, "dot_parser:E.Profile.Feature.009") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "digraph document") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "subgraph") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "help:") != null);
 }
 
@@ -149,12 +149,12 @@ test "consumer can lex the milestone document from caller-supplied bytes" {
 }
 
 test "consumer sees a structured failure for deferred DOT features" {
-    var lexer = dot.lexer.Lexer.init("digraph D { a -> b; }");
+    var lexer = dot.lexer.Lexer.init("\"quoted name\"");
     const result = lexer.next();
     try std.testing.expect(result == .failure);
     try std.testing.expectEqual(dot.Code.profile_unsupported_feature, result.failure.code);
     try std.testing.expectEqual(
-        dot.diagnostic.Feature.digraph_document,
+        dot.diagnostic.Feature.quoted_identifier,
         result.failure.details.unsupported_feature,
     );
 }
@@ -205,23 +205,57 @@ test "parseBorrowed returns a caller-owned document over borrowed source" {
 
 test "façade surfaces parse failures with a null document and a filled bag" {
     var bag: dot.FixedDiagnosticBag(4) = .{};
-    var parsed = dot.parseBorrowed(std.testing.allocator, "digraph { a -> b; }", bag.sink(), .{});
+    var parsed = dot.parseBorrowed(std.testing.allocator, "graph { { a } }", bag.sink(), .{});
     defer parsed.deinit(std.testing.allocator);
 
     try std.testing.expect(parsed.outcome == .unsupported_feature);
     try std.testing.expect(parsed.document == null);
     try std.testing.expectEqual(
-        dot.diagnostic.Feature.digraph_document,
+        dot.diagnostic.Feature.subgraph,
         bag.items()[0].details.unsupported_feature,
     );
 
     // The one-shot reports the same failure with no validation attempted.
     var check_bag: dot.FixedDiagnosticBag(4) = .{};
-    var checked = dot.parseAndValidate(std.testing.allocator, "digraph {}", check_bag.sink(), .{});
+    var checked = dot.parseAndValidate(std.testing.allocator, "graph { subgraph s; }", check_bag.sink(), .{});
     defer checked.deinit(std.testing.allocator);
     try std.testing.expect(checked.outcome == .unsupported_feature);
     try std.testing.expect(checked.validation == null);
     try std.testing.expect(!checked.documentValid());
+}
+
+test "directed documents check clean end-to-end through the façade" {
+    const source = "strict digraph Routes {\n    hub -> a\n    hub -> b;\n}";
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+    var checked = dot.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});
+    defer checked.deinit(std.testing.allocator);
+
+    try std.testing.expect(checked.outcome == .success);
+    try std.testing.expect(checked.documentValid());
+    try std.testing.expectEqual(@as(usize, 0), bag.items().len);
+
+    const document = checked.document.?;
+    try std.testing.expectEqual(dot.GraphKind.digraph, document.kind);
+    try std.testing.expect(document.strict);
+    try std.testing.expectEqualStrings("Routes", document.text(document.name.?));
+    try std.testing.expectEqual(@as(usize, 2), document.edges.len);
+}
+
+test "a directed document with the wrong operator is flagged by validation" {
+    const source = "digraph { a -- b; }";
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+    var checked = dot.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});
+    defer checked.deinit(std.testing.allocator);
+
+    try std.testing.expect(checked.outcome == .success);
+    try std.testing.expect(!checked.documentValid());
+    const failure = bag.items()[0];
+    try std.testing.expectEqualStrings("--", failure.span.slice(source));
+    try std.testing.expectEqual(
+        dot.diagnostic.OperatorMismatch.Operator.directed,
+        failure.details.operator_mismatch.expected,
+    );
+    try std.testing.expectEqualStrings("digraph", failure.details.operator_mismatch.declaration.slice(source));
 }
 
 test "a fully valid document checks clean through the façade" {
@@ -314,6 +348,23 @@ test "parseBorrowedIn parses into caller slices with no allocator" {
     try std.testing.expect(validation.documentValid());
 }
 
+test "parseBorrowedIn carries the full document header" {
+    // The fixed builder stores kind/strict/name through its own path;
+    // cover it directly, not just via the allocator builder.
+    const source = "strict digraph Name { a -> b }";
+    var storage: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4 }) = .{};
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+
+    const parsed = dot.parseBorrowedIn(source, storage.storage(), bag.sink(), .{});
+    try std.testing.expect(parsed.outcome == .success);
+
+    const document = parsed.document.?;
+    try std.testing.expectEqual(dot.GraphKind.digraph, document.kind);
+    try std.testing.expect(document.strict);
+    try std.testing.expectEqualStrings("Name", document.text(document.name.?));
+    try std.testing.expectEqual(@as(usize, 1), document.edges.len);
+}
+
 test "parseBorrowedIn reports pool exhaustion as a storage failure" {
     var ids: [1]dot.StatementId = undefined;
     var nodes: [1]dot.NodeStatement = undefined;
@@ -369,10 +420,20 @@ const ValidEntry = struct {
     /// Text of the first statement's identifier/left endpoint (null when
     /// the document is empty).
     first_text: ?[]const u8,
+    // Expected document header.
+    kind: dot.GraphKind = .undigraph,
+    strict: bool = false,
+    /// Expected graph-name text (null for anonymous documents).
+    graph_name: ?[]const u8 = null,
 };
 
 const valid_corpus = [_]ValidEntry{
     .{ .name = "minimal", .source = @embedFile("corpus/valid/minimal.dot"), .shape = "", .nodes = 0, .edges = 0, .first_text = null },
+    .{ .name = "digraph", .source = @embedFile("corpus/valid/digraph.dot"), .shape = "e", .nodes = 0, .edges = 1, .first_text = "a", .kind = .digraph },
+    .{ .name = "graph_name", .source = @embedFile("corpus/valid/graph_name.dot"), .shape = "n", .nodes = 1, .edges = 0, .first_text = "a", .graph_name = "G" },
+    .{ .name = "optional_semicolon", .source = @embedFile("corpus/valid/optional_semicolon.dot"), .shape = "n", .nodes = 1, .edges = 0, .first_text = "a" },
+    .{ .name = "strict", .source = @embedFile("corpus/valid/strict.dot"), .shape = "e", .nodes = 0, .edges = 1, .first_text = "a", .strict = true },
+    .{ .name = "no_semicolons", .source = @embedFile("corpus/valid/no_semicolons.dot"), .shape = "ee", .nodes = 0, .edges = 2, .first_text = "a", .kind = .digraph, .graph_name = "G" },
     .{ .name = "nodes", .source = @embedFile("corpus/valid/nodes.dot"), .shape = "nnn", .nodes = 3, .edges = 0, .first_text = "alpha" },
     .{ .name = "edges", .source = @embedFile("corpus/valid/edges.dot"), .shape = "eee", .nodes = 0, .edges = 3, .first_text = "a" },
     .{ .name = "mixed", .source = @embedFile("corpus/valid/mixed.dot"), .shape = "neen", .nodes = 2, .edges = 2, .first_text = "hub" },
@@ -404,11 +465,9 @@ const UnsupportedEntry = struct {
 };
 
 const unsupported_corpus = [_]UnsupportedEntry{
-    .{ .name = "digraph", .source = @embedFile("corpus/unsupported/digraph.dot"), .feature = .digraph_document },
-    .{ .name = "graph_name", .source = @embedFile("corpus/unsupported/graph_name.dot"), .feature = .graph_name },
     .{ .name = "subgraph", .source = @embedFile("corpus/unsupported/subgraph.dot"), .feature = .subgraph },
-    .{ .name = "optional_semicolon", .source = @embedFile("corpus/unsupported/optional_semicolon.dot"), .feature = .optional_semicolons },
     .{ .name = "edge_chain", .source = @embedFile("corpus/unsupported/edge_chain.dot"), .feature = .edge_chain },
+    .{ .name = "node_attribute", .source = @embedFile("corpus/unsupported/node_attribute.dot"), .feature = .node_attribute_statement },
 };
 
 fn documentShape(document: *const dot.Document, buffer: []u8) []const u8 {
@@ -436,6 +495,13 @@ test "valid corpus parses to the expected statements, deterministically" {
 
         // Semantic expectations, not just the outcome class.
         const document = &checked.document.?;
+        try std.testing.expectEqual(entry.kind, document.kind);
+        try std.testing.expectEqual(entry.strict, document.strict);
+        if (entry.graph_name) |expected_name| {
+            try std.testing.expectEqualStrings(expected_name, document.text(document.name.?));
+        } else {
+            try std.testing.expect(document.name == null);
+        }
         var shape_buffer: [32]u8 = undefined;
         try std.testing.expectEqualStrings(entry.shape, documentShape(document, &shape_buffer));
         try std.testing.expectEqual(entry.nodes, document.nodes.len);
@@ -554,6 +620,9 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
         try std.testing.expectEqual(first_diag.code, second_diag.code);
         try std.testing.expectEqual(first_diag.span.start, second_diag.span.start);
         try std.testing.expectEqual(first_diag.span.byte_len, second_diag.span.byte_len);
+        // The typed payload too: same code at the same position with a
+        // different Feature or Capacity resource is still a regression.
+        try std.testing.expectEqual(first_diag.details, second_diag.details);
     }
     if (checked.document) |*first_document| {
         try std.testing.expectEqualSlices(

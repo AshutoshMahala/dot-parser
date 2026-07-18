@@ -1,22 +1,25 @@
-//! Raw-byte lexer (milestone 1, step 3).
+//! Raw-byte lexer (milestone 1, step 3; extended by slice 2).
 //!
-//! Recognizes only the milestone-1 subset: the source keyword `graph` (which
-//! maps to the `undigraph` kind at reading time), bare ASCII identifiers,
-//! `{`, `}`, `;`, the edge operators `--` and `->`, and whitespace (space,
-//! tab, LF, CRLF, CR).
+//! Recognizes the current subset: every DOT keyword (`graph` maps to the
+//! `undigraph` kind at reading time, `digraph`, `strict`, plus the deferred
+//! `subgraph`/`node`/`edge`); bare ASCII identifiers; `{`, `}`, `;`; the
+//! edge operators `--` and `->`; and whitespace (space, tab, LF, CRLF, CR).
 //!
 //! Guarantees:
 //! - Spans borrow from the caller's source; no allocation ever (R-MEM-001).
 //! - State is instance-owned (R-ROB-003); no OS or filesystem access.
 //! - Every `next` call either consumes input or returns a terminal result
 //!   (`eof` or a failure); the lexer cannot loop forever.
-//! - Introducers of recognized-but-deferred DOT constructs (`digraph`,
-//!   `strict`, comments, quoted/numeral/HTML/non-ASCII identifiers,
-//!   attributes, ports, …) are reported as structured
-//!   `profile_unsupported_feature` failures, distinct from bytes that are
-//!   invalid in any DOT document (R-MOD-006). Detection stops at the
-//!   introducer: neither the construct's body nor the remaining input is
-//!   checked, so an unsupported result makes no whole-input validity claim.
+//! - Every keyword tokenizes, including keywords of deferred constructs:
+//!   whether `subgraph` legally introduces a subgraph or sits in an illegal
+//!   grammar position is the parser's decision, which the lexer cannot
+//!   make. Only *lexical* deferred constructs — comments, quoted/numeral/
+//!   HTML/non-ASCII identifiers, attribute punctuation, ports — are
+//!   reported here as structured `profile_unsupported_feature` failures,
+//!   distinct from bytes that are invalid in any DOT document (R-MOD-006).
+//!   Detection stops at the introducer: neither the construct's body nor
+//!   the remaining input is checked, so an unsupported result makes no
+//!   whole-input validity claim.
 
 const std = @import("std");
 const location = @import("location.zig");
@@ -28,6 +31,11 @@ pub const Token = struct {
 
     pub const Tag = enum {
         keyword_graph,
+        keyword_digraph,
+        keyword_strict,
+        keyword_subgraph,
+        keyword_node,
+        keyword_edge,
         identifier,
         edge_undirected,
         edge_directed,
@@ -44,17 +52,6 @@ pub const Token = struct {
 pub const Result = union(enum) {
     token: Token,
     failure: diagnostic.Diagnostic,
-};
-
-/// DOT keywords that are valid DOT but deferred beyond milestone 1. They are
-/// detected so the failure names the feature instead of degrading into a
-/// generic syntax error (R-MOD-006).
-const deferred_keywords = [_]struct { word: []const u8, feature: diagnostic.Feature }{
-    .{ .word = "digraph", .feature = .digraph_document },
-    .{ .word = "strict", .feature = .strict_modifier },
-    .{ .word = "subgraph", .feature = .subgraph },
-    .{ .word = "node", .feature = .node_attribute_statement },
-    .{ .word = "edge", .feature = .edge_attribute_statement },
 };
 
 pub const Lexer = struct {
@@ -159,16 +156,23 @@ pub const Lexer = struct {
         const word = self.source[start.byte_offset..][0..len];
 
         // DOT keywords are case-independent (graphviz.org/doc/info/lang.html).
-        if (std.ascii.eqlIgnoreCase(word, "graph")) {
-            self.consume(len);
-            return .{ .token = .{
-                .tag = .keyword_graph,
-                .span = .{ .start = start, .byte_len = len },
-            } };
-        }
-        for (deferred_keywords) |entry| {
-            if (std.ascii.eqlIgnoreCase(word, entry.word)) {
-                return unsupported(start, len, entry.feature);
+        // Keywords of deferred constructs tokenize too: only the parser
+        // knows whether they introduce the construct or are misplaced.
+        const keywords = [_]struct { word: []const u8, tag: Token.Tag }{
+            .{ .word = "graph", .tag = .keyword_graph },
+            .{ .word = "digraph", .tag = .keyword_digraph },
+            .{ .word = "strict", .tag = .keyword_strict },
+            .{ .word = "subgraph", .tag = .keyword_subgraph },
+            .{ .word = "node", .tag = .keyword_node },
+            .{ .word = "edge", .tag = .keyword_edge },
+        };
+        for (keywords) |keyword| {
+            if (std.ascii.eqlIgnoreCase(word, keyword.word)) {
+                self.consume(len);
+                return .{ .token = .{
+                    .tag = keyword.tag,
+                    .span = .{ .start = start, .byte_len = len },
+                } };
             }
         }
 
@@ -279,6 +283,8 @@ test "empty input yields eof forever" {
 test "each milestone token lexes on its own" {
     inline for (.{
         .{ "graph", Token.Tag.keyword_graph },
+        .{ "digraph", Token.Tag.keyword_digraph },
+        .{ "strict", Token.Tag.keyword_strict },
         .{ "abc", Token.Tag.identifier },
         .{ "--", Token.Tag.edge_undirected },
         .{ "->", Token.Tag.edge_directed },
@@ -296,6 +302,10 @@ test "keyword boundary: graphical is one identifier, not graph + ical" {
     var lexer = Lexer.init("graphical");
     try expectToken(&lexer, .identifier, "graphical");
     try expectToken(&lexer, .eof, "");
+
+    var digraphs = Lexer.init("digraphs stricter");
+    try expectToken(&digraphs, .identifier, "digraphs");
+    try expectToken(&digraphs, .identifier, "stricter");
 }
 
 test "DOT keywords are case-independent" {
@@ -305,8 +315,14 @@ test "DOT keywords are case-independent" {
     var mixed = Lexer.init("Graph");
     try expectToken(&mixed, .keyword_graph, "Graph");
 
-    var deferred = Lexer.init("DiGraph");
-    try expectUnsupported(&deferred, .digraph_document);
+    var directed = Lexer.init("DiGraph STRICT");
+    try expectToken(&directed, .keyword_digraph, "DiGraph");
+    try expectToken(&directed, .keyword_strict, "STRICT");
+
+    var deferred = Lexer.init("SubGraph Node EDGE");
+    try expectToken(&deferred, .keyword_subgraph, "SubGraph");
+    try expectToken(&deferred, .keyword_node, "Node");
+    try expectToken(&deferred, .keyword_edge, "EDGE");
 }
 
 test "identifiers may contain underscores and digits after the first byte" {
@@ -403,13 +419,10 @@ test "non-ASCII bytes are the deferred identifier range, not invalid input" {
     try expectInvalidByte(&control, 0x7f);
 }
 
-test "recognized deferred features are unsupported, not invalid" {
+test "recognized lexical deferred features are unsupported, not invalid" {
+    // Keyword-introduced deferred constructs (subgraph, node/edge attribute
+    // statements) are the parser's call — the keywords tokenize above.
     inline for (.{
-        .{ "digraph D", diagnostic.Feature.digraph_document },
-        .{ "strict graph", diagnostic.Feature.strict_modifier },
-        .{ "subgraph s", diagnostic.Feature.subgraph },
-        .{ "node [", diagnostic.Feature.node_attribute_statement },
-        .{ "edge [", diagnostic.Feature.edge_attribute_statement },
         .{ "\"quoted\"", diagnostic.Feature.quoted_identifier },
         .{ "<html>", diagnostic.Feature.html_identifier },
         .{ "[color=red]", diagnostic.Feature.attribute_list },

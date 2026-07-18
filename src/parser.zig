@@ -1,13 +1,19 @@
 //! Parser state machine (milestone 1, step 5).
 //!
-//! Milestone grammar:
+//! Current grammar (milestone 1 + slice 2):
 //!
 //! ```text
-//! document  := "graph" "{" statement* "}" EOF
-//! statement := identifier ";"
-//!            | identifier edgeop identifier ";"
+//! document  := "strict"? ("graph" | "digraph") identifier? "{" statement* "}" EOF
+//! statement := identifier ";"?
+//!            | identifier edgeop identifier ";"?
 //! edgeop    := "--" | "->"
 //! ```
+//!
+//! Statement terminators are optional, per DOT. The document header is
+//! complete at `{`; `beginDocument` fires there carrying kind, strict, and
+//! the optional name. Unquoted keywords are not valid names (`graph graph`
+//! is a syntax error, matching Graphviz; a keyword name requires quoting,
+//! which is a deferred feature).
 //!
 //! The parser is kind-agnostic: both edge operators parse structurally and
 //! the written operator is preserved in the emitted event. Whether an
@@ -35,10 +41,20 @@
 //!   cannot exhaust the call stack (R-PERF-002).
 //! - Work is a single linear scan of the input (R-PERF-001, R-SEC-003);
 //!   `Options.max_statements` additionally bounds the statements processed.
-//! - Recognized-but-deferred constructs (graph names, edge chains, optional
-//!   semicolons, anonymous subgraphs, …) stop the parse as unsupported
-//!   features, not as malformed input (R-MOD-006). The parse makes no
-//!   validity claim beyond that boundary.
+//! - Recognized-but-deferred constructs (subgraphs, edge chains, attribute
+//!   statements and lists, quoted/numeral/HTML/non-ASCII identifiers,
+//!   comments, ports, …) stop the parse as unsupported features, not as
+//!   malformed input (R-MOD-006) — but only where the construct is legal
+//!   DOT: a deferred keyword in an illegal grammar position (`subgraph` as
+//!   the document root, `graph node {}`) is plain invalid syntax. The
+//!   parse makes no validity claim beyond an unsupported boundary. In
+//!   statement position the stop happens at the introducer keyword without
+//!   lookahead: DOT keywords are reserved words everywhere (they cannot be
+//!   unquoted identifiers — verified against Graphviz 15.1.0, which
+//!   rejects `graph { node; }` and `graph { edge -- x; }`), so the keyword
+//!   can only be introducing its deferred construct and no valid input is
+//!   over-rejected. When the attribute slice lands, malformed continuations
+//!   simply become syntax errors after the keyword.
 //!
 //! Only a run-to-completion `parse` is exposed for now, but the machine is
 //! genuinely resumable: all continuation state (grammar state and the spans
@@ -141,11 +157,17 @@ fn Machine(comptime EventsPtr: type) type {
         /// bounded drivers can safely over-call `step`.
         terminal: ?Result = null,
 
+        // Header state, accumulated until `{` completes the header.
+        kind: syntax_event.GraphKind = .undigraph,
+        strict: bool = false,
+        keyword_span: location.Span = undefined,
+        name_span: ?location.Span = null,
+
         // Continuation state. Everything a suspended parse needs lives in
         // the machine itself — never in `runToCompletion` locals — so
         // `next`/`pump` drivers can be layered on `step` without touching
         // the grammar (R-MOD-010 groundwork).
-        state: State = .keyword,
+        state: State = .prologue,
         /// First identifier of the statement being parsed.
         left: location.Span = undefined,
         /// Operator of the edge statement being parsed.
@@ -155,17 +177,21 @@ fn Machine(comptime EventsPtr: type) type {
         right: location.Span = undefined,
 
         const State = enum {
-            /// Expect the document keyword.
-            keyword,
-            /// Expect `{`.
-            open,
+            /// Expect `strict` or the kind keyword.
+            prologue,
+            /// After `strict`: expect the kind keyword.
+            kind_keyword,
+            /// After the kind keyword: expect an optional name or `{`.
+            header_name,
+            /// After the name: expect `{`.
+            header_open,
             /// Expect a statement's first identifier or the closing `}`.
             statement,
-            /// After a statement's first identifier: `;`, `--`, or `->`.
+            /// After a statement's first identifier.
             after_identifier,
             /// After an edge operator: the right endpoint identifier.
             edge_right,
-            /// After a complete edge: the terminating `;`.
+            /// After a complete edge: `;`, or whatever starts next.
             edge_terminate,
             /// After the closing `}`: end of input.
             epilogue,
@@ -190,64 +216,67 @@ fn Machine(comptime EventsPtr: type) type {
             };
 
             switch (self.state) {
-                .keyword => switch (token.tag) {
-                    .keyword_graph => {
-                        // The source keyword `graph` maps to the
-                        // `undigraph` kind at reading time.
-                        self.begun = true;
-                        self.events.beginDocument(.{
-                            .kind = .undigraph,
-                            .keyword_span = token.span,
-                        }) catch |err| return self.sinkFailure(err);
-                        self.state = .open;
+                .prologue => switch (token.tag) {
+                    .keyword_strict => {
+                        self.strict = true;
+                        self.state = .kind_keyword;
                     },
-                    else => return self.unexpected(.{ .graph_keyword = true }, .document_header, token),
+                    .keyword_graph => self.acceptKind(.undigraph, token),
+                    .keyword_digraph => self.acceptKind(.digraph, token),
+                    else => return self.unexpected(.{
+                        .strict_keyword = true,
+                        .graph_keyword = true,
+                        .digraph_keyword = true,
+                    }, .document_header, token),
                 },
-                .open => switch (token.tag) {
-                    .left_brace => {
-                        self.open_brace_span = token.span;
-                        self.state = .statement;
+                .kind_keyword => switch (token.tag) {
+                    .keyword_graph => self.acceptKind(.undigraph, token),
+                    .keyword_digraph => self.acceptKind(.digraph, token),
+                    else => return self.unexpected(.{
+                        .graph_keyword = true,
+                        .digraph_keyword = true,
+                    }, .document_header, token),
+                },
+                .header_name => switch (token.tag) {
+                    .identifier => {
+                        self.name_span = token.span;
+                        self.state = .header_open;
                     },
-                    // `graph G {` is valid DOT with a graph name; deferred
-                    // to slice 2. DOT keywords are only reserved
-                    // positionally, so `graph graph {` is a graph literally
-                    // named "graph" — the same deferred feature, not
-                    // malformed input (R-MOD-006). Other deferred keywords
-                    // (`digraph`, `strict`, …) never reach the parser: the
-                    // lexer reports them as unsupported features itself, so
-                    // keyword recognition responsibility lives entirely in
-                    // the lexer.
-                    .identifier, .keyword_graph => {
-                        return self.unsupportedAt(token.span, .graph_name);
-                    },
+                    .left_brace => return self.beginBody(token),
+                    // Unquoted keywords are not valid names (Graphviz
+                    // rejects `graph graph`); a keyword name needs quoting,
+                    // which is a deferred feature.
+                    else => return self.unexpected(.{
+                        .identifier = true,
+                        .left_brace = true,
+                    }, .document_header, token),
+                },
+                .header_open => switch (token.tag) {
+                    .left_brace => return self.beginBody(token),
                     else => return self.unexpected(.{ .left_brace = true }, .document_header, token),
                 },
                 .statement => switch (token.tag) {
-                    .identifier => {
-                        if (self.statements == self.options.max_statements) {
-                            return self.fail(.{
-                                .code = .resource_capacity_exhausted,
-                                .span = token.span,
-                                .details = .{ .capacity = .{
-                                    .resource = .statements,
-                                    .limit = self.options.max_statements,
-                                } },
-                            });
-                        }
-                        self.statements += 1;
-                        self.left = token.span;
-                        self.state = .after_identifier;
-                    },
+                    .identifier => if (self.beginStatement(token)) |result| return result,
                     .right_brace => self.state = .epilogue,
                     // `{ … }` here is a valid-DOT anonymous subgraph.
                     .left_brace => return self.unsupportedAt(token.span, .subgraph),
-                    else => return self.unexpected(.{ .identifier = true, .right_brace = true }, .document_body, token),
+                    // Statement position is where these keywords legally
+                    // introduce deferred constructs (`subgraph s { … }`,
+                    // `node [ … ]`, …); anywhere else they are plain
+                    // syntax errors.
+                    .keyword_graph,
+                    .keyword_subgraph,
+                    .keyword_node,
+                    .keyword_edge,
+                    => return self.unsupportedAt(token.span, statementKeywordFeature(token.tag).?),
+                    else => return self.unexpected(.{
+                        .identifier = true,
+                        .right_brace = true,
+                    }, .document_body, token),
                 },
                 .after_identifier => switch (token.tag) {
                     .semicolon => {
-                        self.events.nodeStatement(.{
-                            .identifier = self.left,
-                        }) catch |err| return self.sinkFailure(err);
+                        if (self.emitNode()) |result| return result;
                         self.state = .statement;
                     },
                     .edge_undirected, .edge_directed => {
@@ -258,40 +287,76 @@ fn Machine(comptime EventsPtr: type) type {
                         self.operator_span = token.span;
                         self.state = .edge_right;
                     },
-                    // A statement boundary without `;` is valid DOT
-                    // (semicolons are optional there); deferred.
-                    .identifier, .right_brace, .left_brace => {
-                        return self.unsupportedAt(token.span, .optional_semicolons);
+                    // Terminators are optional: the node statement ended,
+                    // and this token starts the next construct.
+                    .identifier => {
+                        if (self.emitNode()) |result| return result;
+                        if (self.beginStatement(token)) |result| return result;
                     },
-                    else => return self.unexpected(.{ .semicolon = true, .undirected_operator = true, .directed_operator = true }, .statement, token),
+                    .right_brace => {
+                        if (self.emitNode()) |result| return result;
+                        self.state = .epilogue;
+                    },
+                    .left_brace => {
+                        if (self.emitNode()) |result| return result;
+                        return self.unsupportedAt(token.span, .subgraph);
+                    },
+                    .keyword_graph, .keyword_subgraph, .keyword_node, .keyword_edge => {
+                        if (self.emitNode()) |result| return result;
+                        return self.unsupportedAt(token.span, statementKeywordFeature(token.tag).?);
+                    },
+                    else => return self.unexpected(.{
+                        .semicolon = true,
+                        .undirected_operator = true,
+                        .directed_operator = true,
+                        .identifier = true,
+                        .right_brace = true,
+                    }, .statement, token),
                 },
                 .edge_right => switch (token.tag) {
                     .identifier => {
                         self.right = token.span;
                         self.state = .edge_terminate;
                     },
-                    // `a -- { … }` is a valid-DOT subgraph endpoint.
-                    .left_brace => return self.unsupportedAt(token.span, .subgraph),
+                    // `a -- { … }` and `a -- subgraph s { … }` are
+                    // valid-DOT subgraph endpoints.
+                    .left_brace,
+                    .keyword_subgraph,
+                    => return self.unsupportedAt(token.span, .subgraph),
                     else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
                 },
                 .edge_terminate => switch (token.tag) {
                     .semicolon => {
-                        self.events.edgeStatement(.{
-                            .left = self.left,
-                            .operator = self.operator,
-                            .operator_span = self.operator_span,
-                            .right = self.right,
-                        }) catch |err| return self.sinkFailure(err);
+                        if (self.emitEdge()) |result| return result;
                         self.state = .statement;
                     },
                     // `a -- b -- c` is a valid-DOT edge chain; deferred.
                     .edge_undirected, .edge_directed => {
                         return self.unsupportedAt(token.span, .edge_chain);
                     },
-                    .identifier, .right_brace, .left_brace => {
-                        return self.unsupportedAt(token.span, .optional_semicolons);
+                    // Terminators are optional: the edge ended, and this
+                    // token starts the next construct.
+                    .identifier => {
+                        if (self.emitEdge()) |result| return result;
+                        if (self.beginStatement(token)) |result| return result;
                     },
-                    else => return self.unexpected(.{ .semicolon = true }, .statement_terminator, token),
+                    .right_brace => {
+                        if (self.emitEdge()) |result| return result;
+                        self.state = .epilogue;
+                    },
+                    .left_brace => {
+                        if (self.emitEdge()) |result| return result;
+                        return self.unsupportedAt(token.span, .subgraph);
+                    },
+                    .keyword_graph, .keyword_subgraph, .keyword_node, .keyword_edge => {
+                        if (self.emitEdge()) |result| return result;
+                        return self.unsupportedAt(token.span, statementKeywordFeature(token.tag).?);
+                    },
+                    else => return self.unexpected(.{
+                        .semicolon = true,
+                        .identifier = true,
+                        .right_brace = true,
+                    }, .statement_terminator, token),
                 },
                 .epilogue => switch (token.tag) {
                     .eof => {
@@ -301,6 +366,63 @@ fn Machine(comptime EventsPtr: type) type {
                     else => return self.unexpected(.{ .end_of_input = true }, .document_epilogue, token),
                 },
             }
+            return null;
+        }
+
+        fn acceptKind(self: *Self, kind: syntax_event.GraphKind, token: lex.Token) void {
+            self.kind = kind;
+            self.keyword_span = token.span;
+            self.state = .header_name;
+        }
+
+        /// `{` completes the document header: emit `beginDocument` with the
+        /// accumulated kind, strict marker, and optional name.
+        fn beginBody(self: *Self, token: lex.Token) ?Result {
+            self.begun = true;
+            self.open_brace_span = token.span;
+            self.events.beginDocument(.{
+                .kind = self.kind,
+                .strict = self.strict,
+                .keyword_span = self.keyword_span,
+                .name_span = self.name_span,
+            }) catch |err| return self.sinkFailure(err);
+            self.state = .statement;
+            return null;
+        }
+
+        /// Start a statement at its first identifier: the one place the
+        /// caller-visible statement limit is enforced.
+        fn beginStatement(self: *Self, token: lex.Token) ?Result {
+            if (self.statements == self.options.max_statements) {
+                return self.fail(.{
+                    .code = .resource_capacity_exhausted,
+                    .span = token.span,
+                    .details = .{ .capacity = .{
+                        .resource = .statements,
+                        .limit = self.options.max_statements,
+                    } },
+                });
+            }
+            self.statements += 1;
+            self.left = token.span;
+            self.state = .after_identifier;
+            return null;
+        }
+
+        fn emitNode(self: *Self) ?Result {
+            self.events.nodeStatement(.{
+                .identifier = self.left,
+            }) catch |err| return self.sinkFailure(err);
+            return null;
+        }
+
+        fn emitEdge(self: *Self) ?Result {
+            self.events.edgeStatement(.{
+                .left = self.left,
+                .operator = self.operator,
+                .operator_span = self.operator_span,
+                .right = self.right,
+            }) catch |err| return self.sinkFailure(err);
             return null;
         }
 
@@ -380,11 +502,31 @@ fn Machine(comptime EventsPtr: type) type {
     };
 }
 
+/// The deferred construct a keyword legally introduces in statement
+/// position (`graph [ … ]`, `subgraph s { … }`, `node [ … ]`,
+/// `edge [ … ]`). Positions where these keywords are not legal DOT report
+/// plain unexpected-token syntax errors instead — the classification is a
+/// grammar decision, which is why it lives here and not in the lexer.
+fn statementKeywordFeature(tag: lex.Token.Tag) ?diagnostic.Feature {
+    return switch (tag) {
+        .keyword_graph => .graph_attribute_statement,
+        .keyword_subgraph => .subgraph,
+        .keyword_node => .node_attribute_statement,
+        .keyword_edge => .edge_attribute_statement,
+        else => null,
+    };
+}
+
 /// Map lexer token tags into the stable diagnostic vocabulary; diagnostics
 /// must not depend on lexer types (dependency direction).
 fn tokenItem(tag: lex.Token.Tag) diagnostic.SyntaxItem {
     return switch (tag) {
         .keyword_graph => .graph_keyword,
+        .keyword_digraph => .digraph_keyword,
+        .keyword_strict => .strict_keyword,
+        .keyword_subgraph => .subgraph_keyword,
+        .keyword_node => .node_keyword,
+        .keyword_edge => .edge_keyword,
         .identifier => .identifier,
         .edge_undirected => .undirected_operator,
         .edge_directed => .directed_operator,
@@ -489,13 +631,13 @@ fn expectAborted(source: []const u8, expected_reason: syntax_event.AbortReason) 
 test "fail-fast means the bag contains exactly one diagnostic" {
     var events: Recording = .{};
     var bag: Bag = .{};
-    const result = parse("graph @ }", &events, bag.sink(), .{});
+    const result = parse("graph { @ }", &events, bag.sink(), .{});
     try expect(result.outcome == .invalid_syntax);
 
     try expectEqual(@as(usize, 1), bag.items().len);
     try expectEqual(diagnostic.Code.lexer_invalid_byte, bag.items()[0].code);
 
-    try expectAborted("graph @ }", .invalid_syntax);
+    try expectAborted("graph { @ }", .invalid_syntax);
 }
 
 test "missing opening brace reports the typed expected set and context" {
@@ -505,7 +647,8 @@ test "missing opening brace reports the typed expected set and context" {
 
     const unexpected = bag.items()[0].details.unexpected;
     try expect(unexpected.expected.contains(.left_brace));
-    try expectEqual(@as(usize, 1), unexpected.expected.count());
+    try expect(unexpected.expected.contains(.identifier));
+    try expectEqual(@as(usize, 2), unexpected.expected.count());
     try expectEqual(diagnostic.SyntaxItem.semicolon, unexpected.found);
     try expectEqual(diagnostic.ParseContext.document_header, unexpected.context);
     try expect(unexpected.related == null);
@@ -524,30 +667,82 @@ test "unexpected end of input points back to the unclosed brace" {
     try expectEqualStrings("{", related.span.slice(source));
 }
 
-test "named graph is the deferred graph-name feature, not malformed" {
+test "document headers: kind, strict, and name reach the begin event" {
+    const source = "strict digraph Routes { a -> b; }";
     var events: Recording = .{};
     var bag: Bag = .{};
-    const result = parse("graph G { }", &events, bag.sink(), .{});
-    try expect(result.outcome == .unsupported_feature);
+    try expect(parse(source, &events, bag.sink(), .{}).outcome == .success);
+    try expectEqual(@as(usize, 0), bag.items().len);
 
-    const failure = bag.items()[0];
-    try expectEqual(diagnostic.Code.profile_unsupported_feature, failure.code);
-    try expectEqual(diagnostic.Feature.graph_name, failure.details.unsupported_feature);
-    try expectEqualStrings("G", failure.span.slice("graph G { }"));
-
-    try expectAborted("graph G { }", .unsupported_feature);
+    const begin = events.recorded()[0].begin_document;
+    try expectEqual(syntax_event.GraphKind.digraph, begin.kind);
+    try expect(begin.strict);
+    try expectEqualStrings("digraph", begin.keyword_span.slice(source));
+    try expectEqualStrings("Routes", begin.name_span.?.slice(source));
 }
 
-test "a keyword used as a graph name is the deferred feature, not malformed" {
-    // DOT keywords are only positionally reserved: `graph graph {}` is a
-    // valid document whose name is "graph".
+test "plain headers default to non-strict and unnamed" {
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    try expect(parse("graph { }", &events, bag.sink(), .{}).outcome == .success);
+    const begin = events.recorded()[0].begin_document;
+    try expectEqual(syntax_event.GraphKind.undigraph, begin.kind);
+    try expect(!begin.strict);
+    try expect(begin.name_span == null);
+}
+
+test "an unquoted keyword is not a valid graph name (matches Graphviz)" {
+    // Graphviz rejects `graph graph {}`; a keyword name requires quoting,
+    // which is a deferred feature. This reverses an earlier classification
+    // that assumed keywords were valid unquoted names.
     var events: Recording = .{};
     var bag: Bag = .{};
     const result = parse("graph graph { }", &events, bag.sink(), .{});
-    try expect(result.outcome == .unsupported_feature);
-    try expectEqual(diagnostic.Feature.graph_name, bag.items()[0].details.unsupported_feature);
-    try expectEqualStrings("graph", bag.items()[0].span.slice("graph graph { }"));
-    try expectEqual(@as(usize, 6), bag.items()[0].span.start.byte_offset);
+    try expect(result.outcome == .invalid_syntax);
+
+    const unexpected = bag.items()[0].details.unexpected;
+    try expect(unexpected.expected.contains(.identifier));
+    try expect(unexpected.expected.contains(.left_brace));
+    try expectEqual(diagnostic.SyntaxItem.graph_keyword, unexpected.found);
+    try expectEqual(@as(usize, 0), events.recorded().len);
+}
+
+test "strict must be followed by a kind keyword" {
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    try expect(parse("strict { }", &events, bag.sink(), .{}).outcome == .invalid_syntax);
+
+    const unexpected = bag.items()[0].details.unexpected;
+    try expect(unexpected.expected.contains(.graph_keyword));
+    try expect(unexpected.expected.contains(.digraph_keyword));
+    try expectEqual(@as(usize, 0), events.recorded().len);
+}
+
+test "optional semicolons: adjacent statements split correctly" {
+    const source = "graph { a b c -- d e }";
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    try expect(parse(source, &events, bag.sink(), .{}).outcome == .success);
+
+    // a(node) b(node) c--d(edge) e(node), all without terminators.
+    const recorded = events.recorded();
+    try expectEqual(@as(usize, 6), recorded.len);
+    try expectEqualStrings("a", recorded[1].node_statement.identifier.slice(source));
+    try expectEqualStrings("b", recorded[2].node_statement.identifier.slice(source));
+    const edge = recorded[3].edge_statement;
+    try expectEqualStrings("c", edge.left.slice(source));
+    try expectEqualStrings("d", edge.right.slice(source));
+    try expectEqualStrings("e", recorded[4].node_statement.identifier.slice(source));
+    try expect(recorded[5] == .end_document);
+}
+
+test "mixed terminated and unterminated statements agree" {
+    var with: Recording = .{};
+    var without: Recording = .{};
+    var bag: Bag = .{};
+    try expect(parse("digraph { a -> b; c; }", &with, bag.sink(), .{}).outcome == .success);
+    try expect(parse("digraph { a -> b c }", &without, bag.sink(), .{}).outcome == .success);
+    try expectEqual(with.recorded().len, without.recorded().len);
 }
 
 test "missing edge endpoint is invalid syntax at the terminator" {
@@ -608,16 +803,22 @@ test "input truncated at every byte boundary fails safely" {
 }
 
 test "failures before a supported header emit no events but do fill the bag" {
-    // Deferred header keyword: unsupported feature, empty event sink.
-    var digraph_events: Recording = .{};
-    var digraph_bag: Bag = .{};
-    const digraph_result = parse("digraph { a -> b; }", &digraph_events, digraph_bag.sink(), .{});
-    try expect(digraph_result.outcome == .unsupported_feature);
+    // Deferred lexical construct: unsupported feature, empty event sink.
+    var quoted_events: Recording = .{};
+    var quoted_bag: Bag = .{};
+    const quoted_result = parse("\"g\" { a; }", &quoted_events, quoted_bag.sink(), .{});
+    try expect(quoted_result.outcome == .unsupported_feature);
     try expectEqual(
-        diagnostic.Feature.digraph_document,
-        digraph_bag.items()[0].details.unsupported_feature,
+        diagnostic.Feature.quoted_identifier,
+        quoted_bag.items()[0].details.unsupported_feature,
     );
-    try expectEqual(@as(usize, 0), digraph_events.recorded().len);
+    try expectEqual(@as(usize, 0), quoted_events.recorded().len);
+
+    // An incomplete header (begin fires only at `{`): no events either.
+    var named_events: Recording = .{};
+    var named_bag: Bag = .{};
+    try expect(parse("strict digraph G", &named_events, named_bag.sink(), .{}).outcome == .invalid_syntax);
+    try expectEqual(@as(usize, 0), named_events.recorded().len);
 
     // Invalid leading byte: invalid syntax, empty event sink.
     var invalid_events: Recording = .{};
@@ -635,24 +836,52 @@ test "failures before a supported header emit no events but do fill the bag" {
 
 test "unsupported outcome is a boundary, not a whole-input validity claim" {
     // The remainder after the unsupported introducer is malformed (`@`),
-    // but the parse stopped at `digraph`: validity beyond the boundary is
+    // but the parse stopped at `subgraph`: validity beyond the boundary is
     // unknown by design, and the outcome must not promise otherwise.
     var events: Recording = .{};
     var bag: Bag = .{};
-    const result = parse("digraph @", &events, bag.sink(), .{});
+    const result = parse("graph { subgraph @", &events, bag.sink(), .{});
     try expect(result.outcome == .unsupported_feature);
-    try expectEqual(diagnostic.Feature.digraph_document, bag.items()[0].details.unsupported_feature);
+    try expectEqual(diagnostic.Feature.subgraph, bag.items()[0].details.unsupported_feature);
+}
+
+test "deferred keywords in illegal positions are syntax errors, not unsupported" {
+    // A subgraph cannot be the document root, and no keyword is a valid
+    // unquoted graph name or edge endpoint (Graphviz rejects all of
+    // these). Reporting them as unsupported features would claim the input
+    // uses a deferred construct when it is simply malformed.
+    inline for (.{
+        .{ "subgraph s { a; }", diagnostic.SyntaxItem.subgraph_keyword },
+        .{ "strict subgraph { }", diagnostic.SyntaxItem.subgraph_keyword },
+        .{ "graph subgraph { }", diagnostic.SyntaxItem.subgraph_keyword },
+        .{ "graph node { }", diagnostic.SyntaxItem.node_keyword },
+        .{ "node { }", diagnostic.SyntaxItem.node_keyword },
+        .{ "graph { a -- node; }", diagnostic.SyntaxItem.node_keyword },
+        .{ "graph { a -- edge; }", diagnostic.SyntaxItem.edge_keyword },
+        .{ "graph { a; } subgraph", diagnostic.SyntaxItem.subgraph_keyword },
+    }) |case| {
+        var events: Recording = .{};
+        var bag: Bag = .{};
+        const result = parse(case[0], &events, bag.sink(), .{});
+        try expect(result.outcome == .invalid_syntax);
+        try expectEqual(diagnostic.Code.parser_unexpected_token, bag.items()[0].code);
+        try expectEqual(case[1], bag.items()[0].details.unexpected.found);
+    }
 }
 
 test "recognized-but-deferred constructs mid-document abort as unsupported" {
     inline for (.{
         .{ "graph { a -- b -- c; }", diagnostic.Feature.edge_chain },
         .{ "graph { a -- { b }; }", diagnostic.Feature.subgraph },
+        .{ "graph { a -- subgraph s; }", diagnostic.Feature.subgraph },
         .{ "graph { { a } }", diagnostic.Feature.subgraph },
-        .{ "graph { a b; }", diagnostic.Feature.optional_semicolons },
-        .{ "graph { a }", diagnostic.Feature.optional_semicolons },
-        .{ "graph { a -- b }", diagnostic.Feature.optional_semicolons },
-        .{ "graph { A -> B }", diagnostic.Feature.optional_semicolons },
+        .{ "graph { a { } }", diagnostic.Feature.subgraph },
+        .{ "graph { subgraph s { b } }", diagnostic.Feature.subgraph },
+        .{ "graph { a -- b subgraph s }", diagnostic.Feature.subgraph },
+        .{ "digraph { graph }", diagnostic.Feature.graph_attribute_statement },
+        .{ "digraph { node [shape=box]; }", diagnostic.Feature.node_attribute_statement },
+        .{ "graph { a node }", diagnostic.Feature.node_attribute_statement },
+        .{ "graph { edge [] }", diagnostic.Feature.edge_attribute_statement },
         .{ "graph { a -> b [color=red]; }", diagnostic.Feature.attribute_list },
     }) |case| {
         var events: Recording = .{};
@@ -660,6 +889,29 @@ test "recognized-but-deferred constructs mid-document abort as unsupported" {
         try expect(parse(case[0], &events, bag.sink(), .{}).outcome == .unsupported_feature);
         try expectEqual(case[1], bag.items()[0].details.unsupported_feature);
         try expectAborted(case[0], .unsupported_feature);
+    }
+}
+
+test "statement-position reserved words stop at the introducer, without lookahead" {
+    // DOT keywords are reserved words in every position — an unquoted
+    // keyword is never an identifier. Graphviz 15.1.0 rejects each input
+    // below (`syntax error near ';'`/`'--'`), so stopping at the keyword
+    // over-rejects no valid DOT; what follows the introducer is unchecked
+    // boundary, exactly as documented for the unsupported outcome. Once
+    // the attribute slice consumes these keywords itself, the malformed
+    // continuations here become syntax errors after the keyword — the
+    // classification tightens without an API change.
+    inline for (.{
+        .{ "graph { graph; }", diagnostic.Feature.graph_attribute_statement },
+        .{ "graph { subgraph; }", diagnostic.Feature.subgraph },
+        .{ "graph { node; }", diagnostic.Feature.node_attribute_statement },
+        .{ "graph { edge -- x; }", diagnostic.Feature.edge_attribute_statement },
+        .{ "graph { node -- x; }", diagnostic.Feature.node_attribute_statement },
+    }) |case| {
+        var events: Recording = .{};
+        var bag: Bag = .{};
+        try expect(parse(case[0], &events, bag.sink(), .{}).outcome == .unsupported_feature);
+        try expectEqual(case[1], bag.items()[0].details.unsupported_feature);
     }
 }
 

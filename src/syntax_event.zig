@@ -8,12 +8,14 @@
 //!
 //! ## Event vocabulary and ordering
 //!
-//! The sink lifecycle begins only once the parser has recognized a supported
-//! document header. A parse therefore emits either
+//! The sink lifecycle begins only once the parser has recognized a complete
+//! supported document header — `[strict] (graph|digraph) [name] {` — so
+//! `beginDocument` carries the whole header (kind, strict, name). A parse
+//! therefore emits either
 //!
-//! - **no events at all** — the input failed before a supported header was
-//!   recognized (invalid leading bytes, or a recognized-but-deferred header
-//!   such as `digraph` or `strict`). The failure is reported through the
+//! - **no events at all** — the input failed before the header completed
+//!   (invalid leading bytes, a malformed header, or a deferred construct
+//!   such as a `subgraph` header). The failure is reported through the
 //!   parse result and diagnostics, never through this contract — or
 //! - exactly this sequence:
 //!
@@ -83,8 +85,14 @@ pub const EdgeOperator = enum {
 
 pub const BeginDocument = struct {
     kind: GraphKind,
-    /// Span of the document keyword as written (`graph`; later `digraph`).
+    /// True when the document carries the `strict` modifier. Retained as
+    /// written; strict's duplicate-edge semantics are semantic resolution,
+    /// not parsing (R-FUNC-003).
+    strict: bool = false,
+    /// Span of the kind keyword as written (`graph` or `digraph`).
     keyword_span: location.Span,
+    /// The document's name, when one was written.
+    name_span: ?location.Span = null,
 };
 
 pub const NodeStatement = struct {

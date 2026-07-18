@@ -26,6 +26,18 @@ Revisit that decision if stable benchmark hardware becomes available.
 | Default (growing pools, arena) | 8.99 ms | 8.62–10.19 ms | 290 MiB/s | 45 ns |
 | With `document_capacities` hints | 7.63 ms | 7.32–7.95 ms | 342 MiB/s | 38 ns |
 
+Re-measured after slice 2 (directed documents: 6-keyword lexer table, 9
+parser states, header metadata; same workload document):
+
+| Configuration | Median | Spread (min–max) | Throughput | Per statement |
+| --- | --- | --- | --- | --- |
+| Default (growing pools, arena) | 8.59 ms | 7.83–9.98 ms | 304 MiB/s | 43 ns |
+| With `document_capacities` hints | 7.32 ms | 7.01–7.61 ms | 356 MiB/s | 37 ns |
+
+Within run-to-run noise of the milestone-1 numbers: the grammar growth is
+not measurable on this workload. Memory figures below are unchanged by
+slice 2 (re-verified: 26.0 B/statement retained, same arena capacities).
+
 ## Memory
 
 | Metric | Value |
