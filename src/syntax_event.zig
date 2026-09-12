@@ -21,13 +21,22 @@
 //!
 //! ```text
 //! beginDocument
-//! (nodeStatement | edgeStatement)*   // in source order
+//! ((attribute* (nodeStatement | edgeStatement | attributeStatement)) | assignment)*
 //! endDocument | abortDocument        // exactly one terminal event
 //! ```
 //!
 //! - `beginDocument` is the first event whenever any event is emitted, with
 //!   one cleanup exception below.
 //! - Statement events arrive in the order they appear in the source.
+//! - Each `attribute` carries one completed pair for the immediately following
+//!   node, edge, or attribute statement. Adjacent bracket groups are flattened;
+//!   empty groups produce no pair event. Pairs never attach to an assignment.
+//! - Pair events stream before their owning statement, so a malformed suffix
+//!   may abort after some pairs with no final statement event. Consumers stage
+//!   these pairs in their destination pool and discard them on document abort;
+//!   no temporary per-statement list is required in the parser.
+//! - The final statement consumes all pending pairs. There can be no pending
+//!   pairs at `endDocument`. This seam remains private, not a stable sink API.
 //! - `endDocument` commits: the document parsed completely.
 //! - `abortDocument` ends the document without commit (R-MOD-011). The
 //!   parser cannot roll back work a sink already performed; sinks needing
@@ -40,7 +49,8 @@
 //!
 //! ## Failure propagation
 //!
-//! `beginDocument`, `nodeStatement`, `edgeStatement`, and `endDocument`
+//! `beginDocument`, `nodeStatement`, `edgeStatement`, `attribute`, `assignment`,
+//! `attributeStatement`, and `endDocument`
 //! return `E!void` for an error set `E` the sink chooses (allocation
 //! failure, capacity, …); a sink that cannot fail declares `error{}!void`.
 //! When one fails, the parser stops and calls `abortDocument` — which is
@@ -95,6 +105,18 @@ pub const BeginDocument = struct {
     name_span: ?location.Span = null,
 };
 
+pub const Attribute = struct {
+    key: location.Span,
+    value: location.Span,
+};
+
+pub const AttributeTarget = enum { graph, node, edge };
+
+pub const AttributeStatement = struct {
+    target: AttributeTarget,
+    keyword_span: location.Span,
+};
+
 pub const NodeStatement = struct {
     identifier: location.Span,
 };
@@ -124,6 +146,9 @@ pub const Event = union(enum) {
     begin_document: BeginDocument,
     node_statement: NodeStatement,
     edge_statement: EdgeStatement,
+    attribute: Attribute,
+    assignment: Attribute,
+    attribute_statement: AttributeStatement,
     end_document,
     abort_document: AbortReason,
 };
@@ -139,6 +164,9 @@ pub const Event = union(enum) {
 /// pub fn beginDocument(self: *T, event: BeginDocument) E!void
 /// pub fn nodeStatement(self: *T, statement: NodeStatement) E!void
 /// pub fn edgeStatement(self: *T, statement: EdgeStatement) E!void
+/// pub fn attribute(self: *T, pair: Attribute) E!void
+/// pub fn assignment(self: *T, pair: Attribute) E!void
+/// pub fn attributeStatement(self: *T, statement: AttributeStatement) E!void
 /// pub fn endDocument(self: *T) E!void
 /// pub fn abortDocument(self: *T, reason: AbortReason) void   // infallible
 /// ```
@@ -151,6 +179,9 @@ pub fn assertSyntaxSink(comptime T: type) void {
         assertMethod(T, "beginDocument", &.{BeginDocument}, .fallible);
         assertMethod(T, "nodeStatement", &.{NodeStatement}, .fallible);
         assertMethod(T, "edgeStatement", &.{EdgeStatement}, .fallible);
+        assertMethod(T, "attribute", &.{Attribute}, .fallible);
+        assertMethod(T, "assignment", &.{Attribute}, .fallible);
+        assertMethod(T, "attributeStatement", &.{AttributeStatement}, .fallible);
         assertMethod(T, "endDocument", &.{}, .fallible);
         assertMethod(T, "abortDocument", &.{AbortReason}, .infallible);
     }
@@ -204,7 +235,7 @@ fn assertMethod(
 /// parser and builder (R-ARCH-005: drive the parser with a recording sink).
 /// Performs no allocation.
 ///
-/// `capacity` bounds the fallible events (begin + statements). One extra
+/// `capacity` bounds the fallible events (begin + statements + attribute pairs). One extra
 /// slot is reserved for the terminal event so that recording an abort can
 /// never fail — capacity exhaustion is exactly when aborts happen, and the
 /// contract requires `abortDocument` to be infallible.
@@ -227,6 +258,16 @@ pub fn RecordingSink(comptime capacity: usize) type {
 
         pub fn edgeStatement(self: *Self, statement: EdgeStatement) Error!void {
             try self.record(.{ .edge_statement = statement });
+        }
+
+        pub fn attribute(self: *Self, event: Attribute) Error!void {
+            try self.record(.{ .attribute = event });
+        }
+        pub fn assignment(self: *Self, event: Attribute) Error!void {
+            try self.record(.{ .assignment = event });
+        }
+        pub fn attributeStatement(self: *Self, event: AttributeStatement) Error!void {
+            try self.record(.{ .attribute_statement = event });
         }
 
         pub fn endDocument(self: *Self) Error!void {

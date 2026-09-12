@@ -359,7 +359,6 @@ fn writeHint(details: Details, info: diagnostic.Code.Info, writer: anytype) !voi
         .unterminated => |construct| switch (construct) {
             .block_comment => try writer.writeAll("close the block comment opened here with '*/'; block comments do not nest"),
             .quoted_identifier => try writer.writeAll("close the quoted identifier opened here with a double quote"),
-            _ => try writer.writeAll(info.hint),
         },
         .operator_mismatch => |mismatch| switch (mismatch.expected) {
             .directed => try writer.writeAll(
@@ -677,7 +676,6 @@ fn unterminatedName(construct: diagnostic.UnterminatedConstruct) []const u8 {
     return switch (construct) {
         .block_comment => "block comment",
         .quoted_identifier => "quoted identifier",
-        _ => "lexical construct",
     };
 }
 
@@ -749,6 +747,10 @@ fn itemName(item: diagnostic.SyntaxItem) []const u8 {
         .undirected_operator => "'--'",
         .directed_operator => "'->'",
         .end_of_input => "end of input",
+        .left_bracket => "'['",
+        .right_bracket => "']'",
+        .equals => "'='",
+        .comma => "','",
     };
 }
 
@@ -760,6 +762,10 @@ fn contextName(context: diagnostic.ParseContext) []const u8 {
         .edge_endpoint => "an edge endpoint",
         .statement_terminator => "a statement terminator",
         .document_epilogue => "the end of the document",
+        .attribute_list => "an attribute list",
+        .attribute_key => "an attribute key",
+        .attribute_value => "an attribute value",
+        .assignment_value => "an assignment value",
     };
 }
 
@@ -841,17 +847,6 @@ test "unterminated constructs render typed wording and safe fallbacks" {
     try renderBoxed(d, 1, .{ .source = source, .style = .ascii }, &writer);
     try expect(std.mem.indexOf(u8, writer.buffered(), "^^ block comment opened here, never closed") != null);
     try expect(std.mem.indexOf(u8, writer.buffered(), "E.Lexer.Syntax.031") != null);
-
-    // Forward-compatible readers may encounter a construct introduced by a
-    // newer library. Its fallback must not invent a closing delimiter.
-    d.details = .{ .unterminated = @enumFromInt(255) };
-    writer = std.Io.Writer.fixed(&buffer);
-    try render(d, &writer);
-    try expect(std.mem.indexOf(u8, writer.buffered(), "lexical construct") != null);
-    try expect(std.mem.indexOf(u8, writer.buffered(), "*/") == null);
-    writer = std.Io.Writer.fixed(&buffer);
-    try renderBoxed(d, 1, .{}, &writer);
-    try expect(std.mem.indexOf(u8, writer.buffered(), "lexical construct") != null);
 
     // Publicly constructed diagnostics can omit details. The registry's
     // generic summary/hint still render without taking an unreachable arm.

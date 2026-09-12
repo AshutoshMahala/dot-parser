@@ -42,6 +42,8 @@ pub fn main(init: std.process.Init) !void {
 
     var statements = document.statements();
     while (statements.next()) |statement| switch (statement) {
+        .assignment => |assignment| try stdout.print("assignment {s} = {s}\n", .{ document.text(assignment.key), document.text(assignment.value) }),
+        .attribute_statement => |attributes| try stdout.print("{s} attributes: {d}\n", .{ @tagName(attributes.target), attributes.attributes.len }),
         .node => |node| try stdout.print("node  {s}\n", .{
             document.text(node.identifier),
         }),

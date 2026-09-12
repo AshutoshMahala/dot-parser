@@ -54,6 +54,7 @@ pub fn build(b: *std.Build) void {
         "fixed_buffer",
         "diagnostics_demo",
         "identifiers",
+        "attributes",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{

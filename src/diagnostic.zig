@@ -13,7 +13,7 @@
 //! 002 MISMATCH, 003 INVALID, 009 UNSUPPORTED, 026 EXHAUSTED; 031+
 //! project-specific). The hashing algorithms are verified against the
 //! spec's test vectors below; upgrading the WDP baseline requires
-//! re-verifying those vectors and reviewing every published identity.
+//! re-verifying those vectors and reviewing the current registry.
 //!
 //! Design constraints from the requirements:
 //! - Diagnostics are structured data; the library never prints, formats, or
@@ -137,10 +137,9 @@ pub const SequenceDefinition = struct {
 
 /// Named sequence assignments used by this diagnostic registry. Sequences
 /// identify a condition within a component/primary domain, not a complete
-/// diagnostic identity. Keep the published numeric assignments stable.
+/// diagnostic identity. Conventional numbers follow the pinned WDP baseline.
 pub const Sequence = struct {
     // WDP part 6 conventional assignments.
-    pub const missing: SequenceDefinition = .{ .number = 1, .alias = "MISSING" };
     pub const mismatch: SequenceDefinition = .{ .number = 2, .alias = "MISMATCH" };
     pub const invalid: SequenceDefinition = .{ .number = 3, .alias = "INVALID" };
     pub const unsupported: SequenceDefinition = .{ .number = 9, .alias = "UNSUPPORTED" };
@@ -152,17 +151,12 @@ pub const Sequence = struct {
 
 /// The diagnostic registry.
 ///
-/// Published codes are stable: identities are append-only and a sequence
-/// number is never reused or renumbered, even across `0.x` versions — a
-/// recorded diagnostic keeps its meaning (R-DIAG-005). Each code is unique,
-/// documented here, and covered by the registry test below. (The registry
-/// was provisional until two vertical slices had exercised it; it froze
-/// with the 0.1.0 release.)
+/// Each current code is unique, documented here, and covered by registry
+/// tests (R-DIAG-005). During experimental 0.x development, codes and payload
+/// enums may change; obsolete entries are removed, not retained for replay.
 pub const Code = enum {
     /// E.Lexer.Byte.003 (INVALID) — a byte is invalid at this location.
     lexer_invalid_byte,
-    /// E.Parser.Syntax.001 (MISSING) — a required syntax element is absent.
-    parser_missing_element,
     /// E.Parser.Syntax.003 (INVALID) — the token found violates the grammar.
     parser_unexpected_token,
     /// E.Parser.Syntax.031 (UNEXPECTED_END, project-specific) — input ended
@@ -202,8 +196,8 @@ pub const Code = enum {
         hint: []const u8,
     };
 
-    /// Internal entries select the sequence/alias pair once. Public Info
-    /// retains its existing numeric sequence and string alias fields.
+    /// Internal entries select the sequence/alias pair once; Info exposes
+    /// the derived number and alias for rendering and inspection.
     const Definition = struct {
         severity: Severity,
         component: Component,
@@ -222,14 +216,6 @@ pub const Code = enum {
                 .sequence = Sequence.invalid,
                 .summary = "input byte is not valid at this location",
                 .hint = "use a supported DOT token; NUL is not allowed in quoted identifiers",
-            },
-            .parser_missing_element => .{
-                .severity = .err,
-                .component = .parser,
-                .primary = .syntax,
-                .sequence = Sequence.missing,
-                .summary = "a required syntax element is missing",
-                .hint = "the milestone grammar is: graph { statement* } where a statement is 'a;' or 'a -- b;'",
             },
             .parser_unexpected_token => .{
                 .severity = .err,
@@ -407,15 +393,13 @@ pub const Details = union(enum) {
     expected_quote: ?u8,
 };
 
-/// Lexical constructs requiring a closing delimiter. Append variants only
-/// when their support ships; published discriminants are never repurposed.
+/// Currently supported lexical constructs requiring a closing delimiter.
 pub const UnterminatedConstruct = enum(u8) {
-    block_comment = 0,
-    quoted_identifier = 1,
-    _,
+    block_comment,
+    quoted_identifier,
 };
 
-/// Stable diagnostic-layer vocabulary for grammar-level constructs.
+/// Diagnostic-layer vocabulary for grammar-level constructs.
 /// Deliberately NOT the lexer's token tags: diagnostics must not depend on
 /// the lexer (dependency direction), and token tags are an implementation
 /// detail that may diverge from user-facing grammar concepts.
@@ -433,14 +417,17 @@ pub const SyntaxItem = enum(u8) {
     undirected_operator,
     directed_operator,
     end_of_input,
+    left_bracket,
+    right_bracket,
+    equals,
+    comma,
 };
 
 /// An inline, allocation-free, deterministic set of expected constructs.
 pub const ExpectedSet = std.EnumSet(SyntaxItem);
 
-/// The grammar position where a parser failure occurred. These are stable
-/// grammar concepts, not internal state-machine names, so parser refactors
-/// do not become observable API changes.
+/// Grammar concepts identifying where a parser failure occurred, rather than
+/// internal state-machine names.
 pub const ParseContext = enum(u8) {
     document_header,
     document_body,
@@ -448,6 +435,10 @@ pub const ParseContext = enum(u8) {
     edge_endpoint,
     statement_terminator,
     document_epilogue,
+    attribute_list,
+    attribute_key,
+    attribute_value,
+    assignment_value,
 };
 
 /// A secondary source location related to a diagnostic. The role is typed;
@@ -482,64 +473,24 @@ pub const OperatorMismatch = struct {
     pub const Operator = enum(u8) { undirected, directed };
 };
 
-/// Recognized-but-deferred DOT features. Non-exhaustive (`_`) so the set can
-/// grow without forcing every downstream switch to be exhaustive; consumers
-/// aggregate, test, and render on the enum, never on spelled-out strings.
-///
-/// Discriminants are append-only and never reused: once a feature ships, its
-/// variant stays for diagnostic compatibility, marked legacy below. Legacy
-/// variants are never emitted by the current profile, but they keep their
-/// display names in `name` so a recorded diagnostic replayed through a
-/// current renderer still reads correctly — the legacy marker governs
-/// discriminant stability, not display (R-DIAG-005).
-pub const Feature = enum(u16) {
-    /// Legacy (implemented in slice 2): kept for its discriminant only.
-    digraph_document,
-    /// Legacy (implemented in slice 2): kept for its discriminant only.
-    graph_name,
-    /// Legacy (implemented in slice 2): kept for its discriminant only.
-    strict_modifier,
+/// DOT features recognized but not implemented in the current parser.
+/// Remove a variant when its feature ships. Consumers use these typed values
+/// instead of parsing diagnostic text; this is not a cross-version wire enum.
+pub const Feature = enum {
     subgraph,
-    node_attribute_statement,
-    edge_attribute_statement,
-    /// Legacy (implemented in the identifier slice): kept for its discriminant.
-    quoted_identifier,
     html_identifier,
-    /// Legacy (implemented in the identifier slice): kept for its discriminant.
-    numeral_identifier,
     non_ascii_identifier,
-    /// Legacy (implemented in the comments slice): kept for its discriminant only.
-    comment,
-    attribute_list,
-    attribute_assignment,
     port_or_compass,
     edge_chain,
-    /// Legacy (implemented in slice 2): kept for its discriminant only.
-    optional_semicolons,
-    graph_attribute_statement,
-    _,
 
     /// Canonical English display name. Renderers may localize instead.
     pub fn name(self: Feature) []const u8 {
         return switch (self) {
-            .digraph_document => "digraph document",
-            .graph_name => "graph name",
-            .strict_modifier => "strict modifier",
             .subgraph => "subgraph",
-            .node_attribute_statement => "node attribute statement",
-            .edge_attribute_statement => "edge attribute statement",
-            .quoted_identifier => "quoted identifier",
             .html_identifier => "HTML-like identifier",
-            .numeral_identifier => "numeral identifier",
             .non_ascii_identifier => "non-ASCII identifier",
-            .comment => "comment",
-            .attribute_list => "attribute list",
-            .attribute_assignment => "attribute assignment",
             .port_or_compass => "port or compass point",
             .edge_chain => "edge chain",
-            .optional_semicolons => "optional semicolons",
-            .graph_attribute_statement => "graph attribute statement",
-            _ => "unrecognized feature",
         };
     }
 };
@@ -548,8 +499,7 @@ pub const Capacity = struct {
     resource: Resource,
     limit: usize,
 
-    /// Which caller-configured capacity was exhausted. Non-exhaustive for
-    /// the same growth reason as `Feature`.
+    /// Which current caller-configured capacity was exhausted.
     pub const Resource = enum(u8) {
         statements,
         /// Caller-provided pools (`parseBorrowedIn`).
@@ -560,7 +510,11 @@ pub const Capacity = struct {
         statement_index,
         /// The 4 GiB retained source-range domain.
         source_range,
-        _,
+        attributes,
+        attribute_pool,
+        assignment_pool,
+        attribute_statement_pool,
+        attribute_index,
 
         pub fn name(self: Resource) []const u8 {
             return switch (self) {
@@ -570,7 +524,11 @@ pub const Capacity = struct {
                 .edge_pool => "edge pool",
                 .statement_index => "statement index",
                 .source_range => "source range",
-                _ => "resource",
+                .attributes => "attribute",
+                .attribute_pool => "attribute pool",
+                .assignment_pool => "assignment pool",
+                .attribute_statement_pool => "attribute statement pool",
+                .attribute_index => "attribute index",
             };
         }
     };
@@ -695,7 +653,6 @@ test "structured codes follow the documented registry" {
     try expectEqualStrings("E.Lexer.Syntax.003", Code.lexer_invalid_concatenation.structured());
     try expectEqualStrings("E.Lexer.Syntax.031", Code.lexer_unterminated_construct.structured());
     try expectEqualStrings("E.Lexer.Byte.003", Code.lexer_invalid_byte.structured());
-    try expectEqualStrings("E.Parser.Syntax.001", Code.parser_missing_element.structured());
     try expectEqualStrings("E.Parser.Syntax.003", Code.parser_unexpected_token.structured());
     try expectEqualStrings("E.Parser.Syntax.031", Code.parser_unexpected_end.structured());
     try expectEqualStrings("E.Validation.Operator.002", Code.validation_operator_mismatch.structured());

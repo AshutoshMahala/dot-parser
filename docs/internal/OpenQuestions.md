@@ -1,8 +1,8 @@
 # Open design decisions
 
-Last reconciled: 2026-09-12 (comments and identifier slices).
+Last reconciled: 2026-09-12 (comments, identifiers, and basic attributes).
 
-Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q29)
+Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q30)
 are stable: they are never renumbered, deleted, or reused, and new questions
 append with fresh numbers. Answered questions are not removed — the
 **Decided** section doubles as the project's decision log, each entry naming
@@ -23,6 +23,17 @@ authoritative for what the current release actually processes.
 ---
 
 ## Decided
+
+**Q30 — How does the first attribute slice retain groups and deliver pairs?**
+Adjacent bracket groups are flattened into one ordered pair sequence, preserving
+written duplicate keys but not group boundaries or empty-list presence. Node,
+edge and attribute statements reference a shared pair pool; assignments have a
+separate pool. The private event seam streams pairs before their owner statement;
+abort discards staged data and no partial document escapes. Both storage paths
+have explicit capacities for all six pools. `max_attributes` counts all pairs,
+including assignments, but does not bound lexical work. Defaults, effective-value
+resolution and compile-time feature removal remain future work. *(Embodied:
+`src/parser.zig`, `src/syntax_event.zig`, `src/syntax.zig`, `tests/attributes.zig`.)*
 
 **Q2 — Is the primary public result a syntax AST, an event stream, or equal
 support for both?**
@@ -69,8 +80,8 @@ differential reference, not an instruction to reproduce every implementation
 quirk. Intentional differences are listed in
 [supported syntax](../SUPPORTED_SYNTAX.md), including standalone-CR comment
 termination and whole-document consumption. Keywords, numeral IDs, and quoted
-IDs are implemented; non-ASCII bare IDs remain deferred. Additional identifier
-probes used the locally available Graphviz 16.0.0, separately labeled in the
+IDs and basic attributes are implemented; non-ASCII bare IDs remain deferred.
+Additional identifier and attribute probes used the locally available Graphviz 16.0.0, separately labeled in the
 compatibility notes. **Verification pending:** automate the differential
 harness against the pinned reference and record exceptions explicitly.
 *(Embodied: `src/lexer.zig`, compatibility notes, corpus; R-ROB-004.)*
@@ -152,7 +163,7 @@ whether convenience APIs should ship with non-trivial defaults is open.
 
 **Q16 — What size thresholds establish that disabling a feature removed its
 cost?**
-Parser-state size is regression-guarded (≤ 320 B) and baselines exist;
+Parser-state size is regression-guarded (≤ 416 B; currently 400 B native) and baselines exist;
 per-profile binary-size thresholds await the profile work. *(Embodied:
 `docs/BASELINES.md`; parser-size test.)*
 
@@ -193,8 +204,10 @@ deliverables of the next slice. *(Embodied: `src/lexer.zig`,
 **Q24 — When will the first stable compatibility boundary be declared?**
 `v0.1.0` shipped after slice 2 (directed documents). It is a useful experimental
 release, not a source-API stability declaration. The stable boundary and its
-criteria remain open; published diagnostic identities/discriminants already
-have their separate stability guarantee. *(Embodied: `CHANGELOG.md`,
+criteria remain open. There is no compatibility guarantee for source APIs,
+diagnostic identities, payload discriminants or retained layouts during this
+experimental phase. Obsolete entries and compatibility-only scaffolding are
+removed; WDP conformance and current registry consistency remain required. *(Embodied: `CHANGELOG.md`,
 `build.zig.zon`, `src/root.zig`; R-ARCH-009/R-DIAG-005.)*
 
 **Q26 — Which named profiles are public conveniences?**
@@ -223,8 +236,8 @@ cancellation. No public bounded/cancellation driver ships yet.
 **Q7 — What are the target RAM, flash, maximum token, maximum nesting, and
 document-size budgets for the first embedded profile?**
 Gated on choosing the target board and build configuration (R-PORT-002).
-Interim: `FixedDocumentStorage.byte_size` and `max_statements` give callers
-their own budgeting.
+Interim: `FixedDocumentStorage.byte_size`, `max_statements`, and
+`max_attributes` give callers their own output budgeting.
 
 **Q11 — Which observer events and verbosity levels are stable public API in
 version 1?**
@@ -262,3 +275,10 @@ Open; nothing currently forces the choice.
   numeral IDs from deferred non-ASCII bare IDs, and record the explicit decoding,
   NUL, and line-continuation policies. The 16.0.0 manual probes do not replace
   the pinned 15.1.0 differential suite; BOM policy remains open.
+
+- 2026-09-12 — Attribute slice: added Q30 for representation/event decisions;
+  Q10 records supplemental Graphviz checks. Q7 still requires a concrete target;
+  Q27's byte/work budgets are not satisfied by the new pair-count limit.
+
+- 2026-09-12 — Q24: removed the premature diagnostic stability exception;
+  experimental 0.x now has no backward-compatibility retention requirement.

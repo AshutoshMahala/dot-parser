@@ -25,19 +25,25 @@ strict digraph Routes {
 - Bare ASCII, numeral, and quoted identifiers (including quoted `+`
   concatenation), node statements, single-edge statements;
   semicolons are optional, as in Graphviz.
+- Basic attributes: standalone assignments, graph/node/edge attribute statements,
+  and node/edge lists. Duplicate keys and written order are preserved.
 - Borrowed source spans, explicit caller memory, fixed-buffer operation.
 - Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
 
-Everything else (HTML/non-ASCII bare IDs, attributes, edge
+Everything else (HTML/non-ASCII bare IDs, edge
 chains, ports, subgraphs, …) is deliberately deferred to later vertical
 slices. The authoritative construct-by-construct table is
 [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
+
+See [the attribute example](examples/attributes.zig) for fixed-storage parsing
+and ordered attribute traversal. Parsing does not apply defaults or resolve values.
 
 ## Usage
 
 ### Just parse and check
 
 ```zig
+const std = @import("std");
 const dot = @import("dot_parser");
 
 var bag: dot.FixedDiagnosticBag(16) = .{};
@@ -54,6 +60,12 @@ if (checked.documentValid()) {
                 document.text(edge.left),
                 edge.operator.lexeme(),
                 document.text(edge.right),
+            }),
+            .assignment => |assignment| std.log.info("assignment {s} = {s}", .{
+                document.text(assignment.key), document.text(assignment.value),
+            }),
+            .attribute_statement => |attributes| std.log.info("{s} attributes: {d}", .{
+                @tagName(attributes.target), attributes.attributes.len,
             }),
         }
     }
@@ -76,7 +88,7 @@ while (statements.next()) |statement| switch (statement) {
             where.line, where.byte_column, document.text(node.identifier),
         });
     },
-    .edge => {},
+    .edge, .assignment, .attribute_statement => {}, // This lint only checks nodes.
 };
 ```
 

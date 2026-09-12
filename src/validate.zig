@@ -28,23 +28,16 @@ const location = @import("location.zig");
 const diagnostic = @import("diagnostic.zig");
 const syntax = @import("syntax.zig");
 
-/// Policy knobs arrive with later slices; the struct exists so signatures
-/// stay stable.
+/// No validation-rule configuration is implemented yet.
 pub const Options = struct {};
 
 /// How the pass ended. Tagged, so meaningless combinations (such as an
-/// incomplete-but-valid pass) are unrepresentable. The `budget_exhausted`
-/// and `cancelled` variants are declared now so downstream switches handle
-/// them from day one, but they are not produced until validation budgets
-/// and cooperative cancellation land.
+/// incomplete-but-valid pass) are unrepresentable. Only implemented outcomes
+/// are exposed; bounded and cancellable validation remain future work.
 pub const Outcome = union(enum) {
     /// The pass examined every statement (R-FUNC-008). Any number of
     /// violations may have been found — completion is not validity.
     completed: Completed,
-    /// Future: a validation work budget stopped the pass early.
-    budget_exhausted: Partial,
-    /// Future: cooperative cancellation stopped the pass early.
-    cancelled: Partial,
 
     pub const Completed = struct {
         /// No rule violations were found.
@@ -53,10 +46,6 @@ pub const Outcome = union(enum) {
         /// counter accounts for the difference (bounded-bag policy: first
         /// diagnostics retained, the rest counted).
         violations: usize,
-    };
-
-    pub const Partial = struct {
-        violations_so_far: usize,
     };
 };
 
@@ -71,7 +60,6 @@ pub const Result = struct {
     pub fn documentValid(self: *const Result) bool {
         return switch (self.outcome) {
             .completed => |completed| completed.document_valid,
-            .budget_exhausted, .cancelled => false,
         };
     }
 };

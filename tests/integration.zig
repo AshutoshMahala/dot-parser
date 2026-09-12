@@ -4,6 +4,10 @@
 const std = @import("std");
 const dot = @import("dot_parser");
 
+test {
+    _ = @import("attributes.zig");
+}
+
 const Rejecting = struct {
     fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!void {
         return error.DiagnosticSinkFailure;
@@ -571,7 +575,7 @@ test "the discard sink makes ignoring diagnostics explicit" {
 const ValidEntry = struct {
     name: []const u8,
     source: []const u8,
-    /// Statement kinds in source order: 'n' node, 'e' edge.
+    /// Statement kinds: 'n' node, 'e' edge, 'a' assignment, 'd' attribute statement.
     shape: []const u8,
     nodes: usize,
     edges: usize,
@@ -586,6 +590,8 @@ const ValidEntry = struct {
 };
 
 const valid_corpus = [_]ValidEntry{
+    .{ .name = "attributes", .source = @embedFile("corpus/valid/attributes.dot"), .shape = "adddnen", .nodes = 2, .edges = 1, .first_text = "rankdir", .kind = .digraph, .graph_name = "G" },
+    .{ .name = "node_attribute", .source = @embedFile("corpus/valid/node_attribute.dot"), .shape = "d", .nodes = 0, .edges = 0, .first_text = "node" },
     .{ .name = "numeral_identifiers", .source = @embedFile("corpus/valid/numeral_identifiers.dot"), .shape = "nne", .nodes = 2, .edges = 1, .first_text = "0", .kind = .digraph, .graph_name = "-0.5" },
     .{ .name = "quoted_identifiers", .source = @embedFile("corpus/valid/quoted_identifiers.dot"), .shape = "ne", .nodes = 1, .edges = 1, .first_text = "\"node\"", .graph_name = "\"graph\"" },
     .{ .name = "quoted_concatenation", .source = @embedFile("corpus/valid/quoted_concatenation.dot"), .shape = "e", .nodes = 0, .edges = 1, .first_text = "\"a\" /* between parts */ + \"b\"", .kind = .digraph, .graph_name = "\"G\" + \"raph\"" },
@@ -613,6 +619,9 @@ const InvalidEntry = struct {
 };
 
 const invalid_corpus = [_]InvalidEntry{
+    .{ .name = "missing_attribute_value", .source = @embedFile("corpus/invalid/missing_attribute_value.dot"), .code = .parser_unexpected_token, .offset = 13 },
+    .{ .name = "missing_attribute_equals", .source = @embedFile("corpus/invalid/missing_attribute_equals.dot"), .code = .parser_unexpected_token, .offset = 12 },
+    .{ .name = "truncated_attribute", .source = @embedFile("corpus/invalid/truncated_attribute.dot"), .code = .parser_unexpected_end, .offset = 15 },
     .{ .name = "unterminated_comment", .source = @embedFile("corpus/invalid/unterminated_comment.dot"), .code = .lexer_unterminated_construct, .offset = 11, .construct = .block_comment },
     .{ .name = "unterminated_comment_before_header", .source = @embedFile("corpus/invalid/unterminated_comment_before_header.dot"), .code = .lexer_unterminated_construct, .offset = 0, .construct = .block_comment },
     .{ .name = "unterminated_comment_after_document", .source = @embedFile("corpus/invalid/unterminated_comment_after_document.dot"), .code = .lexer_unterminated_construct, .offset = 9, .construct = .block_comment },
@@ -635,7 +644,6 @@ const UnsupportedEntry = struct {
 const unsupported_corpus = [_]UnsupportedEntry{
     .{ .name = "subgraph", .source = @embedFile("corpus/unsupported/subgraph.dot"), .feature = .subgraph },
     .{ .name = "edge_chain", .source = @embedFile("corpus/unsupported/edge_chain.dot"), .feature = .edge_chain },
-    .{ .name = "node_attribute", .source = @embedFile("corpus/unsupported/node_attribute.dot"), .feature = .node_attribute_statement },
 };
 
 fn documentShape(document: *const dot.Document, buffer: []u8) []const u8 {
@@ -645,6 +653,8 @@ fn documentShape(document: *const dot.Document, buffer: []u8) []const u8 {
         buffer[length] = switch (statement) {
             .node => 'n',
             .edge => 'e',
+            .assignment => 'a',
+            .attribute_statement => 'd',
         };
     }
     return buffer[0..length];
@@ -678,6 +688,8 @@ test "valid corpus parses to the expected statements, deterministically" {
             const actual = switch (document.statementAt(0).?) {
                 .node => |node| document.text(node.identifier),
                 .edge => |edge| document.text(edge.left),
+                .assignment => |assignment| document.text(assignment.key),
+                .attribute_statement => |statement| document.text(statement.keyword),
             };
             try std.testing.expectEqualStrings(expected_text, actual);
         }
@@ -688,15 +700,21 @@ test "valid corpus parses to the expected statements, deterministically" {
         var second = dot.parseAndValidate(std.testing.allocator, entry.source, second_bag.sink(), .{});
         defer second.deinit(std.testing.allocator);
         const second_document = &second.document.?;
+        try std.testing.expectEqualSlices(dot.Attribute, document.attributes, second_document.attributes);
+        try std.testing.expectEqualSlices(dot.Assignment, document.assignments, second_document.assignments);
+        try std.testing.expectEqualSlices(dot.AttributeStatement, document.attribute_statements, second_document.attribute_statements);
         try std.testing.expectEqualSlices(dot.StatementId, document.order, second_document.order);
         try std.testing.expectEqualSlices(dot.NodeStatement, document.nodes, second_document.nodes);
         try std.testing.expectEqualSlices(dot.EdgeStatement, document.edges, second_document.edges);
-        var pools: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8 }) = .{};
+        var pools: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8, .attributes = 16, .assignments = 8, .attribute_statements = 8 }) = .{};
         const fixed = dot.parseBorrowedIn(entry.source, pools.storage(), dot.diagnostic.discard, .{});
         try std.testing.expect(fixed.outcome == .success);
         try std.testing.expectEqualSlices(dot.StatementId, document.order, fixed.document.?.order);
         try std.testing.expectEqualSlices(dot.NodeStatement, document.nodes, fixed.document.?.nodes);
         try std.testing.expectEqualSlices(dot.EdgeStatement, document.edges, fixed.document.?.edges);
+        try std.testing.expectEqualSlices(dot.Attribute, document.attributes, fixed.document.?.attributes);
+        try std.testing.expectEqualSlices(dot.Assignment, document.assignments, fixed.document.?.assignments);
+        try std.testing.expectEqualSlices(dot.AttributeStatement, document.attribute_statements, fixed.document.?.attribute_statements);
     }
 }
 
@@ -717,7 +735,7 @@ test "invalid corpus fails with the expected diagnostic and terminates" {
         if (failure.code == .lexer_unterminated_construct) {
             try std.testing.expectEqual(entry.construct.?, failure.details.unterminated);
         }
-        var pools: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4 }) = .{};
+        var pools: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4, .attributes = 8, .assignments = 4, .attribute_statements = 4 }) = .{};
         var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
         const fixed = dot.parseBorrowedIn(entry.source, pools.storage(), fixed_bag.sink(), .{});
         try std.testing.expect(fixed.outcome == .invalid_syntax);
@@ -771,7 +789,7 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
 
     var bag: dot.FixedDiagnosticBag(4) = .{};
     var checked = dot.parseAndValidate(gpa, input.items, bag.sink(), .{
-        .parse = .{ .max_statements = 4096 },
+        .parse = .{ .max_statements = 4096, .max_attributes = 4096 },
     });
     defer checked.deinit(gpa);
 
@@ -791,7 +809,7 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
     // position, and on the parsed statements when both succeed.
     var second_bag: dot.FixedDiagnosticBag(4) = .{};
     var second = dot.parseAndValidate(gpa, input.items, second_bag.sink(), .{
-        .parse = .{ .max_statements = 4096 },
+        .parse = .{ .max_statements = 4096, .max_attributes = 4096 },
     });
     defer second.deinit(gpa);
     try std.testing.expectEqual(
@@ -808,6 +826,9 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
         try std.testing.expectEqual(first_diag.details, second_diag.details);
     }
     if (checked.document) |*first_document| {
+        try std.testing.expectEqualSlices(dot.Attribute, first_document.attributes, second.document.?.attributes);
+        try std.testing.expectEqualSlices(dot.Assignment, first_document.assignments, second.document.?.assignments);
+        try std.testing.expectEqualSlices(dot.AttributeStatement, first_document.attribute_statements, second.document.?.attribute_statements);
         try std.testing.expectEqualSlices(
             dot.StatementId,
             first_document.order,
@@ -816,7 +837,7 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
     }
 
     // The fixed-storage twin must terminate on the same bytes too.
-    var pools: dot.FixedDocumentStorage(.{ .statements = 64, .nodes = 64, .edges = 64 }) = .{};
+    var pools: dot.FixedDocumentStorage(.{ .statements = 64, .nodes = 64, .edges = 64, .attributes = 64, .assignments = 64, .attribute_statements = 64 }) = .{};
     var fixed_bag: dot.FixedDiagnosticBag(4) = .{};
     _ = dot.parseBorrowedIn(input.items, pools.storage(), fixed_bag.sink(), .{});
 }

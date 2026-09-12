@@ -1,9 +1,9 @@
 //! Raw-byte lexer for the currently supported DOT subset.
 //!
 //! Recognizes the current subset: every DOT keyword (`graph` maps to the
-//! `undigraph` kind at reading time, `digraph`, `strict`, plus the deferred
-//! `subgraph`/`node`/`edge`); bare ASCII, numeral, and quoted identifiers;
-//! `{`, `}`, `;`; the
+//! `undigraph` kind at reading time, `digraph`, `strict`, `node`, `edge`, and the deferred
+//! `subgraph`); bare ASCII, numeral, and quoted identifiers;
+//! `{`, `}`, `;`, `[`, `]`, `=`, `,`; the
 //! edge operators `--` and `->`; whitespace (space, tab, LF, CRLF, CR);
 //! and comments (`//`, `/* ... */`, and `#` through the physical line end).
 //! Comments are skipped without retention. See docs/SUPPORTED_SYNTAX.md for
@@ -18,9 +18,9 @@
 //!   whether `subgraph` legally introduces a subgraph or sits in an illegal
 //!   grammar position is the parser's decision, which the lexer cannot
 //!   make. Only *lexical* deferred constructs — HTML/non-ASCII identifiers,
-//!   attribute punctuation, ports — are
+//!   ports — are
 //!   reported here as structured `profile_unsupported_feature` failures,
-//!   distinct from bytes that are invalid in any DOT document (R-MOD-006).
+//!   distinct from invalid syntax (R-MOD-006).
 //!   Detection stops at the introducer: neither the construct's body nor
 //!   the remaining input is checked, so an unsupported result makes no
 //!   whole-input validity claim.
@@ -47,6 +47,10 @@ pub const Token = struct {
         right_brace,
         semicolon,
         eof,
+        left_bracket,
+        right_bracket,
+        equals,
+        comma,
     };
 };
 
@@ -78,6 +82,10 @@ pub const Lexer = struct {
             '{' => self.single(.left_brace),
             '}' => self.single(.right_brace),
             ';' => self.single(.semicolon),
+            '[' => self.single(.left_bracket),
+            ']' => self.single(.right_bracket),
+            '=' => self.single(.equals),
+            ',' => self.single(.comma),
             'A'...'Z', 'a'...'z', '_' => self.identifierOrKeyword(),
             '-' => self.dash(),
             '0'...'9' => self.numeral(),
@@ -91,8 +99,6 @@ pub const Lexer = struct {
             '"' => self.quotedIdentifier(),
             // Valid DOT, deferred to later slices (R-MOD-006 detectors).
             '<' => unsupported(start, 1, .html_identifier),
-            '[', ']', ',' => unsupported(start, 1, .attribute_list),
-            '=' => unsupported(start, 1, .attribute_assignment),
             ':' => unsupported(start, 1, .port_or_compass),
             // DOT permits bytes 0x80–0xFF in unquoted identifiers
             // ([a-zA-Z\200-\377]); milestone 1 is ASCII-only, so this is a
@@ -632,14 +638,9 @@ test "non-ASCII bytes are the deferred identifier range, not invalid input" {
 }
 
 test "recognized lexical deferred features are unsupported, not invalid" {
-    // Keyword-introduced deferred constructs (subgraph, node/edge attribute
-    // statements) are the parser's call — the keywords tokenize above.
+    // Keyword-introduced subgraphs are the parser's call; keywords tokenize.
     inline for (.{
         .{ "<html>", diagnostic.Feature.html_identifier },
-        .{ "[color=red]", diagnostic.Feature.attribute_list },
-        .{ "]", diagnostic.Feature.attribute_list },
-        .{ ",", diagnostic.Feature.attribute_list },
-        .{ "=", diagnostic.Feature.attribute_assignment },
         .{ ":n", diagnostic.Feature.port_or_compass },
     }) |case| {
         var lexer = Lexer.init(case[0]);

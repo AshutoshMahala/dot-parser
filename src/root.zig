@@ -64,6 +64,11 @@ pub const Statement = syntax_impl.Statement;
 pub const StatementId = syntax_impl.StatementId;
 pub const NodeStatement = syntax_impl.NodeStatement;
 pub const EdgeStatement = syntax_impl.EdgeStatement;
+pub const Attribute = syntax_impl.Attribute;
+pub const AttributeRange = syntax_impl.AttributeRange;
+pub const AttributeTarget = syntax_impl.AttributeTarget;
+pub const AttributeStatement = syntax_impl.AttributeStatement;
+pub const Assignment = syntax_impl.Assignment;
 
 // Façade option/result types.
 pub const ValidateOptions = validate_impl.Options;
@@ -78,6 +83,8 @@ pub const ParseOptions = struct {
     /// `resource_exhausted` outcome. A statement/output capacity bound, not
     /// a total-work budget (work is one linear scan of the input).
     max_statements: usize = std.math.maxInt(usize),
+    /// Total key/value pairs, including standalone assignments; not a scan budget.
+    max_attributes: usize = std.math.maxInt(usize),
     /// Preallocate the document's pools. With capacities that cover the
     /// document, the build performs no allocation after the pools are
     /// reserved — the intended mode for fixed-buffer allocators. Fixed-
@@ -100,6 +107,8 @@ pub const StorageFailure = enum {
     /// by the documented builder error sets; exists so an unmapped future
     /// error is visible instead of being mislabeled.
     internal,
+    /// Attribute-pool indices exceed the compact representation.
+    attribute_index_overflow,
 };
 
 /// The public parse outcome. Diagnostics explaining failures travel through
@@ -153,6 +162,7 @@ pub fn parseBorrowed(
 
     const result = parser_impl.parse(source, &builder, diagnostics, .{
         .max_statements = options.max_statements,
+        .max_attributes = options.max_attributes,
     });
     switch (result.outcome) {
         .success => {},
@@ -203,14 +213,7 @@ fn makeBuilder(
     source: []const u8,
     capacities: DocumentCapacities,
 ) syntax_impl.Builder.Error!syntax_impl.Builder {
-    if (capacities.statements == 0 and capacities.nodes == 0 and capacities.edges == 0) {
-        return syntax_impl.Builder.init(allocator, source);
-    }
-    return syntax_impl.Builder.initCapacity(allocator, source, .{
-        .statements = capacities.statements,
-        .nodes = capacities.nodes,
-        .edges = capacities.edges,
-    });
+    return syntax_impl.Builder.initCapacity(allocator, source, capacities);
 }
 
 /// Map the document builders' error sets into the public storage taxonomy.
@@ -221,6 +224,7 @@ fn storageFailure(err: anyerror) StorageFailure {
         error.OutOfMemory => .out_of_memory,
         error.PoolExhausted => .pool_exhausted,
         error.StatementIndexOverflow => .statement_index_overflow,
+        error.AttributeIndexOverflow => .attribute_index_overflow,
         error.SourceOffsetOverflow => .source_offset_overflow,
         else => .internal,
     };
@@ -243,7 +247,7 @@ fn emitStorageDiagnostic(
             .code = .resource_memory_exhausted,
             .span = span,
         },
-        .pool_exhausted, .statement_index_overflow, .source_offset_overflow => .{
+        .pool_exhausted, .statement_index_overflow, .source_offset_overflow, .attribute_index_overflow => .{
             .code = .resource_capacity_exhausted,
             .span = span,
             .details = if (info) |i|
@@ -275,6 +279,8 @@ pub const FixedParseOptions = struct {
     /// See `ParseOptions.max_statements`. Capacity needs no option here:
     /// the caller's pools are the capacity.
     max_statements: usize = std.math.maxInt(usize),
+    /// Total key/value pairs, including standalone assignments; not a scan budget.
+    max_attributes: usize = std.math.maxInt(usize),
 };
 
 /// Result of `parseBorrowedIn`. Unlike `ParseResult` there is deliberately
@@ -300,6 +306,7 @@ pub fn parseBorrowedIn(
     var builder = syntax_impl.FixedBuilder.init(source, storage);
     const result = parser_impl.parse(source, &builder, diagnostics, .{
         .max_statements = options.max_statements,
+        .max_attributes = options.max_attributes,
     });
     switch (result.outcome) {
         .success => {},

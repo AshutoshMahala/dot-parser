@@ -557,7 +557,7 @@ original line can be expanded for a terminal or editor.
 
 ### R-DIAG-001: Use WDP diagnostic identities
 
-All stable parser diagnostics must use Waddling Diagnostic Protocol (WDP)
+All parser diagnostics must use Waddling Diagnostic Protocol (WDP)
 structured codes and, where useful, their precomputed compact IDs. The WDP
 part 7 namespace `dot_parser` is the error boundary carrying the library's
 identity; the component names the internal module that reported the
@@ -615,28 +615,29 @@ catalog loading, localization, JSON, or runtime hashing. Structured codes,
 compact IDs, and catalogs should be generated or validated at build time where
 possible.
 
-### R-DIAG-005: Codes remain stable and testable
+### R-DIAG-005: Current codes remain coherent and testable
 
-Published codes must not be silently reused for a different meaning. The build
-or test suite should detect duplicate structured identities, catalog drift,
-invalid severity assignments, and compact-ID collisions within the project
-catalog. Within the package namespace, an identity consists of severity,
-component, primary, and sequence; a sequence number alone is not globally
-unique and may recur across domains. Canonical sequence numbers and aliases
-are defined together in `diagnostic.Sequence`, with registry metadata derived
-from those pairs.
+The build or test suite must detect duplicate structured identities, catalog
+drift, invalid severity assignments, and compact-ID collisions within the
+current project catalog. Within the package namespace, an identity consists of
+severity, component, primary, and sequence; a sequence number alone is not
+globally unique and may recur across domains. Canonical sequence numbers and
+aliases are defined together in `diagnostic.Sequence`, with registry metadata
+derived from those pairs.
 
-The same stability applies to the typed payload vocabulary: discriminants of
-published diagnostic enums (`Feature`, `SyntaxItem`, capacity resources, …)
-are append-only and never renumbered or reused, even when a feature ships and
-its variant is no longer emitted. Such variants are marked legacy in source
-and keep their display names so recorded diagnostics replay correctly. This
-holds through the `0.x` phase and past the eventual stability boundary.
+During initial experimental `0.x` development, backward compatibility is not
+required for diagnostic identities or typed payload enums. Remove obsolete
+codes, implemented-feature detectors, display entries, and compatibility-only
+scaffolding rather than preserving old discriminants or replay behavior. Add
+outcomes when their behavior is implemented, not to reserve future API slots.
+Current enums and retained layouts are not cross-version serialized formats.
+A future stability guarantee requires an explicit decision; it is not implied
+by the existing experimental release.
 
 ### R-DIAG-006: Pin the WDP specification version
 
 The project must document which WDP specification version and conformance level
-its codes follow. Upgrading that baseline requires compatibility review and
+its codes follow. Upgrading that baseline requires conformance review and
 regeneration or validation of structured codes, compact IDs, catalogs, and
 tests. Parser users must not need a runtime WDP implementation merely to inspect
 a diagnostic identity.
@@ -851,10 +852,12 @@ The project must distinguish and document its compatibility surfaces:
 - Minimum supported compiler/toolchain and target profiles.
 
 During the initial experimental `0.x` phase, backward compatibility is not
-promised and breaking changes are expected. Releases must state that status
-clearly; no stable binary ABI or retained-tree serialization is implied. Once a
+promised, including for WDP identities and diagnostic payloads, and breaking
+changes are expected. Do not retain compatibility-only code for this phase.
+Releases must state that status clearly; no stable binary ABI or retained-tree
+serialization is implied. Once a
 stable compatibility boundary is declared, semantic versioning should govern
-published source APIs. Stable WDP codes must not be reused for new meanings. A
+published source APIs and any separately declared diagnostic guarantees. A
 future public serialized format must carry its own version and define
 endianness, index width, and compatibility behavior; internal memory layouts are
 not serialized formats.
@@ -1156,9 +1159,8 @@ recorded here.
 - 2026-07-18 — **§19 added**: developer-experience requirements
   (R-DX-001 … R-DX-008) codifying the DX design pass; Amendments moved to
   §20.
-- 2026-07-18 — **R-DIAG-005**: extended to the typed payload vocabulary —
-  published diagnostic-enum discriminants are append-only and never reused;
-  shipped features leave legacy variants in place (slice-2 review).
+- 2026-07-18 — **R-DIAG-005**: introduced an early cross-version diagnostic
+  stability policy; superseded by the experimental-phase decision below.
 - 2026-09-12 — **Reconciliation after comments**: distinguished intended
   requirements from shipped coverage; clarified unsupported recognition
   (R-MOD-006), token versus bounded work (R-MOD-010), syntax commit versus
@@ -1167,3 +1169,7 @@ recorded here.
   (R-DIAG-005), and the Zig low-level/dependency policy (R-SEC-006). Sink
   filtering does not alter validity. Question decisions and remaining work are
   recorded in `OpenQuestions.md`; no requirement IDs changed.
+
+- 2026-09-12 — **R-DIAG-005/R-ARCH-009**: removed the premature diagnostic
+  stability exception. No backward-compatibility scaffolding is required while
+  the library is experimental and has no users; keep only current behavior.

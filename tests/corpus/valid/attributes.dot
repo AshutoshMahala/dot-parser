@@ -1,0 +1,9 @@
+digraph G {
+    rankdir=LR;
+    graph [label="X" + "Y"];
+    node [shape=box][color=red color=blue];
+    edge [];
+    "a" [label="A", weight=-0.5;][""=""][];
+    "a" -> 2 [x=1 x=2];
+    2;
+}

@@ -62,11 +62,55 @@ pool and its capacity (see [OUTCOMES.md](OUTCOMES.md)).
 
 ## Costs
 
-The equal node/edge benchmark mix costs 26 bytes per statement on 64-bit targets
-(`StatementId` 8 B, `NodeStatement` 8 B, `EdgeStatement` 28 B); positions
+The equal node/edge benchmark mix now costs 34 bytes per statement on the native
+64-bit target (`StatementId` 8 B, `NodeStatement` 16 B, `EdgeStatement` 36 B);
+node and edge records each include an 8-byte attribute-pool range. Positions
 are stored as compact 8-byte ranges and full line/column locations are
 derived on demand. Measured throughput and arena footprints live in
 [BASELINES.md](BASELINES.md).
+
+## Attributes and memory
+
+The document has six decomposed pools: `order`, `nodes`, `edges`,
+`attributes`, `assignments`, and `attribute_statements`. Freeing an owned
+document remains a fixed number of pool releases, not a per-element walk.
+The three new pools allocate nothing when unused and unhinted. Node/edge
+records still pay for their compact attribute range in the current profile;
+compile-time syntax removal is not implemented yet.
+
+An `Attribute` is two raw source ranges (16 bytes). `Assignment` has the same
+layout in a separate statement pool. An `AttributeStatement` retains its
+target, keyword range, and attribute range (20 bytes on the native target).
+An `AttributeRange` contains element indices, not source byte offsets.
+`document.attributeSlice(statement.attributes)` returns the ordered pairs,
+or null for an out-of-bounds range. Identifier decoding works on each key/value.
+
+```zig
+var storage: dot.FixedDocumentStorage(.{
+    .statements = 4, .nodes = 1, .edges = 1,
+    .assignments = 1, .attribute_statements = 1, .attributes = 5,
+}) = .{};
+```
+
+`statements` covers every statement kind. `attributes` counts pairs in bracket
+lists (including graph/node/edge statements), not standalone assignments.
+`assignments` and `attribute_statements` count their respective statements.
+These same fields are available as allocator capacity hints. Fixed capacities
+are hard bounds; allocator hints are initial reservations, not limits.
+
+`max_attributes` is a separate parse limit covering **all** key/value pairs,
+including standalone assignments. It is enforced when a key is accepted, before
+its value is parsed, so an exhausted limit makes no claim about the remaining
+syntax. Empty groups use no pair capacity but their owner still counts as a
+statement. Neither this limit nor pool capacity bounds source scan length.
+
+Pairs stream into the destination attribute pool while parsing a statement.
+No temporary growable list is built for each statement. If a later pair or
+closing bracket fails, the whole parse aborts and exposes no partial document.
+Adjacent groups are flattened; duplicate keys and order are retained. Default
+resolution and effective-value maps belong in a separate consumer/pass.
+
+See [the runnable example](../examples/attributes.zig).
 
 ## Identifier values
 

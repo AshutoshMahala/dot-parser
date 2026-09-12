@@ -31,9 +31,9 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | Comments (`//`, `/* */`, `#`) | **Supported** | Skipped without retention; see compatibility notes below |
 | Subgraphs (`{ … }`, `subgraph s { … }`) | Deferred | Feature `subgraph`, including subgraphs as edge endpoints |
 | Edge chains (`a -- b -- c`) | Deferred | Feature `edge_chain` |
-| Attribute lists (`[color=red]`) | Deferred | Feature `attribute_list` |
-| Attribute statements (`graph`/`node`/`edge` + `[…]`) | Deferred | Features `graph_attribute_statement`, `node_attribute_statement`, `edge_attribute_statement` |
-| ID assignments (`rankdir = LR`) | Deferred | Feature `attribute_assignment` |
+| Attribute lists (`[color=red]`) | **Supported** | Attached to nodes or single edges; adjacent groups flattened, duplicates retained |
+| Attribute statements (`graph`/`node`/`edge` + `[…]`) | **Supported** | Target and ordered pairs retained; defaults are not applied |
+| ID assignments (`rankdir = LR`) | **Supported** | Separate assignment statements, retained as written |
 | HTML identifiers (`<…>`) | Deferred | Feature `html_identifier` |
 | Non-ASCII identifiers (bytes `0x80`–`0xFF`) | Deferred | Feature `non_ascii_identifier`; the whole run is one span |
 | Ports and compass points (`a:n`) | Deferred | Feature `port_or_compass` |
@@ -69,7 +69,8 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
   skip or ignore validation.
 - **Limits**: retained positions address at most 4 GiB of source
   (`storage_failure: .source_offset_overflow` beyond that);
-  `ParseOptions.max_statements` optionally bounds output size.
+  `max_statements` bounds statement count and `max_attributes` bounds total
+  key/value pairs, including standalone assignments. Neither bounds lexical work.
 
 ## Identifier lexical rules
 
@@ -116,6 +117,37 @@ this library removes all three, consistently with its physical-line policy.
 Token-length/work budgets remain future work. Fixed output pools limit retained
 statements, not the length of an individual lexical scan or the source retained
 by a borrowed document.
+
+## Basic attribute rules
+
+The supported forms follow the [DOT attribute grammar](https://graphviz.org/doc/info/lang.html).
+A pair is `ID = ID`; every currently supported identifier form works as either
+key or value. Keywords need quoting. Inside a bracket group, pairs may be
+separated by one comma or semicolon, or have no separator. One trailing
+separator is accepted. Leading or repeated separators and missing keys,
+equals signs, or values are invalid syntax.
+
+Empty lists and adjacent groups are accepted: `a[][x=1][x=2]` retains two
+ordered pairs. Group boundaries, empty-group presence and separator spelling
+are not separately retained. They remain in the caller's source, but this is
+not a lossless CST or formatting API. `graph`, `node` and `edge` attribute
+statements require at least one bracket group. A standalone assignment cannot
+take a following list; an edge operator cannot follow a node's attribute list.
+
+No default propagation, last-value selection, layout-attribute validation,
+external resource loading or engine-specific interpretation occurs. Subgraphs,
+edge chains and ports remain deferred, including when they would own attributes.
+HTML-like values and non-ASCII bare values retain their deferred boundary.
+
+Incomplete lists use the existing parser syntax diagnostics. EOF inside a list
+carries the current group's opening `[` as its related location; after that
+group closes, EOF refers back to the document's open `{`.
+
+Eighteen manual acceptance/rejection probes against local Graphviz 16.0.0 on
+2026-09-12 agreed for checked empty/adjacent groups, separators, assignments,
+quoted keys, malformed pairs and attachment boundaries. These are supplemental
+checks, not the pending pinned differential harness or a semantic comparison.
+See [ownership](OWNERSHIP.md#attributes-and-memory) for pool layout and limits.
 
 ## How this page stays honest
 

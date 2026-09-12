@@ -1,7 +1,7 @@
 # Project Structure
 
 Status: living document — updated as slices land  
-Last updated: 2026-09-12 (quoted and numeral identifiers)
+Last updated: 2026-09-12 (basic attributes)
 
 The package is a standalone Zig DOT-language library and must not depend on
 Zigraph.
@@ -35,6 +35,7 @@ dot-parser/
 │   └── validate.zig
 ├── tests/
 │   ├── integration.zig
+│   ├── attributes.zig
 │   └── corpus/
 │       ├── README.md          (corpus governance)
 │       ├── valid/
@@ -44,7 +45,8 @@ dot-parser/
 │   ├── parse_undigraph.zig
 │   ├── fixed_buffer.zig
 │   ├── diagnostics_demo.zig
-│   └── identifiers.zig
+│   ├── identifiers.zig
+│   └── attributes.zig
 ├── bench/
 │   └── throughput.zig
 └── docs/
@@ -97,16 +99,16 @@ in the initial core.
 
 The raw-byte lexer and token cursor. It recognizes:
 
-- Every DOT keyword (`graph`, `digraph`, `strict`, and the deferred
-  `subgraph`/`node`/`edge`), case-independently. Keywords always tokenize;
+- Every DOT keyword (`graph`, `digraph`, `strict`, `node`, `edge`, and the deferred
+  `subgraph`), case-independently. Keywords always tokenize;
   whether one is legal in its position is the parser's decision.
 - Bare ASCII, numeral, and quoted identifiers (including `+` concatenation).
-- `{`, `}`, `;`, `--`, and `->`.
+- `{`, `}`, `;`, `[`, `]`, `=`, `,`, `--`, and `->`.
 - Whitespace and physical line endings (LF, CRLF, standalone CR).
 - Comments, skipped without retaining trivia (see [supported syntax](../SUPPORTED_SYNTAX.md)).
 - End of input and invalid bytes.
 - Introducers of deferred *lexical* constructs (HTML/non-ASCII bare
-  identifiers, attribute punctuation, ports), reported
+  identifiers and ports), reported
   as typed unsupported-feature failures.
 
 It borrows source spans, performs no hidden allocation, and owns no AST types.
@@ -141,7 +143,10 @@ Document data includes:
   optional graph name.
 - Ordered statement IDs.
 - Node statements.
-- Edge statements with the written operator and endpoint spans.
+- Edge statements with the written operator and endpoint ranges.
+- Standalone assignments and graph/node/edge attribute statements.
+- Ordered key/value pairs in an attribute pool, referenced by compact ranges;
+  adjacent groups are flattened and duplicate keys are preserved.
 
 The document preserves written statements. It does not synthesize implicit
 nodes from an edge statement.

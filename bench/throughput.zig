@@ -76,7 +76,10 @@ fn run(
         const document = checked.document.?;
         retained_bytes = document.order.len * @sizeOf(dot.StatementId) +
             document.nodes.len * @sizeOf(dot.NodeStatement) +
-            document.edges.len * @sizeOf(dot.EdgeStatement);
+            document.edges.len * @sizeOf(dot.EdgeStatement) +
+            document.attributes.len * @sizeOf(dot.Attribute) +
+            document.assignments.len * @sizeOf(dot.Assignment) +
+            document.attribute_statements.len * @sizeOf(dot.AttributeStatement);
         // Arena *backing capacity*: includes pool-growth copies and arena
         // block sizing — not live document memory and not process RSS.
         arena_footprint = arena.queryCapacity();

@@ -10,7 +10,8 @@
 //!
 //! Decomposed pools rather than one array of tagged unions:
 //!
-//! - `nodes` and `edges` are dense per-kind pools in source order, so
+//! - `nodes`, `edges`, `assignments`, and `attribute_statements` are dense
+//!   per-kind pools in source order, with a shared ordered `attributes` pool, so
 //!   per-kind passes (validation iterates only edges) are branch-free and
 //!   touch no unrelated memory,
 //! - `order` records source order as compact typed indices,
@@ -27,7 +28,7 @@
 //!
 //! Explicit allocator, no hidden allocation. The document is mid-term data:
 //! build it with an arena or fixed buffer and release it in bulk — `deinit`
-//! is three frees, never a per-node walk; arena users may skip `deinit` and
+//! is six pool releases, never a per-node walk; arena users may skip `deinit` and
 //! reset the arena. The source bytes are caller-owned and must outlive the
 //! document (borrowed ranges, R-MEM-004).
 //!
@@ -53,10 +54,34 @@ pub const Index = u32;
 pub const StatementId = union(enum) {
     node: Index,
     edge: Index,
+    assignment: Index,
+    attribute_statement: Index,
+};
+
+pub const AttributeTarget = syntax_event.AttributeTarget;
+
+/// Ordered key/value spelling. No defaults, deduplication, or interpretation.
+pub const Attribute = struct {
+    key: location.Range,
+    value: location.Range,
+};
+pub const Assignment = Attribute;
+
+/// Compact slice of Document.attributes (element indices, not source bytes).
+pub const AttributeRange = struct {
+    start: Index = 0,
+    len: Index = 0,
+};
+
+pub const AttributeStatement = struct {
+    target: AttributeTarget,
+    keyword: location.Range,
+    attributes: AttributeRange = .{},
 };
 
 pub const NodeStatement = struct {
     identifier: location.Range,
+    attributes: AttributeRange = .{},
 };
 
 pub const EdgeStatement = struct {
@@ -64,12 +89,15 @@ pub const EdgeStatement = struct {
     operator: EdgeOperator,
     operator_range: location.Range,
     right: location.Range,
+    attributes: AttributeRange = .{},
 };
 
 /// A by-value view of one statement, for order-preserving traversal.
 pub const Statement = union(enum) {
     node: NodeStatement,
     edge: EdgeStatement,
+    assignment: Assignment,
+    attribute_statement: AttributeStatement,
 };
 
 pub const StatementIterator = struct {
@@ -106,6 +134,9 @@ pub const Document = struct {
     nodes: []const NodeStatement,
     /// Edge-statement pool, in source order.
     edges: []const EdgeStatement,
+    attributes: []const Attribute = &.{},
+    assignments: []const Assignment = &.{},
+    attribute_statements: []const AttributeStatement = &.{},
 
     pub fn statementCount(self: *const Document) usize {
         return self.order.len;
@@ -119,11 +150,27 @@ pub const Document = struct {
                 Statement{ .node = self.nodes[index] }
             else
                 null,
+            .assignment => |index| if (index < self.assignments.len)
+                Statement{ .assignment = self.assignments[index] }
+            else
+                null,
+            .attribute_statement => |index| if (index < self.attribute_statements.len)
+                Statement{ .attribute_statement = self.attribute_statements[index] }
+            else
+                null,
             .edge => |index| if (index < self.edges.len)
                 Statement{ .edge = self.edges[index] }
             else
                 null,
         };
+    }
+
+    /// Bounds-checked attribute-pool lookup. Preserve duplicates and order;
+    /// callers choose any effective-value/default resolution policy.
+    pub fn attributeSlice(self: *const Document, range: AttributeRange) ?[]const Attribute {
+        const start: usize = range.start;
+        if (start > self.attributes.len or range.len > self.attributes.len - start) return null;
+        return self.attributes[start..][0..range.len];
     }
 
     /// The statement at a position in source order, or null past the end.
@@ -157,7 +204,7 @@ pub const Document = struct {
 };
 
 /// Free an allocator-owned document produced by `Builder.toDocument`
-/// (bulk release, R-MEM-005: three frees, no per-node walk).
+/// (bulk release, R-MEM-005: six pool releases, no per-node walk).
 ///
 /// Package-internal on purpose: `Document` itself is a non-owning view, so
 /// a fixed-storage document — whose pools belong to the caller — can never
@@ -166,6 +213,9 @@ pub fn deinitOwnedDocument(document: *Document, allocator: std.mem.Allocator) vo
     allocator.free(document.order);
     allocator.free(document.nodes);
     allocator.free(document.edges);
+    allocator.free(document.attributes);
+    allocator.free(document.assignments);
+    allocator.free(document.attribute_statements);
     document.* = undefined;
 }
 
@@ -204,6 +254,10 @@ pub const Builder = struct {
     order: std.ArrayList(StatementId) = .empty,
     nodes: std.ArrayList(NodeStatement) = .empty,
     edges: std.ArrayList(EdgeStatement) = .empty,
+    attributes: std.ArrayList(Attribute) = .empty,
+    assignments: std.ArrayList(Assignment) = .empty,
+    attribute_statements: std.ArrayList(AttributeStatement) = .empty,
+    pending_attributes: usize = 0,
     phase: Phase = .idle,
     /// Set when a sink method fails; read by the façade to emit a precise
     /// storage diagnostic.
@@ -213,6 +267,7 @@ pub const Builder = struct {
         OutOfMemory,
         /// More statements of one kind than `Index` can address.
         StatementIndexOverflow,
+        AttributeIndexOverflow,
         /// A source position beyond the 4 GiB retained-range limit.
         SourceOffsetOverflow,
     };
@@ -237,6 +292,9 @@ pub const Builder = struct {
         try builder.order.ensureTotalCapacityPrecise(allocator, capacities.statements);
         try builder.nodes.ensureTotalCapacityPrecise(allocator, capacities.nodes);
         try builder.edges.ensureTotalCapacityPrecise(allocator, capacities.edges);
+        try builder.attributes.ensureTotalCapacityPrecise(allocator, capacities.attributes);
+        try builder.assignments.ensureTotalCapacityPrecise(allocator, capacities.assignments);
+        try builder.attribute_statements.ensureTotalCapacityPrecise(allocator, capacities.attribute_statements);
         return builder;
     }
 
@@ -245,6 +303,9 @@ pub const Builder = struct {
         self.order.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
         self.edges.deinit(self.allocator);
+        self.attributes.deinit(self.allocator);
+        self.assignments.deinit(self.allocator);
+        self.attribute_statements.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -257,6 +318,10 @@ pub const Builder = struct {
         self.order.clearRetainingCapacity();
         self.nodes.clearRetainingCapacity();
         self.edges.clearRetainingCapacity();
+        self.attributes.clearRetainingCapacity();
+        self.assignments.clearRetainingCapacity();
+        self.attribute_statements.clearRetainingCapacity();
+        self.pending_attributes = 0;
         self.phase = .idle;
     }
 
@@ -270,6 +335,10 @@ pub const Builder = struct {
             self.order.clearAndFree(self.allocator);
             self.nodes.clearAndFree(self.allocator);
             self.edges.clearAndFree(self.allocator);
+            self.attributes.clearAndFree(self.allocator);
+            self.assignments.clearAndFree(self.allocator);
+            self.attribute_statements.clearAndFree(self.allocator);
+            self.pending_attributes = 0;
             self.phase = .terminal;
         }
         const order = try self.order.toOwnedSlice(self.allocator);
@@ -277,6 +346,12 @@ pub const Builder = struct {
         const nodes = try self.nodes.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(nodes);
         const edges = try self.edges.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(edges);
+        const attributes = try self.attributes.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(attributes);
+        const assignments = try self.assignments.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(assignments);
+        const attribute_statements = try self.attribute_statements.toOwnedSlice(self.allocator);
         self.phase = .terminal;
         return .{
             .source = self.source,
@@ -287,6 +362,9 @@ pub const Builder = struct {
             .order = order,
             .nodes = nodes,
             .edges = edges,
+            .attributes = attributes,
+            .assignments = assignments,
+            .attribute_statements = attribute_statements,
         };
     }
 
@@ -306,6 +384,7 @@ pub const Builder = struct {
         const at = statement_event.identifier;
         const node: NodeStatement = .{
             .identifier = try self.range(statement_event.identifier),
+            .attributes = self.pendingRange(),
         };
         const index = try self.statementIndex(self.nodes.items.len, at);
         // Reserve both slots first so the two appends cannot desynchronize.
@@ -313,6 +392,7 @@ pub const Builder = struct {
         try self.reserve(&self.order, at);
         self.nodes.appendAssumeCapacity(node);
         self.order.appendAssumeCapacity(.{ .node = index });
+        self.pending_attributes = self.attributes.items.len;
     }
 
     pub fn edgeStatement(self: *Builder, statement_event: syntax_event.EdgeStatement) Error!void {
@@ -323,12 +403,54 @@ pub const Builder = struct {
             .operator = statement_event.operator,
             .operator_range = try self.range(statement_event.operator_span),
             .right = try self.range(statement_event.right),
+            .attributes = self.pendingRange(),
         };
         const index = try self.statementIndex(self.edges.items.len, at);
         try self.reserve(&self.edges, at);
         try self.reserve(&self.order, at);
         self.edges.appendAssumeCapacity(edge);
         self.order.appendAssumeCapacity(.{ .edge = index });
+        self.pending_attributes = self.attributes.items.len;
+    }
+
+    fn pendingRange(self: *const Builder) AttributeRange {
+        return .{ .start = @intCast(self.pending_attributes), .len = @intCast(self.attributes.items.len - self.pending_attributes) };
+    }
+
+    pub fn attribute(self: *Builder, event: syntax_event.Attribute) Error!void {
+        std.debug.assert(self.phase == .building);
+        const value: Attribute = .{ .key = try self.range(event.key), .value = try self.range(event.value) };
+        if (self.attributes.items.len >= std.math.maxInt(Index)) {
+            self.failure_info = .{ .span = event.key, .capacity = .{ .resource = .attribute_index, .limit = std.math.maxInt(Index) } };
+            return error.AttributeIndexOverflow;
+        }
+        try self.reserve(&self.attributes, event.key);
+        self.attributes.appendAssumeCapacity(value);
+    }
+
+    pub fn assignment(self: *Builder, event: syntax_event.Attribute) Error!void {
+        std.debug.assert(self.phase == .building and self.pending_attributes == self.attributes.items.len);
+        const value: Assignment = .{ .key = try self.range(event.key), .value = try self.range(event.value) };
+        const index = try self.statementIndex(self.assignments.items.len, event.key);
+        try self.reserve(&self.assignments, event.key);
+        try self.reserve(&self.order, event.key);
+        self.assignments.appendAssumeCapacity(value);
+        self.order.appendAssumeCapacity(.{ .assignment = index });
+    }
+
+    pub fn attributeStatement(self: *Builder, event: syntax_event.AttributeStatement) Error!void {
+        std.debug.assert(self.phase == .building);
+        const value: AttributeStatement = .{
+            .target = event.target,
+            .keyword = try self.range(event.keyword_span),
+            .attributes = self.pendingRange(),
+        };
+        const index = try self.statementIndex(self.attribute_statements.items.len, event.keyword_span);
+        try self.reserve(&self.attribute_statements, event.keyword_span);
+        try self.reserve(&self.order, event.keyword_span);
+        self.attribute_statements.appendAssumeCapacity(value);
+        self.order.appendAssumeCapacity(.{ .attribute_statement = index });
+        self.pending_attributes = self.attributes.items.len;
     }
 
     fn range(self: *Builder, span: location.Span) Error!location.Range {
@@ -360,6 +482,7 @@ pub const Builder = struct {
 
     pub fn endDocument(self: *Builder) Error!void {
         std.debug.assert(self.phase == .building);
+        std.debug.assert(self.pendingRange().len == 0);
         self.phase = .committed;
     }
 
@@ -370,6 +493,10 @@ pub const Builder = struct {
         self.order.clearAndFree(self.allocator);
         self.nodes.clearAndFree(self.allocator);
         self.edges.clearAndFree(self.allocator);
+        self.attributes.clearAndFree(self.allocator);
+        self.assignments.clearAndFree(self.allocator);
+        self.attribute_statements.clearAndFree(self.allocator);
+        self.pending_attributes = 0;
         self.phase = .terminal;
     }
 };
@@ -393,10 +520,17 @@ fn checkedIndex(length: usize) error{StatementIndexOverflow}!Index {
     return @intCast(length);
 }
 
+/// Pool element counts: hard limits for fixed storage, initial reservations
+/// for allocator-backed storage. Zero means no initial space in that pool.
 pub const Capacities = struct {
+    /// Source statements across all four kinds, not attribute pairs.
     statements: usize = 0,
     nodes: usize = 0,
     edges: usize = 0,
+    /// Pairs in bracket lists; standalone assignments use their own pool.
+    attributes: usize = 0,
+    assignments: usize = 0,
+    attribute_statements: usize = 0,
 };
 
 /// Caller-provided pools for allocation-free document building
@@ -407,6 +541,9 @@ pub const DocumentStorage = struct {
     statement_ids: []StatementId,
     nodes: []NodeStatement,
     edges: []EdgeStatement,
+    attributes: []Attribute = &.{},
+    assignments: []Assignment = &.{},
+    attribute_statements: []AttributeStatement = &.{},
 };
 
 /// Comptime sugar over `DocumentStorage`: a struct that owns the pools.
@@ -416,7 +553,7 @@ pub const DocumentStorage = struct {
 /// static, or heap via `allocator.create`). Budget with `byte_size`.
 pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
     comptime {
-        for ([_]usize{ capacities.statements, capacities.nodes, capacities.edges }) |capacity| {
+        for ([_]usize{ capacities.statements, capacities.nodes, capacities.edges, capacities.attributes, capacities.assignments, capacities.attribute_statements }) |capacity| {
             if (capacity > std.math.maxInt(Index)) {
                 @compileError("FixedDocumentStorage: capacity exceeds the statement index width (" ++
                     @typeName(Index) ++ ")");
@@ -431,12 +568,18 @@ pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
         statement_ids: [capacities.statements]StatementId = undefined,
         nodes: [capacities.nodes]NodeStatement = undefined,
         edges: [capacities.edges]EdgeStatement = undefined,
+        attributes: [capacities.attributes]Attribute = undefined,
+        assignments: [capacities.assignments]Assignment = undefined,
+        attribute_statements: [capacities.attribute_statements]AttributeStatement = undefined,
 
         pub fn storage(self: *@This()) DocumentStorage {
             return .{
                 .statement_ids = &self.statement_ids,
                 .nodes = &self.nodes,
                 .edges = &self.edges,
+                .attributes = &self.attributes,
+                .assignments = &self.assignments,
+                .attribute_statements = &self.attribute_statements,
             };
         }
     };
@@ -459,6 +602,10 @@ pub const FixedBuilder = struct {
     order_len: usize = 0,
     nodes_len: usize = 0,
     edges_len: usize = 0,
+    attributes_len: usize = 0,
+    assignments_len: usize = 0,
+    attribute_statements_len: usize = 0,
+    pending_attributes: usize = 0,
     phase: Phase = .idle,
     /// Set when a sink method fails; read by the façade to emit a precise
     /// storage diagnostic naming the exhausted pool.
@@ -471,6 +618,7 @@ pub const FixedBuilder = struct {
         SourceOffsetOverflow,
         /// More statements of one kind than `Index` can address.
         StatementIndexOverflow,
+        AttributeIndexOverflow,
     };
 
     const Phase = enum { idle, building, committed, terminal };
@@ -486,6 +634,10 @@ pub const FixedBuilder = struct {
         self.order_len = 0;
         self.nodes_len = 0;
         self.edges_len = 0;
+        self.attributes_len = 0;
+        self.assignments_len = 0;
+        self.attribute_statements_len = 0;
+        self.pending_attributes = 0;
         self.phase = .idle;
     }
 
@@ -505,6 +657,9 @@ pub const FixedBuilder = struct {
             .order = self.storage.statement_ids[0..self.order_len],
             .nodes = self.storage.nodes[0..self.nodes_len],
             .edges = self.storage.edges[0..self.edges_len],
+            .attributes = self.storage.attributes[0..self.attributes_len],
+            .assignments = self.storage.assignments[0..self.assignments_len],
+            .attribute_statements = self.storage.attribute_statements[0..self.attribute_statements_len],
         };
     }
 
@@ -517,6 +672,51 @@ pub const FixedBuilder = struct {
         self.strict = event.strict;
         self.keyword = try self.range(event.keyword_span);
         self.name = if (event.name_span) |name_span| try self.range(name_span) else null;
+    }
+
+    fn pendingRange(self: *const FixedBuilder) AttributeRange {
+        return .{ .start = @intCast(self.pending_attributes), .len = @intCast(self.attributes_len - self.pending_attributes) };
+    }
+
+    pub fn attribute(self: *FixedBuilder, event: syntax_event.Attribute) Error!void {
+        std.debug.assert(self.phase == .building);
+        const value: Attribute = .{ .key = try self.range(event.key), .value = try self.range(event.value) };
+        if (self.attributes_len >= std.math.maxInt(Index)) {
+            self.failure_info = .{ .span = event.key, .capacity = .{ .resource = .attribute_index, .limit = std.math.maxInt(Index) } };
+            return error.AttributeIndexOverflow;
+        }
+        try self.checkPool(self.attributes_len, self.storage.attributes.len, .attribute_pool, event.key);
+        self.storage.attributes[self.attributes_len] = value;
+        self.attributes_len += 1;
+    }
+
+    pub fn assignment(self: *FixedBuilder, event: syntax_event.Attribute) Error!void {
+        std.debug.assert(self.phase == .building and self.pending_attributes == self.attributes_len);
+        const value: Assignment = .{ .key = try self.range(event.key), .value = try self.range(event.value) };
+        const index = try self.statementIndex(self.assignments_len, event.key);
+        try self.checkPool(self.assignments_len, self.storage.assignments.len, .assignment_pool, event.key);
+        try self.checkPool(self.order_len, self.storage.statement_ids.len, .statement_pool, event.key);
+        self.storage.assignments[self.assignments_len] = value;
+        self.assignments_len += 1;
+        self.storage.statement_ids[self.order_len] = .{ .assignment = index };
+        self.order_len += 1;
+    }
+
+    pub fn attributeStatement(self: *FixedBuilder, event: syntax_event.AttributeStatement) Error!void {
+        std.debug.assert(self.phase == .building);
+        const value: AttributeStatement = .{
+            .target = event.target,
+            .keyword = try self.range(event.keyword_span),
+            .attributes = self.pendingRange(),
+        };
+        const index = try self.statementIndex(self.attribute_statements_len, event.keyword_span);
+        try self.checkPool(self.attribute_statements_len, self.storage.attribute_statements.len, .attribute_statement_pool, event.keyword_span);
+        try self.checkPool(self.order_len, self.storage.statement_ids.len, .statement_pool, event.keyword_span);
+        self.storage.attribute_statements[self.attribute_statements_len] = value;
+        self.attribute_statements_len += 1;
+        self.storage.statement_ids[self.order_len] = .{ .attribute_statement = index };
+        self.order_len += 1;
+        self.pending_attributes = self.attributes_len;
     }
 
     fn range(self: *FixedBuilder, span: location.Span) Error!location.Range {
@@ -560,6 +760,7 @@ pub const FixedBuilder = struct {
         const at = statement_event.identifier;
         const node: NodeStatement = .{
             .identifier = try self.range(statement_event.identifier),
+            .attributes = self.pendingRange(),
         };
         try self.checkPool(self.nodes_len, self.storage.nodes.len, .node_pool, at);
         try self.checkPool(self.order_len, self.storage.statement_ids.len, .statement_pool, at);
@@ -568,6 +769,7 @@ pub const FixedBuilder = struct {
         self.nodes_len += 1;
         self.storage.statement_ids[self.order_len] = .{ .node = index };
         self.order_len += 1;
+        self.pending_attributes = self.attributes_len;
     }
 
     pub fn edgeStatement(self: *FixedBuilder, statement_event: syntax_event.EdgeStatement) Error!void {
@@ -578,6 +780,7 @@ pub const FixedBuilder = struct {
             .operator = statement_event.operator,
             .operator_range = try self.range(statement_event.operator_span),
             .right = try self.range(statement_event.right),
+            .attributes = self.pendingRange(),
         };
         try self.checkPool(self.edges_len, self.storage.edges.len, .edge_pool, at);
         try self.checkPool(self.order_len, self.storage.statement_ids.len, .statement_pool, at);
@@ -586,10 +789,12 @@ pub const FixedBuilder = struct {
         self.edges_len += 1;
         self.storage.statement_ids[self.order_len] = .{ .edge = index };
         self.order_len += 1;
+        self.pending_attributes = self.attributes_len;
     }
 
     pub fn endDocument(self: *FixedBuilder) Error!void {
         std.debug.assert(self.phase == .building);
+        std.debug.assert(self.pendingRange().len == 0);
         self.phase = .committed;
     }
 
@@ -600,6 +805,10 @@ pub const FixedBuilder = struct {
         self.order_len = 0;
         self.nodes_len = 0;
         self.edges_len = 0;
+        self.attributes_len = 0;
+        self.assignments_len = 0;
+        self.attribute_statements_len = 0;
+        self.pending_attributes = 0;
         self.phase = .terminal;
     }
 };
@@ -759,7 +968,7 @@ test "undersized fixed buffer aborts the parse with a sink failure" {
 }
 
 test "allocation failure at every point aborts cleanly without leaks" {
-    const source = "graph \"G\"+\"raph\" { \"a\"; \"a\" -- 1; 1; \"c\" -> \"d\"; }";
+    const source = "graph \"G\"+\"raph\" { rankdir=LR; node [shape=box]; \"a\" [x=1][x=2]; \"a\" -- 1 [weight=.5]; }";
     var fail_index: usize = 0;
     while (fail_index < 64) : (fail_index += 1) {
         var failing = std.testing.FailingAllocator.init(
@@ -793,13 +1002,13 @@ test "allocation failure at every point aborts cleanly without leaks" {
 }
 
 test "toDocument failure is terminal, complete, and recoverable via reset" {
-    const source = "graph { a; a -- b; }";
+    const source = "graph { a [x=1]; a -- b [y=2]; rankdir=LR; node [shape=box]; }";
     var fail_index: usize = 0;
     var observed_transfer_failure = false;
     while (fail_index < 64) : (fail_index += 1) {
         // All in-place resizes fail, so every toOwnedSlice must take the
         // allocate-and-copy path — sweeping fail_index therefore fails each
-        // of the three transfers in turn, including mid-handoff (the P0
+        // of the six transfers in turn, including mid-handoff (the P0
         // partial-transfer scenario).
         var failing = std.testing.FailingAllocator.init(
             std.testing.allocator,
@@ -979,4 +1188,30 @@ test "builder driven directly through the event contract" {
     defer deinitOwnedDocument(&document, std.testing.allocator);
     try expectEqual(@as(usize, 1), document.statementCount());
     try expectEqualStrings("n", document.statementAt(0).?.node.identifier.slice(source));
+}
+
+test "attribute index overflow is checked before fixed pool access" {
+    var pools: FixedDocumentStorage(.{}) = .{};
+    var builder = FixedBuilder.init("graph", pools.storage());
+    try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = .start, .byte_len = 5 } });
+    builder.attributes_len = std.math.maxInt(Index);
+    const at: location.Span = .{ .start = .start, .byte_len = 1 };
+    try std.testing.expectError(error.AttributeIndexOverflow, builder.attribute(.{ .key = at, .value = at }));
+    try expectEqual(diagnostic.Capacity.Resource.attribute_index, builder.failure_info.?.capacity.?.resource);
+    builder.abortDocument(.sink_failure);
+    try expectEqual(@as(usize, 0), builder.attributes_len);
+}
+
+test "new capacity hints reserve even when all original pool hints are zero" {
+    var buffer: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    var builder = try Builder.initCapacity(fba.allocator(), "graph {}", .{
+        .attributes = 2,
+        .assignments = 2,
+        .attribute_statements = 2,
+    });
+    defer builder.deinit();
+    try expectEqual(@as(usize, 2), builder.attributes.capacity);
+    try expectEqual(@as(usize, 2), builder.assignments.capacity);
+    try expectEqual(@as(usize, 2), builder.attribute_statements.capacity);
 }

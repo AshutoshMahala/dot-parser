@@ -17,12 +17,12 @@ are for humans and tooling.
 | `.success` | The document parsed completely | Yes |
 | `.invalid_syntax` | The input is malformed in any DOT dialect | No |
 | `.unsupported_feature` | The parse stopped at a recognized-but-deferred DOT construct | No |
-| `.resource_exhausted` | A caller-configured limit (e.g. `max_statements`) was reached; the input may still be valid | No |
+| `.resource_exhausted` | A caller-configured limit (e.g. `max_statements` or `max_attributes`) was reached; the input may still be valid | No |
 | `.storage_failure` | Document storage could not hold the document | No |
 
 `storage_failure` carries its own cause: `.out_of_memory` (allocator),
 `.pool_exhausted` (a fixed pool filled — the diagnostic names the pool and
-its capacity), `.statement_index_overflow`, `.source_offset_overflow`
+its capacity), `.statement_index_overflow`, `.attribute_index_overflow`, `.source_offset_overflow`
 (source beyond the 4 GiB retained-range limit), or `.internal` (never
 expected; a bug report is welcome). `.internal` currently has no corresponding
 diagnostic; inspect the outcome even when the diagnostic bag is empty.
@@ -35,13 +35,21 @@ The distinction the taxonomy is built around:
 - **`unsupported_feature`** means *this is recognized DOT syntax that this
   library does not process yet*. The parse stopped at the construct's
   introducer, and the diagnostic names the exact feature as a typed enum
-  (`Feature.subgraph`, `Feature.attribute_list`, …) that tooling can
+  (`Feature.subgraph`, `Feature.html_identifier`, …) that tooling can
   aggregate or test against.
 
 An unsupported outcome is a **boundary, not a validity claim**: nothing at
 or beyond the stopping point has been checked. And the classification is
 grammar-aware — a deferred keyword in a position where it is not legal DOT
 (`subgraph` as the document root) is plain `invalid_syntax`.
+
+Basic attributes produce syntax errors for malformed supported forms.
+`Feature` contains only currently deferred constructs; implemented features
+have no unsupported-feature entry. Attribute failures reuse
+`E.Parser.Syntax.003` / `031` with typed key/value/list contexts, expected
+`=` / `]` vocabulary and a related opener at EOF. Capacity diagnostics identify
+the attribute, assignment or attribute-statement pool, or the total
+`max_attributes` limit.
 
 ## Parsing succeeds, validation judges
 
@@ -56,9 +64,8 @@ var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
 ```
 
 `ValidationResult.outcome` is `.completed { document_valid, violations }`
-today; `.budget_exhausted` and `.cancelled` are declared for future
-bounded/cancellable passes so consumer `switch`es will not break when they
-arrive. Validation reports **every** violation, in source order — it never
+today. Bounded/cancellable validation is future work; outcomes for those
+behaviors will be added when implemented. Validation reports **every** violation, in source order — it never
 stops at the first.
 
 ## The diagnostic bag
@@ -70,7 +77,7 @@ one diagnostic per violation. A
 `FixedDiagnosticBag(N)` keeps the first `N` and counts the rest in
 `omitted` — diagnostics are never silently dropped.
 
-Each diagnostic carries a stable WDP identity, a source span, and **optional
+Each diagnostic carries a WDP identity, a source span, and **optional
 typed details** (`Details.none` means no additional context). Details are
 never pre-rendered strings. Wording belongs to renderers; the
 out-of-the-box console renderer is one consumer of these payloads, and
@@ -83,7 +90,6 @@ Current registry:
 | `E.Lexer.Byte.003` | A byte invalid at its location, including NUL inside quotes | `.invalid_byte` |
 | `E.Lexer.Syntax.003` | `+` is not followed by a quoted identifier | `.expected_quote` (next byte, or null at EOF) |
 | `E.Lexer.Syntax.031` | Input ended inside an unclosed lexical construct; span marks its opener | `.unterminated` (`.block_comment` or `.quoted_identifier`) |
-| `E.Parser.Syntax.001` | A required syntax element is missing | Reserved; not currently emitted |
 | `E.Parser.Syntax.003` | Unexpected token | `.unexpected` |
 | `E.Parser.Syntax.031` | Input ended before the document was complete | `.unexpected` |
 | `E.Validation.Operator.002` | Edge operator does not match the graph kind | `.operator_mismatch` |
@@ -94,16 +100,18 @@ Current registry:
 This table describes library-produced diagnostics. `Diagnostic` is publicly
 constructible: its separate `code` and `details` fields do not enforce these
 pairings in the type system. Consumers must not assume every diagnostic has
-non-empty details. `UnterminatedConstruct` is non-exhaustive; handle unknown
-values when consuming recorded diagnostics from newer versions.
+non-empty details. Diagnostic enums describe this library version, not a
+cross-version serialization format.
 
 Sequence numbers and aliases are defined together in `diagnostic.Sequence`.
 Registry entries select one definition; `Code.Info.sequence` and `.alias`
 are derived from that pair. Neither field is retained in each diagnostic.
 
-Codes and payload enums are append-only: published discriminants are never
-reused or renumbered, so recorded diagnostics stay meaningful across
-versions. Identities follow the Waddling Diagnostic Protocol version
+During experimental `0.x`, backward compatibility is not promised for diagnostic
+codes, payload enums, source APIs or retained layouts. Obsolete entries are
+removed rather than kept for replay. WDP conformance and unique, coherent
+identities within the current registry are still tested. Identities follow
+the Waddling Diagnostic Protocol version
 0.1.0-draft at conformance Level 2 (Namespaced: structured codes, compact
 IDs, and namespaces), with the part 6 sequence conventions and part 10
 presentation palette as informative guidance.

@@ -48,6 +48,9 @@ slice 2 (re-verified: 26.0 B/statement retained, same arena capacities).
 
 ## Memory
 
+The following table is the historical slice-2 snapshot; current attribute-slice
+costs are recorded immediately below it.
+
 | Metric | Value |
 | --- | --- |
 | Retained document | 26.0 bytes/statement (5.2 MB for 200k statements) |
@@ -55,13 +58,38 @@ slice 2 (re-verified: 26.0 B/statement retained, same arena capacities).
 | Arena backing capacity, default | ~23 MB |
 | Arena backing capacity, capacity hints | ~10 MB |
 | Fixed pools (`parseBorrowedIn`) | exactly the declared capacity; zero allocation |
-| Parser state | ≤ 320 B constant (regression-guarded by a unit test) |
+| Parser state | ≤ 320 B constant at slice 2 (then guarded by a unit test) |
 
 Note on the arena figures: `ArenaAllocator.queryCapacity()` reports the
 arena's **backing capacity** — it includes copies left behind by pool
 growth and the arena's own block-sizing policy. It is neither the live
 document size nor process RSS. The gap between the two configurations is
 growth slack; general allocators reclaim it, fixed pools never create it.
+
+### Attribute-slice measurements (2026-09-12)
+
+The tables above remain historical baselines. On the same 200k-statement
+attribute-free workload, one before/after smoke run measured:
+
+| Configuration | Before (identifiers) | After (attributes) |
+| --- | --- | --- |
+| Default median | 9.50 ms / 274 MiB/s | 11.13 ms / 234 MiB/s |
+| Hinted median | 8.37 ms / 312 MiB/s | 9.38 ms / 278 MiB/s |
+| Retained bytes | 5,200,000 (26/statement) | 6,800,000 (34/statement) |
+| Default arena backing capacity | 23,146,328 | 37,620,470 |
+| Hinted arena backing capacity | 10,200,148 | 8,400,148 |
+
+This run indicates a roughly 11–15% throughput cost; it is not a dedicated
+performance gate or an attribute-heavy workload measurement. Arena block
+sizing is nonlinear: the lower hinted backing capacity does **not** mean lower
+retained memory. Do not generalize those arena figures to RSS or all allocators.
+
+Current native layout: StatementId 8 B, NodeStatement 16 B, EdgeStatement
+36 B, Attribute/Assignment 16 B, AttributeStatement 20 B. Parser state is
+400 B on aarch64-macOS, guarded at ≤416 B. It remains independent of source
+length, list length, and group count. Attribute pools are unused on this
+workload, but every node/edge retains an 8-byte attribute range. Compile-time
+profile removal and target-specific budgets remain future work.
 
 ## Binary size
 

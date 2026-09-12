@@ -1,11 +1,12 @@
 //! Parser state machine (milestone 1, step 5).
 //!
-//! Current grammar (milestone 1 + slice 2):
+//! Current grammar (basic attributes included):
 //!
 //! ```text
 //! document  := "strict"? ("graph" | "digraph") identifier? "{" statement* "}" EOF
-//! statement := identifier ";"?
-//!            | identifier edgeop identifier ";"?
+//! statement := (identifier attributes? | identifier edgeop identifier attributes?
+//!            | identifier "=" identifier | ("graph" | "node" | "edge") attributes) ";"?
+//! attributes := ("[" (identifier "=" identifier (";" | ",")?)* "]")+
 //! edgeop    := "--" | "->"
 //! ```
 //!
@@ -41,20 +42,11 @@
 //!   cannot exhaust the call stack (R-PERF-002).
 //! - Work is a single linear scan of the input (R-PERF-001, R-SEC-003);
 //!   `Options.max_statements` additionally bounds the statements processed.
-//! - Recognized-but-deferred constructs (subgraphs, edge chains, attribute
-//!   statements and lists, HTML/non-ASCII identifiers,
-//!   ports, …) stop the parse as unsupported features, not as
-//!   malformed input (R-MOD-006) — but only where the construct is legal
-//!   DOT: a deferred keyword in an illegal grammar position (`subgraph` as
-//!   the document root, `graph node {}`) is plain invalid syntax. The
-//!   parse makes no validity claim beyond an unsupported boundary. In
-//!   statement position the stop happens at the introducer keyword without
-//!   lookahead: DOT keywords are reserved words everywhere (they cannot be
-//!   unquoted identifiers — verified against Graphviz 15.1.0, which
-//!   rejects `graph { node; }` and `graph { edge -- x; }`), so the keyword
-//!   can only be introducing its deferred construct and no valid input is
-//!   over-rejected. When the attribute slice lands, malformed continuations
-//!   simply become syntax errors after the keyword.
+//! - Subgraphs, edge chains, HTML/non-ASCII bare identifiers and ports remain
+//!   deferred. Attributes are parsed and retained without default resolution,
+//!   key deduplication or value interpretation. Malformed supported attribute
+//!   syntax is invalid, not unsupported. Unsupported boundaries still make
+//!   no claim about validity beyond the detected construct.
 //!
 //! Only a run-to-completion `parse` is exposed for now, but the machine is
 //! genuinely resumable: all continuation state (grammar state and the spans
@@ -77,6 +69,8 @@ pub const Options = struct {
     /// scanned once in full. Byte/token budgets and cooperative
     /// cancellation arrive with the bounded drivers (R-MOD-010).
     max_statements: usize = std.math.maxInt(usize),
+    /// Total key/value pairs, including standalone assignments. Not a scan budget.
+    max_attributes: usize = std.math.maxInt(usize),
 };
 
 /// The parse outcome category. The diagnostics explaining a failure travel
@@ -145,6 +139,11 @@ fn Machine(comptime EventsPtr: type) type {
         diagnostics: diagnostic.Sink,
         options: Options,
         statements: usize = 0,
+        attributes: usize = 0,
+        attribute_key: location.Span = undefined,
+        attribute_target: syntax_event.AttributeTarget = .graph,
+        open_bracket_span: ?location.Span = null,
+        pending: enum { node, edge, attributes } = .node,
         delivery: DiagnosticDelivery = .complete,
         /// Span of the document's `{`, once consumed — the related location
         /// reported when the input ends inside the body.
@@ -195,6 +194,14 @@ fn Machine(comptime EventsPtr: type) type {
             edge_terminate,
             /// After the closing `}`: end of input.
             epilogue,
+            assignment_value,
+            completed,
+            attribute_open,
+            attribute_key_or_close,
+            attribute_equals,
+            attribute_value,
+            attribute_after_value,
+            after_attributes,
         };
 
         fn runToCompletion(self: *Self) Result {
@@ -254,108 +261,94 @@ fn Machine(comptime EventsPtr: type) type {
                     .left_brace => return self.beginBody(token),
                     else => return self.unexpected(.{ .left_brace = true }, .document_header, token),
                 },
-                .statement => switch (token.tag) {
-                    .identifier => if (self.beginStatement(token)) |result| return result,
-                    .right_brace => self.state = .epilogue,
-                    // `{ … }` here is a valid-DOT anonymous subgraph.
-                    .left_brace => return self.unsupportedAt(token.span, .subgraph),
-                    // Statement position is where these keywords legally
-                    // introduce deferred constructs (`subgraph s { … }`,
-                    // `node [ … ]`, …); anywhere else they are plain
-                    // syntax errors.
-                    .keyword_graph,
-                    .keyword_subgraph,
-                    .keyword_node,
-                    .keyword_edge,
-                    => return self.unsupportedAt(token.span, statementKeywordFeature(token.tag).?),
-                    else => return self.unexpected(.{
-                        .identifier = true,
-                        .right_brace = true,
-                    }, .document_body, token),
-                },
+                .statement => return self.beginNext(token),
                 .after_identifier => switch (token.tag) {
-                    .semicolon => {
-                        if (self.emitNode()) |result| return result;
-                        self.state = .statement;
+                    .equals => {
+                        if (self.countAttribute(self.left)) |result| return result;
+                        self.state = .assignment_value;
                     },
+                    .left_bracket => self.openAttributes(token),
                     .edge_undirected, .edge_directed => {
-                        self.operator = switch (token.tag) {
-                            .edge_undirected => .undirected,
-                            else => .directed,
-                        };
+                        self.operator = if (token.tag == .edge_undirected) .undirected else .directed;
                         self.operator_span = token.span;
                         self.state = .edge_right;
                     },
-                    // Terminators are optional: the node statement ended,
-                    // and this token starts the next construct.
-                    .identifier => {
-                        if (self.emitNode()) |result| return result;
-                        if (self.beginStatement(token)) |result| return result;
-                    },
-                    .right_brace => {
-                        if (self.emitNode()) |result| return result;
-                        self.state = .epilogue;
-                    },
-                    .left_brace => {
-                        if (self.emitNode()) |result| return result;
-                        return self.unsupportedAt(token.span, .subgraph);
-                    },
-                    .keyword_graph, .keyword_subgraph, .keyword_node, .keyword_edge => {
-                        if (self.emitNode()) |result| return result;
-                        return self.unsupportedAt(token.span, statementKeywordFeature(token.tag).?);
-                    },
-                    else => return self.unexpected(.{
+                    else => return self.finishPending(token, .{
                         .semicolon = true,
                         .undirected_operator = true,
                         .directed_operator = true,
                         .identifier = true,
                         .right_brace = true,
-                    }, .statement, token),
+                        .left_bracket = true,
+                        .equals = true,
+                        .graph_keyword = true,
+                        .node_keyword = true,
+                        .edge_keyword = true,
+                        .subgraph_keyword = true,
+                        .left_brace = true,
+                    }, .statement),
                 },
                 .edge_right => switch (token.tag) {
                     .identifier => {
                         self.right = token.span;
+                        self.pending = .edge;
                         self.state = .edge_terminate;
                     },
-                    // `a -- { … }` and `a -- subgraph s { … }` are
-                    // valid-DOT subgraph endpoints.
-                    .left_brace,
-                    .keyword_subgraph,
-                    => return self.unsupportedAt(token.span, .subgraph),
+                    .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph),
                     else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
                 },
                 .edge_terminate => switch (token.tag) {
-                    .semicolon => {
-                        if (self.emitEdge()) |result| return result;
+                    .left_bracket => self.openAttributes(token),
+                    .edge_undirected, .edge_directed => return self.unsupportedAt(token.span, .edge_chain),
+                    else => return self.finishPending(token, statementEndExpected(true), .statement_terminator),
+                },
+                .assignment_value => {
+                    if (token.tag != .identifier)
+                        return self.unexpected(.{ .identifier = true }, .assignment_value, token);
+                    self.events.assignment(.{ .key = self.left, .value = token.span }) catch |err| return self.sinkFailure(err);
+                    self.state = .completed;
+                },
+                .completed => {
+                    if (token.tag == .semicolon) {
                         self.state = .statement;
-                    },
-                    // `a -- b -- c` is a valid-DOT edge chain; deferred.
-                    .edge_undirected, .edge_directed => {
-                        return self.unsupportedAt(token.span, .edge_chain);
-                    },
-                    // Terminators are optional: the edge ended, and this
-                    // token starts the next construct.
-                    .identifier => {
-                        if (self.emitEdge()) |result| return result;
-                        if (self.beginStatement(token)) |result| return result;
-                    },
-                    .right_brace => {
-                        if (self.emitEdge()) |result| return result;
-                        self.state = .epilogue;
-                    },
-                    .left_brace => {
-                        if (self.emitEdge()) |result| return result;
-                        return self.unsupportedAt(token.span, .subgraph);
-                    },
-                    .keyword_graph, .keyword_subgraph, .keyword_node, .keyword_edge => {
-                        if (self.emitEdge()) |result| return result;
-                        return self.unsupportedAt(token.span, statementKeywordFeature(token.tag).?);
-                    },
+                    } else return self.beginNext(token);
+                },
+                .attribute_open => {
+                    if (token.tag != .left_bracket)
+                        return self.unexpected(.{ .left_bracket = true }, .attribute_list, token);
+                    self.openAttributes(token);
+                },
+                .attribute_key_or_close => switch (token.tag) {
+                    .right_bracket => self.closeAttributes(),
+                    .identifier => return self.beginAttribute(token),
+                    else => return self.unexpected(.{ .identifier = true, .right_bracket = true }, .attribute_key, token),
+                },
+                .attribute_equals => {
+                    if (token.tag != .equals)
+                        return self.unexpected(.{ .equals = true }, .attribute_key, token);
+                    self.state = .attribute_value;
+                },
+                .attribute_value => {
+                    if (token.tag != .identifier)
+                        return self.unexpected(.{ .identifier = true }, .attribute_value, token);
+                    self.events.attribute(.{ .key = self.attribute_key, .value = token.span }) catch |err| return self.sinkFailure(err);
+                    self.state = .attribute_after_value;
+                },
+                .attribute_after_value => switch (token.tag) {
+                    .right_bracket => self.closeAttributes(),
+                    .comma, .semicolon => self.state = .attribute_key_or_close,
+                    .identifier => return self.beginAttribute(token),
                     else => return self.unexpected(.{
-                        .semicolon = true,
                         .identifier = true,
-                        .right_brace = true,
-                    }, .statement_terminator, token),
+                        .right_bracket = true,
+                        .comma = true,
+                        .semicolon = true,
+                    }, .attribute_list, token),
+                },
+                .after_attributes => {
+                    if (token.tag == .left_bracket) {
+                        self.openAttributes(token);
+                    } else return self.finishPending(token, statementEndExpected(true), .statement_terminator);
                 },
                 .epilogue => switch (token.tag) {
                     .eof => {
@@ -389,7 +382,7 @@ fn Machine(comptime EventsPtr: type) type {
             return null;
         }
 
-        /// Start a statement at its first identifier: the one place the
+        /// Start a statement at its identifier or attribute keyword: the place the
         /// caller-visible statement limit is enforced.
         fn beginStatement(self: *Self, token: lex.Token) ?Result {
             if (self.statements == self.options.max_statements) {
@@ -404,7 +397,83 @@ fn Machine(comptime EventsPtr: type) type {
             }
             self.statements += 1;
             self.left = token.span;
+            self.pending = .node;
             self.state = .after_identifier;
+            return null;
+        }
+
+        fn beginNext(self: *Self, token: lex.Token) ?Result {
+            switch (token.tag) {
+                .identifier => return self.beginStatement(token),
+                .right_brace => self.state = .epilogue,
+                .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph),
+                .keyword_graph, .keyword_node, .keyword_edge => {
+                    if (self.beginStatement(token)) |result| return result;
+                    self.pending = .attributes;
+                    self.attribute_target = switch (token.tag) {
+                        .keyword_graph => .graph,
+                        .keyword_node => .node,
+                        else => .edge,
+                    };
+                    self.state = .attribute_open;
+                },
+                else => return self.unexpected(.{
+                    .identifier = true,
+                    .right_brace = true,
+                    .left_brace = true,
+                    .graph_keyword = true,
+                    .node_keyword = true,
+                    .edge_keyword = true,
+                    .subgraph_keyword = true,
+                }, .document_body, token),
+            }
+            return null;
+        }
+
+        fn finishPending(self: *Self, token: lex.Token, expected: std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false), context: diagnostic.ParseContext) ?Result {
+            switch (token.tag) {
+                .semicolon, .identifier, .right_brace, .left_brace, .keyword_graph, .keyword_node, .keyword_edge, .keyword_subgraph => {},
+                else => return self.unexpected(expected, context, token),
+            }
+            switch (self.pending) {
+                .node => if (self.emitNode()) |result| return result,
+                .edge => if (self.emitEdge()) |result| return result,
+                .attributes => self.events.attributeStatement(.{
+                    .target = self.attribute_target,
+                    .keyword_span = self.left,
+                }) catch |err| return self.sinkFailure(err),
+            }
+            if (token.tag == .semicolon) {
+                self.state = .statement;
+                return null;
+            }
+            return self.beginNext(token);
+        }
+
+        fn openAttributes(self: *Self, token: lex.Token) void {
+            self.open_bracket_span = token.span;
+            self.state = .attribute_key_or_close;
+        }
+
+        fn closeAttributes(self: *Self) void {
+            self.open_bracket_span = null;
+            self.state = .after_attributes;
+        }
+
+        fn countAttribute(self: *Self, at: location.Span) ?Result {
+            if (self.attributes == self.options.max_attributes) return self.fail(.{
+                .code = .resource_capacity_exhausted,
+                .span = at,
+                .details = .{ .capacity = .{ .resource = .attributes, .limit = self.options.max_attributes } },
+            });
+            self.attributes += 1;
+            return null;
+        }
+
+        fn beginAttribute(self: *Self, token: lex.Token) ?Result {
+            if (self.countAttribute(token.span)) |result| return result;
+            self.attribute_key = token.span;
+            self.state = .attribute_equals;
             return null;
         }
 
@@ -473,7 +542,7 @@ fn Machine(comptime EventsPtr: type) type {
             // The end of input inside the body traces back to the `{` that
             // is still open (typed relation; renderers word it).
             const related: ?diagnostic.Related = if (found == .end_of_input)
-                (if (self.open_brace_span) |span|
+                (if (self.open_bracket_span orelse self.open_brace_span) |span|
                     .{ .span = span, .role = .opened_here }
                 else
                     null)
@@ -501,18 +570,17 @@ fn Machine(comptime EventsPtr: type) type {
     };
 }
 
-/// The deferred construct a keyword legally introduces in statement
-/// position (`graph [ … ]`, `subgraph s { … }`, `node [ … ]`,
-/// `edge [ … ]`). Positions where these keywords are not legal DOT report
-/// plain unexpected-token syntax errors instead — the classification is a
-/// grammar decision, which is why it lives here and not in the lexer.
-fn statementKeywordFeature(tag: lex.Token.Tag) ?diagnostic.Feature {
-    return switch (tag) {
-        .keyword_graph => .graph_attribute_statement,
-        .keyword_subgraph => .subgraph,
-        .keyword_node => .node_attribute_statement,
-        .keyword_edge => .edge_attribute_statement,
-        else => null,
+fn statementEndExpected(brackets: bool) std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false) {
+    return .{
+        .semicolon = true,
+        .identifier = true,
+        .right_brace = true,
+        .left_bracket = brackets,
+        .left_brace = true,
+        .graph_keyword = true,
+        .node_keyword = true,
+        .edge_keyword = true,
+        .subgraph_keyword = true,
     };
 }
 
@@ -533,6 +601,10 @@ fn tokenItem(tag: lex.Token.Tag) diagnostic.SyntaxItem {
         .right_brace => .right_brace,
         .semicolon => .semicolon,
         .eof => .end_of_input,
+        .left_bracket => .left_bracket,
+        .right_bracket => .right_bracket,
+        .equals => .equals,
+        .comma => .comma,
     };
 }
 
@@ -877,11 +949,6 @@ test "recognized-but-deferred constructs mid-document abort as unsupported" {
         .{ "graph { a { } }", diagnostic.Feature.subgraph },
         .{ "graph { subgraph s { b } }", diagnostic.Feature.subgraph },
         .{ "graph { a -- b subgraph s }", diagnostic.Feature.subgraph },
-        .{ "digraph { graph }", diagnostic.Feature.graph_attribute_statement },
-        .{ "digraph { node [shape=box]; }", diagnostic.Feature.node_attribute_statement },
-        .{ "graph { a node }", diagnostic.Feature.node_attribute_statement },
-        .{ "graph { edge [] }", diagnostic.Feature.edge_attribute_statement },
-        .{ "graph { a -> b [color=red]; }", diagnostic.Feature.attribute_list },
     }) |case| {
         var events: Recording = .{};
         var bag: Bag = .{};
@@ -891,27 +958,14 @@ test "recognized-but-deferred constructs mid-document abort as unsupported" {
     }
 }
 
-test "statement-position reserved words stop at the introducer, without lookahead" {
-    // DOT keywords are reserved words in every position — an unquoted
-    // keyword is never an identifier. Graphviz 15.1.0 rejects each input
-    // below (`syntax error near ';'`/`'--'`), so stopping at the keyword
-    // over-rejects no valid DOT; what follows the introducer is unchecked
-    // boundary, exactly as documented for the unsupported outcome. Once
-    // the attribute slice consumes these keywords itself, the malformed
-    // continuations here become syntax errors after the keyword — the
-    // classification tightens without an API change.
-    inline for (.{
-        .{ "graph { graph; }", diagnostic.Feature.graph_attribute_statement },
-        .{ "graph { subgraph; }", diagnostic.Feature.subgraph },
-        .{ "graph { node; }", diagnostic.Feature.node_attribute_statement },
-        .{ "graph { edge -- x; }", diagnostic.Feature.edge_attribute_statement },
-        .{ "graph { node -- x; }", diagnostic.Feature.node_attribute_statement },
-    }) |case| {
+test "attribute keywords require a bracket list; subgraphs remain deferred" {
+    inline for (.{ "graph { graph; }", "graph { node; }", "graph { edge -- x; }", "graph { node -- x; }", "digraph { graph }", "graph { a node }" }) |source| {
         var events: Recording = .{};
         var bag: Bag = .{};
-        try expect(parse(case[0], &events, bag.sink(), .{}).outcome == .unsupported_feature);
-        try expectEqual(case[1], bag.items()[0].details.unsupported_feature);
+        try expect(parse(source, &events, bag.sink(), .{}).outcome == .invalid_syntax);
+        try expect(bag.items()[0].details.unexpected.expected.contains(.left_bracket));
     }
+    try expectAborted("graph { subgraph; }", .unsupported_feature);
 }
 
 test "statement limit is a resource outcome, distinct from invalid syntax" {
@@ -984,11 +1038,11 @@ test "failing beginDocument still receives the cleanup abort" {
 
 test "parser state stays small (R-PERF-005 parser-state-size regression guard)" {
     // The whole machine — lexer, continuation state, options, bookkeeping —
-    // must remain a small constant, independent of input size. 320 B is the
+    // must remain a small constant, independent of input size. 416 B is the
     // current measured value plus headroom (see docs/BASELINES.md), not an
     // architectural budget: if a slice legitimately grows the state, measure,
     // update the baseline doc, and raise this bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording)) <= 320);
+    try expect(@sizeOf(Machine(*Recording)) <= 416);
 }
 
 test "step is terminal-idempotent after success and after failure" {
@@ -1046,4 +1100,33 @@ test "a failing diagnostic sink is surfaced as delivery failure, not masked" {
     var bag: Bag = .{};
     const ok = parse("graph {", &ok_events, bag.sink(), .{});
     try expectEqual(DiagnosticDelivery.complete, ok.diagnostic_delivery);
+}
+
+test "attribute pairs stream before owners and abort if any event is refused" {
+    const source = "graph { a[x=1][y=2]; node[]; z=3; a--b[w=4] }";
+    var complete: Recording = .{};
+    try expect(parse(source, &complete, diagnostic.discard, .{}).outcome == .success);
+    const recorded = complete.recorded();
+    try expect(recorded[0] == .begin_document);
+    try expect(recorded[1] == .attribute);
+    try expect(recorded[2] == .attribute);
+    try expect(recorded[3] == .node_statement);
+    try expect(recorded[4] == .attribute_statement);
+    try expect(recorded[5] == .assignment);
+    try expect(recorded[6] == .attribute);
+    try expect(recorded[7] == .edge_statement);
+    try expect(recorded[8] == .end_document);
+    inline for (0..8) |capacity| {
+        var events: syntax_event.RecordingSink(capacity) = .{};
+        const result = parse(source, &events, diagnostic.discard, .{});
+        try expect(result.outcome == .sink_failure);
+        try expectEqual(anyerror.EventCapacityExceeded, result.outcome.sink_failure);
+        try expectEqual(@as(usize, capacity + 1), events.recorded().len);
+        try expect(events.recorded()[capacity] == .abort_document);
+    }
+    var partial: Recording = .{};
+    try expect(parse("graph { a[x=1 y=] }", &partial, diagnostic.discard, .{}).outcome == .invalid_syntax);
+    try expectEqual(@as(usize, 3), partial.recorded().len);
+    try expect(partial.recorded()[1] == .attribute);
+    try expect(partial.recorded()[2] == .abort_document);
 }

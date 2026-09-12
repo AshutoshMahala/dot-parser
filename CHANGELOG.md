@@ -1,9 +1,27 @@
 # Changelog
 
 Notable changes to dot-parser. During `0.x`, minor versions may break
-compatibility; deprecations and breaks are called out here.
+compatibility, including diagnostic identities and enum values. Breaking changes
+are called out here; compatibility shims are not retained.
 
 ## Unreleased
+
+- Remove obsolete unsupported-feature entries, the unused missing-element
+  diagnostic, forward-compatibility-only enum fallbacks, and unimplemented
+  validation outcome placeholders. Diagnostic enums now describe current behavior.
+- Remove the diagnostic stability exception during experimental `0.x`; WDP
+  conformance and current registry consistency remain tested.
+
+- Parse basic attributes: standalone assignments, graph/node/edge attribute
+  statements, and node/single-edge lists. Preserve pair order and duplicates;
+  flatten adjacent groups without applying defaults or interpreting values.
+- Add attribute/assignment/attribute-statement pools and capacity hints, plus
+  `max_attributes` for total key/value pairs. Both storage paths share the
+  streaming private event contract and abort without exposing partial documents.
+- Reuse existing WDP syntax/capacity identities with appended typed contexts
+  and resources.
+- Add attribute examples, corpus coverage, truncation/failure tests and fuzzing.
+  Record the larger retained records and measured smoke-run performance cost.
 
 - Parse `//`, `/* ... */`, and `#` comments without allocation or retained
   trivia. Behavior and Graphviz differences are documented in
@@ -11,12 +29,11 @@ compatibility; deprecations and breaks are called out here.
 - Add `E.Lexer.Syntax.031` with typed `.unterminated` details for block comments
   and quoted identifiers, and construct-specific rendering at the opener.
 - Define sequence numbers and aliases together in `diagnostic.Sequence`;
-  existing `Code.Info` fields and published diagnostic identities are unchanged.
+  registry metadata is derived from those pairs.
 - Parse numeral and quoted identifiers, including `+` concatenation, into the
   existing compact ranges. Add allocation-free decoding into caller buffers
   or writers; preserve raw spelling and perform no numeric conversion.
-- Report malformed quoted concatenation as `E.Lexer.Syntax.003`; retain legacy
-  quoted/numeral feature discriminants for diagnostic compatibility.
+- Report malformed quoted concatenation as `E.Lexer.Syntax.003`.
 - Escape non-ASCII/control bytes in console source excerpts and align their
   underlines without Unicode tables. See supported syntax for newline and
   byte-handling policies and the scope of Graphviz verification.
