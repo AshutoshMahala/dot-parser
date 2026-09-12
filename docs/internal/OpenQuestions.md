@@ -1,5 +1,7 @@
 # Open design decisions
 
+Last reconciled: 2026-09-12 (comments and identifier slices).
+
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q29)
 are stable: they are never renumbered, deleted, or reused, and new questions
 append with fresh numbers. Answered questions are not removed — the
@@ -8,9 +10,15 @@ where the decision is embodied.
 
 Status meanings:
 
-- **Decided** — settled; changing it is a deliberate reversal, not drift.
+- **Decided** — policy is settled; changing it is a deliberate reversal, not drift.
 - **Partially decided** — a direction or first slice exists; the rest stays open.
 - **Open** — genuinely undecided; usually gated on a future slice.
+
+Policy status is separate from delivery status. Entries identify pending
+implementation or verification explicitly; a decided policy does not claim
+that every supporting feature or test already exists. Requirements describe
+the intended contract, while [supported syntax](../SUPPORTED_SYNTAX.md) is
+authoritative for what the current release actually processes.
 
 ---
 
@@ -34,8 +42,10 @@ a tolerant parsing mode retain it and report a diagnostic?**
 Tolerant by design: the parser is kind-agnostic (both operators always parse,
 the written operator is preserved), and the kind×operator legality rule lives
 solely in validation, which reports every independent mismatch in source
-order. Consumers may filter the diagnostic class at their sink for dialect
-tolerance. *(Embodied: `src/parser.zig`, `src/validate.zig`, corpus.)*
+order. Sink filtering changes reporting, not `document_valid`. Consumers may
+parse without validation or apply their own acceptance policy; configurable
+validation-rule policy is not implemented yet. *(Embodied: `src/parser.zig`,
+`src/validate.zig`, corpus.)*
 
 **Q5 — Is semantic resolution part of this package or a sibling package?**
 This package, as a separate optional layer (`DotIR` + explicit lowering
@@ -53,6 +63,32 @@ Zig, minimum 0.16.0. *(Embodied: `build.zig.zon`.)*
 **Q9 — Is serialization required in version 1?**
 No. *(Embodied: non-goals §14.)*
 
+**Q10 — What compatibility baseline defines correct behavior?**
+The written DOT specification is primary; Graphviz 15.1.0 is the current
+differential reference, not an instruction to reproduce every implementation
+quirk. Intentional differences are listed in
+[supported syntax](../SUPPORTED_SYNTAX.md), including standalone-CR comment
+termination and whole-document consumption. Keywords, numeral IDs, and quoted
+IDs are implemented; non-ASCII bare IDs remain deferred. Additional identifier
+probes used the locally available Graphviz 16.0.0, separately labeled in the
+compatibility notes. **Verification pending:** automate the differential
+harness against the pinned reference and record exceptions explicitly.
+*(Embodied: `src/lexer.zig`, compatibility notes, corpus; R-ROB-004.)*
+
+**Q13 — What language-specific policy governs raw pointers, unchecked
+blocks, integer casts, and dependency review?**
+Use checked input-derived bounds and narrowing; isolate low-level operations
+and document the invariants that make them safe. Callback context pointer casts
+are permitted with explicit type, alignment, and lifetime contracts. Assertions
+may enforce internal or documented caller preconditions, but malformed source
+must produce a bounded failure rather than a trap. Disabling runtime safety
+requires a local justification and direct tests. Dependencies require review
+of safety, allocation/platform costs, and licensing before introduction; the
+package currently has none. **Verification pending:** a dedicated audit of all
+low-level sites; this policy is not a claim that such an audit has occurred.
+*(Policy: R-SEC-004/R-SEC-006 and §17; existing seams: diagnostic sink context
+casts and checked retained-range/index conversions.)*
+
 **Q19 — Does version 1 support parsing independently supplied fragments?**
 No — whole documents only. R-MEM-007's merge semantics remain the contract
 for whenever fragments arrive. *(Embodied: façade surface.)*
@@ -63,14 +99,41 @@ Namespace `dot_parser` (WDP part 7, fully qualified compact IDs
 `nshash-codehash`); components are internal modules (`Lexer`, `Parser`,
 `Validation`, `Resource`, `Profile`); sequences follow the part 6 conventions
 (001 MISSING, 002 MISMATCH, 003 INVALID, 009 UNSUPPORTED, 026 EXHAUSTED,
-031+ project-specific); registry uniqueness, format validity, and compact-ID
-collisions are test-enforced against the official WDP test vectors.
+031+ project-specific). Sequence numbers and aliases are defined together in
+`diagnostic.Sequence`; numbers may recur across diagnostic domains. Registry
+uniqueness, format validity, and compact-ID collisions are test-enforced;
+compact-ID generation is also checked against the official WDP test vectors.
 *(Embodied: `src/diagnostic.zig`; R-DIAG-001 as amended.)*
 
 **Q21 — Are any analysis passes worth an optional parallel implementation?**
 Not now. Concurrency stays external to the core (R-ARCH-008/R-CON-004);
 revisit only after profiling demonstrates value. *(Embodied: no threading
 anywhere; frozen documents are share-safe per R-CON-003.)*
+
+**Q25 — What exact deterministic ordering is promised?**
+For the current public API, statements and per-kind pools preserve source
+order, and diagnostics follow deterministic source/emission order. Repeated
+runs with the same input and configuration promise semantic equality, not
+literal byte identity of whole structs (padding is not part of the contract).
+Existing tests and fuzz checks cover outcome classes, statement order and
+pools including borrowed ranges, and diagnostic codes, positions, and feature
+payloads. New public payloads must extend that coverage as they arrive.
+Future merged-fragment, `DotIR`, and serialized-output APIs must define their
+own ordering before publication; their absence does not leave the current
+contract undecided. *(Embodied: `src/syntax.zig`, `src/validate.zig`,
+validation/corpus/fuzz determinism tests; R-PORT-005/R-CON-005.)*
+
+**Q29 — Which sinks require transactional staging, and is a standard staging
+sink worth its memory and binary cost?**
+A sink requiring atomic externally visible output owns staging or rollback.
+The parser provides completion/abort lifecycle signals, not rollback of
+arbitrary side effects. Header failures may emit no syntax events; after a
+begin attempt, the documented cleanup/terminal rules apply. Completion means
+complete syntax parsing, not semantic validity: consumers requiring validated
+output must also stage through validation. No reusable staging helper will be
+added until a concrete consumer demonstrates its need and cost; reconsider
+that helper separately from the settled ownership boundary.
+*(Embodied: `src/syntax_event.zig`, builder abort paths; R-MOD-011.)*
 
 ---
 
@@ -82,23 +145,10 @@ every interim release documents its exact supported subset. The end-state
 compatibility statement is written when the slices land. *(Embodied: README
 "First goal"; `tests/corpus/unsupported/` tracks the boundary.)*
 
-**Q10 — What compatibility baseline defines correct behavior?**
-The written DOT specification is primary (case-independent keywords,
-`\200–\377` identifier bytes, and the numeral grammar are implemented from
-it). Differential testing against a pinned Graphviz release is still to be
-chosen. *(Embodied: lexer follows the spec; R-ROB-004 differential tests
-pending.)*
-
 **Q12 — What default security limits apply to convenience APIs?**
 `max_statements` exists and is caller-visible, but defaults to unlimited;
 whether convenience APIs should ship with non-trivial defaults is open.
 *(Embodied: `ParseOptions.max_statements`.)*
-
-**Q13 — What language-specific policy governs raw pointers, unchecked
-blocks, integer casts, and dependency review?**
-Practice is established — no unsafe patterns, checked narrowing with
-justifying comments, asserts as documented traps in safe builds, zero
-dependencies — but it is not yet written down as a policy document.
 
 **Q16 — What size thresholds establish that disabling a feature removed its
 cost?**
@@ -120,26 +170,32 @@ await the profile work. *(Embodied: `syntax.Index`, `location.Range`.)*
 
 **Q23 — Does version 1 ship the optional UTF-8 validator, and what policy
 applies to BOMs, NUL bytes, invalid sequences, and HTML-like IDs?**
-Version 1 stays byte-oriented: bytes 0x80–0xFF are reported as the deferred
-non-ASCII identifier feature with full-run spans; NUL and other control
-bytes are invalid input. The validator and BOM policy land with slice 3
-(lexical completeness). *(Embodied: `lexer.nonAsciiIdentifier`.)*
+**Decided:** the core is byte-oriented, with physical byte offsets and
+LF/CRLF/standalone-CR tracking; encoding validation is a separate optional
+policy/pass. Comment bodies are opaque bytes, including NUL and invalid UTF-8,
+and preprocessor directives do not alter physical locations.
+**Implemented boundary:** quoted IDs retain one raw-expression range and decode
+only on explicit request into caller storage or a writer. Escaped LF/CRLF/CR
+continuations are removed on decoding; raw line endings are preserved. Quoted
+content accepts non-ASCII and non-NUL control bytes without validation of its
+encoding; NUL is rejected. Non-ASCII bare identifier runs (bytes 0x80–0xFF plus
+identifier continuation bytes) are reported as deferred, not decoded or
+accepted identifiers. Outside comments and quoted content, control bytes other
+than supported whitespace are invalid when reached by the lexer. HTML-like
+constructs stop at a deferred boundary; their bodies have not been validated.
+**Still open:** timing and exact policy for non-ASCII identifier support, BOM
+handling, whether version 1 ships a UTF-8 validator and its invalid-sequence
+policy, and HTML-like ID validation. Resolve these as lexical support grows;
+they are not all promised
+deliverables of the next slice. *(Embodied: `src/lexer.zig`,
+[supported syntax](../SUPPORTED_SYNTAX.md); R-PORT-006.)*
 
 **Q24 — When will the first stable compatibility boundary be declared?**
-Plan: tag `v0.1.0` after slice 2 (directed documents) — not a stability
-declaration, but the first version claiming general usefulness. The stable
-boundary itself remains future. *(Embodied: versioning discussion,
-2026-07-18.)*
-
-**Q25 — What exact deterministic ordering is promised?**
-Statements and diagnostics are in source order; repeated runs are
-semantically identical over an enumerated set of stable properties, each
-test- and fuzz-verified: outcome class, statement order/node/edge pools
-(including borrowed ranges), and diagnostic codes, positions, and feature
-payloads. Literal byte identity of whole structs is deliberately not
-claimed — it would drag padding and other representation details into the
-contract. Ordering for merged fragments and serialized output is not
-applicable yet. *(Embodied: validation/corpus/fuzz determinism tests.)*
+`v0.1.0` shipped after slice 2 (directed documents). It is a useful experimental
+release, not a source-API stability declaration. The stable boundary and its
+criteria remain open; published diagnostic identities/discriminants already
+have their separate stability guarantee. *(Embodied: `CHANGELOG.md`,
+`build.zig.zon`, `src/root.zig`; R-ARCH-009/R-DIAG-005.)*
 
 **Q26 — Which named profiles are public conveniences?**
 Decision in principle: named profiles first (`micro`/`core`/`full`),
@@ -149,10 +205,16 @@ Implementation awaits the profile slice. *(Embodied: DX design discussion,
 
 **Q27 — Which progress budgets does the bounded driver support, and what
 work unit is deterministic?**
-The work unit is decided and implemented: one `step` = one token, with
-terminal-idempotent stepping and all continuation state in the machine.
-The budget vocabulary (`max_tokens`, byte budgets) is open. *(Embodied:
-`parser.Machine.step`.)*
+**Implemented groundwork:** a nonterminal `step` asks the lexer for one token
+and advances the parser; terminal calls are idempotent. Grammar continuation
+state lives in the machine. **Not a bounded-work guarantee:** that lexer call
+can scan a long identifier, whitespace region, or comment before returning.
+A token count therefore does not bound bytes examined or cancellation latency.
+**Still open:** budget vocabulary, deterministic byte/work accounting, and
+cancellation safe points. Strict bounded pumping requires resumable lexical
+scanning as well as parser stepping; yield must remain distinct from terminal
+cancellation. No public bounded/cancellation driver ships yet.
+*(Embodied: `parser.Machine.step`, `lexer.skipTrivia`; R-MOD-010/R-MOD-013.)*
 
 ---
 
@@ -187,7 +249,16 @@ but design and measurement belong to a dedicated recovery slice.
 syntax index over retained source?**
 Open; nothing currently forces the choice.
 
-**Q29 — Which sinks require transactional staging, and is a standard staging
-sink worth its memory and binary cost?**
-Open. The event contract documents that staging is the sink's own
-responsibility (R-MOD-011); no standard staging sink is planned yet.
+---
+
+## Reconciliation log
+
+- 2026-09-12 — Q10, Q13, Q25, and Q29 moved to **Decided**, with pending
+  verification and future API scope stated separately. Corrected Q4's
+  reporting/validity distinction, Q20's paired sequences/aliases, Q23's
+  context-dependent byte handling, Q24's shipped release, and Q27's
+  token-progress versus bounded-work distinction. No question IDs changed.
+- 2026-09-12 — Identifier slice: Q10/Q23 now distinguish supported quoted and
+  numeral IDs from deferred non-ASCII bare IDs, and record the explicit decoding,
+  NUL, and line-continuation policies. The 16.0.0 manual probes do not replace
+  the pinned 15.1.0 differential suite; BOM policy remains open.

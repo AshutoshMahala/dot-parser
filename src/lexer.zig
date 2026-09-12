@@ -2,7 +2,8 @@
 //!
 //! Recognizes the current subset: every DOT keyword (`graph` maps to the
 //! `undigraph` kind at reading time, `digraph`, `strict`, plus the deferred
-//! `subgraph`/`node`/`edge`); bare ASCII identifiers; `{`, `}`, `;`; the
+//! `subgraph`/`node`/`edge`); bare ASCII, numeral, and quoted identifiers;
+//! `{`, `}`, `;`; the
 //! edge operators `--` and `->`; whitespace (space, tab, LF, CRLF, CR);
 //! and comments (`//`, `/* ... */`, and `#` through the physical line end).
 //! Comments are skipped without retention. See docs/SUPPORTED_SYNTAX.md for
@@ -16,8 +17,8 @@
 //! - Every keyword tokenizes, including keywords of deferred constructs:
 //!   whether `subgraph` legally introduces a subgraph or sits in an illegal
 //!   grammar position is the parser's decision, which the lexer cannot
-//!   make. Only *lexical* deferred constructs — quoted/numeral/
-//!   HTML/non-ASCII identifiers, attribute punctuation, ports — are
+//!   make. Only *lexical* deferred constructs — HTML/non-ASCII identifiers,
+//!   attribute punctuation, ports — are
 //!   reported here as structured `profile_unsupported_feature` failures,
 //!   distinct from bytes that are invalid in any DOT document (R-MOD-006).
 //!   Detection stops at the introducer: neither the construct's body nor
@@ -79,16 +80,16 @@ pub const Lexer = struct {
             ';' => self.single(.semicolon),
             'A'...'Z', 'a'...'z', '_' => self.identifierOrKeyword(),
             '-' => self.dash(),
-            // Valid DOT, deferred to later slices (R-MOD-006 detectors).
-            '0'...'9' => unsupported(start, 1, .numeral_identifier),
+            '0'...'9' => self.numeral(),
             // A leading '.' is a DOT numeral only when a digit follows
             // (grammar: `-?(.[0-9]+ | [0-9]+(.[0-9]*)?)`); a bare '.' is
             // invalid in any DOT document.
             '.' => if (self.peek(1)) |after| switch (after) {
-                '0'...'9' => unsupported(start, 2, .numeral_identifier),
+                '0'...'9' => self.numeral(),
                 else => self.invalidByte(),
             } else self.invalidByte(),
-            '"' => unsupported(start, 1, .quoted_identifier),
+            '"' => self.quotedIdentifier(),
+            // Valid DOT, deferred to later slices (R-MOD-006 detectors).
             '<' => unsupported(start, 1, .html_identifier),
             '[', ']', ',' => unsupported(start, 1, .attribute_list),
             '=' => unsupported(start, 1, .attribute_assignment),
@@ -107,9 +108,9 @@ pub const Lexer = struct {
     }
 
     fn peek(self: *const Lexer, ahead: usize) ?u8 {
-        const index = self.tracker.location.byte_offset + ahead;
-        if (index >= self.source.len) return null;
-        return self.source[index];
+        const offset = self.tracker.location.byte_offset;
+        if (ahead >= self.source.len - offset) return null;
+        return self.source[offset + ahead];
     }
 
     fn consume(self: *Lexer, count: usize) void {
@@ -171,6 +172,86 @@ pub const Lexer = struct {
         const start = self.here();
         self.consume(1);
         return .{ .token = .{ .tag = tag, .span = .{ .start = start, .byte_len = 1 } } };
+    }
+
+    /// DOT numerals are textual IDs, not floating-point values. Maximal
+    /// matching follows -?(.[0-9]+ | [0-9]+(.[0-9]*)?); exponent notation
+    /// and a leading '+' are not part of the grammar.
+    fn numeral(self: *Lexer) Result {
+        const start = self.here();
+        var len: usize = if (self.peek(0) == '-') 1 else 0;
+        while (self.peek(len)) |byte| {
+            if (!std.ascii.isDigit(byte)) break;
+            len += 1;
+        }
+        if (self.peek(len) == '.') {
+            len += 1;
+            while (self.peek(len)) |byte| {
+                if (!std.ascii.isDigit(byte)) break;
+                len += 1;
+            }
+        }
+        self.consume(len);
+        return .{ .token = .{ .tag = .identifier, .span = .{ .start = start, .byte_len = len } } };
+    }
+
+    /// One lexical identifier expression, including quoted '+' components.
+    /// Retain one raw range, not an allocated list of string parts. Trailing
+    /// trivia is inspected for '+' but excluded from the returned span.
+    /// A local cursor keeps failures repeatable without rewinding live state.
+    fn quotedIdentifier(self: *Lexer) Result {
+        const start = self.here();
+        var cursor = self.*;
+        while (true) {
+            const opener = cursor.here();
+            cursor.consume(1); // opening quote
+            while (cursor.peek(0)) |byte| {
+                if (byte == 0) return cursor.invalidByte();
+                if (byte == '"') {
+                    cursor.consume(1);
+                    break;
+                }
+                if (byte == '\\') {
+                    // Escaped quotes do not end the segment. A double
+                    // backslash is consumed as a pair but preserved on
+                    // decoding; other escape spellings are also preserved.
+                    cursor.consume(1);
+                    if (cursor.peek(0)) |after| {
+                        if (after == 0) return cursor.invalidByte();
+                        cursor.consume(1);
+                        if (after == '\r' and cursor.peek(0) == '\n') cursor.consume(1);
+                    }
+                } else {
+                    cursor.consume(1);
+                }
+            } else {
+                return .{ .failure = .{
+                    .code = .lexer_unterminated_construct,
+                    .span = .{ .start = opener, .byte_len = 1 },
+                    .details = .{ .unterminated = .quoted_identifier },
+                } };
+            }
+
+            const end = cursor;
+            // With no '+', leave trailing trivia for the next token,
+            // including any malformed block comment that it contains.
+            if (!cursor.skipTrivia() or cursor.peek(0) != '+') {
+                self.* = end;
+                return .{ .token = .{
+                    .tag = .identifier,
+                    .span = .{ .start = start, .byte_len = end.here().byte_offset - start.byte_offset },
+                } };
+            }
+            cursor.consume(1);
+            if (!cursor.skipTrivia()) return cursor.unterminatedComment();
+            if (cursor.peek(0) != '"') {
+                return .{ .failure = .{
+                    .code = .lexer_invalid_concatenation,
+                    .span = .{ .start = cursor.here(), .byte_len = if (cursor.peek(0) == null) 0 else 1 },
+                    .details = .{ .expected_quote = cursor.peek(0) },
+                } };
+            }
+        }
     }
 
     fn identifierOrKeyword(self: *Lexer) Result {
@@ -240,9 +321,9 @@ pub const Lexer = struct {
             },
             // A '-' introducing a digit is a negative DOT numeral; `-.` is
             // one only when a digit follows the '.'.
-            '0'...'9' => return unsupported(start, 2, .numeral_identifier),
+            '0'...'9' => return self.numeral(),
             '.' => if (self.peek(2)) |third| switch (third) {
-                '0'...'9' => return unsupported(start, 3, .numeral_identifier),
+                '0'...'9' => return self.numeral(),
                 else => {},
             },
             else => {},
@@ -554,21 +635,107 @@ test "recognized lexical deferred features are unsupported, not invalid" {
     // Keyword-introduced deferred constructs (subgraph, node/edge attribute
     // statements) are the parser's call — the keywords tokenize above.
     inline for (.{
-        .{ "\"quoted\"", diagnostic.Feature.quoted_identifier },
         .{ "<html>", diagnostic.Feature.html_identifier },
         .{ "[color=red]", diagnostic.Feature.attribute_list },
         .{ "]", diagnostic.Feature.attribute_list },
         .{ ",", diagnostic.Feature.attribute_list },
         .{ "=", diagnostic.Feature.attribute_assignment },
         .{ ":n", diagnostic.Feature.port_or_compass },
-        .{ "123", diagnostic.Feature.numeral_identifier },
-        .{ ".5", diagnostic.Feature.numeral_identifier },
-        .{ "-1", diagnostic.Feature.numeral_identifier },
-        .{ "-.5", diagnostic.Feature.numeral_identifier },
     }) |case| {
         var lexer = Lexer.init(case[0]);
         try expectUnsupported(&lexer, case[1]);
     }
+}
+
+test "numerals are maximal textual IDs and preserve adjacent operators" {
+    inline for (.{ "0", "-0", "123", "-12", ".5", "-.5", "12.", "-12.30", "000.00" }) |raw| {
+        var lexer = Lexer.init(raw);
+        try expectToken(&lexer, .identifier, raw);
+        try expectToken(&lexer, .eof, "");
+    }
+    var lexer = Lexer.init("1->-2 3--4 1e3 1.2.3");
+    try expectToken(&lexer, .identifier, "1");
+    try expectToken(&lexer, .edge_directed, "->");
+    try expectToken(&lexer, .identifier, "-2");
+    try expectToken(&lexer, .identifier, "3");
+    try expectToken(&lexer, .edge_undirected, "--");
+    try expectToken(&lexer, .identifier, "4");
+    try expectToken(&lexer, .identifier, "1");
+    try expectToken(&lexer, .identifier, "e3");
+    try expectToken(&lexer, .identifier, "1.2");
+    try expectToken(&lexer, .identifier, ".3");
+    try expectToken(&lexer, .eof, "");
+    var positive = Lexer.init("+1");
+    try expectInvalidByte(&positive, '+');
+}
+
+test "quoted identifiers include concatenations but exclude trailing trivia" {
+    const raw = "\"gr\" /* \" */ + // \"\r\n \"aph\"";
+    var lexer = Lexer.init(raw ++ " /* trailing */ -> \"b\"");
+    try expectToken(&lexer, .identifier, raw);
+    try expectEqual(@as(usize, raw.len), lexer.here().byte_offset);
+    try expectToken(&lexer, .edge_directed, "->");
+    try expectToken(&lexer, .identifier, "\"b\"");
+    try expectToken(&lexer, .eof, "");
+    var adjacent = Lexer.init("\"a\"\"b\"");
+    try expectToken(&adjacent, .identifier, "\"a\"");
+    try expectToken(&adjacent, .identifier, "\"b\"");
+}
+
+test "quoted content preserves physical positions and accepts opaque non-NUL bytes" {
+    inline for (.{ "\n", "\r\n", "\r" }) |newline| {
+        const raw = "\"a\\" ++ newline ++ "b" ++ newline ++ "// /* # \x01\x7f\xff\"";
+        var lexer = Lexer.init(raw ++ " x");
+        try expectToken(&lexer, .identifier, raw);
+        const next = lexer.next().token;
+        try expectEqual(location.locate(lexer.source, raw.len + 1), next.span.start);
+        try expectEqual(@as(usize, 3), next.span.start.line);
+    }
+    inline for (.{ "\"a\x00b\"", "\"a\\\x00b\"" }) |raw| {
+        var lexer = Lexer.init(raw);
+        const failure = lexer.next().failure;
+        try expectEqual(diagnostic.Code.lexer_invalid_byte, failure.code);
+        try expectEqual(@as(u8, 0), failure.details.invalid_byte);
+        try expectEqualStrings("\x00", failure.span.slice(raw));
+        try expectEqual(failure, lexer.next().failure);
+    }
+}
+
+test "unterminated strings report their own opener including later concatenated parts" {
+    const raw = "\"a\\\"b\\\\c\"";
+    for (1..raw.len) |end| {
+        var lexer = Lexer.init(raw[0..end]);
+        const result = lexer.next();
+        try expect(result == .failure);
+        try expectEqual(diagnostic.UnterminatedConstruct.quoted_identifier, result.failure.details.unterminated);
+        try expectEqual(@as(usize, 0), result.failure.span.start.byte_offset);
+        try expectEqual(@as(usize, 1), result.failure.span.byte_len);
+        try expectEqual(result, lexer.next());
+    }
+    var lexer = Lexer.init("\"a\" +\r\n \"bc");
+    const first = lexer.next().failure;
+    try expectEqual(@as(usize, 8), first.span.start.byte_offset);
+    try expectEqual(@as(usize, 2), first.span.start.line);
+    try expectEqual(@as(usize, 2), first.span.start.byte_column);
+    try expectEqual(first, lexer.next().failure);
+}
+
+test "malformed concatenation distinguishes expected quote from unclosed comment" {
+    inline for (.{ "\"a\"+", "\"a\"+b", "\"a\"+1", "\"a\"+}", "\"a\"++\"b\"", "\"a\"+<html>" }) |raw| {
+        var lexer = Lexer.init(raw);
+        const first = lexer.next().failure;
+        try expectEqual(diagnostic.Code.lexer_invalid_concatenation, first.code);
+        try expectEqual(@as(usize, 4), first.span.start.byte_offset);
+        try expectEqual(if (raw.len == 4) @as(?u8, null) else raw[4], first.details.expected_quote);
+        try expectEqual(first, lexer.next().failure);
+    }
+    var after_plus = Lexer.init("\"a\"+/*");
+    const failure = after_plus.next().failure;
+    try expectEqual(diagnostic.UnterminatedConstruct.block_comment, failure.details.unterminated);
+    try expectEqual(@as(usize, 4), failure.span.start.byte_offset);
+    var trailing = Lexer.init("\"a\" /*");
+    try expectToken(&trailing, .identifier, "\"a\"");
+    try expectEqual(diagnostic.UnterminatedConstruct.block_comment, trailing.next().failure.details.unterminated);
 }
 
 test "failures are terminal and idempotent" {

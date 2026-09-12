@@ -22,12 +22,13 @@ strict digraph Routes {
 - One root document: `graph` or `digraph`, optionally `strict`, optionally
   named (the source keyword `graph` maps to the library kind `undigraph`;
   in this library `graph` always means "either kind").
-- Bare ASCII identifiers, node statements, single-edge statements;
+- Bare ASCII, numeral, and quoted identifiers (including quoted `+`
+  concatenation), node statements, single-edge statements;
   semicolons are optional, as in Graphviz.
 - Borrowed source spans, explicit caller memory, fixed-buffer operation.
 - Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
 
-Everything else (quoted/numeral/HTML IDs, attributes, edge
+Everything else (HTML/non-ASCII bare IDs, attributes, edge
 chains, ports, subgraphs, …) is deliberately deferred to later vertical
 slices. The authoritative construct-by-construct table is
 [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
@@ -108,6 +109,22 @@ allocator fits your architecture better.)
 
 Coming in a later slice: a consumer-neutral `DotIR` plus adapter contracts,
 so engines consume normalized semantics rather than surface syntax.
+
+### Identifier spelling versus value
+
+`document.text(range)` always returns the exact source spelling, including
+quotes and concatenation. Decode explicitly when you need the logical value:
+
+```zig
+var value_buffer: [128]u8 = undefined;
+const value = try document.decodeIdentifier(node.identifier, &value_buffer);
+// Or stream without a decoded-value buffer:
+try document.writeIdentifier(node.identifier, writer);
+```
+
+Decoding performs no allocation or numeric conversion. See
+[ownership and decoding](docs/OWNERSHIP.md#identifier-values) and the runnable
+[identifier example](examples/identifiers.zig).
 
 The source bytes are borrowed: keep them alive and unchanged for as long as
 the returned document is used. See [examples/](examples/) for runnable

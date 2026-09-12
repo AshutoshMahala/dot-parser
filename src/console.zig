@@ -358,6 +358,7 @@ fn writeHint(details: Details, info: diagnostic.Code.Info, writer: anytype) !voi
     switch (details) {
         .unterminated => |construct| switch (construct) {
             .block_comment => try writer.writeAll("close the block comment opened here with '*/'; block comments do not nest"),
+            .quoted_identifier => try writer.writeAll("close the quoted identifier opened here with a double quote"),
             _ => try writer.writeAll(info.hint),
         },
         .operator_mismatch => |mismatch| switch (mismatch.expected) {
@@ -376,9 +377,9 @@ fn writeHint(details: Details, info: diagnostic.Code.Info, writer: anytype) !voi
 // Source excerpts
 // ---------------------------------------------------------------------------
 
-/// Maximum excerpt content width; longer lines are windowed around the span
-/// with clip markers. This is a hard requirement, not polish: a minified
-/// document can be one multi-megabyte line.
+/// Maximum source bytes per excerpt; escaped bytes can expand to four display
+/// cells. Longer lines are windowed with clip markers, so even a multi-megabyte
+/// source line has bounded output. Tabs retain their existing presentation.
 const max_view = 60;
 
 /// Returns the source to excerpt from, or null when the box must fall back
@@ -464,7 +465,13 @@ fn writeExcerpt(
             try writeUnsigned(writer, line, gutter_width);
             try writer.print(" {s} ", .{g.gutter});
             if (view.clipped_left) try writer.writeAll(g.clip);
-            try writer.writeAll(source[view.start..view.end]);
+            for (source[view.start..view.end]) |byte| {
+                if (byte == '\t' or std.ascii.isPrint(byte)) {
+                    try writer.writeAll(&.{byte});
+                } else {
+                    try writer.print("\\x{X:0>2}", .{byte});
+                }
+            }
             if (view.clipped_right) try writer.writeAll(g.clip);
             try writer.writeAll("\n");
             previous_line = line;
@@ -528,21 +535,22 @@ fn writeUnderline(
     try writer.print(" {s} ", .{g.gutter});
     if (view.clipped_left) try writeRepeat(writer, " ", g.clip_width);
 
-    // Mirror the line's own bytes for padding — a tab where the line has a
-    // tab, a space elsewhere — so the underline aligns under any
-    // indentation without column arithmetic. Assumes one byte is one display
-    // cell, which holds for the ASCII-only milestone; when multi-byte
-    // identifiers land (quoted/HTML/non-ASCII), this needs display-width
-    // awareness.
+    // Mirror tabs and account for the four cells of each escaped byte.
+    // Excerpts intentionally use byte escapes rather than Unicode display-
+    // width interpretation; canonical locations remain original byte columns.
     const offset = annotation.span.start.byte_offset;
     for (source[view.start..@min(offset, view.end)]) |byte| {
-        try writer.writeAll(if (byte == '\t') "\t" else " ");
+        try writer.writeAll(if (byte == '\t') "\t" else if (std.ascii.isPrint(byte)) " " else "    ");
     }
 
     // At least one mark (zero-width spans point at a position, e.g. end of
     // input), at most the visible remainder of the window.
     const visible = if (offset < view.end) view.end - offset else 0;
-    const marks = @max(1, @min(annotation.span.byte_len, visible));
+    var marks: usize = 0;
+    for (source[offset..][0..@min(annotation.span.byte_len, visible)]) |byte| {
+        marks += if (byte == '\t' or std.ascii.isPrint(byte)) @as(usize, 1) else 4;
+    }
+    marks = @max(1, marks);
     const style = if (annotation.primary) pal.frame else pal.secondary;
     try writer.writeAll(style);
     if (annotation.primary) {
@@ -565,6 +573,7 @@ fn writePrimaryLabel(details: Details, writer: anytype) !void {
     switch (details) {
         .none => unreachable,
         .unterminated => |construct| try writer.print("{s} opened here, never closed", .{unterminatedName(construct)}),
+        .expected_quote => |found| try writeExpectedQuote(found, writer),
         .invalid_byte => |byte| {
             if (std.ascii.isPrint(byte)) {
                 try writer.print("byte 0x{X:0>2} ('{c}') is not valid in DOT", .{ byte, byte });
@@ -633,6 +642,7 @@ fn writeDetailValue(details: Details, writer: anytype) !void {
     switch (details) {
         .none => unreachable,
         .unterminated => |construct| try writer.print("unterminated {s}", .{unterminatedName(construct)}),
+        .expected_quote => |found| try writeExpectedQuote(found, writer),
         .invalid_byte => |byte| {
             if (std.ascii.isPrint(byte)) {
                 try writer.print("offending byte 0x{X:0>2} ('{c}')", .{ byte, byte });
@@ -666,8 +676,21 @@ fn writeDetailValue(details: Details, writer: anytype) !void {
 fn unterminatedName(construct: diagnostic.UnterminatedConstruct) []const u8 {
     return switch (construct) {
         .block_comment => "block comment",
+        .quoted_identifier => "quoted identifier",
         _ => "lexical construct",
     };
+}
+
+fn writeExpectedQuote(found: ?u8, writer: anytype) !void {
+    if (found) |byte| {
+        if (std.ascii.isPrint(byte)) {
+            try writer.print("expected a double quote, found byte 0x{X:0>2} ('{c}')", .{ byte, byte });
+        } else {
+            try writer.print("expected a double quote, found byte 0x{X:0>2}", .{byte});
+        }
+    } else {
+        try writer.writeAll("expected a double quote, found end of input");
+    }
 }
 
 fn hasNote(details: Details) bool {
@@ -839,6 +862,28 @@ test "unterminated constructs render typed wording and safe fallbacks" {
     writer = std.Io.Writer.fixed(&buffer);
     try renderBoxed(d, 1, .{ .source = source }, &writer);
     try expect(std.mem.indexOf(u8, writer.buffered(), d.code.info().summary) != null);
+}
+
+test "identifier diagnostics render typed quote and concatenation context" {
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    var d: Diagnostic = .{
+        .code = .lexer_unterminated_construct,
+        .span = spanAt(0, 1, 1, 1),
+        .details = .{ .unterminated = .quoted_identifier },
+    };
+    try renderBoxed(d, 1, .{ .source = "\"unfinished", .style = .ascii }, &writer);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "quoted identifier opened here, never closed") != null);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "close the quoted identifier") != null);
+    d.code = .lexer_invalid_concatenation;
+    inline for (.{ @as(?u8, 'b'), @as(?u8, 0x1b), @as(?u8, null) }) |found| {
+        d.details = .{ .expected_quote = found };
+        writer = std.Io.Writer.fixed(&buffer);
+        try render(d, &writer);
+        try expect(std.mem.indexOf(u8, writer.buffered(), "E.Lexer.Syntax.003") != null);
+        try expect(std.mem.indexOf(u8, writer.buffered(), if (found == null) "found end of input" else "found byte 0x") != null);
+        try expect(std.mem.indexOfScalar(u8, writer.buffered(), 0x1b) == null);
+    }
 }
 
 test "render produces informative text" {

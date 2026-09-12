@@ -13,7 +13,7 @@
 //! complete at `{`; `beginDocument` fires there carrying kind, strict, and
 //! the optional name. Unquoted keywords are not valid names (`graph graph`
 //! is a syntax error, matching Graphviz; a keyword name requires quoting,
-//! which is a deferred feature).
+//! which is supported as an identifier).
 //!
 //! The parser is kind-agnostic: both edge operators parse structurally and
 //! the written operator is preserved in the emitted event. Whether an
@@ -42,7 +42,7 @@
 //! - Work is a single linear scan of the input (R-PERF-001, R-SEC-003);
 //!   `Options.max_statements` additionally bounds the statements processed.
 //! - Recognized-but-deferred constructs (subgraphs, edge chains, attribute
-//!   statements and lists, quoted/numeral/HTML/non-ASCII identifiers,
+//!   statements and lists, HTML/non-ASCII identifiers,
 //!   ports, …) stop the parse as unsupported features, not as
 //!   malformed input (R-MOD-006) — but only where the construct is legal
 //!   DOT: a deferred keyword in an illegal grammar position (`subgraph` as
@@ -244,8 +244,7 @@ fn Machine(comptime EventsPtr: type) type {
                     },
                     .left_brace => return self.beginBody(token),
                     // Unquoted keywords are not valid names (Graphviz
-                    // rejects `graph graph`); a keyword name needs quoting,
-                    // which is a deferred feature.
+                    // rejects `graph graph`); a keyword name needs quoting.
                     else => return self.unexpected(.{
                         .identifier = true,
                         .left_brace = true,
@@ -692,8 +691,8 @@ test "plain headers default to non-strict and unnamed" {
 }
 
 test "an unquoted keyword is not a valid graph name (matches Graphviz)" {
-    // Graphviz rejects `graph graph {}`; a keyword name requires quoting,
-    // which is a deferred feature. This reverses an earlier classification
+    // Graphviz rejects `graph graph {}`; a keyword name requires quoting.
+    // This reverses an earlier classification
     // that assumed keywords were valid unquoted names.
     var events: Recording = .{};
     var bag: Bag = .{};
@@ -803,14 +802,14 @@ test "input truncated at every byte boundary fails safely" {
 }
 
 test "failures before a supported header emit no events but do fill the bag" {
-    // Deferred lexical construct: unsupported feature, empty event sink.
+    // A quoted ID is supported, but cannot replace the document-kind keyword.
     var quoted_events: Recording = .{};
     var quoted_bag: Bag = .{};
     const quoted_result = parse("\"g\" { a; }", &quoted_events, quoted_bag.sink(), .{});
-    try expect(quoted_result.outcome == .unsupported_feature);
+    try expect(quoted_result.outcome == .invalid_syntax);
     try expectEqual(
-        diagnostic.Feature.quoted_identifier,
-        quoted_bag.items()[0].details.unsupported_feature,
+        diagnostic.Code.parser_unexpected_token,
+        quoted_bag.items()[0].code,
     );
     try expectEqual(@as(usize, 0), quoted_events.recorded().len);
 

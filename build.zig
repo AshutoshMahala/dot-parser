@@ -53,6 +53,7 @@ pub fn build(b: *std.Build) void {
         "parse_undigraph",
         "fixed_buffer",
         "diagnostics_demo",
+        "identifiers",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{

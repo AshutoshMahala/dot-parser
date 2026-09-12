@@ -20,11 +20,13 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | `graph { … }` documents | **Supported** | Exposed as kind `.undigraph` |
 | `digraph { … }` documents | **Supported** | Exposed as kind `.digraph` |
 | `strict` modifier | **Supported** | Parsed and retained (`Document.strict`); strictness semantics (duplicate-edge rules) are not enforced |
-| Graph names | **Supported** | Bare ASCII identifiers only (`Document.name`); quoted/numeral/HTML names are deferred with those identifier forms |
+| Graph names | **Supported** | Bare ASCII, numeral, or quoted identifier expressions (`Document.name`); HTML/non-ASCII bare names remain deferred |
 | Node statements (`a;`) | **Supported** | |
 | Edge statements (`a -- b;`, `a -> b;`) | **Supported** | Both operators always *parse*; kind×operator legality is a validation rule, not a parse error |
 | Optional semicolons | **Supported** | As in Graphviz: `digraph G { a -> b b -> c }` |
 | Bare ASCII identifiers | **Supported** | `[A-Za-z_][A-Za-z0-9_]*`; keywords are case-independent and reserved in every position |
+| Numeral identifiers | **Supported** | `-?(.[0-9]+ \| [0-9]+(.[0-9]*)?)`; exact text, no numeric conversion |
+| Quoted identifiers and `+` concatenation | **Supported** | Exact raw range; explicit value decoding, including escaped quotes and physical line continuations |
 | Whitespace / line endings | **Supported** | Space, tab; LF, CRLF, and standalone CR each end a line |
 | Comments (`//`, `/* */`, `#`) | **Supported** | Skipped without retention; see compatibility notes below |
 | Subgraphs (`{ … }`, `subgraph s { … }`) | Deferred | Feature `subgraph`, including subgraphs as edge endpoints |
@@ -32,9 +34,7 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | Attribute lists (`[color=red]`) | Deferred | Feature `attribute_list` |
 | Attribute statements (`graph`/`node`/`edge` + `[…]`) | Deferred | Features `graph_attribute_statement`, `node_attribute_statement`, `edge_attribute_statement` |
 | ID assignments (`rankdir = LR`) | Deferred | Feature `attribute_assignment` |
-| Quoted identifiers (`"a b"`) | Deferred | Feature `quoted_identifier` |
 | HTML identifiers (`<…>`) | Deferred | Feature `html_identifier` |
-| Numeral identifiers (`3`, `-.5`) | Deferred | Feature `numeral_identifier` |
 | Non-ASCII identifiers (bytes `0x80`–`0xFF`) | Deferred | Feature `non_ascii_identifier`; the whole run is one span |
 | Ports and compass points (`a:n`) | Deferred | Feature `port_or_compass` |
 
@@ -53,8 +53,8 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
   `invalid_syntax`, diagnosed at its opening `/*` as `E.Lexer.Syntax.031`
   with `.unterminated = .block_comment`.
   Comments separate tokens; they cannot splice a keyword or edge operator.
-  Quoted and HTML-like identifiers remain deferred and are not scanned for
-  comments.
+  Comment markers inside quoted identifiers are content. HTML-like identifiers
+  remain deferred and their bodies are not scanned.
 - **Whole-document consumption**: after the root closing `}`, only whitespace,
   complete comments, and end of input are accepted. Malformed trailing comments
   and additional tokens are errors. Graphviz 15.1.0 accepts the specific inputs
@@ -70,6 +70,52 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 - **Limits**: retained positions address at most 4 GiB of source
   (`storage_failure: .source_offset_overflow` beyond that);
   `ParseOptions.max_statements` optionally bounds output size.
+
+## Identifier lexical rules
+
+All supported forms work as document names, node IDs, and edge endpoints.
+Quoted keywords such as `"graph"` are identifiers, never keyword tokens. An
+empty quoted identifier is accepted. Adjacent quoted strings without `+` are
+separate tokens; only quoted strings may be joined by `+`. Whitespace and
+comments may occur on either side of it.
+
+The lexer retains one raw-expression range. Explicit decoding removes the
+quotes and concatenation glue, converts `\"` to `"`, and removes a backslash
+followed by LF, CRLF, or standalone CR. All other escapes remain unchanged:
+`\n` is two bytes, and `\\` remains two backslashes. Unescaped physical line
+endings within quotes are preserved as written. This is DOT lexical decoding,
+not a C/JSON unescaper or Graphviz label/attribute interpretation.
+
+Non-ASCII bytes and non-NUL control bytes inside quotes are preserved without
+UTF-8 validation. NUL inside quotes is rejected as `E.Lexer.Byte.003` at the
+offending byte, not silently truncated. Non-ASCII bare IDs and a leading UTF-8
+BOM remain on the existing deferred-feature path; BOM stripping, transcoding,
+and encoding validation are not implemented.
+
+An unterminated quoted segment reports `E.Lexer.Syntax.031` with
+`.unterminated = .quoted_identifier` at that segment's opening quote, including
+when it is a later part of a concatenation. A missing quoted operand after `+`
+reports `E.Lexer.Syntax.003` with `.expected_quote` containing the next raw byte,
+or null at EOF. Neither failure returns a partial document.
+
+Numerals have no leading `+`, exponent, or numeric normalization. Maximal
+matching means `1e3` is tokens `1` and `e3`, and `1.2.3` is `1.2` and `.3`;
+in a statement list these can be separate nodes because separators are optional.
+This parser emits no ambiguity warning for those cases. Bare `.` and `-.`
+remain invalid.
+
+**Verification:** the written [DOT grammar](https://graphviz.org/doc/info/lang.html)
+is primary and Graphviz 15.1.0 remains the pinned differential baseline.
+Additional manual identifier probes used the locally installed Graphviz 16.0.0
+on 2026-09-12; they do not replace a pinned automated suite. The checked forms
+include numeral boundaries, quoted concatenation, raw multiline content,
+escaped quotes/backslashes, and control bytes. A deliberate difference in the
+checked 16.0.0 behavior: it removes escaped LF but preserves escaped CRLF/CR;
+this library removes all three, consistently with its physical-line policy.
+
+Token-length/work budgets remain future work. Fixed output pools limit retained
+statements, not the length of an individual lexical scan or the source retained
+by a borrowed document.
 
 ## How this page stays honest
 

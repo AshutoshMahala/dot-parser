@@ -62,11 +62,45 @@ pool and its capacity (see [OUTCOMES.md](OUTCOMES.md)).
 
 ## Costs
 
-Retained documents cost 26 bytes per statement on 64-bit targets
+The equal node/edge benchmark mix costs 26 bytes per statement on 64-bit targets
 (`StatementId` 8 B, `NodeStatement` 8 B, `EdgeStatement` 28 B); positions
 are stored as compact 8-byte ranges and full line/column locations are
 derived on demand. Measured throughput and arena footprints live in
 [BASELINES.md](BASELINES.md).
+
+## Identifier values
+
+All identifier forms use the same compact raw range. Even a concatenation such
+as `"sen" /* join */ + "sor"` retains one range, not a list of components or
+a copied string. `document.text(range)` returns that exact spelling; the
+logical value is `sensor`. Numerals remain textual: `01.00` is not converted
+or normalized to `1`.
+
+- `document.decodeIdentifier(range, output)` decodes into caller storage.
+- `document.writeIdentifier(range, writer)` streams the value via `writeAll`.
+- `dot.identifier.decodedLen(raw)` reports the exact required output size.
+  `decodeInto(raw, output)` and `writeDecoded(raw, writer)` are also available
+  directly for consumers of lexer spans.
+
+Decoding follows the [supported lexical rules](SUPPORTED_SYNTAX.md). It
+validates the supplied raw expression, does linear work without allocation,
+and does not cache results. Callers needing repeated access may retain the
+decoded value in memory they own. Writer output contains the actual value
+bytes, not terminal-escaped presentation.
+
+These byte-transformation helpers use local Zig errors, not the parse/validation
+diagnostic sink. `InvalidIdentifier` means the range is not exactly one
+supported identifier expression; `NoSpaceLeft` means the output is too small;
+`OverlappingBuffers` means its written region overlaps the raw source. Buffer
+decoding leaves output unchanged on every error. On success the returned slice
+borrows the output buffer and may outlive the document. Streaming validates
+before writing, but a writer failure can leave partial output and propagates
+the writer's own error unchanged.
+
+The source and document pools must remain unchanged while the document is in
+use. A range passed to a document method must lie within that document, just
+as for `document.text`. Inter-component comments lie inside a concatenated
+identifier's raw range but have no separately retained trivia records.
 
 Runnable versions of all three strategies are in
 [../examples/](../examples/).

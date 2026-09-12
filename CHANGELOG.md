@@ -8,10 +8,18 @@ compatibility; deprecations and breaks are called out here.
 - Parse `//`, `/* ... */`, and `#` comments without allocation or retained
   trivia. Behavior and Graphviz differences are documented in
   [Supported DOT syntax](docs/SUPPORTED_SYNTAX.md).
-- Add `E.Lexer.Syntax.031` with typed `.unterminated` details, currently
-  `.block_comment`, and construct-specific rendering at the opening delimiter.
+- Add `E.Lexer.Syntax.031` with typed `.unterminated` details for block comments
+  and quoted identifiers, and construct-specific rendering at the opener.
 - Define sequence numbers and aliases together in `diagnostic.Sequence`;
   existing `Code.Info` fields and published diagnostic identities are unchanged.
+- Parse numeral and quoted identifiers, including `+` concatenation, into the
+  existing compact ranges. Add allocation-free decoding into caller buffers
+  or writers; preserve raw spelling and perform no numeric conversion.
+- Report malformed quoted concatenation as `E.Lexer.Syntax.003`; retain legacy
+  quoted/numeral feature discriminants for diagnostic compatibility.
+- Escape non-ASCII/control bytes in console source excerpts and align their
+  underlines without Unicode tables. See supported syntax for newline and
+  byte-handling policies and the scope of Graphviz verification.
 
 ## 0.1.0 — 2026-07-18
 

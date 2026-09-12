@@ -33,6 +33,8 @@ const validate_impl = @import("validate.zig");
 pub const location = @import("location.zig");
 pub const diagnostic = @import("diagnostic.zig");
 pub const lexer = @import("lexer.zig");
+/// Explicit raw-identifier decoding into caller storage or a writer.
+pub const identifier = @import("identifier.zig");
 
 /// Default console presentation for diagnostics — one way to render, shipped
 /// out of the box. Consumers bring their own reporting by implementing

@@ -1,0 +1,3 @@
+digraph "G" + "raph" {
+    "a" /* between parts */ + "b" -> "c" + "d";
+}

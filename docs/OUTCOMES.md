@@ -80,8 +80,9 @@ Current registry:
 
 | Code | When | Details emitted by the library |
 | --- | --- | --- |
-| `E.Lexer.Byte.003` | A byte no DOT token can begin with | `.invalid_byte` |
-| `E.Lexer.Syntax.031` | Input ended inside an unclosed lexical construct; span marks its opener | `.unterminated` (currently `.block_comment`) |
+| `E.Lexer.Byte.003` | A byte invalid at its location, including NUL inside quotes | `.invalid_byte` |
+| `E.Lexer.Syntax.003` | `+` is not followed by a quoted identifier | `.expected_quote` (next byte, or null at EOF) |
+| `E.Lexer.Syntax.031` | Input ended inside an unclosed lexical construct; span marks its opener | `.unterminated` (`.block_comment` or `.quoted_identifier`) |
 | `E.Parser.Syntax.001` | A required syntax element is missing | Reserved; not currently emitted |
 | `E.Parser.Syntax.003` | Unexpected token | `.unexpected` |
 | `E.Parser.Syntax.031` | Input ended before the document was complete | `.unexpected` |
@@ -112,3 +113,14 @@ presentation palette as informative guidance.
 If *your sink* fails while a diagnostic is being reported, the outcome
 still describes the parse; the loss is surfaced separately as
 `diagnostic_delivery == .failed`. One channel never hides the other.
+
+## Byte-safe excerpts
+
+Console source excerpts escape non-ASCII and non-printable bytes as `\xNN`
+(tabs retain their existing presentation). Underlines account for those byte
+escapes; diagnostic offsets and byte columns still refer to original input.
+This avoids emitting input-supplied terminal control sequences and does not
+require Unicode display-width tables. Each excerpt window contains at most
+60 source bytes, which can expand to 240 cells before framing/tab expansion.
+This presentation policy is separate from identifier decoding, which preserves
+the actual value bytes.

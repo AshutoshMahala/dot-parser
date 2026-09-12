@@ -1,0 +1,4 @@
+graph "graph" {
+    "node";
+    "a\"b" -- "// not a comment";
+}

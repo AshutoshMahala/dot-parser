@@ -39,6 +39,7 @@
 const std = @import("std");
 const location = @import("location.zig");
 const syntax_event = @import("syntax_event.zig");
+const identifier = @import("identifier.zig");
 
 pub const GraphKind = syntax_event.GraphKind;
 pub const EdgeOperator = syntax_event.EdgeOperator;
@@ -136,9 +137,22 @@ pub const Document = struct {
         return .{ .document = self };
     }
 
-    /// The source text a range of this document covers.
+    /// Exact source spelling, not a decoded identifier value. Quoted
+    /// concatenations include quotes, '+' and intervening trivia.
     pub fn text(self: *const Document, range: location.Range) []const u8 {
         return range.slice(self.source);
+    }
+
+    /// Decode an identifier range into caller-owned memory. Output is unchanged
+    /// on error. Range must lie within this document; non-identifier spelling
+    /// is rejected. No caching, normalization, or numeric conversion occurs.
+    pub fn decodeIdentifier(self: *const Document, range: location.Range, output: []u8) identifier.DecodeError![]const u8 {
+        return identifier.decodeInto(self.text(range), output);
+    }
+
+    /// Stream a decoded identifier. A writer failure may leave partial output.
+    pub fn writeIdentifier(self: *const Document, range: location.Range, writer: anytype) !void {
+        try identifier.writeDecoded(self.text(range), writer);
     }
 };
 
@@ -745,7 +759,7 @@ test "undersized fixed buffer aborts the parse with a sink failure" {
 }
 
 test "allocation failure at every point aborts cleanly without leaks" {
-    const source = "graph { a; a -- b; b; c -> d; }";
+    const source = "graph \"G\"+\"raph\" { \"a\"; \"a\" -- 1; 1; \"c\" -> \"d\"; }";
     var fail_index: usize = 0;
     while (fail_index < 64) : (fail_index += 1) {
         var failing = std.testing.FailingAllocator.init(

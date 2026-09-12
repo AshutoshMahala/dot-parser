@@ -1,10 +1,15 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-07-18
+Original draft: 2026-07-13 · Last amended: 2026-09-12
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
+
+These requirements describe the intended contract, not a claim that every
+feature is implemented. [OpenQuestions.md](OpenQuestions.md) separates settled
+policy from pending implementation and verification;
+[supported syntax](../SUPPORTED_SYNTAX.md) describes current grammar coverage.
 
 ## 1. Purpose
 
@@ -232,6 +237,11 @@ should report a structured `unsupported_feature` result containing the feature
 identifier and source span. This must be distinct from malformed syntax,
 capacity exhaustion, observer failure, and cancellation.
 
+Recognition is not validation: an unsupported result marks where processing
+stopped and makes no validity claim about the deferred construct or the rest
+of the input. The current profile's compatibility boundary is documented in
+`docs/SUPPORTED_SYNTAX.md` (Q10).
+
 Providing this distinction requires a small recognition gate for the excluded
 construct. The implementation of the feature may be absent, but the profile
 must retain enough knowledge to identify its introducer or grammar position. A
@@ -288,6 +298,13 @@ The shared parser state machine should permit:
 These drivers must not require threads. Optional drivers should be independently
 excludable when their binary-size cost is material.
 
+Each driver must state exactly what its budget bounds. A token or statement
+count alone does not bound bytes scanned: trivia or a single lexeme may be
+arbitrarily long. A strict byte/work-bounded driver must be able to yield within
+lexical scanning and resume without restarting the construct. The current
+private parser's token-at-a-time stepping is groundwork, not a public guarantee
+of bounded work or cancellation latency (Q27).
+
 ### R-MOD-011: Active sinks have transactional lifecycle signals
 
 A direct sink may perform visible work before the parser discovers a later
@@ -295,6 +312,11 @@ error. The sink contract must therefore include document lifecycle events or an
 equivalent mechanism for `begin`, successful `commit`, and `abort` with reason.
 The parser cannot promise to roll back arbitrary consumer side effects; sinks
 that require atomic output must buffer, stage, or implement rollback themselves.
+
+Syntax commit means the whole document parsed, not that semantic validation
+passed. A consumer requiring validated atomic output must retain control of
+its staging through validation as well. A reusable staging helper is deferred
+until a concrete consumer justifies its memory and binary cost (Q29).
 
 ### R-MOD-012: Lazy behavior has explicit validity guarantees
 
@@ -577,8 +599,13 @@ failure, observer failure, and internal failure. A WDP code explains a specific
 diagnostic; it must not replace the small control-flow result needed by callers.
 
 Warnings, information, trace, help, success, and completion events may accompany
-a successful operation. Fatal outcomes must identify the diagnostic that caused
-the operation to stop.
+a successful operation. Failure outcomes must identify the control-flow cause
+even when no diagnostic is retained or delivered. Diagnostic delivery status is
+separate from the operation's outcome; callers must inspect both. Not every
+failure has a diagnostic: the current internal storage-failure fallback emits
+none, and the private event sink owns the cause of its own failures. Per-code
+payload and delivery contracts are documented in `docs/OUTCOMES.md`; these
+exceptions must be explicit rather than inferred from an empty bag.
 
 ### R-DIAG-004: Rich messages and catalogs remain optional
 
@@ -591,9 +618,13 @@ possible.
 ### R-DIAG-005: Codes remain stable and testable
 
 Published codes must not be silently reused for a different meaning. The build
-or test suite should detect duplicate structured codes, duplicate sequence use
-within a namespace, catalog drift, invalid severity assignments, and compact-ID
-collisions within the project catalog.
+or test suite should detect duplicate structured identities, catalog drift,
+invalid severity assignments, and compact-ID collisions within the project
+catalog. Within the package namespace, an identity consists of severity,
+component, primary, and sequence; a sequence number alone is not globally
+unique and may recur across domains. Canonical sequence numbers and aliases
+are defined together in `diagnostic.Sequence`, with registry metadata derived
+from those pairs.
 
 The same stability applies to the typed payload vocabulary: discriminants of
 published diagnostic enums (`Feature`, `SyntaxItem`, capacity resources, …)
@@ -717,6 +748,19 @@ Dependencies and platform surface should remain small. Any code requiring raw
 pointer manipulation or other memory-unsafe operations must be isolated,
 justified, reviewed, and directly tested. The core should not use mutable global
 state.
+
+For Zig, low-level casts must have locally documented invariants. Erased
+callback context casts must preserve the original type, alignment, and lifetime;
+input-derived indices and narrowing conversions require bounds validation or a
+documented proof that their domain is safe. Assertions may check internal or
+documented caller preconditions, but malformed source bytes must not trigger
+them. Any explicit disabling of runtime safety requires a local justification
+and direct tests; it is not a substitute for validating untrusted input.
+
+Before adding a dependency, review its safety, allocation behavior, platform
+requirements, maintenance exposure, and license compatibility (§17). The current
+zero-dependency build is evidence of a small dependency surface, not proof that
+all low-level code has been audited (Q13).
 
 ### R-SEC-007: Security failures are testable
 
@@ -1037,11 +1081,20 @@ every level. Deeper layers are never gated behind the façade.
 
 ### R-DX-002: One uniform reporting surface
 
-Every phase reports problems the same way: diagnostics flow into a
-caller-owned sink, and functions return only small typed outcome values.
-A fail-fast phase produces a bag of one; a complete-analysis phase produces
-the same bag with more entries; a future recovery mode changes entry
-counts, never the surface. Diagnostics never travel inside return values.
+Parsing, validation, and future analysis phases use one reporting surface:
+diagnostics flow into a caller-owned sink, and control-flow results carry
+small typed outcomes and
+delivery status rather than diagnostic payloads. Current fail-fast parsing
+attempts at most one failure diagnostic; complete validation attempts one per
+independent violation. Retention depends on the sink: a discard sink, full bag,
+or failed delivery can leave no retained entry, and documented failures may
+emit no diagnostic (R-DIAG-003). Recovery may increase entry counts without
+changing this surface. Low-level lexer results may carry a diagnostic for the
+parser to forward; they are not a second parse/validation reporting API.
+
+Filtering diagnostics changes reporting, not the validity of the document.
+Rule-level policy that changes validity must be explicit and separate from sink
+filtering; the current validator does not yet expose that policy.
 
 ### R-DX-003: Results are data and lose nothing
 
@@ -1106,3 +1159,11 @@ recorded here.
 - 2026-07-18 — **R-DIAG-005**: extended to the typed payload vocabulary —
   published diagnostic-enum discriminants are append-only and never reused;
   shipped features leave legacy variants in place (slice-2 review).
+- 2026-09-12 — **Reconciliation after comments**: distinguished intended
+  requirements from shipped coverage; clarified unsupported recognition
+  (R-MOD-006), token versus bounded work (R-MOD-010), syntax commit versus
+  validated atomic output (R-MOD-011), outcome/delivery and optional diagnostics
+  (R-DIAG-003/R-DX-002), diagnostic identity scope and paired sequence aliases
+  (R-DIAG-005), and the Zig low-level/dependency policy (R-SEC-006). Sink
+  filtering does not alter validity. Question decisions and remaining work are
+  recorded in `OpenQuestions.md`; no requirement IDs changed.

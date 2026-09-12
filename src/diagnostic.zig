@@ -159,7 +159,7 @@ pub const Sequence = struct {
 /// was provisional until two vertical slices had exercised it; it froze
 /// with the 0.1.0 release.)
 pub const Code = enum {
-    /// E.Lexer.Byte.003 (INVALID) — a byte cannot begin any token.
+    /// E.Lexer.Byte.003 (INVALID) — a byte is invalid at this location.
     lexer_invalid_byte,
     /// E.Parser.Syntax.001 (MISSING) — a required syntax element is absent.
     parser_missing_element,
@@ -183,6 +183,9 @@ pub const Code = enum {
     /// E.Lexer.Syntax.031 (UNEXPECTED_END) — a lexical construct is unclosed.
     /// Always emitted with `Details.unterminated` naming the construct.
     lexer_unterminated_construct,
+    /// E.Lexer.Syntax.003 (INVALID) — '+' must join two quoted identifiers.
+    /// Emitted with `Details.expected_quote` (next byte, or null at EOF).
+    lexer_invalid_concatenation,
 
     /// Comptime metadata for one diagnostic code. All strings are static.
     pub const Info = struct {
@@ -217,8 +220,8 @@ pub const Code = enum {
                 .component = .lexer,
                 .primary = .byte,
                 .sequence = Sequence.invalid,
-                .summary = "input byte cannot begin any DOT token",
-                .hint = "this milestone accepts bare ASCII identifiers ([A-Za-z_][A-Za-z0-9_]*), '{', '}', ';', '--', '->', and whitespace",
+                .summary = "input byte is not valid at this location",
+                .hint = "use a supported DOT token; NUL is not allowed in quoted identifiers",
             },
             .parser_missing_element => .{
                 .severity = .err,
@@ -283,6 +286,14 @@ pub const Code = enum {
                 .sequence = Sequence.unexpected_end,
                 .summary = "input ended inside an unterminated construct",
                 .hint = "close the construct opened at the highlighted location",
+            },
+            .lexer_invalid_concatenation => .{
+                .severity = .err,
+                .component = .lexer,
+                .primary = .syntax,
+                .sequence = Sequence.invalid,
+                .summary = "expected a quoted identifier after '+'",
+                .hint = "'+' joins quoted identifiers only; put the next identifier in double quotes",
             },
         };
         return .{
@@ -392,12 +403,15 @@ pub const Details = union(enum) {
     capacity: Capacity,
     /// For `lexer_unterminated_construct`; the primary span is the opener.
     unterminated: UnterminatedConstruct,
+    /// For `lexer_invalid_concatenation`: next raw byte, or null at EOF.
+    expected_quote: ?u8,
 };
 
 /// Lexical constructs requiring a closing delimiter. Append variants only
 /// when their support ships; published discriminants are never repurposed.
 pub const UnterminatedConstruct = enum(u8) {
     block_comment = 0,
+    quoted_identifier = 1,
     _,
 };
 
@@ -488,8 +502,10 @@ pub const Feature = enum(u16) {
     subgraph,
     node_attribute_statement,
     edge_attribute_statement,
+    /// Legacy (implemented in the identifier slice): kept for its discriminant.
     quoted_identifier,
     html_identifier,
+    /// Legacy (implemented in the identifier slice): kept for its discriminant.
     numeral_identifier,
     non_ascii_identifier,
     /// Legacy (implemented in the comments slice): kept for its discriminant only.
@@ -676,6 +692,7 @@ test "severity alphabet matches WDP part 1" {
 }
 
 test "structured codes follow the documented registry" {
+    try expectEqualStrings("E.Lexer.Syntax.003", Code.lexer_invalid_concatenation.structured());
     try expectEqualStrings("E.Lexer.Syntax.031", Code.lexer_unterminated_construct.structured());
     try expectEqualStrings("E.Lexer.Byte.003", Code.lexer_invalid_byte.structured());
     try expectEqualStrings("E.Parser.Syntax.001", Code.parser_missing_element.structured());

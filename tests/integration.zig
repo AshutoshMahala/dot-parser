@@ -10,6 +10,92 @@ const Rejecting = struct {
     }
 };
 
+test "identifier spelling and value agree across allocator and fixed storage" {
+    const source = "strict digraph \"G\"+\"raph\" { \"gr\"/**/+\"aph\"; -00.50 -> \"a\\\"b\"; }";
+    var bag: dot.FixedDiagnosticBag(4) = .{};
+    var parsed = dot.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expect(parsed.documentValid());
+    const doc = &parsed.document.?;
+    var pools: dot.FixedDocumentStorage(.{ .statements = 2, .nodes = 1, .edges = 1 }) = .{};
+    const fixed = dot.parseBorrowedIn(source, pools.storage(), bag.sink(), .{});
+    try std.testing.expect(fixed.outcome == .success);
+    try std.testing.expectEqualSlices(dot.StatementId, doc.order, fixed.document.?.order);
+    try std.testing.expectEqualSlices(dot.NodeStatement, doc.nodes, fixed.document.?.nodes);
+    try std.testing.expectEqualSlices(dot.EdgeStatement, doc.edges, fixed.document.?.edges);
+    try std.testing.expectEqual(doc.name, fixed.document.?.name);
+    var decoded: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("Graph", try doc.decodeIdentifier(doc.name.?, &decoded));
+    try std.testing.expectEqualStrings("\"gr\"/**/+\"aph\"", doc.text(doc.nodes[0].identifier));
+    try std.testing.expectEqualStrings("graph", try doc.decodeIdentifier(doc.nodes[0].identifier, &decoded));
+    try std.testing.expectEqualStrings("-00.50", try doc.decodeIdentifier(doc.edges[0].left, &decoded));
+    var writer = std.Io.Writer.fixed(&decoded);
+    try doc.writeIdentifier(doc.edges[0].right, &writer);
+    try std.testing.expectEqualStrings("a\"b", writer.buffered());
+    try std.testing.expectError(error.NoSpaceLeft, doc.decodeIdentifier(doc.nodes[0].identifier, decoded[0..1]));
+    try std.testing.expectEqual(@as(usize, 0), bag.items().len);
+}
+
+test "identifier failures preserve diagnostic delivery and fixed-pool reuse" {
+    inline for (.{ "graph { \"x\"; \"a\"+", "graph { \"x\"; \"a", "graph { \"x\"; \"a\x00b\" }" }) |source| {
+        var bag: dot.FixedDiagnosticBag(1) = .{};
+        var parsed = dot.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
+        defer parsed.deinit(std.testing.allocator);
+        try std.testing.expect(parsed.outcome == .invalid_syntax);
+        try std.testing.expect(parsed.document == null);
+        try std.testing.expectEqual(@as(usize, 1), bag.items().len);
+        var pools: dot.FixedDocumentStorage(.{ .statements = 2, .nodes = 2 }) = .{};
+        var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
+        const fixed = dot.parseBorrowedIn(source, pools.storage(), fixed_bag.sink(), .{});
+        try std.testing.expect(fixed.document == null);
+        try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), fixed_bag.items());
+        const rejected = dot.parseBorrowedIn(source, pools.storage(), .{ .context = null, .emit_fn = Rejecting.emit }, .{});
+        try std.testing.expect(rejected.outcome == .invalid_syntax);
+        try std.testing.expectEqual(dot.diagnostic.Delivery.failed, rejected.diagnostic_delivery);
+        var empty_bag: dot.FixedDiagnosticBag(0) = .{};
+        const omitted = dot.parseBorrowedIn(source, pools.storage(), empty_bag.sink(), .{});
+        try std.testing.expect(omitted.outcome == .invalid_syntax);
+        try std.testing.expectEqual(@as(usize, 1), empty_bag.omitted);
+        const reused = dot.parseBorrowedIn("graph { 1; }", pools.storage(), dot.diagnostic.discard, .{});
+        try std.testing.expect(reused.outcome == .success);
+    }
+}
+
+test "identifier document truncation never commits partial syntax" {
+    const source = "digraph \"na\"+\"me\" { \"a\\\"b\" + /* \" */ \"c\" -> -.5; }";
+    for (0..source.len) |end| {
+        var bag: dot.FixedDiagnosticBag(1) = .{};
+        var parsed = dot.parseBorrowed(std.testing.allocator, source[0..end], bag.sink(), .{});
+        defer parsed.deinit(std.testing.allocator);
+        try std.testing.expect(parsed.outcome != .success);
+        try std.testing.expect(parsed.document == null);
+        try std.testing.expectEqual(@as(usize, 1), bag.items().len);
+        var pools: dot.FixedDocumentStorage(.{ .statements = 1, .edges = 1 }) = .{};
+        var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
+        const fixed = dot.parseBorrowedIn(source[0..end], pools.storage(), fixed_bag.sink(), .{});
+        try std.testing.expect(fixed.document == null);
+        try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), fixed_bag.items());
+    }
+}
+
+test "quoted identifiers do not hide validation mismatches or unsafe excerpt bytes" {
+    const source = "graph { \"\xff\x1b[31m\" -> \"b\"; }";
+    var bag: dot.FixedDiagnosticBag(1) = .{};
+    var checked = dot.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});
+    defer checked.deinit(std.testing.allocator);
+    try std.testing.expect(checked.outcome == .success);
+    try std.testing.expect(!checked.documentValid());
+    const d = bag.items()[0];
+    const at = std.mem.indexOf(u8, source, "->").?;
+    try std.testing.expectEqual(dot.location.locate(source, at), d.span.start);
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try dot.console.renderBoxed(d, 1, .{ .source = source, .style = .ascii }, &writer);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\\xFF\\x1B[31m") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, writer.buffered(), 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "^^ expected '--'") != null);
+}
+
 test "comments work through fixed storage and preserve validation positions" {
     const source = "# 99 \"ignored\"\r\n/* header */graph {\r\na /* -> ignored */ -> // endpoint\r\nb; }# eof";
     var storage: dot.FixedDocumentStorage(.{ .statements = 1, .edges = 1 }) = .{};
@@ -228,12 +314,12 @@ test "consumer can lex the milestone document from caller-supplied bytes" {
 }
 
 test "consumer sees a structured failure for deferred DOT features" {
-    var lexer = dot.lexer.Lexer.init("\"quoted name\"");
+    var lexer = dot.lexer.Lexer.init("<html>");
     const result = lexer.next();
     try std.testing.expect(result == .failure);
     try std.testing.expectEqual(dot.Code.profile_unsupported_feature, result.failure.code);
     try std.testing.expectEqual(
-        dot.diagnostic.Feature.quoted_identifier,
+        dot.diagnostic.Feature.html_identifier,
         result.failure.details.unsupported_feature,
     );
 }
@@ -500,6 +586,9 @@ const ValidEntry = struct {
 };
 
 const valid_corpus = [_]ValidEntry{
+    .{ .name = "numeral_identifiers", .source = @embedFile("corpus/valid/numeral_identifiers.dot"), .shape = "nne", .nodes = 2, .edges = 1, .first_text = "0", .kind = .digraph, .graph_name = "-0.5" },
+    .{ .name = "quoted_identifiers", .source = @embedFile("corpus/valid/quoted_identifiers.dot"), .shape = "ne", .nodes = 1, .edges = 1, .first_text = "\"node\"", .graph_name = "\"graph\"" },
+    .{ .name = "quoted_concatenation", .source = @embedFile("corpus/valid/quoted_concatenation.dot"), .shape = "e", .nodes = 0, .edges = 1, .first_text = "\"a\" /* between parts */ + \"b\"", .kind = .digraph, .graph_name = "\"G\" + \"raph\"" },
     .{ .name = "comments", .source = @embedFile("corpus/valid/comments.dot"), .shape = "nne", .nodes = 2, .edges = 1, .first_text = "a", .kind = .digraph, .strict = true, .graph_name = "G" },
     .{ .name = "minimal", .source = @embedFile("corpus/valid/minimal.dot"), .shape = "", .nodes = 0, .edges = 0, .first_text = null },
     .{ .name = "digraph", .source = @embedFile("corpus/valid/digraph.dot"), .shape = "e", .nodes = 0, .edges = 1, .first_text = "a", .kind = .digraph },
@@ -520,12 +609,15 @@ const InvalidEntry = struct {
     code: dot.Code,
     /// Byte offset of the diagnostic's primary span.
     offset: usize,
+    construct: ?dot.diagnostic.UnterminatedConstruct = null,
 };
 
 const invalid_corpus = [_]InvalidEntry{
-    .{ .name = "unterminated_comment", .source = @embedFile("corpus/invalid/unterminated_comment.dot"), .code = .lexer_unterminated_construct, .offset = 11 },
-    .{ .name = "unterminated_comment_before_header", .source = @embedFile("corpus/invalid/unterminated_comment_before_header.dot"), .code = .lexer_unterminated_construct, .offset = 0 },
-    .{ .name = "unterminated_comment_after_document", .source = @embedFile("corpus/invalid/unterminated_comment_after_document.dot"), .code = .lexer_unterminated_construct, .offset = 9 },
+    .{ .name = "unterminated_comment", .source = @embedFile("corpus/invalid/unterminated_comment.dot"), .code = .lexer_unterminated_construct, .offset = 11, .construct = .block_comment },
+    .{ .name = "unterminated_comment_before_header", .source = @embedFile("corpus/invalid/unterminated_comment_before_header.dot"), .code = .lexer_unterminated_construct, .offset = 0, .construct = .block_comment },
+    .{ .name = "unterminated_comment_after_document", .source = @embedFile("corpus/invalid/unterminated_comment_after_document.dot"), .code = .lexer_unterminated_construct, .offset = 9, .construct = .block_comment },
+    .{ .name = "unterminated_quoted_identifier", .source = @embedFile("corpus/invalid/unterminated_quoted_identifier.dot"), .code = .lexer_unterminated_construct, .offset = 8, .construct = .quoted_identifier },
+    .{ .name = "invalid_quoted_concatenation", .source = @embedFile("corpus/invalid/invalid_quoted_concatenation.dot"), .code = .lexer_invalid_concatenation, .offset = 14 },
     .{ .name = "truncated", .source = @embedFile("corpus/invalid/truncated.dot"), .code = .parser_unexpected_end, .offset = 7 },
     .{ .name = "missing_brace", .source = @embedFile("corpus/invalid/missing_brace.dot"), .code = .parser_unexpected_token, .offset = 6 },
     .{ .name = "invalid_byte", .source = @embedFile("corpus/invalid/invalid_byte.dot"), .code = .lexer_invalid_byte, .offset = 8 },
@@ -599,6 +691,12 @@ test "valid corpus parses to the expected statements, deterministically" {
         try std.testing.expectEqualSlices(dot.StatementId, document.order, second_document.order);
         try std.testing.expectEqualSlices(dot.NodeStatement, document.nodes, second_document.nodes);
         try std.testing.expectEqualSlices(dot.EdgeStatement, document.edges, second_document.edges);
+        var pools: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8 }) = .{};
+        const fixed = dot.parseBorrowedIn(entry.source, pools.storage(), dot.diagnostic.discard, .{});
+        try std.testing.expect(fixed.outcome == .success);
+        try std.testing.expectEqualSlices(dot.StatementId, document.order, fixed.document.?.order);
+        try std.testing.expectEqualSlices(dot.NodeStatement, document.nodes, fixed.document.?.nodes);
+        try std.testing.expectEqualSlices(dot.EdgeStatement, document.edges, fixed.document.?.edges);
     }
 }
 
@@ -617,14 +715,14 @@ test "invalid corpus fails with the expected diagnostic and terminates" {
         try std.testing.expectEqual(entry.code, failure.code);
         try std.testing.expectEqual(entry.offset, failure.span.start.byte_offset);
         if (failure.code == .lexer_unterminated_construct) {
-            try std.testing.expectEqual(dot.diagnostic.UnterminatedConstruct.block_comment, failure.details.unterminated);
-            var pools: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4 }) = .{};
-            var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
-            const fixed = dot.parseBorrowedIn(entry.source, pools.storage(), fixed_bag.sink(), .{});
-            try std.testing.expect(fixed.outcome == .invalid_syntax);
-            try std.testing.expect(fixed.document == null);
-            try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), fixed_bag.items());
+            try std.testing.expectEqual(entry.construct.?, failure.details.unterminated);
         }
+        var pools: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4 }) = .{};
+        var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
+        const fixed = dot.parseBorrowedIn(entry.source, pools.storage(), fixed_bag.sink(), .{});
+        try std.testing.expect(fixed.outcome == .invalid_syntax);
+        try std.testing.expect(fixed.document == null);
+        try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), fixed_bag.items());
     }
 }
 
