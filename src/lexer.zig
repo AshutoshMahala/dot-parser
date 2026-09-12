@@ -1,9 +1,12 @@
-//! Raw-byte lexer (milestone 1, step 3; extended by slice 2).
+//! Raw-byte lexer for the currently supported DOT subset.
 //!
 //! Recognizes the current subset: every DOT keyword (`graph` maps to the
 //! `undigraph` kind at reading time, `digraph`, `strict`, plus the deferred
 //! `subgraph`/`node`/`edge`); bare ASCII identifiers; `{`, `}`, `;`; the
-//! edge operators `--` and `->`; and whitespace (space, tab, LF, CRLF, CR).
+//! edge operators `--` and `->`; whitespace (space, tab, LF, CRLF, CR);
+//! and comments (`//`, `/* ... */`, and `#` through the physical line end).
+//! Comments are skipped without retention. See docs/SUPPORTED_SYNTAX.md for
+//! the comment and physical-location compatibility policy.
 //!
 //! Guarantees:
 //! - Spans borrow from the caller's source; no allocation ever (R-MEM-001).
@@ -13,7 +16,7 @@
 //! - Every keyword tokenizes, including keywords of deferred constructs:
 //!   whether `subgraph` legally introduces a subgraph or sits in an illegal
 //!   grammar position is the parser's decision, which the lexer cannot
-//!   make. Only *lexical* deferred constructs — comments, quoted/numeral/
+//!   make. Only *lexical* deferred constructs — quoted/numeral/
 //!   HTML/non-ASCII identifiers, attribute punctuation, ports — are
 //!   reported here as structured `profile_unsupported_feature` failures,
 //!   distinct from bytes that are invalid in any DOT document (R-MOD-006).
@@ -63,7 +66,7 @@ pub const Lexer = struct {
     }
 
     pub fn next(self: *Lexer) Result {
-        self.skipWhitespace();
+        if (!self.skipTrivia()) return self.unterminatedComment();
         const start = self.here();
         const byte = self.peek(0) orelse return .{ .token = .{
             .tag = .eof,
@@ -90,11 +93,6 @@ pub const Lexer = struct {
             '[', ']', ',' => unsupported(start, 1, .attribute_list),
             '=' => unsupported(start, 1, .attribute_assignment),
             ':' => unsupported(start, 1, .port_or_compass),
-            '#' => unsupported(start, 1, .comment),
-            '/' => if (self.peek(1)) |after| switch (after) {
-                '/', '*' => unsupported(start, 2, .comment),
-                else => self.invalidByte(),
-            } else self.invalidByte(),
             // DOT permits bytes 0x80–0xFF in unquoted identifiers
             // ([a-zA-Z\200-\377]); milestone 1 is ASCII-only, so this is a
             // deferred feature, not malformed input.
@@ -120,13 +118,53 @@ pub const Lexer = struct {
         }
     }
 
-    fn skipWhitespace(self: *Lexer) void {
+    /// Returns false only for an unterminated block comment. Comment bodies
+    /// are opaque bytes: no decoding, nesting, directives, or allocations.
+    fn skipTrivia(self: *Lexer) bool {
         while (self.peek(0)) |byte| {
             switch (byte) {
                 ' ', '\t', '\n', '\r' => self.consume(1),
-                else => return,
+                '#' => self.skipLineComment(),
+                '/' => {
+                    const after = self.peek(1) orelse return true;
+                    switch (after) {
+                        '/' => self.skipLineComment(),
+                        '*' => {
+                            // Look ahead like identifier scanning: advance
+                            // positions only after the construct is complete.
+                            // On failure, the tracker remains at the opener.
+                            var len: usize = 2;
+                            while (self.peek(len)) |body| : (len += 1) {
+                                if (body == '*' and self.peek(len + 1) == '/') {
+                                    self.consume(len + 2);
+                                    break;
+                                }
+                            } else {
+                                return false;
+                            }
+                        },
+                        else => return true,
+                    }
+                },
+                else => return true,
             }
         }
+        return true;
+    }
+
+    fn skipLineComment(self: *Lexer) void {
+        while (self.peek(0)) |byte| {
+            if (byte == '\n' or byte == '\r') return;
+            self.consume(1);
+        }
+    }
+
+    fn unterminatedComment(self: *const Lexer) Result {
+        return .{ .failure = .{
+            .code = .lexer_unterminated_construct,
+            .span = .{ .start = self.here(), .byte_len = 2 },
+            .details = .{ .unterminated = .block_comment },
+        } };
     }
 
     fn single(self: *Lexer, tag: Token.Tag) Result {
@@ -280,6 +318,99 @@ test "empty input yields eof forever" {
     try expectEqual(location.Location.start, lexer.here());
 }
 
+test "comments separate tokens without joining identifiers or operators" {
+    var lexer = Lexer.init("/* header */graph// line\n{a/**/b/* /* not nested */--c;}// eof");
+    try expectToken(&lexer, .keyword_graph, "graph");
+    try expectToken(&lexer, .left_brace, "{");
+    try expectToken(&lexer, .identifier, "a");
+    try expectToken(&lexer, .identifier, "b");
+    try expectToken(&lexer, .edge_undirected, "--");
+    try expectToken(&lexer, .identifier, "c");
+    try expectToken(&lexer, .semicolon, ";");
+    try expectToken(&lexer, .right_brace, "}");
+    try expectToken(&lexer, .eof, "");
+    try expectToken(&lexer, .eof, "");
+
+    var split_operator = Lexer.init("-/**/-");
+    try expectInvalidByte(&split_operator, '-');
+    var split_keyword = Lexer.init("gr/**/aph");
+    try expectToken(&split_keyword, .identifier, "gr");
+    try expectToken(&split_keyword, .identifier, "aph");
+}
+
+test "line comments accept EOF and all physical line endings" {
+    inline for (.{ "//", "#" }) |prefix| {
+        var eof = Lexer.init(prefix ++ " opaque /* \" @ \x00\xff");
+        try expectToken(&eof, .eof, "");
+        inline for (.{ "\n", "\r\n", "\r" }) |newline| {
+            const source = prefix ++ " ignored" ++ newline ++ "x";
+            var lexer = Lexer.init(source);
+            const token = lexer.next().token;
+            try expectEqual(Token.Tag.identifier, token.tag);
+            try expectEqual(location.Location{
+                .byte_offset = source.len - 1,
+                .line = 2,
+                .byte_column = 1,
+            }, token.span.start);
+        }
+    }
+}
+
+test "hash comments match Graphviz token-boundary behavior without remapping lines" {
+    var lexer = Lexer.init("  # 42 \"elsewhere.dot\"\na# inline\nb");
+    const a = lexer.next().token;
+    try expectEqualStrings("a", a.span.slice(lexer.source));
+    try expectEqual(@as(usize, 2), a.span.start.line);
+    const b = lexer.next().token;
+    try expectEqualStrings("b", b.span.slice(lexer.source));
+    try expectEqual(@as(usize, 3), b.span.start.line);
+}
+
+test "block comments preserve mixed physical positions and opaque contents" {
+    const source = "/*\r\n\r\n\n# // \" \x00\xff*/x";
+    var lexer = Lexer.init(source);
+    const token = lexer.next().token;
+    try expectEqualStrings("x", token.span.slice(source));
+    try expectEqual(location.locate(source, source.len - 1), token.span.start);
+    try expectEqual(@as(usize, 4), token.span.start.line);
+}
+
+test "block comment truncation reports the opener on repeated calls" {
+    const body = "/* body **/";
+    for (2..body.len) |end| {
+        var lexer = Lexer.init(body[0..end]);
+        const first = lexer.next();
+        try expect(first == .failure);
+        try expectEqual(diagnostic.Code.lexer_unterminated_construct, first.failure.code);
+        try expectEqual(location.Location.start, first.failure.span.start);
+        try expectEqual(@as(usize, 2), first.failure.span.byte_len);
+        try expectEqual(diagnostic.UnterminatedConstruct.block_comment, first.failure.details.unterminated);
+        try expectEqual(first, lexer.next());
+        try expectEqual(first, lexer.next());
+    }
+    var complete = Lexer.init(body);
+    try expectToken(&complete, .eof, "");
+    var slash = Lexer.init("/");
+    try expectInvalidByte(&slash, '/');
+    var ordinary_slash = Lexer.init("/x");
+    try expectInvalidByte(&ordinary_slash, '/');
+}
+
+test "unterminated comments preserve nonzero physical locations on repeated calls" {
+    inline for (.{ "\n", "\r\n", "\r" }) |newline| {
+        const source = "// ignored" ++ newline ++ "  /* x";
+        var lexer = Lexer.init(source);
+        const expected = location.locate(source, source.len - 4);
+        const first = lexer.next();
+        try expect(first == .failure);
+        try expectEqual(expected, first.failure.span.start);
+        try expectEqual(@as(usize, 2), first.failure.span.start.line);
+        try expectEqual(@as(usize, 3), first.failure.span.start.byte_column);
+        try expectEqual(first, lexer.next());
+        try expectEqual(expected, lexer.here());
+    }
+}
+
 test "each milestone token lexes on its own" {
     inline for (.{
         .{ "graph", Token.Tag.keyword_graph },
@@ -430,9 +561,6 @@ test "recognized lexical deferred features are unsupported, not invalid" {
         .{ ",", diagnostic.Feature.attribute_list },
         .{ "=", diagnostic.Feature.attribute_assignment },
         .{ ":n", diagnostic.Feature.port_or_compass },
-        .{ "# comment", diagnostic.Feature.comment },
-        .{ "// comment", diagnostic.Feature.comment },
-        .{ "/* comment */", diagnostic.Feature.comment },
         .{ "123", diagnostic.Feature.numeral_identifier },
         .{ ".5", diagnostic.Feature.numeral_identifier },
         .{ "-1", diagnostic.Feature.numeral_identifier },

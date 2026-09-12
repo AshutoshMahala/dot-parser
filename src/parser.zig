@@ -43,7 +43,7 @@
 //!   `Options.max_statements` additionally bounds the statements processed.
 //! - Recognized-but-deferred constructs (subgraphs, edge chains, attribute
 //!   statements and lists, quoted/numeral/HTML/non-ASCII identifiers,
-//!   comments, ports, …) stop the parse as unsupported features, not as
+//!   ports, …) stop the parse as unsupported features, not as
 //!   malformed input (R-MOD-006) — but only where the construct is legal
 //!   DOT: a deferred keyword in an illegal grammar position (`subgraph` as
 //!   the document root, `graph node {}`) is plain invalid syntax. The

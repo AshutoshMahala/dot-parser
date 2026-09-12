@@ -101,9 +101,10 @@ The raw-byte lexer and token cursor. It recognizes:
 - Bare ASCII identifiers.
 - `{`, `}`, `;`, `--`, and `->`.
 - Whitespace and physical line endings (LF, CRLF, standalone CR).
+- Comments, skipped without retaining trivia (see [supported syntax](../SUPPORTED_SYNTAX.md)).
 - End of input and invalid bytes.
 - Introducers of deferred *lexical* constructs (quoted/HTML/numeral/
-  non-ASCII identifiers, comments, attribute punctuation, ports), reported
+  non-ASCII identifiers, attribute punctuation, ports), reported
   as typed unsupported-feature failures.
 
 It borrows source spans, performs no hidden allocation, and owns no AST types.
@@ -267,4 +268,3 @@ Use four complementary levels:
 Every module that accepts memory must be tested with a deliberately undersized
 fixed buffer. Every parser boundary should be tested with input truncated at
 each byte position.
-

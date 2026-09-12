@@ -80,9 +80,15 @@ pub const RenderOptions = struct {
 pub fn render(d: Diagnostic, writer: anytype) !void {
     const info = d.code.info();
     const loc = d.span.start;
-    try writer.print("{s}[{s}:{s}]: {s}\n", .{
-        severityWord(info.severity), diagnostic.namespace, d.code.structured(), info.summary,
+    try writer.print("{s}[{s}:{s}]: ", .{
+        severityWord(info.severity), diagnostic.namespace, d.code.structured(),
     });
+    if (d.details == .unterminated) {
+        try writeHeadline(d, info, writer);
+    } else {
+        try writer.writeAll(info.summary);
+    }
+    try writer.writeAll("\n");
     try writer.print("  --> line {d}, column {d} (byte {d}, len {d})\n", .{
         loc.line, loc.byte_column, loc.byte_offset, d.span.byte_len,
     });
@@ -96,7 +102,13 @@ pub fn render(d: Diagnostic, writer: anytype) !void {
         try writeNoteValue(d.details, writer);
         try writer.writeAll("\n");
     }
-    try writer.print("  help: {s}\n", .{info.hint});
+    try writer.writeAll("  help: ");
+    if (d.details == .unterminated) {
+        try writeHint(d.details, info, writer);
+    } else {
+        try writer.writeAll(info.hint);
+    }
+    try writer.writeAll("\n");
 }
 
 /// Render one diagnostic as a numbered box: message-first header, location,
@@ -329,6 +341,9 @@ fn plural(count: usize) []const u8 {
 /// payload.
 fn writeHeadline(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !void {
     switch (d.details) {
+        .unterminated => |construct| {
+            try writer.print("input ended inside a {s}", .{unterminatedName(construct)});
+        },
         .unsupported_feature => |feature| {
             try writer.print("unsupported DOT construct: {s}", .{feature.name()});
         },
@@ -341,6 +356,10 @@ fn writeHeadline(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !vo
 /// contextual wording is developed; the fallback keeps every code covered.
 fn writeHint(details: Details, info: diagnostic.Code.Info, writer: anytype) !void {
     switch (details) {
+        .unterminated => |construct| switch (construct) {
+            .block_comment => try writer.writeAll("close the block comment opened here with '*/'; block comments do not nest"),
+            _ => try writer.writeAll(info.hint),
+        },
         .operator_mismatch => |mismatch| switch (mismatch.expected) {
             .directed => try writer.writeAll(
                 "change '--' to '->', or declare the document with 'graph'",
@@ -545,6 +564,7 @@ fn writeUnderline(
 fn writePrimaryLabel(details: Details, writer: anytype) !void {
     switch (details) {
         .none => unreachable,
+        .unterminated => |construct| try writer.print("{s} opened here, never closed", .{unterminatedName(construct)}),
         .invalid_byte => |byte| {
             if (std.ascii.isPrint(byte)) {
                 try writer.print("byte 0x{X:0>2} ('{c}') is not valid in DOT", .{ byte, byte });
@@ -612,6 +632,7 @@ fn writeUnsigned(writer: anytype, value: usize, width: usize) !void {
 fn writeDetailValue(details: Details, writer: anytype) !void {
     switch (details) {
         .none => unreachable,
+        .unterminated => |construct| try writer.print("unterminated {s}", .{unterminatedName(construct)}),
         .invalid_byte => |byte| {
             if (std.ascii.isPrint(byte)) {
                 try writer.print("offending byte 0x{X:0>2} ('{c}')", .{ byte, byte });
@@ -640,6 +661,13 @@ fn writeDetailValue(details: Details, writer: anytype) !void {
             });
         },
     }
+}
+
+fn unterminatedName(construct: diagnostic.UnterminatedConstruct) []const u8 {
+    return switch (construct) {
+        .block_comment => "block comment",
+        _ => "lexical construct",
+    };
 }
 
 fn hasNote(details: Details) bool {
@@ -771,6 +799,46 @@ fn spanAt(offset: usize, line: usize, column: usize, len: usize) location.Span {
         .start = .{ .byte_offset = offset, .line = line, .byte_column = column },
         .byte_len = len,
     };
+}
+
+test "unterminated constructs render typed wording and safe fallbacks" {
+    const source = "graph { /* unfinished";
+    var d: Diagnostic = .{
+        .code = .lexer_unterminated_construct,
+        .span = spanAt(8, 1, 9, 2),
+        .details = .{ .unterminated = .block_comment },
+    };
+    var buffer: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try render(d, &writer);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "input ended inside a block comment") != null);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "close the block comment opened here with '*/'") != null);
+
+    writer = std.Io.Writer.fixed(&buffer);
+    try renderBoxed(d, 1, .{ .source = source, .style = .ascii }, &writer);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "^^ block comment opened here, never closed") != null);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "E.Lexer.Syntax.031") != null);
+
+    // Forward-compatible readers may encounter a construct introduced by a
+    // newer library. Its fallback must not invent a closing delimiter.
+    d.details = .{ .unterminated = @enumFromInt(255) };
+    writer = std.Io.Writer.fixed(&buffer);
+    try render(d, &writer);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "lexical construct") != null);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "*/") == null);
+    writer = std.Io.Writer.fixed(&buffer);
+    try renderBoxed(d, 1, .{}, &writer);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "lexical construct") != null);
+
+    // Publicly constructed diagnostics can omit details. The registry's
+    // generic summary/hint still render without taking an unreachable arm.
+    d.details = .none;
+    writer = std.Io.Writer.fixed(&buffer);
+    try render(d, &writer);
+    try expect(std.mem.indexOf(u8, writer.buffered(), d.code.info().summary) != null);
+    writer = std.Io.Writer.fixed(&buffer);
+    try renderBoxed(d, 1, .{ .source = source }, &writer);
+    try expect(std.mem.indexOf(u8, writer.buffered(), d.code.info().summary) != null);
 }
 
 test "render produces informative text" {

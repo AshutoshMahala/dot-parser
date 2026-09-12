@@ -1,0 +1,6 @@
+# 42 "ignored-file.dot"
+/* document comment */ strict /* modifier */ digraph /* kind */ G /* name */ {
+    a; // node
+    b; # another node
+    a /* left endpoint */ -> /* right endpoint */ b;
+} /* trailing comment */

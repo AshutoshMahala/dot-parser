@@ -3,6 +3,16 @@
 Notable changes to dot-parser. During `0.x`, minor versions may break
 compatibility; deprecations and breaks are called out here.
 
+## Unreleased
+
+- Parse `//`, `/* ... */`, and `#` comments without allocation or retained
+  trivia. Behavior and Graphviz differences are documented in
+  [Supported DOT syntax](docs/SUPPORTED_SYNTAX.md).
+- Add `E.Lexer.Syntax.031` with typed `.unterminated` details, currently
+  `.block_comment`, and construct-specific rendering at the opening delimiter.
+- Define sequence numbers and aliases together in `diagnostic.Sequence`;
+  existing `Code.Info` fields and published diagnostic identities are unchanged.
+
 ## 0.1.0 — 2026-07-18
 
 First tagged release: an end-to-end DOT subset from bytes to a validated,

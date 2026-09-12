@@ -26,6 +26,7 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | Optional semicolons | **Supported** | As in Graphviz: `digraph G { a -> b b -> c }` |
 | Bare ASCII identifiers | **Supported** | `[A-Za-z_][A-Za-z0-9_]*`; keywords are case-independent and reserved in every position |
 | Whitespace / line endings | **Supported** | Space, tab; LF, CRLF, and standalone CR each end a line |
+| Comments (`//`, `/* */`, `#`) | **Supported** | Skipped without retention; see compatibility notes below |
 | Subgraphs (`{ … }`, `subgraph s { … }`) | Deferred | Feature `subgraph`, including subgraphs as edge endpoints |
 | Edge chains (`a -- b -- c`) | Deferred | Feature `edge_chain` |
 | Attribute lists (`[color=red]`) | Deferred | Feature `attribute_list` |
@@ -35,11 +36,29 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | HTML identifiers (`<…>`) | Deferred | Feature `html_identifier` |
 | Numeral identifiers (`3`, `-.5`) | Deferred | Feature `numeral_identifier` |
 | Non-ASCII identifiers (bytes `0x80`–`0xFF`) | Deferred | Feature `non_ascii_identifier`; the whole run is one span |
-| Comments (`//`, `/* */`, `#`) | Deferred | Feature `comment` |
 | Ports and compass points (`a:n`) | Deferred | Feature `port_or_compass` |
 
 ## Compatibility notes
 
+- **Comment handling**: `#` starts a line comment at any token boundary,
+  including after indentation or another token (matching Graphviz 15.1.0).
+  Block comments do not nest and end at the first `*/`. Line comments end at
+  LF, CRLF, standalone CR, or EOF. Standalone CR termination is an intentional
+  difference: Graphviz 15.1.0 rejects `graph { a // c\r b }` and its `#`
+  equivalent, while this library treats CR as a physical newline and accepts
+  both (here `\r` denotes one CR byte).
+  Preprocessor line numbers and file names are discarded; diagnostics always
+  use physical positions in the supplied bytes. Comment bodies are opaque
+  bytes, with no encoding validation. An unterminated block comment is
+  `invalid_syntax`, diagnosed at its opening `/*` as `E.Lexer.Syntax.031`
+  with `.unterminated = .block_comment`.
+  Comments separate tokens; they cannot splice a keyword or edge operator.
+  Quoted and HTML-like identifiers remain deferred and are not scanned for
+  comments.
+- **Whole-document consumption**: after the root closing `}`, only whitespace,
+  complete comments, and end of input are accepted. Malformed trailing comments
+  and additional tokens are errors. Graphviz 15.1.0 accepts the specific inputs
+  `graph {} /* unfinished` and `graph { a; } x`; this library rejects both.
 - **Keywords are reserved words everywhere**, matching Graphviz: an
   unquoted keyword is never an identifier. `graph graph {}` and
   `graph { a -- node; }` are syntax errors (verified against Graphviz

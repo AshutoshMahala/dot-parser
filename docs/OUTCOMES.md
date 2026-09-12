@@ -1,6 +1,6 @@
 # Outcomes and diagnostics
 
-Every phase of this library reports problems the same way: functions
+Phases report problems through the same interface: functions
 return a **small outcome value** describing what happened, and the
 **explanation travels through your diagnostic sink** — structured,
 typed, and never printed by the library. There is no error-code soup to
@@ -24,7 +24,8 @@ are for humans and tooling.
 `.pool_exhausted` (a fixed pool filled — the diagnostic names the pool and
 its capacity), `.statement_index_overflow`, `.source_offset_overflow`
 (source beyond the 4 GiB retained-range limit), or `.internal` (never
-expected; a bug report is welcome).
+expected; a bug report is welcome). `.internal` currently has no corresponding
+diagnostic; inspect the outcome even when the diagnostic bag is empty.
 
 ## Unsupported is not invalid
 
@@ -62,30 +63,42 @@ stops at the first.
 
 ## The diagnostic bag
 
-Parse failures are fail-fast: the bag holds exactly one diagnostic.
-Validation is bag-complete: one diagnostic per violation. A
+Parsing is fail-fast and attempts at most one failure diagnostic. Retention
+depends on the sink: a full bag, discard sink, or rejected delivery can leave
+no retained entry, and `.internal` emits no diagnostic. Validation attempts
+one diagnostic per violation. A
 `FixedDiagnosticBag(N)` keeps the first `N` and counts the rest in
 `omitted` — diagnostics are never silently dropped.
 
-Each diagnostic carries a stable WDP identity and a **typed payload**
-(never pre-rendered strings): the expected-token set, the found item, the
-mismatched operators with the declaration span, the deferred feature, or
-the exhausted resource and its limit. Wording belongs to renderers; the
+Each diagnostic carries a stable WDP identity, a source span, and **optional
+typed details** (`Details.none` means no additional context). Details are
+never pre-rendered strings. Wording belongs to renderers; the
 out-of-the-box console renderer is one consumer of these payloads, and
 your logger, LSP, or JSON emitter can be another via `DiagnosticSink`.
 
 Current registry:
 
-| Code | When |
-| --- | --- |
-| `E.Lexer.Byte.003` | A byte no DOT token can begin with |
-| `E.Parser.Syntax.001` | A required syntax element is missing |
-| `E.Parser.Syntax.003` | Unexpected token |
-| `E.Parser.Syntax.031` | Input ended before the document was complete |
-| `E.Validation.Operator.002` | Edge operator does not match the graph kind |
-| `E.Profile.Feature.009` | Recognized-but-deferred DOT construct |
-| `E.Resource.Capacity.026` | A configured capacity was exhausted |
-| `E.Resource.Memory.026` | Document memory was exhausted |
+| Code | When | Details emitted by the library |
+| --- | --- | --- |
+| `E.Lexer.Byte.003` | A byte no DOT token can begin with | `.invalid_byte` |
+| `E.Lexer.Syntax.031` | Input ended inside an unclosed lexical construct; span marks its opener | `.unterminated` (currently `.block_comment`) |
+| `E.Parser.Syntax.001` | A required syntax element is missing | Reserved; not currently emitted |
+| `E.Parser.Syntax.003` | Unexpected token | `.unexpected` |
+| `E.Parser.Syntax.031` | Input ended before the document was complete | `.unexpected` |
+| `E.Validation.Operator.002` | Edge operator does not match the graph kind | `.operator_mismatch` |
+| `E.Profile.Feature.009` | Recognized-but-deferred DOT construct | `.unsupported_feature` |
+| `E.Resource.Capacity.026` | A configured capacity was exhausted | `.capacity` when available, otherwise `.none` |
+| `E.Resource.Memory.026` | Document memory was exhausted | `.none` |
+
+This table describes library-produced diagnostics. `Diagnostic` is publicly
+constructible: its separate `code` and `details` fields do not enforce these
+pairings in the type system. Consumers must not assume every diagnostic has
+non-empty details. `UnterminatedConstruct` is non-exhaustive; handle unknown
+values when consuming recorded diagnostics from newer versions.
+
+Sequence numbers and aliases are defined together in `diagnostic.Sequence`.
+Registry entries select one definition; `Code.Info.sequence` and `.alias`
+are derived from that pair. Neither field is retained in each diagnostic.
 
 Codes and payload enums are append-only: published discriminants are never
 reused or renumbered, so recorded diagnostics stay meaningful across

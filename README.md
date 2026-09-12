@@ -25,8 +25,9 @@ strict digraph Routes {
 - Bare ASCII identifiers, node statements, single-edge statements;
   semicolons are optional, as in Graphviz.
 - Borrowed source spans, explicit caller memory, fixed-buffer operation.
+- Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
 
-Everything else (comments, quoted/numeral/HTML IDs, attributes, edge
+Everything else (quoted/numeral/HTML IDs, attributes, edge
 chains, ports, subgraphs, …) is deliberately deferred to later vertical
 slices. The authoritative construct-by-construct table is
 [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).

@@ -128,6 +128,28 @@ pub const Primary = enum {
     }
 };
 
+/// A sequence number and its canonical alias, defined together so registry
+/// entries cannot accidentally pair a number with another condition's alias.
+pub const SequenceDefinition = struct {
+    number: u16,
+    alias: []const u8,
+};
+
+/// Named sequence assignments used by this diagnostic registry. Sequences
+/// identify a condition within a component/primary domain, not a complete
+/// diagnostic identity. Keep the published numeric assignments stable.
+pub const Sequence = struct {
+    // WDP part 6 conventional assignments.
+    pub const missing: SequenceDefinition = .{ .number = 1, .alias = "MISSING" };
+    pub const mismatch: SequenceDefinition = .{ .number = 2, .alias = "MISMATCH" };
+    pub const invalid: SequenceDefinition = .{ .number = 3, .alias = "INVALID" };
+    pub const unsupported: SequenceDefinition = .{ .number = 9, .alias = "UNSUPPORTED" };
+    pub const exhausted: SequenceDefinition = .{ .number = 26, .alias = "EXHAUSTED" };
+
+    // Project-specific assignments (031–999).
+    pub const unexpected_end: SequenceDefinition = .{ .number = 31, .alias = "UNEXPECTED_END" };
+};
+
 /// The diagnostic registry.
 ///
 /// Published codes are stable: identities are append-only and a sequence
@@ -158,6 +180,9 @@ pub const Code = enum {
     /// E.Resource.Memory.026 (EXHAUSTED) — the allocator could not provide
     /// memory for the retained document.
     resource_memory_exhausted,
+    /// E.Lexer.Syntax.031 (UNEXPECTED_END) — a lexical construct is unclosed.
+    /// Always emitted with `Details.unterminated` naming the construct.
+    lexer_unterminated_construct,
 
     /// Comptime metadata for one diagnostic code. All strings are static.
     pub const Info = struct {
@@ -174,14 +199,24 @@ pub const Code = enum {
         hint: []const u8,
     };
 
+    /// Internal entries select the sequence/alias pair once. Public Info
+    /// retains its existing numeric sequence and string alias fields.
+    const Definition = struct {
+        severity: Severity,
+        component: Component,
+        primary: Primary,
+        sequence: SequenceDefinition,
+        summary: []const u8,
+        hint: []const u8,
+    };
+
     pub fn info(self: Code) Info {
-        return switch (self) {
+        const definition: Definition = switch (self) {
             .lexer_invalid_byte => .{
                 .severity = .err,
                 .component = .lexer,
                 .primary = .byte,
-                .sequence = 3,
-                .alias = "INVALID",
+                .sequence = Sequence.invalid,
                 .summary = "input byte cannot begin any DOT token",
                 .hint = "this milestone accepts bare ASCII identifiers ([A-Za-z_][A-Za-z0-9_]*), '{', '}', ';', '--', '->', and whitespace",
             },
@@ -189,8 +224,7 @@ pub const Code = enum {
                 .severity = .err,
                 .component = .parser,
                 .primary = .syntax,
-                .sequence = 1,
-                .alias = "MISSING",
+                .sequence = Sequence.missing,
                 .summary = "a required syntax element is missing",
                 .hint = "the milestone grammar is: graph { statement* } where a statement is 'a;' or 'a -- b;'",
             },
@@ -198,8 +232,7 @@ pub const Code = enum {
                 .severity = .err,
                 .component = .parser,
                 .primary = .syntax,
-                .sequence = 3,
-                .alias = "INVALID",
+                .sequence = Sequence.invalid,
                 .summary = "unexpected token",
                 .hint = "the milestone grammar is: graph { statement* } where a statement is 'a;' or 'a -- b;'",
             },
@@ -207,8 +240,7 @@ pub const Code = enum {
                 .severity = .err,
                 .component = .parser,
                 .primary = .syntax,
-                .sequence = 31,
-                .alias = "UNEXPECTED_END",
+                .sequence = Sequence.unexpected_end,
                 .summary = "input ended before the document was complete",
                 .hint = "check for an unclosed '{' or a truncated final statement",
             },
@@ -216,8 +248,7 @@ pub const Code = enum {
                 .severity = .err,
                 .component = .validation,
                 .primary = .operator,
-                .sequence = 2,
-                .alias = "MISMATCH",
+                .sequence = Sequence.mismatch,
                 .summary = "edge operator does not match the graph kind",
                 .hint = "an undirected document ('graph') connects nodes with '--'; '->' is only valid in a 'digraph'",
             },
@@ -225,8 +256,7 @@ pub const Code = enum {
                 .severity = .err,
                 .component = .profile,
                 .primary = .feature,
-                .sequence = 9,
-                .alias = "UNSUPPORTED",
+                .sequence = Sequence.unsupported,
                 .summary = "recognized DOT construct is not supported by this profile",
                 .hint = "this construct is recognized DOT syntax that this milestone or build does not process; parsing stopped at this boundary, so the rest of the input has not been checked",
             },
@@ -234,8 +264,7 @@ pub const Code = enum {
                 .severity = .err,
                 .component = .resource,
                 .primary = .capacity,
-                .sequence = 26,
-                .alias = "EXHAUSTED",
+                .sequence = Sequence.exhausted,
                 .summary = "a configured capacity was exhausted before the document finished",
                 .hint = "raise the corresponding limit or provide larger caller-owned storage; the input itself may still be valid",
             },
@@ -243,11 +272,27 @@ pub const Code = enum {
                 .severity = .err,
                 .component = .resource,
                 .primary = .memory,
-                .sequence = 26,
-                .alias = "EXHAUSTED",
+                .sequence = Sequence.exhausted,
                 .summary = "memory for the retained document was exhausted",
                 .hint = "provide a larger allocator or arena, or parse into fixed pools sized for the document; the input itself may still be valid",
             },
+            .lexer_unterminated_construct => .{
+                .severity = .err,
+                .component = .lexer,
+                .primary = .syntax,
+                .sequence = Sequence.unexpected_end,
+                .summary = "input ended inside an unterminated construct",
+                .hint = "close the construct opened at the highlighted location",
+            },
+        };
+        return .{
+            .severity = definition.severity,
+            .component = definition.component,
+            .primary = definition.primary,
+            .sequence = definition.sequence.number,
+            .alias = definition.sequence.alias,
+            .summary = definition.summary,
+            .hint = definition.hint,
         };
     }
 
@@ -345,6 +390,15 @@ pub const Details = union(enum) {
     unsupported_feature: Feature,
     /// For `resource_capacity_exhausted`.
     capacity: Capacity,
+    /// For `lexer_unterminated_construct`; the primary span is the opener.
+    unterminated: UnterminatedConstruct,
+};
+
+/// Lexical constructs requiring a closing delimiter. Append variants only
+/// when their support ships; published discriminants are never repurposed.
+pub const UnterminatedConstruct = enum(u8) {
+    block_comment = 0,
+    _,
 };
 
 /// Stable diagnostic-layer vocabulary for grammar-level constructs.
@@ -438,6 +492,7 @@ pub const Feature = enum(u16) {
     html_identifier,
     numeral_identifier,
     non_ascii_identifier,
+    /// Legacy (implemented in the comments slice): kept for its discriminant only.
     comment,
     attribute_list,
     attribute_assignment,
@@ -621,6 +676,7 @@ test "severity alphabet matches WDP part 1" {
 }
 
 test "structured codes follow the documented registry" {
+    try expectEqualStrings("E.Lexer.Syntax.031", Code.lexer_unterminated_construct.structured());
     try expectEqualStrings("E.Lexer.Byte.003", Code.lexer_invalid_byte.structured());
     try expectEqualStrings("E.Parser.Syntax.001", Code.parser_missing_element.structured());
     try expectEqualStrings("E.Parser.Syntax.003", Code.parser_unexpected_token.structured());
@@ -628,6 +684,7 @@ test "structured codes follow the documented registry" {
     try expectEqualStrings("E.Validation.Operator.002", Code.validation_operator_mismatch.structured());
     try expectEqualStrings("E.Profile.Feature.009", Code.profile_unsupported_feature.structured());
     try expectEqualStrings("E.Resource.Capacity.026", Code.resource_capacity_exhausted.structured());
+    try expectEqualStrings("E.Resource.Memory.026", Code.resource_memory_exhausted.structured());
 }
 
 test "registry is coherent: unique identities, valid fields (R-DIAG-005)" {
