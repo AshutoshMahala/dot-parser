@@ -3,7 +3,7 @@ const dot = @import("dot_parser");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const deep = std.testing.expectEqualDeep;
-const Storage = dot.FixedDocumentStorage(.{ .statements = 32, .nodes = 16, .edges = 16, .attributes = 32, .assignments = 16, .attribute_statements = 16 });
+const Storage = dot.FixedDocumentStorage(.{ .statements = 32, .nodes = 16, .edges = 16, .edge_chains = 8, .edge_links = 32, .attributes = 32, .assignments = 16, .attribute_statements = 16 });
 
 const Request = struct {
     flag: bool = false,
@@ -78,6 +78,7 @@ test "fixed sessions preserve documents diagnostics and work across partitions" 
         "graph { a[x=] }",
         "graph {a b @}",
         "graph {a--b--c}",
+        "digraph {a->b->c[w=1] x--y z->q->r->s[k=2]}",
         "graph { subgraph{} }",
         "graph{/*",
         "",
@@ -94,7 +95,7 @@ test "fixed sessions preserve documents diagnostics and work across partitions" 
 }
 
 test "cancellation at every work boundary exposes no partial document" {
-    const source = "graph { a[k=\"x\"/*glue*/+\"y\"] b--c key=-.5 }";
+    const source = "graph { a[k=\"x\"/*glue*/+\"y\"] b--c--d->e key=-.5 }";
     const total = try partition(source, &.{1}, false);
     for (0..total) |stop| {
         var storage: Storage = .{};
@@ -163,6 +164,14 @@ test "metering and cancellation are independently selectable" {
         });
         const result = session.run();
         try expect(result.outcome == (if (cancellation) .cancelled else .success));
+        request.stop_after = std.math.maxInt(usize);
+        session.reset("graph {a--b--c[x=1]}", dot.diagnostic.discard, .{
+            .cancellation = if (cancellation) request.hook() else {},
+        });
+        const chain_result = session.run();
+        try expect(chain_result.outcome == .success);
+        try equal(@as(usize, 1), chain_result.document.?.edge_chains.len);
+        try equal(@as(usize, 1), chain_result.document.?.edge_links.len);
         const Driver = @FieldType(Session, "machine");
         if (!cancellation) try expect(@FieldType(Driver, "cancellation") == void);
         if (!metering) {

@@ -1,8 +1,8 @@
 # Open design decisions
 
-Last reconciled: 2026-09-12 (comments, identifiers, and basic attributes).
+Last reconciled: 2026-09-13 (edge chains).
 
-Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q30)
+Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q31)
 are stable: they are never renumbered, deleted, or reused, and new questions
 append with fresh numbers. Answered questions are not removed — the
 **Decided** section doubles as the project's decision log, each entry naming
@@ -24,13 +24,26 @@ authoritative for what the current release actually processes.
 
 ## Decided
 
+**Q31 — How are identifier-only edge chains retained and budgeted?**
+Keep ordinary edge records unchanged. A separate chain owner contains the first
+edge and a compact range into continuation links. Each continuation retains its
+written operator/range and right endpoint; no temporary chain list or eager
+edge/node expansion is built. Whole-chain attributes are stored once. Each link
+callback is a separately charged event; one accepted owner increments completed
+statements once. The public allocation-free edge iterator offers a pairwise view
+without changing retained syntax. Fixed capacities bound chain owners and
+continuations independently; statement limits do not bound chain length.
+Subgraph endpoints and ports remain deferred. *(Embodied: `src/syntax.zig`,
+`src/parser.zig`, `tests/edge_chains.zig`, `tests/sessions.zig`.)*
+
 **Q30 — How does the first attribute slice retain groups and deliver pairs?**
 Adjacent bracket groups are flattened into one ordered pair sequence, preserving
 written duplicate keys but not group boundaries or empty-list presence. Node,
 edge and attribute statements reference a shared pair pool; assignments have a
 separate pool. The private event seam streams pairs before their owner statement;
 abort discards staged data and no partial document escapes. Both storage paths
-have explicit capacities for all six pools. `max_attributes` counts all pairs,
+have explicit capacities for all attribute-slice pools (six at that slice;
+eight after Q31's chain support). `max_attributes` counts all pairs,
 including assignments, but does not bound lexical work. Defaults, effective-value
 resolution and compile-time feature removal remain future work. *(Embodied:
 `src/parser.zig`, `src/syntax_event.zig`, `src/syntax.zig`, `tests/attributes.zig`.)*
@@ -163,7 +176,7 @@ whether convenience APIs should ship with non-trivial defaults is open.
 
 **Q16 — What size thresholds establish that disabling a feature removed its
 cost?**
-Parser-state size is regression-guarded (≤ 536 B; currently 520 B native) and baselines exist;
+Parser-state size is regression-guarded (≤ 576 B; currently 560 B native) and baselines exist;
 per-profile binary-size thresholds await the profile work. *(Embodied:
 `docs/BASELINES.md`; parser-size test.)*
 

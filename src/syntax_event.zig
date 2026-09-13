@@ -21,12 +21,16 @@
 //!
 //! ```text
 //! beginDocument
-//! ((attribute* (nodeStatement | edgeStatement | attributeStatement)) | assignment)*
+//! ((attribute* (nodeStatement | edgeStatement | attributeStatement)) |
+//!  (edgeLink+ attribute* edgeChainStatement) | assignment)*
 //! endDocument | abortDocument        // exactly one terminal event
 //! ```
 //!
 //! - `beginDocument` is the first event whenever any event is emitted, with
 //!   one cleanup exception below.
+//! - Each edgeLink streams one continuation after the first edge. The final
+//!   edgeChainStatement carries the first edge and consumes all pending links
+//!   and attributes. Abort discards both pools; no temporary chain list exists.
 //! - Statement events arrive in the order they appear in the source.
 //! - Each `attribute` carries one completed pair for the immediately following
 //!   node, edge, or attribute statement. Adjacent bracket groups are flattened;
@@ -50,7 +54,7 @@
 //! ## Failure propagation
 //!
 //! `beginDocument`, `nodeStatement`, `edgeStatement`, `attribute`, `assignment`,
-//! `attributeStatement`, and `endDocument`
+//! `edgeLink`, `edgeChainStatement`, `attributeStatement`, and `endDocument`
 //! return `E!void` for an error set `E` the sink chooses (allocation
 //! failure, capacity, …); a sink that cannot fail declares `error{}!void`.
 //! When one fails, the parser stops and calls `abortDocument` — which is
@@ -121,6 +125,12 @@ pub const NodeStatement = struct {
     identifier: location.Span,
 };
 
+pub const EdgeLink = struct {
+    operator: EdgeOperator,
+    operator_span: location.Span,
+    right: location.Span,
+};
+
 pub const EdgeStatement = struct {
     left: location.Span,
     operator: EdgeOperator,
@@ -147,6 +157,8 @@ pub const Event = union(enum) {
     begin_document: BeginDocument,
     node_statement: NodeStatement,
     edge_statement: EdgeStatement,
+    edge_chain_statement: EdgeStatement,
+    edge_link: EdgeLink,
     attribute: Attribute,
     assignment: Attribute,
     attribute_statement: AttributeStatement,
@@ -165,6 +177,8 @@ pub const Event = union(enum) {
 /// pub fn beginDocument(self: *T, event: BeginDocument) E!void
 /// pub fn nodeStatement(self: *T, statement: NodeStatement) E!void
 /// pub fn edgeStatement(self: *T, statement: EdgeStatement) E!void
+/// pub fn edgeChainStatement(self: *T, first: EdgeStatement) E!void
+/// pub fn edgeLink(self: *T, link: EdgeLink) E!void
 /// pub fn attribute(self: *T, pair: Attribute) E!void
 /// pub fn assignment(self: *T, pair: Attribute) E!void
 /// pub fn attributeStatement(self: *T, statement: AttributeStatement) E!void
@@ -180,6 +194,8 @@ pub fn assertSyntaxSink(comptime T: type) void {
         assertMethod(T, "beginDocument", &.{BeginDocument}, .fallible);
         assertMethod(T, "nodeStatement", &.{NodeStatement}, .fallible);
         assertMethod(T, "edgeStatement", &.{EdgeStatement}, .fallible);
+        assertMethod(T, "edgeChainStatement", &.{EdgeStatement}, .fallible);
+        assertMethod(T, "edgeLink", &.{EdgeLink}, .fallible);
         assertMethod(T, "attribute", &.{Attribute}, .fallible);
         assertMethod(T, "assignment", &.{Attribute}, .fallible);
         assertMethod(T, "attributeStatement", &.{AttributeStatement}, .fallible);
@@ -259,6 +275,13 @@ pub fn RecordingSink(comptime capacity: usize) type {
 
         pub fn edgeStatement(self: *Self, statement: EdgeStatement) Error!void {
             try self.record(.{ .edge_statement = statement });
+        }
+
+        pub fn edgeLink(self: *Self, event: EdgeLink) Error!void {
+            try self.record(.{ .edge_link = event });
+        }
+        pub fn edgeChainStatement(self: *Self, event: EdgeStatement) Error!void {
+            try self.record(.{ .edge_chain_statement = event });
         }
 
         pub fn attribute(self: *Self, event: Attribute) Error!void {

@@ -23,7 +23,7 @@ strict digraph Routes {
   named (the source keyword `graph` maps to the library kind `undigraph`;
   in this library `graph` always means "either kind").
 - Bare ASCII, numeral, and quoted identifiers (including quoted `+`
-  concatenation), node statements, single-edge statements;
+  concatenation), node statements, single-edge statements and edge chains;
   semicolons are optional, as in Graphviz.
 - Basic attributes: standalone assignments, graph/node/edge attribute statements,
   and node/edge lists. Duplicate keys and written order are preserved.
@@ -31,8 +31,8 @@ strict digraph Routes {
 - Fixed-storage bounded sessions, with optional cooperative cancellation.
 - Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
 
-Everything else (HTML/non-ASCII bare IDs, edge
-chains, ports, subgraphs, …) is deliberately deferred to later vertical
+Everything else (HTML/non-ASCII bare IDs,
+ports, subgraphs, …) is deliberately deferred to later vertical
 slices. The authoritative construct-by-construct table is
 [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
 
@@ -56,6 +56,9 @@ if (checked.documentValid()) {
     var statements = document.statements();
     while (statements.next()) |statement| {
         switch (statement) {
+            .edge_chain => |chain| std.log.info("chain {s}: {d} edges", .{
+                document.text(chain.first.left), @as(usize, chain.links.len) + 1,
+            }),
             .node => |node| std.log.info("node {s}", .{document.text(node.identifier)}),
             .edge => |edge| std.log.info("edge {s} {s} {s}", .{
                 document.text(edge.left),
@@ -75,6 +78,11 @@ if (checked.documentValid()) {
 
 ### Build a linter
 
+For a pairwise engine-adapter view, use `document.edgeIterator()`. It visits
+single edges and chain links in source order without allocating; chain attributes
+are shared. See [the chain example](examples/edge_chains.zig) for fixed-pool sizing
+and [ownership](docs/OWNERSHIP.md#edge-chains-and-memory) for the retained layout.
+
 `parseBorrowed` and `validate` are separate stages, and the document is a
 plain source-ordered view — ranges slice your buffer, and full positions
 are derived only when you ask:
@@ -89,7 +97,7 @@ while (statements.next()) |statement| switch (statement) {
             where.line, where.byte_column, document.text(node.identifier),
         });
     },
-    .edge, .assignment, .attribute_statement => {}, // This lint only checks nodes.
+    .edge, .edge_chain, .assignment, .attribute_statement => {}, // This lint only checks nodes.
 };
 ```
 

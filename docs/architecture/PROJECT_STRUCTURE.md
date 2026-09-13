@@ -166,6 +166,8 @@ Document data includes:
 - Ordered statement IDs.
 - Node statements.
 - Edge statements with the written operator and endpoint ranges.
+- Chain statements with a first edge and compact continuation-link range;
+  no eager pairwise expansion. The edge iterator provides an allocation-free view.
 - Standalone assignments and graph/node/edge attribute statements.
 - Ordered key/value pairs in an attribute pool, referenced by compact ranges;
   adjacent groups are flattened and duplicate keys are preserved.

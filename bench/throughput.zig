@@ -77,6 +77,8 @@ fn run(
         retained_bytes = document.order.len * @sizeOf(dot.StatementId) +
             document.nodes.len * @sizeOf(dot.NodeStatement) +
             document.edges.len * @sizeOf(dot.EdgeStatement) +
+            document.edge_chains.len * @sizeOf(dot.EdgeChainStatement) +
+            document.edge_links.len * @sizeOf(dot.EdgeLink) +
             document.attributes.len * @sizeOf(dot.Attribute) +
             document.assignments.len * @sizeOf(dot.Assignment) +
             document.attribute_statements.len * @sizeOf(dot.AttributeStatement);

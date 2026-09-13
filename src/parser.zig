@@ -1,10 +1,10 @@
 //! Parser state machine (milestone 1, step 5).
 //!
-//! Current grammar (basic attributes included):
+//! Current grammar (basic attributes and identifier-only chains included):
 //!
 //! ```text
 //! document  := "strict"? ("graph" | "digraph") identifier? "{" statement* "}" EOF
-//! statement := (identifier attributes? | identifier edgeop identifier attributes?
+//! statement := (identifier attributes? | identifier (edgeop identifier)+ attributes?
 //!            | identifier "=" identifier | ("graph" | "node" | "edge") attributes) ";"?
 //! attributes := ("[" (identifier "=" identifier (";" | ",")?)* "]")+
 //! edgeop    := "--" | "->"
@@ -42,7 +42,7 @@
 //!   cannot exhaust the call stack (R-PERF-002).
 //! - Work is a single linear scan of the input (R-PERF-001, R-SEC-003);
 //!   `Options.max_statements` additionally bounds the statements processed.
-//! - Subgraphs, edge chains, HTML/non-ASCII bare identifiers and ports remain
+//! - Subgraphs, HTML/non-ASCII bare identifiers and ports remain
 //!   deferred. Attributes are parsed and retained without default resolution,
 //!   key deduplication or value interpretation. Malformed supported attribute
 //!   syntax is invalid, not unsupported. Unsupported boundaries still make
@@ -150,7 +150,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
     return struct {
         const Self = @This();
 
-        const Action = enum { begin, node, edge, attribute_statement, assignment, attribute, commit };
+        const Action = enum { begin, node, edge, edge_chain, edge_link, attribute_statement, assignment, attribute, commit };
         const Work = struct {
             token: lex.Token = undefined,
             action: Action = undefined,
@@ -176,7 +176,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         attribute_key: location.Span = undefined,
         attribute_target: syntax_event.AttributeTarget = .graph,
         open_bracket_span: ?location.Span = null,
-        pending: enum { node, edge, attributes } = .node,
+        pending: enum { node, edge, edge_chain, attributes } = .node,
         delivery: DiagnosticDelivery = .complete,
         /// Span of the document's `{`, once consumed — the related location
         /// reported when the input ends inside the body.
@@ -207,7 +207,11 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         /// Right endpoint of the edge statement being parsed.
         right: location.Span = undefined,
 
+        link_operator: syntax_event.EdgeOperator = undefined,
+        link_operator_span: location.Span = undefined,
+
         const State = enum {
+            chain_right,
             /// Expect `strict` or the kind keyword.
             prologue,
             /// After `strict`: expect the kind keyword.
@@ -417,8 +421,26 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 },
                 .edge_terminate => switch (token.tag) {
                     .left_bracket => self.openAttributes(token),
-                    .edge_undirected, .edge_directed => return self.unsupportedAt(token.span, .edge_chain),
-                    else => return self.finishPending(token, statementEndExpected(true), .statement_terminator),
+                    .edge_undirected, .edge_directed => {
+                        self.link_operator = if (token.tag == .edge_undirected) .undirected else .directed;
+                        self.link_operator_span = token.span;
+                        self.state = .chain_right;
+                    },
+                    else => {
+                        var expected = statementEndExpected(true);
+                        expected.undirected_operator = true;
+                        expected.directed_operator = true;
+                        return self.finishPending(token, expected, .statement_terminator);
+                    },
+                },
+                .chain_right => switch (token.tag) {
+                    .identifier => {
+                        self.pending = .edge_chain;
+                        self.state = .edge_terminate;
+                        return self.schedule(.edge_link, token);
+                    },
+                    .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph),
+                    else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
                 },
                 .assignment_value => {
                     if (token.tag != .identifier)
@@ -542,6 +564,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             const action: Action = switch (self.pending) {
                 .node => .node,
                 .edge => .edge,
+                .edge_chain => .edge_chain,
                 .attributes => .attribute_statement,
             };
             self.state = .completed;
@@ -621,6 +644,17 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                     .operator_span = self.operator_span,
                     .right = self.right,
                 }) catch |err| return self.sinkFailure(err),
+                .edge_link => self.events.edgeLink(.{
+                    .operator = self.link_operator,
+                    .operator_span = self.link_operator_span,
+                    .right = token.span,
+                }) catch |err| return self.sinkFailure(err),
+                .edge_chain => self.events.edgeChainStatement(.{
+                    .left = self.left,
+                    .operator = self.operator,
+                    .operator_span = self.operator_span,
+                    .right = self.right,
+                }) catch |err| return self.sinkFailure(err),
                 .attribute_statement => self.events.attributeStatement(.{
                     .target = self.attribute_target,
                     .keyword_span = self.left,
@@ -633,13 +667,13 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 },
             }
             if (metered) switch (action) {
-                .node, .edge, .attribute_statement => self.work.completed_statements += 1,
+                .node, .edge, .edge_chain, .attribute_statement => self.work.completed_statements += 1,
                 .assignment => {
                     self.work.completed_statements += 1;
                     self.work.completed_pairs += 1;
                 },
                 .attribute => self.work.completed_pairs += 1,
-                .begin, .commit => {},
+                .begin, .commit, .edge_link => {},
             };
             return null;
         }
@@ -769,6 +803,14 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 
 const Recording = syntax_event.RecordingSink(16);
 const Bag = diagnostic.FixedBag(4);
+
+test "chain dispatch failures preserve budget accounting and terminal cleanup" {
+    const source = "digraph {a->b->c->d[x=1] z->q->r}";
+    const total = try checkBudgetPartition(source, &.{1}, .{}, null, false);
+    try expectEqual(total, try checkBudgetPartition(source, &.{ 0, 3, 17 }, .{}, null, false));
+    // begin, two links, attribute, owner, link, owner, commit.
+    for (0..8) |at| _ = try checkBudgetPartition(source, &.{ 0, 1, 5 }, .{}, at, false);
+}
 
 const CancellationProbe = struct {
     flag: bool = false,
@@ -910,7 +952,7 @@ const BudgetSink = struct {
         self.records[self.len] = event;
         self.len += 1;
         switch (event) {
-            .node_statement, .edge_statement, .attribute_statement => self.statements += 1,
+            .node_statement, .edge_statement, .edge_chain_statement, .attribute_statement => self.statements += 1,
             .assignment => {
                 self.statements += 1;
                 self.pairs += 1;
@@ -927,6 +969,12 @@ const BudgetSink = struct {
     }
     pub fn edgeStatement(self: *@This(), event: syntax_event.EdgeStatement) !void {
         try self.record(.{ .edge_statement = event });
+    }
+    pub fn edgeLink(self: *@This(), event: syntax_event.EdgeLink) !void {
+        try self.record(.{ .edge_link = event });
+    }
+    pub fn edgeChainStatement(self: *@This(), event: syntax_event.EdgeStatement) !void {
+        try self.record(.{ .edge_chain_statement = event });
     }
     pub fn attributeStatement(self: *@This(), event: syntax_event.AttributeStatement) !void {
         try self.record(.{ .attribute_statement = event });
@@ -1125,7 +1173,7 @@ test "ordinary parser compiles out pending work and audit storage" {
     try expect(@FieldType(Ordinary, "work") == void);
     try expect(@FieldType(Ordinary, "audit") == void);
     try expect(@FieldType(lex.Scanner(false, false), "source_frontier") == void);
-    try expect(@sizeOf(Ordinary) <= 536);
+    try expect(@sizeOf(Ordinary) <= 576);
 }
 
 test "unaudited metered driver charges empty document exactly and runs to completion" {
@@ -1483,7 +1531,6 @@ test "deferred keywords in illegal positions are syntax errors, not unsupported"
 
 test "recognized-but-deferred constructs mid-document abort as unsupported" {
     inline for (.{
-        .{ "graph { a -- b -- c; }", diagnostic.Feature.edge_chain },
         .{ "graph { a -- { b }; }", diagnostic.Feature.subgraph },
         .{ "graph { a -- subgraph s; }", diagnostic.Feature.subgraph },
         .{ "graph { { a } }", diagnostic.Feature.subgraph },
@@ -1579,11 +1626,11 @@ test "failing beginDocument still receives the cleanup abort" {
 
 test "parser state stays small (R-PERF-005 parser-state-size regression guard)" {
     // The whole machine — lexer, continuation state, options, bookkeeping —
-    // must remain a small constant, independent of input size. 536 B is the
+    // must remain a small constant, independent of input size. 576 B is the
     // current measured value plus headroom (see docs/BASELINES.md), not an
     // architectural budget: if a slice legitimately grows the state, measure,
     // update the baseline doc, and raise this bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 536);
+    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 576);
 }
 
 test "step is terminal-idempotent after success and after failure" {

@@ -26,6 +26,10 @@ pub fn main(init: std.process.Init) !void {
     var statements = document.statements();
     while (statements.next()) |statement| {
         const range: dot.AttributeRange = switch (statement) {
+            .edge_chain => |chain| blk: {
+                try writer.print("chain {s}: {d} edges\n", .{ document.text(chain.first.left), @as(usize, chain.links.len) + 1 });
+                break :blk chain.first.attributes;
+            },
             .assignment => |assignment| {
                 try writer.print("assignment {s} = {s}\n", .{ document.text(assignment.key), document.text(assignment.value) });
                 continue;

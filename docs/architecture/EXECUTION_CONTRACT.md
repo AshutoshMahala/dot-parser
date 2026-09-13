@@ -65,6 +65,7 @@ statement/pair counts; no event queue, allocation, or source-sized copy is added
 | Grammar | One fixed-size transition over the saved token; optionally schedule an action |
 | Dispatch | Attempt one normal callback, including begin and commit; update accepted counts only on success |
 | Lookahead replay | After an owner event, a separate grammar credit processes its saved terminator/next-statement token without rescanning |
+| Chain continuation | Save one operator, accept its endpoint in a grammar step, then attempt one separately charged link callback; no chain-sized loop or temporary list |
 | Terminal | Return the latched result with zero work and no repeated callbacks |
 
 Zero credits leave normal work untouched. One-credit calls can yield before
@@ -73,6 +74,12 @@ terminal. Failures still perform at most one diagnostic attempt and one cleanup
 abort, even when discovered on the last credit. Callback/allocator work remains
 excluded as specified below. Progress counts accepted syntax events, not
 statement/pair reservations or semantically validated output.
+
+Identifier-only chains retain the first edge in machine state. Continuations
+stream directly into the link pool; the chain-owner callback consumes their
+compact range and all pending attributes. Only that accepted owner increments
+completed statements. Cancellation/abort discards staged links with the other
+pools; validation and the public pairwise edge iterator remain unbudgeted.
 
 Tests compare budget partitions with ordinary parsing, independently count
 source examinations, grammar transitions and callback attempts, and cover every

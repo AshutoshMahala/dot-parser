@@ -23,10 +23,16 @@ are for humans and tooling.
 
 `storage_failure` carries its own cause: `.out_of_memory` (allocator),
 `.pool_exhausted` (a fixed pool filled — the diagnostic names the pool and
-its capacity), `.statement_index_overflow`, `.attribute_index_overflow`, `.source_offset_overflow`
+its capacity), `.statement_index_overflow`, `.attribute_index_overflow`,
+`.edge_link_index_overflow`, `.source_offset_overflow`
 (source beyond the 4 GiB retained-range limit), or `.internal` (never
 expected; a bug report is welcome). `.internal` currently has no corresponding
 diagnostic; inspect the outcome even when the diagnostic bag is empty.
+
+Chain storage failures use the existing WDP capacity diagnostic, with typed
+resources `edge_chain_pool`, `edge_link_pool`, or `edge_link_index`.
+A missing chain endpoint remains a syntax error, not a capacity failure.
+The shipped chain feature no longer appears in `diagnostic.Feature`.
 
 ## Sessions: yield and cancellation
 

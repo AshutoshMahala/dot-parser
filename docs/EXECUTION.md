@@ -57,6 +57,8 @@ unbudgeted operations. There is no OS clock, scheduler, thread, or hidden worker
   It is monotonic but is not a count of accepted source bytes.
 - `completed_statements` and `completed_pairs`: accepted syntax events, not
   reservations. A yielded attribute list can have pairs but no completed owner.
+  A chain counts as one statement when its owner is accepted, not once per
+  operator. Continuations can be staged before this count changes.
 - `work_used`: credits spent in this call, not a lifetime total.
 - `outcome`: null while yielded, otherwise the terminal ParseOutcome.
 - `diagnostic_delivery`: whether failure diagnostics reached their sink.
@@ -65,6 +67,11 @@ unbudgeted operations. There is no OS clock, scheduler, thread, or hidden worker
 the document exists only on success. Progress counts can describe output later
 discarded on failure or cancellation. No partial document is published.
 Successful parsing does not imply semantic validation succeeded.
+
+Each chain continuation gets its own grammar transition and event credit;
+there is no unbudgeted loop over a whole chain inside parsing. Fixed pools
+bound chain owners and continuation records separately. Neither
+`max_statements` nor a per-call budget is a total chain-length limit.
 
 `run()` finishes the remaining parse without returning intermediate yields.
 Repeated advance, run, cancel, and result calls after termination preserve

@@ -30,8 +30,8 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | Whitespace / line endings | **Supported** | Space, tab; LF, CRLF, and standalone CR each end a line |
 | Comments (`//`, `/* */`, `#`) | **Supported** | Skipped without retention; see compatibility notes below |
 | Subgraphs (`{ … }`, `subgraph s { … }`) | Deferred | Feature `subgraph`, including subgraphs as edge endpoints |
-| Edge chains (`a -- b -- c`) | Deferred | Feature `edge_chain` |
-| Attribute lists (`[color=red]`) | **Supported** | Attached to nodes or single edges; adjacent groups flattened, duplicates retained |
+| Edge chains (`a -- b -- c`) | **Supported** | Identifier endpoints; one source statement with ordered continuation links |
+| Attribute lists (`[color=red]`) | **Supported** | Attached to nodes, edges or whole chains; adjacent groups flattened, duplicates retained |
 | Attribute statements (`graph`/`node`/`edge` + `[…]`) | **Supported** | Target and ordered pairs retained; defaults are not applied |
 | ID assignments (`rankdir = LR`) | **Supported** | Separate assignment statements, retained as written |
 | HTML identifiers (`<…>`) | Deferred | Feature `html_identifier` |
@@ -114,9 +114,9 @@ escaped quotes/backslashes, and control bytes. A deliberate difference in the
 checked 16.0.0 behavior: it removes escaped LF but preserves escaped CRLF/CR;
 this library removes all three, consistently with its physical-line policy.
 
-Token-length/work budgets remain future work. Fixed output pools limit retained
-statements, not the length of an individual lexical scan or the source retained
-by a borrowed document.
+Optional fixed-session work budgets cover lexical examinations, grammar transitions,
+and event attempts; see [bounded execution](EXECUTION.md). Token-length limits
+remain future work. Output pools bound retained records, not source length.
 
 ## Basic attribute rules
 
@@ -135,8 +135,8 @@ statements require at least one bracket group. A standalone assignment cannot
 take a following list; an edge operator cannot follow a node's attribute list.
 
 No default propagation, last-value selection, layout-attribute validation,
-external resource loading or engine-specific interpretation occurs. Subgraphs,
-edge chains and ports remain deferred, including when they would own attributes.
+external resource loading or engine-specific interpretation occurs. Subgraphs
+and ports remain deferred, including when they would own attributes.
 HTML-like values and non-ASCII bare values retain their deferred boundary.
 
 Incomplete lists use the existing parser syntax diagnostics. EOF inside a list
@@ -148,6 +148,27 @@ Eighteen manual acceptance/rejection probes against local Graphviz 16.0.0 on
 quoted keys, malformed pairs and attachment boundaries. These are supplemental
 checks, not the pending pinned differential harness or a semantic comparison.
 See [ownership](OWNERSHIP.md#attributes-and-memory) for pool layout and limits.
+
+## Edge chains
+
+`a -> b -> c [color=red]` is one `.edge_chain` statement. All supported
+identifier forms and intervening comments work at each endpoint. The written
+operators are retained independently; validation reports every mismatched
+operator in source order. Missing endpoints are syntax errors. Subgraph endpoints
+and ports remain unsupported, including inside a chain.
+
+Attributes follow the entire chain; `a -> b [x=1] -> c` is invalid. Adjacent
+attribute groups retain the existing flattening policy. A chain does not
+synthesize nodes, resolve defaults, or enforce `strict` duplicate-edge semantics.
+
+`max_statements` counts a chain once. It does not cap its number of links.
+Fixed storage exposes `edge_chains` and `edge_links` capacities; links count
+only continuations after the first edge. Allocator-backed callers can provide
+the same fields as reservation hints, not hard limits. Work budgets bound each
+advance, not the total parse; the caller may stop via cancellation.
+
+See [chain ownership and traversal](OWNERSHIP.md#edge-chains-and-memory) and
+[the runnable example](../examples/edge_chains.zig).
 
 ## How this page stays honest
 

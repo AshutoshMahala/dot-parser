@@ -298,6 +298,45 @@ calls, pool reuse/exhaustion, and megabyte inputs. No parser storage allocation
 is introduced. The lexer implementation now lives in `lexer.zig`, with its
 public namespace selected in `root.zig`.
 
+## Identifier-only edge chains (2026-09-13)
+
+Zig 0.16.0 / aarch64-macOS. Retained element sizes are regression-tested:
+`StatementId` 8 B, ordinary `EdgeStatement` 36 B (unchanged),
+`EdgeChainStatement` 44 B, and continuation `EdgeLink` 20 B. A chain of
+N edges uses one owner, N-1 continuations and one order entry:
+`52 + 20 * (N - 1)` bytes, excluding attributes and borrowed source.
+There is no temporary chain list or eager expansion.
+
+The ordinary parser machine is now 560 B, up from 520 B for the extra saved
+continuation operator/span; its regression guard is 576 B. The new pool slices,
+lengths and cached document metadata add fixed overhead even when chains are
+unused. Pool elements allocate nothing when unused and unhinted.
+
+`zig build bench-session -Doptimize=ReleaseFast` on the unchanged 200,000-node
+fixture reported this single-run snapshot (not a chain-throughput benchmark):
+
+| Metering | Cancellation | Session | Parser machine | Median |
+| --- | --- | --- | --- | --- |
+| Off | Off | 1,064 B | 560 B | 5.07 ms |
+| Off | On | 1,136 B | 632 B | 8.73 ms |
+| On | Off | 1,136 B | 632 B | 7.16 ms |
+| On | On | 1,160 B | 656 B | 9.06 ms |
+
+The ordinary parse+validate smoke benchmark retained 6,800,000 B
+(34 B/statement), with arena backing capacities unchanged at 37,620,470 B
+default and 8,400,148 B hinted. Sequential pre-slice / post-slice invocations
+at different build paths measured 12.80 / 12.83 ms default and
+10.98 / 11.31 ms hinted. These overlapping sample ranges do not establish a
+speedup or regression. Edge traversal merges only the edge and chain pools,
+not unrelated node/attribute records.
+
+Verification: 227 tests in Debug and ReleaseSafe, seven runnable examples,
+and eight consumed freestanding execution-profile builds. New coverage includes
+4,096-edge chains, partition equivalence, cancellation boundaries, every chain
+callback failure, typed pool/index exhaustion, allocation-failure injection,
+truncated prefixes, generated chains and source-order validation. The
+freestanding check remains a compile check, not an on-device measurement.
+
 ## Binary size
 
 The figures in this section are the historical post-renderer snapshot; newer

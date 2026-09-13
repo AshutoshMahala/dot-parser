@@ -56,6 +56,7 @@ pub fn build(b: *std.Build) void {
         "identifiers",
         "attributes",
         "bounded",
+        "edge_chains",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{

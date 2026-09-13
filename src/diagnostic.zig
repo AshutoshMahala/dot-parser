@@ -481,7 +481,6 @@ pub const Feature = enum {
     html_identifier,
     non_ascii_identifier,
     port_or_compass,
-    edge_chain,
 
     /// Canonical English display name. Renderers may localize instead.
     pub fn name(self: Feature) []const u8 {
@@ -490,7 +489,6 @@ pub const Feature = enum {
             .html_identifier => "HTML-like identifier",
             .non_ascii_identifier => "non-ASCII identifier",
             .port_or_compass => "port or compass point",
-            .edge_chain => "edge chain",
         };
     }
 };
@@ -506,6 +504,9 @@ pub const Capacity = struct {
         statement_pool,
         node_pool,
         edge_pool,
+        edge_chain_pool,
+        edge_link_pool,
+        edge_link_index,
         /// The document's statement index width.
         statement_index,
         /// The 4 GiB retained source-range domain.
@@ -522,6 +523,9 @@ pub const Capacity = struct {
                 .statement_pool => "statement pool",
                 .node_pool => "node pool",
                 .edge_pool => "edge pool",
+                .edge_chain_pool => "edge chain pool",
+                .edge_link_pool => "edge link pool",
+                .edge_link_index => "edge link index",
                 .statement_index => "statement index",
                 .source_range => "source range",
                 .attributes => "attribute",

@@ -85,9 +85,10 @@ pub fn validate(
     var emitted: usize = 0;
     var delivery: diagnostic.Delivery = .complete;
 
-    // The edge pool is in source order, so diagnostics come out in source
-    // order and the position cursor advances monotonically (one shared scan).
-    for (document.edges) |edge| {
+    // Merge ordinary edges and chain links in source order so the position
+    // cursor advances monotonically. The iterator allocates nothing.
+    var edges = document.edgeIterator();
+    while (edges.next()) |edge| {
         if (edge.operator == expected) continue;
 
         if (declaration == null) {

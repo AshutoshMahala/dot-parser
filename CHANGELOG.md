@@ -6,6 +6,15 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Support identifier-only edge chains with whole-chain attributes, preserving
+  one source statement and every written operator. Add `.edge_chain` traversal,
+  separate chain/link pools, checked link slices and an allocation-free pairwise
+  edge iterator. Single-edge records remain unchanged; validation merges both
+  forms in source order. Continuation events obey work budgets and cancellation.
+  Remove the shipped `Feature.edge_chain` detector; fixed callers reserve
+  `edge_chains`/`edge_links` capacity. Exhaustive statement switches must handle
+  the new variant; no compatibility shim is retained.
+
 - Add `BoundedSession` and compile-time-configurable `FixedSession`: fixed-pool
   parsing with progress snapshots, commit-only documents, zero-credit yielding,
   idempotent results, and explicit cancel/deinit/reset cleanup. No allocation or

@@ -7,6 +7,7 @@ const dot = @import("dot_parser");
 test {
     _ = @import("attributes.zig");
     _ = @import("sessions.zig");
+    _ = @import("edge_chains.zig");
 }
 
 const Rejecting = struct {
@@ -644,7 +645,6 @@ const UnsupportedEntry = struct {
 
 const unsupported_corpus = [_]UnsupportedEntry{
     .{ .name = "subgraph", .source = @embedFile("corpus/unsupported/subgraph.dot"), .feature = .subgraph },
-    .{ .name = "edge_chain", .source = @embedFile("corpus/unsupported/edge_chain.dot"), .feature = .edge_chain },
 };
 
 fn documentShape(document: *const dot.Document, buffer: []u8) []const u8 {
@@ -654,6 +654,7 @@ fn documentShape(document: *const dot.Document, buffer: []u8) []const u8 {
         buffer[length] = switch (statement) {
             .node => 'n',
             .edge => 'e',
+            .edge_chain => 'c',
             .assignment => 'a',
             .attribute_statement => 'd',
         };
@@ -689,6 +690,7 @@ test "valid corpus parses to the expected statements, deterministically" {
             const actual = switch (document.statementAt(0).?) {
                 .node => |node| document.text(node.identifier),
                 .edge => |edge| document.text(edge.left),
+                .edge_chain => |chain| document.text(chain.first.left),
                 .assignment => |assignment| document.text(assignment.key),
                 .attribute_statement => |statement| document.text(statement.keyword),
             };

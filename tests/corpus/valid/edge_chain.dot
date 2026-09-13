@@ -1,0 +1,7 @@
+digraph {
+  lone;
+  a -> "b"+"B" /* continuation */ -> -.5 -> d [color=red][color=blue];
+  x -> y;
+  p -> q -> r [weight=2];
+  rankdir=LR;
+}

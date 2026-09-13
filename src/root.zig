@@ -70,6 +70,9 @@ pub const Statement = syntax_impl.Statement;
 pub const StatementId = syntax_impl.StatementId;
 pub const NodeStatement = syntax_impl.NodeStatement;
 pub const EdgeStatement = syntax_impl.EdgeStatement;
+pub const EdgeChainStatement = syntax_impl.EdgeChainStatement;
+pub const EdgeLink = syntax_impl.EdgeLink;
+pub const EdgeLinkRange = syntax_impl.EdgeLinkRange;
 pub const Attribute = syntax_impl.Attribute;
 pub const AttributeRange = syntax_impl.AttributeRange;
 pub const AttributeTarget = syntax_impl.AttributeTarget;
@@ -115,6 +118,8 @@ pub const StorageFailure = enum {
     internal,
     /// Attribute-pool indices exceed the compact representation.
     attribute_index_overflow,
+    /// Continuation-link indices exceed the compact representation.
+    edge_link_index_overflow,
 };
 
 /// The public parse outcome. Diagnostics explaining failures travel through
@@ -234,6 +239,7 @@ fn storageFailure(err: anyerror) StorageFailure {
         error.PoolExhausted => .pool_exhausted,
         error.StatementIndexOverflow => .statement_index_overflow,
         error.AttributeIndexOverflow => .attribute_index_overflow,
+        error.EdgeLinkIndexOverflow => .edge_link_index_overflow,
         error.SourceOffsetOverflow => .source_offset_overflow,
         else => .internal,
     };
@@ -256,7 +262,7 @@ fn emitStorageDiagnostic(
             .code = .resource_memory_exhausted,
             .span = span,
         },
-        .pool_exhausted, .statement_index_overflow, .source_offset_overflow, .attribute_index_overflow => .{
+        .pool_exhausted, .statement_index_overflow, .source_offset_overflow, .attribute_index_overflow, .edge_link_index_overflow => .{
             .code = .resource_capacity_exhausted,
             .span = span,
             .details = if (info) |i|

@@ -85,10 +85,10 @@ derived on demand. Measured throughput and arena footprints live in
 
 ## Attributes and memory
 
-The document has six decomposed pools: `order`, `nodes`, `edges`,
-`attributes`, `assignments`, and `attribute_statements`. Freeing an owned
+The document has eight decomposed pools: `order`, `nodes`, `edges`,
+`edge_chains`, `edge_links`, `attributes`, `assignments`, and `attribute_statements`. Freeing an owned
 document remains a fixed number of pool releases, not a per-element walk.
-The three new pools allocate nothing when unused and unhinted. Node/edge
+Unused, unhinted pools allocate nothing. Node/edge
 records still pay for their compact attribute range in the current profile;
 compile-time syntax removal is not implemented yet.
 
@@ -125,6 +125,41 @@ Adjacent groups are flattened; duplicate keys and order are retained. Default
 resolution and effective-value maps belong in a separate consumer/pass.
 
 See [the runnable example](../examples/attributes.zig).
+
+## Edge chains and memory
+
+A single edge still occupies 36 bytes on the native target. A chain uses one
+44-byte `EdgeChainStatement` plus one 20-byte `EdgeLink` for each continuation
+after its first edge, and one 8-byte order entry. A chain of N edges therefore
+retains `52 + 20 * (N - 1)` bytes, excluding attributes and borrowed source.
+No endpoint strings or attribute pairs are copied.
+
+`chain.first` stores the first edge, including the whole chain's attribute range.
+`document.edgeLinkSlice(chain.links)` returns checked, ordered continuations:
+each stores its operator, operator source range, and right endpoint. Its left
+endpoint is the preceding right endpoint.
+
+```zig
+var storage: dot.FixedDocumentStorage(.{
+    .statements = 1, .edge_chains = 1, .edge_links = 2, .attributes = 1,
+}) = .{}; // Enough for a -> b -> c -> d [color=red].
+```
+
+The `edges` pool contains only single-edge statements; `edge_chains` contains
+chain owners. `document.statements()` preserves their written grouping.
+For engine adapters, `document.edgeIterator()` visits both ordinary edges and
+chain links in source order as by-value `EdgeStatement` views, sharing each
+chain's attribute range. It allocates nothing and does not materialize an
+expanded graph. Iteration and validation are separate, unbudgeted operations.
+
+Continuation events stream directly into the final link pool before their owner
+is committed. Yield retains staged data; cancel or failure discards it. The two
+new pool capacities default to zero, so fixed callers must reserve them to
+accept chains. Existing single-edge inputs need no extra pool space. Unused
+pools still add fixed metadata to document/builder/session structs; compile-time
+feature removal is not implemented.
+
+See [the runnable chain example](../examples/edge_chains.zig).
 
 ## Identifier values
 
