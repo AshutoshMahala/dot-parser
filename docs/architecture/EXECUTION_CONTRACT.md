@@ -1,6 +1,6 @@
 # Optional bounded execution contract
 
-Status: public driver design draft; internal metered scanning, grammar and dispatch implemented
+Status: implemented for fixed-storage sessions; experimental 0.x API
 
 Date: 2026-09-13
 
@@ -8,18 +8,18 @@ Requirements: R-MOD-009–013, R-MEM-001/003, R-SEC-002/003, R-CON-002
 
 Related decision: [Q27](../internal/OpenQuestions.md)
 
-The existing run-to-completion APIs remain the default. This document specifies
-the proposed public execution slice and its implemented internal groundwork.
-No public bounded API ships yet. Exact public type and function names remain to
-be selected. Do not add
-placeholder outcomes or compatibility scaffolding before behavior is implemented.
+The existing run-to-completion APIs remain the default. `BoundedSession` now
+provides fixed-storage budgeted parsing; `FixedSession` independently selects
+metering and cancellation at compile time. See the [user guide](../EXECUTION.md)
+and [runnable example](../../examples/bounded.zig). Public event sinks, allocator-
+backed bounded sessions, streaming input and bounded validation remain deferred.
 
 ### Implemented groundwork: lexical scanning
 
-`src/lexer_machine.zig` supplies the same resumable scanner to the public
-`src/lexer.zig` facade and the private metered parser. Each lexical credit
-performs one source-byte or EOF
-examination, with cached-byte classification and incremental position tracking.
+`src/lexer.zig` contains the single scanner implementation. `root.zig` exposes
+only Token, Result and ordinary Lexer; the parser imports internal scan helpers.
+Each lexical credit performs one source-byte or EOF examination, with cached-byte
+classification and incremental position tracking.
 Returning a lexical token is not a syntax-sink event; grammar and event dispatch
 are separately charged by the parser.
 
@@ -42,7 +42,9 @@ Its driver enters the known trivia state directly: ordinary `next()` cannot
 yield, and every nonterminal token completion restores that state. The metered
 specialization still dispatches from saved state, even for an unbounded `next()`
 call after a yield. Both paths retain the same microsteps and source-fetch site.
-Cancellation hooks and a public bounded parser are **not** implemented yet.
+Fixed-storage sessions expose bounded parsing and opt-in cancellation. The
+cancellable driver uses one-examination scan calls so it can poll at each safe
+point; these calls resume saved state even when metering is disabled.
 
 The driver materializes completed lexical results at one shared exit rather
 than within each compile-time-expanded state branch. An explicit completion
@@ -77,7 +79,14 @@ source examinations, grammar transitions and callback attempts, and cover every
 prefix, all callback failures, refused diagnostics, output limits, arbitrary
 bytes and megabyte inputs. The ordinary specialization compiles out pending-work
 and audit fields and dispatches immediately. Neither path duplicates the grammar.
-Fixed-storage session ownership, cancellation and the public driver remain next.
+Fixed-storage sessions own their builder and machine by value, rebinding the
+builder pointer before driving so moves between calls cannot leave self-pointers
+dangling. A cached public terminal result prevents repeated storage diagnostics
+or document handoff. No pool view is exposed before commit.
+
+`cancel()` and `deinit()` terminate unfinished work without a positive budget.
+`reset()` first terminates old work, then reuses the pools; previous document
+views must be retired. Aborted pool bytes are not erased, only logically discarded.
 
 ## 1. Scope and optionality
 
@@ -215,7 +224,8 @@ depend on supplying another positive work budget.
 Expose a small by-value snapshot: current phase, source progress, completed
 statement count, completed key/value-pair count, and work used in this call.
 
-Source progress is the monotonic high-water byte offset examined by the scanner.
+Source progress is one past the highest byte offset examined by the scanner,
+initialized to zero. EOF costs work but does not advance this monotonic frontier.
 Call it `source_frontier` rather than implying that every examined byte has
 already been accepted into a token or statement. It can include lookahead and
 an incomplete lexical construct. This sharpens the earlier “bytes consumed”
@@ -236,7 +246,7 @@ No numeric accounting stability across versions is promised.
 
 ## 5. Acceptance tests and delivery order
 
-Before exposing a public bounded driver:
+Acceptance gates for the fixed-storage driver (retain when extending it):
 
 1. **Accounting audit:** enumerate every input-dependent loop and callout.
    Instrument microsteps and actual source examinations independently; verify
@@ -264,14 +274,14 @@ Before exposing a public bounded driver:
 8. **Portability:** compile consumed fixed-storage paths for a freestanding
    target, with no core clock, thread, signal or atomic dependency.
 
-Implementation order: resumable metered lexer → metered grammar/event dispatch
-→ fixed-storage bounded document session → cancellation and lifecycle tests →
-public API and usage examples. Cancellation safe points must be designed into
-the lexer/driver from the start even if the hook is wired later. A smaller
-development fixture is useful, but no public “bounded parser” claim may ship
-while any supported lexical form still performs unbounded work in one call.
+Implemented delivery: resumable scanning → metered grammar/event dispatch →
+fixed-storage session → cancellation/lifecycle handling → public API/examples.
+The public surface is `BoundedSession`, `FixedSession(ExecutionFeatures)`,
+`SessionProgress`, `ExecutionPhase`, and `Cancellation`. Cancellation hooks
+are borrowed context/predicate pairs, not OS tokens or synchronization primitives.
+All source scans remain resumable; no supported lexical form requires a minimum
+budget greater than one.
 
-Open implementation details: public naming, cancellation-hook representation,
-exact mapping of code paths to microsteps, and acceptable measured overhead.
-This draft defines their constraints; it does not authorize implementation of
-additional syntax, recovery, streaming input, total-work limits or scheduling.
+Further syntax, recovery, public pull sinks, streaming input, total-work limits,
+scheduling and bounded validation are outside this contract's implemented scope.
+Measured optionality and callout costs are recorded in [baselines](../BASELINES.md).

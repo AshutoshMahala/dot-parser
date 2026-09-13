@@ -133,6 +133,7 @@ pub const EdgeStatement = struct {
 /// never through this enum (R-DIAG-003). Grows in later slices
 /// (cancellation, configured limits, …).
 pub const AbortReason = enum {
+    cancelled,
     invalid_syntax,
     unsupported_feature,
     resource_exhausted,

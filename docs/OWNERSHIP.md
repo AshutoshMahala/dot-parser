@@ -13,6 +13,7 @@ each memory strategy releases it.
 | Document pools (`parseBorrowed`, `parseAndValidate`) | The returned result | Until `result.deinit(allocator)` | `deinit` with the same allocator |
 | Document pools (`parseBorrowedIn`) | Caller (your slices / `FixedDocumentStorage`) | While the document is used | Reuse or discard the storage — there is nothing to free |
 | Diagnostic bag / sink | Caller | Caller-defined | Depends on the bag's storage (a `FixedDiagnosticBag` is a plain value) |
+| Fixed session and hook contexts | Caller | Throughout active parsing/yields | `session.deinit()` cleans up unfinished work; frees no pools |
 
 Two rules fall out of this:
 
@@ -59,6 +60,19 @@ const parsed = dot.parseBorrowedIn(source, storage.storage(), bag.sink(), .{});
 yours. When a pool is too small the parse reports
 `storage_failure: .pool_exhausted` with a diagnostic naming the exhausted
 pool and its capacity (see [OUTCOMES.md](OUTCOMES.md)).
+
+## Fixed-session lifetime
+
+Fixed sessions borrow the same pools as `parseBorrowedIn`. They retain lexical,
+grammar and dispatch continuation plus a cached terminal result, but no extra
+source or output copies. Source, pools and hook contexts must survive yields.
+Do not inspect or mutate pools while active. Moving a session between calls is
+supported; duplicating a live session or reentering it is not.
+
+`cancel()`/`deinit()` terminate unfinished parsing without freeing caller storage.
+`reset` cancels unfinished work and reuses those pools, invalidating prior
+document views. Aborted storage is logically discarded, not wiped. See
+[bounded execution](EXECUTION.md) for the API and detailed lifecycle.
 
 ## Costs
 

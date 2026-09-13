@@ -239,6 +239,65 @@ all five examples run, and consumed ordinary/metered parser probes compile for
 RISC-V32 and Wasm32 freestanding. Tests explicitly check the ordinary entry
 invariant and resuming a metered scanner through unbounded `next()`.
 
+## Public fixed sessions and cancellation (2026-09-13)
+
+`zig build bench-session -Doptimize=ReleaseFast` compares the four independently
+selected execution combinations. The fixture is 200,000 `a;` node statements
+(400,008 bytes); source and fixed pools are allocated outside the timer. Metered
+variants advance in 256-credit calls. The cancellation fixture increments a poll
+counter and never requests cancellation, so its callout cost is included here.
+Two invocations, each with nine measured rounds after two warm-ups, reported:
+
+| Metering | Cancellation | Native session | Native parser machine | Median range |
+| --- | --- | --- | --- | --- |
+| Off | Off | 936 B | 520 B | 5.06–5.52 ms |
+| Off | On | 1,008 B | 592 B | 8.41–8.81 ms |
+| On | Off | 1,008 B | 592 B | 6.86–7.21 ms |
+| On | On | 1,032 B | 616 B | 8.45–8.86 ms |
+
+Session storage includes its fixed builder and cached terminal result, but not
+source, caller pools, diagnostic bag, hook context, or transient call stack.
+The ordinary parser remains 520 B. Cancellation-only execution needs saved
+token/action state for safe points, but has no metering/frontier counters.
+Disabled hook fields have type `void`; the RISC-V object symbol table contains
+the probe request predicate only in cancellation-enabled builds.
+
+Cancellation is deliberately not free: it polls between individual lexical
+examinations as well as grammar and dispatch steps. The current implementation
+uses one-examination scanner calls for that path. Larger budgets cannot remove
+this polling cost. Uncancellable sessions retain bulk scanner driving and
+ordinary one-shot parsing retains its immediate fast path.
+
+`zig build check-freestanding` emits eight consumed ReleaseSmall objects from
+`tests/freestanding_session.zig`, one per architecture/feature combination:
+
+| Metering / cancellation | RISC-V32 object | Wasm32 object |
+| --- | --- | --- |
+| Off / off | 17,852 B | 19,921 B |
+| Off / on | 18,108 B | 20,641 B |
+| On / off | 17,928 B | 20,756 B |
+| On / on | 18,304 B | 21,088 B |
+
+These are **object-file totals**, including metadata, relocations, probe code
+and helper references, not linked firmware flash or peak RAM. RISC-V objects
+still reference compiler memory helpers (`memcpy`/`memset`); the check does not
+link a board runtime or execute hardware. The source contains no core clock,
+thread, signal or atomic dependency.
+
+The hosted ReleaseSmall diagnostics example is 202,880 B and the new bounded
+example is 184,344 B; these select different renderer/runtime paths and are not
+comparable core-size measurements. A one-shot end-to-end smoke run measured
+12.17 ms default / 10.50 ms hinted versus 12.05 / 10.41 ms on the preceding
+checkout at another build path. That comparison is within normal variation and
+does not establish an ordinary-path regression or improvement.
+
+All 215 tests pass in Debug and ReleaseSafe; all six examples run. Coverage
+includes budget partitions, every lexical cancellation state, callback/diagnostic
+failure precedence, commit precedence, zero-credit cleanup, movement between
+calls, pool reuse/exhaustion, and megabyte inputs. No parser storage allocation
+is introduced. The lexer implementation now lives in `lexer.zig`, with its
+public namespace selected in `root.zig`.
+
 ## Binary size
 
 The figures in this section are the historical post-renderer snapshot; newer

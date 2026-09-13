@@ -55,6 +55,7 @@ pub fn build(b: *std.Build) void {
         "diagnostics_demo",
         "identifiers",
         "attributes",
+        "bounded",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -101,4 +102,48 @@ pub fn build(b: *std.Build) void {
     });
     b.step("bench-lexer", "Run lexical throughput fixtures")
         .dependOn(&b.addRunArtifact(lexer_bench).step);
+
+    const session_bench = b.addExecutable(.{
+        .name = "session_throughput",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/session.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "dot_parser", .module = mod }},
+        }),
+    });
+    b.step("bench-session", "Compare fixed-session execution policies")
+        .dependOn(&b.addRunArtifact(session_bench).step);
+
+    const freestanding = b.step("check-freestanding", "Compile consumed session profiles for RISC-V32 and Wasm32");
+    for ([_]std.Target.Cpu.Arch{ .riscv32, .wasm32 }) |arch| {
+        const portable_target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .freestanding });
+        const portable = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = portable_target,
+            .optimize = .ReleaseSmall,
+        });
+        for ([_]bool{ false, true }) |metering| {
+            for ([_]bool{ false, true }) |cancellation| {
+                const options = b.addOptions();
+                options.addOption(bool, "metering", metering);
+                options.addOption(bool, "cancellation", cancellation);
+                const probe = b.addObject(.{
+                    .name = b.fmt("session_{s}_m{d}_c{d}", .{ @tagName(arch), @intFromBool(metering), @intFromBool(cancellation) }),
+                    .root_module = b.createModule(.{
+                        .root_source_file = b.path("tests/freestanding_session.zig"),
+                        .target = portable_target,
+                        .optimize = .ReleaseSmall,
+                        .imports = &.{
+                            .{ .name = "dot_parser", .module = portable },
+                            .{ .name = "execution_features", .module = options.createModule() },
+                        },
+                    }),
+                });
+                // Force object emission, not just semantic analysis of exports.
+                _ = probe.getEmittedBin();
+                freestanding.dependOn(&probe.step);
+            }
+        }
+    }
 }

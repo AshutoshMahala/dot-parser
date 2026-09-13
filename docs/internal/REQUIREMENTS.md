@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-09-12
+Original draft: 2026-07-13 · Last amended: 2026-09-13
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -301,20 +301,20 @@ excludable when their binary-size cost is material.
 Each driver must state exactly what its budget bounds. A token or statement
 count alone does not bound bytes scanned: trivia or a single lexeme may be
 arbitrarily long. A strict byte/work-bounded driver must be able to yield within
-lexical scanning and resume without restarting the construct. The current
-private parser's token-at-a-time stepping is groundwork, not a public guarantee
-of bounded work or cancellation latency (Q27).
+lexical scanning and resume without restarting the construct. Token-at-a-time
+stepping alone is not a guarantee of bounded work or cancellation latency (Q27).
 
-The agreed next direction is optional deterministic work metering, distinct
+The implemented fixed-storage direction is optional deterministic work metering, distinct
 from source progress, with resumable yield and terminal cancellation. The
-[execution-contract draft](../architecture/EXECUTION_CONTRACT.md) proposes the
+[execution contract](../architecture/EXECUTION_CONTRACT.md) defines the
 microstep accounting, callback exclusions, cleanup rules, fixed-storage first
-slice, and acceptance tests. It is a design specification, not a shipped API.
-The internal scanner and parser now implement separately charged source
-examinations, grammar transitions and syntax-event attempts, with partition and
-failure-lifecycle tests. Pending work and progress counters compile out of the
-ordinary parser. The public parser still runs to completion; fixed-storage
-bounded sessions and cancellation are not implemented yet.
+slice, and acceptance tests; the corresponding session API is experimental 0.x.
+The scanner and parser implement separately charged source examinations, grammar
+transitions and syntax-event attempts, with partition and failure-lifecycle
+tests. `BoundedSession` exposes fixed-storage bounded parsing; `FixedSession`
+independently selects metering and cancellation. Pending work/progress and hook
+storage compile out when not needed. One-shot APIs remain unchanged. Public
+pull events, streaming input, total-work limits and bounded validation remain deferred.
 
 ### R-MOD-011: Active sinks have transactional lifecycle signals
 

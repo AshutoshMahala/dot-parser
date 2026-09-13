@@ -223,21 +223,18 @@ execution uses deterministic work units, with source progress reported
 separately. Yield preserves continuation/staged data without abort; cancellation
 is terminal. Keep the stage-based architecture and expose factual progress, not
 a whole-pipeline percentage.
-**Proposed execution contract:** [draft](../architecture/EXECUTION_CONTRACT.md)
+**Implemented execution contract:** [contract](../architecture/EXECUTION_CONTRACT.md)
 defines charged scan/grammar/dispatch microsteps, zero/one-credit behavior,
 callback exclusions and terminal cleanup, cancellation precedence, source
-frontier semantics, and acceptance tests. These operational details are a
-design proposal for the next fixed-storage slice, not current API behavior.
-**Still pending:** public API/hook shape, implementation mapping and audit of
-every input-dependent loop, measured optionality/overhead, and completion of
-the acceptance tests. The internal scanner/parser now have compile-time
-metering, saved lexical/grammar/dispatch continuations, separately charged
-source examinations, grammar transitions and event attempts, and partition and
-failure-lifecycle tests. The public parser remains run-to-completion; no public
-bounded session or cancellation driver ships yet. Ordinary-path costs and
-optional state are recorded in `docs/BASELINES.md`.
-*(R-MOD-010/R-MOD-013; current groundwork: `parser.Machine.advance`,
-`lexer_machine.Scanner`.)*
+frontier semantics, and acceptance tests. `BoundedSession` now provides public
+fixed-storage bounded parsing. `FixedSession` independently selects metering and
+cancellation; the hook is a borrowed context/non-failing predicate pair. Explicit
+cancel/deinit cleans up abandoned work, and reset reuses pools after cleanup.
+Partition, cancellation-boundary, failure-precedence, lifetime and freestanding
+checks accompany the API. Ordinary-path and optional costs are recorded in
+`docs/BASELINES.md`. Public pull events, streaming input, total-operation work
+limits and bounded validation remain outside this implemented slice.
+*(R-MOD-010/R-MOD-013; `root.FixedSession`, `parser.Machine`, `lexer.Scanner`.)*
 
 ---
 

@@ -53,14 +53,14 @@
 //! and pending-dispatch state. Each private `advance` credit buys one source
 //! examination, grammar transition, or normal callback attempt (R-MOD-010).
 //! The ordinary specialization shares the grammar with immediate callbacks;
-//! pending work and progress counters compile out. Cancellation and a public
-//! fixed-storage session remain future work.
+//! pending work and progress counters compile out. Fixed-storage sessions and
+//! optional cancellation are exposed through root.zig.
 
 const std = @import("std");
 const location = @import("location.zig");
 const diagnostic = @import("diagnostic.zig");
 const lex = @import("lexer.zig");
-const lex_machine = @import("lexer_machine.zig");
+const execution = @import("execution.zig");
 const syntax_event = @import("syntax_event.zig");
 
 pub const Options = struct {
@@ -70,7 +70,7 @@ pub const Options = struct {
     /// always performs one linear scan, so total work is bounded by input
     /// length — a whitespace-heavy body or a long identifier is still
     /// scanned once in full. The private metered driver does not change this
-    /// public run-to-completion API; cancellation is not implemented yet.
+    /// public run-to-completion API; cancellation is selected by session features.
     max_statements: usize = std.math.maxInt(usize),
     /// Total key/value pairs, including standalone assignments. Not a scan budget.
     max_attributes: usize = std.math.maxInt(usize),
@@ -81,6 +81,8 @@ pub const Options = struct {
 pub const Outcome = union(enum) {
     /// The document parsed completely and the event sink committed.
     success,
+    /// Explicit cancellation or an observed caller request; no diagnostic.
+    cancelled,
     /// The input is malformed in any DOT dialect.
     invalid_syntax,
     /// Parsing reached a recognized DOT construct that this profile cannot
@@ -105,7 +107,7 @@ pub const Result = struct {
 };
 
 // Internal execution vocabulary, not re-exported from root.zig.
-const Phase = enum { scan, grammar, dispatch, terminal };
+pub const Phase = enum { scan, grammar, dispatch, terminal };
 const Progress = struct {
     result: ?Result,
     work_used: usize,
@@ -135,7 +137,7 @@ pub fn parse(
         }
         syntax_event.assertSyntaxSink(info.pointer.child);
     }
-    var machine: Machine(EventsPtr, false, false) = .{
+    var machine: Machine(EventsPtr, false, false, false) = .{
         .tokens = lex.Lexer.init(source),
         .events = events,
         .diagnostics = diagnostics,
@@ -144,7 +146,7 @@ pub fn parse(
     return machine.runToCompletion();
 }
 
-fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool) type {
+pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool) type {
     return struct {
         const Self = @This();
 
@@ -154,16 +156,17 @@ fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: b
             action: Action = undefined,
             phase: Phase = .scan,
             replay: bool = false,
-            completed_statements: usize = 0,
-            completed_pairs: usize = 0,
+            completed_statements: if (metered) usize else void = if (metered) 0 else {},
+            completed_pairs: if (metered) usize else void = if (metered) 0 else {},
         };
         const Audit = struct {
             grammar: usize = 0,
             dispatch: usize = 0,
         };
 
-        tokens: lex_machine.Scanner(metered, audited),
-        work: if (metered) Work else void = if (metered) .{} else {},
+        tokens: lex.Scanner(metered, audited),
+        work: if (metered or cancellable) Work else void = if (metered or cancellable) .{} else {},
+        cancellation: if (cancellable) ?execution.Cancellation else void = if (cancellable) null else {},
         audit: if (audited) Audit else void = if (audited) .{} else {},
         events: EventsPtr,
         diagnostics: diagnostic.Sink,
@@ -233,11 +236,14 @@ fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: b
             after_attributes,
         };
 
-        fn runToCompletion(self: *Self) Result {
+        pub fn runToCompletion(self: *Self) Result {
             if (metered) {
                 while (true) {
                     if (self.advance(std.math.maxInt(usize)).result) |result| return result;
                 }
+            } else if (cancellable) {
+                _ = self.drive(false, 0);
+                return self.terminal.?;
             } else {
                 while (true) {
                     if (self.step()) |result| return result;
@@ -248,7 +254,7 @@ fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: b
         /// Ordinary immediate driver: one token, shared grammar, direct events.
         /// It has no pending-token storage, work counter or progress counters.
         fn step(self: *Self) ?Result {
-            if (metered) @compileError("metered machines use advance");
+            if (metered or cancellable) @compileError("controlled machines use drive");
             if (self.terminal) |result| return result;
             const token = switch (self.tokens.next()) {
                 .token => |token| token,
@@ -259,15 +265,32 @@ fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: b
 
         /// Private bounded driver. A credit buys a lexical examination, one
         /// grammar transition, or one normal event attempt; never two classes.
-        fn advance(self: *Self, budget: usize) Progress {
-            if (!metered) @compileError("advance requires a metered machine");
-            if (self.terminal != null) return self.progress(0);
-            var remaining = budget;
-            while (remaining != 0) {
+        pub fn advance(self: *Self, budget: usize) Progress {
+            if (!metered) @compileError("advance requires metering; use runToCompletion");
+            return self.progress(self.drive(true, budget));
+        }
+
+        fn drive(self: *Self, comptime bounded: bool, budget: usize) usize {
+            if (self.terminal != null) return 0;
+            var remaining = if (bounded) budget else {};
+            while (true) {
+                // The entry check also covers zero-budget calls. A normal
+                // callback's next boundary is polled, but a concrete failure
+                // or successful commit is latched before another poll.
+                if (cancellable) {
+                    if (self.cancellation) |hook| if (hook.requested()) {
+                        _ = self.cancel();
+                        break;
+                    };
+                }
+                if (bounded and remaining == 0) break;
                 switch (self.work.phase) {
                     .scan => {
-                        const scanned = lex_machine.advanceBounded(audited, &self.tokens, remaining);
-                        remaining -= scanned.work_used;
+                        const scanned = if (cancellable)
+                            lex.advanceOne(metered, audited, &self.tokens)
+                        else
+                            lex.advanceBounded(audited, &self.tokens, remaining);
+                        if (bounded) remaining -= scanned.work_used;
                         if (scanned.result) |result| switch (result) {
                             .token => |token| {
                                 self.work.token = token;
@@ -279,13 +302,13 @@ fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: b
                         };
                     },
                     .grammar => {
-                        remaining -= 1;
+                        if (bounded) remaining -= 1;
                         self.work.phase = .scan;
                         self.work.replay = false;
                         _ = self.transition(self.work.token);
                     },
                     .dispatch => {
-                        remaining -= 1;
+                        if (bounded) remaining -= 1;
                         _ = self.dispatch(self.work.action, self.work.token);
                         if (self.terminal == null)
                             self.work.phase = if (self.work.replay) .grammar else .scan;
@@ -294,7 +317,14 @@ fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: b
                 }
                 if (self.terminal != null) break;
             }
-            return self.progress(budget - remaining);
+            return if (bounded) budget - remaining else 0;
+        }
+
+        /// Explicit cleanup works even without a polling hook or positive budget.
+        pub fn cancel(self: *Self) Result {
+            if (self.terminal) |result| return result;
+            if (self.begun) self.events.abortDocument(.cancelled);
+            return self.finish(.cancelled);
         }
 
         fn progress(self: *const Self, used: usize) Progress {
@@ -515,7 +545,7 @@ fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: b
                 .attributes => .attribute_statement,
             };
             self.state = .completed;
-            if (metered) {
+            if (metered or cancellable) {
                 // Retain this lookahead until the owning statement is emitted.
                 // A separate grammar credit then processes it in .completed.
                 self.work.replay = true;
@@ -561,7 +591,7 @@ fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: b
         }
 
         fn schedule(self: *Self, action: Action, token: lex.Token) ?Result {
-            if (metered) {
+            if (metered or cancellable) {
                 self.work.action = action;
                 self.work.phase = .dispatch;
                 return null;
@@ -617,7 +647,7 @@ fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: b
         fn finish(self: *Self, outcome: Outcome) Result {
             const result: Result = .{ .outcome = outcome, .diagnostic_delivery = self.delivery };
             self.terminal = result;
-            if (metered) self.work.phase = .terminal;
+            if (metered or cancellable) self.work.phase = .terminal;
             return result;
         }
 
@@ -642,7 +672,7 @@ fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: b
                 .resource_exhausted => .resource_exhausted,
                 // `fail` only handles diagnostic-classified failures; event
                 // sink failures route through `sinkFailure` exclusively.
-                .sink_failure => unreachable,
+                .sink_failure, .cancelled => unreachable,
             });
         }
 
@@ -740,6 +770,126 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 const Recording = syntax_event.RecordingSink(16);
 const Bag = diagnostic.FixedBag(4);
 
+const CancellationProbe = struct {
+    flag: bool = false,
+    polls: usize = 0,
+    fn hook(self: *@This()) execution.Cancellation {
+        return .{ .context = self, .is_requested = poll };
+    }
+    fn poll(context: ?*anyopaque) bool {
+        const self: *@This() = @ptrCast(@alignCast(context.?));
+        self.polls += 1;
+        return self.flag;
+    }
+};
+
+test "cancellation during successful and failed events preserves terminal precedence" {
+    const source = "graph {a[x=1][y=2] node[] z=3 a--b[w=4]}";
+    inline for (.{ false, true }) |fails| for (0..9) |at| {
+        var request: CancellationProbe = .{};
+        var events: BudgetSink = .{ .cancel_flag = &request.flag, .cancel_at = at, .fail_at = if (fails) at else null };
+        var diags: BudgetDiagnostics = .{};
+        var machine: Machine(*BudgetSink, true, true, true) = .{
+            .tokens = lex.Scanner(true, true).init(source),
+            .events = &events,
+            .diagnostics = diags.sink(),
+            .options = .{},
+            .cancellation = request.hook(),
+        };
+        const progress = machine.advance(std.math.maxInt(usize));
+        const outcome = progress.result.?.outcome;
+        if (fails) {
+            try expect(outcome == .sink_failure);
+        } else if (at == 8) {
+            try expect(outcome == .success); // Commit wins immediately.
+        } else {
+            try expect(outcome == .cancelled);
+        }
+        try expectEqual(at + 1, events.attempts);
+        try expectEqual(@as(usize, if (!fails and at == 8) 0 else 1), events.aborts);
+        try expectEqual(@as(usize, 0), diags.attempts);
+        try expectEqual(progress.work_used, machine.tokens.examinations + machine.audit.grammar + machine.audit.dispatch);
+        try expect(request.polls <= progress.work_used + 1);
+        const polls = request.polls;
+        _ = machine.advance(0);
+        _ = machine.cancel();
+        try expectEqual(polls, request.polls);
+    };
+}
+
+test "cancellation can stop every lexical continuation and execution phase" {
+    const Scanner = lex.Scanner(true, true);
+    const State = @FieldType(Scanner, "state");
+    var states = std.EnumSet(State).initEmpty();
+    var phases = std.EnumSet(Phase).initEmpty();
+    const sources = [_][]const u8{
+        " \r\n#x\r//y\n/*z**/graph {a;}",
+        "graph {a\xff;}",
+        "graph {-1.2 -.5 .1 1->2 3--4}",
+        "graph {\"a\\\"b\" /*glue*/ + \"c\" [x=y] }",
+    };
+    for (sources) |source| for (0..source.len * 4 + 16) |budget| {
+        var request: CancellationProbe = .{};
+        var events: BudgetSink = .{};
+        var machine: Machine(*BudgetSink, true, true, true) = .{
+            .tokens = Scanner.init(source),
+            .events = &events,
+            .diagnostics = diagnostic.discard,
+            .options = .{},
+            .cancellation = request.hook(),
+        };
+        const before = machine.advance(budget);
+        if (before.result != null) continue;
+        states.insert(machine.tokens.state);
+        phases.insert(before.phase);
+        const begun = machine.begun;
+        const attempts = events.attempts;
+        const reads = machine.tokens.examinations;
+        request.flag = true;
+        const cancelled = machine.advance(0);
+        try expect(cancelled.result.?.outcome == .cancelled);
+        try expectEqual(@as(usize, 0), cancelled.work_used);
+        try expectEqual(attempts, events.attempts);
+        try expectEqual(reads, machine.tokens.examinations);
+        try expectEqual(@as(usize, if (begun) 1 else 0), events.aborts);
+    };
+    var expected_states = std.EnumSet(State).initFull();
+    expected_states.remove(.ready);
+    try expectEqual(expected_states, states);
+    var expected_phases = std.EnumSet(Phase).initFull();
+    expected_phases.remove(.terminal);
+    try expectEqual(expected_phases, phases);
+}
+
+test "late cancellation from a rejected syntax diagnostic does not mask failure" {
+    const Reporter = struct {
+        request: *CancellationProbe,
+        emits: usize = 0,
+        fn emit(context: ?*anyopaque, _: diagnostic.Diagnostic) diagnostic.SinkError!void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.emits += 1;
+            self.request.flag = true;
+            return error.DiagnosticSinkFailure;
+        }
+    };
+    var request: CancellationProbe = .{};
+    var reporter: Reporter = .{ .request = &request };
+    var events: BudgetSink = .{};
+    var machine: Machine(*BudgetSink, true, true, true) = .{
+        .tokens = lex.Scanner(true, true).init("graph {a[x=]}"),
+        .events = &events,
+        .diagnostics = .{ .context = &reporter, .emit_fn = Reporter.emit },
+        .options = .{},
+        .cancellation = request.hook(),
+    };
+    while (machine.advance(1).result == null) {}
+    try expect(machine.terminal.?.outcome == .invalid_syntax);
+    try expectEqual(DiagnosticDelivery.failed, machine.terminal.?.diagnostic_delivery);
+    try expectEqual(@as(usize, 1), events.aborts);
+    try expectEqual(@as(usize, 1), reporter.emits);
+    try expect(machine.cancel().outcome == .invalid_syntax);
+}
+
 // Independent probes count attempted callouts, not just accepted records.
 const BudgetSink = struct {
     records: [128]syntax_event.Event = undefined,
@@ -749,10 +899,13 @@ const BudgetSink = struct {
     statements: usize = 0,
     pairs: usize = 0,
     fail_at: ?usize = null,
+    cancel_flag: ?*bool = null,
+    cancel_at: ?usize = null,
 
     fn record(self: *@This(), event: syntax_event.Event) !void {
         const attempt = self.attempts;
         self.attempts += 1;
+        if (self.cancel_at == attempt) self.cancel_flag.?.* = true;
         if (self.fail_at == attempt) return error.Refused;
         self.records[self.len] = event;
         self.len += 1;
@@ -815,8 +968,8 @@ fn checkBudgetPartition(source: []const u8, budgets: []const usize, options: Opt
     const expected = parse(source, &reference, reference_diags.sink(), options);
     var events: BudgetSink = .{ .fail_at = fail_at };
     var diags: BudgetDiagnostics = .{ .reject = reject };
-    var machine: Machine(*BudgetSink, true, true) = .{
-        .tokens = lex_machine.Scanner(true, true).init(source),
+    var machine: Machine(*BudgetSink, true, true, false) = .{
+        .tokens = lex.Scanner(true, true).init(source),
         .events = &events,
         .diagnostics = diags.sink(),
         .options = options,
@@ -923,8 +1076,8 @@ test "metered parser capacities remain output limits not work budgets" {
 
 test "metered parser yields before begin pair owner and commit dispatch" {
     var events: BudgetSink = .{};
-    var machine: Machine(*BudgetSink, true, true) = .{
-        .tokens = lex_machine.Scanner(true, true).init("graph {a[x=1]}"),
+    var machine: Machine(*BudgetSink, true, true, false) = .{
+        .tokens = lex.Scanner(true, true).init("graph {a[x=1]}"),
         .events = &events,
         .diagnostics = diagnostic.discard,
         .options = .{},
@@ -968,17 +1121,17 @@ test "metered parser yields inside megabyte trivia and attribute values" {
 }
 
 test "ordinary parser compiles out pending work and audit storage" {
-    const Ordinary = Machine(*BudgetSink, false, false);
+    const Ordinary = Machine(*BudgetSink, false, false, false);
     try expect(@FieldType(Ordinary, "work") == void);
     try expect(@FieldType(Ordinary, "audit") == void);
-    try expect(@FieldType(lex_machine.Scanner(false, false), "source_frontier") == void);
+    try expect(@FieldType(lex.Scanner(false, false), "source_frontier") == void);
     try expect(@sizeOf(Ordinary) <= 536);
 }
 
 test "unaudited metered driver charges empty document exactly and runs to completion" {
     var events: BudgetSink = .{};
-    var machine: Machine(*BudgetSink, true, false) = .{
-        .tokens = lex_machine.Scanner(true, false).init("graph{}"),
+    var machine: Machine(*BudgetSink, true, false, false) = .{
+        .tokens = lex.Scanner(true, false).init("graph{}"),
         .events = &events,
         .diagnostics = diagnostic.discard,
         .options = .{},
@@ -1430,13 +1583,13 @@ test "parser state stays small (R-PERF-005 parser-state-size regression guard)" 
     // current measured value plus headroom (see docs/BASELINES.md), not an
     // architectural budget: if a slice legitimately grows the state, measure,
     // update the baseline doc, and raise this bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording, false, false)) <= 536);
+    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 536);
 }
 
 test "step is terminal-idempotent after success and after failure" {
     var events: Recording = .{};
     var bag: Bag = .{};
-    var machine: Machine(*Recording, false, false) = .{
+    var machine: Machine(*Recording, false, false, false) = .{
         .tokens = lex.Lexer.init("graph { a; }"),
         .events = &events,
         .diagnostics = bag.sink(),
@@ -1453,7 +1606,7 @@ test "step is terminal-idempotent after success and after failure" {
 
     var failed_events: Recording = .{};
     var failed_bag: Bag = .{};
-    var failed_machine: Machine(*Recording, false, false) = .{
+    var failed_machine: Machine(*Recording, false, false, false) = .{
         .tokens = lex.Lexer.init("graph {"),
         .events = &failed_events,
         .diagnostics = failed_bag.sink(),

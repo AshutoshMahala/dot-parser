@@ -28,6 +28,7 @@ strict digraph Routes {
 - Basic attributes: standalone assignments, graph/node/edge attribute statements,
   and node/edge lists. Duplicate keys and written order are preserved.
 - Borrowed source spans, explicit caller memory, fixed-buffer operation.
+- Fixed-storage bounded sessions, with optional cooperative cancellation.
 - Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
 
 Everything else (HTML/non-ASCII bare IDs, edge
@@ -150,6 +151,7 @@ Requires Zig **0.16.0** or newer.
 ```sh
 zig build test        # unit + public integration tests
 zig build examples    # build and run the examples
+zig build check-freestanding # consumed session profiles for RISC-V32/Wasm32
 ```
 
 The library target has no OS, network, or filesystem dependency: it parses
@@ -162,6 +164,8 @@ generated in memory — reading it is the application's job.
   [Supported DOT syntax](docs/SUPPORTED_SYNTAX.md)
 - Deciding who owns what, or working without an allocator? →
   [Ownership and memory](docs/OWNERSHIP.md)
+- Yielding during parsing or supporting cancellation? →
+  [Bounded execution](docs/EXECUTION.md) · [runnable example](examples/bounded.zig)
 - Handling results, or telling malformed apart from not-yet-supported? →
   [Outcomes and diagnostics](docs/OUTCOMES.md)
 - Learning by running code? → [examples/](examples/)

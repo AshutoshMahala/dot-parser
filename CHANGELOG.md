@@ -6,6 +6,19 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add `BoundedSession` and compile-time-configurable `FixedSession`: fixed-pool
+  parsing with progress snapshots, commit-only documents, zero-credit yielding,
+  idempotent results, and explicit cancel/deinit/reset cleanup. No allocation or
+  source copy is introduced; sessions may move between non-overlapping calls.
+- Add optional cancellation independently of metering, polled before each scan,
+  grammar and dispatch step. Cancellation emits no diagnostic and cannot replace
+  an obtained failure or successful commit. `ParseOutcome` gains `.cancelled`
+  for session results; one-shot APIs never produce it.
+- Consolidate the scanner implementation/tests in `lexer.zig`, selecting its
+  public Token/Result/Lexer namespace in `root.zig`; remove the facade-only file
+  split. Add the execution guide, bounded example, profile benchmark, and consumed
+  freestanding checks for all four execution combinations.
+
 - Specialize ordinary lexer entry to its known trivia state, avoiding the
   initial saved-state dispatch on short tokens. Metered scanners still resume
   their saved state, including when switching from bounded calls to `next()`.
@@ -19,9 +32,6 @@ are called out here; compatibility shims are not retained.
   separately from capacity reservations. Preserve terminal cleanup and ordinary
   run-to-completion behavior. Add partition, failure, progress and long-input
   tests; pending-work/audit storage compiles out of the ordinary parser.
-- Move shared scanner implementation/tests to package-internal
-  `lexer_machine.zig`, retaining the existing `lexer.zig` public facade.
-  No public bounded session or cancellation API is introduced.
 
 - Centralize lexer result construction and use an explicit transient completion
   tag for internal transitions. Reduce generated driver stack usage and improve

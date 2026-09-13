@@ -8,10 +8,11 @@
 //! - `parseBorrowed` / `parseAndValidate` / `validate` — the front door.
 //! - `Document` and friends — what linters and analyzers actually program
 //!   against: statements in source order, compact borrowed ranges.
-//! - `location`, `diagnostic`, `console`, `lexer` — the underlying modules,
-//!   exported whole for consumers that need them.
+//! - `BoundedSession` / `FixedSession` — fixed-storage resumable execution.
+//! - `location`, `diagnostic`, `console` — underlying modules, exported whole.
+//! - `lexer` — public lexical vocabulary and ordinary cursor, selected here.
 //!
-//! The syntax-event sink, parser driver, and document builder remain private and
+//! The syntax-event sink, low-level parser machine, and document builder remain private and
 //! provisional; they are reachable only through the façade until the
 //! contract stabilizes (PROJECT_STRUCTURE.md).
 //!
@@ -32,7 +33,12 @@ const validate_impl = @import("validate.zig");
 
 pub const location = @import("location.zig");
 pub const diagnostic = @import("diagnostic.zig");
-pub const lexer = @import("lexer.zig");
+pub const lexer = struct {
+    const impl = @import("lexer.zig");
+    pub const Token = impl.Token;
+    pub const Result = impl.Result;
+    pub const Lexer = impl.Lexer;
+};
 /// Explicit raw-identifier decoding into caller storage or a writer.
 pub const identifier = @import("identifier.zig");
 
@@ -115,6 +121,8 @@ pub const StorageFailure = enum {
 /// the caller's diagnostic sink, never through this value.
 pub const ParseOutcome = union(enum) {
     success,
+    /// A session was cancelled. One-shot parsing never produces this outcome.
+    cancelled,
     /// The input is malformed in any DOT dialect.
     invalid_syntax,
     /// Parsing stopped at a recognized-but-deferred DOT construct; validity
@@ -166,6 +174,7 @@ pub fn parseBorrowed(
     });
     switch (result.outcome) {
         .success => {},
+        .cancelled => unreachable, // This one-shot driver cannot be cancelled.
         .invalid_syntax => return .{
             .outcome = .invalid_syntax,
             .diagnostic_delivery = result.diagnostic_delivery,
@@ -283,7 +292,7 @@ pub const FixedParseOptions = struct {
     max_attributes: usize = std.math.maxInt(usize),
 };
 
-/// Result of `parseBorrowedIn`. Unlike `ParseResult` there is deliberately
+/// Result of `parseBorrowedIn` and fixed sessions. Unlike `ParseResult` there is deliberately
 /// no `deinit`: the document is backed entirely by the caller's storage —
 /// release it by reusing or discarding that storage.
 pub const FixedParseResult = struct {
@@ -291,6 +300,141 @@ pub const FixedParseResult = struct {
     outcome: ParseOutcome,
     diagnostic_delivery: diagnostic.Delivery,
 };
+
+pub const ExecutionFeatures = @import("execution.zig").Features;
+pub const Cancellation = @import("execution.zig").Cancellation;
+pub const ExecutionPhase = parser_impl.Phase;
+
+/// By-value progress, never a partial document. Accepted counts can describe
+/// staged output that is later discarded; frontier includes lexical lookahead.
+pub const SessionProgress = struct {
+    phase: ExecutionPhase,
+    /// One past the highest examined byte offset; zero before any byte read.
+    /// EOF examination costs work but does not move this frontier.
+    source_frontier: usize,
+    completed_statements: usize,
+    completed_pairs: usize,
+    work_used: usize,
+    outcome: ?ParseOutcome,
+    diagnostic_delivery: diagnostic.Delivery,
+};
+
+/// Default fixed-storage session: deterministic work budgets, no polling hook.
+pub const BoundedSession = FixedSession(.{});
+
+/// Caller-owned, allocation-free parse session. `source`, pools, diagnostic
+/// context and any cancellation context must outlive active calls/yields at
+/// stable addresses. Source bytes must remain unchanged.
+/// A returned document borrows source/pools, not this session. Do not inspect
+/// or mutate pools while parsing, or copy a live session into a second owner.
+/// Moving between calls is supported: internal builder pointers are rebound.
+/// Calls must not overlap or reenter from a hook. `deinit` cancels unfinished
+/// work; `reset` also cancels unfinished work and invalidates previous pool views.
+pub fn FixedSession(comptime features: ExecutionFeatures) type {
+    return struct {
+        const Self = @This();
+        const Driver = parser_impl.Machine(*syntax_impl.FixedBuilder, features.metering, false, features.cancellation);
+
+        pub const Options = struct {
+            max_statements: usize = std.math.maxInt(usize),
+            max_attributes: usize = std.math.maxInt(usize),
+            cancellation: if (features.cancellation) ?Cancellation else void = if (features.cancellation) null else {},
+        };
+
+        builder: syntax_impl.FixedBuilder,
+        machine: Driver,
+        terminal: ?FixedParseResult = null,
+
+        pub fn init(source: []const u8, storage: DocumentStorage, diagnostics: DiagnosticSink, options: Options) Self {
+            return .{
+                .builder = syntax_impl.FixedBuilder.init(source, storage),
+                .machine = .{
+                    .tokens = @FieldType(Driver, "tokens").init(source),
+                    // Never retain a pointer into the returned init temporary.
+                    .events = undefined,
+                    .diagnostics = diagnostics,
+                    .options = .{ .max_statements = options.max_statements, .max_attributes = options.max_attributes },
+                    .cancellation = options.cancellation,
+                },
+            };
+        }
+
+        /// At most `budget` scan/grammar/dispatch steps. Zero may observe
+        /// cancellation; otherwise it yields without work. Callouts and terminal
+        /// diagnostic/abort housekeeping are excluded from work credits.
+        pub fn advance(self: *Self, budget: usize) SessionProgress {
+            if (!features.metering) @compileError("metering is disabled; use run()");
+            self.machine.events = &self.builder;
+            const progress = self.machine.advance(budget);
+            self.settle();
+            return .{
+                .phase = progress.phase,
+                .source_frontier = progress.source_frontier,
+                .completed_statements = progress.completed_statements,
+                .completed_pairs = progress.completed_pairs,
+                .work_used = progress.work_used,
+                .outcome = if (self.terminal) |r| r.outcome else null,
+                .diagnostic_delivery = if (self.terminal) |r| r.diagnostic_delivery else .complete,
+            };
+        }
+
+        /// Run the remaining parse to completion. Cancellation stays active when
+        /// configured, independently of whether work metering is enabled.
+        pub fn run(self: *Self) FixedParseResult {
+            self.machine.events = &self.builder;
+            _ = self.machine.runToCompletion();
+            self.settle();
+            return self.terminal.?;
+        }
+
+        /// Null until terminal; a document exists exactly on successful commit.
+        /// Repeated reads return the same borrowed view, without consuming it.
+        pub fn result(self: *const Self) ?FixedParseResult {
+            return self.terminal;
+        }
+
+        /// Terminal cleanup without a hook or positive work budget. Success or
+        /// a concrete failure already latched cannot be replaced by cancellation.
+        pub fn cancel(self: *Self) FixedParseResult {
+            self.machine.events = &self.builder;
+            _ = self.machine.cancel();
+            self.settle();
+            return self.terminal.?;
+        }
+
+        pub fn deinit(self: *Self) void {
+            _ = self.cancel();
+        }
+
+        /// Reuse the same pools. Previous document views must no longer be used.
+        pub fn reset(self: *Self, source: []const u8, diagnostics: DiagnosticSink, options: Options) void {
+            _ = self.cancel();
+            const storage = self.builder.storage;
+            self.* = init(source, storage, diagnostics, options);
+        }
+
+        fn settle(self: *Self) void {
+            if (self.terminal != null) return;
+            const parsed = self.machine.terminal orelse return;
+            const outcome: ParseOutcome = switch (parsed.outcome) {
+                .success => .success,
+                .cancelled => .cancelled,
+                .invalid_syntax => .invalid_syntax,
+                .unsupported_feature => .unsupported_feature,
+                .resource_exhausted => .resource_exhausted,
+                .sink_failure => |err| .{ .storage_failure = storageFailure(err) },
+            };
+            self.terminal = .{
+                .document = if (parsed.outcome == .success) self.builder.toDocument() else null,
+                .outcome = outcome,
+                .diagnostic_delivery = if (parsed.outcome == .sink_failure)
+                    emitStorageDiagnostic(self.machine.diagnostics, parsed.outcome.sink_failure, self.builder.failure_info, parsed.diagnostic_delivery)
+                else
+                    parsed.diagnostic_delivery,
+            };
+        }
+    };
+}
 
 /// Parse one DOT document into caller-provided fixed pools: no allocator,
 /// nothing grows, failure is deterministic (`storage_failure` with
@@ -310,6 +454,7 @@ pub fn parseBorrowedIn(
     });
     switch (result.outcome) {
         .success => {},
+        .cancelled => unreachable, // This one-shot driver cannot be cancelled.
         .invalid_syntax => return .{
             .outcome = .invalid_syntax,
             .diagnostic_delivery = result.diagnostic_delivery,

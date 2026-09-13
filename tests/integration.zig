@@ -6,6 +6,7 @@ const dot = @import("dot_parser");
 
 test {
     _ = @import("attributes.zig");
+    _ = @import("sessions.zig");
 }
 
 const Rejecting = struct {
@@ -802,6 +803,7 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
             try std.testing.expect(bag.items().len >= 1);
         },
         .storage_failure => {},
+        .cancelled => return error.UnexpectedCancellation,
     }
 
     // Determinism: a second run over the same bytes agrees — not just on

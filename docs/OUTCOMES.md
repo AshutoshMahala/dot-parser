@@ -10,11 +10,12 @@ are for humans and tooling.
 ## Parse outcomes
 
 `parseBorrowed`, `parseBorrowedIn`, and `parseAndValidate` report a
-`ParseOutcome`:
+`ParseOutcome`. Fixed sessions use the same type and additionally support cancellation:
 
 | Outcome | Meaning | Document? |
 | --- | --- | --- |
 | `.success` | The document parsed completely | Yes |
+| `.cancelled` | A session was cancelled; never produced by one-shot parsing | No |
 | `.invalid_syntax` | The input is malformed in any DOT dialect | No |
 | `.unsupported_feature` | The parse stopped at a recognized-but-deferred DOT construct | No |
 | `.resource_exhausted` | A caller-configured limit (e.g. `max_statements` or `max_attributes`) was reached; the input may still be valid | No |
@@ -26,6 +27,14 @@ its capacity), `.statement_index_overflow`, `.attribute_index_overflow`, `.sourc
 (source beyond the 4 GiB retained-range limit), or `.internal` (never
 expected; a bug report is welcome). `.internal` currently has no corresponding
 diagnostic; inspect the outcome even when the diagnostic bag is empty.
+
+## Sessions: yield and cancellation
+
+A yielded session has no terminal outcome (`SessionProgress.outcome == null`)
+and `result()` is null. Yield is resumable, not a resource failure. Cancellation
+is terminal and emits no failure diagnostic. A previously obtained failure or
+successful commit is never replaced by later cancellation. See
+[bounded execution](EXECUTION.md).
 
 ## Unsupported is not invalid
 

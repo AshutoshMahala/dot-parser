@@ -12,8 +12,8 @@ Start with a small physical layout and split modules only when responsibilities
 actually grow. Architectural boundaries are important from the first commit;
 having one file per hypothetical future feature is not.
 
-The [optional execution contract](EXECUTION_CONTRACT.md) is a design draft for
-bounded parsing and cancellation. It does not describe a shipped driver.
+The [optional execution contract](EXECUTION_CONTRACT.md) defines implemented
+bounded parsing and cancellation, now available for caller-owned fixed storage.
 
 ## Current layout
 
@@ -31,7 +31,7 @@ dot-parser/
 │   ├── diagnostic.zig
 │   ├── console.zig
 │   ├── lexer.zig
-│   ├── lexer_machine.zig
+│   ├── execution.zig          (feature flags and borrowed cancellation hook)
 │   ├── identifier.zig
 │   ├── syntax_event.zig
 │   ├── parser.zig
@@ -40,6 +40,8 @@ dot-parser/
 ├── tests/
 │   ├── integration.zig
 │   ├── attributes.zig
+│   ├── sessions.zig
+│   ├── freestanding_session.zig
 │   └── corpus/
 │       ├── README.md          (corpus governance)
 │       ├── valid/
@@ -50,14 +52,17 @@ dot-parser/
 │   ├── fixed_buffer.zig
 │   ├── diagnostics_demo.zig
 │   ├── identifiers.zig
-│   └── attributes.zig
+│   ├── attributes.zig
+│   └── bounded.zig
 ├── bench/
 │   ├── throughput.zig         (parse + validate, retained memory)
-│   └── lexer.zig              (lexical fixtures, no timed allocation)
+│   ├── lexer.zig              (lexical fixtures, no timed allocation)
+│   └── session.zig            (independent execution-policy costs)
 └── docs/
     ├── SUPPORTED_SYNTAX.md
     ├── OWNERSHIP.md
     ├── OUTCOMES.md
+    ├── EXECUTION.md
     ├── BASELINES.md
     ├── architecture/
     │   ├── PROJECT_STRUCTURE.md
@@ -103,9 +108,9 @@ in the initial core.
 
 ### `src/lexer.zig`
 
-The public raw-byte lexer facade: `Token`, `Result`, and run-to-completion
-`Lexer`. The implementation lives in `lexer_machine.zig` so its optional
-metering factory is not re-exported through the public lexer module. It recognizes:
+The shared raw-byte scanner implementation. `root.zig` selects `Token`, `Result`,
+and ordinary `Lexer` for the public namespace; internal factories and scan
+drivers are not re-exported. It recognizes:
 
 - Every DOT keyword (`graph`, `digraph`, `strict`, `node`, `edge`, and the deferred
   `subgraph`), case-independently. Keywords always tokenize;
@@ -122,7 +127,7 @@ metering factory is not re-exported through the public lexer module. It recogniz
 It borrows source spans, performs no hidden allocation, and owns no AST types.
 Ordinary lexing and the private metered parser share one resumable scanner.
 Metered scanning can yield within every supported lexical form; public parsing
-still runs to completion. Budget/frontier counters compile out of
+can run to completion or through fixed-storage sessions. Budget/frontier counters compile out of
 ordinary lexing; shared continuation-state and throughput costs are recorded
 in [baselines](../BASELINES.md).
 
@@ -140,11 +145,13 @@ The parser state machine and a private, provisional syntax-event contract. It
 parses one document and emits source-shaped events. It does not allocate AST
 nodes directly and does not know about graph engines.
 
-Only a run-to-completion wrapper is public. The internal metered specialization
+Public facades offer run-to-completion and fixed-storage sessions. The metered specialization
 separately charges scanning, grammar transitions, and event attempts, retaining
 one token and pending action across yields. The ordinary specialization uses
 the same grammar with immediate callbacks and no pending-work/progress fields.
-Fixed-storage sessions and cancellation are not implemented yet.
+Cancellation adds a borrowed hook and polls before each microstep. It can be
+selected independently of metering; disabled features compile out. `root.zig`
+owns the fixed-session API, lifetime rules, and public storage-failure mapping.
 
 ### `src/syntax.zig`
 
