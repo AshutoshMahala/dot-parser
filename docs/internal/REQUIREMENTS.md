@@ -305,6 +305,15 @@ lexical scanning and resume without restarting the construct. The current
 private parser's token-at-a-time stepping is groundwork, not a public guarantee
 of bounded work or cancellation latency (Q27).
 
+The agreed next direction is optional deterministic work metering, distinct
+from source progress, with resumable yield and terminal cancellation. The
+[execution-contract draft](../architecture/EXECUTION_CONTRACT.md) proposes the
+microstep accounting, callback exclusions, cleanup rules, fixed-storage first
+slice, and acceptance tests. It is a design specification, not a shipped API.
+The internal lexer now implements resumable one-examination scan steps and
+partition tests. The public parser still runs each token to completion;
+grammar/event budgets and cancellation are not implemented yet.
+
 ### R-MOD-011: Active sinks have transactional lifecycle signals
 
 A direct sink may perform visible work before the parser discovers a later

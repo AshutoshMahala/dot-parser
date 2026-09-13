@@ -1038,11 +1038,11 @@ test "failing beginDocument still receives the cleanup abort" {
 
 test "parser state stays small (R-PERF-005 parser-state-size regression guard)" {
     // The whole machine — lexer, continuation state, options, bookkeeping —
-    // must remain a small constant, independent of input size. 416 B is the
+    // must remain a small constant, independent of input size. 536 B is the
     // current measured value plus headroom (see docs/BASELINES.md), not an
     // architectural budget: if a slice legitimately grows the state, measure,
     // update the baseline doc, and raise this bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording)) <= 416);
+    try expect(@sizeOf(Machine(*Recording)) <= 536);
 }
 
 test "step is terminal-idempotent after success and after failure" {

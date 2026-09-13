@@ -1,7 +1,7 @@
 # Project Structure
 
 Status: living document — updated as slices land  
-Last updated: 2026-09-12 (basic attributes)
+Last updated: 2026-09-12 (resumable lexical scanning)
 
 The package is a standalone Zig DOT-language library and must not depend on
 Zigraph.
@@ -11,6 +11,9 @@ Zigraph.
 Start with a small physical layout and split modules only when responsibilities
 actually grow. Architectural boundaries are important from the first commit;
 having one file per hypothetical future feature is not.
+
+The [optional execution contract](EXECUTION_CONTRACT.md) is a design draft for
+bounded parsing and cancellation. It does not describe a shipped driver.
 
 ## Current layout
 
@@ -55,7 +58,8 @@ dot-parser/
     ├── OUTCOMES.md
     ├── BASELINES.md
     ├── architecture/
-    │   └── PROJECT_STRUCTURE.md
+    │   ├── PROJECT_STRUCTURE.md
+    │   └── EXECUTION_CONTRACT.md
     └── internal/              (contributor-facing requirements and questions)
 ```
 
@@ -112,6 +116,11 @@ The raw-byte lexer and token cursor. It recognizes:
   as typed unsupported-feature failures.
 
 It borrows source spans, performs no hidden allocation, and owns no AST types.
+Ordinary lexing and a private metered fixture share one resumable scanner.
+Metered scanning can yield within every supported lexical form; the public
+parser still consumes whole tokens. Budget/frontier counters compile out of
+ordinary lexing; shared continuation-state and throughput costs are recorded
+in [baselines](../BASELINES.md).
 
 ### `src/identifier.zig`
 

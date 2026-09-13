@@ -163,7 +163,7 @@ whether convenience APIs should ship with non-trivial defaults is open.
 
 **Q16 — What size thresholds establish that disabling a feature removed its
 cost?**
-Parser-state size is regression-guarded (≤ 416 B; currently 400 B native) and baselines exist;
+Parser-state size is regression-guarded (≤ 536 B; currently 520 B native) and baselines exist;
 per-profile binary-size thresholds await the profile work. *(Embodied:
 `docs/BASELINES.md`; parser-size test.)*
 
@@ -218,16 +218,25 @@ Implementation awaits the profile slice. *(Embodied: DX design discussion,
 
 **Q27 — Which progress budgets does the bounded driver support, and what
 work unit is deterministic?**
-**Implemented groundwork:** a nonterminal `step` asks the lexer for one token
-and advances the parser; terminal calls are idempotent. Grammar continuation
-state lives in the machine. **Not a bounded-work guarantee:** that lexer call
-can scan a long identifier, whitespace region, or comment before returning.
-A token count therefore does not bound bytes examined or cancellation latency.
-**Still open:** budget vocabulary, deterministic byte/work accounting, and
-cancellation safe points. Strict bounded pumping requires resumable lexical
-scanning as well as parser stepping; yield must remain distinct from terminal
-cancellation. No public bounded/cancellation driver ships yet.
-*(Embodied: `parser.Machine.step`, `lexer.skipTrivia`; R-MOD-010/R-MOD-013.)*
+**Agreed policy:** metering and cancellation are optional capabilities; bounded
+execution uses deterministic work units, with source progress reported
+separately. Yield preserves continuation/staged data without abort; cancellation
+is terminal. Keep the stage-based architecture and expose factual progress, not
+a whole-pipeline percentage.
+**Proposed execution contract:** [draft](../architecture/EXECUTION_CONTRACT.md)
+defines charged scan/grammar/dispatch microsteps, zero/one-credit behavior,
+callback exclusions and terminal cleanup, cancellation precedence, source
+frontier semantics, and acceptance tests. These operational details are a
+design proposal for the next fixed-storage slice, not current API behavior.
+**Still pending:** public API/hook shape, implementation mapping and audit of
+every input-dependent loop, measured optionality/overhead, and completion of
+the acceptance tests. The internal lexer now has compile-time metering, saved
+lexical continuations, charged lookahead/position tracking, and budget-partition
+tests. The public parser still calls run-to-completion `Lexer.next`, so one
+parser step can scan a long lexeme or trivia region; no public bounded or
+cancellation driver ships yet. Initial ordinary-path costs are recorded in
+`docs/BASELINES.md` and need attention before expanding the driver.
+*(R-MOD-010/R-MOD-013; current groundwork: `parser.Machine.step`, `lexer.Scanner`.)*
 
 ---
 
@@ -282,3 +291,7 @@ Open; nothing currently forces the choice.
 
 - 2026-09-12 — Q24: removed the premature diagnostic stability exception;
   experimental 0.x now has no backward-compatibility retention requirement.
+
+- 2026-09-12 — Q27: recorded agreement on optional work budgeting, stop
+  behavior and factual progress. Linked the execution-contract draft; exact
+  operational rules remain a proposed specification, not delivered behavior.

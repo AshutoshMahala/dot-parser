@@ -6,6 +6,17 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Centralize lexer result construction and use an explicit transient completion
+  tag for internal transitions. Reduce generated driver stack usage and improve
+  ordinary throughput without changing work-credit accounting or public APIs.
+
+- Replace whole-token lexical loops with shared resumable scanning and a
+  private compile-time-metered fixture. Preserve existing tokens, spans and
+  diagnostics; latch EOF/failures without rescanning. Add boundary-partition,
+  source-examination and long-input tests. Public parsing remains
+  run-to-completion; cancellation and bounded grammar/events are not available.
+  Shared-state and ordinary-throughput costs are recorded in the baselines.
+
 - Remove obsolete unsupported-feature entries, the unused missing-element
   diagnostic, forward-compatibility-only enum fallbacks, and unimplemented
   validation outcome placeholders. Diagnostic enums now describe current behavior.
