@@ -6,6 +6,23 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Specialize ordinary lexer entry to its known trivia state, avoiding the
+  initial saved-state dispatch on short tokens. Metered scanners still resume
+  their saved state, including when switching from bounded calls to `next()`.
+  Add entry-invariant/resumption tests and a `bench-lexer` target covering
+  punctuation, trivia, keywords/numerals, quotes/comments and longer IDs.
+  This is a targeted speedup; mixed-workload tradeoffs are recorded in baselines.
+
+- Extend private compile-time work metering through grammar transitions and
+  normal syntax-event attempts, including begin and commit. Retain lookahead
+  across owner dispatch without rescanning; count accepted statements/pairs
+  separately from capacity reservations. Preserve terminal cleanup and ordinary
+  run-to-completion behavior. Add partition, failure, progress and long-input
+  tests; pending-work/audit storage compiles out of the ordinary parser.
+- Move shared scanner implementation/tests to package-internal
+  `lexer_machine.zig`, retaining the existing `lexer.zig` public facade.
+  No public bounded session or cancellation API is introduced.
+
 - Centralize lexer result construction and use an explicit transient completion
   tag for internal transitions. Reduce generated driver stack usage and improve
   ordinary throughput without changing work-credit accounting or public APIs.
@@ -14,7 +31,8 @@ are called out here; compatibility shims are not retained.
   private compile-time-metered fixture. Preserve existing tokens, spans and
   diagnostics; latch EOF/failures without rescanning. Add boundary-partition,
   source-examination and long-input tests. Public parsing remains
-  run-to-completion; cancellation and bounded grammar/events are not available.
+  run-to-completion; this lexical groundwork did not include grammar/event
+  metering or cancellation (grammar/event metering is recorded above).
   Shared-state and ordinary-throughput costs are recorded in the baselines.
 
 - Remove obsolete unsupported-feature entries, the unused missing-element

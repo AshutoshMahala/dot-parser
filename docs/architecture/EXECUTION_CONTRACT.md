@@ -1,25 +1,27 @@
 # Optional bounded execution contract
 
-Status: driver design draft; internal bounded lexer implemented, driver not implemented
+Status: public driver design draft; internal metered scanning, grammar and dispatch implemented
 
-Date: 2026-09-12
+Date: 2026-09-13
 
 Requirements: R-MOD-009–013, R-MEM-001/003, R-SEC-002/003, R-CON-002
 
 Related decision: [Q27](../internal/OpenQuestions.md)
 
 The existing run-to-completion APIs remain the default. This document specifies
-the proposed next execution slice, not capabilities currently available in the
-library. Exact public type and function names remain to be selected. Do not add
+the proposed public execution slice and its implemented internal groundwork.
+No public bounded API ships yet. Exact public type and function names remain to
+be selected. Do not add
 placeholder outcomes or compatibility scaffolding before behavior is implemented.
 
 ### Implemented groundwork: lexical scanning
 
-`src/lexer.zig` now uses the same resumable scanner for ordinary lexing and a
-private metered fixture. Each lexical credit performs one source-byte or EOF
+`src/lexer_machine.zig` supplies the same resumable scanner to the public
+`src/lexer.zig` facade and the private metered parser. Each lexical credit
+performs one source-byte or EOF
 examination, with cached-byte classification and incremental position tracking.
-No lexer grammar/dispatch-only credits are needed yet. Returning a lexical token
-is not a syntax-sink event; grammar/event charging remains future work.
+Returning a lexical token is not a syntax-sink event; grammar and event dispatch
+are separately charged by the parser.
 
 | Input-dependent path | Continuation and charging |
 | --- | --- |
@@ -36,14 +38,46 @@ states, zero-credit nonmutation, terminal latching, frontier monotonicity,
 independent examination counts, random inputs, and megabyte-scale runs. The
 ordinary specialization has no budget or frontier counters, but the shared
 continuation machinery has measured costs; see [baselines](../BASELINES.md).
-Cancellation hooks, bounded grammar/events, and a public bounded parser are
-**not** implemented by this lexer slice.
+Its driver enters the known trivia state directly: ordinary `next()` cannot
+yield, and every nonterminal token completion restores that state. The metered
+specialization still dispatches from saved state, even for an unbounded `next()`
+call after a yield. Both paths retain the same microsteps and source-fetch site.
+Cancellation hooks and a public bounded parser are **not** implemented yet.
 
 The driver materializes completed lexical results at one shared exit rather
 than within each compile-time-expanded state branch. An explicit completion
 tag is a transient microstep result, never a saved continuation or public
 outcome. This reduces generated-code overhead without changing the number of
 credits charged, terminal behavior, or the resumable state exposed by a yield.
+
+### Implemented groundwork: grammar and syntax events
+
+The private `parser.Machine` now specializes at compile time for immediate or
+metered execution. Both use the same grammar helpers and callback payloads.
+The metered specialization retains one token, a pending action, and accepted
+statement/pair counts; no event queue, allocation, or source-sized copy is added.
+
+| Phase | Charged operation and saved continuation |
+| --- | --- |
+| Scan | Delegate remaining credits to the scanner; save its completed token |
+| Grammar | One fixed-size transition over the saved token; optionally schedule an action |
+| Dispatch | Attempt one normal callback, including begin and commit; update accepted counts only on success |
+| Lookahead replay | After an owner event, a separate grammar credit processes its saved terminator/next-statement token without rescanning |
+| Terminal | Return the latched result with zero work and no repeated callbacks |
+
+Zero credits leave normal work untouched. One-credit calls can yield before
+begin, pair, owner, and commit callbacks; successful commit is immediately
+terminal. Failures still perform at most one diagnostic attempt and one cleanup
+abort, even when discovered on the last credit. Callback/allocator work remains
+excluded as specified below. Progress counts accepted syntax events, not
+statement/pair reservations or semantically validated output.
+
+Tests compare budget partitions with ordinary parsing, independently count
+source examinations, grammar transitions and callback attempts, and cover every
+prefix, all callback failures, refused diagnostics, output limits, arbitrary
+bytes and megabyte inputs. The ordinary specialization compiles out pending-work
+and audit fields and dispatches immediately. Neither path duplicates the grammar.
+Fixed-storage session ownership, cancellation and the public driver remain next.
 
 ## 1. Scope and optionality
 

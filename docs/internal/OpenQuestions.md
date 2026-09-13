@@ -230,13 +230,14 @@ frontier semantics, and acceptance tests. These operational details are a
 design proposal for the next fixed-storage slice, not current API behavior.
 **Still pending:** public API/hook shape, implementation mapping and audit of
 every input-dependent loop, measured optionality/overhead, and completion of
-the acceptance tests. The internal lexer now has compile-time metering, saved
-lexical continuations, charged lookahead/position tracking, and budget-partition
-tests. The public parser still calls run-to-completion `Lexer.next`, so one
-parser step can scan a long lexeme or trivia region; no public bounded or
-cancellation driver ships yet. Initial ordinary-path costs are recorded in
-`docs/BASELINES.md` and need attention before expanding the driver.
-*(R-MOD-010/R-MOD-013; current groundwork: `parser.Machine.step`, `lexer.Scanner`.)*
+the acceptance tests. The internal scanner/parser now have compile-time
+metering, saved lexical/grammar/dispatch continuations, separately charged
+source examinations, grammar transitions and event attempts, and partition and
+failure-lifecycle tests. The public parser remains run-to-completion; no public
+bounded session or cancellation driver ships yet. Ordinary-path costs and
+optional state are recorded in `docs/BASELINES.md`.
+*(R-MOD-010/R-MOD-013; current groundwork: `parser.Machine.advance`,
+`lexer_machine.Scanner`.)*
 
 ---
 

@@ -89,4 +89,16 @@ pub fn build(b: *std.Build) void {
     });
     const bench_step = b.step("bench", "Run the throughput baseline");
     bench_step.dependOn(&b.addRunArtifact(bench_exe).step);
+
+    const lexer_bench = b.addExecutable(.{
+        .name = "lexer_throughput",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/lexer.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "dot_parser", .module = mod }},
+        }),
+    });
+    b.step("bench-lexer", "Run lexical throughput fixtures")
+        .dependOn(&b.addRunArtifact(lexer_bench).step);
 }

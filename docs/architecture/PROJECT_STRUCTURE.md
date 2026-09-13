@@ -31,6 +31,7 @@ dot-parser/
 │   ├── diagnostic.zig
 │   ├── console.zig
 │   ├── lexer.zig
+│   ├── lexer_machine.zig
 │   ├── identifier.zig
 │   ├── syntax_event.zig
 │   ├── parser.zig
@@ -51,7 +52,8 @@ dot-parser/
 │   ├── identifiers.zig
 │   └── attributes.zig
 ├── bench/
-│   └── throughput.zig
+│   ├── throughput.zig         (parse + validate, retained memory)
+│   └── lexer.zig              (lexical fixtures, no timed allocation)
 └── docs/
     ├── SUPPORTED_SYNTAX.md
     ├── OWNERSHIP.md
@@ -101,7 +103,9 @@ in the initial core.
 
 ### `src/lexer.zig`
 
-The raw-byte lexer and token cursor. It recognizes:
+The public raw-byte lexer facade: `Token`, `Result`, and run-to-completion
+`Lexer`. The implementation lives in `lexer_machine.zig` so its optional
+metering factory is not re-exported through the public lexer module. It recognizes:
 
 - Every DOT keyword (`graph`, `digraph`, `strict`, `node`, `edge`, and the deferred
   `subgraph`), case-independently. Keywords always tokenize;
@@ -116,9 +120,9 @@ The raw-byte lexer and token cursor. It recognizes:
   as typed unsupported-feature failures.
 
 It borrows source spans, performs no hidden allocation, and owns no AST types.
-Ordinary lexing and a private metered fixture share one resumable scanner.
-Metered scanning can yield within every supported lexical form; the public
-parser still consumes whole tokens. Budget/frontier counters compile out of
+Ordinary lexing and the private metered parser share one resumable scanner.
+Metered scanning can yield within every supported lexical form; public parsing
+still runs to completion. Budget/frontier counters compile out of
 ordinary lexing; shared continuation-state and throughput costs are recorded
 in [baselines](../BASELINES.md).
 
@@ -136,9 +140,11 @@ The parser state machine and a private, provisional syntax-event contract. It
 parses one document and emits source-shaped events. It does not allocate AST
 nodes directly and does not know about graph engines.
 
-The first implementation may expose only a run-to-completion wrapper, but its
-state must remain instance-owned so `next`/`pump` drivers can be added without
-rewriting the grammar.
+Only a run-to-completion wrapper is public. The internal metered specialization
+separately charges scanning, grammar transitions, and event attempts, retaining
+one token and pending action across yields. The ordinary specialization uses
+the same grammar with immediate callbacks and no pending-work/progress fields.
+Fixed-storage sessions and cancellation are not implemented yet.
 
 ### `src/syntax.zig`
 

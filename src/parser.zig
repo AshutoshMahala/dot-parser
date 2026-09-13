@@ -49,15 +49,18 @@
 //!   no claim about validity beyond the detected construct.
 //!
 //! Only a run-to-completion `parse` is exposed for now, but the machine is
-//! genuinely resumable: all continuation state (grammar state and the spans
-//! of the statement in flight) lives in the machine struct, and progress is
-//! made one `step` (one token) at a time — `next`/`pump`/cancellation
-//! drivers are wrappers over `step`, not a parser rewrite (R-MOD-010).
+//! internally resumable: the metered specialization retains lexical, grammar,
+//! and pending-dispatch state. Each private `advance` credit buys one source
+//! examination, grammar transition, or normal callback attempt (R-MOD-010).
+//! The ordinary specialization shares the grammar with immediate callbacks;
+//! pending work and progress counters compile out. Cancellation and a public
+//! fixed-storage session remain future work.
 
 const std = @import("std");
 const location = @import("location.zig");
 const diagnostic = @import("diagnostic.zig");
 const lex = @import("lexer.zig");
+const lex_machine = @import("lexer_machine.zig");
 const syntax_event = @import("syntax_event.zig");
 
 pub const Options = struct {
@@ -66,8 +69,8 @@ pub const Options = struct {
     /// capacity bound (R-ROB-002), **not** a total-work budget: the parser
     /// always performs one linear scan, so total work is bounded by input
     /// length — a whitespace-heavy body or a long identifier is still
-    /// scanned once in full. Byte/token budgets and cooperative
-    /// cancellation arrive with the bounded drivers (R-MOD-010).
+    /// scanned once in full. The private metered driver does not change this
+    /// public run-to-completion API; cancellation is not implemented yet.
     max_statements: usize = std.math.maxInt(usize),
     /// Total key/value pairs, including standalone assignments. Not a scan budget.
     max_attributes: usize = std.math.maxInt(usize),
@@ -101,6 +104,17 @@ pub const Result = struct {
     diagnostic_delivery: DiagnosticDelivery = .complete,
 };
 
+// Internal execution vocabulary, not re-exported from root.zig.
+const Phase = enum { scan, grammar, dispatch, terminal };
+const Progress = struct {
+    result: ?Result,
+    work_used: usize,
+    source_frontier: usize,
+    phase: Phase,
+    completed_statements: usize,
+    completed_pairs: usize,
+};
+
 /// Parse `source` to completion, emitting syntax events into `events` and
 /// failure diagnostics into `diagnostics`.
 ///
@@ -121,7 +135,7 @@ pub fn parse(
         }
         syntax_event.assertSyntaxSink(info.pointer.child);
     }
-    var machine: Machine(EventsPtr) = .{
+    var machine: Machine(EventsPtr, false, false) = .{
         .tokens = lex.Lexer.init(source),
         .events = events,
         .diagnostics = diagnostics,
@@ -130,11 +144,27 @@ pub fn parse(
     return machine.runToCompletion();
 }
 
-fn Machine(comptime EventsPtr: type) type {
+fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool) type {
     return struct {
         const Self = @This();
 
-        tokens: lex.Lexer,
+        const Action = enum { begin, node, edge, attribute_statement, assignment, attribute, commit };
+        const Work = struct {
+            token: lex.Token = undefined,
+            action: Action = undefined,
+            phase: Phase = .scan,
+            replay: bool = false,
+            completed_statements: usize = 0,
+            completed_pairs: usize = 0,
+        };
+        const Audit = struct {
+            grammar: usize = 0,
+            dispatch: usize = 0,
+        };
+
+        tokens: lex_machine.Scanner(metered, audited),
+        work: if (metered) Work else void = if (metered) .{} else {},
+        audit: if (audited) Audit else void = if (audited) .{} else {},
         events: EventsPtr,
         diagnostics: diagnostic.Sink,
         options: Options,
@@ -151,9 +181,9 @@ fn Machine(comptime EventsPtr: type) type {
         /// True once `beginDocument` has been issued; from then on every
         /// exit path must emit a terminal event.
         begun: bool = false,
-        /// Latched once a terminal result is produced. Further `step` calls
-        /// return it unchanged — no re-emitted events or diagnostics — so
-        /// bounded drivers can safely over-call `step`.
+        /// Latched once a terminal result is produced. Further driver calls
+        /// return it unchanged — no re-emitted events or diagnostics. Metered
+        /// calls report zero work used.
         terminal: ?Result = null,
 
         // Header state, accumulated until `{` completes the header.
@@ -163,9 +193,8 @@ fn Machine(comptime EventsPtr: type) type {
         name_span: ?location.Span = null,
 
         // Continuation state. Everything a suspended parse needs lives in
-        // the machine itself — never in `runToCompletion` locals — so
-        // `next`/`pump` drivers can be layered on `step` without touching
-        // the grammar (R-MOD-010 groundwork).
+        // the machine itself — never in `runToCompletion` locals. Metered
+        // execution also retains one lookahead token and its pending action.
         state: State = .prologue,
         /// First identifier of the statement being parsed.
         left: location.Span = undefined,
@@ -205,23 +234,82 @@ fn Machine(comptime EventsPtr: type) type {
         };
 
         fn runToCompletion(self: *Self) Result {
-            while (true) {
-                if (self.step()) |result| return result;
+            if (metered) {
+                while (true) {
+                    if (self.advance(std.math.maxInt(usize)).result) |result| return result;
+                }
+            } else {
+                while (true) {
+                    if (self.step()) |result| return result;
+                }
             }
         }
 
-        /// Consume one token and advance the grammar by one transition.
-        /// Returns null while the parse can continue, or the terminal
-        /// result. This is the unit a bounded `pump` driver will meter.
-        /// Terminal-idempotent: once a terminal result exists, it is
-        /// returned unchanged without consuming input or emitting anything.
+        /// Ordinary immediate driver: one token, shared grammar, direct events.
+        /// It has no pending-token storage, work counter or progress counters.
         fn step(self: *Self) ?Result {
+            if (metered) @compileError("metered machines use advance");
             if (self.terminal) |result| return result;
             const token = switch (self.tokens.next()) {
                 .token => |token| token,
                 .failure => |failure| return self.fail(failure),
             };
+            return self.transition(token);
+        }
 
+        /// Private bounded driver. A credit buys a lexical examination, one
+        /// grammar transition, or one normal event attempt; never two classes.
+        fn advance(self: *Self, budget: usize) Progress {
+            if (!metered) @compileError("advance requires a metered machine");
+            if (self.terminal != null) return self.progress(0);
+            var remaining = budget;
+            while (remaining != 0) {
+                switch (self.work.phase) {
+                    .scan => {
+                        const scanned = lex_machine.advanceBounded(audited, &self.tokens, remaining);
+                        remaining -= scanned.work_used;
+                        if (scanned.result) |result| switch (result) {
+                            .token => |token| {
+                                self.work.token = token;
+                                self.work.phase = .grammar;
+                            },
+                            .failure => |failure| {
+                                _ = self.fail(failure);
+                            },
+                        };
+                    },
+                    .grammar => {
+                        remaining -= 1;
+                        self.work.phase = .scan;
+                        self.work.replay = false;
+                        _ = self.transition(self.work.token);
+                    },
+                    .dispatch => {
+                        remaining -= 1;
+                        _ = self.dispatch(self.work.action, self.work.token);
+                        if (self.terminal == null)
+                            self.work.phase = if (self.work.replay) .grammar else .scan;
+                    },
+                    .terminal => unreachable,
+                }
+                if (self.terminal != null) break;
+            }
+            return self.progress(budget - remaining);
+        }
+
+        fn progress(self: *const Self, used: usize) Progress {
+            return .{
+                .result = self.terminal,
+                .work_used = used,
+                .source_frontier = self.tokens.source_frontier,
+                .phase = self.work.phase,
+                .completed_statements = self.work.completed_statements,
+                .completed_pairs = self.work.completed_pairs,
+            };
+        }
+
+        fn transition(self: *Self, token: lex.Token) ?Result {
+            if (audited) self.audit.grammar += 1;
             switch (self.state) {
                 .prologue => switch (token.tag) {
                     .keyword_strict => {
@@ -305,14 +393,10 @@ fn Machine(comptime EventsPtr: type) type {
                 .assignment_value => {
                     if (token.tag != .identifier)
                         return self.unexpected(.{ .identifier = true }, .assignment_value, token);
-                    self.events.assignment(.{ .key = self.left, .value = token.span }) catch |err| return self.sinkFailure(err);
                     self.state = .completed;
+                    return self.schedule(.assignment, token);
                 },
-                .completed => {
-                    if (token.tag == .semicolon) {
-                        self.state = .statement;
-                    } else return self.beginNext(token);
-                },
+                .completed => return self.continueAfterStatement(token),
                 .attribute_open => {
                     if (token.tag != .left_bracket)
                         return self.unexpected(.{ .left_bracket = true }, .attribute_list, token);
@@ -331,8 +415,8 @@ fn Machine(comptime EventsPtr: type) type {
                 .attribute_value => {
                     if (token.tag != .identifier)
                         return self.unexpected(.{ .identifier = true }, .attribute_value, token);
-                    self.events.attribute(.{ .key = self.attribute_key, .value = token.span }) catch |err| return self.sinkFailure(err);
                     self.state = .attribute_after_value;
+                    return self.schedule(.attribute, token);
                 },
                 .attribute_after_value => switch (token.tag) {
                     .right_bracket => self.closeAttributes(),
@@ -351,10 +435,7 @@ fn Machine(comptime EventsPtr: type) type {
                     } else return self.finishPending(token, statementEndExpected(true), .statement_terminator);
                 },
                 .epilogue => switch (token.tag) {
-                    .eof => {
-                        self.events.endDocument() catch |err| return self.sinkFailure(err);
-                        return self.finish(.success);
-                    },
+                    .eof => return self.schedule(.commit, token),
                     else => return self.unexpected(.{ .end_of_input = true }, .document_epilogue, token),
                 },
             }
@@ -367,19 +448,12 @@ fn Machine(comptime EventsPtr: type) type {
             self.state = .header_name;
         }
 
-        /// `{` completes the document header: emit `beginDocument` with the
-        /// accumulated kind, strict marker, and optional name.
+        /// Recognize the header, then schedule its separate begin event.
+        /// begun becomes true only when the callback is actually attempted.
         fn beginBody(self: *Self, token: lex.Token) ?Result {
-            self.begun = true;
             self.open_brace_span = token.span;
-            self.events.beginDocument(.{
-                .kind = self.kind,
-                .strict = self.strict,
-                .keyword_span = self.keyword_span,
-                .name_span = self.name_span,
-            }) catch |err| return self.sinkFailure(err);
             self.state = .statement;
-            return null;
+            return self.schedule(.begin, token);
         }
 
         /// Start a statement at its identifier or attribute keyword: the place the
@@ -435,14 +509,23 @@ fn Machine(comptime EventsPtr: type) type {
                 .semicolon, .identifier, .right_brace, .left_brace, .keyword_graph, .keyword_node, .keyword_edge, .keyword_subgraph => {},
                 else => return self.unexpected(expected, context, token),
             }
-            switch (self.pending) {
-                .node => if (self.emitNode()) |result| return result,
-                .edge => if (self.emitEdge()) |result| return result,
-                .attributes => self.events.attributeStatement(.{
-                    .target = self.attribute_target,
-                    .keyword_span = self.left,
-                }) catch |err| return self.sinkFailure(err),
+            const action: Action = switch (self.pending) {
+                .node => .node,
+                .edge => .edge,
+                .attributes => .attribute_statement,
+            };
+            self.state = .completed;
+            if (metered) {
+                // Retain this lookahead until the owning statement is emitted.
+                // A separate grammar credit then processes it in .completed.
+                self.work.replay = true;
+                return self.schedule(action, token);
             }
+            if (self.schedule(action, token)) |result| return result;
+            return self.continueAfterStatement(token);
+        }
+
+        fn continueAfterStatement(self: *Self, token: lex.Token) ?Result {
             if (token.tag == .semicolon) {
                 self.state = .statement;
                 return null;
@@ -477,26 +560,64 @@ fn Machine(comptime EventsPtr: type) type {
             return null;
         }
 
-        fn emitNode(self: *Self) ?Result {
-            self.events.nodeStatement(.{
-                .identifier = self.left,
-            }) catch |err| return self.sinkFailure(err);
-            return null;
+        fn schedule(self: *Self, action: Action, token: lex.Token) ?Result {
+            if (metered) {
+                self.work.action = action;
+                self.work.phase = .dispatch;
+                return null;
+            }
+            return self.dispatch(action, token);
         }
 
-        fn emitEdge(self: *Self) ?Result {
-            self.events.edgeStatement(.{
-                .left = self.left,
-                .operator = self.operator,
-                .operator_span = self.operator_span,
-                .right = self.right,
-            }) catch |err| return self.sinkFailure(err);
+        /// One charged normal callback in the bounded driver. Payloads reuse
+        /// saved spans and the cached token; there is no event queue or copying
+        /// of a source-sized collection. Callback execution is a callout.
+        fn dispatch(self: *Self, action: Action, token: lex.Token) ?Result {
+            if (audited) self.audit.dispatch += 1;
+            switch (action) {
+                .begin => {
+                    self.begun = true;
+                    self.events.beginDocument(.{
+                        .kind = self.kind,
+                        .strict = self.strict,
+                        .keyword_span = self.keyword_span,
+                        .name_span = self.name_span,
+                    }) catch |err| return self.sinkFailure(err);
+                },
+                .node => self.events.nodeStatement(.{ .identifier = self.left }) catch |err| return self.sinkFailure(err),
+                .edge => self.events.edgeStatement(.{
+                    .left = self.left,
+                    .operator = self.operator,
+                    .operator_span = self.operator_span,
+                    .right = self.right,
+                }) catch |err| return self.sinkFailure(err),
+                .attribute_statement => self.events.attributeStatement(.{
+                    .target = self.attribute_target,
+                    .keyword_span = self.left,
+                }) catch |err| return self.sinkFailure(err),
+                .assignment => self.events.assignment(.{ .key = self.left, .value = token.span }) catch |err| return self.sinkFailure(err),
+                .attribute => self.events.attribute(.{ .key = self.attribute_key, .value = token.span }) catch |err| return self.sinkFailure(err),
+                .commit => {
+                    self.events.endDocument() catch |err| return self.sinkFailure(err);
+                    return self.finish(.success);
+                },
+            }
+            if (metered) switch (action) {
+                .node, .edge, .attribute_statement => self.work.completed_statements += 1,
+                .assignment => {
+                    self.work.completed_statements += 1;
+                    self.work.completed_pairs += 1;
+                },
+                .attribute => self.work.completed_pairs += 1,
+                .begin, .commit => {},
+            };
             return null;
         }
 
         fn finish(self: *Self, outcome: Outcome) Result {
             const result: Result = .{ .outcome = outcome, .diagnostic_delivery = self.delivery };
             self.terminal = result;
+            if (metered) self.work.phase = .terminal;
             return result;
         }
 
@@ -618,6 +739,273 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 
 const Recording = syntax_event.RecordingSink(16);
 const Bag = diagnostic.FixedBag(4);
+
+// Independent probes count attempted callouts, not just accepted records.
+const BudgetSink = struct {
+    records: [128]syntax_event.Event = undefined,
+    len: usize = 0,
+    attempts: usize = 0,
+    aborts: usize = 0,
+    statements: usize = 0,
+    pairs: usize = 0,
+    fail_at: ?usize = null,
+
+    fn record(self: *@This(), event: syntax_event.Event) !void {
+        const attempt = self.attempts;
+        self.attempts += 1;
+        if (self.fail_at == attempt) return error.Refused;
+        self.records[self.len] = event;
+        self.len += 1;
+        switch (event) {
+            .node_statement, .edge_statement, .attribute_statement => self.statements += 1,
+            .assignment => {
+                self.statements += 1;
+                self.pairs += 1;
+            },
+            .attribute => self.pairs += 1,
+            else => {},
+        }
+    }
+    pub fn beginDocument(self: *@This(), event: syntax_event.BeginDocument) !void {
+        try self.record(.{ .begin_document = event });
+    }
+    pub fn nodeStatement(self: *@This(), event: syntax_event.NodeStatement) !void {
+        try self.record(.{ .node_statement = event });
+    }
+    pub fn edgeStatement(self: *@This(), event: syntax_event.EdgeStatement) !void {
+        try self.record(.{ .edge_statement = event });
+    }
+    pub fn attributeStatement(self: *@This(), event: syntax_event.AttributeStatement) !void {
+        try self.record(.{ .attribute_statement = event });
+    }
+    pub fn assignment(self: *@This(), event: syntax_event.Attribute) !void {
+        try self.record(.{ .assignment = event });
+    }
+    pub fn attribute(self: *@This(), event: syntax_event.Attribute) !void {
+        try self.record(.{ .attribute = event });
+    }
+    pub fn endDocument(self: *@This()) !void {
+        try self.record(.end_document);
+    }
+    pub fn abortDocument(self: *@This(), reason: syntax_event.AbortReason) void {
+        self.aborts += 1;
+        self.records[self.len] = .{ .abort_document = reason };
+        self.len += 1;
+    }
+};
+
+const BudgetDiagnostics = struct {
+    bag: Bag = .{},
+    attempts: usize = 0,
+    reject: bool = false,
+    fn sink(self: *@This()) diagnostic.Sink {
+        return .{ .context = self, .emit_fn = emit };
+    }
+    fn emit(context: ?*anyopaque, item: diagnostic.Diagnostic) diagnostic.SinkError!void {
+        const self: *@This() = @ptrCast(@alignCast(context.?));
+        self.attempts += 1;
+        if (self.reject) return error.DiagnosticSinkFailure;
+        try self.bag.sink().emit(item);
+    }
+};
+
+fn checkBudgetPartition(source: []const u8, budgets: []const usize, options: Options, fail_at: ?usize, reject: bool) !usize {
+    var reference: BudgetSink = .{ .fail_at = fail_at };
+    var reference_diags: BudgetDiagnostics = .{ .reject = reject };
+    const expected = parse(source, &reference, reference_diags.sink(), options);
+    var events: BudgetSink = .{ .fail_at = fail_at };
+    var diags: BudgetDiagnostics = .{ .reject = reject };
+    var machine: Machine(*BudgetSink, true, true) = .{
+        .tokens = lex_machine.Scanner(true, true).init(source),
+        .events = &events,
+        .diagnostics = diags.sink(),
+        .options = options,
+    };
+    var calls: usize = 0;
+    var total: usize = 0;
+    var frontier: usize = 0;
+    while (true) : (calls += 1) {
+        try expect(calls <= 16 * source.len + 128);
+        const budget = budgets[calls % budgets.len];
+        const reads = machine.tokens.examinations;
+        const grammar = machine.audit.grammar;
+        const dispatch = machine.audit.dispatch;
+        const attempts = events.attempts;
+        const aborts = events.aborts;
+        const diagnostics = diags.attempts;
+        const before = machine.progress(0);
+        const progress = machine.advance(budget);
+        const examined = machine.tokens.examinations - reads;
+        try expectEqual(progress.work_used, examined + (machine.audit.grammar - grammar) + (machine.audit.dispatch - dispatch));
+        try expectEqual(machine.audit.dispatch - dispatch, events.attempts - attempts);
+        try expect(progress.work_used <= budget);
+        try expect(examined <= progress.work_used);
+        try expect(progress.source_frontier >= frontier);
+        try expect(progress.source_frontier <= source.len);
+        try expectEqual(events.statements, progress.completed_statements);
+        try expectEqual(events.pairs, progress.completed_pairs);
+        if (budget == 0) try std.testing.expectEqualDeep(before, progress);
+        if (progress.result == null) {
+            try expectEqual(aborts, events.aborts);
+            try expectEqual(diagnostics, diags.attempts);
+            if (budget != 0) try expect(progress.work_used != 0);
+        } else {
+            try expect(events.aborts - aborts <= 1);
+            try expect(diags.attempts - diagnostics <= 1);
+        }
+        total += progress.work_used;
+        frontier = progress.source_frontier;
+        if (progress.result) |result| {
+            try std.testing.expectEqualDeep(expected, result);
+            try expectEqual(Phase.terminal, progress.phase);
+            break;
+        }
+    }
+    try std.testing.expectEqualDeep(reference.records[0..reference.len], events.records[0..events.len]);
+    try std.testing.expectEqualDeep(reference_diags.bag.items(), diags.bag.items());
+    try expectEqual(reference.attempts, events.attempts);
+    try expectEqual(reference.aborts, events.aborts);
+    try expectEqual(reference_diags.attempts, diags.attempts);
+    const stopped = machine.progress(0);
+    const stopped_reads = machine.tokens.examinations;
+    const stopped_audit = machine.audit;
+    inline for (.{ 0, 1, std.math.maxInt(usize) }) |budget| {
+        try std.testing.expectEqualDeep(stopped, machine.advance(budget));
+        try expectEqual(stopped_reads, machine.tokens.examinations);
+        try std.testing.expectEqualDeep(stopped_audit, machine.audit);
+        try expectEqual(reference.attempts, events.attempts);
+        try expectEqual(reference.aborts, events.aborts);
+        try expectEqual(reference_diags.attempts, diags.attempts);
+    }
+    return total;
+}
+
+test "metered parser partitions preserve events diagnostics and independent work accounting" {
+    const sources = [_][]const u8{
+        "graph{}",                                                         "strict digraph named { a b; c->d; e--f }",
+        "graph { a[x=1][y=2] node[] z=3 a--b[w=4] graph[k=v] edge[k=v] }", "#line\n/* pre */graph { \"a\" + /* gap */ \"b\"[x=\"v\\\"q\" y=-.5] // tail\r\n }",
+        "",                                                                "graph {",
+        "graph {a[x=]}",                                                   "graph {a[x=1 y=]}",
+        "graph {a[x=1] @}",                                                "graph {a--b--c}",
+        "graph {subgraph {}}",                                             "graph { a:port }",
+        "graph {<html>}",                                                  "graph {/*",
+        "graph {\"unterminated",                                           "graph{} /*",
+        "digraph { a-> }",
+    };
+    for (sources) |source| {
+        const total = try checkBudgetPartition(source, &.{std.math.maxInt(usize)}, .{}, null, false);
+        try expectEqual(total, try checkBudgetPartition(source, &.{1}, .{}, null, false));
+        try expectEqual(total, try checkBudgetPartition(source, &.{2}, .{}, null, false));
+        try expectEqual(total, try checkBudgetPartition(source, &.{ 0, 1, 3, 0, 7, 2 }, .{}, null, false));
+    }
+}
+
+test "metered parser every prefix and callback failure preserve lifecycle" {
+    const source = "strict digraph \"g\" { a[x=1][y=2] node[] z=3 a->b[w=\"v\"+\"x\"] }";
+    for (0..source.len + 1) |end| {
+        _ = try checkBudgetPartition(source[0..end], &.{ 0, 1, 2 }, .{}, null, false);
+    }
+    // Includes failed begin, all payload variants, and failed commit.
+    for (0..9) |index| {
+        _ = try checkBudgetPartition(source, &.{1}, .{}, index, false);
+        _ = try checkBudgetPartition(source, &.{ 0, 3, 7 }, .{}, index, false);
+    }
+    _ = try checkBudgetPartition("graph {a[x=]}", &.{1}, .{}, null, true);
+    _ = try checkBudgetPartition("@", &.{1}, .{}, null, true);
+}
+
+test "metered parser capacities remain output limits not work budgets" {
+    inline for (.{ 0, 1, 2 }) |limit| {
+        _ = try checkBudgetPartition("graph { a[x=1] b[y=2] c=z }", &.{1}, .{ .max_statements = limit }, null, false);
+        _ = try checkBudgetPartition("graph { a[x=1] b[y=2] c=z }", &.{ 0, 2, 9 }, .{ .max_attributes = limit }, null, false);
+    }
+}
+
+test "metered parser yields before begin pair owner and commit dispatch" {
+    var events: BudgetSink = .{};
+    var machine: Machine(*BudgetSink, true, true) = .{
+        .tokens = lex_machine.Scanner(true, true).init("graph {a[x=1]}"),
+        .events = &events,
+        .diagnostics = diagnostic.discard,
+        .options = .{},
+    };
+    var dispatches: usize = 0;
+    while (machine.terminal == null) {
+        if (machine.work.phase == .dispatch) {
+            const before = events.attempts;
+            const pending = machine.work.action;
+            if (pending == .begin) try expect(!machine.begun);
+            if (pending == .node) {
+                try expectEqual(@as(usize, 1), machine.work.completed_pairs);
+                try expectEqual(@as(usize, 0), machine.work.completed_statements);
+            }
+            try expectEqual(@as(usize, 0), machine.advance(0).work_used);
+            try expectEqual(before, events.attempts);
+            const result = machine.advance(1);
+            try expectEqual(before + 1, events.attempts);
+            if (pending == .commit) try expect(result.result.?.outcome == .success);
+            dispatches += 1;
+        } else _ = machine.advance(1);
+    }
+    try expectEqual(@as(usize, 4), dispatches);
+}
+
+test "metered parser yields inside megabyte trivia and attribute values" {
+    const n = 1024 * 1024;
+    const source = try std.testing.allocator.alloc(u8, n + 32);
+    defer std.testing.allocator.free(source);
+    const cases = .{
+        .{ "graph {/*", "*/}", 'a' },
+        .{ "graph {a[x=\"", "\"]}", 'a' },
+        .{ "graph {", "}", ' ' },
+    };
+    inline for (cases) |parts| {
+        @memcpy(source[0..parts[0].len], parts[0]);
+        @memset(source[parts[0].len..][0..n], parts[2]);
+        @memcpy(source[parts[0].len + n ..][0..parts[1].len], parts[1]);
+        _ = try checkBudgetPartition(source[0 .. parts[0].len + n + parts[1].len], &.{1}, .{}, null, false);
+    }
+}
+
+test "ordinary parser compiles out pending work and audit storage" {
+    const Ordinary = Machine(*BudgetSink, false, false);
+    try expect(@FieldType(Ordinary, "work") == void);
+    try expect(@FieldType(Ordinary, "audit") == void);
+    try expect(@FieldType(lex_machine.Scanner(false, false), "source_frontier") == void);
+    try expect(@sizeOf(Ordinary) <= 536);
+}
+
+test "unaudited metered driver charges empty document exactly and runs to completion" {
+    var events: BudgetSink = .{};
+    var machine: Machine(*BudgetSink, true, false) = .{
+        .tokens = lex_machine.Scanner(true, false).init("graph{}"),
+        .events = &events,
+        .diagnostics = diagnostic.discard,
+        .options = .{},
+    };
+    // Nine examinations (including keyword lookahead and EOF), four grammar
+    // transitions, begin and commit. Finishing syntax does not commit for free.
+    const before_commit = machine.advance(14);
+    try expect(before_commit.result == null);
+    try expectEqual(Phase.dispatch, before_commit.phase);
+    try expectEqual(@as(usize, 1), events.attempts);
+    try expect(machine.runToCompletion().outcome == .success);
+    try expectEqual(@as(usize, 2), events.attempts);
+    try expectEqual(@as(usize, 15), try checkBudgetPartition("graph{}", &.{1}, .{}, null, false));
+}
+
+test "metered parser deterministic arbitrary-byte inputs match immediate grammar" {
+    var random = std.Random.DefaultPrng.init(0x627564676574);
+    var bytes: [96]u8 = undefined;
+    for (0..400) |_| {
+        random.random().bytes(&bytes);
+        const len = random.random().uintLessThan(usize, bytes.len + 1);
+        _ = try checkBudgetPartition(bytes[0..len], &.{ 0, 1, 5 }, .{}, null, false);
+        // A supported header also exercises arbitrary bytes inside the body.
+        @memcpy(bytes[0..7], "graph {");
+        _ = try checkBudgetPartition(bytes[0..@max(7, len)], &.{ 1, 2, 11 }, .{}, null, false);
+    }
+}
 
 test "empty graph commits with begin and end only, empty bag" {
     inline for (.{ "graph { }", "graph{}", "GRAPH {\r\n}\n" }) |source| {
@@ -1042,13 +1430,13 @@ test "parser state stays small (R-PERF-005 parser-state-size regression guard)" 
     // current measured value plus headroom (see docs/BASELINES.md), not an
     // architectural budget: if a slice legitimately grows the state, measure,
     // update the baseline doc, and raise this bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording)) <= 536);
+    try expect(@sizeOf(Machine(*Recording, false, false)) <= 536);
 }
 
 test "step is terminal-idempotent after success and after failure" {
     var events: Recording = .{};
     var bag: Bag = .{};
-    var machine: Machine(*Recording) = .{
+    var machine: Machine(*Recording, false, false) = .{
         .tokens = lex.Lexer.init("graph { a; }"),
         .events = &events,
         .diagnostics = bag.sink(),
@@ -1065,7 +1453,7 @@ test "step is terminal-idempotent after success and after failure" {
 
     var failed_events: Recording = .{};
     var failed_bag: Bag = .{};
-    var failed_machine: Machine(*Recording) = .{
+    var failed_machine: Machine(*Recording, false, false) = .{
         .tokens = lex.Lexer.init("graph {"),
         .events = &failed_events,
         .diagnostics = failed_bag.sink(),

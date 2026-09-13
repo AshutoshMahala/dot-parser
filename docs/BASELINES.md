@@ -168,6 +168,77 @@ and fixed-pool requirements are unchanged. The hosted ReleaseSmall
 All 194 tests pass in Debug and ReleaseSafe, all five examples run, and consumed
 ordinary/metered scanner probes compile for RISC-V32 and Wasm32 freestanding.
 
+## Internal grammar/event metering (2026-09-13)
+
+On Zig 0.16.0 / aarch64-macOS, persistent parser-machine storage is 520 B for
+ordinary parsing (unchanged), 592 B for metered parsing, and 616 B with test-only
+independent audit counters. The 72 B optional increase includes scanner frontier,
+cached token/action, phase and accepted-output counters. This is machine storage,
+not whole-call peak stack. Ordinary pending-work/audit fields have type `void`.
+No allocation, retained-document change, or event queue is added by this slice.
+
+Sequential ReleaseFast smoke runs used the same staging path/cache before and
+after, 2,733,345 source bytes and 200,000 statements. Each invocation reports a
+median of nine rounds after two warm-ups; ranges below cover three invocations.
+
+| Ordinary parse + validate | Before | After |
+| --- | --- | --- |
+| Default pools, reported median range | 12.98–13.19 ms | 11.91–13.95 ms |
+| Capacity hints, reported median range | 11.40–11.60 ms | 11.34–11.95 ms |
+
+These noisy, overlapping ranges do not establish a throughput improvement or a
+zero-cost claim. Comparing the middle reported medians gives roughly 2% more
+elapsed time for default pools and 4% for hints; treat that as a smoke signal,
+not a stable regression estimate. Retention remains 6,800,000 B, with arena
+backing capacities 37,620,470 B (default) / 8,400,148 B (hinted).
+
+All 202 tests pass in Debug and ReleaseSafe; the five examples run. A consumed,
+unaudited metered-parser probe using a counting sink compiles to object code
+for RISC-V32 and Wasm32 freestanding. This is a compilation check, not a board
+runtime, complete embedded memory measurement, or public bounded-session claim.
+The hosted ReleaseSmall `diagnostics_demo` is 202,944 B in this build; it consumes
+the ordinary parser, not the private metered specialization.
+
+## Short-token entry specialization (2026-09-13)
+
+Ordinary `Lexer.next()` now enters its known trivia state directly instead of
+loading and dispatching a saved continuation on each token. It cannot suspend;
+nonterminal completion always restores trivia. Metered scanners still resume
+saved state. There is no second lexical grammar, new source read, bulk scan,
+allocation, counter, or additional persistent field.
+
+Reproduce lexical measurements with `zig build bench-lexer -Doptimize=ReleaseFast`.
+The benchmark constructs sources outside the timer, scans without allocation,
+and consumes tags, spans and positions through a checksum. Each fixture repeats
+65,536 times. Same-path/cache sequential before/after batches on the environment
+above produced these ranges of reported medians (three invocations per version;
+each invocation has nine timed rounds after two warm-ups):
+
+| Fixture | Source bytes | Before | After |
+| --- | --- | --- | --- |
+| Short IDs/punctuation | 1,114,112 | 15.27–15.49 ms | 8.06–8.48 ms |
+| Short IDs/trivia | 983,040 | 5.36–5.51 ms | 5.12–6.01 ms |
+| Keywords/numerals | 3,670,016 | 11.15–11.20 ms | 9.91–10.50 ms |
+| Quotes/comments | 2,228,224 | 6.75–6.92 ms | 5.54–5.58 ms |
+| Longer identifier (64-byte ID) | 4,259,840 | 6.87–7.12 ms | 7.40–7.41 ms |
+
+Punctuation-heavy scanning takes roughly 47% less time comparing the middle
+reported medians. This is **not** an across-the-board speedup: the longer-ID
+fixture is about 5% slower by the same comparison, and trivia-heavy results
+overlap. These are compiler/workload-specific smoke measurements, not portable
+guarantees. Check all fixtures when revisiting code generation.
+
+Two uncontended end-to-end benchmark invocations per version reported default
+medians of 12.65–13.62 ms before / 12.29–12.59 ms after, and hinted medians of
+10.98–11.83 ms before / 10.64–10.95 ms after. The spread is too large to attribute
+a stable whole-parser improvement to this change.
+
+Persistent state and retained-document memory are unchanged. Hosted ReleaseSmall
+`diagnostics_demo` measures 202,912 B. All 204 tests pass in Debug and ReleaseSafe,
+all five examples run, and consumed ordinary/metered parser probes compile for
+RISC-V32 and Wasm32 freestanding. Tests explicitly check the ordinary entry
+invariant and resuming a metered scanner through unbounded `next()`.
+
 ## Binary size
 
 The figures in this section are the historical post-renderer snapshot; newer

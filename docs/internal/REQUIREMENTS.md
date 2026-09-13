@@ -310,9 +310,11 @@ from source progress, with resumable yield and terminal cancellation. The
 [execution-contract draft](../architecture/EXECUTION_CONTRACT.md) proposes the
 microstep accounting, callback exclusions, cleanup rules, fixed-storage first
 slice, and acceptance tests. It is a design specification, not a shipped API.
-The internal lexer now implements resumable one-examination scan steps and
-partition tests. The public parser still runs each token to completion;
-grammar/event budgets and cancellation are not implemented yet.
+The internal scanner and parser now implement separately charged source
+examinations, grammar transitions and syntax-event attempts, with partition and
+failure-lifecycle tests. Pending work and progress counters compile out of the
+ordinary parser. The public parser still runs to completion; fixed-storage
+bounded sessions and cancellation are not implemented yet.
 
 ### R-MOD-011: Active sinks have transactional lifecycle signals
 
