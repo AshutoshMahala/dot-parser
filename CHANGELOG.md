@@ -6,6 +6,18 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Support named/anonymous subgraphs as either edge endpoint and in mixed chains,
+  including nested endpoint edges. Retain syntax, never eager node-set expansion.
+  Breaking API: statement/iterator edges use `EdgeView` with `Endpoint` values;
+  chain views use `edgeLinks(chain)` / `edgeLinkCount(chain)`. Node-only raw pools
+  retain their record sizes. New `scoped_edges` / `scoped_edge_links` capacities
+  isolate generalized storage; node-only prefixes are promoted without copying.
+  Endpoint scopes do not add standalone statement entries. Scope records gain a
+  subtree boundary; explicit scratch frames now retain suspended outer-edge state.
+  Remove `Feature.subgraph_endpoint`; malformed endpoints are syntax errors.
+  Preserve operator-order validation, bounded work, cancellation and commit-only
+  publication. Add endpoint guide/example, prefix and failure-path tests.
+
 - Support named, anonymous and nested standalone subgraphs using compact scope
   records and iterative parsing/traversal. Preserve all global statements; expose
   direct/recursive scope statements, edges and written node references, plus
@@ -16,7 +28,7 @@ are called out here; compatibility shims are not retained.
   `FixedParseScratch` nesting frames; no legacy overload is retained.
   Allocator callers may supply a separate `scratch_allocator`. Add `max_nesting`
   and typed depth/scratch/scope-pool capacities; replace `Feature.subgraph` with
-  the still-deferred `Feature.subgraph_endpoint`. Entry/exit obey work budgets,
+  `Feature.subgraph_endpoint` (subsequently removed by endpoint support above). Entry/exit obey work budgets,
   cancellation and commit-only output. Add scope guide, example and benchmark.
 
 - Support raw port suffixes on node statements and all edge/chain endpoints.

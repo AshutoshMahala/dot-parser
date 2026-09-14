@@ -28,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
         const range: dot.AttributeRange = switch (statement) {
             .subgraph => continue, // Its own assignments/defaults appear in the global stream.
             .edge_chain => |chain| blk: {
-                try writer.print("chain {s}: {d} edges\n", .{ document.text(document.nodeReference(chain.first.left).?.identifier), @as(usize, chain.links.len) + 1 });
+                try writer.print("chain {s}: {d} edges\n", .{ document.text(document.nodeReference(chain.first.left.node).?.identifier), document.edgeLinkCount(chain) + 1 });
                 break :blk chain.first.attributes;
             },
             .assignment => |assignment| {
@@ -44,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
                 break :blk node.attributes;
             },
             .edge => |edge| blk: {
-                try writer.print("edge {s} {s} {s}:\n", .{ document.text(document.nodeReference(edge.left).?.identifier), edge.operator.lexeme(), document.text(document.nodeReference(edge.right).?.identifier) });
+                try writer.print("edge {s} {s} {s}:\n", .{ document.text(document.nodeReference(edge.left.node).?.identifier), edge.operator.lexeme(), document.text(document.nodeReference(edge.right.node).?.identifier) });
                 break :blk edge.attributes;
             },
         };

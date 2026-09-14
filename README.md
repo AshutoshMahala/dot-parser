@@ -27,14 +27,13 @@ strict digraph Routes {
   semicolons are optional, as in Graphviz.
 - Basic attributes: standalone assignments, graph/node/edge attribute statements,
   and node/edge lists. Duplicate keys and written order are preserved.
-- Named, anonymous and nested standalone subgraphs, with allocation-free scope views.
+- Named, anonymous and nested subgraphs, including edge endpoints, with allocation-free scope views.
 - Borrowed source spans, explicit caller memory, fixed-buffer operation.
 - Fixed-storage bounded sessions, with optional cooperative cancellation.
 - Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
-- Port suffixes (`a:out`, `a:n`, `a:out:e`) on node statements and every edge endpoint.
+- Port suffixes (`a:out`, `a:n`, `a:out:e`) on node statements and node endpoints.
 
-Everything else (HTML/non-ASCII bare IDs,
-subgraph edge endpoints, …) is deliberately deferred to later vertical
+Other features (HTML/non-ASCII bare IDs, semantic edge-product expansion, …) is deliberately deferred to later vertical
 slices. The authoritative construct-by-construct table is
 [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
 
@@ -42,6 +41,8 @@ See [the attribute example](examples/attributes.zig) for fixed-storage parsing
 and ordered attribute traversal. Parsing does not apply defaults or resolve values.
 See [the port example](examples/ports.zig) for compact node references and raw
 suffix traversal. Parsing does not resolve named ports or compass attachments.
+See [subgraph endpoints](examples/subgraph_endpoints.zig) for a uniform node/scope
+endpoint switch; parsing never eagerly expands node-to-node edge products.
 See [subgraph traversal](docs/SUBGRAPHS.md) and [the example](examples/subgraphs.zig)
 for direct/recursive scope views and explicit nesting scratch.
 
@@ -64,13 +65,13 @@ if (checked.documentValid()) {
         switch (statement) {
             .subgraph => |id| std.log.info("subgraph scope {d}", .{@intFromEnum(id)}),
             .edge_chain => |chain| std.log.info("chain {s}: {d} edges", .{
-                document.text(document.nodeReference(chain.first.left).?.identifier), @as(usize, chain.links.len) + 1,
+                document.text(document.nodeReference(chain.first.left.node).?.identifier), document.edgeLinkCount(chain) + 1,
             }),
             .node => |node| std.log.info("node {s}", .{document.text(document.nodeReference(node.reference).?.identifier)}),
             .edge => |edge| std.log.info("edge {s} {s} {s}", .{
-                document.text(document.nodeReference(edge.left).?.identifier),
+                document.text(document.nodeReference(edge.left.node).?.identifier),
                 edge.operator.lexeme(),
-                document.text(document.nodeReference(edge.right).?.identifier),
+                document.text(document.nodeReference(edge.right.node).?.identifier),
             }),
             .assignment => |assignment| std.log.info("assignment {s} = {s}", .{
                 document.text(assignment.key), document.text(assignment.value),
@@ -83,11 +84,15 @@ if (checked.documentValid()) {
 }
 ```
 
+The quick-start switch uses `.node` endpoints because its input is node-only.
+For arbitrary DOT, handle both `Endpoint` variants as shown in the
+[subgraph endpoint example](examples/subgraph_endpoints.zig).
+
 ### Build a linter
 
 For a pairwise engine-adapter view, use `document.edgeIterator()`. It visits
-single edges and chain links in source order without allocating; chain attributes
-are shared. See [the chain example](examples/edge_chains.zig) for fixed-pool sizing
+single edges and chain links as `EdgeView` values in operator source order without
+allocating; chain attributes are shared. See [the chain example](examples/edge_chains.zig) for fixed-pool sizing
 and [ownership](docs/OWNERSHIP.md#edge-chains-and-memory) for the retained layout.
 
 `parseBorrowed` and `validate` are separate stages, and the document is a

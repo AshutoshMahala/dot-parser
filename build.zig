@@ -59,6 +59,7 @@ pub fn build(b: *std.Build) void {
         "edge_chains",
         "ports",
         "subgraphs",
+        "subgraph_endpoints",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{

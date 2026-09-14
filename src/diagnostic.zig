@@ -482,14 +482,12 @@ pub const OperatorMismatch = struct {
 /// Remove a variant when its feature ships. Consumers use these typed values
 /// instead of parsing diagnostic text; this is not a cross-version wire enum.
 pub const Feature = enum {
-    subgraph_endpoint,
     html_identifier,
     non_ascii_identifier,
 
     /// Canonical English display name. Renderers may localize instead.
     pub fn name(self: Feature) []const u8 {
         return switch (self) {
-            .subgraph_endpoint => "subgraph edge endpoint",
             .html_identifier => "HTML-like identifier",
             .non_ascii_identifier => "non-ASCII identifier",
         };
@@ -512,6 +510,8 @@ pub const Capacity = struct {
         edge_link_index,
         ported_reference_pool,
         subgraph_pool,
+        scoped_edge_pool,
+        scoped_edge_link_pool,
         nesting_frames,
         nesting_depth,
         ported_reference_index,
@@ -536,6 +536,8 @@ pub const Capacity = struct {
                 .edge_link_index => "edge link index",
                 .ported_reference_pool => "ported reference pool",
                 .subgraph_pool => "subgraph pool",
+                .scoped_edge_pool => "subgraph-edge owner pool",
+                .scoped_edge_link_pool => "subgraph-edge link pool",
                 .nesting_frames => "nesting frame storage",
                 .nesting_depth => "nesting depth",
                 .ported_reference_index => "ported reference index",

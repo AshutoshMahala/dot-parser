@@ -170,7 +170,9 @@ Subgraph entry and exit each have a separately charged normal callback. One
 fixed-frame push happens in the opening grammar transition and one pop after an
 accepted exit; neither walks ancestors. Failure/cancellation resets active frame
 length and aborts staged output without synthetic close events. `completed_statements`
-counts a scope at accepted exit, while `max_statements` counts its reservation.
+counts a standalone scope in a separate post-close callback after lookahead rules
+out an edge operator. `max_statements` reserves the potential owner at its start;
+an endpoint scope does not add another statement beyond the edge owner.
 Scratch capacity exhaustion is a storage failure, distinct from nesting policy.
 
 ### Exclusions and bounded housekeeping
@@ -304,7 +306,8 @@ chain continuation), its optional first/second components and the most recent
 colon. A completed suffix dispatches `portedReference`, returning a document-local
 handle from the builder. This is one normal charged event attempt, including
 failure; it does not increment statement or pair progress. The private sink
-contract's other normal methods still return `E!void`.
+contract also returns `ScopeEntry` from `beginSubgraph`; other normal methods
+return `E!void`.
 
 The terminating lookahead is replayed through the resumed owning grammar state,
 not rescanned. A chain continuation similarly waits until its optional suffix is
@@ -317,3 +320,22 @@ allocator, cancellation protocol, or public event-sink API.
 Further syntax, recovery, public pull sinks, streaming input, total-work limits,
 scheduling and bounded validation are outside this contract's implemented scope.
 Measured optionality and callout costs are recorded in [baselines](../BASELINES.md).
+
+## Subgraph endpoint continuation
+
+The parser saves the enclosing scope and first-edge state in explicit nesting
+scratch, then resumes the appropriate left/right/link grammar position at close.
+No recursive parser call or source replay is needed. `beginSubgraph` returns an
+opaque scope ID and saved builder handles; `endSubgraph` returns those handles
+to the builder. They are values, never pointers into growable arrays.
+
+Generalized owners are reserved before right-endpoint body events. Promotion
+consumes a node-only prefix by range in O(1); subsequent links form an indexed
+per-owner list because nested owners may interleave. Generalized links retain
+both endpoints and their owner, allowing a four-way operator-order merge with
+ordinary edge/chain pools. No nested membership traversal or edge product occurs
+inside a parser work unit. Final owner completion attaches one attribute range.
+
+The extra pool metadata and larger fixed scratch frame are real costs; see
+[ownership](../OWNERSHIP.md#subgraph-endpoint-storage). Standalone completion now
+has its own callback after the closing scope has been disambiguated.

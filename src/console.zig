@@ -1134,18 +1134,18 @@ test "a mismatched source degrades instead of crashing the renderer" {
 }
 
 test "unsupported constructs put the feature name in the headline" {
-    const source = "graph { subgraph s { b } }";
+    const source = "graph { <table/> }";
     var buffer: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
 
     try renderBoxed(.{
         .code = .profile_unsupported_feature,
         .span = spanAt(8, 1, 9, 8),
-        .details = .{ .unsupported_feature = .subgraph_endpoint },
+        .details = .{ .unsupported_feature = .html_identifier },
     }, 1, .{ .source = source }, &writer);
 
     const text = writer.buffered();
-    try expect(std.mem.startsWith(u8, text, "┌─ Error 1: unsupported DOT construct: subgraph edge endpoint\n"));
+    try expect(std.mem.startsWith(u8, text, "┌─ Error 1: unsupported DOT construct: HTML-like identifier\n"));
     try expect(std.mem.indexOf(u8, text, "^^^^^^^^ the parse stopped at this deferred construct\n") != null);
 }
 

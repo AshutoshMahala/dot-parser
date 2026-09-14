@@ -19,9 +19,9 @@ pub fn main(init: std.process.Init) !void {
 
     var edges = document.edgeIterator();
     while (edges.next()) |edge| {
-        try writeReference(&document, edge.left, writer);
+        try writeReference(&document, edge.left.node, writer);
         try writer.print(" {s} ", .{edge.operator.lexeme()});
-        try writeReference(&document, edge.right, writer);
+        try writeReference(&document, edge.right.node, writer);
         try writer.writeAll("\n");
     }
     // Source-written qualified occurrences, not unique ports or declarations.

@@ -72,8 +72,8 @@ fn fuzzChains(_: void, smith: *std.testing.Smith) !void {
     var edges = parsed.document.?.edgeIterator();
     for (0..count) |i| {
         const edge = edges.next().?;
-        try equal(i, try std.fmt.parseInt(usize, parsed.document.?.text(parsed.document.?.nodeReference(edge.left).?.identifier), 10));
-        try equal(i + 1, try std.fmt.parseInt(usize, parsed.document.?.text(parsed.document.?.nodeReference(edge.right).?.identifier), 10));
+        try equal(i, try std.fmt.parseInt(usize, parsed.document.?.text(parsed.document.?.nodeReference(edge.left.node).?.identifier), 10));
+        try equal(i + 1, try std.fmt.parseInt(usize, parsed.document.?.text(parsed.document.?.nodeReference(edge.right.node).?.identifier), 10));
     }
     try expect(edges.next() == null);
 }
@@ -93,9 +93,9 @@ test "chains retain one source statement and share attributes without expanding 
     try equal(@as(usize, 3), doc.edge_links.len);
     try equal(@as(usize, 1), doc.nodes.len); // No implicit nodes.
     const chain = doc.statementAt(1).?.edge_chain;
-    try strings("a", doc.text(doc.nodeReference(chain.first.left).?.identifier));
-    try strings("\"b\"+\"B\"", doc.text(doc.nodeReference(chain.first.right).?.identifier));
-    const links = doc.edgeLinkSlice(chain.links).?;
+    try strings("a", doc.text(doc.nodeReference(chain.first.left.node).?.identifier));
+    try strings("\"b\"+\"B\"", doc.text(doc.nodeReference(chain.first.right.node).?.identifier));
+    const links = doc.edgeLinkSlice(chain.links.nodes).?;
     try equal(@as(usize, 2), links.len);
     try strings("-.5", doc.text(doc.nodeReference(links[0].right).?.identifier));
     try strings("d", doc.text(doc.nodeReference(links[1].right).?.identifier));
@@ -108,8 +108,8 @@ test "chains retain one source statement and share attributes without expanding 
     const right = [_][]const u8{ "\"b\"+\"B\"", "-.5", "d", "y", "q", "r" };
     for (left, right, 0..) |l, r, i| {
         const edge = edges.next().?;
-        try strings(l, doc.text(doc.nodeReference(edge.left).?.identifier));
-        try strings(r, doc.text(doc.nodeReference(edge.right).?.identifier));
+        try strings(l, doc.text(doc.nodeReference(edge.left.node).?.identifier));
+        try strings(r, doc.text(doc.nodeReference(edge.right.node).?.identifier));
         try equal(@as(u32, if (i < 3) 2 else if (i == 3) 0 else 1), edge.attributes.len);
     }
     try expect(edges.next() == null);
@@ -180,7 +180,7 @@ test "chains count as one statement and ordinary edges need no chain capacity" {
     try equal(@as(usize, 20), @sizeOf(dot.EdgeLink));
 }
 
-test "malformed chain suffixes are syntax errors and subgraph endpoints remain deferred" {
+test "malformed chain suffixes are syntax errors and subgraph endpoints parse" {
     inline for (.{ "graph {a--b--}", "graph {a--b--", "graph {a--b--c--}", "graph {a--b--c[x=]}", "graph {a--b--c[x=1]--d}" }) |input| {
         var a: dot.FixedDiagnosticBag(2) = .{};
         var b: dot.FixedDiagnosticBag(2) = .{};
@@ -195,8 +195,8 @@ test "malformed chain suffixes are syntax errors and subgraph endpoints remain d
     inline for (.{ "graph {a--b--{c}}", "graph {a--b--subgraph s {c}}" }) |input| {
         var parsed = dot.parseBorrowed(std.testing.allocator, input, dot.diagnostic.discard, .{});
         defer parsed.deinit(std.testing.allocator);
-        try expect(parsed.outcome == .unsupported_feature);
-        try expect(parsed.document == null);
+        try expect(parsed.outcome == .success);
+        try expect(parsed.document != null);
     }
 }
 

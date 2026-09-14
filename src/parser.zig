@@ -1,13 +1,14 @@
 //! Parser state machine (milestone 1, step 5).
 //!
-//! Current grammar (standalone scopes, attributes, ports and node-reference chains):
+//! Current grammar (subgraph endpoints, attributes, ports and mixed chains):
 //!
 //! ```text
 //! document  := "strict"? ("graph" | "digraph") identifier? "{" statement* "}" EOF
-//! statement := (node_ref attributes? | node_ref (edgeop node_ref)+ attributes?
+//! statement := (node_ref attributes? | endpoint (edgeop endpoint)+ attributes?
 //!            | identifier "=" identifier | ("graph" | "node" | "edge") attributes
 //!            | subgraph) ";"?
 //! subgraph  := ("subgraph" identifier?)? "{" statement* "}"
+//! endpoint  := node_ref | subgraph
 //! node_ref  := identifier (":" identifier (":" identifier)?)?
 //! attributes := ("[" (identifier "=" identifier (";" | ",")?)* "]")+
 //! edgeop    := "--" | "->"
@@ -158,7 +159,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
     return struct {
         const Self = @This();
 
-        const Action = enum { begin, begin_subgraph, end_subgraph, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit };
+        const Action = enum { begin, begin_subgraph, end_subgraph, subgraph_statement, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit };
         const Work = struct {
             token: lex.Token = undefined,
             action: Action = undefined,
@@ -218,6 +219,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         link_operator: syntax_event.EdgeOperator = undefined,
         link_operator_span: location.Span = undefined,
 
+        left_scope: ?u32 = null,
+        right_scope: ?u32 = null,
+        subgraph_role: syntax_event.ScopeRole = .left,
+        completed_scope: u32 = 0,
         left_port: ?u32 = null,
         right_port: ?u32 = null,
         link_port: ?u32 = null,
@@ -429,8 +434,16 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         return self.beginSubgraphBody(token);
                     },
                     .after_subgraph => {
-                        if (token.tag == .edge_directed or token.tag == .edge_undirected) return self.unsupportedAt(token.span, .subgraph_endpoint);
-                        return self.continueAfterStatement(token);
+                        if (token.tag == .edge_directed or token.tag == .edge_undirected) {
+                            self.operator = if (token.tag == .edge_undirected) .undirected else .directed;
+                            self.operator_span = token.span;
+                            self.state = .edge_right;
+                        } else {
+                            self.state = .completed;
+                            if (self.dispatchThenReplay(.subgraph_statement, token)) |result| return result;
+                            if (!metered and !cancellable) return self.continueAfterStatement(token);
+                            return null;
+                        }
                     },
                     .statement => return self.beginNext(token),
                     .after_identifier => switch (token.tag) {
@@ -455,15 +468,16 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         .identifier => {
                             self.right = token.span;
                             self.right_port = null;
+                            self.right_scope = null;
                             self.pending = .edge;
                             self.state = .edge_terminate;
                         },
-                        .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph_endpoint),
-                        else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
+                        .left_brace, .keyword_subgraph => return self.startSubgraph(token, .right),
+                        else => return self.unexpected(.{ .identifier = true, .left_brace = true, .subgraph_keyword = true }, .edge_endpoint, token),
                     },
                     .edge_terminate => switch (token.tag) {
                         .colon => {
-                            if (self.pending != .edge or self.right_port != null)
+                            if (self.pending != .edge or self.right_port != null or self.right_scope != null)
                                 return self.unexpected(edgeEndExpected(false), .statement_terminator, token);
                             self.startPort(.right, .edge_terminate, token.span);
                         },
@@ -474,7 +488,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                             self.state = .chain_right;
                         },
                         else => {
-                            return self.finishPending(token, edgeEndExpected(self.pending == .edge and self.right_port == null), .statement_terminator);
+                            return self.finishPending(token, edgeEndExpected(self.pending == .edge and self.right_port == null and self.right_scope == null), .statement_terminator);
                         },
                     },
                     .chain_right => switch (token.tag) {
@@ -484,8 +498,8 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                             self.link_port = null;
                             self.state = .chain_after_identifier;
                         },
-                        .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph_endpoint),
-                        else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
+                        .left_brace, .keyword_subgraph => return self.startSubgraph(token, .link),
+                        else => return self.unexpected(.{ .identifier = true, .left_brace = true, .subgraph_keyword = true }, .edge_endpoint, token),
                     },
                     .chain_after_identifier => {
                         if (token.tag == .colon) {
@@ -603,6 +617,8 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             self.statements += 1;
             self.left = token.span;
             self.left_port = null;
+            self.left_scope = null;
+            self.right_scope = null;
             self.pending = .node;
             self.state = .after_identifier;
             return null;
@@ -621,10 +637,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 },
                 .left_brace, .keyword_subgraph => {
                     if (self.beginStatement(token)) |result| return result;
-                    self.subgraph_start = token.span;
-                    self.subgraph_name = null;
-                    if (token.tag == .left_brace) return self.beginSubgraphBody(token);
-                    self.state = .subgraph_name;
+                    return self.startSubgraph(token, .left);
                 },
                 .keyword_graph, .keyword_node, .keyword_edge => {
                     if (self.beginStatement(token)) |result| return result;
@@ -653,6 +666,19 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             return if (self.options.scratch) |scratch| scratch.len else 0;
         }
 
+        fn firstEdge(self: *const Self) syntax_event.EdgeStatement {
+            return .{ .left = self.left, .left_port = self.left_port, .left_scope = self.left_scope, .operator = self.operator, .operator_span = self.operator_span, .right = self.right, .right_port = self.right_port, .right_scope = self.right_scope };
+        }
+
+        fn startSubgraph(self: *Self, token: lex.Token, role: syntax_event.ScopeRole) ?Result {
+            self.subgraph_role = role;
+            self.subgraph_start = token.span;
+            self.subgraph_name = null;
+            if (token.tag == .left_brace) return self.beginSubgraphBody(token);
+            self.state = .subgraph_name;
+            return null;
+        }
+
         fn beginSubgraphBody(self: *Self, token: lex.Token) ?Result {
             if (self.nestingDepth() == self.options.max_nesting) return self.fail(.{
                 .code = .resource_capacity_exhausted,
@@ -660,7 +686,21 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .details = .{ .capacity = .{ .resource = .nesting_depth, .limit = self.options.max_nesting } },
             });
             const scratch = self.options.scratch orelse return self.scratchFailure(error.NestingStorageExhausted, token.span);
-            scratch.push(self.open_brace_span.?) catch |err| return self.scratchFailure(err, token.span);
+            scratch.push(.{
+                .parent_open = self.open_brace_span.?,
+                .start = self.subgraph_start,
+                .role = self.subgraph_role,
+                .edge = if (self.subgraph_role == .left) null else if (self.subgraph_role == .link) self.firstEdge() else .{
+                    .left = self.left,
+                    .left_port = self.left_port,
+                    .left_scope = self.left_scope,
+                    .operator = self.operator,
+                    .operator_span = self.operator_span,
+                    .right = self.left,
+                },
+                .link_operator = if (self.subgraph_role == .link) self.link_operator else null,
+                .link_operator_span = if (self.subgraph_role == .link) self.link_operator_span else null,
+            }) catch |err| return self.scratchFailure(err, token.span);
             self.open_brace_span = token.span;
             self.state = .statement;
             return self.schedule(.begin_subgraph, token);
@@ -780,15 +820,57 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         .name_span = self.name_span,
                     }) catch |err| return self.sinkFailure(err);
                 },
-                .begin_subgraph => self.events.beginSubgraph(.{ .start = self.subgraph_start, .name = self.subgraph_name }) catch |err| return self.sinkFailure(err),
-                .end_subgraph => {
-                    self.events.endSubgraph(.{ .close = token.span }) catch |err| return self.sinkFailure(err);
-                    self.open_brace_span = self.options.scratch.?.pop();
+                .begin_subgraph => {
+                    const stack = self.options.scratch.?;
+                    const frame = &stack.frames[stack.len - 1];
+                    frame.entry = self.events.beginSubgraph(.{
+                        .start = frame.start,
+                        .name = self.subgraph_name,
+                        .role = frame.role,
+                        .edge = frame.edge,
+                        .link_operator = frame.link_operator,
+                        .link_operator_span = frame.link_operator_span,
+                    }) catch |err| return self.sinkFailure(err);
                 },
+                .end_subgraph => {
+                    const stack = self.options.scratch.?;
+                    const frame = stack.frames[stack.len - 1];
+                    self.events.endSubgraph(.{ .close = token.span, .entry = frame.entry }) catch |err| return self.sinkFailure(err);
+                    _ = stack.pop();
+                    self.open_brace_span = frame.parent_open;
+                    self.completed_scope = frame.entry.id;
+                    if (frame.role == .left) {
+                        self.left = frame.start;
+                        self.left_scope = frame.entry.id;
+                        self.left_port = null;
+                        self.pending = .node;
+                        self.state = .after_subgraph;
+                    } else {
+                        const edge = frame.edge.?;
+                        self.left = edge.left;
+                        self.left_port = edge.left_port;
+                        self.left_scope = edge.left_scope;
+                        self.right = edge.right;
+                        self.right_port = edge.right_port;
+                        self.right_scope = edge.right_scope;
+                        self.operator = edge.operator;
+                        self.operator_span = edge.operator_span;
+                        if (frame.role == .right) {
+                            self.right = frame.start;
+                            self.right_port = null;
+                            self.right_scope = frame.entry.id;
+                        }
+                        self.pending = if (frame.role == .right) .edge else .edge_chain;
+                        self.state = .edge_terminate;
+                    }
+                },
+                .subgraph_statement => self.events.subgraphStatement(self.completed_scope) catch |err| return self.sinkFailure(err),
                 .node => self.events.nodeStatement(.{ .identifier = self.left, .port = self.left_port }) catch |err| return self.sinkFailure(err),
                 .edge => self.events.edgeStatement(.{
                     .left = self.left,
                     .left_port = self.left_port,
+                    .left_scope = self.left_scope,
+                    .right_scope = self.right_scope,
                     .operator = self.operator,
                     .operator_span = self.operator_span,
                     .right = self.right,
@@ -820,6 +902,8 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .edge_chain => self.events.edgeChainStatement(.{
                     .left = self.left,
                     .left_port = self.left_port,
+                    .left_scope = self.left_scope,
+                    .right_scope = self.right_scope,
                     .operator = self.operator,
                     .operator_span = self.operator_span,
                     .right = self.right,
@@ -837,13 +921,13 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 },
             }
             if (metered) switch (action) {
-                .node, .edge, .edge_chain, .attribute_statement, .end_subgraph => self.work.completed_statements += 1,
+                .node, .edge, .edge_chain, .attribute_statement, .subgraph_statement => self.work.completed_statements += 1,
                 .assignment => {
                     self.work.completed_statements += 1;
                     self.work.completed_pairs += 1;
                 },
                 .attribute => self.work.completed_pairs += 1,
-                .begin, .begin_subgraph, .commit, .edge_link, .ported_reference => {},
+                .begin, .begin_subgraph, .end_subgraph, .commit, .edge_link, .ported_reference => {},
             };
             return null;
         }
@@ -1158,12 +1242,16 @@ const BudgetSink = struct {
     pub fn edgeStatement(self: *@This(), event: syntax_event.EdgeStatement) !void {
         try self.record(.{ .edge_statement = event });
     }
-    pub fn beginSubgraph(self: *@This(), event: syntax_event.BeginSubgraph) !void {
+    pub fn beginSubgraph(self: *@This(), event: syntax_event.BeginSubgraph) !syntax_event.ScopeEntry {
         try self.record(.{ .begin_subgraph = event });
+        return .{ .id = @intCast(self.len) };
+    }
+    pub fn subgraphStatement(self: *@This(), id: u32) !void {
+        try self.record(.{ .subgraph_statement = id });
+        self.statements += 1;
     }
     pub fn endSubgraph(self: *@This(), event: syntax_event.EndSubgraph) !void {
         try self.record(.{ .end_subgraph = event });
-        self.statements += 1;
     }
     pub fn portedReference(self: *@This(), event: syntax_event.PortedReference) !u32 {
         try self.record(.{ .ported_reference = event });
@@ -1716,13 +1804,13 @@ test "failures before a supported header emit no events but do fill the bag" {
 
 test "unsupported outcome is a boundary, not a whole-input validity claim" {
     // The remainder after the unsupported introducer is malformed (`@`),
-    // but the parse stopped at `subgraph`: validity beyond the boundary is
+    // but the parse stopped at `<`: validity beyond the boundary is
     // unknown by design, and the outcome must not promise otherwise.
     var events: Recording = .{};
     var bag: Bag = .{};
-    const result = parse("graph { a -- subgraph @", &events, bag.sink(), .{});
+    const result = parse("graph { a -- < @", &events, bag.sink(), .{});
     try expect(result.outcome == .unsupported_feature);
-    try expectEqual(diagnostic.Feature.subgraph_endpoint, bag.items()[0].details.unsupported_feature);
+    try expectEqual(diagnostic.Feature.html_identifier, bag.items()[0].details.unsupported_feature);
 }
 
 test "deferred keywords in illegal positions are syntax errors, not unsupported" {
@@ -1751,8 +1839,8 @@ test "deferred keywords in illegal positions are syntax errors, not unsupported"
 
 test "recognized-but-deferred constructs mid-document abort as unsupported" {
     inline for (.{
-        .{ "graph { a -- { b }; }", diagnostic.Feature.subgraph_endpoint },
-        .{ "graph { a -- subgraph s; }", diagnostic.Feature.subgraph_endpoint },
+        .{ "graph { a -- <b>; }", diagnostic.Feature.html_identifier },
+        .{ "graph { <b> -- a; }", diagnostic.Feature.html_identifier },
     }) |case| {
         var events: Recording = .{};
         var bag: Bag = .{};
@@ -1936,7 +2024,7 @@ test "attribute pairs stream before owners and abort if any event is refused" {
 }
 
 test "nested scope callbacks and all prefixes preserve budget partitioning" {
-    const source = "digraph { subgraph s { a:p->b->c[x=1] {z=q} } {} }";
+    const source = "digraph { a->subgraph s { a:p->b->{c}[x=1] {z=q} }->{} }";
     const total = try checkBudgetPartition(source, &.{1}, .{}, null, false);
     try expectEqual(total, try checkBudgetPartition(source, &.{ 0, 3, 17 }, .{}, null, false));
     for (0..source.len + 1) |end| _ = try checkBudgetPartition(source[0..end], &.{ 0, 1, 2 }, .{}, null, false);

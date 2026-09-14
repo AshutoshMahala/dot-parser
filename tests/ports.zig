@@ -25,14 +25,14 @@ test "ports preserve source occurrences and chain endpoints without interpreting
     const first = edges.next().?;
     const second = edges.next().?;
     try deep(first.right, second.left);
-    try strings("a", doc.text(doc.nodeReference(first.left).?.identifier));
-    try strings("out", doc.text(doc.nodeReference(first.left).?.port.?.first));
-    try strings("e", doc.text(doc.nodeReference(first.left).?.port.?.second.?));
-    try strings("unknown", doc.text(doc.nodeReference(second.right).?.port.?.second.?));
+    try strings("a", doc.text(doc.nodeReference(first.left.node).?.identifier));
+    try strings("out", doc.text(doc.nodeReference(first.left.node).?.port.?.first));
+    try strings("e", doc.text(doc.nodeReference(first.left.node).?.port.?.second.?));
+    try strings("unknown", doc.text(doc.nodeReference(second.right.node).?.port.?.second.?));
     try equal(@as(usize, 2), doc.attributeSlice(second.attributes).?.len);
     const third = edges.next().?;
-    try expect(doc.nodeReference(third.right).?.port == null);
-    try expect(!std.meta.eql(third.left, doc.nodes[2].reference)); // Repeated spelling, separate occurrence.
+    try expect(doc.nodeReference(third.right.node).?.port == null);
+    try expect(!std.meta.eql(third.left.node, doc.nodes[2].reference)); // Repeated spelling, separate occurrence.
     try expect(edges.next() == null);
 }
 
@@ -117,7 +117,7 @@ fn fuzzPorts(_: void, smith: *std.testing.Smith) !void {
         const edge = edges.next().?;
         inline for (.{ "left", "right" }, 0..) |field, offset| {
             const index = i + offset;
-            const view = doc.nodeReference(@field(edge, field)).?;
+            const view = doc.nodeReference(@field(edge, field).node).?;
             try equal(index, try std.fmt.parseInt(usize, doc.text(view.identifier), 10));
             try equal(qualified[index], view.port != null);
             if (view.port) |port| {

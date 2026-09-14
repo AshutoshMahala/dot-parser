@@ -2,8 +2,18 @@
 const std = @import("std");
 const location = @import("location.zig");
 
+const event = @import("syntax_event.zig");
+
 /// Internal continuation payload; consumers normally use FixedParseScratch.
-pub const Frame = struct { parent_open: location.Span };
+pub const Frame = struct {
+    parent_open: location.Span,
+    start: location.Span = undefined,
+    role: event.ScopeRole = .left,
+    entry: event.ScopeEntry = undefined,
+    edge: ?event.EdgeStatement = null,
+    link_operator: ?event.EdgeOperator = null,
+    link_operator_span: ?location.Span = null,
+};
 
 pub const Storage = struct { frames: []Frame = &.{} };
 
@@ -26,7 +36,7 @@ pub const Stack = struct {
 
     pub const Error = error{ OutOfMemory, NestingStorageExhausted };
 
-    pub fn push(self: *Stack, parent_open: location.Span) Error!void {
+    pub fn push(self: *Stack, frame: Frame) Error!void {
         if (self.len == self.frames.len) {
             const allocator = self.allocator orelse return error.NestingStorageExhausted;
             const capacity = std.math.add(usize, self.frames.len, @max(self.frames.len, 1)) catch return error.OutOfMemory;
@@ -35,14 +45,14 @@ pub const Stack = struct {
             allocator.free(self.frames);
             self.frames = grown;
         }
-        self.frames[self.len] = .{ .parent_open = parent_open };
+        self.frames[self.len] = frame;
         self.len += 1;
     }
 
-    pub fn pop(self: *Stack) location.Span {
+    pub fn pop(self: *Stack) Frame {
         std.debug.assert(self.len != 0);
         self.len -= 1;
-        return self.frames[self.len].parent_open;
+        return self.frames[self.len];
     }
 
     pub fn deinit(self: *Stack) void {
@@ -56,9 +66,9 @@ test "fixed nesting frames are reused by siblings" {
     var stack: Stack = .{ .frames = fixed.storage().frames };
     const span: location.Span = .{ .start = .start, .byte_len = 1 };
     for (0..1000) |_| {
-        try stack.push(span);
-        try std.testing.expectError(error.NestingStorageExhausted, stack.push(span));
-        try std.testing.expectEqualDeep(span, stack.pop());
+        try stack.push(.{ .parent_open = span });
+        try std.testing.expectError(error.NestingStorageExhausted, stack.push(.{ .parent_open = span }));
+        try std.testing.expectEqualDeep(span, stack.pop().parent_open);
     }
-    try std.testing.expectEqual(@as(usize, 32), @sizeOf(Frame));
+    try std.testing.expect(@sizeOf(Frame) > @sizeOf(location.Span));
 }

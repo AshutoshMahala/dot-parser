@@ -30,8 +30,8 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | Whitespace / line endings | **Supported** | Space, tab; LF, CRLF, and standalone CR each end a line |
 | Comments (`//`, `/* */`, `#`) | **Supported** | Skipped without retention; see compatibility notes below |
 | Standalone subgraphs (`{ … }`, `subgraph { … }`, `subgraph s { … }`) | **Supported** | Named/anonymous/nested scope occurrences; no semantic merging |
-| Subgraphs as edge endpoints | Deferred | Feature `subgraph_endpoint`; no edge-product expansion |
-| Edge chains (`a -- b -- c`) | **Supported** | Node-reference endpoints, including ports; one source statement with ordered continuation links |
+| Subgraphs as edge endpoints | **Supported** | Named/anonymous/nested endpoints and mixed chains; no edge-product expansion |
+| Edge chains (`a -- b -- c`) | **Supported** | Node or subgraph endpoints; one source statement with ordered continuation links |
 | Attribute lists (`[color=red]`) | **Supported** | Attached to nodes, edges or whole chains; adjacent groups flattened, duplicates retained |
 | Attribute statements (`graph`/`node`/`edge` + `[…]`) | **Supported** | Target and ordered pairs retained; defaults are not applied |
 | ID assignments (`rankdir = LR`) | **Supported** | Separate assignment statements, retained as written |
@@ -71,8 +71,9 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 - **Limits**: retained positions address at most 4 GiB of source
   (`storage_failure: .source_offset_overflow` beyond that);
   `max_statements` bounds statement count and `max_attributes` bounds total
-  key/value pairs, including standalone assignments. Subgraph occurrences count as
-  statements; the root does not. `max_nesting` bounds active subgraph depth (root 0).
+  key/value pairs, including standalone assignments. Standalone subgraphs count as
+  statements; endpoint subgraphs do not add a statement beyond their owning edge.
+  Statements inside either kind of body still count; the root does not. `max_nesting` bounds active subgraph depth (root 0).
   These limits do not bound lexical work.
 
 ## Identifier lexical rules
@@ -156,10 +157,11 @@ See [ownership](OWNERSHIP.md#attributes-and-memory) for pool layout and limits.
 ## Edge chains
 
 `a -> b -> c [color=red]` is one `.edge_chain` statement. All supported
-identifier forms, port suffixes and intervening comments work at each endpoint. The written
+identifier forms and port suffixes work at node endpoints. Subgraphs can occupy
+either endpoint and mix with nodes inside a chain; comments work between tokens. The written
 operators are retained independently; validation reports every mismatched
-operator in source order. Missing endpoints are syntax errors. Subgraph endpoints
-remain unsupported, including inside a chain.
+operator in source order. Missing endpoints are syntax errors. Subgraphs are retained as scope occurrences,
+not eagerly expanded edge products.
 
 Attributes follow the entire chain; `a -> b [x=1] -> c` is invalid. Adjacent
 attribute groups retain the existing flattening policy. A chain does not
@@ -181,8 +183,8 @@ spellings and intervening trivia work in each component. Quoted colons are
 identifier content: `"a:b"` is a bare reference, not a suffix. Reserved keywords
 still need quoting. Missing components or a third colon are syntax errors;
 EOF after a colon points back to that colon using a typed secondary location.
-Suffixes are allowed on node statements and every ordinary/chain endpoint,
-not on document names, assignments, or attribute keys/values.
+Suffixes are allowed on node statements and node endpoints in ordinary/mixed chains,
+not on subgraph endpoints, document names, assignments, or attribute keys/values.
 
 The syntax tree preserves `first` and optional `second` raw ranges. It does not
 decide whether `a:n` means a named port or a compass direction; Graphviz's
@@ -202,7 +204,7 @@ an assigned arrival/departure direction.
 See [port ownership](OWNERSHIP.md#node-references-and-ports) and the
 [runnable example](../examples/ports.zig).
 
-## Standalone subgraphs
+## Subgraphs
 
 The grammar is `("subgraph" ID?)? "{" statement* "}"`, with an optional
 statement semicolon. A scope may contain every supported statement, including
@@ -215,10 +217,13 @@ assignments, repeated node references and order remain syntax, not effective
 defaults or resolved membership. No cycle detection or implicit node creation
 occurs. Parsing and traversal are iterative, not recursive.
 
-A subgraph followed by an edge operator, or a subgraph introducer in a right
-edge-endpoint position, stops with `Feature.subgraph_endpoint`. No partial
-document is returned, and syntax beyond that boundary is not validated.
-Malformed standalone headers are ordinary syntax errors.
+A subgraph followed by an edge operator becomes the left endpoint of that edge
+statement. Right endpoints and chain continuations can also be subgraphs:
+`a -> {b; c} -> subgraph s {d}`. Empty endpoints remain explicit scopes,
+even though later semantic expansion may produce no node-to-node edges.
+Only the edge statement owns trailing attributes. A standalone scope cannot take
+a bracket suffix, and a subgraph endpoint cannot take a port suffix.
+Malformed headers/endpoints are syntax errors, not unsupported-feature boundaries.
 
 See [scope APIs](SUBGRAPHS.md), [memory](OWNERSHIP.md#subgraphs-and-nesting-scratch)
 and [the runnable example](../examples/subgraphs.zig).

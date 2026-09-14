@@ -130,16 +130,16 @@ See [the runnable example](../examples/attributes.zig).
 
 ## Edge chains and memory
 
-A single edge still occupies 36 bytes on the native target. A chain uses one
+A node-only single edge occupies 36 bytes on the native target. A node-only chain uses one
 44-byte `EdgeChainStatement` plus one 20-byte `EdgeLink` for each continuation
 after its first edge, and one 8-byte order entry. A chain of N edges therefore
 retains `52 + 20 * (N - 1)` bytes, excluding port records, attributes and borrowed source.
 No endpoint strings or attribute pairs are copied.
 
 `chain.first` stores the first edge, including the whole chain's attribute range.
-`document.edgeLinkSlice(chain.links)` returns checked, ordered continuations:
-each stores its operator, operator source range, and right endpoint. Its left
-endpoint is the preceding right endpoint.
+`document.edgeLinks(chain)` walks continuations as uniform `EdgeView` values.
+`document.edgeLinkCount(chain)` returns their count in O(1). For raw node-only
+storage, `edgeLinkSlice(range)` remains a checked lookup into `edge_links`.
 
 ```zig
 var storage: dot.FixedDocumentStorage(.{
@@ -147,17 +147,18 @@ var storage: dot.FixedDocumentStorage(.{
 }) = .{}; // Enough for a -> b -> c -> d [color=red].
 ```
 
-The `edges` pool contains only single-edge statements; `edge_chains` contains
-chain owners. `document.statements()` preserves their written grouping.
+The `edges` pool contains only node-to-node single-edge statements; `edge_chains`
+contains node-only chain owners. Statements involving subgraphs use separate pools.
+`document.statements()` preserves their written grouping.
 For engine adapters, `document.edgeIterator()` visits both ordinary edges and
-chain links in source order as by-value `EdgeStatement` views, sharing each
+chain links in source order as by-value `EdgeView` values, sharing each
 chain's attribute range. It allocates nothing and does not materialize an
 expanded graph. Iteration and validation are separate, unbudgeted operations.
 
 Continuation events stream directly into the final link pool before their owner
-is committed. Yield retains staged data; cancel or failure discards it. The two
-new pool capacities default to zero, so fixed callers must reserve them to
-accept chains. Existing single-edge inputs need no extra pool space. Unused
+is committed. Yield retains staged data; cancel or failure discards it.
+`edge_chains` and `edge_links` capacities default to zero, so fixed callers must
+reserve them to accept node-only chains. Existing single-edge inputs need no extra pool space. Unused
 pools still add fixed metadata to document/builder/session structs; compile-time
 feature removal is not implemented.
 
@@ -165,8 +166,10 @@ See [the runnable chain example](../examples/edge_chains.zig).
 
 ## Node references and ports
 
-`NodeStatement.reference`, edge `left`/`right`, and continuation `right` are
-8-byte `NodeReference` values. Call `document.nodeReference(reference)` to get
+`NodeStatement.reference` and raw node-only edge/link endpoints are
+8-byte `NodeReference` values. Public `EdgeView` endpoints instead use the
+`Endpoint` union: switch on `.node` to get a `NodeReference`, or `.subgraph`
+to get a `ScopeId`. Call `document.nodeReference(reference)` to get
 a checked `NodeReferenceView` containing the base `identifier: Range` and
 optional `port: PortSyntax`. Pass those ranges to the existing text/decoding
 helpers. The accessor returns null for an out-of-bounds reference; handles are
@@ -198,20 +201,20 @@ this is not compile-time feature removal. See [current layouts](BASELINES.md).
 
 ## Subgraphs and nesting scratch
 
-Each subgraph retains a 32-byte record plus one 8-byte global order entry:
-**40 bytes per occurrence**, excluding statements inside it and their normal
-payloads. The record holds its parent ID, optional raw name, whole-source range,
-and a contiguous interval in the global statement order. Descendants are not
-copied into ancestors; no scope tag is added to existing node/edge records.
-The new pool still adds fixed document/builder/session metadata.
+Each subgraph retains a 36-byte record: parent ID, optional name, source range,
+body statement interval and one-past descendant-scope index. Standalone scopes
+also use an 8-byte order entry (**44 bytes per empty standalone occurrence**).
+Endpoint scopes have no extra statement entry: their edge owns the statement.
+Descendants are never copied into ancestors.
 
-A temporary frame saves the enclosing opening-brace span for diagnostics:
-32 bytes on the measured native 64-bit target. Active scratch is proportional
-to maximum nesting depth D, not total subgraphs G. One frame handles any number
-of non-nested siblings. Fixed RAM is reserved capacity: `40 * G_capacity`
-for empty subgraphs and order, plus `32 * D_capacity` scratch, excluding source,
-session/metadata, diagnostics and other statement pools. Use `byte_size` and
-`@sizeOf` on your target rather than assuming native frame sizes.
+Temporary frames now preserve a suspended outer edge as well as scope/diagnostic
+state: **272 bytes per reserved nesting level** on the measured native target.
+This is an increase from the standalone-only 32-byte frame, including for standalone
+scopes. One frame still handles arbitrarily many sequential siblings. Scratch is
+O(maximum active depth), never O(total scopes). Fixed RAM is reserved capacity:
+`36 * subgraphs_capacity + 8 * statements_capacity + 272 * nesting_capacity`,
+plus all other pools, source/session metadata and diagnostics. Use `byte_size`
+and `@sizeOf` on your target; these are native, not universal sizes.
 
 ```zig
 var pools: dot.FixedDocumentStorage(.{ .statements = 20, .subgraphs = 20 }) = .{};
@@ -226,7 +229,8 @@ to zero capacity, sufficient for flat documents; it is never hidden allocation.
 `subgraphs` counts retained occurrences; `nesting` counts simultaneously active
 frames. `max_nesting` is a separate policy limit; root depth is zero.
 Scratch/pool exhaustion is a storage failure, while exceeding the policy is
-resource exhaustion. Scope occurrences also consume `max_statements`.
+resource exhaustion. Only standalone scope owners consume `max_statements`; endpoint scopes belong
+to their edge owner. Body statements count normally.
 
 Allocator-backed parsing grows temporary frames only when required, doubling
 capacity and reusing it for siblings. `ParseOptions.scratch_allocator` defaults
@@ -279,3 +283,21 @@ identifier's raw range but have no separately retained trivia records.
 
 Runnable versions of all three strategies are in
 [../examples/](../examples/).
+
+## Subgraph endpoint storage
+
+Ordinary node-only records remain 36/44/20 bytes (edge/chain/link). A statement
+involving a subgraph uses a 64-byte `ScopedEdgeStatement`, one 8-byte order entry,
+and 44-byte `ScopedEdgeLink` continuations. Any node-only prefix before the first
+right-hand subgraph remains in the 20-byte link pool: promotion records its range
+in O(1), without copying a long prefix. Links after promotion carry an owner index
+and next-link index so nested statements can interleave without moving records.
+All sizes exclude scopes, ports, attributes and borrowed source.
+
+Reserve `scoped_edges` and `scoped_edge_links` in fixed storage; the same fields
+are optional allocator capacity hints. Zero capacity accepts no records in that
+pool, not zero metadata overhead. Unused generalized pools allocate no backing
+storage, but document/builder/session values grow; feature elimination is not yet
+implemented. No semantic node sets or Cartesian edge products are materialized.
+
+See [the endpoint example](../examples/subgraph_endpoints.zig).

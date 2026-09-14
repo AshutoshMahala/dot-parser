@@ -16,7 +16,7 @@ while (scopes.next()) |scope| {
 
     var children = scope.statements(.direct);
     while (children.next()) |statement| {
-        // .subgraph carries the child's ScopeId; other variants are unchanged.
+        // .subgraph is a standalone child owner; edge endpoints may also name scopes.
         _ = statement;
     }
 }
@@ -41,12 +41,13 @@ instead of manually converting them.
 
 | View | Direct | Recursive |
 | --- | --- | --- |
-| `scope.statements(mode)` | Immediate statements, including child scope owners | Every descendant statement, including scope owners |
+| `scope.statements(mode)` | Immediate statements, including standalone child scope owners | Every descendant statement, including scope owners |
 | `scope.subgraphs(mode)` | Immediate child scopes | All descendant scopes |
 | `scope.edges(mode)` | Edges written directly in this scope | Also edges written in descendants |
 | `scope.nodeReferences(mode)` | References written directly in this scope | Also references written in descendants |
 
-None includes the scope's own owner statement. Edge views yield ordinary edges
+None includes the scope's own owner statement. Endpoint scopes are not extra
+statements; enumerate `scope.subgraphs(mode)` to see all child scopes. Edge views yield ordinary edges
 and chain pairs in written order, sharing chain attributes. Node-reference views
 include node statements and edge-only endpoints; repeated references remain,
 but a chain middle is visited once as written. Resolve each with
@@ -96,10 +97,15 @@ Keep the referenced `Document` value alive at a stable address while using a vie
 or iterator. Copying a document does not rebind existing views. Pool reuse invalidates
 them; scope views have no deinit.
 
-Direct statement traversal skips a child body in O(1), so a complete traversal
-is O(immediate statements). Recursive traversal is O(descendant statements).
-Subgraph/reference/edge filters scan the selected statements, plus any yielded
-chain links: their cost is not just the number of returned results.
+Direct statement traversal skips each child body in O(1), for
+O(immediate statements + immediate child scopes) total work. Recursive statement
+traversal is O(descendant statements). Child-scope traversal uses subtree intervals:
+O(returned scopes) for either mode. Node-reference traversal scans selected
+statements and their chain links, skipping subgraph-valued endpoints themselves.
+Its order is statement preorder then chain order, not a lexical token stream.
+Scope edge traversal seeks into four ordered pools in logarithmic time, then scans
+operators within the scope source range. Direct filtering also scans descendant
+scope headers; it can inspect descendant operators it does not return.
 Enumerating all scopes with `document.subgraphs()` is O(number of scopes).
 Global `nextScoped()` uses parent links with amortized O(statements + scopes)
 work and constant iterator storage. A single call may close several ancestors;
@@ -109,4 +115,35 @@ can repeat work; use one global pass when indexing a whole document.
 
 See [memory and scratch sizing](OWNERSHIP.md#subgraphs-and-nesting-scratch),
 [execution/cancellation](EXECUTION.md), and [the runnable example](../examples/subgraphs.zig).
-Subgraphs used as edge endpoints remain the next separate syntax slice.
+## Subgraphs as edge endpoints
+
+For `a -> {b; c} -> d`, the document retains one outer chain, two body node
+statements and one anonymous scope. It does **not** create four node-to-node edges.
+`document.edgeIterator()` yields two syntactic edges, with endpoints typed as:
+
+```zig
+switch (edge.right) {
+    .node => |reference| {
+        const node = document.nodeReference(reference).?;
+        _ = node;
+    },
+    .subgraph => |id| {
+        const scope = document.scope(id).?;
+        _ = scope;
+    },
+}
+```
+
+The same `EdgeView` is used for ordinary edges and mixed chains.
+`document.edgeLinks(chain)` walks one chain's continuations in chain order;
+`document.edgeLinkCount(chain)` counts them without walking. Use `edgeIterator()`
+for global operator order: in `a -> {b -> c} -> d`, it yields the outer first
+operator, inner operator, then outer continuation. Statement traversal remains
+owner-first: outer chain then inner edge. Scope endpoints have their own source
+ranges/IDs but do not add fake standalone statements. Left-position scopes are
+classified as standalone versus edge endpoints after their closing brace.
+
+Repeated names are separate occurrences; resolving/merging names, deduplicating
+node membership, applying defaults and expanding edge products are still separate
+semantic work. Empty endpoint scopes remain visible. See the
+[runnable endpoint example](../examples/subgraph_endpoints.zig).

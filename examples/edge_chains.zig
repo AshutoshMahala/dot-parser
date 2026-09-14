@@ -11,14 +11,14 @@ pub fn main(init: std.process.Init) !void {
     const document = &parsed.document.?;
     if (!dot.validate(document, dot.diagnostic.discard, .{}).documentValid()) return error.InvalidDocument;
     const chain = document.statementAt(0).?.edge_chain;
-    std.debug.assert(document.edgeLinkSlice(chain.links).?.len == 1);
+    std.debug.assert(document.edgeLinkCount(chain) == 1);
     var buffer: [256]u8 = undefined;
     var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
     var edges = document.edgeIterator();
     while (edges.next()) |edge| {
         try output.interface.print("{s} {s} {s}: {d} shared attributes\n", .{
-            document.text(document.nodeReference(edge.left).?.identifier),  edge.operator.lexeme(),
-            document.text(document.nodeReference(edge.right).?.identifier), document.attributeSlice(edge.attributes).?.len,
+            document.text(document.nodeReference(edge.left.node).?.identifier),  edge.operator.lexeme(),
+            document.text(document.nodeReference(edge.right.node).?.identifier), document.attributeSlice(edge.attributes).?.len,
         });
     }
     try output.interface.flush();

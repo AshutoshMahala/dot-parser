@@ -1,8 +1,8 @@
 # Open design decisions
 
-Last reconciled: 2026-09-13 (standalone subgraphs).
+Last reconciled: 2026-09-14 (subgraph endpoints).
 
-Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q33)
+Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q34)
 are stable: they are never renumbered, deleted, or reused, and new questions
 append with fresh numbers. Answered questions are not removed — the
 **Decided** section doubles as the project's decision log, each entry naming
@@ -24,21 +24,41 @@ authoritative for what the current release actually processes.
 
 ## Decided
 
+**Q34 — How are subgraph edge endpoints retained without inflating ordinary edges?**
+Use separate generalized owner/link pools and a uniform public `Endpoint`
+(node reference or scope occurrence) / `EdgeView`. Node-only records retain their
+sizes. Promote a node-only prefix by range, never by copying. Preserve one edge
+statement owner, all endpoint scopes and their body statements, without expanding
+node membership or edge products. Generalized links use indices so nested owners
+can interleave; global edges/validation merge operators in lexical order.
+Statement traversal is owner-first. Endpoint scopes have no extra statement entry.
+
+Explicit frames preserve suspended outer-edge state (272 native bytes/level).
+Scope records add a descendant-scope boundary (36 native bytes). Scope enter/exit
+and standalone completion are separately charged; endpoint scopes count toward
+nesting/pool capacity, not an extra `max_statements` item. No separate total-scope
+policy is introduced: fixed pool capacity bounds retained occurrences, and work
+budgets/cancellation bound execution. Allocator hints are not hard limits.
+Semantic membership, repeated-name resolution and expansion remain deferred.
+*(Embodied: `src/parser.zig`, `src/syntax.zig`, `src/scratch.zig`,
+`tests/subgraph_endpoints.zig`, `docs/SUBGRAPHS.md`.)*
+
 **Q33 — How are standalone subgraphs represented, traversed and bounded?**
 Use document-local occurrence `ScopeId`s (root 0), optional raw names and a
-32-byte record with parent, body interval and source range. Named/anonymous use
+compact record with parent, body interval and source range (extended by Q34). Named/anonymous use
 identical IDs; repeated names are not merged. Keep one global preorder statement
 stream, including scope owners; borrowed scope views expose direct/recursive
 statements, child scopes, pairwise edges and written node references. No repeated
 ancestor membership lists, per-node scope tags, semantic defaults or clusters.
 Parsing/traversal are iterative. Entry/exit events are separately charged; completed
-statement progress counts exit, while `max_statements` reserves the owner at entry.
+statement progress is disambiguated after exit (Q34), while `max_statements`
+reserves the potential owner at entry.
 Temporary nesting frames are explicit, reused for siblings and separate from
 retained output through `ParseMemory`; allocator callers may separate scratch
 allocator lifetime. `max_nesting` counts depth below root; no separate max-subgraphs
-policy is needed beyond statement count/pool capacity. Cycle detection is not a
-syntax-parser responsibility. Subgraph edge endpoints and resolved membership
-remain deferred. *(Embodied: `src/syntax.zig`, `src/scratch.zig`, `src/parser.zig`,
+policy is introduced; endpoint occurrences now rely on scope-pool capacity (Q34). Cycle detection is not a
+syntax-parser responsibility. Endpoint syntax is implemented by Q34; resolved
+membership remains deferred. *(Embodied: `src/syntax.zig`, `src/scratch.zig`, `src/parser.zig`,
 `tests/subgraphs.zig`, `docs/SUBGRAPHS.md`.)*
 
 **Q32 — How are ports retained without inflating every node reference?**
@@ -67,7 +87,7 @@ callback is a separately charged event; one accepted owner increments completed
 statements once. The public allocation-free edge iterator offers a pairwise view
 without changing retained syntax. Fixed capacities bound chain owners and
 continuations independently; statement limits do not bound chain length.
-Subgraph endpoints remain deferred; ports are covered by Q32. *(Embodied: `src/syntax.zig`,
+Subgraph endpoints are covered by Q34; ports are covered by Q32. *(Embodied: `src/syntax.zig`,
 `src/parser.zig`, `tests/edge_chains.zig`, `tests/sessions.zig`.)*
 
 **Q30 — How does the first attribute slice retain groups and deliver pairs?**

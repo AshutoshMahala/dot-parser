@@ -482,3 +482,62 @@ the board and build are chosen).
 - Fuzzing note: on Zig 0.16.0 the verified fuzz invocation is
   `zig build -Doptimize=ReleaseFast test --fuzz=1000` (the Debug fuzz
   runner has a toolchain-side StackTrace type mismatch).
+
+## Subgraph endpoints (2026-09-14)
+
+Measured with Zig 0.16.0 on the same native 64-bit macOS host. This slice retains
+subgraph syntax and mixed chains; it does not resolve membership or materialize
+Cartesian edge products. Historical sections above describe their named snapshots.
+
+| Native retained record | Bytes |
+| --- | ---: |
+| Node-only edge / chain / link | 36 / 44 / 20 (unchanged) |
+| StatementId | 8 (unchanged) |
+| Endpoint (by-value view) | 12 |
+| Generalized owner (`ScopedEdgeStatement`) | 64 |
+| Generalized continuation (`ScopedEdgeLink`) | 44 |
+| Subgraph | 36 (was 32) |
+| Temporary nesting frame | 272 (was 32) |
+
+A node-only prefix stays in the original 20-byte link pool; promotion records a
+range without copying it. A generalized owner uses one order entry; its endpoint
+scopes do not each add an order entry. Standalone scopes still do. For example,
+`a -> {b; c} -> d` retains 200 bytes of occupied pools, excluding source, metadata,
+allocator slack and temporary scratch. It represents two syntactic edge operators,
+not four expanded node-to-node edges.
+
+The larger scratch frame preserves outer-edge continuation while nested bodies
+parse. This is a real cost for all reserved nesting levels, even standalone-only
+input. Flat input needs no frame backing allocation. Sequential siblings reuse
+one frame; depth D requires D frames, without recursive calls.
+
+| FixedSession profile: metering / cancellation | Session | Driver |
+| --- | ---: | ---: |
+| Off / Off | 1,560 B | 824 B |
+| Off / On | 1,632 B | 896 B |
+| On / Off | 1,632 B | 896 B |
+| On / On | 1,656 B | 920 B |
+
+Flat mixed node/edge parse+validate, 2,733,345 bytes / 200,000 statements,
+ReleaseFast. Two serial invocations per revision, each with two warm-ups and nine
+timed rounds; table gives the range of invocation medians, not confidence intervals.
+
+| Pools | Before (`b187c6c`) | Endpoint implementation |
+| --- | ---: | ---: |
+| Default | 13.51–14.89 ms | 14.65–15.27 ms |
+| Hinted | 13.03–13.10 ms | 13.47–13.50 ms |
+
+These noisy local runs show some overhead, not evidence of a zero-cost syntax
+extension. Retained occupied pools remain **6,800,000 bytes (34 B/statement)**;
+backing arena capacity remains **37,620,470 B default / 8,400,148 B hinted**.
+Unused generalized pools allocate no backing memory, but their metadata and the
+wider traversal views have fixed costs. Compile-time syntax removal remains future
+work. No large subgraph-product throughput claim is made by this flat fixture.
+
+Reproduce with `zig build bench -Doptimize=ReleaseFast` and
+`zig build bench-session -Doptimize=ReleaseFast`. The throughput harness prints
+native endpoint/scratch layouts. Verification: 265 tests (171 unit, 94 public
+integration), Debug and ReleaseSafe; ten runnable examples; eight consumed
+RISC-V32/Wasm32 freestanding profile probes. Prefix partitioning, nested operator
+ordering, long-prefix promotion, pool/OOM failures and boundary cancellation are
+covered. These are compile probes, not MCU runtime measurements.

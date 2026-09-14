@@ -56,7 +56,7 @@ The distinction the taxonomy is built around:
 - **`unsupported_feature`** means *this is recognized DOT syntax that this
   library does not process yet*. The parse stopped at the construct's
   introducer, and the diagnostic names the exact feature as a typed enum
-  (`Feature.subgraph_endpoint`, `Feature.html_identifier`, …) that tooling can
+  (`Feature.html_identifier`, `Feature.non_ascii_identifier`) that tooling can
   aggregate or test against.
 
 An unsupported outcome is a **boundary, not a validity claim**: nothing at
@@ -163,6 +163,7 @@ scope slots uses the same storage outcome with `.subgraph_pool`. Allocator-backe
 scratch allocation failure reports `.out_of_memory`. These use the existing WDP
 capacity/memory codes and emit one diagnostic, not a second facade diagnostic.
 
-Malformed standalone headers are syntax errors. Subgraphs used as edge endpoints
-remain `.unsupported_feature` with `Feature.subgraph_endpoint`. That boundary is
-not a claim that the remaining input is valid. Every failure exposes no document.
+Malformed subgraph headers and missing/malformed edge endpoints are syntax errors.
+Subgraph endpoints are supported; the old unsupported-feature variant is removed.
+Fixed generalized-edge storage failures identify `.scoped_edge_pool` or
+`.scoped_edge_link_pool`. Every failure exposes no document.

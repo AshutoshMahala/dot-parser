@@ -1,7 +1,7 @@
 # Project Structure
 
 Status: living document — updated as slices land  
-Last updated: 2026-09-13 (standalone subgraphs)
+Last updated: 2026-09-14 (subgraph endpoints)
 
 The package is a standalone Zig DOT-language library and must not depend on
 Zigraph.
@@ -335,3 +335,14 @@ fixed-storage work. Builders retain parent IDs independently, closing body/sourc
 ranges on exit. Allocator-backed scratch can use a separate temporary allocator;
 fixed parsing receives a document/scratch memory bundle. Neither parser nor
 builder uses input-dependent recursion or integrates graph-engine semantics.
+
+Endpoint edges use separate generalized owner/link pools while public edge views
+share a node-or-scope endpoint union. The prefix before promotion remains in its
+original node-only link range. Indexed links tolerate nested owners without
+copying, recursion or eager expansion. Endpoint scopes have no standalone order
+entry; global statement traversal remains owner-first. A subtree scope boundary
+supports direct-child traversal independently of statement kinds.
+
+See `examples/subgraph_endpoints.zig` for the public endpoint switch and
+`tests/subgraph_endpoints.zig` for nested ordering, storage failures, work
+partitioning and cancellation coverage.

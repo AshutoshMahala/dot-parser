@@ -85,7 +85,11 @@ capacities. No staged port record becomes a public partial document.
 
 Each subgraph entry and exit has a separate normal callback credit. Opening a
 scope pushes one fixed scratch frame in its grammar transition; accepting the
-exit pops one frame. There is no unbudgeted loop over ancestors or descendants.
+exit pops one frame. A standalone scope completes in a separate charged callback
+once lookahead rules out an edge operator. An endpoint scope does not increment
+completed statements; its final edge/chain owner does. Entering a right endpoint
+stages at most one generalized owner/link and saves an existing node-only prefix
+by range, never copying it. There is no unbudgeted loop over ancestors or descendants.
 Cancellation clears logical frame length without unwinding recursively, emits
 no synthetic per-scope close callbacks, and publishes no partial document.
 `max_nesting` (root depth 0) is a terminal policy limit, independent of per-call

@@ -34,8 +34,8 @@ pub fn main(init: std.process.Init) !void {
         var edges = scope.edges(.direct);
         while (edges.next()) |edge| {
             try writer.print("  {s} -> {s}\n", .{
-                document.text(document.nodeReference(edge.left).?.identifier),
-                document.text(document.nodeReference(edge.right).?.identifier),
+                document.text(document.nodeReference(edge.left.node).?.identifier),
+                document.text(document.nodeReference(edge.right.node).?.identifier),
             });
         }
     }

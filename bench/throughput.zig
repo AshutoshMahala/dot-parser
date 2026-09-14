@@ -36,6 +36,10 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("element sizes: StatementId={d} NodeStatement={d} EdgeStatement={d}\n\n", .{
         @sizeOf(dot.StatementId), @sizeOf(dot.NodeStatement), @sizeOf(dot.EdgeStatement),
     });
+    try stdout.print("endpoint layouts: Endpoint={d} ScopedEdgeStatement={d} ScopedEdgeLink={d} Subgraph={d} Frame={d}\n", .{
+        @sizeOf(dot.Endpoint),                              @sizeOf(dot.ScopedEdgeStatement), @sizeOf(dot.ScopedEdgeLink), @sizeOf(dot.Subgraph),
+        dot.FixedParseScratch(.{ .nesting = 1 }).byte_size,
+    });
 
     try run(init.io, stdout, source, "default (growing pools)", .{});
     try run(init.io, stdout, source, "with capacity hints", .{
@@ -80,6 +84,8 @@ fn run(
             document.edges.len * @sizeOf(dot.EdgeStatement) +
             document.edge_chains.len * @sizeOf(dot.EdgeChainStatement) +
             document.edge_links.len * @sizeOf(dot.EdgeLink) +
+            document.scoped_edges.len * @sizeOf(dot.ScopedEdgeStatement) +
+            document.scoped_edge_links.len * @sizeOf(dot.ScopedEdgeLink) +
             document.ported_references.len * @sizeOf(dot.PortedReference) +
             document.attributes.len * @sizeOf(dot.Attribute) +
             document.assignments.len * @sizeOf(dot.Assignment) +

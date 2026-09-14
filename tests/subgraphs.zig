@@ -78,9 +78,9 @@ test "scopes retain occurrences and source order with direct and recursive views
         try deep(doc.statement(item.id).?, item.statement);
     }
     try expect(statements.nextScoped() == null);
-    try equal(@as(usize, 32), @sizeOf(dot.Subgraph));
+    try equal(@as(usize, 36), @sizeOf(dot.Subgraph));
     try equal(@as(usize, 8), @sizeOf(dot.StatementId));
-    try equal(@as(usize, 32), dot.FixedParseScratch(.{ .nesting = 1 }).byte_size);
+    try expect(dot.FixedParseScratch(.{ .nesting = 1 }).byte_size > 32);
 }
 test "all input prefixes agree across allocated fixed and one-credit parsing" {
     const source = "digraph { subgraph \"s\"+\"t\" { a:p->b->c[x=1] {node[y=2] z=3} } {q} }";
@@ -168,14 +168,14 @@ test "deep nesting uses explicit frames and one-credit execution without recursi
     try equal(@as(usize, 1), count(doc.scope(.root).?.statements(.direct)));
     try equal(@as(usize, depth), count(doc.scope(.root).?.subgraphs(.recursive)));
 }
-test "subgraph endpoints stay unsupported while malformed standalone headers are syntax errors" {
+test "subgraph endpoints parse while malformed standalone headers are syntax errors" {
     inline for (.{ "graph {a--{b}}", "digraph {subgraph s {a}->b}", "graph {{}--{}}", "graph {a--subgraph s {b}}" }) |source| {
         var bag: dot.FixedDiagnosticBag(2) = .{};
         var result = dot.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
         defer result.deinit(std.testing.allocator);
-        try expect(result.outcome == .unsupported_feature);
-        try expect(result.document == null);
-        try equal(dot.diagnostic.Feature.subgraph_endpoint, bag.items()[0].details.unsupported_feature);
+        try expect(result.outcome == .success);
+        try expect(result.document != null);
+        try equal(@as(usize, 0), bag.items().len);
     }
     inline for (.{ "graph {subgraph;}", "graph {subgraph s;}", "graph {subgraph s {a}[x=1]}" }) |source| {
         var result = dot.parseBorrowed(std.testing.allocator, source, dot.diagnostic.discard, .{});

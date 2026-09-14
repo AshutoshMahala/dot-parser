@@ -10,6 +10,7 @@ test {
     _ = @import("edge_chains.zig");
     _ = @import("ports.zig");
     _ = @import("subgraphs.zig");
+    _ = @import("subgraph_endpoints.zig");
 }
 
 const Rejecting = struct {
@@ -233,12 +234,12 @@ test "consumer can render a diagnostic into caller-owned memory" {
             .start = .{ .byte_offset = 0, .line = 1, .byte_column = 1 },
             .byte_len = 8,
         },
-        .details = .{ .unsupported_feature = .subgraph_endpoint },
+        .details = .{ .unsupported_feature = .html_identifier },
     }, &writer);
 
     const text = writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, text, "dot_parser:E.Profile.Feature.009") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "subgraph") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "HTML-like") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "help:") != null);
 }
 
@@ -373,24 +374,24 @@ test "parseBorrowed returns a caller-owned document over borrowed source" {
     );
     const edge = document.statementAt(1).?.edge;
     try std.testing.expectEqual(dot.EdgeOperator.undirected, edge.operator);
-    try std.testing.expectEqualStrings("b", document.nodeReference(edge.right).?.identifier.slice(source));
+    try std.testing.expectEqualStrings("b", document.nodeReference(edge.right.node).?.identifier.slice(source));
 }
 
 test "façade surfaces parse failures with a null document and a filled bag" {
     var bag: dot.FixedDiagnosticBag(4) = .{};
-    var parsed = dot.parseBorrowed(std.testing.allocator, "graph { a -- { b } }", bag.sink(), .{});
+    var parsed = dot.parseBorrowed(std.testing.allocator, "graph { a -- <b> }", bag.sink(), .{});
     defer parsed.deinit(std.testing.allocator);
 
     try std.testing.expect(parsed.outcome == .unsupported_feature);
     try std.testing.expect(parsed.document == null);
     try std.testing.expectEqual(
-        dot.diagnostic.Feature.subgraph_endpoint,
+        dot.diagnostic.Feature.html_identifier,
         bag.items()[0].details.unsupported_feature,
     );
 
     // The one-shot reports the same failure with no validation attempted.
     var check_bag: dot.FixedDiagnosticBag(4) = .{};
-    var checked = dot.parseAndValidate(std.testing.allocator, "graph { a -- subgraph s; }", check_bag.sink(), .{});
+    var checked = dot.parseAndValidate(std.testing.allocator, "graph { a -- <b>; }", check_bag.sink(), .{});
     defer checked.deinit(std.testing.allocator);
     try std.testing.expect(checked.outcome == .unsupported_feature);
     try std.testing.expect(checked.validation == null);
@@ -650,7 +651,7 @@ const UnsupportedEntry = struct {
 };
 
 const unsupported_corpus = [_]UnsupportedEntry{
-    .{ .name = "subgraph_endpoint", .source = @embedFile("corpus/unsupported/subgraph_endpoint.dot"), .feature = .subgraph_endpoint },
+    .{ .name = "html_identifier", .source = @embedFile("corpus/unsupported/html_identifier.dot"), .feature = .html_identifier },
 };
 
 fn documentShape(document: *const dot.Document, buffer: []u8) []const u8 {
@@ -697,8 +698,8 @@ test "valid corpus parses to the expected statements, deterministically" {
             const actual = switch (document.statementAt(0).?) {
                 .subgraph => |id| document.text(document.scope(id).?.name().?),
                 .node => |node| document.text(document.nodeReference(node.reference).?.identifier),
-                .edge => |edge| document.text(document.nodeReference(edge.left).?.identifier),
-                .edge_chain => |chain| document.text(document.nodeReference(chain.first.left).?.identifier),
+                .edge => |edge| document.text(document.nodeReference(edge.left.node).?.identifier),
+                .edge_chain => |chain| document.text(document.nodeReference(chain.first.left.node).?.identifier),
                 .assignment => |assignment| document.text(assignment.key),
                 .attribute_statement => |statement| document.text(statement.keyword),
             };

@@ -33,10 +33,13 @@
 //! - Each edgeLink streams one continuation after the first edge. The final
 //!   edgeChainStatement carries the first edge and consumes all pending links
 //!   and attributes. Abort discards both pools; no temporary chain list exists.
-//! - Scope entry reserves its statement before body events; exit completes its
-//!   interval after the body. No pending attributes/links cross scope entry/exit.
-//!   Other statement events arrive in source order. Abort discards the whole
-//!   staged tree without synthesizing per-scope close events.
+//! - Scope entry reserves an owner before body events and returns its ID plus
+//!   opaque saved builder state. Endpoint scopes are not standalone statements.
+//!   The parser returns that state on exit, restoring the suspended outer edge.
+//!   A left-position scope emits subgraphStatement only if lookahead finds no
+//!   edge operator. Right/link entries stage the operator before nested body events.
+//!   Node-only prefixes are retained by range, never copied on promotion.
+//!   Abort discards the tree without synthesizing per-scope close events.
 //! - `portedReference` stages one completed qualified occurrence, in source
 //!   order, and returns an opaque document-local `u32` handle. The following
 //!   node/edge/link event uses that handle alongside the base identifier span.
@@ -65,12 +68,12 @@
 //! ## Failure propagation
 //!
 //! `beginDocument`, `nodeStatement`, `edgeStatement`, `attribute`, `assignment`,
-//! `edgeLink`, `edgeChainStatement`, `attributeStatement`, `beginSubgraph`,
+//! `edgeLink`, `edgeChainStatement`, `attributeStatement`, `subgraphStatement`,
 //! `endSubgraph`, and `endDocument`
 //! return `E!void` for an error set `E` the sink chooses (allocation
 //! failure, capacity, …); a sink that cannot fail declares `error{}!void`.
-//! `portedReference` is the sole payload-returning callback: `E!u32`, with
-//! the same failure/abort rules. Its attempt costs one dispatch work unit.
+//! `portedReference` returns `E!u32`; `beginSubgraph` returns `E!ScopeEntry`.
+//! Both share the normal failure/abort rules and cost one dispatch work unit.
 //! When one fails, the parser stops and calls `abortDocument` — which is
 //! infallible and must always succeed — so the sink can release staged
 //! state. The parse outcome then reports a sink failure, distinct from
@@ -78,7 +81,8 @@
 //!
 //! Parser-owned nesting storage failure aborts with `.scratch_failure`; the
 //! facade maps it to a public storage outcome. Enter/exit each cost one normal
-//! dispatch credit. Completed statement progress counts exit, not entry.
+//! dispatch credit. Standalone completion is a separate subgraphStatement event;
+//! an endpoint scope does not increment statement progress.
 //!
 //! ## Span lifetime
 //!
@@ -139,12 +143,19 @@ pub const AttributeStatement = struct {
     keyword_span: location.Span,
 };
 
+pub const ScopeRole = enum { left, right, link };
+pub const ScopeState = struct { reserved_order: ?u32 = null, scoped_owner: ?u32 = null };
+pub const ScopeEntry = struct { id: u32, state: ScopeState = .{} };
 pub const BeginSubgraph = struct {
     /// The keyword or anonymous opening brace; the name uses its full raw span.
     start: location.Span,
     name: ?location.Span,
+    role: ScopeRole = .left,
+    edge: ?EdgeStatement = null,
+    link_operator: ?EdgeOperator = null,
+    link_operator_span: ?location.Span = null,
 };
-pub const EndSubgraph = struct { close: location.Span };
+pub const EndSubgraph = struct { close: location.Span, entry: ScopeEntry };
 
 pub const NodeStatement = struct {
     identifier: location.Span,
@@ -159,6 +170,8 @@ pub const EdgeLink = struct {
 };
 
 pub const EdgeStatement = struct {
+    left_scope: ?u32 = null,
+    right_scope: ?u32 = null,
     left: location.Span,
     left_port: ?u32 = null,
     operator: EdgeOperator,
@@ -194,6 +207,7 @@ pub const Event = union(enum) {
     begin_document: BeginDocument,
     begin_subgraph: BeginSubgraph,
     end_subgraph: EndSubgraph,
+    subgraph_statement: u32,
     node_statement: NodeStatement,
     edge_statement: EdgeStatement,
     edge_chain_statement: EdgeStatement,
@@ -232,7 +246,8 @@ pub const Event = union(enum) {
 pub fn assertSyntaxSink(comptime T: type) void {
     comptime {
         assertMethod(T, "beginDocument", &.{BeginDocument}, .fallible);
-        assertMethod(T, "beginSubgraph", &.{BeginSubgraph}, .fallible);
+        assertMethod(T, "beginSubgraph", &.{BeginSubgraph}, .scope);
+        assertMethod(T, "subgraphStatement", &.{u32}, .fallible);
         assertMethod(T, "endSubgraph", &.{EndSubgraph}, .fallible);
         assertMethod(T, "nodeStatement", &.{NodeStatement}, .fallible);
         assertMethod(T, "edgeStatement", &.{EdgeStatement}, .fallible);
@@ -251,7 +266,7 @@ fn assertMethod(
     comptime T: type,
     comptime name: []const u8,
     comptime arg_types: []const type,
-    comptime failability: enum { fallible, infallible, reference },
+    comptime failability: enum { fallible, infallible, reference, scope },
 ) void {
     const prefix = @typeName(T) ++ "." ++ name;
     if (!@hasDecl(T, name)) {
@@ -281,8 +296,8 @@ fn assertMethod(
         .infallible => if (return_type != void) {
             @compileError(prefix ++ " must return `void`: abort cannot fail by contract");
         },
-        .fallible, .reference => {
-            const Payload = if (failability == .reference) u32 else void;
+        .fallible, .reference, .scope => {
+            const Payload = if (failability == .reference) u32 else if (failability == .scope) ScopeEntry else void;
             const return_info = @typeInfo(return_type);
             if (return_info != .error_union or return_info.error_union.payload != Payload) {
                 @compileError(prefix ++ " must return an error union with payload " ++ @typeName(Payload));
@@ -309,6 +324,7 @@ pub fn RecordingSink(comptime capacity: usize) type {
         events: [capacity + 1]Event = undefined,
         len: usize = 0,
         port_count: u32 = 0,
+        scope_count: u32 = 0,
 
         pub fn beginDocument(self: *Self, event: BeginDocument) Error!void {
             try self.record(.{ .begin_document = event });
@@ -322,8 +338,13 @@ pub fn RecordingSink(comptime capacity: usize) type {
             try self.record(.{ .edge_statement = statement });
         }
 
-        pub fn beginSubgraph(self: *Self, event: BeginSubgraph) Error!void {
+        pub fn beginSubgraph(self: *Self, event: BeginSubgraph) Error!ScopeEntry {
             try self.record(.{ .begin_subgraph = event });
+            self.scope_count += 1;
+            return .{ .id = self.scope_count };
+        }
+        pub fn subgraphStatement(self: *Self, id: u32) Error!void {
+            try self.record(.{ .subgraph_statement = id });
         }
         pub fn endSubgraph(self: *Self, event: EndSubgraph) Error!void {
             try self.record(.{ .end_subgraph = event });

@@ -45,14 +45,14 @@ pub fn main(init: std.process.Init) !void {
     var statements = document.statements();
     while (statements.next()) |statement| switch (statement) {
         .subgraph => |id| try stdout.print("subgraph scope {d}\n", .{@intFromEnum(id)}),
-        .edge_chain => |chain| try stdout.print("chain {s}: {d} edges\n", .{ document.text(document.nodeReference(chain.first.left).?.identifier), @as(usize, chain.links.len) + 1 }),
+        .edge_chain => |chain| try stdout.print("chain {s}: {d} edges\n", .{ document.text(document.nodeReference(chain.first.left.node).?.identifier), document.edgeLinkCount(chain) + 1 }),
         .assignment => |assignment| try stdout.print("assignment {s} = {s}\n", .{ document.text(assignment.key), document.text(assignment.value) }),
         .attribute_statement => |attributes| try stdout.print("{s} attributes: {d}\n", .{ @tagName(attributes.target), attributes.attributes.len }),
         .node => |node| try stdout.print("node  {s}\n", .{document.text(document.nodeReference(node.reference).?.identifier)}),
         .edge => |edge| try stdout.print("edge  {s} {s} {s}\n", .{
-            document.text(document.nodeReference(edge.left).?.identifier),
+            document.text(document.nodeReference(edge.left.node).?.identifier),
             edge.operator.lexeme(),
-            document.text(document.nodeReference(edge.right).?.identifier),
+            document.text(document.nodeReference(edge.right.node).?.identifier),
         }),
     };
     // Nothing to free: reuse or discard `storage`.
