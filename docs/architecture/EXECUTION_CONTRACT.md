@@ -289,6 +289,23 @@ are borrowed context/predicate pairs, not OS tokens or synchronization primitive
 All source scans remain resumable; no supported lexical form requires a minimum
 budget greater than one.
 
+### Port-suffix continuation
+
+The parser saves the target reference (node/first endpoint, right endpoint or
+chain continuation), its optional first/second components and the most recent
+colon. A completed suffix dispatches `portedReference`, returning a document-local
+handle from the builder. This is one normal charged event attempt, including
+failure; it does not increment statement or pair progress. The private sink
+contract's other normal methods still return `E!void`.
+
+The terminating lookahead is replayed through the resumed owning grammar state,
+not rescanned. A chain continuation similarly waits until its optional suffix is
+complete before dispatching `edgeLink`. Every replay costs a grammar unit, and
+every callback has its own dispatch unit. There is no variable-length suffix or
+chain loop inside one transition. Cancellation/abort discards staged records;
+only document commit exposes them. Ports require no new source scan, clock,
+allocator, cancellation protocol, or public event-sink API.
+
 Further syntax, recovery, public pull sinks, streaming input, total-work limits,
 scheduling and bounded validation are outside this contract's implemented scope.
 Measured optionality and callout costs are recorded in [baselines](../BASELINES.md).

@@ -414,6 +414,7 @@ pub const SyntaxItem = enum(u8) {
     left_brace,
     right_brace,
     semicolon,
+    colon,
     undirected_operator,
     directed_operator,
     end_of_input,
@@ -433,6 +434,7 @@ pub const ParseContext = enum(u8) {
     document_body,
     statement,
     edge_endpoint,
+    port_component,
     statement_terminator,
     document_epilogue,
     attribute_list,
@@ -450,6 +452,8 @@ pub const Related = struct {
     pub const Role = enum(u8) {
         /// A still-open delimiter this failure traces back to.
         opened_here,
+        /// A colon whose required following component is missing.
+        suffix_started_here,
         /// The declaration that established the violated expectation.
         declared_here,
     };
@@ -480,7 +484,6 @@ pub const Feature = enum {
     subgraph,
     html_identifier,
     non_ascii_identifier,
-    port_or_compass,
 
     /// Canonical English display name. Renderers may localize instead.
     pub fn name(self: Feature) []const u8 {
@@ -488,7 +491,6 @@ pub const Feature = enum {
             .subgraph => "subgraph",
             .html_identifier => "HTML-like identifier",
             .non_ascii_identifier => "non-ASCII identifier",
-            .port_or_compass => "port or compass point",
         };
     }
 };
@@ -507,6 +509,8 @@ pub const Capacity = struct {
         edge_chain_pool,
         edge_link_pool,
         edge_link_index,
+        ported_reference_pool,
+        ported_reference_index,
         /// The document's statement index width.
         statement_index,
         /// The 4 GiB retained source-range domain.
@@ -526,6 +530,8 @@ pub const Capacity = struct {
                 .edge_chain_pool => "edge chain pool",
                 .edge_link_pool => "edge link pool",
                 .edge_link_index => "edge link index",
+                .ported_reference_pool => "ported reference pool",
+                .ported_reference_index => "ported reference index",
                 .statement_index => "statement index",
                 .source_range => "source range",
                 .attributes => "attribute",

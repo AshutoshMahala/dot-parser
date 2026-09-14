@@ -1,8 +1,8 @@
 # Open design decisions
 
-Last reconciled: 2026-09-13 (edge chains).
+Last reconciled: 2026-09-13 (ports).
 
-Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q31)
+Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q32)
 are stable: they are never renumbered, deleted, or reused, and new questions
 append with fresh numbers. Answered questions are not removed — the
 **Decided** section doubles as the project's decision log, each entry naming
@@ -24,6 +24,23 @@ authoritative for what the current release actually processes.
 
 ## Decided
 
+**Q32 — How are ports retained without inflating every node reference?**
+Use an 8-byte inline-or-pooled `NodeReference`. Bare references hold a source
+range; qualified occurrences index a 28-byte pool record containing the base ID
+and raw first/optional second suffix IDs. A checked accessor returns that view.
+No offset bits are stolen: zero raw length tags the pooled form, while even an
+empty quoted ID has nonzero raw length. Pool entries are source occurrences,
+not interned nodes, unique ports, declarations or resolved attachments. Chain
+middles share their one occurrence through incoming/outgoing pairwise views.
+All supported ID spellings work in suffixes; unknown compass-like IDs are
+retained. No `a:n` ambiguity resolution, implicit ports, label parsing, defaults
+or reverse indexes belong in this slice. Each completed suffix has one charged
+private callback returning its pool handle; fixed/hinted capacities include the
+new pool, with normal abort/reset ownership. The 50% qualification break-even
+versus 12-byte references plus 20-byte suffix records concerns payloads only;
+fixed metadata and reserved capacities still cost memory. *(Embodied:
+`src/syntax.zig`, `src/parser.zig`, `tests/ports.zig`, `examples/ports.zig`.)*
+
 **Q31 — How are identifier-only edge chains retained and budgeted?**
 Keep ordinary edge records unchanged. A separate chain owner contains the first
 edge and a compact range into continuation links. Each continuation retains its
@@ -33,7 +50,7 @@ callback is a separately charged event; one accepted owner increments completed
 statements once. The public allocation-free edge iterator offers a pairwise view
 without changing retained syntax. Fixed capacities bound chain owners and
 continuations independently; statement limits do not bound chain length.
-Subgraph endpoints and ports remain deferred. *(Embodied: `src/syntax.zig`,
+Subgraph endpoints remain deferred; ports are covered by Q32. *(Embodied: `src/syntax.zig`,
 `src/parser.zig`, `tests/edge_chains.zig`, `tests/sessions.zig`.)*
 
 **Q30 — How does the first attribute slice retain groups and deliver pairs?**
@@ -43,7 +60,7 @@ edge and attribute statements reference a shared pair pool; assignments have a
 separate pool. The private event seam streams pairs before their owner statement;
 abort discards staged data and no partial document escapes. Both storage paths
 have explicit capacities for all attribute-slice pools (six at that slice;
-eight after Q31's chain support). `max_attributes` counts all pairs,
+eight after Q31's chain support; nine with Q32). `max_attributes` counts all pairs,
 including assignments, but does not bound lexical work. Defaults, effective-value
 resolution and compile-time feature removal remain future work. *(Embodied:
 `src/parser.zig`, `src/syntax_event.zig`, `src/syntax.zig`, `tests/attributes.zig`.)*
@@ -176,7 +193,7 @@ whether convenience APIs should ship with non-trivial defaults is open.
 
 **Q16 — What size thresholds establish that disabling a feature removed its
 cost?**
-Parser-state size is regression-guarded (≤ 576 B; currently 560 B native) and baselines exist;
+Parser-state size is regression-guarded (≤ 736 B; currently 720 B native) and baselines exist;
 per-profile binary-size thresholds await the profile work. *(Embodied:
 `docs/BASELINES.md`; parser-size test.)*
 
@@ -306,3 +323,7 @@ Open; nothing currently forces the choice.
 - 2026-09-12 — Q27: recorded agreement on optional work budgeting, stop
   behavior and factual progress. Linked the execution-contract draft; exact
   operational rules remain a proposed specification, not delivered behavior.
+
+- 2026-09-13 — Q32: ports use compact inline-or-pooled node references,
+  raw suffix semantics, explicit occurrence-pool capacities and separately
+  budgeted callbacks. Updated current state-size and coverage references.

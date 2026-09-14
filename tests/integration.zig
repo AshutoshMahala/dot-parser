@@ -8,6 +8,7 @@ test {
     _ = @import("attributes.zig");
     _ = @import("sessions.zig");
     _ = @import("edge_chains.zig");
+    _ = @import("ports.zig");
 }
 
 const Rejecting = struct {
@@ -32,13 +33,13 @@ test "identifier spelling and value agree across allocator and fixed storage" {
     try std.testing.expectEqual(doc.name, fixed.document.?.name);
     var decoded: [32]u8 = undefined;
     try std.testing.expectEqualStrings("Graph", try doc.decodeIdentifier(doc.name.?, &decoded));
-    try std.testing.expectEqualStrings("\"gr\"/**/+\"aph\"", doc.text(doc.nodes[0].identifier));
-    try std.testing.expectEqualStrings("graph", try doc.decodeIdentifier(doc.nodes[0].identifier, &decoded));
-    try std.testing.expectEqualStrings("-00.50", try doc.decodeIdentifier(doc.edges[0].left, &decoded));
+    try std.testing.expectEqualStrings("\"gr\"/**/+\"aph\"", doc.text(doc.nodeReference(doc.nodes[0].reference).?.identifier));
+    try std.testing.expectEqualStrings("graph", try doc.decodeIdentifier(doc.nodeReference(doc.nodes[0].reference).?.identifier, &decoded));
+    try std.testing.expectEqualStrings("-00.50", try doc.decodeIdentifier(doc.nodeReference(doc.edges[0].left).?.identifier, &decoded));
     var writer = std.Io.Writer.fixed(&decoded);
-    try doc.writeIdentifier(doc.edges[0].right, &writer);
+    try doc.writeIdentifier(doc.nodeReference(doc.edges[0].right).?.identifier, &writer);
     try std.testing.expectEqualStrings("a\"b", writer.buffered());
-    try std.testing.expectError(error.NoSpaceLeft, doc.decodeIdentifier(doc.nodes[0].identifier, decoded[0..1]));
+    try std.testing.expectError(error.NoSpaceLeft, doc.decodeIdentifier(doc.nodeReference(doc.nodes[0].reference).?.identifier, decoded[0..1]));
     try std.testing.expectEqual(@as(usize, 0), bag.items().len);
 }
 
@@ -110,8 +111,8 @@ test "comments work through fixed storage and preserve validation positions" {
     try std.testing.expect(parsed.outcome == .success);
     const document = parsed.document.?;
     try std.testing.expectEqual(@as(usize, 1), document.statementCount());
-    try std.testing.expectEqualStrings("a", document.text(document.edges[0].left));
-    try std.testing.expectEqualStrings("b", document.text(document.edges[0].right));
+    try std.testing.expectEqualStrings("a", document.text(document.nodeReference(document.edges[0].left).?.identifier));
+    try std.testing.expectEqualStrings("b", document.text(document.nodeReference(document.edges[0].right).?.identifier));
     const validation = dot.validate(&document, bag.sink(), .{});
     try std.testing.expect(!validation.documentValid());
     try std.testing.expectEqual(@as(usize, 1), bag.items().len);
@@ -367,11 +368,11 @@ test "parseBorrowed returns a caller-owned document over borrowed source" {
     try std.testing.expectEqual(@as(usize, 2), document.statementCount());
     try std.testing.expectEqualStrings(
         "a",
-        document.statementAt(0).?.node.identifier.slice(source),
+        document.nodeReference(document.statementAt(0).?.node.reference).?.identifier.slice(source),
     );
     const edge = document.statementAt(1).?.edge;
     try std.testing.expectEqual(dot.EdgeOperator.undirected, edge.operator);
-    try std.testing.expectEqualStrings("b", edge.right.slice(source));
+    try std.testing.expectEqualStrings("b", document.nodeReference(edge.right).?.identifier.slice(source));
 }
 
 test "façade surfaces parse failures with a null document and a filled bag" {
@@ -504,7 +505,7 @@ test "parseBorrowedIn parses into caller slices with no allocator" {
     try std.testing.expectEqual(@as(usize, 3), document.statementCount());
 
     var iterator = document.statements();
-    try std.testing.expectEqualStrings("a", document.text(iterator.next().?.node.identifier));
+    try std.testing.expectEqualStrings("a", document.text(document.nodeReference(iterator.next().?.node.reference).?.identifier));
     try std.testing.expect(iterator.next().? == .edge);
 
     // Validation works identically on fixed-storage documents.
@@ -688,9 +689,9 @@ test "valid corpus parses to the expected statements, deterministically" {
         try std.testing.expectEqual(entry.edges, document.edges.len);
         if (entry.first_text) |expected_text| {
             const actual = switch (document.statementAt(0).?) {
-                .node => |node| document.text(node.identifier),
-                .edge => |edge| document.text(edge.left),
-                .edge_chain => |chain| document.text(chain.first.left),
+                .node => |node| document.text(document.nodeReference(node.reference).?.identifier),
+                .edge => |edge| document.text(document.nodeReference(edge.left).?.identifier),
+                .edge_chain => |chain| document.text(document.nodeReference(chain.first.left).?.identifier),
                 .assignment => |assignment| document.text(assignment.key),
                 .attribute_statement => |statement| document.text(statement.keyword),
             };

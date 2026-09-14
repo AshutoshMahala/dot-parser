@@ -30,13 +30,13 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | Whitespace / line endings | **Supported** | Space, tab; LF, CRLF, and standalone CR each end a line |
 | Comments (`//`, `/* */`, `#`) | **Supported** | Skipped without retention; see compatibility notes below |
 | Subgraphs (`{ … }`, `subgraph s { … }`) | Deferred | Feature `subgraph`, including subgraphs as edge endpoints |
-| Edge chains (`a -- b -- c`) | **Supported** | Identifier endpoints; one source statement with ordered continuation links |
+| Edge chains (`a -- b -- c`) | **Supported** | Node-reference endpoints, including ports; one source statement with ordered continuation links |
 | Attribute lists (`[color=red]`) | **Supported** | Attached to nodes, edges or whole chains; adjacent groups flattened, duplicates retained |
 | Attribute statements (`graph`/`node`/`edge` + `[…]`) | **Supported** | Target and ordered pairs retained; defaults are not applied |
 | ID assignments (`rankdir = LR`) | **Supported** | Separate assignment statements, retained as written |
 | HTML identifiers (`<…>`) | Deferred | Feature `html_identifier` |
 | Non-ASCII identifiers (bytes `0x80`–`0xFF`) | Deferred | Feature `non_ascii_identifier`; the whole run is one span |
-| Ports and compass points (`a:n`) | Deferred | Feature `port_or_compass` |
+| Port suffixes (`a:n`, `a:out:e`) | **Supported** | Raw first/optional second identifier; no attachment resolution |
 
 ## Compatibility notes
 
@@ -136,7 +136,7 @@ take a following list; an edge operator cannot follow a node's attribute list.
 
 No default propagation, last-value selection, layout-attribute validation,
 external resource loading or engine-specific interpretation occurs. Subgraphs
-and ports remain deferred, including when they would own attributes.
+remain deferred, including when they would own attributes.
 HTML-like values and non-ASCII bare values retain their deferred boundary.
 
 Incomplete lists use the existing parser syntax diagnostics. EOF inside a list
@@ -152,10 +152,10 @@ See [ownership](OWNERSHIP.md#attributes-and-memory) for pool layout and limits.
 ## Edge chains
 
 `a -> b -> c [color=red]` is one `.edge_chain` statement. All supported
-identifier forms and intervening comments work at each endpoint. The written
+identifier forms, port suffixes and intervening comments work at each endpoint. The written
 operators are retained independently; validation reports every mismatched
 operator in source order. Missing endpoints are syntax errors. Subgraph endpoints
-and ports remain unsupported, including inside a chain.
+remain unsupported, including inside a chain.
 
 Attributes follow the entire chain; `a -> b [x=1] -> c` is invalid. Adjacent
 attribute groups retain the existing flattening policy. A chain does not
@@ -169,6 +169,34 @@ advance, not the total parse; the caller may stop via cancellation.
 
 See [chain ownership and traversal](OWNERSHIP.md#edge-chains-and-memory) and
 [the runnable example](../examples/edge_chains.zig).
+
+## Port suffixes
+
+A node reference is `ID`, `ID:ID`, or `ID:ID:ID`. All supported identifier
+spellings and intervening trivia work in each component. Quoted colons are
+identifier content: `"a:b"` is a bare reference, not a suffix. Reserved keywords
+still need quoting. Missing components or a third colon are syntax errors;
+EOF after a colon points back to that colon using a typed secondary location.
+Suffixes are allowed on node statements and every ordinary/chain endpoint,
+not on document names, assignments, or attribute keys/values.
+
+The syntax tree preserves `first` and optional `second` raw ranges. It does not
+decide whether `a:n` means a named port or a compass direction; Graphviz's
+[port-position semantics](https://graphviz.org/docs/attr-types/portPos/) depend
+on node definitions. Unknown compass-like identifiers are accepted, consistent
+with the [DOT grammar's parser note](https://graphviz.org/doc/info/lang.html).
+Decoding either component uses the existing identifier helpers.
+
+The parser does not discover record/HTML port declarations, synthesize implicit
+ports, validate compass names, resolve `headport`/`tailport`, or build reverse
+indexes. Those attributes remain ordinary pairs. The occurrence pool answers
+what suffixes were explicitly written, not which ports exist or are effective.
+Grouping by decoded node identity or indexing incoming/outgoing uses is consumer
+work. For an undigraph the iterator's left/right remain written order, not
+an assigned arrival/departure direction.
+
+See [port ownership](OWNERSHIP.md#node-references-and-ports) and the
+[runnable example](../examples/ports.zig).
 
 ## How this page stays honest
 

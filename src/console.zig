@@ -613,6 +613,7 @@ fn writeSecondaryLabel(details: Details, writer: anytype) !void {
         },
         .unexpected => |unexpected| switch (unexpected.related.?.role) {
             .opened_here => try writer.writeAll("opened here, never closed"),
+            .suffix_started_here => try writer.writeAll("port suffix component started here"),
             .declared_here => try writer.writeAll("declared here"),
         },
         else => unreachable,
@@ -744,6 +745,7 @@ fn itemName(item: diagnostic.SyntaxItem) []const u8 {
         .left_brace => "'{'",
         .right_brace => "'}'",
         .semicolon => "';'",
+        .colon => "':'",
         .undirected_operator => "'--'",
         .directed_operator => "'->'",
         .end_of_input => "end of input",
@@ -760,6 +762,7 @@ fn contextName(context: diagnostic.ParseContext) []const u8 {
         .document_body => "the document body",
         .statement => "a statement",
         .edge_endpoint => "an edge endpoint",
+        .port_component => "a port suffix component",
         .statement_terminator => "a statement terminator",
         .document_epilogue => "the end of the document",
         .attribute_list => "an attribute list",
@@ -772,6 +775,7 @@ fn contextName(context: diagnostic.ParseContext) []const u8 {
 fn roleName(role: diagnostic.Related.Role) []const u8 {
     return switch (role) {
         .opened_here => "unclosed delimiter opened",
+        .suffix_started_here => "port suffix component started",
         .declared_here => "declared",
     };
 }

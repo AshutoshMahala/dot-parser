@@ -6,6 +6,18 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Support raw port suffixes on node statements and all edge/chain endpoints.
+  Use compact inline-or-pooled references: 8-byte handles and a separate
+  28-byte qualified-occurrence pool, with checked `Document.nodeReference` views.
+  Breaking API: `NodeStatement.identifier` becomes `reference`; edge/link
+  endpoints are `NodeReference`, not direct ranges. Use the view's `identifier`
+  with text/decoding helpers. Fixed callers reserve `ported_references`; allocator
+  callers can hint it. No compatibility aliases or attachment resolution.
+  Remove `Feature.port_or_compass`; add typed port capacity resources, colon
+  expectations, port-component context and related suffix-start locations.
+  Suffix scans, grammar transitions and callback dispatch obey existing work
+  budgets and cancellation. Update examples, ownership and execution docs.
+
 - Support identifier-only edge chains with whole-chain attributes, preserving
   one source statement and every written operator. Add `.edge_chain` traversal,
   separate chain/link pools, checked link slices and an allocation-free pairwise

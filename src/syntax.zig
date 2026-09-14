@@ -14,6 +14,7 @@
 //!   per-kind pools in source order, with a shared ordered `attributes` pool, so
 //!   per-kind consumers can touch only their relevant records,
 //! - chains have separate owner/link pools; ordinary edges retain their size,
+//! - node references inline bare ranges or index the qualified-occurrence pool,
 //! - `order` records source order as compact typed indices,
 //! - statement indices are `Index` (u32) with checked overflow; the width is
 //!   a single declaration so a future embedded profile can shrink it,
@@ -28,7 +29,7 @@
 //!
 //! Explicit allocator, no hidden allocation. The document is mid-term data:
 //! build it with an arena or fixed buffer and release it in bulk — `deinit`
-//! is eight pool releases, never a per-node walk; arena users may skip `deinit` and
+//! is nine pool releases, never a per-node walk; arena users may skip `deinit` and
 //! reset the arena. The source bytes are caller-owned and must outlive the
 //! document (borrowed ranges, R-MEM-004).
 //!
@@ -80,16 +81,50 @@ pub const AttributeStatement = struct {
     attributes: AttributeRange = .{},
 };
 
-pub const NodeStatement = struct {
+/// Compact inline identifier range or index into Document.ported_references.
+/// Treat the encoding as opaque. Zero raw_len marks a pooled occurrence; even
+/// an empty quoted identifier has a nonzero raw spelling length.
+pub const NodeReference = struct {
+    index_or_start: Index,
+    raw_len: u32,
+
+    pub fn fromRange(range: location.Range) ?NodeReference {
+        if (range.len == 0) return null;
+        return .{ .index_or_start = range.start, .raw_len = range.len };
+    }
+
+    fn pooled(index: Index) NodeReference {
+        return .{ .index_or_start = index, .raw_len = 0 };
+    }
+};
+
+/// Raw suffix components, not resolved ports or compass directions.
+pub const PortSyntax = struct {
+    first: location.Range,
+    second: ?location.Range = null,
+};
+
+/// One written qualified occurrence, not an interned node or port declaration.
+pub const PortedReference = struct {
     identifier: location.Range,
+    port: PortSyntax,
+};
+
+pub const NodeReferenceView = struct {
+    identifier: location.Range,
+    port: ?PortSyntax = null,
+};
+
+pub const NodeStatement = struct {
+    reference: NodeReference,
     attributes: AttributeRange = .{},
 };
 
 pub const EdgeStatement = struct {
-    left: location.Range,
+    left: NodeReference,
     operator: EdgeOperator,
     operator_range: location.Range,
-    right: location.Range,
+    right: NodeReference,
     attributes: AttributeRange = .{},
 };
 
@@ -97,7 +132,7 @@ pub const EdgeStatement = struct {
 pub const EdgeLink = struct {
     operator: EdgeOperator,
     operator_range: location.Range,
-    right: location.Range,
+    right: NodeReference,
 };
 
 pub const EdgeLinkRange = struct { start: Index = 0, len: Index = 0 };
@@ -136,7 +171,7 @@ pub const EdgeIterator = struct {
     edge_index: usize = 0,
     chain_index: usize = 0,
     links: []const EdgeLink = &.{},
-    left: location.Range = undefined,
+    left: NodeReference = undefined,
     attributes: AttributeRange = .{},
 
     pub fn next(self: *EdgeIterator) ?EdgeStatement {
@@ -200,9 +235,23 @@ pub const Document = struct {
     edges: []const EdgeStatement,
     edge_chains: []const EdgeChainStatement = &.{},
     edge_links: []const EdgeLink = &.{},
+    ported_references: []const PortedReference = &.{},
     attributes: []const Attribute = &.{},
     assignments: []const Assignment = &.{},
     attribute_statements: []const AttributeStatement = &.{},
+
+    /// Resolve a compact reference without scanning source or allocating.
+    /// Null for an out-of-bounds inline range or pool handle.
+    pub fn nodeReference(self: *const Document, reference: NodeReference) ?NodeReferenceView {
+        if (reference.raw_len == 0) {
+            if (reference.index_or_start >= self.ported_references.len) return null;
+            const value = self.ported_references[reference.index_or_start];
+            return .{ .identifier = value.identifier, .port = value.port };
+        }
+        const start: usize = reference.index_or_start;
+        if (start > self.source.len or reference.raw_len > self.source.len - start) return null;
+        return .{ .identifier = .{ .start = reference.index_or_start, .len = reference.raw_len } };
+    }
 
     pub fn statementCount(self: *const Document) usize {
         return self.order.len;
@@ -286,7 +335,7 @@ pub const Document = struct {
 };
 
 /// Free an allocator-owned document produced by `Builder.toDocument`
-/// (bulk release, R-MEM-005: eight pool releases, no per-node walk).
+/// (bulk release, R-MEM-005: nine pool releases, no per-node walk).
 ///
 /// Package-internal on purpose: `Document` itself is a non-owning view, so
 /// a fixed-storage document — whose pools belong to the caller — can never
@@ -296,6 +345,7 @@ pub fn deinitOwnedDocument(document: *Document, allocator: std.mem.Allocator) vo
     allocator.free(document.nodes);
     allocator.free(document.edge_chains);
     allocator.free(document.edge_links);
+    allocator.free(document.ported_references);
     allocator.free(document.edges);
     allocator.free(document.attributes);
     allocator.free(document.assignments);
@@ -339,6 +389,7 @@ pub const Builder = struct {
     nodes: std.ArrayList(NodeStatement) = .empty,
     edge_chains: std.ArrayList(EdgeChainStatement) = .empty,
     edge_links: std.ArrayList(EdgeLink) = .empty,
+    ported_references: std.ArrayList(PortedReference) = .empty,
     edges: std.ArrayList(EdgeStatement) = .empty,
     attributes: std.ArrayList(Attribute) = .empty,
     assignments: std.ArrayList(Assignment) = .empty,
@@ -356,6 +407,7 @@ pub const Builder = struct {
         StatementIndexOverflow,
         AttributeIndexOverflow,
         EdgeLinkIndexOverflow,
+        PortedReferenceIndexOverflow,
         /// A source position beyond the 4 GiB retained-range limit.
         SourceOffsetOverflow,
     };
@@ -381,6 +433,7 @@ pub const Builder = struct {
         try builder.nodes.ensureTotalCapacityPrecise(allocator, capacities.nodes);
         try builder.edge_chains.ensureTotalCapacityPrecise(allocator, capacities.edge_chains);
         try builder.edge_links.ensureTotalCapacityPrecise(allocator, capacities.edge_links);
+        try builder.ported_references.ensureTotalCapacityPrecise(allocator, capacities.ported_references);
         try builder.edges.ensureTotalCapacityPrecise(allocator, capacities.edges);
         try builder.attributes.ensureTotalCapacityPrecise(allocator, capacities.attributes);
         try builder.assignments.ensureTotalCapacityPrecise(allocator, capacities.assignments);
@@ -394,6 +447,7 @@ pub const Builder = struct {
         self.nodes.deinit(self.allocator);
         self.edge_chains.deinit(self.allocator);
         self.edge_links.deinit(self.allocator);
+        self.ported_references.deinit(self.allocator);
         self.edges.deinit(self.allocator);
         self.attributes.deinit(self.allocator);
         self.assignments.deinit(self.allocator);
@@ -411,6 +465,7 @@ pub const Builder = struct {
         self.nodes.clearRetainingCapacity();
         self.edge_chains.clearRetainingCapacity();
         self.edge_links.clearRetainingCapacity();
+        self.ported_references.clearRetainingCapacity();
         self.edges.clearRetainingCapacity();
         self.attributes.clearRetainingCapacity();
         self.assignments.clearRetainingCapacity();
@@ -431,6 +486,7 @@ pub const Builder = struct {
             self.nodes.clearAndFree(self.allocator);
             self.edge_chains.clearAndFree(self.allocator);
             self.edge_links.clearAndFree(self.allocator);
+            self.ported_references.clearAndFree(self.allocator);
             self.edges.clearAndFree(self.allocator);
             self.attributes.clearAndFree(self.allocator);
             self.assignments.clearAndFree(self.allocator);
@@ -445,6 +501,8 @@ pub const Builder = struct {
         errdefer self.allocator.free(nodes);
         const edge_chains = try self.edge_chains.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(edge_chains);
+        const ported_references = try self.ported_references.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(ported_references);
         const edge_links = try self.edge_links.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(edge_links);
         const edges = try self.edges.toOwnedSlice(self.allocator);
@@ -465,6 +523,7 @@ pub const Builder = struct {
             .nodes = nodes,
             .edge_chains = edge_chains,
             .edge_links = edge_links,
+            .ported_references = ported_references,
             .edges = edges,
             .attributes = attributes,
             .assignments = assignments,
@@ -487,7 +546,7 @@ pub const Builder = struct {
         std.debug.assert(self.phase == .building);
         const at = statement_event.identifier;
         const node: NodeStatement = .{
-            .identifier = try self.range(statement_event.identifier),
+            .reference = try self.reference(statement_event.identifier, statement_event.port),
             .attributes = self.pendingRange(),
         };
         const index = try self.statementIndex(self.nodes.items.len, at);
@@ -503,10 +562,10 @@ pub const Builder = struct {
         std.debug.assert(self.phase == .building);
         const at = statement_event.left;
         const edge: EdgeStatement = .{
-            .left = try self.range(statement_event.left),
+            .left = try self.reference(statement_event.left, statement_event.left_port),
             .operator = statement_event.operator,
             .operator_range = try self.range(statement_event.operator_span),
-            .right = try self.range(statement_event.right),
+            .right = try self.reference(statement_event.right, statement_event.right_port),
             .attributes = self.pendingRange(),
         };
         const index = try self.statementIndex(self.edges.items.len, at);
@@ -519,7 +578,7 @@ pub const Builder = struct {
 
     pub fn edgeLink(self: *Builder, event: syntax_event.EdgeLink) Error!void {
         std.debug.assert(self.phase == .building);
-        const value: EdgeLink = .{ .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.range(event.right) };
+        const value: EdgeLink = .{ .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.reference(event.right, event.right_port) };
         if (self.edge_links.items.len >= std.math.maxInt(Index)) {
             self.failure_info = .{ .span = event.operator_span, .capacity = .{ .resource = .edge_link_index, .limit = std.math.maxInt(Index) } };
             return error.EdgeLinkIndexOverflow;
@@ -531,7 +590,7 @@ pub const Builder = struct {
     pub fn edgeChainStatement(self: *Builder, event: syntax_event.EdgeStatement) Error!void {
         std.debug.assert(self.phase == .building and self.edge_links.items.len > self.pending_links);
         const value: EdgeChainStatement = .{
-            .first = .{ .left = try self.range(event.left), .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.range(event.right), .attributes = self.pendingRange() },
+            .first = .{ .left = try self.reference(event.left, event.left_port), .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.reference(event.right, event.right_port), .attributes = self.pendingRange() },
             .links = .{ .start = @intCast(self.pending_links), .len = @intCast(self.edge_links.items.len - self.pending_links) },
         };
         const index = try self.statementIndex(self.edge_chains.items.len, event.left);
@@ -541,6 +600,30 @@ pub const Builder = struct {
         self.order.appendAssumeCapacity(.{ .edge_chain = index });
         self.pending_links = self.edge_links.items.len;
         self.pending_attributes = self.attributes.items.len;
+    }
+
+    pub fn portedReference(self: *Builder, event: syntax_event.PortedReference) Error!u32 {
+        std.debug.assert(self.phase == .building);
+        const value: PortedReference = .{
+            .identifier = try self.range(event.identifier),
+            .port = .{ .first = try self.range(event.first), .second = if (event.second) |span| try self.range(span) else null },
+        };
+        if (self.ported_references.items.len >= std.math.maxInt(Index)) {
+            self.failure_info = .{ .span = event.first, .capacity = .{ .resource = .ported_reference_index, .limit = std.math.maxInt(Index) } };
+            return error.PortedReferenceIndexOverflow;
+        }
+        const index: Index = @intCast(self.ported_references.items.len);
+        try self.reserve(&self.ported_references, event.first);
+        self.ported_references.appendAssumeCapacity(value);
+        return index;
+    }
+
+    fn reference(self: *Builder, span: location.Span, port: ?u32) Error!NodeReference {
+        if (port) |index| {
+            std.debug.assert(index < self.ported_references.items.len);
+            return NodeReference.pooled(index);
+        }
+        return NodeReference.fromRange(try self.range(span)).?;
     }
 
     fn pendingRange(self: *const Builder) AttributeRange {
@@ -625,6 +708,7 @@ pub const Builder = struct {
         self.nodes.clearAndFree(self.allocator);
         self.edge_chains.clearAndFree(self.allocator);
         self.edge_links.clearAndFree(self.allocator);
+        self.ported_references.clearAndFree(self.allocator);
         self.edges.clearAndFree(self.allocator);
         self.attributes.clearAndFree(self.allocator);
         self.assignments.clearAndFree(self.allocator);
@@ -664,6 +748,8 @@ pub const Capacities = struct {
     edge_chains: usize = 0,
     /// Continuations after each chain's first edge (N edges use N-1 links).
     edge_links: usize = 0,
+    /// Qualified node-reference occurrences; duplicates are not interned.
+    ported_references: usize = 0,
     edges: usize = 0,
     /// Pairs in bracket lists; standalone assignments use their own pool.
     attributes: usize = 0,
@@ -680,6 +766,7 @@ pub const DocumentStorage = struct {
     nodes: []NodeStatement,
     edge_chains: []EdgeChainStatement = &.{},
     edge_links: []EdgeLink = &.{},
+    ported_references: []PortedReference = &.{},
     edges: []EdgeStatement,
     attributes: []Attribute = &.{},
     assignments: []Assignment = &.{},
@@ -693,7 +780,7 @@ pub const DocumentStorage = struct {
 /// static, or heap via `allocator.create`). Budget with `byte_size`.
 pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
     comptime {
-        for ([_]usize{ capacities.statements, capacities.nodes, capacities.edges, capacities.edge_links, capacities.edge_chains, capacities.attributes, capacities.assignments, capacities.attribute_statements }) |capacity| {
+        for ([_]usize{ capacities.statements, capacities.nodes, capacities.edges, capacities.edge_links, capacities.edge_chains, capacities.ported_references, capacities.attributes, capacities.assignments, capacities.attribute_statements }) |capacity| {
             if (capacity > std.math.maxInt(Index)) {
                 @compileError("FixedDocumentStorage: capacity exceeds the statement index width (" ++
                     @typeName(Index) ++ ")");
@@ -709,6 +796,7 @@ pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
         nodes: [capacities.nodes]NodeStatement = undefined,
         edge_chains: [capacities.edge_chains]EdgeChainStatement = undefined,
         edge_links: [capacities.edge_links]EdgeLink = undefined,
+        ported_references: [capacities.ported_references]PortedReference = undefined,
         edges: [capacities.edges]EdgeStatement = undefined,
         attributes: [capacities.attributes]Attribute = undefined,
         assignments: [capacities.assignments]Assignment = undefined,
@@ -720,6 +808,7 @@ pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
                 .nodes = &self.nodes,
                 .edge_chains = &self.edge_chains,
                 .edge_links = &self.edge_links,
+                .ported_references = &self.ported_references,
                 .edges = &self.edges,
                 .attributes = &self.attributes,
                 .assignments = &self.assignments,
@@ -747,6 +836,7 @@ pub const FixedBuilder = struct {
     nodes_len: usize = 0,
     edge_chains_len: usize = 0,
     edge_links_len: usize = 0,
+    ported_references_len: usize = 0,
     edges_len: usize = 0,
     attributes_len: usize = 0,
     assignments_len: usize = 0,
@@ -767,6 +857,7 @@ pub const FixedBuilder = struct {
         StatementIndexOverflow,
         AttributeIndexOverflow,
         EdgeLinkIndexOverflow,
+        PortedReferenceIndexOverflow,
     };
 
     const Phase = enum { idle, building, committed, terminal };
@@ -783,6 +874,7 @@ pub const FixedBuilder = struct {
         self.nodes_len = 0;
         self.edge_chains_len = 0;
         self.edge_links_len = 0;
+        self.ported_references_len = 0;
         self.edges_len = 0;
         self.attributes_len = 0;
         self.assignments_len = 0;
@@ -809,6 +901,7 @@ pub const FixedBuilder = struct {
             .nodes = self.storage.nodes[0..self.nodes_len],
             .edge_chains = self.storage.edge_chains[0..self.edge_chains_len],
             .edge_links = self.storage.edge_links[0..self.edge_links_len],
+            .ported_references = self.storage.ported_references[0..self.ported_references_len],
             .edges = self.storage.edges[0..self.edges_len],
             .attributes = self.storage.attributes[0..self.attributes_len],
             .assignments = self.storage.assignments[0..self.assignments_len],
@@ -829,7 +922,7 @@ pub const FixedBuilder = struct {
 
     pub fn edgeLink(self: *FixedBuilder, event: syntax_event.EdgeLink) Error!void {
         std.debug.assert(self.phase == .building);
-        const value: EdgeLink = .{ .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.range(event.right) };
+        const value: EdgeLink = .{ .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.reference(event.right, event.right_port) };
         if (self.edge_links_len >= std.math.maxInt(Index)) {
             self.failure_info = .{ .span = event.operator_span, .capacity = .{ .resource = .edge_link_index, .limit = std.math.maxInt(Index) } };
             return error.EdgeLinkIndexOverflow;
@@ -842,7 +935,7 @@ pub const FixedBuilder = struct {
     pub fn edgeChainStatement(self: *FixedBuilder, event: syntax_event.EdgeStatement) Error!void {
         std.debug.assert(self.phase == .building and self.edge_links_len > self.pending_links);
         const value: EdgeChainStatement = .{
-            .first = .{ .left = try self.range(event.left), .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.range(event.right), .attributes = self.pendingRange() },
+            .first = .{ .left = try self.reference(event.left, event.left_port), .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.reference(event.right, event.right_port), .attributes = self.pendingRange() },
             .links = .{ .start = @intCast(self.pending_links), .len = @intCast(self.edge_links_len - self.pending_links) },
         };
         const index = try self.statementIndex(self.edge_chains_len, event.left);
@@ -854,6 +947,31 @@ pub const FixedBuilder = struct {
         self.order_len += 1;
         self.pending_links = self.edge_links_len;
         self.pending_attributes = self.attributes_len;
+    }
+
+    pub fn portedReference(self: *FixedBuilder, event: syntax_event.PortedReference) Error!u32 {
+        std.debug.assert(self.phase == .building);
+        const value: PortedReference = .{
+            .identifier = try self.range(event.identifier),
+            .port = .{ .first = try self.range(event.first), .second = if (event.second) |span| try self.range(span) else null },
+        };
+        if (self.ported_references_len >= std.math.maxInt(Index)) {
+            self.failure_info = .{ .span = event.first, .capacity = .{ .resource = .ported_reference_index, .limit = std.math.maxInt(Index) } };
+            return error.PortedReferenceIndexOverflow;
+        }
+        const index: Index = @intCast(self.ported_references_len);
+        try self.checkPool(self.ported_references_len, self.storage.ported_references.len, .ported_reference_pool, event.first);
+        self.storage.ported_references[self.ported_references_len] = value;
+        self.ported_references_len += 1;
+        return index;
+    }
+
+    fn reference(self: *FixedBuilder, span: location.Span, port: ?u32) Error!NodeReference {
+        if (port) |index| {
+            std.debug.assert(index < self.ported_references_len);
+            return NodeReference.pooled(index);
+        }
+        return NodeReference.fromRange(try self.range(span)).?;
     }
 
     fn pendingRange(self: *const FixedBuilder) AttributeRange {
@@ -941,7 +1059,7 @@ pub const FixedBuilder = struct {
         std.debug.assert(self.phase == .building);
         const at = statement_event.identifier;
         const node: NodeStatement = .{
-            .identifier = try self.range(statement_event.identifier),
+            .reference = try self.reference(statement_event.identifier, statement_event.port),
             .attributes = self.pendingRange(),
         };
         try self.checkPool(self.nodes_len, self.storage.nodes.len, .node_pool, at);
@@ -958,10 +1076,10 @@ pub const FixedBuilder = struct {
         std.debug.assert(self.phase == .building);
         const at = statement_event.left;
         const edge: EdgeStatement = .{
-            .left = try self.range(statement_event.left),
+            .left = try self.reference(statement_event.left, statement_event.left_port),
             .operator = statement_event.operator,
             .operator_range = try self.range(statement_event.operator_span),
-            .right = try self.range(statement_event.right),
+            .right = try self.reference(statement_event.right, statement_event.right_port),
             .attributes = self.pendingRange(),
         };
         try self.checkPool(self.edges_len, self.storage.edges.len, .edge_pool, at);
@@ -989,6 +1107,7 @@ pub const FixedBuilder = struct {
         self.nodes_len = 0;
         self.edge_chains_len = 0;
         self.edge_links_len = 0;
+        self.ported_references_len = 0;
         self.edges_len = 0;
         self.attributes_len = 0;
         self.assignments_len = 0;
@@ -1011,6 +1130,25 @@ comptime {
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
+
+test "ported index and source overflow fail before pool access and reset cleanly" {
+    var pools: FixedDocumentStorage(.{}) = .{};
+    var builder = FixedBuilder.init("graph{}", pools.storage());
+    const at: location.Span = .{ .start = .start, .byte_len = 1 };
+    try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
+    builder.ported_references_len = std.math.maxInt(Index);
+    try std.testing.expectError(error.PortedReferenceIndexOverflow, builder.portedReference(.{ .identifier = at, .first = at }));
+    try expectEqual(diagnostic.Capacity.Resource.ported_reference_index, builder.failure_info.?.capacity.?.resource);
+    builder.abortDocument(.sink_failure);
+    try expectEqual(@as(usize, 0), builder.ported_references_len);
+    var allocated = Builder.init(std.testing.allocator, "graph{}");
+    defer allocated.deinit();
+    try allocated.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
+    const huge: location.Span = .{ .start = .{ .byte_offset = std.math.maxInt(u32), .line = 1, .byte_column = 1 }, .byte_len = 1 };
+    try std.testing.expectError(error.SourceOffsetOverflow, allocated.portedReference(.{ .identifier = at, .first = huge }));
+    try expectEqual(@as(usize, 0), allocated.ported_references.items.len);
+    allocated.abortDocument(.sink_failure);
+}
 
 test "link index overflow is reported before accessing a fixed pool" {
     var pools: FixedDocumentStorage(.{}) = .{};
@@ -1063,22 +1201,22 @@ test "document preserves statement order, kinds, and borrowed ranges" {
     try expect(document.order[3] == .edge);
 
     const first = document.statementAt(0).?.node;
-    try expectEqualStrings("a", first.identifier.slice(source));
-    try expectEqualStrings("a", document.text(first.identifier));
+    try expectEqualStrings("a", document.nodeReference(first.reference).?.identifier.slice(source));
+    try expectEqualStrings("a", document.text(document.nodeReference(first.reference).?.identifier));
     try expectEqualStrings(source, document.source);
 
     const edge = document.statementAt(1).?.edge;
     try expectEqual(EdgeOperator.undirected, edge.operator);
-    try expectEqualStrings("a", edge.left.slice(source));
+    try expectEqualStrings("a", document.nodeReference(edge.left).?.identifier.slice(source));
     try expectEqualStrings("--", edge.operator_range.slice(source));
-    try expectEqualStrings("b", edge.right.slice(source));
+    try expectEqualStrings("b", document.nodeReference(edge.right).?.identifier.slice(source));
 
     // The written `->` is preserved for validation to inspect.
     const directed = document.statementAt(3).?.edge;
     try expectEqual(EdgeOperator.directed, directed.operator);
 
     // Ranges borrow the original buffer — no copies (R-MEM-004).
-    try expect(first.identifier.slice(source).ptr == source.ptr + 8);
+    try expect(document.nodeReference(first.reference).?.identifier.slice(source).ptr == source.ptr + 8);
 
     // Positions are derived on demand, not stored (R-MEM-008).
     const operator_span = edge.operator_range.toSpan(source);
@@ -1122,7 +1260,7 @@ test "document outlives the builder and the parser state" {
     };
     defer deinitOwnedDocument(&document, std.testing.allocator);
 
-    try expectEqualStrings("x", document.statementAt(0).?.node.identifier.slice(source));
+    try expectEqualStrings("x", document.nodeReference(document.statementAt(0).?.node.reference).?.identifier.slice(source));
 }
 
 test "fixed buffer with exact capacities allocates nothing after init" {
@@ -1264,7 +1402,7 @@ test "aborted builder is reusable after reset" {
 
     var document = try builder.toDocument();
     defer deinitOwnedDocument(&document, std.testing.allocator);
-    try expectEqualStrings("ok", document.statementAt(0).?.node.identifier.slice(source));
+    try expectEqualStrings("ok", document.nodeReference(document.statementAt(0).?.node.reference).?.identifier.slice(source));
 }
 
 test "builder is reusable after toDocument via reset" {
@@ -1285,8 +1423,8 @@ test "builder is reusable after toDocument via reset" {
 
     try expectEqual(@as(usize, 1), first.statementCount());
     try expectEqual(@as(usize, 2), second.statementCount());
-    try expectEqualStrings("a", first.statementAt(0).?.node.identifier.slice(first_source));
-    try expectEqualStrings("c", second.statementAt(1).?.node.identifier.slice(second_source));
+    try expectEqualStrings("a", first.nodeReference(first.statementAt(0).?.node.reference).?.identifier.slice(first_source));
+    try expectEqualStrings("c", second.nodeReference(second.statementAt(1).?.node.reference).?.identifier.slice(second_source));
 }
 
 test "fixed builder parses into caller pools with no allocator" {
@@ -1306,10 +1444,10 @@ test "fixed builder parses into caller pools with no allocator" {
 
     const document = builder.toDocument();
     try expectEqual(@as(usize, 2), document.statementCount());
-    try expectEqualStrings("a", document.text(document.statementAt(0).?.node.identifier));
+    try expectEqualStrings("a", document.text(document.nodeReference(document.statementAt(0).?.node.reference).?.identifier));
     const edge = document.statementAt(1).?.edge;
     try expectEqual(EdgeOperator.undirected, edge.operator);
-    try expectEqualStrings("b", document.text(edge.right));
+    try expectEqualStrings("b", document.text(document.nodeReference(edge.right).?.identifier));
 
     // The document views the caller's pools directly — no copies.
     try expect(document.nodes.ptr == &nodes);
@@ -1367,9 +1505,9 @@ test "statement iterator walks source order" {
     defer deinitOwnedDocument(&document, std.testing.allocator);
 
     var iterator = document.statements();
-    try expectEqualStrings("a", document.text(iterator.next().?.node.identifier));
+    try expectEqualStrings("a", document.text(document.nodeReference(iterator.next().?.node.reference).?.identifier));
     try expect(iterator.next().? == .edge);
-    try expectEqualStrings("b", document.text(iterator.next().?.node.identifier));
+    try expectEqualStrings("b", document.text(document.nodeReference(iterator.next().?.node.reference).?.identifier));
     try expectEqual(@as(?Statement, null), iterator.next());
 }
 
@@ -1391,7 +1529,7 @@ test "builder driven directly through the event contract" {
     var document = try builder.toDocument();
     defer deinitOwnedDocument(&document, std.testing.allocator);
     try expectEqual(@as(usize, 1), document.statementCount());
-    try expectEqualStrings("n", document.statementAt(0).?.node.identifier.slice(source));
+    try expectEqualStrings("n", document.nodeReference(document.statementAt(0).?.node.reference).?.identifier.slice(source));
 }
 
 test "attribute index overflow is checked before fixed pool access" {

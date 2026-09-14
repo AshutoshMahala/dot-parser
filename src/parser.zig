@@ -1,11 +1,12 @@
 //! Parser state machine (milestone 1, step 5).
 //!
-//! Current grammar (basic attributes and identifier-only chains included):
+//! Current grammar (attributes, ports and node-reference chains included):
 //!
 //! ```text
 //! document  := "strict"? ("graph" | "digraph") identifier? "{" statement* "}" EOF
-//! statement := (identifier attributes? | identifier (edgeop identifier)+ attributes?
+//! statement := (node_ref attributes? | node_ref (edgeop node_ref)+ attributes?
 //!            | identifier "=" identifier | ("graph" | "node" | "edge") attributes) ";"?
+//! node_ref  := identifier (":" identifier (":" identifier)?)?
 //! attributes := ("[" (identifier "=" identifier (";" | ",")?)* "]")+
 //! edgeop    := "--" | "->"
 //! ```
@@ -38,11 +39,11 @@
 //!   abort after begin when the document cannot commit — including the
 //!   documented cleanup abort after an attempted `beginDocument` that
 //!   itself failed.
-//! - Iterative state machine — no recursion at all, so input size and shape
+//! - Iterative state-machine parsing has no recursion, so input size and shape
 //!   cannot exhaust the call stack (R-PERF-002).
 //! - Work is a single linear scan of the input (R-PERF-001, R-SEC-003);
 //!   `Options.max_statements` additionally bounds the statements processed.
-//! - Subgraphs, HTML/non-ASCII bare identifiers and ports remain
+//! - Subgraphs and HTML/non-ASCII bare identifiers remain
 //!   deferred. Attributes are parsed and retained without default resolution,
 //!   key deduplication or value interpretation. Malformed supported attribute
 //!   syntax is invalid, not unsupported. Unsupported boundaries still make
@@ -150,7 +151,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
     return struct {
         const Self = @This();
 
-        const Action = enum { begin, node, edge, edge_chain, edge_link, attribute_statement, assignment, attribute, commit };
+        const Action = enum { begin, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit };
         const Work = struct {
             token: lex.Token = undefined,
             action: Action = undefined,
@@ -210,7 +211,22 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         link_operator: syntax_event.EdgeOperator = undefined,
         link_operator_span: location.Span = undefined,
 
+        left_port: ?u32 = null,
+        right_port: ?u32 = null,
+        link_port: ?u32 = null,
+        link_right: location.Span = undefined,
+        port_first: location.Span = undefined,
+        port_second: ?location.Span = null,
+        port_colon: location.Span = undefined,
+        port_target: enum { left, right, link } = .left,
+        port_resume: State = .after_identifier,
+
         const State = enum {
+            port_first,
+            port_after_first,
+            port_second,
+            port_after_second,
+            chain_after_identifier,
             chain_right,
             /// Expect `strict` or the kind keyword.
             prologue,
@@ -344,154 +360,188 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
 
         fn transition(self: *Self, token: lex.Token) ?Result {
             if (audited) self.audit.grammar += 1;
-            switch (self.state) {
-                .prologue => switch (token.tag) {
-                    .keyword_strict => {
-                        self.strict = true;
-                        self.state = .kind_keyword;
+            // Ordinary parsing replays only a finished suffix/link lookahead.
+            // Controlled parsing returns after one transition and charges the
+            // replay separately through Work; no recursion or hot-path flag.
+            while (true) {
+                switch (self.state) {
+                    .prologue => switch (token.tag) {
+                        .keyword_strict => {
+                            self.strict = true;
+                            self.state = .kind_keyword;
+                        },
+                        .keyword_graph => self.acceptKind(.undigraph, token),
+                        .keyword_digraph => self.acceptKind(.digraph, token),
+                        else => return self.unexpected(.{
+                            .strict_keyword = true,
+                            .graph_keyword = true,
+                            .digraph_keyword = true,
+                        }, .document_header, token),
                     },
-                    .keyword_graph => self.acceptKind(.undigraph, token),
-                    .keyword_digraph => self.acceptKind(.digraph, token),
-                    else => return self.unexpected(.{
-                        .strict_keyword = true,
-                        .graph_keyword = true,
-                        .digraph_keyword = true,
-                    }, .document_header, token),
-                },
-                .kind_keyword => switch (token.tag) {
-                    .keyword_graph => self.acceptKind(.undigraph, token),
-                    .keyword_digraph => self.acceptKind(.digraph, token),
-                    else => return self.unexpected(.{
-                        .graph_keyword = true,
-                        .digraph_keyword = true,
-                    }, .document_header, token),
-                },
-                .header_name => switch (token.tag) {
-                    .identifier => {
-                        self.name_span = token.span;
-                        self.state = .header_open;
+                    .kind_keyword => switch (token.tag) {
+                        .keyword_graph => self.acceptKind(.undigraph, token),
+                        .keyword_digraph => self.acceptKind(.digraph, token),
+                        else => return self.unexpected(.{
+                            .graph_keyword = true,
+                            .digraph_keyword = true,
+                        }, .document_header, token),
                     },
-                    .left_brace => return self.beginBody(token),
-                    // Unquoted keywords are not valid names (Graphviz
-                    // rejects `graph graph`); a keyword name needs quoting.
-                    else => return self.unexpected(.{
-                        .identifier = true,
-                        .left_brace = true,
-                    }, .document_header, token),
-                },
-                .header_open => switch (token.tag) {
-                    .left_brace => return self.beginBody(token),
-                    else => return self.unexpected(.{ .left_brace = true }, .document_header, token),
-                },
-                .statement => return self.beginNext(token),
-                .after_identifier => switch (token.tag) {
-                    .equals => {
-                        if (self.countAttribute(self.left)) |result| return result;
-                        self.state = .assignment_value;
+                    .header_name => switch (token.tag) {
+                        .identifier => {
+                            self.name_span = token.span;
+                            self.state = .header_open;
+                        },
+                        .left_brace => return self.beginBody(token),
+                        // Unquoted keywords are not valid names (Graphviz
+                        // rejects `graph graph`); a keyword name needs quoting.
+                        else => return self.unexpected(.{
+                            .identifier = true,
+                            .left_brace = true,
+                        }, .document_header, token),
                     },
-                    .left_bracket => self.openAttributes(token),
-                    .edge_undirected, .edge_directed => {
-                        self.operator = if (token.tag == .edge_undirected) .undirected else .directed;
-                        self.operator_span = token.span;
-                        self.state = .edge_right;
+                    .header_open => switch (token.tag) {
+                        .left_brace => return self.beginBody(token),
+                        else => return self.unexpected(.{ .left_brace = true }, .document_header, token),
                     },
-                    else => return self.finishPending(token, .{
-                        .semicolon = true,
-                        .undirected_operator = true,
-                        .directed_operator = true,
-                        .identifier = true,
-                        .right_brace = true,
-                        .left_bracket = true,
-                        .equals = true,
-                        .graph_keyword = true,
-                        .node_keyword = true,
-                        .edge_keyword = true,
-                        .subgraph_keyword = true,
-                        .left_brace = true,
-                    }, .statement),
-                },
-                .edge_right => switch (token.tag) {
-                    .identifier => {
-                        self.right = token.span;
-                        self.pending = .edge;
-                        self.state = .edge_terminate;
+                    .statement => return self.beginNext(token),
+                    .after_identifier => switch (token.tag) {
+                        .colon => {
+                            if (self.left_port != null) return self.unexpected(nodeEndExpected(false), .statement, token);
+                            self.startPort(.left, .after_identifier, token.span);
+                        },
+                        .equals => {
+                            if (self.left_port != null) return self.unexpected(nodeEndExpected(false), .statement, token);
+                            if (self.countAttribute(self.left)) |result| return result;
+                            self.state = .assignment_value;
+                        },
+                        .left_bracket => self.openAttributes(token),
+                        .edge_undirected, .edge_directed => {
+                            self.operator = if (token.tag == .edge_undirected) .undirected else .directed;
+                            self.operator_span = token.span;
+                            self.state = .edge_right;
+                        },
+                        else => return self.finishPending(token, nodeEndExpected(self.left_port == null), .statement),
                     },
-                    .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph),
-                    else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
-                },
-                .edge_terminate => switch (token.tag) {
-                    .left_bracket => self.openAttributes(token),
-                    .edge_undirected, .edge_directed => {
-                        self.link_operator = if (token.tag == .edge_undirected) .undirected else .directed;
-                        self.link_operator_span = token.span;
-                        self.state = .chain_right;
+                    .edge_right => switch (token.tag) {
+                        .identifier => {
+                            self.right = token.span;
+                            self.right_port = null;
+                            self.pending = .edge;
+                            self.state = .edge_terminate;
+                        },
+                        .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph),
+                        else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
                     },
-                    else => {
-                        var expected = statementEndExpected(true);
-                        expected.undirected_operator = true;
-                        expected.directed_operator = true;
-                        return self.finishPending(token, expected, .statement_terminator);
+                    .edge_terminate => switch (token.tag) {
+                        .colon => {
+                            if (self.pending != .edge or self.right_port != null)
+                                return self.unexpected(edgeEndExpected(false), .statement_terminator, token);
+                            self.startPort(.right, .edge_terminate, token.span);
+                        },
+                        .left_bracket => self.openAttributes(token),
+                        .edge_undirected, .edge_directed => {
+                            self.link_operator = if (token.tag == .edge_undirected) .undirected else .directed;
+                            self.link_operator_span = token.span;
+                            self.state = .chain_right;
+                        },
+                        else => {
+                            return self.finishPending(token, edgeEndExpected(self.pending == .edge and self.right_port == null), .statement_terminator);
+                        },
                     },
-                },
-                .chain_right => switch (token.tag) {
-                    .identifier => {
-                        self.pending = .edge_chain;
-                        self.state = .edge_terminate;
-                        return self.schedule(.edge_link, token);
+                    .chain_right => switch (token.tag) {
+                        .identifier => {
+                            self.pending = .edge_chain;
+                            self.link_right = token.span;
+                            self.link_port = null;
+                            self.state = .chain_after_identifier;
+                        },
+                        .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph),
+                        else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
                     },
-                    .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph),
-                    else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
-                },
-                .assignment_value => {
-                    if (token.tag != .identifier)
-                        return self.unexpected(.{ .identifier = true }, .assignment_value, token);
-                    self.state = .completed;
-                    return self.schedule(.assignment, token);
-                },
-                .completed => return self.continueAfterStatement(token),
-                .attribute_open => {
-                    if (token.tag != .left_bracket)
-                        return self.unexpected(.{ .left_bracket = true }, .attribute_list, token);
-                    self.openAttributes(token);
-                },
-                .attribute_key_or_close => switch (token.tag) {
-                    .right_bracket => self.closeAttributes(),
-                    .identifier => return self.beginAttribute(token),
-                    else => return self.unexpected(.{ .identifier = true, .right_bracket = true }, .attribute_key, token),
-                },
-                .attribute_equals => {
-                    if (token.tag != .equals)
-                        return self.unexpected(.{ .equals = true }, .attribute_key, token);
-                    self.state = .attribute_value;
-                },
-                .attribute_value => {
-                    if (token.tag != .identifier)
-                        return self.unexpected(.{ .identifier = true }, .attribute_value, token);
-                    self.state = .attribute_after_value;
-                    return self.schedule(.attribute, token);
-                },
-                .attribute_after_value => switch (token.tag) {
-                    .right_bracket => self.closeAttributes(),
-                    .comma, .semicolon => self.state = .attribute_key_or_close,
-                    .identifier => return self.beginAttribute(token),
-                    else => return self.unexpected(.{
-                        .identifier = true,
-                        .right_bracket = true,
-                        .comma = true,
-                        .semicolon = true,
-                    }, .attribute_list, token),
-                },
-                .after_attributes => {
-                    if (token.tag == .left_bracket) {
+                    .chain_after_identifier => {
+                        if (token.tag == .colon) {
+                            if (self.link_port != null) return self.unexpected(edgeEndExpected(false), .statement_terminator, token);
+                            self.startPort(.link, .chain_after_identifier, token.span);
+                        } else {
+                            self.state = .edge_terminate;
+                            if (self.dispatchThenReplay(.edge_link, token)) |result| return result;
+                            if (!metered and !cancellable) continue;
+                        }
+                    },
+                    .port_first => {
+                        if (token.tag != .identifier) return self.unexpected(.{ .identifier = true }, .port_component, token);
+                        self.port_first = token.span;
+                        self.state = .port_after_first;
+                    },
+                    .port_after_first => {
+                        if (token.tag == .colon) {
+                            self.port_colon = token.span;
+                            self.state = .port_second;
+                        } else {
+                            if (self.finishPort(token)) |result| return result;
+                            if (!metered and !cancellable) continue;
+                        }
+                    },
+                    .port_second => {
+                        if (token.tag != .identifier) return self.unexpected(.{ .identifier = true }, .port_component, token);
+                        self.port_second = token.span;
+                        self.state = .port_after_second;
+                    },
+                    .port_after_second => {
+                        if (self.finishPort(token)) |result| return result;
+                        if (!metered and !cancellable) continue;
+                    },
+                    .assignment_value => {
+                        if (token.tag != .identifier)
+                            return self.unexpected(.{ .identifier = true }, .assignment_value, token);
+                        self.state = .completed;
+                        return self.schedule(.assignment, token);
+                    },
+                    .completed => return self.continueAfterStatement(token),
+                    .attribute_open => {
+                        if (token.tag != .left_bracket)
+                            return self.unexpected(.{ .left_bracket = true }, .attribute_list, token);
                         self.openAttributes(token);
-                    } else return self.finishPending(token, statementEndExpected(true), .statement_terminator);
-                },
-                .epilogue => switch (token.tag) {
-                    .eof => return self.schedule(.commit, token),
-                    else => return self.unexpected(.{ .end_of_input = true }, .document_epilogue, token),
-                },
+                    },
+                    .attribute_key_or_close => switch (token.tag) {
+                        .right_bracket => self.closeAttributes(),
+                        .identifier => return self.beginAttribute(token),
+                        else => return self.unexpected(.{ .identifier = true, .right_bracket = true }, .attribute_key, token),
+                    },
+                    .attribute_equals => {
+                        if (token.tag != .equals)
+                            return self.unexpected(.{ .equals = true }, .attribute_key, token);
+                        self.state = .attribute_value;
+                    },
+                    .attribute_value => {
+                        if (token.tag != .identifier)
+                            return self.unexpected(.{ .identifier = true }, .attribute_value, token);
+                        self.state = .attribute_after_value;
+                        return self.schedule(.attribute, token);
+                    },
+                    .attribute_after_value => switch (token.tag) {
+                        .right_bracket => self.closeAttributes(),
+                        .comma, .semicolon => self.state = .attribute_key_or_close,
+                        .identifier => return self.beginAttribute(token),
+                        else => return self.unexpected(.{
+                            .identifier = true,
+                            .right_bracket = true,
+                            .comma = true,
+                            .semicolon = true,
+                        }, .attribute_list, token),
+                    },
+                    .after_attributes => {
+                        if (token.tag == .left_bracket) {
+                            self.openAttributes(token);
+                        } else return self.finishPending(token, statementEndExpected(true), .statement_terminator);
+                    },
+                    .epilogue => switch (token.tag) {
+                        .eof => return self.schedule(.commit, token),
+                        else => return self.unexpected(.{ .end_of_input = true }, .document_epilogue, token),
+                    },
+                }
+                return null;
             }
-            return null;
         }
 
         fn acceptKind(self: *Self, kind: syntax_event.GraphKind, token: lex.Token) void {
@@ -523,6 +573,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             }
             self.statements += 1;
             self.left = token.span;
+            self.left_port = null;
             self.pending = .node;
             self.state = .after_identifier;
             return null;
@@ -554,6 +605,27 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 }, .document_body, token),
             }
             return null;
+        }
+
+        fn startPort(self: *Self, target: @FieldType(Self, "port_target"), resume_state: State, colon: location.Span) void {
+            self.port_target = target;
+            self.port_resume = resume_state;
+            self.port_colon = colon;
+            self.port_second = null;
+            self.state = .port_first;
+        }
+
+        fn finishPort(self: *Self, token: lex.Token) ?Result {
+            self.state = self.port_resume;
+            return self.dispatchThenReplay(.ported_reference, token);
+        }
+
+        fn dispatchThenReplay(self: *Self, action: Action, token: lex.Token) ?Result {
+            if (metered or cancellable) {
+                self.work.replay = true;
+                return self.schedule(action, token);
+            }
+            return self.schedule(action, token);
         }
 
         fn finishPending(self: *Self, token: lex.Token, expected: std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false), context: diagnostic.ParseContext) ?Result {
@@ -637,23 +709,45 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         .name_span = self.name_span,
                     }) catch |err| return self.sinkFailure(err);
                 },
-                .node => self.events.nodeStatement(.{ .identifier = self.left }) catch |err| return self.sinkFailure(err),
+                .node => self.events.nodeStatement(.{ .identifier = self.left, .port = self.left_port }) catch |err| return self.sinkFailure(err),
                 .edge => self.events.edgeStatement(.{
                     .left = self.left,
+                    .left_port = self.left_port,
                     .operator = self.operator,
                     .operator_span = self.operator_span,
                     .right = self.right,
+                    .right_port = self.right_port,
                 }) catch |err| return self.sinkFailure(err),
+                .ported_reference => {
+                    const identifier_span = switch (self.port_target) {
+                        .left => self.left,
+                        .right => self.right,
+                        .link => self.link_right,
+                    };
+                    const index = self.events.portedReference(.{
+                        .identifier = identifier_span,
+                        .first = self.port_first,
+                        .second = self.port_second,
+                    }) catch |err| return self.sinkFailure(err);
+                    switch (self.port_target) {
+                        .left => self.left_port = index,
+                        .right => self.right_port = index,
+                        .link => self.link_port = index,
+                    }
+                },
                 .edge_link => self.events.edgeLink(.{
                     .operator = self.link_operator,
                     .operator_span = self.link_operator_span,
-                    .right = token.span,
+                    .right = self.link_right,
+                    .right_port = self.link_port,
                 }) catch |err| return self.sinkFailure(err),
                 .edge_chain => self.events.edgeChainStatement(.{
                     .left = self.left,
+                    .left_port = self.left_port,
                     .operator = self.operator,
                     .operator_span = self.operator_span,
                     .right = self.right,
+                    .right_port = self.right_port,
                 }) catch |err| return self.sinkFailure(err),
                 .attribute_statement => self.events.attributeStatement(.{
                     .target = self.attribute_target,
@@ -673,7 +767,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                     self.work.completed_pairs += 1;
                 },
                 .attribute => self.work.completed_pairs += 1,
-                .begin, .commit, .edge_link => {},
+                .begin, .commit, .edge_link, .ported_reference => {},
             };
             return null;
         }
@@ -724,11 +818,13 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             token: lex.Token,
         ) Result {
             const found = tokenItem(token.tag);
-            // The end of input inside the body traces back to the `{` that
-            // is still open (typed relation; renderers word it).
+            // EOF traces back to the pending suffix colon, otherwise the
+            // innermost still-open delimiter (typed relation; renderers word it).
+            const missing_port = self.state == .port_first or self.state == .port_second;
+            const origin: ?location.Span = if (missing_port) self.port_colon else self.open_bracket_span orelse self.open_brace_span;
             const related: ?diagnostic.Related = if (found == .end_of_input)
-                (if (self.open_bracket_span orelse self.open_brace_span) |span|
-                    .{ .span = span, .role = .opened_here }
+                (if (origin) |span|
+                    .{ .span = span, .role = if (missing_port) .suffix_started_here else .opened_here }
                 else
                     null)
             else
@@ -753,6 +849,20 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             });
         }
     };
+}
+
+fn nodeEndExpected(unqualified: bool) std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false) {
+    var expected = edgeEndExpected(unqualified);
+    expected.equals = unqualified;
+    return expected;
+}
+
+fn edgeEndExpected(port_allowed: bool) std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false) {
+    var expected = statementEndExpected(true);
+    expected.undirected_operator = true;
+    expected.directed_operator = true;
+    expected.colon = port_allowed;
+    return expected;
 }
 
 fn statementEndExpected(brackets: bool) std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false) {
@@ -785,6 +895,7 @@ fn tokenItem(tag: lex.Token.Tag) diagnostic.SyntaxItem {
         .left_brace => .left_brace,
         .right_brace => .right_brace,
         .semicolon => .semicolon,
+        .colon => .colon,
         .eof => .end_of_input,
         .left_bracket => .left_bracket,
         .right_bracket => .right_bracket,
@@ -970,6 +1081,11 @@ const BudgetSink = struct {
     pub fn edgeStatement(self: *@This(), event: syntax_event.EdgeStatement) !void {
         try self.record(.{ .edge_statement = event });
     }
+    pub fn portedReference(self: *@This(), event: syntax_event.PortedReference) !u32 {
+        try self.record(.{ .ported_reference = event });
+        // Recorded event indices are valid opaque handles for this test sink.
+        return @intCast(self.len - 1);
+    }
     pub fn edgeLink(self: *@This(), event: syntax_event.EdgeLink) !void {
         try self.record(.{ .edge_link = event });
     }
@@ -1089,9 +1205,10 @@ test "metered parser partitions preserve events diagnostics and independent work
         "graph {a[x=]}",                                                   "graph {a[x=1 y=]}",
         "graph {a[x=1] @}",                                                "graph {a--b--c}",
         "graph {subgraph {}}",                                             "graph { a:port }",
-        "graph {<html>}",                                                  "graph {/*",
-        "graph {\"unterminated",                                           "graph{} /*",
-        "digraph { a-> }",
+        "digraph {a:p:e->b:q->c:0[x=1]}",                                  "graph {a:p:}",
+        "graph {a:p:q:r}",                                                 "graph {<html>}",
+        "graph {/*",                                                       "graph {\"unterminated",
+        "graph{} /*",                                                      "digraph { a-> }",
     };
     for (sources) |source| {
         const total = try checkBudgetPartition(source, &.{std.math.maxInt(usize)}, .{}, null, false);
@@ -1113,6 +1230,16 @@ test "metered parser every prefix and callback failure preserve lifecycle" {
     }
     _ = try checkBudgetPartition("graph {a[x=]}", &.{1}, .{}, null, true);
     _ = try checkBudgetPartition("@", &.{1}, .{}, null, true);
+}
+
+test "ported reference callback failures preserve lifecycle and accounting" {
+    const source = "digraph {a:p:e[x=1] a:q->b:r->c:s:w[k=v]}";
+    var events: BudgetSink = .{};
+    try expect(parse(source, &events, diagnostic.discard, .{}).outcome == .success);
+    for (0..events.attempts) |index| {
+        _ = try checkBudgetPartition(source, &.{1}, .{}, index, false);
+        _ = try checkBudgetPartition(source, &.{ 0, 3, 7 }, .{}, index, false);
+    }
 }
 
 test "metered parser capacities remain output limits not work budgets" {
@@ -1159,6 +1286,7 @@ test "metered parser yields inside megabyte trivia and attribute values" {
         .{ "graph {/*", "*/}", 'a' },
         .{ "graph {a[x=\"", "\"]}", 'a' },
         .{ "graph {", "}", ' ' },
+        .{ "graph {a:\"", "\":e->b:p}", 'a' },
     };
     inline for (cases) |parts| {
         @memcpy(source[0..parts[0].len], parts[0]);
@@ -1173,7 +1301,7 @@ test "ordinary parser compiles out pending work and audit storage" {
     try expect(@FieldType(Ordinary, "work") == void);
     try expect(@FieldType(Ordinary, "audit") == void);
     try expect(@FieldType(lex.Scanner(false, false), "source_frontier") == void);
-    try expect(@sizeOf(Ordinary) <= 576);
+    try expect(@sizeOf(Ordinary) <= 736);
 }
 
 test "unaudited metered driver charges empty document exactly and runs to completion" {
@@ -1626,11 +1754,11 @@ test "failing beginDocument still receives the cleanup abort" {
 
 test "parser state stays small (R-PERF-005 parser-state-size regression guard)" {
     // The whole machine — lexer, continuation state, options, bookkeeping —
-    // must remain a small constant, independent of input size. 576 B is the
+    // must remain a small constant, independent of input size. 736 B is the
     // current measured value plus headroom (see docs/BASELINES.md), not an
     // architectural budget: if a slice legitimately grows the state, measure,
     // update the baseline doc, and raise this bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 576);
+    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 736);
 }
 
 test "step is terminal-idempotent after success and after failure" {

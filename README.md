@@ -30,14 +30,17 @@ strict digraph Routes {
 - Borrowed source spans, explicit caller memory, fixed-buffer operation.
 - Fixed-storage bounded sessions, with optional cooperative cancellation.
 - Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
+- Port suffixes (`a:out`, `a:n`, `a:out:e`) on node statements and every edge endpoint.
 
 Everything else (HTML/non-ASCII bare IDs,
-ports, subgraphs, …) is deliberately deferred to later vertical
+subgraphs, …) is deliberately deferred to later vertical
 slices. The authoritative construct-by-construct table is
 [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
 
 See [the attribute example](examples/attributes.zig) for fixed-storage parsing
 and ordered attribute traversal. Parsing does not apply defaults or resolve values.
+See [the port example](examples/ports.zig) for compact node references and raw
+suffix traversal. Parsing does not resolve named ports or compass attachments.
 
 ## Usage
 
@@ -57,13 +60,13 @@ if (checked.documentValid()) {
     while (statements.next()) |statement| {
         switch (statement) {
             .edge_chain => |chain| std.log.info("chain {s}: {d} edges", .{
-                document.text(chain.first.left), @as(usize, chain.links.len) + 1,
+                document.text(document.nodeReference(chain.first.left).?.identifier), @as(usize, chain.links.len) + 1,
             }),
-            .node => |node| std.log.info("node {s}", .{document.text(node.identifier)}),
+            .node => |node| std.log.info("node {s}", .{document.text(document.nodeReference(node.reference).?.identifier)}),
             .edge => |edge| std.log.info("edge {s} {s} {s}", .{
-                document.text(edge.left),
+                document.text(document.nodeReference(edge.left).?.identifier),
                 edge.operator.lexeme(),
-                document.text(edge.right),
+                document.text(document.nodeReference(edge.right).?.identifier),
             }),
             .assignment => |assignment| std.log.info("assignment {s} = {s}", .{
                 document.text(assignment.key), document.text(assignment.value),
@@ -91,11 +94,14 @@ are derived only when you ask:
 // A tiny lint: flag node names longer than 8 bytes.
 var statements = document.statements();
 while (statements.next()) |statement| switch (statement) {
-    .node => |node| if (node.identifier.len > 8) {
-        const where = node.identifier.toSpan(document.source).start;
-        std.log.warn("{d}:{d}: long node name '{s}'", .{
-            where.line, where.byte_column, document.text(node.identifier),
-        });
+    .node => |node| {
+        const name = document.nodeReference(node.reference).?.identifier;
+        if (name.len > 8) {
+            const where = name.toSpan(document.source).start;
+            std.log.warn("{d}:{d}: long node name '{s}'", .{
+                where.line, where.byte_column, document.text(name),
+            });
+        }
     },
     .edge, .edge_chain, .assignment, .attribute_statement => {}, // This lint only checks nodes.
 };
@@ -138,9 +144,10 @@ quotes and concatenation. Decode explicitly when you need the logical value:
 
 ```zig
 var value_buffer: [128]u8 = undefined;
-const value = try document.decodeIdentifier(node.identifier, &value_buffer);
+const reference = document.nodeReference(node.reference).?;
+const value = try document.decodeIdentifier(reference.identifier, &value_buffer);
 // Or stream without a decoded-value buffer:
-try document.writeIdentifier(node.identifier, writer);
+try document.writeIdentifier(reference.identifier, writer);
 ```
 
 Decoding performs no allocation or numeric conversion. See

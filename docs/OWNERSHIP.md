@@ -85,8 +85,8 @@ derived on demand. Measured throughput and arena footprints live in
 
 ## Attributes and memory
 
-The document has eight decomposed pools: `order`, `nodes`, `edges`,
-`edge_chains`, `edge_links`, `attributes`, `assignments`, and `attribute_statements`. Freeing an owned
+The document has nine decomposed pools: `order`, `nodes`, `edges`,
+`edge_chains`, `edge_links`, `ported_references`, `attributes`, `assignments`, and `attribute_statements`. Freeing an owned
 document remains a fixed number of pool releases, not a per-element walk.
 Unused, unhinted pools allocate nothing. Node/edge
 records still pay for their compact attribute range in the current profile;
@@ -131,7 +131,7 @@ See [the runnable example](../examples/attributes.zig).
 A single edge still occupies 36 bytes on the native target. A chain uses one
 44-byte `EdgeChainStatement` plus one 20-byte `EdgeLink` for each continuation
 after its first edge, and one 8-byte order entry. A chain of N edges therefore
-retains `52 + 20 * (N - 1)` bytes, excluding attributes and borrowed source.
+retains `52 + 20 * (N - 1)` bytes, excluding port records, attributes and borrowed source.
 No endpoint strings or attribute pairs are copied.
 
 `chain.first` stores the first edge, including the whole chain's attribute range.
@@ -160,6 +160,39 @@ pools still add fixed metadata to document/builder/session structs; compile-time
 feature removal is not implemented.
 
 See [the runnable chain example](../examples/edge_chains.zig).
+
+## Node references and ports
+
+`NodeStatement.reference`, edge `left`/`right`, and continuation `right` are
+8-byte `NodeReference` values. Call `document.nodeReference(reference)` to get
+a checked `NodeReferenceView` containing the base `identifier: Range` and
+optional `port: PortSyntax`. Pass those ranges to the existing text/decoding
+helpers. The accessor returns null for an out-of-bounds reference; handles are
+document-local, not portable IDs, and must not be used after pool reuse.
+
+A bare reference holds its source range inline. A qualified reference holds an
+index into `document.ported_references`; each occurrence there costs 28 bytes
+(base range, first suffix range, optional second range). A zero raw length marks
+the pooled form, without stealing source-offset bits. Even `""` has a nonzero
+raw spelling length. The normal 4 GiB retained-source domain is unchanged.
+No identifiers are copied or interned. A qualified chain middle uses one pool
+record, reused for its incoming and outgoing pairwise edges.
+
+Fixed storage must reserve `.ported_references` for the number of qualified
+**written occurrences**, including node statements. Repeated spelling occupies
+separate records. Its default capacity is zero; bare inputs need no slots.
+Allocator callers can use the same field as a reservation hint. Every completed
+suffix streams directly into that pool; failure/cancellation discards all staged
+records, and no partial document is returned.
+
+The selected inline-or-pooled representation costs `8R + 28P` bytes for R stored
+references and P qualified occurrences, excluding other fields/metadata. The
+alternative 12-byte always-expanded reference plus a 20-byte suffix pool would
+cost `12R + 20P`: equal at 50% qualification, with the selected representation
+4 bytes/reference cheaper at 0% and 4 bytes/reference dearer at 100%. Fixed-pool
+RAM uses reserved capacities, not actual occupancy. Node/edge/link record sizes
+are unchanged, but pool metadata and parser continuation state have fixed costs;
+this is not compile-time feature removal. See [current layouts](BASELINES.md).
 
 ## Identifier values
 

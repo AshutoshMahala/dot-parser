@@ -73,6 +73,14 @@ there is no unbudgeted loop over a whole chain inside parsing. Fixed pools
 bound chain owners and continuation records separately. Neither
 `max_statements` nor a per-call budget is a total chain-length limit.
 
+Each qualified node reference also has a separately charged `portedReference`
+event that stages one record. It increments neither completed statements nor
+pairs. Both suffix components and intervening trivia can yield/cancel, including
+after either colon. The parser may retain and replay a lookahead token to finish
+the suffix and its owner; each replay charges grammar work, without rescanning
+the token. Reserve `ported_references` capacity separately from statement/link
+capacities. No staged port record becomes a public partial document.
+
 `run()` finishes the remaining parse without returning intermediate yields.
 Repeated advance, run, cancel, and result calls after termination preserve
 the result. They perform no more scans, polls, diagnostics or lifecycle events.

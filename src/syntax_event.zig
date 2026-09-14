@@ -21,8 +21,9 @@
 //!
 //! ```text
 //! beginDocument
-//! ((attribute* (nodeStatement | edgeStatement | attributeStatement)) |
-//!  (edgeLink+ attribute* edgeChainStatement) | assignment)*
+//! ((portedReference* attribute* (nodeStatement | edgeStatement)) |
+//!  (portedReference* (portedReference? edgeLink)+ attribute* edgeChainStatement) |
+//!  (attribute* attributeStatement) | assignment)*
 //! endDocument | abortDocument        // exactly one terminal event
 //! ```
 //!
@@ -32,6 +33,12 @@
 //!   edgeChainStatement carries the first edge and consumes all pending links
 //!   and attributes. Abort discards both pools; no temporary chain list exists.
 //! - Statement events arrive in the order they appear in the source.
+//! - `portedReference` stages one completed qualified occurrence, in source
+//!   order, and returns an opaque document-local `u32` handle. The following
+//!   node/edge/link event uses that handle alongside the base identifier span.
+//!   Bare references emit no such event. Chain middles are staged once and
+//!   reused by the pairwise view. Handles expire on abort or storage reuse;
+//!   they do not identify interned nodes, unique ports or declarations.
 //! - Each `attribute` carries one completed pair for the immediately following
 //!   node, edge, or attribute statement. Adjacent bracket groups are flattened;
 //!   empty groups produce no pair event. Pairs never attach to an assignment.
@@ -57,6 +64,8 @@
 //! `edgeLink`, `edgeChainStatement`, `attributeStatement`, and `endDocument`
 //! return `E!void` for an error set `E` the sink chooses (allocation
 //! failure, capacity, …); a sink that cannot fail declares `error{}!void`.
+//! `portedReference` is the sole payload-returning callback: `E!u32`, with
+//! the same failure/abort rules. Its attempt costs one dispatch work unit.
 //! When one fails, the parser stops and calls `abortDocument` — which is
 //! infallible and must always succeed — so the sink can release staged
 //! state. The parse outcome then reports a sink failure, distinct from
@@ -123,19 +132,30 @@ pub const AttributeStatement = struct {
 
 pub const NodeStatement = struct {
     identifier: location.Span,
+    port: ?u32 = null,
 };
 
 pub const EdgeLink = struct {
     operator: EdgeOperator,
     operator_span: location.Span,
     right: location.Span,
+    right_port: ?u32 = null,
 };
 
 pub const EdgeStatement = struct {
     left: location.Span,
+    left_port: ?u32 = null,
     operator: EdgeOperator,
     operator_span: location.Span,
     right: location.Span,
+    right_port: ?u32 = null,
+};
+
+/// A completed suffix occurrence. The sink returns a document-local pool handle.
+pub const PortedReference = struct {
+    identifier: location.Span,
+    first: location.Span,
+    second: ?location.Span = null,
 };
 
 /// Why a document ended without commit. Coarse control-flow information
@@ -159,6 +179,7 @@ pub const Event = union(enum) {
     edge_statement: EdgeStatement,
     edge_chain_statement: EdgeStatement,
     edge_link: EdgeLink,
+    ported_reference: PortedReference,
     attribute: Attribute,
     assignment: Attribute,
     attribute_statement: AttributeStatement,
@@ -196,6 +217,7 @@ pub fn assertSyntaxSink(comptime T: type) void {
         assertMethod(T, "edgeStatement", &.{EdgeStatement}, .fallible);
         assertMethod(T, "edgeChainStatement", &.{EdgeStatement}, .fallible);
         assertMethod(T, "edgeLink", &.{EdgeLink}, .fallible);
+        assertMethod(T, "portedReference", &.{PortedReference}, .reference);
         assertMethod(T, "attribute", &.{Attribute}, .fallible);
         assertMethod(T, "assignment", &.{Attribute}, .fallible);
         assertMethod(T, "attributeStatement", &.{AttributeStatement}, .fallible);
@@ -208,7 +230,7 @@ fn assertMethod(
     comptime T: type,
     comptime name: []const u8,
     comptime arg_types: []const type,
-    comptime failability: enum { fallible, infallible },
+    comptime failability: enum { fallible, infallible, reference },
 ) void {
     const prefix = @typeName(T) ++ "." ++ name;
     if (!@hasDecl(T, name)) {
@@ -238,10 +260,11 @@ fn assertMethod(
         .infallible => if (return_type != void) {
             @compileError(prefix ++ " must return `void`: abort cannot fail by contract");
         },
-        .fallible => {
+        .fallible, .reference => {
+            const Payload = if (failability == .reference) u32 else void;
             const return_info = @typeInfo(return_type);
-            if (return_info != .error_union or return_info.error_union.payload != void) {
-                @compileError(prefix ++ " must return `E!void` for an error set `E` of the sink's choice");
+            if (return_info != .error_union or return_info.error_union.payload != Payload) {
+                @compileError(prefix ++ " must return an error union with payload " ++ @typeName(Payload));
             }
         },
     }
@@ -264,6 +287,7 @@ pub fn RecordingSink(comptime capacity: usize) type {
 
         events: [capacity + 1]Event = undefined,
         len: usize = 0,
+        port_count: u32 = 0,
 
         pub fn beginDocument(self: *Self, event: BeginDocument) Error!void {
             try self.record(.{ .begin_document = event });
@@ -275,6 +299,13 @@ pub fn RecordingSink(comptime capacity: usize) type {
 
         pub fn edgeStatement(self: *Self, statement: EdgeStatement) Error!void {
             try self.record(.{ .edge_statement = statement });
+        }
+
+        pub fn portedReference(self: *Self, event: PortedReference) Error!u32 {
+            try self.record(.{ .ported_reference = event });
+            const index = self.port_count;
+            self.port_count += 1;
+            return index;
         }
 
         pub fn edgeLink(self: *Self, event: EdgeLink) Error!void {

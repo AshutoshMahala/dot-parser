@@ -337,6 +337,48 @@ callback failure, typed pool/index exhaustion, allocation-failure injection,
 truncated prefixes, generated chains and source-order validation. The
 freestanding check remains a compile check, not an on-device measurement.
 
+## Port syntax and compact references (2026-09-13)
+
+`NodeReference` is 8 B; one `PortedReference` is 28 B. Native node/edge/link/chain
+records remain 16/36/20/44 B. Bare input allocates no unhinted port pool, but the
+document's new slice adds 16 B of metadata. Parser continuation grows from
+560 to 720 B; the regression guard is 736 B. Pool metadata and the cached result
+also grow the fixed session. Measured with `zig build bench-session
+-Doptimize=ReleaseFast` on the same native Zig 0.16.0 host:
+
+| Metering | Cancellation | Session | Driver |
+| --- | --- | ---: | ---: |
+| Off | Off | 1,264 B | 720 B |
+| Off | On | 1,336 B | 792 B |
+| On | Off | 1,336 B | 792 B |
+| On | On | 1,360 B | 816 B |
+
+The existing port-free 200k-statement benchmark still retains 6,800,000 B
+(34 B/statement), with arena capacities 37,620,470 B default and 8,400,148 B
+hinted. These are retained payload/backing-capacity measurements, not RSS.
+Two local invocations per version of `zig build bench -Doptimize=ReleaseFast`
+(2 warm-ups, 9 measured rounds each) gave the following ranges of medians:
+
+| Port-free parse + validate | Before ports (`d60c936`) | Port slice |
+| --- | ---: | ---: |
+| Default pools | 12.87–13.00 ms | 14.41–14.86 ms |
+| Capacity hints | 11.00–11.50 ms | 12.99–13.10 ms |
+
+This small host-specific sample shows roughly 13–16% more elapsed time using
+the midpoint of each range, not a zero-cost or universal performance claim.
+Ordinary lookahead replay is iterative; a recursive-helper prototype was removed
+after it showed additional overhead. Further hot-path tuning remains future work.
+
+Port-heavy throughput and embedded runtime/stack measurements remain unmeasured;
+the 8/28-byte payload tradeoff is explained in [ownership](OWNERSHIP.md#node-references-and-ports).
+
+Verification: 241 tests (168 unit, 73 public integration), Debug and ReleaseSafe;
+eight runnable examples and eight consumed riscv32/wasm32 execution-profile
+objects. New coverage includes mixed inline/pooled fuzz input, long qualified
+chains, all source prefixes, partition equivalence, callback/allocation failure
+injection, cancellation at every work boundary, typed capacity failures and
+pool reset. Freestanding compilation is not a hardware runtime or RAM-fit test.
+
 ## Binary size
 
 The figures in this section are the historical post-renderer snapshot; newer

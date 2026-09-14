@@ -27,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
     while (statements.next()) |statement| {
         const range: dot.AttributeRange = switch (statement) {
             .edge_chain => |chain| blk: {
-                try writer.print("chain {s}: {d} edges\n", .{ document.text(chain.first.left), @as(usize, chain.links.len) + 1 });
+                try writer.print("chain {s}: {d} edges\n", .{ document.text(document.nodeReference(chain.first.left).?.identifier), @as(usize, chain.links.len) + 1 });
                 break :blk chain.first.attributes;
             },
             .assignment => |assignment| {
@@ -39,11 +39,11 @@ pub fn main(init: std.process.Init) !void {
                 break :blk defaults.attributes;
             },
             .node => |node| blk: {
-                try writer.print("node {s}:\n", .{document.text(node.identifier)});
+                try writer.print("node {s}:\n", .{document.text(document.nodeReference(node.reference).?.identifier)});
                 break :blk node.attributes;
             },
             .edge => |edge| blk: {
-                try writer.print("edge {s} {s} {s}:\n", .{ document.text(edge.left), edge.operator.lexeme(), document.text(edge.right) });
+                try writer.print("edge {s} {s} {s}:\n", .{ document.text(document.nodeReference(edge.left).?.identifier), edge.operator.lexeme(), document.text(document.nodeReference(edge.right).?.identifier) });
                 break :blk edge.attributes;
             },
         };

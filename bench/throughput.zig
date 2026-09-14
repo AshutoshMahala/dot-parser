@@ -79,6 +79,7 @@ fn run(
             document.edges.len * @sizeOf(dot.EdgeStatement) +
             document.edge_chains.len * @sizeOf(dot.EdgeChainStatement) +
             document.edge_links.len * @sizeOf(dot.EdgeLink) +
+            document.ported_references.len * @sizeOf(dot.PortedReference) +
             document.attributes.len * @sizeOf(dot.Attribute) +
             document.assignments.len * @sizeOf(dot.Assignment) +
             document.attribute_statements.len * @sizeOf(dot.AttributeStatement);

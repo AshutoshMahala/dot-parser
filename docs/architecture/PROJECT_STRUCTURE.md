@@ -116,12 +116,12 @@ drivers are not re-exported. It recognizes:
   `subgraph`), case-independently. Keywords always tokenize;
   whether one is legal in its position is the parser's decision.
 - Bare ASCII, numeral, and quoted identifiers (including `+` concatenation).
-- `{`, `}`, `;`, `[`, `]`, `=`, `,`, `--`, and `->`.
+- `{`, `}`, `;`, `:`, `[`, `]`, `=`, `,`, `--`, and `->`.
 - Whitespace and physical line endings (LF, CRLF, standalone CR).
 - Comments, skipped without retaining trivia (see [supported syntax](../SUPPORTED_SYNTAX.md)).
 - End of input and invalid bytes.
 - Introducers of deferred *lexical* constructs (HTML/non-ASCII bare
-  identifiers and ports), reported
+  identifiers), reported
   as typed unsupported-feature failures.
 
 It borrows source spans, performs no hidden allocation, and owns no AST types.
@@ -165,7 +165,9 @@ Document data includes:
   optional graph name.
 - Ordered statement IDs.
 - Node statements.
-- Edge statements with the written operator and endpoint ranges.
+- Edge statements with the written operator and compact node references.
+- Inline bare identifier ranges or pooled qualified occurrences, exposed through
+  checked reference views. Port suffixes remain raw first/optional second IDs.
 - Chain statements with a first edge and compact continuation-link range;
   no eager pairwise expansion. The edge iterator provides an allocation-free view.
 - Standalone assignments and graph/node/edge attribute statements.

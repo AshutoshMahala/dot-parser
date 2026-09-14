@@ -17,8 +17,8 @@ pub fn main(init: std.process.Init) !void {
     var edges = document.edgeIterator();
     while (edges.next()) |edge| {
         try output.interface.print("{s} {s} {s}: {d} shared attributes\n", .{
-            document.text(edge.left),  edge.operator.lexeme(),
-            document.text(edge.right), document.attributeSlice(edge.attributes).?.len,
+            document.text(document.nodeReference(edge.left).?.identifier),  edge.operator.lexeme(),
+            document.text(document.nodeReference(edge.right).?.identifier), document.attributeSlice(edge.attributes).?.len,
         });
     }
     try output.interface.flush();

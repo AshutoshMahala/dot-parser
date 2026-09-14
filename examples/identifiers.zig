@@ -19,11 +19,11 @@ pub fn main(init: std.process.Init) !void {
     const edge = document.edges[0];
     var decoded: [16]u8 = undefined;
     try writer.print("raw: {s}\nvalue: {s}\n", .{
-        document.text(edge.left),
-        try document.decodeIdentifier(edge.left, &decoded),
+        document.text(document.nodeReference(edge.left).?.identifier),
+        try document.decodeIdentifier(document.nodeReference(edge.left).?.identifier, &decoded),
     });
     try writer.writeAll("numeral value (no conversion): ");
-    try document.writeIdentifier(edge.right, writer);
+    try document.writeIdentifier(document.nodeReference(edge.right).?.identifier, writer);
     try writer.writeAll("\n");
     try writer.flush();
 }

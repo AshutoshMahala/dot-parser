@@ -4,7 +4,7 @@
 //! Recognizes the current subset: every DOT keyword (`graph` maps to the
 //! `undigraph` kind at reading time, `digraph`, `strict`, `node`, `edge`, and the deferred
 //! `subgraph`); bare ASCII, numeral, and quoted identifiers;
-//! `{`, `}`, `;`, `[`, `]`, `=`, `,`; the
+//! `{`, `}`, `;`, `:`, `[`, `]`, `=`, `,`; the
 //! edge operators `--` and `->`; whitespace (space, tab, LF, CRLF, CR);
 //! and comments (`//`, `/* ... */`, and `#` through the physical line end).
 //! Comments are skipped without retention. See docs/SUPPORTED_SYNTAX.md for
@@ -18,8 +18,7 @@
 //! - Every keyword tokenizes, including keywords of deferred constructs:
 //!   whether `subgraph` legally introduces a subgraph or sits in an illegal
 //!   grammar position is the parser's decision, which the lexer cannot
-//!   make. Only *lexical* deferred constructs — HTML/non-ASCII identifiers,
-//!   ports — are
+//!   make. Only *lexical* deferred constructs — HTML/non-ASCII identifiers — are
 //!   reported here as structured `profile_unsupported_feature` failures,
 //!   distinct from invalid syntax (R-MOD-006).
 //!   Detection stops at the introducer: neither the construct's body nor
@@ -47,6 +46,7 @@ pub const Token = struct {
         left_brace,
         right_brace,
         semicolon,
+        colon,
         eof,
         left_bracket,
         right_bracket,
@@ -103,7 +103,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             ready,
         };
         const Trivia = enum { ordinary, after_quote, after_plus };
-        const Terminal = enum { none, eof, invalid, block, quote, concat, non_ascii, html, port };
+        const Terminal = enum { none, eof, invalid, block, quote, concat, non_ascii, html };
 
         source: []const u8,
         tracker: location.Tracker = .{},
@@ -341,12 +341,13 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             };
             self.initial = b;
             switch (b) {
-                '{', '}', ';', '[', ']', '=', ',' => {
+                '{', '}', ';', ':', '[', ']', '=', ',' => {
                     self.consume(b);
                     return self.finish(switch (b) {
                         '{' => .left_brace,
                         '}' => .right_brace,
                         ';' => .semicolon,
+                        ':' => .colon,
                         '[' => .left_bracket,
                         ']' => .right_bracket,
                         '=' => .equals,
@@ -367,7 +368,6 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                     continuation = .quoted;
                 },
                 '<' => return self.fail(.html, self.here(), 1, null),
-                ':' => return self.fail(.port, self.here(), 1, null),
                 else => return self.fail(.invalid, self.here(), 1, b),
             }
             self.consume(b);
@@ -422,7 +422,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                     .invalid => .lexer_invalid_byte,
                     .block, .quote => .lexer_unterminated_construct,
                     .concat => .lexer_invalid_concatenation,
-                    .non_ascii, .html, .port => .profile_unsupported_feature,
+                    .non_ascii, .html => .profile_unsupported_feature,
                     .none, .eof => unreachable,
                 },
                 .span = .{ .start = self.opener.location, .byte_len = self.terminal_len },
@@ -433,7 +433,6 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                     .concat => .{ .expected_quote = self.found },
                     .non_ascii => .{ .unsupported_feature = .non_ascii_identifier },
                     .html => .{ .unsupported_feature = .html_identifier },
-                    .port => .{ .unsupported_feature = .port_or_compass },
                     .none, .eof => unreachable,
                 },
             } };
@@ -949,7 +948,6 @@ test "recognized lexical deferred features are unsupported, not invalid" {
     // Keyword-introduced subgraphs are the parser's call; keywords tokenize.
     inline for (.{
         .{ "<html>", diagnostic.Feature.html_identifier },
-        .{ ":n", diagnostic.Feature.port_or_compass },
     }) |case| {
         var lexer = Lexer.init(case[0]);
         try expectUnsupported(&lexer, case[1]);
@@ -1083,5 +1081,15 @@ test "full milestone document produces the expected token stream" {
     try expectToken(&lexer, .identifier, "b");
     try expectToken(&lexer, .semicolon, ";");
     try expectToken(&lexer, .right_brace, "}");
+    try expectToken(&lexer, .eof, "");
+}
+
+test "colon punctuation stays separate from quoted content and trivia" {
+    var lexer = Lexer.init("\"a:b\" :/**/p:n");
+    try expectToken(&lexer, .identifier, "\"a:b\"");
+    try expectToken(&lexer, .colon, ":");
+    try expectToken(&lexer, .identifier, "p");
+    try expectToken(&lexer, .colon, ":");
+    try expectToken(&lexer, .identifier, "n");
     try expectToken(&lexer, .eof, "");
 }

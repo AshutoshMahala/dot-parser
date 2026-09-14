@@ -24,7 +24,7 @@ are for humans and tooling.
 `storage_failure` carries its own cause: `.out_of_memory` (allocator),
 `.pool_exhausted` (a fixed pool filled — the diagnostic names the pool and
 its capacity), `.statement_index_overflow`, `.attribute_index_overflow`,
-`.edge_link_index_overflow`, `.source_offset_overflow`
+`.edge_link_index_overflow`, `.ported_reference_index_overflow`, `.source_offset_overflow`
 (source beyond the 4 GiB retained-range limit), or `.internal` (never
 expected; a bug report is welcome). `.internal` currently has no corresponding
 diagnostic; inspect the outcome even when the diagnostic bag is empty.
@@ -33,6 +33,12 @@ Chain storage failures use the existing WDP capacity diagnostic, with typed
 resources `edge_chain_pool`, `edge_link_pool`, or `edge_link_index`.
 A missing chain endpoint remains a syntax error, not a capacity failure.
 The shipped chain feature no longer appears in `diagnostic.Feature`.
+
+Ports likewise no longer have an unsupported-feature entry. Fixed-pool/index
+failures use `ported_reference_pool` / `ported_reference_index` capacity
+resources. Missing suffix IDs use the existing expected-set syntax diagnostics
+with context `port_component`; EOF after a colon has a `suffix_started_here`
+secondary span. This adds no new WDP code or raw message-string payload.
 
 ## Sessions: yield and cancellation
 

@@ -3,7 +3,7 @@ const dot = @import("dot_parser");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const deep = std.testing.expectEqualDeep;
-const Storage = dot.FixedDocumentStorage(.{ .statements = 32, .nodes = 16, .edges = 16, .edge_chains = 8, .edge_links = 32, .attributes = 32, .assignments = 16, .attribute_statements = 16 });
+const Storage = dot.FixedDocumentStorage(.{ .statements = 32, .nodes = 16, .edges = 16, .edge_chains = 8, .edge_links = 32, .ported_references = 32, .attributes = 32, .assignments = 16, .attribute_statements = 16 });
 
 const Request = struct {
     flag: bool = false,
@@ -78,6 +78,9 @@ test "fixed sessions preserve documents diagnostics and work across partitions" 
         "graph { a[x=] }",
         "graph {a b @}",
         "graph {a--b--c}",
+        "digraph {a:p:e->b:q->c:r:w[x=1] a:n; a; a:\"\" key=v}",
+        "graph {a:p:}",
+        "graph {a:p:q:r}",
         "digraph {a->b->c[w=1] x--y z->q->r->s[k=2]}",
         "graph { subgraph{} }",
         "graph{/*",
@@ -90,12 +93,12 @@ test "fixed sessions preserve documents diagnostics and work across partitions" 
             try equal(total, try partition(source, &.{ 0, 2, 7, 1 }, cancellable));
         }
     }
-    const source = "graph { a[k=\"x\"/*glue*/+\"y\"] b--c; key=-.5 }";
+    const source = "graph { a:p[k=\"x\"/*glue*/+\"y\"] b:q--c:r:s; key=-.5 }";
     for (0..source.len + 1) |end| _ = try partition(source[0..end], &.{ 0, 1, 3 }, true);
 }
 
 test "cancellation at every work boundary exposes no partial document" {
-    const source = "graph { a[k=\"x\"/*glue*/+\"y\"] b--c--d->e key=-.5 }";
+    const source = "graph { a[k=\"x\"/*glue*/+\"y\"] b:p--c:q:n--d:\"\"->e:1 key=-.5 }";
     const total = try partition(source, &.{1}, false);
     for (0..total) |stop| {
         var storage: Storage = .{};
