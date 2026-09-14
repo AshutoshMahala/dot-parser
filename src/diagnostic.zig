@@ -431,6 +431,7 @@ pub const ExpectedSet = std.EnumSet(SyntaxItem);
 /// internal state-machine names.
 pub const ParseContext = enum(u8) {
     document_header,
+    subgraph_header,
     document_body,
     statement,
     edge_endpoint,
@@ -481,14 +482,14 @@ pub const OperatorMismatch = struct {
 /// Remove a variant when its feature ships. Consumers use these typed values
 /// instead of parsing diagnostic text; this is not a cross-version wire enum.
 pub const Feature = enum {
-    subgraph,
+    subgraph_endpoint,
     html_identifier,
     non_ascii_identifier,
 
     /// Canonical English display name. Renderers may localize instead.
     pub fn name(self: Feature) []const u8 {
         return switch (self) {
-            .subgraph => "subgraph",
+            .subgraph_endpoint => "subgraph edge endpoint",
             .html_identifier => "HTML-like identifier",
             .non_ascii_identifier => "non-ASCII identifier",
         };
@@ -510,6 +511,9 @@ pub const Capacity = struct {
         edge_link_pool,
         edge_link_index,
         ported_reference_pool,
+        subgraph_pool,
+        nesting_frames,
+        nesting_depth,
         ported_reference_index,
         /// The document's statement index width.
         statement_index,
@@ -531,6 +535,9 @@ pub const Capacity = struct {
                 .edge_link_pool => "edge link pool",
                 .edge_link_index => "edge link index",
                 .ported_reference_pool => "ported reference pool",
+                .subgraph_pool => "subgraph pool",
+                .nesting_frames => "nesting frame storage",
+                .nesting_depth => "nesting depth",
                 .ported_reference_index => "ported reference index",
                 .statement_index => "statement index",
                 .source_range => "source range",

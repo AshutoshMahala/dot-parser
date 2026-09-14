@@ -74,7 +74,8 @@ fn run(
         if (round >= warmup_rounds) times[round - warmup_rounds] = elapsed;
 
         const document = checked.document.?;
-        retained_bytes = document.order.len * @sizeOf(dot.StatementId) +
+        retained_bytes = document.subgraph_records.len * @sizeOf(dot.Subgraph) +
+            document.order.len * @sizeOf(dot.StatementId) +
             document.nodes.len * @sizeOf(dot.NodeStatement) +
             document.edges.len * @sizeOf(dot.EdgeStatement) +
             document.edge_chains.len * @sizeOf(dot.EdgeChainStatement) +

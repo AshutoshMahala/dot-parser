@@ -29,7 +29,8 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | Quoted identifiers and `+` concatenation | **Supported** | Exact raw range; explicit value decoding, including escaped quotes and physical line continuations |
 | Whitespace / line endings | **Supported** | Space, tab; LF, CRLF, and standalone CR each end a line |
 | Comments (`//`, `/* */`, `#`) | **Supported** | Skipped without retention; see compatibility notes below |
-| Subgraphs (`{ … }`, `subgraph s { … }`) | Deferred | Feature `subgraph`, including subgraphs as edge endpoints |
+| Standalone subgraphs (`{ … }`, `subgraph { … }`, `subgraph s { … }`) | **Supported** | Named/anonymous/nested scope occurrences; no semantic merging |
+| Subgraphs as edge endpoints | Deferred | Feature `subgraph_endpoint`; no edge-product expansion |
 | Edge chains (`a -- b -- c`) | **Supported** | Node-reference endpoints, including ports; one source statement with ordered continuation links |
 | Attribute lists (`[color=red]`) | **Supported** | Attached to nodes, edges or whole chains; adjacent groups flattened, duplicates retained |
 | Attribute statements (`graph`/`node`/`edge` + `[…]`) | **Supported** | Target and ordered pairs retained; defaults are not applied |
@@ -70,11 +71,13 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 - **Limits**: retained positions address at most 4 GiB of source
   (`storage_failure: .source_offset_overflow` beyond that);
   `max_statements` bounds statement count and `max_attributes` bounds total
-  key/value pairs, including standalone assignments. Neither bounds lexical work.
+  key/value pairs, including standalone assignments. Subgraph occurrences count as
+  statements; the root does not. `max_nesting` bounds active subgraph depth (root 0).
+  These limits do not bound lexical work.
 
 ## Identifier lexical rules
 
-All supported forms work as document names, node IDs, and edge endpoints.
+All supported forms work as document/subgraph names, node IDs, and node-reference edge endpoints.
 Quoted keywords such as `"graph"` are identifiers, never keyword tokens. An
 empty quoted identifier is accepted. Adjacent quoted strings without `+` are
 separate tokens; only quoted strings may be joined by `+`. Whitespace and
@@ -135,13 +138,14 @@ statements require at least one bracket group. A standalone assignment cannot
 take a following list; an edge operator cannot follow a node's attribute list.
 
 No default propagation, last-value selection, layout-attribute validation,
-external resource loading or engine-specific interpretation occurs. Subgraphs
-remain deferred, including when they would own attributes.
+external resource loading or engine-specific interpretation occurs. Subgraph-local
+assignments and graph/node/edge attribute statements are retained in their scope;
+there is no bracket-list attachment after a standalone closing subgraph brace.
 HTML-like values and non-ASCII bare values retain their deferred boundary.
 
 Incomplete lists use the existing parser syntax diagnostics. EOF inside a list
 carries the current group's opening `[` as its related location; after that
-group closes, EOF refers back to the document's open `{`.
+group closes, EOF refers back to the innermost still-open scope's `{`.
 
 Eighteen manual acceptance/rejection probes against local Graphviz 16.0.0 on
 2026-09-12 agreed for checked empty/adjacent groups, separators, assignments,
@@ -197,6 +201,27 @@ an assigned arrival/departure direction.
 
 See [port ownership](OWNERSHIP.md#node-references-and-ports) and the
 [runnable example](../examples/ports.zig).
+
+## Standalone subgraphs
+
+The grammar is `("subgraph" ID?)? "{" statement* "}"`, with an optional
+statement semicolon. A scope may contain every supported statement, including
+another standalone scope. All supported ID spellings work for names; ports do
+not attach to scope names. Empty scopes and repeated names are preserved.
+
+Each written scope has its own document-local `ScopeId`; names do not merge
+occurrences. `cluster_*` names carry no special parser semantics. Attributes,
+assignments, repeated node references and order remain syntax, not effective
+defaults or resolved membership. No cycle detection or implicit node creation
+occurs. Parsing and traversal are iterative, not recursive.
+
+A subgraph followed by an edge operator, or a subgraph introducer in a right
+edge-endpoint position, stops with `Feature.subgraph_endpoint`. No partial
+document is returned, and syntax beyond that boundary is not validated.
+Malformed standalone headers are ordinary syntax errors.
+
+See [scope APIs](SUBGRAPHS.md), [memory](OWNERSHIP.md#subgraphs-and-nesting-scratch)
+and [the runnable example](../examples/subgraphs.zig).
 
 ## How this page stays honest
 

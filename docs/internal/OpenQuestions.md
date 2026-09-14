@@ -1,8 +1,8 @@
 # Open design decisions
 
-Last reconciled: 2026-09-13 (ports).
+Last reconciled: 2026-09-13 (standalone subgraphs).
 
-Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q32)
+Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q33)
 are stable: they are never renumbered, deleted, or reused, and new questions
 append with fresh numbers. Answered questions are not removed — the
 **Decided** section doubles as the project's decision log, each entry naming
@@ -23,6 +23,23 @@ authoritative for what the current release actually processes.
 ---
 
 ## Decided
+
+**Q33 — How are standalone subgraphs represented, traversed and bounded?**
+Use document-local occurrence `ScopeId`s (root 0), optional raw names and a
+32-byte record with parent, body interval and source range. Named/anonymous use
+identical IDs; repeated names are not merged. Keep one global preorder statement
+stream, including scope owners; borrowed scope views expose direct/recursive
+statements, child scopes, pairwise edges and written node references. No repeated
+ancestor membership lists, per-node scope tags, semantic defaults or clusters.
+Parsing/traversal are iterative. Entry/exit events are separately charged; completed
+statement progress counts exit, while `max_statements` reserves the owner at entry.
+Temporary nesting frames are explicit, reused for siblings and separate from
+retained output through `ParseMemory`; allocator callers may separate scratch
+allocator lifetime. `max_nesting` counts depth below root; no separate max-subgraphs
+policy is needed beyond statement count/pool capacity. Cycle detection is not a
+syntax-parser responsibility. Subgraph edge endpoints and resolved membership
+remain deferred. *(Embodied: `src/syntax.zig`, `src/scratch.zig`, `src/parser.zig`,
+`tests/subgraphs.zig`, `docs/SUBGRAPHS.md`.)*
 
 **Q32 — How are ports retained without inflating every node reference?**
 Use an 8-byte inline-or-pooled `NodeReference`. Bare references hold a source
@@ -60,7 +77,7 @@ edge and attribute statements reference a shared pair pool; assignments have a
 separate pool. The private event seam streams pairs before their owner statement;
 abort discards staged data and no partial document escapes. Both storage paths
 have explicit capacities for all attribute-slice pools (six at that slice;
-eight after Q31's chain support; nine with Q32). `max_attributes` counts all pairs,
+eight after Q31's chain support; nine with Q32; ten with Q33). `max_attributes` counts all pairs,
 including assignments, but does not bound lexical work. Defaults, effective-value
 resolution and compile-time feature removal remain future work. *(Embodied:
 `src/parser.zig`, `src/syntax_event.zig`, `src/syntax.zig`, `tests/attributes.zig`.)*
@@ -193,7 +210,7 @@ whether convenience APIs should ship with non-trivial defaults is open.
 
 **Q16 — What size thresholds establish that disabling a feature removed its
 cost?**
-Parser-state size is regression-guarded (≤ 736 B; currently 720 B native) and baselines exist;
+Parser-state size is regression-guarded (≤ 832 B; currently 808 B native) and baselines exist;
 per-profile binary-size thresholds await the profile work. *(Embodied:
 `docs/BASELINES.md`; parser-size test.)*
 
@@ -274,7 +291,9 @@ limits and bounded validation remain outside this implemented slice.
 document-size budgets for the first embedded profile?**
 Gated on choosing the target board and build configuration (R-PORT-002).
 Interim: `FixedDocumentStorage.byte_size`, `max_statements`, and
-`max_attributes` give callers their own output budgeting.
+`max_attributes` give callers their own output budgeting. `FixedParseScratch.byte_size`
+and `max_nesting` now expose temporary nesting capacity and depth policy; choosing
+an actual board budget remains open.
 
 **Q11 — Which observer events and verbosity levels are stable public API in
 version 1?**
@@ -327,3 +346,6 @@ Open; nothing currently forces the choice.
 - 2026-09-13 — Q32: ports use compact inline-or-pooled node references,
   raw suffix semantics, explicit occurrence-pool capacities and separately
   budgeted callbacks. Updated current state-size and coverage references.
+
+- 2026-09-13 — Q33: standalone scope occurrence/tree views, explicit nesting
+  scratch, depth policy, charged enter/exit events and deferred endpoint semantics.

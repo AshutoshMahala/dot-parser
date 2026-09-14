@@ -9,6 +9,7 @@ test {
     _ = @import("sessions.zig");
     _ = @import("edge_chains.zig");
     _ = @import("ports.zig");
+    _ = @import("subgraphs.zig");
 }
 
 const Rejecting = struct {
@@ -25,7 +26,7 @@ test "identifier spelling and value agree across allocator and fixed storage" {
     try std.testing.expect(parsed.documentValid());
     const doc = &parsed.document.?;
     var pools: dot.FixedDocumentStorage(.{ .statements = 2, .nodes = 1, .edges = 1 }) = .{};
-    const fixed = dot.parseBorrowedIn(source, pools.storage(), bag.sink(), .{});
+    const fixed = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, bag.sink(), .{});
     try std.testing.expect(fixed.outcome == .success);
     try std.testing.expectEqualSlices(dot.StatementId, doc.order, fixed.document.?.order);
     try std.testing.expectEqualSlices(dot.NodeStatement, doc.nodes, fixed.document.?.nodes);
@@ -53,17 +54,17 @@ test "identifier failures preserve diagnostic delivery and fixed-pool reuse" {
         try std.testing.expectEqual(@as(usize, 1), bag.items().len);
         var pools: dot.FixedDocumentStorage(.{ .statements = 2, .nodes = 2 }) = .{};
         var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
-        const fixed = dot.parseBorrowedIn(source, pools.storage(), fixed_bag.sink(), .{});
+        const fixed = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, fixed_bag.sink(), .{});
         try std.testing.expect(fixed.document == null);
         try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), fixed_bag.items());
-        const rejected = dot.parseBorrowedIn(source, pools.storage(), .{ .context = null, .emit_fn = Rejecting.emit }, .{});
+        const rejected = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, .{ .context = null, .emit_fn = Rejecting.emit }, .{});
         try std.testing.expect(rejected.outcome == .invalid_syntax);
         try std.testing.expectEqual(dot.diagnostic.Delivery.failed, rejected.diagnostic_delivery);
         var empty_bag: dot.FixedDiagnosticBag(0) = .{};
-        const omitted = dot.parseBorrowedIn(source, pools.storage(), empty_bag.sink(), .{});
+        const omitted = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, empty_bag.sink(), .{});
         try std.testing.expect(omitted.outcome == .invalid_syntax);
         try std.testing.expectEqual(@as(usize, 1), empty_bag.omitted);
-        const reused = dot.parseBorrowedIn("graph { 1; }", pools.storage(), dot.diagnostic.discard, .{});
+        const reused = dot.parseBorrowedIn("graph { 1; }", .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
         try std.testing.expect(reused.outcome == .success);
     }
 }
@@ -79,7 +80,7 @@ test "identifier document truncation never commits partial syntax" {
         try std.testing.expectEqual(@as(usize, 1), bag.items().len);
         var pools: dot.FixedDocumentStorage(.{ .statements = 1, .edges = 1 }) = .{};
         var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
-        const fixed = dot.parseBorrowedIn(source[0..end], pools.storage(), fixed_bag.sink(), .{});
+        const fixed = dot.parseBorrowedIn(source[0..end], .{ .document = pools.storage() }, fixed_bag.sink(), .{});
         try std.testing.expect(fixed.document == null);
         try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), fixed_bag.items());
     }
@@ -107,7 +108,7 @@ test "comments work through fixed storage and preserve validation positions" {
     const source = "# 99 \"ignored\"\r\n/* header */graph {\r\na /* -> ignored */ -> // endpoint\r\nb; }# eof";
     var storage: dot.FixedDocumentStorage(.{ .statements = 1, .edges = 1 }) = .{};
     var bag: dot.FixedDiagnosticBag(1) = .{};
-    const parsed = dot.parseBorrowedIn(source, storage.storage(), bag.sink(), .{ .max_statements = 1 });
+    const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{ .max_statements = 1 });
     try std.testing.expect(parsed.outcome == .success);
     const document = parsed.document.?;
     try std.testing.expectEqual(@as(usize, 1), document.statementCount());
@@ -123,7 +124,7 @@ test "comments work through fixed storage and preserve validation positions" {
     try std.testing.expectEqual(@as(usize, 2), failure.details.operator_mismatch.declaration.start.line);
 
     var empty: dot.FixedDocumentStorage(.{}) = .{};
-    const only_comments = dot.parseBorrowedIn("/* before */graph {// body\n}# after", empty.storage(), dot.diagnostic.discard, .{ .max_statements = 0 });
+    const only_comments = dot.parseBorrowedIn("/* before */graph {// body\n}# after", .{ .document = empty.storage() }, dot.diagnostic.discard, .{ .max_statements = 0 });
     try std.testing.expect(only_comments.outcome == .success);
     try std.testing.expectEqual(@as(usize, 0), only_comments.document.?.statementCount());
 }
@@ -145,11 +146,11 @@ test "unterminated comments abort both storage paths after partial construction"
 
     var storage: dot.FixedDocumentStorage(.{ .statements = 1, .nodes = 1 }) = .{};
     var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
-    const fixed = dot.parseBorrowedIn(source, storage.storage(), fixed_bag.sink(), .{});
+    const fixed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, fixed_bag.sink(), .{});
     try std.testing.expect(fixed.outcome == .invalid_syntax);
     try std.testing.expect(fixed.document == null);
     try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), fixed_bag.items());
-    const reused = dot.parseBorrowedIn("graph { b; }", storage.storage(), dot.diagnostic.discard, .{});
+    const reused = dot.parseBorrowedIn("graph { b; }", .{ .document = storage.storage() }, dot.diagnostic.discard, .{});
     try std.testing.expect(reused.outcome == .success);
 
     var buffer: [2048]u8 = undefined;
@@ -161,11 +162,11 @@ test "unterminated comments abort both storage paths after partial construction"
 
 test "comment failure reporting honors rejected sinks and zero capacity bags" {
     var storage: dot.FixedDocumentStorage(.{}) = .{};
-    const rejected = dot.parseBorrowedIn("graph {} /*", storage.storage(), .{ .context = null, .emit_fn = Rejecting.emit }, .{});
+    const rejected = dot.parseBorrowedIn("graph {} /*", .{ .document = storage.storage() }, .{ .context = null, .emit_fn = Rejecting.emit }, .{});
     try std.testing.expect(rejected.outcome == .invalid_syntax);
     try std.testing.expectEqual(dot.diagnostic.Delivery.failed, rejected.diagnostic_delivery);
     var bag: dot.FixedDiagnosticBag(0) = .{};
-    const omitted = dot.parseBorrowedIn("/*", storage.storage(), bag.sink(), .{});
+    const omitted = dot.parseBorrowedIn("/*", .{ .document = storage.storage() }, bag.sink(), .{});
     try std.testing.expect(omitted.outcome == .invalid_syntax);
     try std.testing.expectEqual(@as(usize, 1), bag.omitted);
     try std.testing.expectEqual(dot.diagnostic.Delivery.complete, omitted.diagnostic_delivery);
@@ -232,7 +233,7 @@ test "consumer can render a diagnostic into caller-owned memory" {
             .start = .{ .byte_offset = 0, .line = 1, .byte_column = 1 },
             .byte_len = 8,
         },
-        .details = .{ .unsupported_feature = .subgraph },
+        .details = .{ .unsupported_feature = .subgraph_endpoint },
     }, &writer);
 
     const text = writer.buffered();
@@ -377,19 +378,19 @@ test "parseBorrowed returns a caller-owned document over borrowed source" {
 
 test "façade surfaces parse failures with a null document and a filled bag" {
     var bag: dot.FixedDiagnosticBag(4) = .{};
-    var parsed = dot.parseBorrowed(std.testing.allocator, "graph { { a } }", bag.sink(), .{});
+    var parsed = dot.parseBorrowed(std.testing.allocator, "graph { a -- { b } }", bag.sink(), .{});
     defer parsed.deinit(std.testing.allocator);
 
     try std.testing.expect(parsed.outcome == .unsupported_feature);
     try std.testing.expect(parsed.document == null);
     try std.testing.expectEqual(
-        dot.diagnostic.Feature.subgraph,
+        dot.diagnostic.Feature.subgraph_endpoint,
         bag.items()[0].details.unsupported_feature,
     );
 
     // The one-shot reports the same failure with no validation attempted.
     var check_bag: dot.FixedDiagnosticBag(4) = .{};
-    var checked = dot.parseAndValidate(std.testing.allocator, "graph { subgraph s; }", check_bag.sink(), .{});
+    var checked = dot.parseAndValidate(std.testing.allocator, "graph { a -- subgraph s; }", check_bag.sink(), .{});
     defer checked.deinit(std.testing.allocator);
     try std.testing.expect(checked.outcome == .unsupported_feature);
     try std.testing.expect(checked.validation == null);
@@ -498,7 +499,7 @@ test "parseBorrowedIn parses into caller slices with no allocator" {
     var storage: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8 }) = .{};
     var bag: dot.FixedDiagnosticBag(4) = .{};
 
-    const parsed = dot.parseBorrowedIn(source, storage.storage(), bag.sink(), .{});
+    const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
     try std.testing.expect(parsed.outcome == .success);
 
     const document = parsed.document.?;
@@ -520,7 +521,7 @@ test "parseBorrowedIn carries the full document header" {
     var storage: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4 }) = .{};
     var bag: dot.FixedDiagnosticBag(4) = .{};
 
-    const parsed = dot.parseBorrowedIn(source, storage.storage(), bag.sink(), .{});
+    const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
     try std.testing.expect(parsed.outcome == .success);
 
     const document = parsed.document.?;
@@ -536,11 +537,11 @@ test "parseBorrowedIn reports pool exhaustion as a storage failure" {
     var edges: [1]dot.EdgeStatement = undefined;
 
     var bag: dot.FixedDiagnosticBag(4) = .{};
-    const parsed = dot.parseBorrowedIn("graph { a; b; }", .{
+    const parsed = dot.parseBorrowedIn("graph { a; b; }", .{ .document = .{
         .statement_ids = &ids,
         .nodes = &nodes,
         .edges = &edges,
-    }, bag.sink(), .{});
+    } }, bag.sink(), .{});
 
     try std.testing.expect(parsed.outcome == .storage_failure);
     try std.testing.expectEqual(dot.StorageFailure.pool_exhausted, parsed.outcome.storage_failure);
@@ -578,7 +579,7 @@ test "the discard sink makes ignoring diagnostics explicit" {
 const ValidEntry = struct {
     name: []const u8,
     source: []const u8,
-    /// Statement kinds: 'n' node, 'e' edge, 'a' assignment, 'd' attribute statement.
+    /// Statement kinds: 's' scope, 'n' node, 'e' edge, 'c' chain, 'a' assignment, 'd' attribute statement.
     shape: []const u8,
     nodes: usize,
     edges: usize,
@@ -593,6 +594,9 @@ const ValidEntry = struct {
 };
 
 const valid_corpus = [_]ValidEntry{
+    .{ .name = "subgraph", .source = @embedFile("corpus/valid/subgraph.dot"), .shape = "sn", .nodes = 1, .edges = 0, .first_text = null },
+    .{ .name = "named_subgraph", .source = @embedFile("corpus/valid/named_subgraph.dot"), .shape = "sn", .nodes = 1, .edges = 0, .first_text = "s" },
+    .{ .name = "nested_subgraphs", .source = @embedFile("corpus/valid/nested_subgraphs.dot"), .shape = "snsns", .nodes = 2, .edges = 0, .first_text = "named" },
     .{ .name = "attributes", .source = @embedFile("corpus/valid/attributes.dot"), .shape = "adddnen", .nodes = 2, .edges = 1, .first_text = "rankdir", .kind = .digraph, .graph_name = "G" },
     .{ .name = "node_attribute", .source = @embedFile("corpus/valid/node_attribute.dot"), .shape = "d", .nodes = 0, .edges = 0, .first_text = "node" },
     .{ .name = "numeral_identifiers", .source = @embedFile("corpus/valid/numeral_identifiers.dot"), .shape = "nne", .nodes = 2, .edges = 1, .first_text = "0", .kind = .digraph, .graph_name = "-0.5" },
@@ -622,6 +626,7 @@ const InvalidEntry = struct {
 };
 
 const invalid_corpus = [_]InvalidEntry{
+    .{ .name = "missing_subgraph_brace", .source = @embedFile("corpus/invalid/missing_subgraph_brace.dot"), .code = .parser_unexpected_token, .offset = 18 },
     .{ .name = "missing_attribute_value", .source = @embedFile("corpus/invalid/missing_attribute_value.dot"), .code = .parser_unexpected_token, .offset = 13 },
     .{ .name = "missing_attribute_equals", .source = @embedFile("corpus/invalid/missing_attribute_equals.dot"), .code = .parser_unexpected_token, .offset = 12 },
     .{ .name = "truncated_attribute", .source = @embedFile("corpus/invalid/truncated_attribute.dot"), .code = .parser_unexpected_end, .offset = 15 },
@@ -645,7 +650,7 @@ const UnsupportedEntry = struct {
 };
 
 const unsupported_corpus = [_]UnsupportedEntry{
-    .{ .name = "subgraph", .source = @embedFile("corpus/unsupported/subgraph.dot"), .feature = .subgraph },
+    .{ .name = "subgraph_endpoint", .source = @embedFile("corpus/unsupported/subgraph_endpoint.dot"), .feature = .subgraph_endpoint },
 };
 
 fn documentShape(document: *const dot.Document, buffer: []u8) []const u8 {
@@ -653,6 +658,7 @@ fn documentShape(document: *const dot.Document, buffer: []u8) []const u8 {
     var statements = document.statements();
     while (statements.next()) |statement| : (length += 1) {
         buffer[length] = switch (statement) {
+            .subgraph => 's',
             .node => 'n',
             .edge => 'e',
             .edge_chain => 'c',
@@ -689,6 +695,7 @@ test "valid corpus parses to the expected statements, deterministically" {
         try std.testing.expectEqual(entry.edges, document.edges.len);
         if (entry.first_text) |expected_text| {
             const actual = switch (document.statementAt(0).?) {
+                .subgraph => |id| document.text(document.scope(id).?.name().?),
                 .node => |node| document.text(document.nodeReference(node.reference).?.identifier),
                 .edge => |edge| document.text(document.nodeReference(edge.left).?.identifier),
                 .edge_chain => |chain| document.text(document.nodeReference(chain.first.left).?.identifier),
@@ -704,15 +711,18 @@ test "valid corpus parses to the expected statements, deterministically" {
         var second = dot.parseAndValidate(std.testing.allocator, entry.source, second_bag.sink(), .{});
         defer second.deinit(std.testing.allocator);
         const second_document = &second.document.?;
+        try std.testing.expectEqualSlices(dot.Subgraph, document.subgraph_records, second_document.subgraph_records);
         try std.testing.expectEqualSlices(dot.Attribute, document.attributes, second_document.attributes);
         try std.testing.expectEqualSlices(dot.Assignment, document.assignments, second_document.assignments);
         try std.testing.expectEqualSlices(dot.AttributeStatement, document.attribute_statements, second_document.attribute_statements);
         try std.testing.expectEqualSlices(dot.StatementId, document.order, second_document.order);
         try std.testing.expectEqualSlices(dot.NodeStatement, document.nodes, second_document.nodes);
         try std.testing.expectEqualSlices(dot.EdgeStatement, document.edges, second_document.edges);
-        var pools: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8, .attributes = 16, .assignments = 8, .attribute_statements = 8 }) = .{};
-        const fixed = dot.parseBorrowedIn(entry.source, pools.storage(), dot.diagnostic.discard, .{});
+        var scratch: dot.FixedParseScratch(.{ .nesting = 8 }) = .{};
+        var pools: dot.FixedDocumentStorage(.{ .statements = 8, .subgraphs = 8, .nodes = 8, .edges = 8, .attributes = 16, .assignments = 8, .attribute_statements = 8 }) = .{};
+        const fixed = dot.parseBorrowedIn(entry.source, .{ .document = pools.storage(), .scratch = scratch.storage() }, dot.diagnostic.discard, .{});
         try std.testing.expect(fixed.outcome == .success);
+        try std.testing.expectEqualSlices(dot.Subgraph, document.subgraph_records, fixed.document.?.subgraph_records);
         try std.testing.expectEqualSlices(dot.StatementId, document.order, fixed.document.?.order);
         try std.testing.expectEqualSlices(dot.NodeStatement, document.nodes, fixed.document.?.nodes);
         try std.testing.expectEqualSlices(dot.EdgeStatement, document.edges, fixed.document.?.edges);
@@ -741,7 +751,7 @@ test "invalid corpus fails with the expected diagnostic and terminates" {
         }
         var pools: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4, .attributes = 8, .assignments = 4, .attribute_statements = 4 }) = .{};
         var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
-        const fixed = dot.parseBorrowedIn(entry.source, pools.storage(), fixed_bag.sink(), .{});
+        const fixed = dot.parseBorrowedIn(entry.source, .{ .document = pools.storage() }, fixed_bag.sink(), .{});
         try std.testing.expect(fixed.outcome == .invalid_syntax);
         try std.testing.expect(fixed.document == null);
         try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), fixed_bag.items());
@@ -844,7 +854,7 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
     // The fixed-storage twin must terminate on the same bytes too.
     var pools: dot.FixedDocumentStorage(.{ .statements = 64, .nodes = 64, .edges = 64, .attributes = 64, .assignments = 64, .attribute_statements = 64 }) = .{};
     var fixed_bag: dot.FixedDiagnosticBag(4) = .{};
-    _ = dot.parseBorrowedIn(input.items, pools.storage(), fixed_bag.sink(), .{});
+    _ = dot.parseBorrowedIn(input.items, .{ .document = pools.storage() }, fixed_bag.sink(), .{});
 }
 
 test "location tracking is exposed for consumers" {

@@ -30,6 +30,7 @@ const std = @import("std");
 const parser_impl = @import("parser.zig");
 const syntax_impl = @import("syntax.zig");
 const validate_impl = @import("validate.zig");
+const scratch_impl = @import("scratch.zig");
 
 pub const location = @import("location.zig");
 pub const diagnostic = @import("diagnostic.zig");
@@ -65,9 +66,17 @@ pub const FixedDiagnosticBag = diagnostic.FixedBag;
 // The borrowed syntax document and its vocabulary.
 pub const GraphKind = syntax_impl.GraphKind;
 pub const EdgeOperator = syntax_impl.EdgeOperator;
+pub const ParseScratch = scratch_impl.Storage;
+pub const FixedParseScratch = scratch_impl.Fixed;
+pub const ScopeId = syntax_impl.ScopeId;
+pub const ScopeView = syntax_impl.ScopeView;
+pub const Subgraph = syntax_impl.Subgraph;
+pub const Traversal = syntax_impl.Traversal;
 pub const Document = syntax_impl.Document;
 pub const Statement = syntax_impl.Statement;
 pub const StatementId = syntax_impl.StatementId;
+pub const ScopedStatement = syntax_impl.ScopedStatement;
+pub const StatementRange = syntax_impl.StatementRange;
 pub const NodeStatement = syntax_impl.NodeStatement;
 pub const NodeReference = syntax_impl.NodeReference;
 pub const NodeReferenceView = syntax_impl.NodeReferenceView;
@@ -91,28 +100,34 @@ pub const DocumentCapacities = syntax_impl.Capacities;
 pub const DocumentStorage = syntax_impl.DocumentStorage;
 pub const FixedDocumentStorage = syntax_impl.FixedDocumentStorage;
 
+/// Independent retained-output and temporary-nesting storage.
+pub const ParseMemory = struct { document: DocumentStorage, scratch: ParseScratch = .{} };
+
 pub const ParseOptions = struct {
+    /// Temporary nesting frames; null uses the explicit document allocator.
+    scratch_allocator: ?std.mem.Allocator = null,
+    /// Maximum active subgraph depth; root is zero. Independent of scratch capacity.
+    max_nesting: usize = std.math.maxInt(usize),
     /// Maximum number of statements before the parse stops with a
     /// `resource_exhausted` outcome. A statement/output capacity bound, not
     /// a total-work budget (work is one linear scan of the input).
     max_statements: usize = std.math.maxInt(usize),
     /// Total key/value pairs, including standalone assignments; not a scan budget.
     max_attributes: usize = std.math.maxInt(usize),
-    /// Preallocate the document's pools. With capacities that cover the
-    /// document, the build performs no allocation after the pools are
-    /// reserved — the intended mode for fixed-buffer allocators. Fixed-
-    /// buffer callers typically derive the numbers from `max_statements`.
+    /// Preallocate output pools, not temporary nesting frames. Covering the
+    /// document avoids output-pool growth; nesting may still allocate through
+    /// scratch_allocator. Use ParseMemory/fixed pools for allocation-free parsing.
     document_capacities: DocumentCapacities = .{},
 };
 
-/// Why document storage could not hold the document. A façade-level taxonomy:
+/// Why document or temporary storage could not hold the parse. A façade-level taxonomy:
 /// the private event-sink machinery never leaks into the public API.
 pub const StorageFailure = enum {
-    /// The document allocator ran out of memory.
+    /// The document or temporary-scratch allocator ran out of memory.
     out_of_memory,
-    /// A caller-provided fixed pool filled up (`parseBorrowedIn`).
+    /// A caller-provided document pool or nesting scratch filled up.
     pool_exhausted,
-    /// More statements of one kind than the document's index width addresses.
+    /// A statement pool or global order exceeds the compact index/count domain.
     statement_index_overflow,
     /// A source position beyond the retained-range limit (4 GiB).
     source_offset_overflow,
@@ -140,7 +155,7 @@ pub const ParseOutcome = union(enum) {
     unsupported_feature,
     /// A caller-configured limit was reached; the input may still be valid.
     resource_exhausted,
-    /// Document storage could not hold the document.
+    /// Document or temporary storage could not hold the parse.
     storage_failure: StorageFailure,
 };
 
@@ -177,12 +192,17 @@ pub fn parseBorrowed(
         };
     };
     defer builder.deinit();
+    var scratch: scratch_impl.Stack = .{ .allocator = options.scratch_allocator orelse allocator };
+    defer scratch.deinit();
 
     const result = parser_impl.parse(source, &builder, diagnostics, .{
         .max_statements = options.max_statements,
         .max_attributes = options.max_attributes,
+        .max_nesting = options.max_nesting,
+        .scratch = &scratch,
     });
     switch (result.outcome) {
+        .scratch_failure => |err| return .{ .outcome = .{ .storage_failure = storageFailure(err) }, .diagnostic_delivery = result.diagnostic_delivery },
         .success => {},
         .cancelled => unreachable, // This one-shot driver cannot be cancelled.
         .invalid_syntax => return .{
@@ -241,7 +261,7 @@ fn makeBuilder(
 fn storageFailure(err: anyerror) StorageFailure {
     return switch (err) {
         error.OutOfMemory => .out_of_memory,
-        error.PoolExhausted => .pool_exhausted,
+        error.PoolExhausted, error.NestingStorageExhausted => .pool_exhausted,
         error.StatementIndexOverflow => .statement_index_overflow,
         error.AttributeIndexOverflow => .attribute_index_overflow,
         error.EdgeLinkIndexOverflow => .edge_link_index_overflow,
@@ -297,6 +317,8 @@ pub fn validate(
 }
 
 pub const FixedParseOptions = struct {
+    /// Maximum active subgraph depth; root is zero. Independent of scratch capacity.
+    max_nesting: usize = std.math.maxInt(usize),
     /// See `ParseOptions.max_statements`. Capacity needs no option here:
     /// the caller's pools are the capacity.
     max_statements: usize = std.math.maxInt(usize),
@@ -334,12 +356,12 @@ pub const SessionProgress = struct {
 /// Default fixed-storage session: deterministic work budgets, no polling hook.
 pub const BoundedSession = FixedSession(.{});
 
-/// Caller-owned, allocation-free parse session. `source`, pools, diagnostic
+/// Caller-owned, allocation-free parse session. `source`, pools, nesting scratch, diagnostic
 /// context and any cancellation context must outlive active calls/yields at
 /// stable addresses. Source bytes must remain unchanged.
 /// A returned document borrows source/pools, not this session. Do not inspect
 /// or mutate pools while parsing, or copy a live session into a second owner.
-/// Moving between calls is supported: internal builder pointers are rebound.
+/// Moving between calls is supported: internal builder/scratch pointers are rebound.
 /// Calls must not overlap or reenter from a hook. `deinit` cancels unfinished
 /// work; `reset` also cancels unfinished work and invalidates previous pool views.
 pub fn FixedSession(comptime features: ExecutionFeatures) type {
@@ -348,24 +370,28 @@ pub fn FixedSession(comptime features: ExecutionFeatures) type {
         const Driver = parser_impl.Machine(*syntax_impl.FixedBuilder, features.metering, false, features.cancellation);
 
         pub const Options = struct {
+            /// Maximum active subgraph depth; root is zero. Independent of scratch capacity.
+            max_nesting: usize = std.math.maxInt(usize),
             max_statements: usize = std.math.maxInt(usize),
             max_attributes: usize = std.math.maxInt(usize),
             cancellation: if (features.cancellation) ?Cancellation else void = if (features.cancellation) null else {},
         };
 
         builder: syntax_impl.FixedBuilder,
+        scratch: scratch_impl.Stack,
         machine: Driver,
         terminal: ?FixedParseResult = null,
 
-        pub fn init(source: []const u8, storage: DocumentStorage, diagnostics: DiagnosticSink, options: Options) Self {
+        pub fn init(source: []const u8, memory: ParseMemory, diagnostics: DiagnosticSink, options: Options) Self {
             return .{
-                .builder = syntax_impl.FixedBuilder.init(source, storage),
+                .builder = syntax_impl.FixedBuilder.init(source, memory.document),
+                .scratch = .{ .frames = memory.scratch.frames },
                 .machine = .{
                     .tokens = @FieldType(Driver, "tokens").init(source),
                     // Never retain a pointer into the returned init temporary.
                     .events = undefined,
                     .diagnostics = diagnostics,
-                    .options = .{ .max_statements = options.max_statements, .max_attributes = options.max_attributes },
+                    .options = .{ .max_statements = options.max_statements, .max_attributes = options.max_attributes, .max_nesting = options.max_nesting, .scratch = undefined },
                     .cancellation = options.cancellation,
                 },
             };
@@ -377,6 +403,7 @@ pub fn FixedSession(comptime features: ExecutionFeatures) type {
         pub fn advance(self: *Self, budget: usize) SessionProgress {
             if (!features.metering) @compileError("metering is disabled; use run()");
             self.machine.events = &self.builder;
+            self.machine.options.scratch = &self.scratch;
             const progress = self.machine.advance(budget);
             self.settle();
             return .{
@@ -394,6 +421,7 @@ pub fn FixedSession(comptime features: ExecutionFeatures) type {
         /// configured, independently of whether work metering is enabled.
         pub fn run(self: *Self) FixedParseResult {
             self.machine.events = &self.builder;
+            self.machine.options.scratch = &self.scratch;
             _ = self.machine.runToCompletion();
             self.settle();
             return self.terminal.?;
@@ -409,6 +437,7 @@ pub fn FixedSession(comptime features: ExecutionFeatures) type {
         /// a concrete failure already latched cannot be replaced by cancellation.
         pub fn cancel(self: *Self) FixedParseResult {
             self.machine.events = &self.builder;
+            self.machine.options.scratch = &self.scratch;
             _ = self.machine.cancel();
             self.settle();
             return self.terminal.?;
@@ -421,8 +450,8 @@ pub fn FixedSession(comptime features: ExecutionFeatures) type {
         /// Reuse the same pools. Previous document views must no longer be used.
         pub fn reset(self: *Self, source: []const u8, diagnostics: DiagnosticSink, options: Options) void {
             _ = self.cancel();
-            const storage = self.builder.storage;
-            self.* = init(source, storage, diagnostics, options);
+            const memory: ParseMemory = .{ .document = self.builder.storage, .scratch = .{ .frames = self.scratch.frames } };
+            self.* = init(source, memory, diagnostics, options);
         }
 
         fn settle(self: *Self) void {
@@ -434,7 +463,7 @@ pub fn FixedSession(comptime features: ExecutionFeatures) type {
                 .invalid_syntax => .invalid_syntax,
                 .unsupported_feature => .unsupported_feature,
                 .resource_exhausted => .resource_exhausted,
-                .sink_failure => |err| .{ .storage_failure = storageFailure(err) },
+                .sink_failure, .scratch_failure => |err| .{ .storage_failure = storageFailure(err) },
             };
             self.terminal = .{
                 .document = if (parsed.outcome == .success) self.builder.toDocument() else null,
@@ -455,16 +484,20 @@ pub fn FixedSession(comptime features: ExecutionFeatures) type {
 /// storage policy.
 pub fn parseBorrowedIn(
     source: []const u8,
-    storage: DocumentStorage,
+    memory: ParseMemory,
     diagnostics: diagnostic.Sink,
     options: FixedParseOptions,
 ) FixedParseResult {
-    var builder = syntax_impl.FixedBuilder.init(source, storage);
+    var builder = syntax_impl.FixedBuilder.init(source, memory.document);
+    var scratch: scratch_impl.Stack = .{ .frames = memory.scratch.frames };
     const result = parser_impl.parse(source, &builder, diagnostics, .{
         .max_statements = options.max_statements,
         .max_attributes = options.max_attributes,
+        .max_nesting = options.max_nesting,
+        .scratch = &scratch,
     });
     switch (result.outcome) {
+        .scratch_failure => |err| return .{ .outcome = .{ .storage_failure = storageFailure(err) }, .diagnostic_delivery = result.diagnostic_delivery },
         .success => {},
         .cancelled => unreachable, // This one-shot driver cannot be cancelled.
         .invalid_syntax => return .{

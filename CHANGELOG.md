@@ -6,6 +6,19 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Support named, anonymous and nested standalone subgraphs using compact scope
+  records and iterative parsing/traversal. Preserve all global statements; expose
+  direct/recursive scope statements, edges and written node references, plus
+  `statements().nextScoped()` for containing-scope context. No semantic name
+  merging, defaults, membership indexes or edge-product expansion.
+  Breaking API: statement unions gain `.subgraph`; fixed parse/session calls take
+  `ParseMemory { document, scratch }`. Reserve `.subgraphs` and explicit
+  `FixedParseScratch` nesting frames; no legacy overload is retained.
+  Allocator callers may supply a separate `scratch_allocator`. Add `max_nesting`
+  and typed depth/scratch/scope-pool capacities; replace `Feature.subgraph` with
+  the still-deferred `Feature.subgraph_endpoint`. Entry/exit obey work budgets,
+  cancellation and commit-only output. Add scope guide, example and benchmark.
+
 - Support raw port suffixes on node statements and all edge/chain endpoints.
   Use compact inline-or-pooled references: 8-byte handles and a separate
   28-byte qualified-occurrence pool, with checked `Document.nodeReference` views.

@@ -29,7 +29,7 @@ test "attributes preserve written order, duplicates, raw IDs and scope across bo
     try expect(parsed.documentValid());
     const doc = &parsed.document.?;
     var pools: dot.FixedDocumentStorage(capacities) = .{};
-    const fixed = dot.parseBorrowedIn(source, pools.storage(), bag.sink(), .{});
+    const fixed = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, bag.sink(), .{});
     try expect(fixed.outcome == .success);
     try sameDocument(doc, &fixed.document.?);
     try equal(@as(usize, 7), doc.statementCount());
@@ -72,7 +72,7 @@ test "empty adjacent lists and all supported identifier forms compose with attri
         defer parsed.deinit(std.testing.allocator);
         try expect(parsed.outcome == .success);
         var pools: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8, .attributes = 16, .assignments = 8, .attribute_statements = 8 }) = .{};
-        const fixed = dot.parseBorrowedIn(input, pools.storage(), dot.diagnostic.discard, .{});
+        const fixed = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
         try expect(fixed.outcome == .success);
         try sameDocument(&parsed.document.?, &fixed.document.?);
     }
@@ -105,7 +105,7 @@ test "malformed attributes fail without partial documents and with matching type
         var parsed = dot.parseBorrowed(std.testing.allocator, input, a.sink(), .{});
         defer parsed.deinit(std.testing.allocator);
         var pools: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4, .attributes = 8, .assignments = 4, .attribute_statements = 4 }) = .{};
-        const fixed = dot.parseBorrowedIn(input, pools.storage(), b.sink(), .{});
+        const fixed = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, b.sink(), .{});
         try expect(parsed.outcome == .invalid_syntax);
         try expect(fixed.outcome == .invalid_syntax);
         try expect(parsed.document == null and fixed.document == null);
@@ -148,13 +148,13 @@ test "each fixed pool exhaustion has an exact resource and storage is reusable" 
     }) |case| {
         var pools: dot.FixedDocumentStorage(case.cap) = .{};
         var bag: dot.FixedDiagnosticBag(1) = .{};
-        const failed = dot.parseBorrowedIn(case.input, pools.storage(), bag.sink(), .{});
+        const failed = dot.parseBorrowedIn(case.input, .{ .document = pools.storage() }, bag.sink(), .{});
         try expect(failed.outcome == .storage_failure);
         try equal(dot.StorageFailure.pool_exhausted, failed.outcome.storage_failure);
         try expect(failed.document == null);
         try equal(case.resource, bag.items()[0].details.capacity.resource);
         try equal(@as(usize, 0), bag.items()[0].details.capacity.limit);
-        const reused = dot.parseBorrowedIn("graph {}", pools.storage(), dot.diagnostic.discard, .{});
+        const reused = dot.parseBorrowedIn("graph {}", .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
         try expect(reused.outcome == .success);
         try equal(@as(usize, 0), reused.document.?.attributes.len);
     }
@@ -166,7 +166,7 @@ test "attribute budgets include assignments but not empty groups, independently 
         var parsed = dot.parseBorrowed(std.testing.allocator, source, bag.sink(), .{ .max_attributes = limit });
         defer parsed.deinit(std.testing.allocator);
         var pools: dot.FixedDocumentStorage(capacities) = .{};
-        const fixed = dot.parseBorrowedIn(source, pools.storage(), dot.diagnostic.discard, .{ .max_attributes = limit });
+        const fixed = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_attributes = limit });
         try equal(std.meta.activeTag(parsed.outcome), std.meta.activeTag(fixed.outcome));
         if (limit < 10) {
             try expect(parsed.outcome == .resource_exhausted);
@@ -175,8 +175,8 @@ test "attribute budgets include assignments but not empty groups, independently 
         } else try expect(parsed.outcome == .success);
     }
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .attribute_statements = 1 }) = .{};
-    try expect(dot.parseBorrowedIn("graph { node[][] }", pools.storage(), dot.diagnostic.discard, .{ .max_attributes = 0 }).outcome == .success);
-    try expect(dot.parseBorrowedIn("graph { node[] }", pools.storage(), dot.diagnostic.discard, .{ .max_statements = 0 }).outcome == .resource_exhausted);
+    try expect(dot.parseBorrowedIn("graph { node[][] }", .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_attributes = 0 }).outcome == .success);
+    try expect(dot.parseBorrowedIn("graph { node[] }", .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_statements = 0 }).outcome == .resource_exhausted);
 }
 
 test "all attribute corpus prefixes terminate identically without exposing partial storage" {
@@ -184,7 +184,7 @@ test "all attribute corpus prefixes terminate identically without exposing parti
         var parsed = dot.parseBorrowed(std.testing.allocator, source[0..length], dot.diagnostic.discard, .{});
         defer parsed.deinit(std.testing.allocator);
         var pools: dot.FixedDocumentStorage(capacities) = .{};
-        const fixed = dot.parseBorrowedIn(source[0..length], pools.storage(), dot.diagnostic.discard, .{});
+        const fixed = dot.parseBorrowedIn(source[0..length], .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
         try equal(std.meta.activeTag(parsed.outcome), std.meta.activeTag(fixed.outcome));
         if (parsed.outcome == .success) {
             try sameDocument(&parsed.document.?, &fixed.document.?);
@@ -211,11 +211,11 @@ test "attribute errors preserve outcome when diagnostics are rejected or omitted
     };
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .nodes = 1, .attributes = 2 }) = .{};
     const input = "graph { a[x=1 y=] }";
-    const rejected = dot.parseBorrowedIn(input, pools.storage(), .{ .context = null, .emit_fn = Reject.emit }, .{});
+    const rejected = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, .{ .context = null, .emit_fn = Reject.emit }, .{});
     try expect(rejected.outcome == .invalid_syntax);
     try equal(dot.diagnostic.Delivery.failed, rejected.diagnostic_delivery);
     var bag: dot.FixedDiagnosticBag(0) = .{};
-    const omitted = dot.parseBorrowedIn(input, pools.storage(), bag.sink(), .{});
+    const omitted = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, bag.sink(), .{});
     try expect(omitted.outcome == .invalid_syntax);
     try equal(@as(usize, 1), bag.omitted);
 }
@@ -240,7 +240,7 @@ fn fuzzAttributes(_: void, smith: *std.testing.Smith) !void {
     defer parsed.deinit(std.testing.allocator);
     try expect(parsed.outcome == .success);
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .nodes = 1, .attributes = 63 }) = .{};
-    const fixed = dot.parseBorrowedIn(bytes, pools.storage(), dot.diagnostic.discard, .{ .max_attributes = count });
+    const fixed = dot.parseBorrowedIn(bytes, .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_attributes = count });
     try expect(fixed.outcome == .success);
     try sameDocument(&parsed.document.?, &fixed.document.?);
     const doc = &parsed.document.?;

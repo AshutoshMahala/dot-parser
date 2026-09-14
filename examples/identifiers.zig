@@ -6,7 +6,7 @@ pub fn main(init: std.process.Init) !void {
     const source = "digraph { \"sen\" /* join */ + \"sor\" -> -00.50; }";
     var storage: dot.FixedDocumentStorage(.{ .statements = 1, .edges = 1 }) = .{};
     var bag: dot.FixedDiagnosticBag(1) = .{};
-    const parsed = dot.parseBorrowedIn(source, storage.storage(), bag.sink(), .{});
+    const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
     var stdout_buffer: [1024]u8 = undefined;
     var output: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
     const writer = &output.interface;

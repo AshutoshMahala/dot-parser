@@ -163,7 +163,15 @@ unchanged, regardless of budget.
 
 Per-call exhaustion yields; it is not a resource error. A total-operation work
 limit is a different policy and is deferred. Statement, attribute and storage
-limits keep their existing terminal resource/storage outcomes.
+limits keep their existing terminal resource/storage outcomes. `max_nesting` is
+also a terminal policy limit, not work credit; root depth is zero.
+
+Subgraph entry and exit each have a separately charged normal callback. One
+fixed-frame push happens in the opening grammar transition and one pop after an
+accepted exit; neither walks ancestors. Failure/cancellation resets active frame
+length and aborts staged output without synthetic close events. `completed_statements`
+counts a scope at accepted exit, while `max_statements` counts its reservation.
+Scratch capacity exhaustion is a storage failure, distinct from nesting policy.
 
 ### Exclusions and bounded housekeeping
 

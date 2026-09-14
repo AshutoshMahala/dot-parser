@@ -379,6 +379,68 @@ chains, all source prefixes, partition equivalence, callback/allocation failure
 injection, cancellation at every work boundary, typed capacity failures and
 pool reset. Freestanding compilation is not a hardware runtime or RAM-fit test.
 
+## Standalone subgraphs (2026-09-13)
+
+Native Zig 0.16.0 / aarch64-macOS measurements:
+
+- `Subgraph`: 32 B, plus an 8 B global `StatementId`: **40 B/occurrence**.
+- Nesting frame: 32 B per active level; fixed capacity uses reserved depth.
+- Existing node/edge/link/chain records remain 16/36/20/44 B.
+- No extra scope ID on each node or edge. The document gains one 16 B pool
+  slice; builders/sessions also gain fixed metadata and scratch-stack state.
+- Ordinary parser: 808 B, up from 720 B; regression guard: 832 B.
+
+`zig build bench-session -Doptimize=ReleaseFast` reports:
+
+| Metering | Cancellation | Session | Driver |
+| --- | --- | ---: | ---: |
+| Off | Off | 1,448 B | 808 B |
+| Off | On | 1,520 B | 880 B |
+| On | Off | 1,520 B | 880 B |
+| On | On | 1,544 B | 904 B |
+
+These sizes exclude source, output pools, diagnostic storage, and the frame
+buffer itself. Flat syntax uses zero scratch frames and no unhinted scope pool,
+but still pays metadata/grammar costs; compile-time syntax removal is not shipped.
+
+The existing flat 200k-statement parse+validate fixture still retains 6,800,000 B
+(34 B/statement). Arena backing capacity remains 37,620,470 B default /
+8,400,148 B hinted. Two sequential local invocations per version (2 warm-ups,
+9 timed rounds each) gave:
+
+| Flat parse + validate | Before scopes (`de7ca0f`) | Standalone scopes |
+| --- | ---: | ---: |
+| Default pools, range of medians | 14.19–14.25 ms | 14.81–14.87 ms |
+| Capacity hints, range of medians | 12.23–12.67 ms | 12.65–13.02 ms |
+
+This small host sample suggests roughly 4% default / 3% hinted overhead using
+range midpoints, with noise/overlapping individual rounds. It is not a universal
+regression estimate or a claim of zero-cost syntax support.
+
+`zig build bench-subgraphs -Doptimize=ReleaseFast` measures fixed-pool parsing
+with caller storage/source construction outside timing. One invocation after
+the final index checks (2 warm-ups, 9 measured rounds) reported:
+
+| Empty scopes | Sibling median | Fully nested median | Retained payload | Sibling scratch | Nested scratch |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 0.079 ms | 0.036 ms | 40,000 B | 32 B | 32,000 B |
+| 10,000 | 0.347 ms | 0.371 ms | 400,000 B | 32 B | 320,000 B |
+| 100,000 | 3.413 ms | 3.714 ms | 4,000,000 B | 32 B | 3,200,000 B |
+
+The 100k measured ranges were 3.168–3.702 ms for siblings and 3.336–4.062 ms
+for nesting. Small fixtures are noisy; these synthetic empty scopes are not a
+representative attribute-heavy graph workload. Global traversal is checked
+outside timing, not included in these parse medians. The explicit stack avoids
+input-dependent call recursion even at 100k depth; this is a host test, not proof
+that those buffers fit an embedded board.
+
+Verification: 257 tests (171 unit, 86 public integration), Debug and ReleaseSafe;
+nine runnable examples and eight consumed RISC-V32/Wasm32 profile objects.
+Coverage includes all source prefixes, generated parent/child invariants, deep
+nesting, sibling scratch reuse, allocation/callback failures, capacity/index
+boundaries, cancellation at every work boundary, scratch reuse, and nested
+validation order. Runtime/stack/flash measurements on an actual board remain open.
+
 ## Binary size
 
 The figures in this section are the historical post-renderer snapshot; newer

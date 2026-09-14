@@ -15,7 +15,8 @@
 //!   per-kind consumers can touch only their relevant records,
 //! - chains have separate owner/link pools; ordinary edges retain their size,
 //! - node references inline bare ranges or index the qualified-occurrence pool,
-//! - `order` records source order as compact typed indices,
+//! - scope records retain parent IDs and body intervals, never copied descendants,
+//! - `order` records all statements in source preorder as compact typed indices,
 //! - statement indices are `Index` (u32) with checked overflow; the width is
 //!   a single declaration so a future embedded profile can shrink it,
 //! - retained positions are compact 8-byte `location.Range`s — offset and
@@ -29,7 +30,7 @@
 //!
 //! Explicit allocator, no hidden allocation. The document is mid-term data:
 //! build it with an arena or fixed buffer and release it in bulk — `deinit`
-//! is nine pool releases, never a per-node walk; arena users may skip `deinit` and
+//! is ten pool releases, never a per-node walk; arena users may skip `deinit` and
 //! reset the arena. The source bytes are caller-owned and must outlive the
 //! document (borrowed ranges, R-MEM-004).
 //!
@@ -54,6 +55,7 @@ pub const Index = u32;
 /// constructible, so `Document.statement` bounds-checks rather than trusting it.
 pub const StatementId = union(enum) {
     node: Index,
+    subgraph: Index,
     edge: Index,
     edge_chain: Index,
     assignment: Index,
@@ -147,20 +149,178 @@ pub const EdgeChainStatement = struct {
 /// A by-value view of one statement, for order-preserving traversal.
 pub const Statement = union(enum) {
     node: NodeStatement,
+    subgraph: ScopeId,
     edge: EdgeStatement,
     edge_chain: EdgeChainStatement,
     assignment: Assignment,
     attribute_statement: AttributeStatement,
 };
 
+pub const ScopeId = enum(Index) { root = 0, _ };
+pub const Traversal = enum { direct, recursive };
+pub const StatementRange = struct { start: Index, len: Index };
+
+/// One written subgraph. IDs are document-local occurrences, never name hashes.
+pub const Subgraph = struct {
+    parent: ScopeId,
+    name: ?location.Range,
+    body: StatementRange,
+    source: location.Range,
+};
+
+/// A borrowed view, not an independently owned graph or resolved membership set.
+pub const ScopeView = struct {
+    document: *const Document,
+    id: ScopeId,
+
+    pub fn parent(self: ScopeView) ?ScopeId {
+        return if (self.id == .root) null else self.record().parent;
+    }
+    pub fn name(self: ScopeView) ?location.Range {
+        return if (self.id == .root) self.document.name else self.record().name;
+    }
+    pub fn sourceRange(self: ScopeView) ?location.Range {
+        return if (self.id == .root) location.Range.fromSpan(.{ .start = .start, .byte_len = self.document.source.len }) else self.record().source;
+    }
+    fn record(self: ScopeView) Subgraph {
+        return self.document.subgraph_records[@intFromEnum(self.id) - 1];
+    }
+    pub fn statements(self: ScopeView, traversal: Traversal) ScopedStatementIterator {
+        const body = if (self.id == .root) StatementRange{ .start = 0, .len = @intCast(self.document.order.len) } else self.record().body;
+        return .{ .document = self.document, .index = body.start, .end = @as(usize, body.start) + body.len, .traversal = traversal };
+    }
+    pub fn subgraphs(self: ScopeView, traversal: Traversal) ChildScopeIterator {
+        return .{ .statements = self.statements(traversal) };
+    }
+    pub fn edges(self: ScopeView, traversal: Traversal) ScopedEdgeIterator {
+        return .{ .statements = self.statements(traversal) };
+    }
+    /// Written references, including edge-only nodes. Duplicates remain; a chain
+    /// middle is visited once. This is not resolved node membership.
+    pub fn nodeReferences(self: ScopeView, traversal: Traversal) NodeReferenceIterator {
+        return .{ .statements = self.statements(traversal) };
+    }
+};
+
+pub const SubgraphIterator = struct {
+    document: *const Document,
+    index: usize = 0,
+    pub fn next(self: *SubgraphIterator) ?ScopeView {
+        if (self.index == self.document.subgraph_records.len) return null;
+        self.index += 1;
+        return .{ .document = self.document, .id = @enumFromInt(self.index) };
+    }
+};
+
+pub const ScopedStatementIterator = struct {
+    document: *const Document,
+    index: usize,
+    end: usize,
+    traversal: Traversal,
+    pub fn next(self: *ScopedStatementIterator) ?Statement {
+        if (self.index >= self.end) return null;
+        const id = self.document.order[self.index];
+        self.index += 1;
+        if (self.traversal == .direct and id == .subgraph) {
+            const body = self.document.subgraph_records[id.subgraph].body;
+            self.index = @as(usize, body.start) + body.len;
+        }
+        return self.document.statement(id);
+    }
+};
+
+pub const ChildScopeIterator = struct {
+    statements: ScopedStatementIterator,
+    pub fn next(self: *ChildScopeIterator) ?ScopeView {
+        while (self.statements.next()) |statement| if (statement == .subgraph)
+            return self.statements.document.scope(statement.subgraph);
+        return null;
+    }
+};
+
+pub const ScopedEdgeIterator = struct {
+    statements: ScopedStatementIterator,
+    links: []const EdgeLink = &.{},
+    left: NodeReference = undefined,
+    attributes: AttributeRange = .{},
+    pub fn next(self: *ScopedEdgeIterator) ?EdgeStatement {
+        if (self.links.len != 0) {
+            const link = self.links[0];
+            self.links = self.links[1..];
+            const edge: EdgeStatement = .{ .left = self.left, .right = link.right, .operator = link.operator, .operator_range = link.operator_range, .attributes = self.attributes };
+            self.left = link.right;
+            return edge;
+        }
+        while (self.statements.next()) |statement| switch (statement) {
+            .edge => |edge| return edge,
+            .edge_chain => |chain| {
+                self.links = self.statements.document.edgeLinkSlice(chain.links).?;
+                self.left = chain.first.right;
+                self.attributes = chain.first.attributes;
+                return chain.first;
+            },
+            else => {},
+        };
+        return null;
+    }
+};
+
+pub const NodeReferenceIterator = struct {
+    statements: ScopedStatementIterator,
+    pending: ?NodeReference = null,
+    links: []const EdgeLink = &.{},
+    pub fn next(self: *NodeReferenceIterator) ?NodeReference {
+        if (self.pending) |reference| {
+            self.pending = null;
+            return reference;
+        }
+        if (self.links.len != 0) {
+            const reference = self.links[0].right;
+            self.links = self.links[1..];
+            return reference;
+        }
+        while (self.statements.next()) |statement| switch (statement) {
+            .node => |node| return node.reference,
+            .edge => |edge| {
+                self.pending = edge.right;
+                return edge.left;
+            },
+            .edge_chain => |chain| {
+                self.pending = chain.first.right;
+                self.links = self.statements.document.edgeLinkSlice(chain.links).?;
+                return chain.first.left;
+            },
+            else => {},
+        };
+        return null;
+    }
+};
+
+pub const ScopedStatement = struct { id: StatementId, scope: ScopeId, statement: Statement };
+
 pub const StatementIterator = struct {
     document: *const Document,
     index: usize = 0,
+    current_scope: ScopeId = .root,
+
+    /// Includes the containing scope without per-statement retained metadata.
+    /// Full traversal is O(statements + subgraphs), with no recursion.
+    pub fn nextScoped(self: *StatementIterator) ?ScopedStatement {
+        if (self.index == self.document.order.len) return null;
+        while (self.current_scope != .root) {
+            const record = self.document.subgraph_records[@intFromEnum(self.current_scope) - 1];
+            if (self.index < @as(usize, record.body.start) + record.body.len) break;
+            self.current_scope = record.parent;
+        }
+        const id = self.document.order[self.index];
+        const result: ScopedStatement = .{ .id = id, .scope = self.current_scope, .statement = self.document.statement(id).? };
+        if (id == .subgraph) self.current_scope = @enumFromInt(id.subgraph + 1);
+        self.index += 1;
+        return result;
+    }
 
     pub fn next(self: *StatementIterator) ?Statement {
-        const statement = self.document.statementAt(self.index) orelse return null;
-        self.index += 1;
-        return statement;
+        return if (self.nextScoped()) |item| item.statement else null;
     }
 };
 
@@ -236,9 +396,20 @@ pub const Document = struct {
     edge_chains: []const EdgeChainStatement = &.{},
     edge_links: []const EdgeLink = &.{},
     ported_references: []const PortedReference = &.{},
+    subgraph_records: []const Subgraph = &.{},
     attributes: []const Attribute = &.{},
     assignments: []const Assignment = &.{},
     attribute_statements: []const AttributeStatement = &.{},
+
+    /// O(1) checked scope lookup. Root is zero; subgraph IDs are one-based
+    /// occurrences in opening/source order, independent of names.
+    pub fn scope(self: *const Document, id: ScopeId) ?ScopeView {
+        if (@intFromEnum(id) > self.subgraph_records.len) return null;
+        return .{ .document = self, .id = id };
+    }
+    pub fn subgraphs(self: *const Document) SubgraphIterator {
+        return .{ .document = self };
+    }
 
     /// Resolve a compact reference without scanning source or allocating.
     /// Null for an out-of-bounds inline range or pool handle.
@@ -261,6 +432,10 @@ pub const Document = struct {
     /// of this document (ids are publicly constructible).
     pub fn statement(self: *const Document, id: StatementId) ?Statement {
         return switch (id) {
+            .subgraph => |index| if (index < self.subgraph_records.len)
+                Statement{ .subgraph = @enumFromInt(index + 1) }
+            else
+                null,
             .node => |index| if (index < self.nodes.len)
                 Statement{ .node = self.nodes[index] }
             else
@@ -335,7 +510,7 @@ pub const Document = struct {
 };
 
 /// Free an allocator-owned document produced by `Builder.toDocument`
-/// (bulk release, R-MEM-005: nine pool releases, no per-node walk).
+/// (bulk release, R-MEM-005: ten pool releases, no per-node walk).
 ///
 /// Package-internal on purpose: `Document` itself is a non-owning view, so
 /// a fixed-storage document — whose pools belong to the caller — can never
@@ -346,6 +521,7 @@ pub fn deinitOwnedDocument(document: *Document, allocator: std.mem.Allocator) vo
     allocator.free(document.edge_chains);
     allocator.free(document.edge_links);
     allocator.free(document.ported_references);
+    allocator.free(document.subgraph_records);
     allocator.free(document.edges);
     allocator.free(document.attributes);
     allocator.free(document.assignments);
@@ -390,6 +566,8 @@ pub const Builder = struct {
     edge_chains: std.ArrayList(EdgeChainStatement) = .empty,
     edge_links: std.ArrayList(EdgeLink) = .empty,
     ported_references: std.ArrayList(PortedReference) = .empty,
+    subgraphs: std.ArrayList(Subgraph) = .empty,
+    current_scope: ScopeId = .root,
     edges: std.ArrayList(EdgeStatement) = .empty,
     attributes: std.ArrayList(Attribute) = .empty,
     assignments: std.ArrayList(Assignment) = .empty,
@@ -403,7 +581,7 @@ pub const Builder = struct {
 
     pub const Error = error{
         OutOfMemory,
-        /// More statements of one kind than `Index` can address.
+        /// A per-kind pool or global order exceeds the compact count/index domain.
         StatementIndexOverflow,
         AttributeIndexOverflow,
         EdgeLinkIndexOverflow,
@@ -434,6 +612,7 @@ pub const Builder = struct {
         try builder.edge_chains.ensureTotalCapacityPrecise(allocator, capacities.edge_chains);
         try builder.edge_links.ensureTotalCapacityPrecise(allocator, capacities.edge_links);
         try builder.ported_references.ensureTotalCapacityPrecise(allocator, capacities.ported_references);
+        try builder.subgraphs.ensureTotalCapacityPrecise(allocator, capacities.subgraphs);
         try builder.edges.ensureTotalCapacityPrecise(allocator, capacities.edges);
         try builder.attributes.ensureTotalCapacityPrecise(allocator, capacities.attributes);
         try builder.assignments.ensureTotalCapacityPrecise(allocator, capacities.assignments);
@@ -448,6 +627,7 @@ pub const Builder = struct {
         self.edge_chains.deinit(self.allocator);
         self.edge_links.deinit(self.allocator);
         self.ported_references.deinit(self.allocator);
+        self.subgraphs.deinit(self.allocator);
         self.edges.deinit(self.allocator);
         self.attributes.deinit(self.allocator);
         self.assignments.deinit(self.allocator);
@@ -466,6 +646,8 @@ pub const Builder = struct {
         self.edge_chains.clearRetainingCapacity();
         self.edge_links.clearRetainingCapacity();
         self.ported_references.clearRetainingCapacity();
+        self.subgraphs.clearRetainingCapacity();
+        self.current_scope = .root;
         self.edges.clearRetainingCapacity();
         self.attributes.clearRetainingCapacity();
         self.assignments.clearRetainingCapacity();
@@ -487,6 +669,8 @@ pub const Builder = struct {
             self.edge_chains.clearAndFree(self.allocator);
             self.edge_links.clearAndFree(self.allocator);
             self.ported_references.clearAndFree(self.allocator);
+            self.subgraphs.clearAndFree(self.allocator);
+            self.current_scope = .root;
             self.edges.clearAndFree(self.allocator);
             self.attributes.clearAndFree(self.allocator);
             self.assignments.clearAndFree(self.allocator);
@@ -501,6 +685,8 @@ pub const Builder = struct {
         errdefer self.allocator.free(nodes);
         const edge_chains = try self.edge_chains.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(edge_chains);
+        const subgraphs = try self.subgraphs.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(subgraphs);
         const ported_references = try self.ported_references.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(ported_references);
         const edge_links = try self.edge_links.toOwnedSlice(self.allocator);
@@ -524,6 +710,7 @@ pub const Builder = struct {
             .edge_chains = edge_chains,
             .edge_links = edge_links,
             .ported_references = ported_references,
+            .subgraph_records = subgraphs,
             .edges = edges,
             .attributes = attributes,
             .assignments = assignments,
@@ -602,6 +789,37 @@ pub const Builder = struct {
         self.pending_attributes = self.attributes.items.len;
     }
 
+    pub fn beginSubgraph(self: *Builder, event: syntax_event.BeginSubgraph) Error!void {
+        std.debug.assert(self.phase == .building);
+        std.debug.assert(self.pendingRange().len == 0 and self.pending_links == self.edge_links.items.len);
+        const index = try self.statementIndex(self.subgraphs.items.len, event.start);
+        const value: Subgraph = .{
+            .parent = self.current_scope,
+            .name = if (event.name) |name| try self.range(name) else null,
+            .source = try self.range(event.start),
+            .body = .{ .start = @intCast(self.order.items.len + 1), .len = 0 },
+        };
+        try self.reserve(&self.order, event.start);
+        try self.reserve(&self.subgraphs, event.start);
+        self.subgraphs.appendAssumeCapacity(value);
+        self.order.appendAssumeCapacity(.{ .subgraph = index });
+        self.current_scope = @enumFromInt(index + 1);
+    }
+
+    pub fn endSubgraph(self: *Builder, event: syntax_event.EndSubgraph) Error!void {
+        std.debug.assert(self.phase == .building and self.current_scope != .root);
+        std.debug.assert(self.pendingRange().len == 0);
+        const record = &self.subgraphs.items[@intFromEnum(self.current_scope) - 1];
+        const end = event.close.endOffset();
+        if (end > std.math.maxInt(u32)) {
+            self.failure_info = .{ .span = event.close, .capacity = .{ .resource = .source_range, .limit = std.math.maxInt(u32) } };
+            return error.SourceOffsetOverflow;
+        }
+        record.source.len = @intCast(end - record.source.start);
+        record.body.len = @intCast(self.order.items.len - record.body.start);
+        self.current_scope = record.parent;
+    }
+
     pub fn portedReference(self: *Builder, event: syntax_event.PortedReference) Error!u32 {
         std.debug.assert(self.phase == .building);
         const value: PortedReference = .{
@@ -677,7 +895,7 @@ pub const Builder = struct {
     }
 
     fn statementIndex(self: *Builder, length: usize, at: location.Span) Error!Index {
-        return checkedIndex(length) catch |err| {
+        return checkedIndex(length, self.order.items.len) catch |err| {
             self.failure_info = .{ .span = at, .capacity = .{
                 .resource = .statement_index,
                 .limit = std.math.maxInt(Index),
@@ -694,7 +912,7 @@ pub const Builder = struct {
     }
 
     pub fn endDocument(self: *Builder) Error!void {
-        std.debug.assert(self.phase == .building);
+        std.debug.assert(self.phase == .building and self.current_scope == .root);
         std.debug.assert(self.pendingRange().len == 0);
         std.debug.assert(self.pending_links == self.edge_links.items.len);
         self.phase = .committed;
@@ -709,6 +927,8 @@ pub const Builder = struct {
         self.edge_chains.clearAndFree(self.allocator);
         self.edge_links.clearAndFree(self.allocator);
         self.ported_references.clearAndFree(self.allocator);
+        self.subgraphs.clearAndFree(self.allocator);
+        self.current_scope = .root;
         self.edges.clearAndFree(self.allocator);
         self.attributes.clearAndFree(self.allocator);
         self.assignments.clearAndFree(self.allocator);
@@ -733,8 +953,9 @@ fn toRange(span: location.Span) error{SourceOffsetOverflow}!location.Range {
     return location.Range.fromSpan(span) orelse error.SourceOffsetOverflow;
 }
 
-fn checkedIndex(length: usize) error{StatementIndexOverflow}!Index {
-    if (length > std.math.maxInt(Index)) return error.StatementIndexOverflow;
+fn checkedIndex(length: usize, total: usize) error{StatementIndexOverflow}!Index {
+    // Scope intervals and the root statement count share the compact domain.
+    if (@max(length, total) >= std.math.maxInt(Index)) return error.StatementIndexOverflow;
     return @intCast(length);
 }
 
@@ -750,6 +971,8 @@ pub const Capacities = struct {
     edge_links: usize = 0,
     /// Qualified node-reference occurrences; duplicates are not interned.
     ported_references: usize = 0,
+    /// Total retained subgraph occurrences, not maximum nesting depth.
+    subgraphs: usize = 0,
     edges: usize = 0,
     /// Pairs in bracket lists; standalone assignments use their own pool.
     attributes: usize = 0,
@@ -767,6 +990,7 @@ pub const DocumentStorage = struct {
     edge_chains: []EdgeChainStatement = &.{},
     edge_links: []EdgeLink = &.{},
     ported_references: []PortedReference = &.{},
+    subgraphs: []Subgraph = &.{},
     edges: []EdgeStatement,
     attributes: []Attribute = &.{},
     assignments: []Assignment = &.{},
@@ -780,7 +1004,7 @@ pub const DocumentStorage = struct {
 /// static, or heap via `allocator.create`). Budget with `byte_size`.
 pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
     comptime {
-        for ([_]usize{ capacities.statements, capacities.nodes, capacities.edges, capacities.edge_links, capacities.edge_chains, capacities.ported_references, capacities.attributes, capacities.assignments, capacities.attribute_statements }) |capacity| {
+        for ([_]usize{ capacities.statements, capacities.nodes, capacities.edges, capacities.edge_links, capacities.edge_chains, capacities.ported_references, capacities.subgraphs, capacities.attributes, capacities.assignments, capacities.attribute_statements }) |capacity| {
             if (capacity > std.math.maxInt(Index)) {
                 @compileError("FixedDocumentStorage: capacity exceeds the statement index width (" ++
                     @typeName(Index) ++ ")");
@@ -797,6 +1021,7 @@ pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
         edge_chains: [capacities.edge_chains]EdgeChainStatement = undefined,
         edge_links: [capacities.edge_links]EdgeLink = undefined,
         ported_references: [capacities.ported_references]PortedReference = undefined,
+        subgraphs: [capacities.subgraphs]Subgraph = undefined,
         edges: [capacities.edges]EdgeStatement = undefined,
         attributes: [capacities.attributes]Attribute = undefined,
         assignments: [capacities.assignments]Assignment = undefined,
@@ -809,6 +1034,7 @@ pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
                 .edge_chains = &self.edge_chains,
                 .edge_links = &self.edge_links,
                 .ported_references = &self.ported_references,
+                .subgraphs = &self.subgraphs,
                 .edges = &self.edges,
                 .attributes = &self.attributes,
                 .assignments = &self.assignments,
@@ -837,6 +1063,8 @@ pub const FixedBuilder = struct {
     edge_chains_len: usize = 0,
     edge_links_len: usize = 0,
     ported_references_len: usize = 0,
+    subgraphs_len: usize = 0,
+    current_scope: ScopeId = .root,
     edges_len: usize = 0,
     attributes_len: usize = 0,
     assignments_len: usize = 0,
@@ -853,7 +1081,7 @@ pub const FixedBuilder = struct {
         PoolExhausted,
         /// A source position beyond the 4 GiB retained-range limit.
         SourceOffsetOverflow,
-        /// More statements of one kind than `Index` can address.
+        /// A per-kind pool or global order exceeds the compact count/index domain.
         StatementIndexOverflow,
         AttributeIndexOverflow,
         EdgeLinkIndexOverflow,
@@ -875,6 +1103,8 @@ pub const FixedBuilder = struct {
         self.edge_chains_len = 0;
         self.edge_links_len = 0;
         self.ported_references_len = 0;
+        self.subgraphs_len = 0;
+        self.current_scope = .root;
         self.edges_len = 0;
         self.attributes_len = 0;
         self.assignments_len = 0;
@@ -902,6 +1132,7 @@ pub const FixedBuilder = struct {
             .edge_chains = self.storage.edge_chains[0..self.edge_chains_len],
             .edge_links = self.storage.edge_links[0..self.edge_links_len],
             .ported_references = self.storage.ported_references[0..self.ported_references_len],
+            .subgraph_records = self.storage.subgraphs[0..self.subgraphs_len],
             .edges = self.storage.edges[0..self.edges_len],
             .attributes = self.storage.attributes[0..self.attributes_len],
             .assignments = self.storage.assignments[0..self.assignments_len],
@@ -947,6 +1178,38 @@ pub const FixedBuilder = struct {
         self.order_len += 1;
         self.pending_links = self.edge_links_len;
         self.pending_attributes = self.attributes_len;
+    }
+
+    pub fn beginSubgraph(self: *FixedBuilder, event: syntax_event.BeginSubgraph) Error!void {
+        std.debug.assert(self.phase == .building);
+        std.debug.assert(self.pendingRange().len == 0 and self.pending_links == self.edge_links_len);
+        const index = try self.statementIndex(self.subgraphs_len, event.start);
+        const value: Subgraph = .{
+            .parent = self.current_scope,
+            .name = if (event.name) |name| try self.range(name) else null,
+            .source = try self.range(event.start),
+            .body = .{ .start = @intCast(self.order_len + 1), .len = 0 },
+        };
+        try self.checkPool(self.subgraphs_len, self.storage.subgraphs.len, .subgraph_pool, event.start);
+        try self.checkPool(self.order_len, self.storage.statement_ids.len, .statement_pool, event.start);
+        self.storage.subgraphs[self.subgraphs_len] = value;
+        self.subgraphs_len += 1;
+        self.storage.statement_ids[self.order_len] = .{ .subgraph = index };
+        self.order_len += 1;
+        self.current_scope = @enumFromInt(index + 1);
+    }
+
+    pub fn endSubgraph(self: *FixedBuilder, event: syntax_event.EndSubgraph) Error!void {
+        std.debug.assert(self.phase == .building and self.current_scope != .root);
+        const record = &self.storage.subgraphs[@intFromEnum(self.current_scope) - 1];
+        const end = event.close.endOffset();
+        if (end > std.math.maxInt(u32)) {
+            self.failure_info = .{ .span = event.close, .capacity = .{ .resource = .source_range, .limit = std.math.maxInt(u32) } };
+            return error.SourceOffsetOverflow;
+        }
+        record.source.len = @intCast(end - record.source.start);
+        record.body.len = @intCast(self.order_len - record.body.start);
+        self.current_scope = record.parent;
     }
 
     pub fn portedReference(self: *FixedBuilder, event: syntax_event.PortedReference) Error!u32 {
@@ -1030,7 +1293,7 @@ pub const FixedBuilder = struct {
     }
 
     fn statementIndex(self: *FixedBuilder, length: usize, at: location.Span) Error!Index {
-        return checkedIndex(length) catch |err| {
+        return checkedIndex(length, self.order_len) catch |err| {
             self.failure_info = .{ .span = at, .capacity = .{
                 .resource = .statement_index,
                 .limit = std.math.maxInt(Index),
@@ -1093,7 +1356,7 @@ pub const FixedBuilder = struct {
     }
 
     pub fn endDocument(self: *FixedBuilder) Error!void {
-        std.debug.assert(self.phase == .building);
+        std.debug.assert(self.phase == .building and self.current_scope == .root);
         std.debug.assert(self.pendingRange().len == 0);
         std.debug.assert(self.pending_links == self.edge_links_len);
         self.phase = .committed;
@@ -1108,6 +1371,8 @@ pub const FixedBuilder = struct {
         self.edge_chains_len = 0;
         self.edge_links_len = 0;
         self.ported_references_len = 0;
+        self.subgraphs_len = 0;
+        self.current_scope = .root;
         self.edges_len = 0;
         self.attributes_len = 0;
         self.assignments_len = 0;
@@ -1556,4 +1821,25 @@ test "new capacity hints reserve even when all original pool hints are zero" {
     try expectEqual(@as(usize, 2), builder.attributes.capacity);
     try expectEqual(@as(usize, 2), builder.assignments.capacity);
     try expectEqual(@as(usize, 2), builder.attribute_statements.capacity);
+}
+
+test "scope order and ID overflow are typed before narrowing or pool access" {
+    var pools: FixedDocumentStorage(.{ .statements = 1, .subgraphs = 1 }) = .{};
+    const at: location.Span = .{ .start = .start, .byte_len = 1 };
+    inline for (.{ "order_len", "subgraphs_len" }) |field| {
+        var builder = FixedBuilder.init("graph{}", pools.storage());
+        try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
+        @field(builder, field) = std.math.maxInt(Index);
+        try std.testing.expectError(error.StatementIndexOverflow, builder.beginSubgraph(.{ .start = at, .name = null }));
+        try expectEqual(diagnostic.Capacity.Resource.statement_index, builder.failure_info.?.capacity.?.resource);
+        builder.abortDocument(.sink_failure);
+        try expectEqual(@as(usize, 0), builder.subgraphs_len);
+    }
+    var builder = FixedBuilder.init("graph{}", pools.storage());
+    try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
+    try builder.beginSubgraph(.{ .start = at, .name = null });
+    const huge: location.Span = .{ .start = .{ .byte_offset = std.math.maxInt(u32), .line = 1, .byte_column = 1 }, .byte_len = 1 };
+    try std.testing.expectError(error.SourceOffsetOverflow, builder.endSubgraph(.{ .close = huge }));
+    builder.abortDocument(.sink_failure);
+    try expectEqual(ScopeId.root, builder.current_scope);
 }

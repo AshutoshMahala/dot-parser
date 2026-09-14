@@ -6,7 +6,7 @@ pub fn main(init: std.process.Init) !void {
     const source = "digraph { a -> b -> c [color=red] }";
     // One chain owner, one continuation after its first edge; no single-edge pool.
     var storage: dot.FixedDocumentStorage(.{ .statements = 1, .edge_chains = 1, .edge_links = 1, .attributes = 1 }) = .{};
-    const parsed = dot.parseBorrowedIn(source, storage.storage(), dot.diagnostic.discard, .{});
+    const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, dot.diagnostic.discard, .{});
     if (parsed.outcome != .success) return error.ParseFailed;
     const document = &parsed.document.?;
     if (!dot.validate(document, dot.diagnostic.discard, .{}).documentValid()) return error.InvalidDocument;

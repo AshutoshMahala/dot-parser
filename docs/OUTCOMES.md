@@ -56,7 +56,7 @@ The distinction the taxonomy is built around:
 - **`unsupported_feature`** means *this is recognized DOT syntax that this
   library does not process yet*. The parse stopped at the construct's
   introducer, and the diagnostic names the exact feature as a typed enum
-  (`Feature.subgraph`, `Feature.html_identifier`, …) that tooling can
+  (`Feature.subgraph_endpoint`, `Feature.html_identifier`, …) that tooling can
   aggregate or test against.
 
 An unsupported outcome is a **boundary, not a validity claim**: nothing at
@@ -153,3 +153,16 @@ require Unicode display-width tables. Each excerpt window contains at most
 60 source bytes, which can expand to 240 cells before framing/tab expansion.
 This presentation policy is separate from identifier decoding, which preserves
 the actual value bytes.
+
+### Subgraph limits and storage failures
+
+`max_nesting` reports `.resource_exhausted` with capacity resource
+`.nesting_depth`; the root is depth zero. Insufficient fixed scratch reports
+`.storage_failure: .pool_exhausted` with `.nesting_frames`. Insufficient retained
+scope slots uses the same storage outcome with `.subgraph_pool`. Allocator-backed
+scratch allocation failure reports `.out_of_memory`. These use the existing WDP
+capacity/memory codes and emit one diagnostic, not a second facade diagnostic.
+
+Malformed standalone headers are syntax errors. Subgraphs used as edge endpoints
+remain `.unsupported_feature` with `Feature.subgraph_endpoint`. That boundary is
+not a claim that the remaining input is valid. Every failure exposes no document.

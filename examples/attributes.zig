@@ -13,7 +13,7 @@ pub fn main(init: std.process.Init) !void {
         .attributes = 5,
     }) = .{};
     var bag: dot.FixedDiagnosticBag(1) = .{};
-    const parsed = dot.parseBorrowedIn(source, storage.storage(), bag.sink(), .{});
+    const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
     var buffer: [1024]u8 = undefined;
     var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
     const writer = &output.interface;
@@ -26,6 +26,7 @@ pub fn main(init: std.process.Init) !void {
     var statements = document.statements();
     while (statements.next()) |statement| {
         const range: dot.AttributeRange = switch (statement) {
+            .subgraph => continue, // Its own assignments/defaults appear in the global stream.
             .edge_chain => |chain| blk: {
                 try writer.print("chain {s}: {d} edges\n", .{ document.text(document.nodeReference(chain.first.left).?.identifier), @as(usize, chain.links.len) + 1 });
                 break :blk chain.first.attributes;

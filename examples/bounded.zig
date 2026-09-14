@@ -15,7 +15,7 @@ const Request = struct {
 pub fn main(init: std.process.Init) !void {
     var storage: dot.FixedDocumentStorage(.{ .statements = 2, .nodes = 1, .edges = 1, .attributes = 1 }) = .{};
     var bag: dot.FixedDiagnosticBag(2) = .{};
-    var session = dot.BoundedSession.init("graph {a[x=1] a--b}", storage.storage(), bag.sink(), .{});
+    var session = dot.BoundedSession.init("graph {a[x=1] a--b}", .{ .document = storage.storage() }, bag.sink(), .{});
     defer session.deinit(); // Cancels only if still unfinished; never frees caller pools.
     var calls: usize = 0;
     var work: usize = 0;
@@ -33,7 +33,7 @@ pub fn main(init: std.process.Init) !void {
     // Reuse pools only after all earlier document views are no longer used.
     var request: Request = .{};
     const Cancellable = dot.FixedSession(.{ .cancellation = true });
-    var cancellable = Cancellable.init("graph {a[x=1] a--b}", storage.storage(), bag.sink(), .{
+    var cancellable = Cancellable.init("graph {a[x=1] a--b}", .{ .document = storage.storage() }, bag.sink(), .{
         .cancellation = .{ .context = &request, .is_requested = Request.poll },
     });
     defer cancellable.deinit();

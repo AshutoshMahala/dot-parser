@@ -27,13 +27,14 @@ strict digraph Routes {
   semicolons are optional, as in Graphviz.
 - Basic attributes: standalone assignments, graph/node/edge attribute statements,
   and node/edge lists. Duplicate keys and written order are preserved.
+- Named, anonymous and nested standalone subgraphs, with allocation-free scope views.
 - Borrowed source spans, explicit caller memory, fixed-buffer operation.
 - Fixed-storage bounded sessions, with optional cooperative cancellation.
 - Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
 - Port suffixes (`a:out`, `a:n`, `a:out:e`) on node statements and every edge endpoint.
 
 Everything else (HTML/non-ASCII bare IDs,
-subgraphs, …) is deliberately deferred to later vertical
+subgraph edge endpoints, …) is deliberately deferred to later vertical
 slices. The authoritative construct-by-construct table is
 [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
 
@@ -41,6 +42,8 @@ See [the attribute example](examples/attributes.zig) for fixed-storage parsing
 and ordered attribute traversal. Parsing does not apply defaults or resolve values.
 See [the port example](examples/ports.zig) for compact node references and raw
 suffix traversal. Parsing does not resolve named ports or compass attachments.
+See [subgraph traversal](docs/SUBGRAPHS.md) and [the example](examples/subgraphs.zig)
+for direct/recursive scope views and explicit nesting scratch.
 
 ## Usage
 
@@ -59,6 +62,7 @@ if (checked.documentValid()) {
     var statements = document.statements();
     while (statements.next()) |statement| {
         switch (statement) {
+            .subgraph => |id| std.log.info("subgraph scope {d}", .{@intFromEnum(id)}),
             .edge_chain => |chain| std.log.info("chain {s}: {d} edges", .{
                 document.text(document.nodeReference(chain.first.left).?.identifier), @as(usize, chain.links.len) + 1,
             }),
@@ -103,7 +107,7 @@ while (statements.next()) |statement| switch (statement) {
             });
         }
     },
-    .edge, .edge_chain, .assignment, .attribute_statement => {}, // This lint only checks nodes.
+    .subgraph, .edge, .edge_chain, .assignment, .attribute_statement => {}, // This lint only checks nodes.
 };
 ```
 
@@ -120,13 +124,18 @@ var storage: dot.FixedDocumentStorage(.{
 }) = .{};
 var bag: dot.FixedDiagnosticBag(8) = .{};
 
-const parsed = dot.parseBorrowedIn(source, storage.storage(), bag.sink(), .{});
+const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
 if (parsed.outcome == .success) {
     const validation = dot.validate(&parsed.document.?, bag.sink(), .{});
     _ = validation;
 }
 // release by reusing or discarding the storage — there is nothing to free
 ```
+
+The example above reserves only flat syntax. For subgraphs, also reserve
+`.subgraphs` in the document pools and pass `.scratch = scratch.storage()` from
+`FixedParseScratch(.{ .nesting = max_active_depth })` in the memory bundle.
+The root has depth zero; siblings reuse frames.
 
 (The allocator-based calls also accept arenas and
 `std.heap.FixedBufferAllocator` with `document_capacities` hints, if an

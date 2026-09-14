@@ -34,7 +34,7 @@ test "long chains yield without exposing partially built statements" {
     for (0..4096) |_| try writer.writeAll("->a");
     try writer.writeAll("}");
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .edge_chains = 1, .edge_links = 4095 }) = .{};
-    var session = dot.BoundedSession.init(writer.buffered(), pools.storage(), dot.diagnostic.discard, .{ .max_statements = 1 });
+    var session = dot.BoundedSession.init(writer.buffered(), .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_statements = 1 });
     defer session.deinit();
     var total: usize = 0;
     while (true) {
@@ -66,7 +66,7 @@ fn fuzzChains(_: void, smith: *std.testing.Smith) !void {
     defer parsed.deinit(std.testing.allocator);
     try expect(parsed.outcome == .success);
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .edge_chains = 1, .edge_links = 64, .attributes = 1 }) = .{};
-    const fixed = dot.parseBorrowedIn(writer.buffered(), pools.storage(), dot.diagnostic.discard, .{});
+    const fixed = dot.parseBorrowedIn(writer.buffered(), .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
     try expect(fixed.outcome == .success);
     try deep(parsed.document.?, fixed.document.?);
     var edges = parsed.document.?.edgeIterator();
@@ -84,7 +84,7 @@ test "chains retain one source statement and share attributes without expanding 
     try expect(parsed.outcome == .success);
     const doc = &parsed.document.?;
     var pools: dot.FixedDocumentStorage(capacities) = .{};
-    const fixed = dot.parseBorrowedIn(source, pools.storage(), dot.diagnostic.discard, .{});
+    const fixed = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
     try expect(fixed.outcome == .success);
     try deep(doc.*, fixed.document.?);
     try equal(@as(usize, 5), doc.statementCount());
@@ -147,7 +147,7 @@ test "chain failures name the exact fixed pool and discard all staged links" {
     }) |case| {
         var pools: dot.FixedDocumentStorage(case.cap) = .{};
         var bag: dot.FixedDiagnosticBag(1) = .{};
-        var session = dot.BoundedSession.init("graph {a--b--c--d}", pools.storage(), bag.sink(), .{});
+        var session = dot.BoundedSession.init("graph {a--b--c--d}", .{ .document = pools.storage() }, bag.sink(), .{});
         defer session.deinit();
         while (session.advance(1).outcome == null) {}
         const result = session.result().?;
@@ -165,7 +165,7 @@ test "chain failures name the exact fixed pool and discard all staged links" {
 
 test "chains count as one statement and ordinary edges need no chain capacity" {
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .edge_chains = 1, .edge_links = 2 }) = .{};
-    var session = dot.BoundedSession.init("digraph {a->b->c->d}", pools.storage(), dot.diagnostic.discard, .{ .max_statements = 1 });
+    var session = dot.BoundedSession.init("digraph {a->b->c->d}", .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_statements = 1 });
     defer session.deinit();
     var progress = session.advance(1);
     while (progress.outcome == null) progress = session.advance(1);
@@ -174,7 +174,7 @@ test "chains count as one statement and ordinary edges need no chain capacity" {
     try equal(@as(usize, 0), progress.completed_pairs);
     try expect(dot.validate(&session.result().?.document.?, dot.diagnostic.discard, .{}).documentValid());
     var single: dot.FixedDocumentStorage(.{ .statements = 1, .edges = 1 }) = .{};
-    try expect(dot.parseBorrowedIn("graph {a--b}", single.storage(), dot.diagnostic.discard, .{}).outcome == .success);
+    try expect(dot.parseBorrowedIn("graph {a--b}", .{ .document = single.storage() }, dot.diagnostic.discard, .{}).outcome == .success);
     try equal(@as(usize, 36), @sizeOf(dot.EdgeStatement));
     try equal(@as(usize, 44), @sizeOf(dot.EdgeChainStatement));
     try equal(@as(usize, 20), @sizeOf(dot.EdgeLink));
@@ -187,7 +187,7 @@ test "malformed chain suffixes are syntax errors and subgraph endpoints remain d
         var parsed = dot.parseBorrowed(std.testing.allocator, input, a.sink(), .{});
         defer parsed.deinit(std.testing.allocator);
         var pools: dot.FixedDocumentStorage(capacities) = .{};
-        const fixed = dot.parseBorrowedIn(input, pools.storage(), b.sink(), .{});
+        const fixed = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, b.sink(), .{});
         try expect(parsed.outcome == .invalid_syntax and fixed.outcome == .invalid_syntax);
         try expect(parsed.document == null and fixed.document == null);
         try deep(a.items(), b.items());
@@ -217,7 +217,7 @@ test "all chain corpus prefixes agree across storage paths" {
         var parsed = dot.parseBorrowed(std.testing.allocator, source[0..end], dot.diagnostic.discard, .{});
         defer parsed.deinit(std.testing.allocator);
         var pools: dot.FixedDocumentStorage(capacities) = .{};
-        const fixed = dot.parseBorrowedIn(source[0..end], pools.storage(), dot.diagnostic.discard, .{});
+        const fixed = dot.parseBorrowedIn(source[0..end], .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
         try equal(std.meta.activeTag(parsed.outcome), std.meta.activeTag(fixed.outcome));
         if (parsed.outcome == .success) try deep(parsed.document.?, fixed.document.?) else try expect(parsed.document == null and fixed.document == null);
     }

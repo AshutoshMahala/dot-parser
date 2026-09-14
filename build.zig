@@ -58,6 +58,7 @@ pub fn build(b: *std.Build) void {
         "bounded",
         "edge_chains",
         "ports",
+        "subgraphs",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -116,6 +117,18 @@ pub fn build(b: *std.Build) void {
     });
     b.step("bench-session", "Compare fixed-session execution policies")
         .dependOn(&b.addRunArtifact(session_bench).step);
+
+    const subgraph_bench = b.addExecutable(.{
+        .name = "subgraph_throughput",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/subgraphs.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "dot_parser", .module = mod }},
+        }),
+    });
+    b.step("bench-subgraphs", "Measure sibling and nested scope parsing")
+        .dependOn(&b.addRunArtifact(subgraph_bench).step);
 
     const freestanding = b.step("check-freestanding", "Compile consumed session profiles for RISC-V32 and Wasm32");
     for ([_]std.Target.Cpu.Arch{ .riscv32, .wasm32 }) |arch| {

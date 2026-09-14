@@ -15,7 +15,7 @@
 //!
 //! - **no events at all** — the input failed before the header completed
 //!   (invalid leading bytes, a malformed header, or a deferred construct
-//!   such as a `subgraph` header). The failure is reported through the
+//!   such as an HTML-like document name). The failure is reported through the
 //!   parse result and diagnostics, never through this contract — or
 //! - exactly this sequence:
 //!
@@ -23,7 +23,8 @@
 //! beginDocument
 //! ((portedReference* attribute* (nodeStatement | edgeStatement)) |
 //!  (portedReference* (portedReference? edgeLink)+ attribute* edgeChainStatement) |
-//!  (attribute* attributeStatement) | assignment)*
+//!  (attribute* attributeStatement) | assignment |
+//!  (beginSubgraph ...nested body events... endSubgraph))*
 //! endDocument | abortDocument        // exactly one terminal event
 //! ```
 //!
@@ -32,7 +33,10 @@
 //! - Each edgeLink streams one continuation after the first edge. The final
 //!   edgeChainStatement carries the first edge and consumes all pending links
 //!   and attributes. Abort discards both pools; no temporary chain list exists.
-//! - Statement events arrive in the order they appear in the source.
+//! - Scope entry reserves its statement before body events; exit completes its
+//!   interval after the body. No pending attributes/links cross scope entry/exit.
+//!   Other statement events arrive in source order. Abort discards the whole
+//!   staged tree without synthesizing per-scope close events.
 //! - `portedReference` stages one completed qualified occurrence, in source
 //!   order, and returns an opaque document-local `u32` handle. The following
 //!   node/edge/link event uses that handle alongside the base identifier span.
@@ -61,7 +65,8 @@
 //! ## Failure propagation
 //!
 //! `beginDocument`, `nodeStatement`, `edgeStatement`, `attribute`, `assignment`,
-//! `edgeLink`, `edgeChainStatement`, `attributeStatement`, and `endDocument`
+//! `edgeLink`, `edgeChainStatement`, `attributeStatement`, `beginSubgraph`,
+//! `endSubgraph`, and `endDocument`
 //! return `E!void` for an error set `E` the sink chooses (allocation
 //! failure, capacity, …); a sink that cannot fail declares `error{}!void`.
 //! `portedReference` is the sole payload-returning callback: `E!u32`, with
@@ -70,6 +75,10 @@
 //! infallible and must always succeed — so the sink can release staged
 //! state. The parse outcome then reports a sink failure, distinct from
 //! invalid syntax (R-DIAG-003).
+//!
+//! Parser-owned nesting storage failure aborts with `.scratch_failure`; the
+//! facade maps it to a public storage outcome. Enter/exit each cost one normal
+//! dispatch credit. Completed statement progress counts exit, not entry.
 //!
 //! ## Span lifetime
 //!
@@ -130,6 +139,13 @@ pub const AttributeStatement = struct {
     keyword_span: location.Span,
 };
 
+pub const BeginSubgraph = struct {
+    /// The keyword or anonymous opening brace; the name uses its full raw span.
+    start: location.Span,
+    name: ?location.Span,
+};
+pub const EndSubgraph = struct { close: location.Span };
+
 pub const NodeStatement = struct {
     identifier: location.Span,
     port: ?u32 = null,
@@ -163,6 +179,7 @@ pub const PortedReference = struct {
 /// never through this enum (R-DIAG-003). Grows in later slices
 /// (cancellation, configured limits, …).
 pub const AbortReason = enum {
+    scratch_failure,
     cancelled,
     invalid_syntax,
     unsupported_feature,
@@ -175,6 +192,8 @@ pub const AbortReason = enum {
 /// union on the hot path.
 pub const Event = union(enum) {
     begin_document: BeginDocument,
+    begin_subgraph: BeginSubgraph,
+    end_subgraph: EndSubgraph,
     node_statement: NodeStatement,
     edge_statement: EdgeStatement,
     edge_chain_statement: EdgeStatement,
@@ -213,6 +232,8 @@ pub const Event = union(enum) {
 pub fn assertSyntaxSink(comptime T: type) void {
     comptime {
         assertMethod(T, "beginDocument", &.{BeginDocument}, .fallible);
+        assertMethod(T, "beginSubgraph", &.{BeginSubgraph}, .fallible);
+        assertMethod(T, "endSubgraph", &.{EndSubgraph}, .fallible);
         assertMethod(T, "nodeStatement", &.{NodeStatement}, .fallible);
         assertMethod(T, "edgeStatement", &.{EdgeStatement}, .fallible);
         assertMethod(T, "edgeChainStatement", &.{EdgeStatement}, .fallible);
@@ -299,6 +320,13 @@ pub fn RecordingSink(comptime capacity: usize) type {
 
         pub fn edgeStatement(self: *Self, statement: EdgeStatement) Error!void {
             try self.record(.{ .edge_statement = statement });
+        }
+
+        pub fn beginSubgraph(self: *Self, event: BeginSubgraph) Error!void {
+            try self.record(.{ .begin_subgraph = event });
+        }
+        pub fn endSubgraph(self: *Self, event: EndSubgraph) Error!void {
+            try self.record(.{ .end_subgraph = event });
         }
 
         pub fn portedReference(self: *Self, event: PortedReference) Error!u32 {

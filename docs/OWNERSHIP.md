@@ -12,6 +12,7 @@ each memory strategy releases it.
 | Source bytes | Caller | Must outlive every use of the `Document` and of diagnostics' spans | Caller-defined |
 | Document pools (`parseBorrowed`, `parseAndValidate`) | The returned result | Until `result.deinit(allocator)` | `deinit` with the same allocator |
 | Document pools (`parseBorrowedIn`) | Caller (your slices / `FixedDocumentStorage`) | While the document is used | Reuse or discard the storage — there is nothing to free |
+| Nesting scratch | Caller storage, or the explicit scratch/document allocator | During parsing; fixed sessions borrow it across yields and until discarded/reinitialized | Allocator-backed one-shot frees it before return; fixed storage is reused, not freed |
 | Diagnostic bag / sink | Caller | Caller-defined | Depends on the bag's storage (a `FixedDiagnosticBag` is a plain value) |
 | Fixed session and hook contexts | Caller | Throughout active parsing/yields | `session.deinit()` cleans up unfinished work; frees no pools |
 
@@ -53,7 +54,7 @@ at the call site and `byte_size` makes the RAM budget explicit:
 ```zig
 var storage: dot.FixedDocumentStorage(.{ .statements = 32, .nodes = 32, .edges = 16 }) = .{};
 // @TypeOf(storage).byte_size bytes, known at compile time.
-const parsed = dot.parseBorrowedIn(source, storage.storage(), bag.sink(), .{});
+const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
 ```
 
 `FixedParseResult` deliberately has **no** `deinit` — the storage is
@@ -65,7 +66,7 @@ pool and its capacity (see [OUTCOMES.md](OUTCOMES.md)).
 
 Fixed sessions borrow the same pools as `parseBorrowedIn`. They retain lexical,
 grammar and dispatch continuation plus a cached terminal result, but no extra
-source or output copies. Source, pools and hook contexts must survive yields.
+source or output copies. Source, pools, nesting scratch and hook contexts must survive yields.
 Do not inspect or mutate pools while active. Moving a session between calls is
 supported; duplicating a live session or reentering it is not.
 
@@ -85,8 +86,9 @@ derived on demand. Measured throughput and arena footprints live in
 
 ## Attributes and memory
 
-The document has nine decomposed pools: `order`, `nodes`, `edges`,
-`edge_chains`, `edge_links`, `ported_references`, `attributes`, `assignments`, and `attribute_statements`. Freeing an owned
+The document has ten decomposed pools: `order`, `nodes`, `edges`,
+`edge_chains`, `edge_links`, `ported_references`, `subgraph_records`, `attributes`,
+`assignments`, and `attribute_statements`. Freeing an owned
 document remains a fixed number of pool releases, not a per-element walk.
 Unused, unhinted pools allocate nothing. Node/edge
 records still pay for their compact attribute range in the current profile;
@@ -193,6 +195,53 @@ cost `12R + 20P`: equal at 50% qualification, with the selected representation
 RAM uses reserved capacities, not actual occupancy. Node/edge/link record sizes
 are unchanged, but pool metadata and parser continuation state have fixed costs;
 this is not compile-time feature removal. See [current layouts](BASELINES.md).
+
+## Subgraphs and nesting scratch
+
+Each subgraph retains a 32-byte record plus one 8-byte global order entry:
+**40 bytes per occurrence**, excluding statements inside it and their normal
+payloads. The record holds its parent ID, optional raw name, whole-source range,
+and a contiguous interval in the global statement order. Descendants are not
+copied into ancestors; no scope tag is added to existing node/edge records.
+The new pool still adds fixed document/builder/session metadata.
+
+A temporary frame saves the enclosing opening-brace span for diagnostics:
+32 bytes on the measured native 64-bit target. Active scratch is proportional
+to maximum nesting depth D, not total subgraphs G. One frame handles any number
+of non-nested siblings. Fixed RAM is reserved capacity: `40 * G_capacity`
+for empty subgraphs and order, plus `32 * D_capacity` scratch, excluding source,
+session/metadata, diagnostics and other statement pools. Use `byte_size` and
+`@sizeOf` on your target rather than assuming native frame sizes.
+
+```zig
+var pools: dot.FixedDocumentStorage(.{ .statements = 20, .subgraphs = 20 }) = .{};
+var scratch: dot.FixedParseScratch(.{ .nesting = 4 }) = .{};
+const parsed = dot.parseBorrowedIn(source, .{
+    .document = pools.storage(), .scratch = scratch.storage(),
+}, bag.sink(), .{ .max_nesting = 4 });
+```
+
+The same `ParseMemory` bundle goes to `FixedSession.init`. Scratch defaults
+to zero capacity, sufficient for flat documents; it is never hidden allocation.
+`subgraphs` counts retained occurrences; `nesting` counts simultaneously active
+frames. `max_nesting` is a separate policy limit; root depth is zero.
+Scratch/pool exhaustion is a storage failure, while exceeding the policy is
+resource exhaustion. Scope occurrences also consume `max_statements`.
+
+Allocator-backed parsing grows temporary frames only when required, doubling
+capacity and reusing it for siblings. `ParseOptions.scratch_allocator` defaults
+to the passed document allocator; supply a separate temporary arena to separate
+lifetimes. Scratch is freed before the one-shot returns and is not referenced
+by the document. Arenas may keep growth copies until reset, just like output
+pools. Document capacity hints reserve output pools only, not nesting scratch.
+
+Fixed-session termination clears active scratch length in constant time.
+Reuse scratch after one-shot completion, or after discarding a session; a
+session retained for reset continues borrowing its buffers. Never share buffers
+between active sessions. Reusing document pools invalidates scope/statement
+views; reusing scratch alone does not invalidate a completed document.
+
+See [scope traversal and complexity](SUBGRAPHS.md).
 
 ## Identifier values
 

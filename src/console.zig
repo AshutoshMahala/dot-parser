@@ -759,6 +759,7 @@ fn itemName(item: diagnostic.SyntaxItem) []const u8 {
 fn contextName(context: diagnostic.ParseContext) []const u8 {
     return switch (context) {
         .document_header => "the document header",
+        .subgraph_header => "a subgraph header",
         .document_body => "the document body",
         .statement => "a statement",
         .edge_endpoint => "an edge endpoint",
@@ -1140,11 +1141,11 @@ test "unsupported constructs put the feature name in the headline" {
     try renderBoxed(.{
         .code = .profile_unsupported_feature,
         .span = spanAt(8, 1, 9, 8),
-        .details = .{ .unsupported_feature = .subgraph },
+        .details = .{ .unsupported_feature = .subgraph_endpoint },
     }, 1, .{ .source = source }, &writer);
 
     const text = writer.buffered();
-    try expect(std.mem.startsWith(u8, text, "┌─ Error 1: unsupported DOT construct: subgraph\n"));
+    try expect(std.mem.startsWith(u8, text, "┌─ Error 1: unsupported DOT construct: subgraph edge endpoint\n"));
     try expect(std.mem.indexOf(u8, text, "^^^^^^^^ the parse stopped at this deferred construct\n") != null);
 }
 

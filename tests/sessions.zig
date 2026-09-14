@@ -3,7 +3,7 @@ const dot = @import("dot_parser");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const deep = std.testing.expectEqualDeep;
-const Storage = dot.FixedDocumentStorage(.{ .statements = 32, .nodes = 16, .edges = 16, .edge_chains = 8, .edge_links = 32, .ported_references = 32, .attributes = 32, .assignments = 16, .attribute_statements = 16 });
+const Storage = dot.FixedDocumentStorage(.{ .statements = 32, .subgraphs = 16, .nodes = 16, .edges = 16, .edge_chains = 8, .edge_links = 32, .ported_references = 32, .attributes = 32, .assignments = 16, .attribute_statements = 16 });
 
 const Request = struct {
     flag: bool = false,
@@ -21,14 +21,16 @@ const Request = struct {
 };
 
 fn partition(source: []const u8, budgets: []const usize, comptime cancellable: bool) !usize {
+    var expected_scratch: dot.FixedParseScratch(.{ .nesting = 16 }) = .{};
+    var scratch: dot.FixedParseScratch(.{ .nesting = 16 }) = .{};
     var expected_storage: Storage = .{};
     var expected_bag: dot.FixedDiagnosticBag(4) = .{};
-    const expected = dot.parseBorrowedIn(source, expected_storage.storage(), expected_bag.sink(), .{});
+    const expected = dot.parseBorrowedIn(source, .{ .document = expected_storage.storage(), .scratch = expected_scratch.storage() }, expected_bag.sink(), .{});
     var storage: Storage = .{};
     var bag: dot.FixedDiagnosticBag(4) = .{};
     var request: Request = .{};
     const Session = dot.FixedSession(.{ .cancellation = cancellable });
-    var session = Session.init(source, storage.storage(), bag.sink(), .{ .cancellation = if (cancellable) request.hook() else {} });
+    var session = Session.init(source, .{ .document = storage.storage(), .scratch = scratch.storage() }, bag.sink(), .{ .cancellation = if (cancellable) request.hook() else {} });
     defer session.deinit();
     var total: usize = 0;
     var calls: usize = 0;
@@ -83,6 +85,8 @@ test "fixed sessions preserve documents diagnostics and work across partitions" 
         "graph {a:p:q:r}",
         "digraph {a->b->c[w=1] x--y z->q->r->s[k=2]}",
         "graph { subgraph{} }",
+        "digraph { subgraph s { a:p->b->c[x=y] { q=r } subgraph s {} } z }",
+        "graph { {a}--b }",
         "graph{/*",
         "",
     };
@@ -98,13 +102,14 @@ test "fixed sessions preserve documents diagnostics and work across partitions" 
 }
 
 test "cancellation at every work boundary exposes no partial document" {
-    const source = "graph { a[k=\"x\"/*glue*/+\"y\"] b:p--c:q:n--d:\"\"->e:1 key=-.5 }";
+    const source = "graph { subgraph s { a[k=\"x\"/*glue*/+\"y\"] {b:p--c:q:n--d:\"\"->e:1} key=-.5 } {} }";
     const total = try partition(source, &.{1}, false);
     for (0..total) |stop| {
+        var scratch: dot.FixedParseScratch(.{ .nesting = 16 }) = .{};
         var storage: Storage = .{};
         var bag: dot.FixedDiagnosticBag(1) = .{};
         var request: Request = .{ .stop_after = stop };
-        var session = dot.FixedSession(.{ .cancellation = true }).init(source, storage.storage(), bag.sink(), .{ .cancellation = request.hook() });
+        var session = dot.FixedSession(.{ .cancellation = true }).init(source, .{ .document = storage.storage(), .scratch = scratch.storage() }, bag.sink(), .{ .cancellation = request.hook() });
         const progress = session.advance(std.math.maxInt(usize));
         try equal(stop, progress.work_used);
         try expect(progress.outcome.? == .cancelled);
@@ -121,7 +126,7 @@ test "zero-budget cancellation cleanup and reset reuse caller pools" {
     var bag: dot.FixedDiagnosticBag(1) = .{};
     var request: Request = .{};
     const Session = dot.FixedSession(.{ .cancellation = true });
-    var session = Session.init("graph {a[x=1]}", storage.storage(), bag.sink(), .{ .cancellation = request.hook() });
+    var session = Session.init("graph {a[x=1]}", .{ .document = storage.storage() }, bag.sink(), .{ .cancellation = request.hook() });
     while (session.advance(1).completed_pairs == 0) {}
     try expect(session.result() == null);
     request.flag = true;
@@ -143,7 +148,7 @@ test "zero-budget cancellation cleanup and reset reuse caller pools" {
 
 test "session supports movement between calls and explicit cleanup without hooks" {
     var storage: Storage = .{};
-    var session = dot.BoundedSession.init("graph {a[x=1]}", storage.storage(), dot.diagnostic.discard, .{});
+    var session = dot.BoundedSession.init("graph {a[x=1]}", .{ .document = storage.storage() }, dot.diagnostic.discard, .{});
     _ = session.advance(12);
     var moved = session;
     session = undefined; // Ownership is transferred, not duplicated.
@@ -162,7 +167,7 @@ test "metering and cancellation are independently selectable" {
         const Session = dot.FixedSession(.{ .metering = metering, .cancellation = cancellation });
         var storage: Storage = .{};
         var request: Request = .{ .stop_after = 12 };
-        var session = Session.init("graph { a[x=1] }", storage.storage(), dot.diagnostic.discard, .{
+        var session = Session.init("graph { a[x=1] }", .{ .document = storage.storage() }, dot.diagnostic.discard, .{
             .cancellation = if (cancellation) request.hook() else {},
         });
         const result = session.run();
@@ -198,7 +203,7 @@ test "fixed-pool failure after yield emits once and wins over late cancellation"
     var storage: dot.FixedDocumentStorage(.{ .statements = 1, .nodes = 1 }) = .{};
     var request: Request = .{};
     var reject: Reject = .{ .request = &request };
-    var session = dot.FixedSession(.{ .cancellation = true }).init("graph {a b}", storage.storage(), .{ .context = &reject, .emit_fn = Reject.emit }, .{ .cancellation = request.hook() });
+    var session = dot.FixedSession(.{ .cancellation = true }).init("graph {a b}", .{ .document = storage.storage() }, .{ .context = &reject, .emit_fn = Reject.emit }, .{ .cancellation = request.hook() });
     while (session.advance(1).outcome == null) {}
     const result = session.result().?;
     try expect(result.outcome == .storage_failure);
@@ -215,7 +220,7 @@ test "statement and attribute limits stay distinct from per-call budgets" {
     inline for (.{ dot.BoundedSession.Options{ .max_statements = 0 }, dot.BoundedSession.Options{ .max_attributes = 0 } }) |options| {
         var storage: Storage = .{};
         var bag: dot.FixedDiagnosticBag(1) = .{};
-        var session = dot.BoundedSession.init("graph {a[x=1]}", storage.storage(), bag.sink(), options);
+        var session = dot.BoundedSession.init("graph {a[x=1]}", .{ .document = storage.storage() }, bag.sink(), options);
         while (session.advance(1).outcome == null) {}
         try expect(session.result().?.outcome == .resource_exhausted);
         try expect(session.result().?.document == null);
@@ -240,7 +245,7 @@ test "long lexical scans yield and cancel without allocating parser storage" {
         const source = bytes[0 .. parts[0].len + n + parts[1].len];
         var storage: Storage = .{};
         var request: Request = .{};
-        var session = dot.FixedSession(.{ .cancellation = true }).init(source, storage.storage(), dot.diagnostic.discard, .{ .cancellation = request.hook() });
+        var session = dot.FixedSession(.{ .cancellation = true }).init(source, .{ .document = storage.storage() }, dot.diagnostic.discard, .{ .cancellation = request.hook() });
         const yielded = session.advance(64);
         try expect(yielded.outcome == null);
         try expect(yielded.source_frontier <= 64);

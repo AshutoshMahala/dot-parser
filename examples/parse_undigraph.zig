@@ -42,6 +42,7 @@ pub fn main(init: std.process.Init) !void {
 
     var statements = document.statements();
     while (statements.next()) |statement| switch (statement) {
+        .subgraph => |id| try stdout.print("subgraph scope {d}\n", .{@intFromEnum(id)}),
         .edge_chain => |chain| try stdout.print("chain {s}: {d} edges\n", .{ document.text(document.nodeReference(chain.first.left).?.identifier), @as(usize, chain.links.len) + 1 }),
         .assignment => |assignment| try stdout.print("assignment {s} = {s}\n", .{ document.text(assignment.key), document.text(assignment.value) }),
         .attribute_statement => |attributes| try stdout.print("{s} attributes: {d}\n", .{ @tagName(attributes.target), attributes.attributes.len }),

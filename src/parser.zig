@@ -1,11 +1,13 @@
 //! Parser state machine (milestone 1, step 5).
 //!
-//! Current grammar (attributes, ports and node-reference chains included):
+//! Current grammar (standalone scopes, attributes, ports and node-reference chains):
 //!
 //! ```text
 //! document  := "strict"? ("graph" | "digraph") identifier? "{" statement* "}" EOF
 //! statement := (node_ref attributes? | node_ref (edgeop node_ref)+ attributes?
-//!            | identifier "=" identifier | ("graph" | "node" | "edge") attributes) ";"?
+//!            | identifier "=" identifier | ("graph" | "node" | "edge") attributes
+//!            | subgraph) ";"?
+//! subgraph  := ("subgraph" identifier?)? "{" statement* "}"
 //! node_ref  := identifier (":" identifier (":" identifier)?)?
 //! attributes := ("[" (identifier "=" identifier (";" | ",")?)* "]")+
 //! edgeop    := "--" | "->"
@@ -43,7 +45,7 @@
 //!   cannot exhaust the call stack (R-PERF-002).
 //! - Work is a single linear scan of the input (R-PERF-001, R-SEC-003);
 //!   `Options.max_statements` additionally bounds the statements processed.
-//! - Subgraphs and HTML/non-ASCII bare identifiers remain
+//! - Subgraph edge endpoints and HTML/non-ASCII bare identifiers remain
 //!   deferred. Attributes are parsed and retained without default resolution,
 //!   key deduplication or value interpretation. Malformed supported attribute
 //!   syntax is invalid, not unsupported. Unsupported boundaries still make
@@ -63,6 +65,7 @@ const diagnostic = @import("diagnostic.zig");
 const lex = @import("lexer.zig");
 const execution = @import("execution.zig");
 const syntax_event = @import("syntax_event.zig");
+const scratch_impl = @import("scratch.zig");
 
 pub const Options = struct {
     /// Maximum number of statements the parser will process before stopping
@@ -75,11 +78,15 @@ pub const Options = struct {
     max_statements: usize = std.math.maxInt(usize),
     /// Total key/value pairs, including standalone assignments. Not a scan budget.
     max_attributes: usize = std.math.maxInt(usize),
+    max_nesting: usize = std.math.maxInt(usize),
+    /// Facade-owned temporary storage; parser retains no owning allocator.
+    scratch: ?*scratch_impl.Stack = null,
 };
 
 /// The parse outcome category. The diagnostics explaining a failure travel
 /// through the caller's diagnostic sink, never through this value.
 pub const Outcome = union(enum) {
+    scratch_failure: scratch_impl.Stack.Error,
     /// The document parsed completely and the event sink committed.
     success,
     /// Explicit cancellation or an observed caller request; no diagnostic.
@@ -151,7 +158,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
     return struct {
         const Self = @This();
 
-        const Action = enum { begin, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit };
+        const Action = enum { begin, begin_subgraph, end_subgraph, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit };
         const Work = struct {
             token: lex.Token = undefined,
             action: Action = undefined,
@@ -179,7 +186,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         open_bracket_span: ?location.Span = null,
         pending: enum { node, edge, edge_chain, attributes } = .node,
         delivery: DiagnosticDelivery = .complete,
-        /// Span of the document's `{`, once consumed — the related location
+        /// Span of the innermost scope's `{`, once consumed — the related location
         /// reported when the input ends inside the body.
         open_brace_span: ?location.Span = null,
         /// True once `beginDocument` has been issued; from then on every
@@ -221,7 +228,13 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         port_target: enum { left, right, link } = .left,
         port_resume: State = .after_identifier,
 
+        subgraph_start: location.Span = undefined,
+        subgraph_name: ?location.Span = null,
+
         const State = enum {
+            subgraph_name,
+            subgraph_open,
+            after_subgraph,
             port_first,
             port_after_first,
             port_second,
@@ -403,6 +416,22 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         .left_brace => return self.beginBody(token),
                         else => return self.unexpected(.{ .left_brace = true }, .document_header, token),
                     },
+                    .subgraph_name => switch (token.tag) {
+                        .identifier => {
+                            self.subgraph_name = token.span;
+                            self.state = .subgraph_open;
+                        },
+                        .left_brace => return self.beginSubgraphBody(token),
+                        else => return self.unexpected(.{ .identifier = true, .left_brace = true }, .subgraph_header, token),
+                    },
+                    .subgraph_open => {
+                        if (token.tag != .left_brace) return self.unexpected(.{ .left_brace = true }, .subgraph_header, token);
+                        return self.beginSubgraphBody(token);
+                    },
+                    .after_subgraph => {
+                        if (token.tag == .edge_directed or token.tag == .edge_undirected) return self.unsupportedAt(token.span, .subgraph_endpoint);
+                        return self.continueAfterStatement(token);
+                    },
                     .statement => return self.beginNext(token),
                     .after_identifier => switch (token.tag) {
                         .colon => {
@@ -429,7 +458,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                             self.pending = .edge;
                             self.state = .edge_terminate;
                         },
-                        .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph),
+                        .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph_endpoint),
                         else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
                     },
                     .edge_terminate => switch (token.tag) {
@@ -455,7 +484,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                             self.link_port = null;
                             self.state = .chain_after_identifier;
                         },
-                        .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph),
+                        .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph_endpoint),
                         else => return self.unexpected(.{ .identifier = true }, .edge_endpoint, token),
                     },
                     .chain_after_identifier => {
@@ -582,8 +611,21 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         fn beginNext(self: *Self, token: lex.Token) ?Result {
             switch (token.tag) {
                 .identifier => return self.beginStatement(token),
-                .right_brace => self.state = .epilogue,
-                .left_brace, .keyword_subgraph => return self.unsupportedAt(token.span, .subgraph),
+                .right_brace => {
+                    if (self.nestingDepth() == 0) {
+                        self.state = .epilogue;
+                    } else {
+                        self.state = .after_subgraph;
+                        return self.schedule(.end_subgraph, token);
+                    }
+                },
+                .left_brace, .keyword_subgraph => {
+                    if (self.beginStatement(token)) |result| return result;
+                    self.subgraph_start = token.span;
+                    self.subgraph_name = null;
+                    if (token.tag == .left_brace) return self.beginSubgraphBody(token);
+                    self.state = .subgraph_name;
+                },
                 .keyword_graph, .keyword_node, .keyword_edge => {
                     if (self.beginStatement(token)) |result| return result;
                     self.pending = .attributes;
@@ -605,6 +647,35 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 }, .document_body, token),
             }
             return null;
+        }
+
+        fn nestingDepth(self: *const Self) usize {
+            return if (self.options.scratch) |scratch| scratch.len else 0;
+        }
+
+        fn beginSubgraphBody(self: *Self, token: lex.Token) ?Result {
+            if (self.nestingDepth() == self.options.max_nesting) return self.fail(.{
+                .code = .resource_capacity_exhausted,
+                .span = token.span,
+                .details = .{ .capacity = .{ .resource = .nesting_depth, .limit = self.options.max_nesting } },
+            });
+            const scratch = self.options.scratch orelse return self.scratchFailure(error.NestingStorageExhausted, token.span);
+            scratch.push(self.open_brace_span.?) catch |err| return self.scratchFailure(err, token.span);
+            self.open_brace_span = token.span;
+            self.state = .statement;
+            return self.schedule(.begin_subgraph, token);
+        }
+
+        fn scratchFailure(self: *Self, err: scratch_impl.Stack.Error, span: location.Span) Result {
+            self.diagnostics.emit(.{
+                .code = if (err == error.OutOfMemory) .resource_memory_exhausted else .resource_capacity_exhausted,
+                .span = span,
+                .details = if (err == error.OutOfMemory) .none else .{ .capacity = .{ .resource = .nesting_frames, .limit = if (self.options.scratch) |scratch| scratch.frames.len else 0 } },
+            }) catch {
+                self.delivery = .failed;
+            };
+            if (self.begun) self.events.abortDocument(.scratch_failure);
+            return self.finish(.{ .scratch_failure = err });
         }
 
         fn startPort(self: *Self, target: @FieldType(Self, "port_target"), resume_state: State, colon: location.Span) void {
@@ -709,6 +780,11 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         .name_span = self.name_span,
                     }) catch |err| return self.sinkFailure(err);
                 },
+                .begin_subgraph => self.events.beginSubgraph(.{ .start = self.subgraph_start, .name = self.subgraph_name }) catch |err| return self.sinkFailure(err),
+                .end_subgraph => {
+                    self.events.endSubgraph(.{ .close = token.span }) catch |err| return self.sinkFailure(err);
+                    self.open_brace_span = self.options.scratch.?.pop();
+                },
                 .node => self.events.nodeStatement(.{ .identifier = self.left, .port = self.left_port }) catch |err| return self.sinkFailure(err),
                 .edge => self.events.edgeStatement(.{
                     .left = self.left,
@@ -761,18 +837,19 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 },
             }
             if (metered) switch (action) {
-                .node, .edge, .edge_chain, .attribute_statement => self.work.completed_statements += 1,
+                .node, .edge, .edge_chain, .attribute_statement, .end_subgraph => self.work.completed_statements += 1,
                 .assignment => {
                     self.work.completed_statements += 1;
                     self.work.completed_pairs += 1;
                 },
                 .attribute => self.work.completed_pairs += 1,
-                .begin, .commit, .edge_link, .ported_reference => {},
+                .begin, .begin_subgraph, .commit, .edge_link, .ported_reference => {},
             };
             return null;
         }
 
         fn finish(self: *Self, outcome: Outcome) Result {
+            if (self.options.scratch) |scratch| scratch.len = 0;
             const result: Result = .{ .outcome = outcome, .diagnostic_delivery = self.delivery };
             self.terminal = result;
             if (metered or cancellable) self.work.phase = .terminal;
@@ -800,7 +877,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .resource_exhausted => .resource_exhausted,
                 // `fail` only handles diagnostic-classified failures; event
                 // sink failures route through `sinkFailure` exclusively.
-                .sink_failure, .cancelled => unreachable,
+                .sink_failure, .scratch_failure, .cancelled => unreachable,
             });
         }
 
@@ -1081,6 +1158,13 @@ const BudgetSink = struct {
     pub fn edgeStatement(self: *@This(), event: syntax_event.EdgeStatement) !void {
         try self.record(.{ .edge_statement = event });
     }
+    pub fn beginSubgraph(self: *@This(), event: syntax_event.BeginSubgraph) !void {
+        try self.record(.{ .begin_subgraph = event });
+    }
+    pub fn endSubgraph(self: *@This(), event: syntax_event.EndSubgraph) !void {
+        try self.record(.{ .end_subgraph = event });
+        self.statements += 1;
+    }
     pub fn portedReference(self: *@This(), event: syntax_event.PortedReference) !u32 {
         try self.record(.{ .ported_reference = event });
         // Recorded event indices are valid opaque handles for this test sink.
@@ -1127,16 +1211,24 @@ const BudgetDiagnostics = struct {
 };
 
 fn checkBudgetPartition(source: []const u8, budgets: []const usize, options: Options, fail_at: ?usize, reject: bool) !usize {
+    var reference_frames: scratch_impl.Fixed(.{ .nesting = 32 }) = .{};
+    var frames: scratch_impl.Fixed(.{ .nesting = 32 }) = .{};
+    var reference_stack: scratch_impl.Stack = .{ .frames = reference_frames.storage().frames };
+    var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var reference_options = options;
+    reference_options.scratch = &reference_stack;
+    var machine_options = options;
+    machine_options.scratch = &stack;
     var reference: BudgetSink = .{ .fail_at = fail_at };
     var reference_diags: BudgetDiagnostics = .{ .reject = reject };
-    const expected = parse(source, &reference, reference_diags.sink(), options);
+    const expected = parse(source, &reference, reference_diags.sink(), reference_options);
     var events: BudgetSink = .{ .fail_at = fail_at };
     var diags: BudgetDiagnostics = .{ .reject = reject };
     var machine: Machine(*BudgetSink, true, true, false) = .{
         .tokens = lex.Scanner(true, true).init(source),
         .events = &events,
         .diagnostics = diags.sink(),
-        .options = options,
+        .options = machine_options,
     };
     var calls: usize = 0;
     var total: usize = 0;
@@ -1301,7 +1393,7 @@ test "ordinary parser compiles out pending work and audit storage" {
     try expect(@FieldType(Ordinary, "work") == void);
     try expect(@FieldType(Ordinary, "audit") == void);
     try expect(@FieldType(lex.Scanner(false, false), "source_frontier") == void);
-    try expect(@sizeOf(Ordinary) <= 736);
+    try expect(@sizeOf(Ordinary) <= 832);
 }
 
 test "unaudited metered driver charges empty document exactly and runs to completion" {
@@ -1628,9 +1720,9 @@ test "unsupported outcome is a boundary, not a whole-input validity claim" {
     // unknown by design, and the outcome must not promise otherwise.
     var events: Recording = .{};
     var bag: Bag = .{};
-    const result = parse("graph { subgraph @", &events, bag.sink(), .{});
+    const result = parse("graph { a -- subgraph @", &events, bag.sink(), .{});
     try expect(result.outcome == .unsupported_feature);
-    try expectEqual(diagnostic.Feature.subgraph, bag.items()[0].details.unsupported_feature);
+    try expectEqual(diagnostic.Feature.subgraph_endpoint, bag.items()[0].details.unsupported_feature);
 }
 
 test "deferred keywords in illegal positions are syntax errors, not unsupported" {
@@ -1659,12 +1751,8 @@ test "deferred keywords in illegal positions are syntax errors, not unsupported"
 
 test "recognized-but-deferred constructs mid-document abort as unsupported" {
     inline for (.{
-        .{ "graph { a -- { b }; }", diagnostic.Feature.subgraph },
-        .{ "graph { a -- subgraph s; }", diagnostic.Feature.subgraph },
-        .{ "graph { { a } }", diagnostic.Feature.subgraph },
-        .{ "graph { a { } }", diagnostic.Feature.subgraph },
-        .{ "graph { subgraph s { b } }", diagnostic.Feature.subgraph },
-        .{ "graph { a -- b subgraph s }", diagnostic.Feature.subgraph },
+        .{ "graph { a -- { b }; }", diagnostic.Feature.subgraph_endpoint },
+        .{ "graph { a -- subgraph s; }", diagnostic.Feature.subgraph_endpoint },
     }) |case| {
         var events: Recording = .{};
         var bag: Bag = .{};
@@ -1674,14 +1762,14 @@ test "recognized-but-deferred constructs mid-document abort as unsupported" {
     }
 }
 
-test "attribute keywords require a bracket list; subgraphs remain deferred" {
+test "attribute keywords require a bracket list; malformed subgraph headers fail" {
     inline for (.{ "graph { graph; }", "graph { node; }", "graph { edge -- x; }", "graph { node -- x; }", "digraph { graph }", "graph { a node }" }) |source| {
         var events: Recording = .{};
         var bag: Bag = .{};
         try expect(parse(source, &events, bag.sink(), .{}).outcome == .invalid_syntax);
         try expect(bag.items()[0].details.unexpected.expected.contains(.left_bracket));
     }
-    try expectAborted("graph { subgraph; }", .unsupported_feature);
+    try expectAborted("graph { subgraph; }", .invalid_syntax);
 }
 
 test "statement limit is a resource outcome, distinct from invalid syntax" {
@@ -1754,11 +1842,11 @@ test "failing beginDocument still receives the cleanup abort" {
 
 test "parser state stays small (R-PERF-005 parser-state-size regression guard)" {
     // The whole machine — lexer, continuation state, options, bookkeeping —
-    // must remain a small constant, independent of input size. 736 B is the
+    // must remain a small constant, independent of input size. 832 B is the
     // current measured value plus headroom (see docs/BASELINES.md), not an
     // architectural budget: if a slice legitimately grows the state, measure,
     // update the baseline doc, and raise this bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 736);
+    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 832);
 }
 
 test "step is terminal-idempotent after success and after failure" {
@@ -1845,4 +1933,14 @@ test "attribute pairs stream before owners and abort if any event is refused" {
     try expectEqual(@as(usize, 3), partial.recorded().len);
     try expect(partial.recorded()[1] == .attribute);
     try expect(partial.recorded()[2] == .abort_document);
+}
+
+test "nested scope callbacks and all prefixes preserve budget partitioning" {
+    const source = "digraph { subgraph s { a:p->b->c[x=1] {z=q} } {} }";
+    const total = try checkBudgetPartition(source, &.{1}, .{}, null, false);
+    try expectEqual(total, try checkBudgetPartition(source, &.{ 0, 3, 17 }, .{}, null, false));
+    for (0..source.len + 1) |end| _ = try checkBudgetPartition(source[0..end], &.{ 0, 1, 2 }, .{}, null, false);
+    // Includes failures in begin/end scope, normal owner callbacks, and commit.
+    for (0..16) |at| _ = try checkBudgetPartition(source, &.{ 0, 1, 5 }, .{}, at, false);
+    for (0..3) |depth| _ = try checkBudgetPartition(source, &.{1}, .{ .max_nesting = depth }, null, false);
 }

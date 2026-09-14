@@ -14,7 +14,7 @@ test "ports preserve source occurrences and chain endpoints without interpreting
     try expect(parsed.outcome == .success);
     const doc = &parsed.document.?;
     var pools: Storage = .{};
-    const fixed = dot.parseBorrowedIn(source, pools.storage(), dot.diagnostic.discard, .{});
+    const fixed = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
     try deep(doc.*, fixed.document.?);
     try equal(@as(usize, 6), doc.ported_references.len);
     try equal(@as(usize, 3), doc.nodes.len);
@@ -58,14 +58,14 @@ test "malformed ports and ports outside node references are syntax errors" {
         var parsed = dot.parseBorrowed(std.testing.allocator, input, a.sink(), .{});
         defer parsed.deinit(std.testing.allocator);
         var pools: Storage = .{};
-        const fixed = dot.parseBorrowedIn(input, pools.storage(), b.sink(), .{});
+        const fixed = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, b.sink(), .{});
         try expect(parsed.outcome == .invalid_syntax and fixed.outcome == .invalid_syntax);
         try expect(parsed.document == null and fixed.document == null);
         try deep(a.items(), b.items());
     }
     var bag: dot.FixedDiagnosticBag(1) = .{};
     var pools: Storage = .{};
-    _ = dot.parseBorrowedIn("graph {a:p:", pools.storage(), bag.sink(), .{});
+    _ = dot.parseBorrowedIn("graph {a:p:", .{ .document = pools.storage() }, bag.sink(), .{});
     try equal(dot.diagnostic.ParseContext.port_component, bag.items()[0].details.unexpected.context);
     try equal(@as(usize, 10), bag.items()[0].details.unexpected.related.?.span.start.byte_offset);
     try equal(dot.diagnostic.Related.Role.suffix_started_here, bag.items()[0].details.unexpected.related.?.role);
@@ -109,7 +109,7 @@ fn fuzzPorts(_: void, smith: *std.testing.Smith) !void {
     defer parsed.deinit(std.testing.allocator);
     try expect(parsed.outcome == .success);
     var pools: Storage = .{};
-    const fixed = dot.parseBorrowedIn(input, pools.storage(), dot.diagnostic.discard, .{});
+    const fixed = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
     try deep(parsed.document, fixed.document);
     const doc = &parsed.document.?;
     var edges = doc.edgeIterator();
@@ -133,7 +133,7 @@ fn fuzzPorts(_: void, smith: *std.testing.Smith) !void {
 test "ported pool exhaustion is typed and reset discards incomplete occurrences" {
     var pools: dot.FixedDocumentStorage(.{ .statements = 2, .nodes = 2, .edges = 1, .ported_references = 1 }) = .{};
     var bag: dot.FixedDiagnosticBag(2) = .{};
-    var session = dot.BoundedSession.init("graph {a:p--b:q}", pools.storage(), bag.sink(), .{});
+    var session = dot.BoundedSession.init("graph {a:p--b:q}", .{ .document = pools.storage() }, bag.sink(), .{});
     defer session.deinit();
     const failed = session.run();
     try expect(failed.outcome == .storage_failure and failed.document == null);
@@ -143,9 +143,9 @@ test "ported pool exhaustion is typed and reset discards incomplete occurrences"
     try equal(@as(usize, 1), doc.ported_references.len);
     try strings("c", doc.text(doc.nodeReference(doc.nodes[0].reference).?.identifier));
     var empty: dot.FixedDocumentStorage(.{ .statements = 1, .nodes = 1 }) = .{};
-    const bare = dot.parseBorrowedIn("graph {a}", empty.storage(), dot.diagnostic.discard, .{});
+    const bare = dot.parseBorrowedIn("graph {a}", .{ .document = empty.storage() }, dot.diagnostic.discard, .{});
     try expect(bare.outcome == .success);
-    const qualified = dot.parseBorrowedIn("graph {a:p}", empty.storage(), dot.diagnostic.discard, .{});
+    const qualified = dot.parseBorrowedIn("graph {a:p}", .{ .document = empty.storage() }, dot.diagnostic.discard, .{});
     try expect(qualified.outcome == .storage_failure);
 }
 
@@ -169,7 +169,7 @@ test "port storage remains compact and accessors reject out of bounds handles" {
     try equal(@as(usize, 20), @sizeOf(dot.EdgeLink));
     try expect(dot.NodeReference.fromRange(.{ .start = 0, .len = 0 }) == null);
     var pools: Storage = .{};
-    const doc = dot.parseBorrowedIn("graph {\"\"; a:p}", pools.storage(), dot.diagnostic.discard, .{}).document.?;
+    const doc = dot.parseBorrowedIn("graph {\"\"; a:p}", .{ .document = pools.storage() }, dot.diagnostic.discard, .{}).document.?;
     try expect(doc.nodeReference(doc.nodes[0].reference).?.port == null);
     try expect(doc.nodeReference(.{ .index_or_start = 1, .raw_len = 0 }) == null);
     try expect(doc.nodeReference(.{ .index_or_start = std.math.maxInt(u32), .raw_len = 1 }) == null);
@@ -181,7 +181,7 @@ test "port storage remains compact and accessors reject out of bounds handles" {
 test "ports do not consume statement or attribute budgets and run in all execution profiles" {
     inline for (.{ false, true }) |metering| inline for (.{ false, true }) |cancellation| {
         var pools: Storage = .{};
-        var session = dot.FixedSession(.{ .metering = metering, .cancellation = cancellation }).init("digraph {a:p->b:q->c:r[k=v]}", pools.storage(), dot.diagnostic.discard, .{ .max_statements = 1, .max_attributes = 1 });
+        var session = dot.FixedSession(.{ .metering = metering, .cancellation = cancellation }).init("digraph {a:p->b:q->c:r[k=v]}", .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_statements = 1, .max_attributes = 1 });
         defer session.deinit();
         const result = session.run();
         try expect(result.outcome == .success);
@@ -196,7 +196,7 @@ test "every source prefix agrees across allocator and fixed port storage" {
         var parsed = dot.parseBorrowed(std.testing.allocator, source[0..end], a.sink(), .{});
         defer parsed.deinit(std.testing.allocator);
         var pools: Storage = .{};
-        const fixed = dot.parseBorrowedIn(source[0..end], pools.storage(), b.sink(), .{});
+        const fixed = dot.parseBorrowedIn(source[0..end], .{ .document = pools.storage() }, b.sink(), .{});
         try deep(parsed.outcome, fixed.outcome);
         try deep(parsed.document, fixed.document);
         try deep(a.items(), b.items());
@@ -211,10 +211,10 @@ test "long qualified chains parse iteratively in ordinary and bounded drivers" {
     try writer.writeAll("}");
     const Pools = dot.FixedDocumentStorage(.{ .statements = 1, .edge_chains = 1, .edge_links = 1999, .ported_references = 2001 });
     var ordinary_storage: Pools = .{};
-    const ordinary = dot.parseBorrowedIn(writer.buffered(), ordinary_storage.storage(), dot.diagnostic.discard, .{});
+    const ordinary = dot.parseBorrowedIn(writer.buffered(), .{ .document = ordinary_storage.storage() }, dot.diagnostic.discard, .{});
     try expect(ordinary.outcome == .success);
     var bounded_storage: Pools = .{};
-    var session = dot.BoundedSession.init(writer.buffered(), bounded_storage.storage(), dot.diagnostic.discard, .{});
+    var session = dot.BoundedSession.init(writer.buffered(), .{ .document = bounded_storage.storage() }, dot.diagnostic.discard, .{});
     defer session.deinit();
     while (true) {
         const progress = session.advance(17);

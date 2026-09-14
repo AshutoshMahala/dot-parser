@@ -11,7 +11,7 @@ pub fn main(init: std.process.Init) !void {
         .edge_links = 1,
         .ported_references = 3,
     }) = .{};
-    const parsed = dot.parseBorrowedIn(source, pools.storage(), dot.diagnostic.discard, .{});
+    const parsed = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
     const document = parsed.document orelse return error.ParseFailed;
     var buffer: [1024]u8 = undefined;
     var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);

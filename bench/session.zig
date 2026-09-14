@@ -30,7 +30,7 @@ pub fn main(init: std.process.Init) !void {
         var polls: usize = 0;
         for (0..11) |round| {
             var probe: Polls = .{};
-            var session = Session.init(source, storage, dot.diagnostic.discard, .{
+            var session = Session.init(source, .{ .document = storage }, dot.diagnostic.discard, .{
                 .cancellation = if (cancellation) .{ .context = &probe, .is_requested = Polls.poll } else {},
             });
             const start = std.Io.Clock.Timestamp.now(init.io, .awake);

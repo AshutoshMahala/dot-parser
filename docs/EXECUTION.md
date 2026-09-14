@@ -9,7 +9,7 @@ var storage: dot.FixedDocumentStorage(.{
     .statements = 32, .nodes = 32, .edges = 16, .attributes = 32,
 }) = .{};
 var bag: dot.FixedDiagnosticBag(4) = .{};
-var session = dot.BoundedSession.init(source, storage.storage(), bag.sink(), .{});
+var session = dot.BoundedSession.init(source, .{ .document = storage.storage() }, bag.sink(), .{});
 defer session.deinit();
 
 while (true) {
@@ -38,7 +38,7 @@ session even inside a long comment or quoted identifier.
 
 `advance(0)` does no normal work. It yields, or observes cancellation and performs
 terminal cleanup. Exhausting a call's budget is not `.resource_exhausted`.
-That outcome still means a configured statement/pair limit was reached; full
+That outcome still means a configured statement/pair/nesting limit was reached; full
 pools still produce `.storage_failure` with a diagnostic.
 
 Credits do not bound CPU instructions or wall-clock time. User diagnostic and
@@ -58,7 +58,9 @@ unbudgeted operations. There is no OS clock, scheduler, thread, or hidden worker
 - `completed_statements` and `completed_pairs`: accepted syntax events, not
   reservations. A yielded attribute list can have pairs but no completed owner.
   A chain counts as one statement when its owner is accepted, not once per
-  operator. Continuations can be staged before this count changes.
+  operator. Continuations can be staged before this count changes. A subgraph
+  counts when its closing event succeeds; entry reserves its order slot but does
+  not increment this counter. Nested child statements can complete first.
 - `work_used`: credits spent in this call, not a lifetime total.
 - `outcome`: null while yielded, otherwise the terminal ParseOutcome.
 - `diagnostic_delivery`: whether failure diagnostics reached their sink.
@@ -81,6 +83,19 @@ the suffix and its owner; each replay charges grammar work, without rescanning
 the token. Reserve `ported_references` capacity separately from statement/link
 capacities. No staged port record becomes a public partial document.
 
+Each subgraph entry and exit has a separate normal callback credit. Opening a
+scope pushes one fixed scratch frame in its grammar transition; accepting the
+exit pops one frame. There is no unbudgeted loop over ancestors or descendants.
+Cancellation clears logical frame length without unwinding recursively, emits
+no synthetic per-scope close callbacks, and publishes no partial document.
+`max_nesting` (root depth 0) is a terminal policy limit, independent of per-call
+credits and the caller's `FixedParseScratch` capacity. Pass document pools and
+scratch separately in the `ParseMemory` bundle; [example](../examples/subgraphs.zig).
+
+Scope iterators, like validation and identifier decoding, are separate
+unbudgeted operations. A recursive view means “include descendants,” not use
+recursive function calls.
+
 `run()` finishes the remaining parse without returning intermediate yields.
 Repeated advance, run, cancel, and result calls after termination preserve
 the result. They perform no more scans, polls, diagnostics or lifecycle events.
@@ -89,7 +104,7 @@ the result. They perform no more scans, polls, diagnostics or lifecycle events.
 
 ```zig
 const Session = dot.FixedSession(.{ .cancellation = true });
-var session = Session.init(source, storage.storage(), bag.sink(), .{
+var session = Session.init(source, .{ .document = storage.storage() }, bag.sink(), .{
     .cancellation = .{ .context = &request, .is_requested = Request.poll },
 });
 defer session.deinit();
@@ -120,7 +135,7 @@ run without work counters. With metering disabled, advance is a compile
 error. With cancellation disabled (the default), hook storage and checks compile
 out. Explicit cancel cleanup remains available in every configuration.
 
-Keep source bytes, pools, diagnostic context and cancellation context alive at stable addresses
+Keep source bytes, pools, nesting scratch, diagnostic context and cancellation context alive at stable addresses
 across yields. Do not inspect/mutate the pools while parsing or copy a live
 session into a second owner. Moving it between calls is supported; calls must
 not overlap or reenter. A completed document borrows source/pools, not the session.

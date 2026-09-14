@@ -1,7 +1,7 @@
 # Project Structure
 
 Status: living document — updated as slices land  
-Last updated: 2026-09-12 (resumable lexical scanning)
+Last updated: 2026-09-13 (standalone subgraphs)
 
 The package is a standalone Zig DOT-language library and must not depend on
 Zigraph.
@@ -35,11 +35,15 @@ dot-parser/
 │   ├── identifier.zig
 │   ├── syntax_event.zig
 │   ├── parser.zig
+│   ├── scratch.zig            (explicit reusable nesting frames)
 │   ├── syntax.zig
 │   └── validate.zig
 ├── tests/
 │   ├── integration.zig
 │   ├── attributes.zig
+│   ├── edge_chains.zig
+│   ├── ports.zig
+│   ├── subgraphs.zig
 │   ├── sessions.zig
 │   ├── freestanding_session.zig
 │   └── corpus/
@@ -53,13 +57,18 @@ dot-parser/
 │   ├── diagnostics_demo.zig
 │   ├── identifiers.zig
 │   ├── attributes.zig
-│   └── bounded.zig
+│   ├── bounded.zig
+│   ├── edge_chains.zig
+│   ├── ports.zig
+│   └── subgraphs.zig
 ├── bench/
 │   ├── throughput.zig         (parse + validate, retained memory)
 │   ├── lexer.zig              (lexical fixtures, no timed allocation)
-│   └── session.zig            (independent execution-policy costs)
+│   ├── session.zig            (independent execution-policy costs)
+│   └── subgraphs.zig          (sibling/deep scope costs)
 └── docs/
     ├── SUPPORTED_SYNTAX.md
+    ├── SUBGRAPHS.md
     ├── OWNERSHIP.md
     ├── OUTCOMES.md
     ├── EXECUTION.md
@@ -112,7 +121,7 @@ The shared raw-byte scanner implementation. `root.zig` selects `Token`, `Result`
 and ordinary `Lexer` for the public namespace; internal factories and scan
 drivers are not re-exported. It recognizes:
 
-- Every DOT keyword (`graph`, `digraph`, `strict`, `node`, `edge`, and the deferred
+- Every DOT keyword (`graph`, `digraph`, `strict`, `node`, `edge`, and
   `subgraph`), case-independently. Keywords always tokenize;
   whether one is legal in its position is the parser's decision.
 - Bare ASCII, numeral, and quoted identifiers (including `+` concatenation).
@@ -163,7 +172,9 @@ Document data includes:
 
 - Document kind (`undigraph` or `digraph`), the `strict` marker, and the
   optional graph name.
-- Ordered statement IDs.
+- Ordered statement IDs, including standalone subgraph owners in preorder.
+- Compact scope occurrence records with parent IDs, source ranges and body
+  intervals; allocation-free direct/recursive views and scope-aware traversal.
 - Node statements.
 - Edge statements with the written operator and compact node references.
 - Inline bare identifier ranges or pooled qualified occurrences, exposed through
@@ -309,3 +320,18 @@ Use four complementary levels:
 Every module that accepts memory must be tested with a deliberately undersized
 fixed buffer. Every parser boundary should be tested with input truncated at
 each byte position.
+
+## Standalone scope storage
+
+Subgraphs are records plus intervals into the single global statement order, not
+separately allocated child trees. Root is scope zero; subgraph IDs identify source
+occurrences. Scope views add no retained membership index. Iterators skip body
+intervals for direct traversal or scan descendants iteratively for recursive views.
+Global scope-aware traversal ascends parent links amortized linearly.
+
+`scratch.zig` owns only the nesting-frame representation/stack mechanics.
+The facade owns its lifetime; the parser borrows it and pushes/pops in constant
+fixed-storage work. Builders retain parent IDs independently, closing body/source
+ranges on exit. Allocator-backed scratch can use a separate temporary allocator;
+fixed parsing receives a document/scratch memory bundle. Neither parser nor
+builder uses input-dependent recursion or integrates graph-engine semantics.
