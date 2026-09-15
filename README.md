@@ -7,6 +7,8 @@ performing layout and without depending on any particular graph engine.
 > **Status: experimental `0.x`.** Backward compatibility is not promised and
 > breaking changes are expected.
 
+Version **0.2.0**: [release highlights and migration notes](docs/RELEASE_0.2.0.md).
+
 ## Current support (growing by vertical slices)
 
 The grammar grows one narrow end-to-end slice at a time:
@@ -33,9 +35,7 @@ strict digraph Routes {
 - Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
 - Port suffixes (`a:out`, `a:n`, `a:out:e`) on node statements and node endpoints.
 
-Other features (HTML/non-ASCII bare IDs, semantic edge-product expansion, …) is deliberately deferred to later vertical
-slices. The authoritative construct-by-construct table is
-[docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
+Other features (HTML/non-ASCII bare IDs, semantic edge-product expansion, …) are deliberately deferred to later vertical slices. The authoritative construct-by-construct table is [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
 
 See [the attribute example](examples/attributes.zig) for fixed-storage parsing
 and ordered attribute traversal. Parsing does not apply defaults or resolve values.
@@ -175,7 +175,8 @@ measured performance.
 
 ## Building
 
-Requires Zig **0.16.0** or newer.
+Tested with Zig **0.16.0**, also the declared minimum toolchain version.
+Newer Zig versions are not yet verified.
 
 ```sh
 zig build test        # unit + public integration tests

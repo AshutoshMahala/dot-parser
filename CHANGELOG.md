@@ -6,6 +6,18 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+No changes yet.
+
+## 0.2.0 — 2026-09-14
+
+Expand the borrowed syntax parser with comments, quoted/numeral identifiers,
+basic attributes, edge chains, ports and nested subgraphs, including subgraph
+endpoints. Add fixed-storage resumable parsing with optional work metering and
+cooperative cancellation. This is an experimental, breaking minor release;
+see the [0.2.0 release and migration notes](docs/RELEASE_0.2.0.md).
+
+### Added and changed
+
 - Support named/anonymous subgraphs as either edge endpoint and in mixed chains,
   including nested endpoint edges. Retain syntax, never eager node-set expansion.
   Breaking API: statement/iterator edges use `EdgeView` with `Endpoint` values;
@@ -27,8 +39,8 @@ are called out here; compatibility shims are not retained.
   `ParseMemory { document, scratch }`. Reserve `.subgraphs` and explicit
   `FixedParseScratch` nesting frames; no legacy overload is retained.
   Allocator callers may supply a separate `scratch_allocator`. Add `max_nesting`
-  and typed depth/scratch/scope-pool capacities; replace `Feature.subgraph` with
-  `Feature.subgraph_endpoint` (subsequently removed by endpoint support above). Entry/exit obey work budgets,
+  and typed depth/scratch/scope-pool capacities; remove the deferred-feature
+  boundary for standalone subgraphs. Entry/exit obey work budgets,
   cancellation and commit-only output. Add scope guide, example and benchmark.
 
 - Support raw port suffixes on node statements and all edge/chain endpoints.
