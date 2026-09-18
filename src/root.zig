@@ -123,8 +123,16 @@ pub const ParseOptions = struct {
     /// Preallocate output pools, not temporary nesting frames. Covering the
     /// document avoids output-pool growth; nesting may still allocate through
     /// scratch_allocator. Use ParseMemory/fixed pools for allocation-free parsing.
+    /// `measure` reports the exact values for a source.
     document_capacities: DocumentCapacities = .{},
+    /// After a syntax error inside the body: stop (`.fail_fast`, one failure
+    /// diagnostic) or resynchronize at statement boundaries and keep
+    /// reporting syntax errors (`.statements`). Either way no document is
+    /// published and the outcome is `invalid_syntax`; validation never runs.
+    recovery: Recovery = .fail_fast,
 };
+
+pub const Recovery = parser_impl.Recovery;
 
 /// Why document or temporary storage could not hold the parse. A façade-level taxonomy:
 /// the private event-sink machinery never leaks into the public API.
@@ -206,6 +214,7 @@ pub fn parseBorrowed(
         .max_attributes = options.max_attributes,
         .max_nesting = options.max_nesting,
         .scratch = &scratch,
+        .recovery = options.recovery,
     });
     switch (result.outcome) {
         .scratch_failure => |err| return .{ .outcome = .{ .storage_failure = storageFailure(err) }, .diagnostic_delivery = result.diagnostic_delivery },
@@ -330,6 +339,8 @@ pub const FixedParseOptions = struct {
     max_statements: usize = std.math.maxInt(usize),
     /// Total key/value pairs, including standalone assignments; not a scan budget.
     max_attributes: usize = std.math.maxInt(usize),
+    /// See `ParseOptions.recovery`.
+    recovery: Recovery = .fail_fast,
 };
 
 /// Result of `parseBorrowedIn` and fixed sessions. Unlike `ParseResult` there is deliberately
@@ -380,6 +391,8 @@ pub fn FixedSession(comptime features: ExecutionFeatures) type {
             max_nesting: usize = std.math.maxInt(usize),
             max_statements: usize = std.math.maxInt(usize),
             max_attributes: usize = std.math.maxInt(usize),
+            /// See `ParseOptions.recovery`.
+            recovery: Recovery = .fail_fast,
             cancellation: if (features.cancellation) ?Cancellation else void = if (features.cancellation) null else {},
         };
 
@@ -397,7 +410,7 @@ pub fn FixedSession(comptime features: ExecutionFeatures) type {
                     // Never retain a pointer into the returned init temporary.
                     .events = undefined,
                     .diagnostics = diagnostics,
-                    .options = .{ .max_statements = options.max_statements, .max_attributes = options.max_attributes, .max_nesting = options.max_nesting, .scratch = undefined },
+                    .options = .{ .max_statements = options.max_statements, .max_attributes = options.max_attributes, .max_nesting = options.max_nesting, .scratch = undefined, .recovery = options.recovery },
                     .cancellation = options.cancellation,
                 },
             };
@@ -501,6 +514,7 @@ pub fn parseBorrowedIn(
         .max_attributes = options.max_attributes,
         .max_nesting = options.max_nesting,
         .scratch = &scratch,
+        .recovery = options.recovery,
     });
     switch (result.outcome) {
         .scratch_failure => |err| return .{ .outcome = .{ .storage_failure = storageFailure(err) }, .diagnostic_delivery = result.diagnostic_delivery },
@@ -531,6 +545,86 @@ pub fn parseBorrowedIn(
     return .{
         .document = builder.toDocument(),
         .outcome = .success,
+        .diagnostic_delivery = result.diagnostic_delivery,
+    };
+}
+
+/// Result of `measure` / `measureIn`. `capacities` is present exactly when
+/// the outcome is `.success`: the exact pool sizes a retained parse of the
+/// same source needs, nothing more.
+pub const MeasureResult = struct {
+    capacities: ?DocumentCapacities = null,
+    outcome: ParseOutcome,
+    diagnostic_delivery: diagnostic.Delivery,
+};
+
+/// Count-only dry run: parse `source` retaining nothing and report the
+/// exact `DocumentCapacities` a retained parse needs. Two uses:
+///
+/// - Arena or fixed-buffer users pass the result as
+///   `ParseOptions.document_capacities` so the retained parse never grows
+///   a pool (growing pools leave every outgrown copy behind in an arena —
+///   several times the document's own size).
+/// - Fixed-storage users size `DocumentStorage` pools for an input they do
+///   not know in advance, without a full retained parse first.
+///
+/// The same grammar, limits and diagnostics as `parseBorrowed`; roughly the
+/// cost of one parse. `allocator` only backs the nesting scratch (or pass
+/// `scratch_allocator`), so a flat document allocates nothing.
+/// `options.document_capacities` is ignored — there is nothing to reserve.
+pub fn measure(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    diagnostics: diagnostic.Sink,
+    options: ParseOptions,
+) MeasureResult {
+    var scratch: scratch_impl.Stack = .{ .allocator = options.scratch_allocator orelse allocator };
+    defer scratch.deinit();
+    return measureWith(source, diagnostics, &scratch, .{
+        .max_statements = options.max_statements,
+        .max_attributes = options.max_attributes,
+        .max_nesting = options.max_nesting,
+        .recovery = options.recovery,
+    });
+}
+
+/// `measure` without an allocator: nesting frames come from `scratch`
+/// (`FixedParseScratch`), so it runs wherever `parseBorrowedIn` runs.
+pub fn measureIn(
+    source: []const u8,
+    scratch: ParseScratch,
+    diagnostics: diagnostic.Sink,
+    options: FixedParseOptions,
+) MeasureResult {
+    var stack: scratch_impl.Stack = .{ .frames = scratch.frames };
+    return measureWith(source, diagnostics, &stack, options);
+}
+
+fn measureWith(
+    source: []const u8,
+    diagnostics: diagnostic.Sink,
+    scratch: *scratch_impl.Stack,
+    options: FixedParseOptions,
+) MeasureResult {
+    var counting: syntax_impl.CountingSink = .{};
+    const result = parser_impl.parse(source, &counting, diagnostics, .{
+        .max_statements = options.max_statements,
+        .max_attributes = options.max_attributes,
+        .max_nesting = options.max_nesting,
+        .scratch = scratch,
+        .recovery = options.recovery,
+    });
+    return .{
+        .capacities = if (result.outcome == .success) counting.counts else null,
+        .outcome = switch (result.outcome) {
+            .success => .success,
+            .invalid_syntax => .invalid_syntax,
+            .unsupported_feature => .unsupported_feature,
+            .resource_exhausted => .resource_exhausted,
+            .scratch_failure => |err| .{ .storage_failure = storageFailure(err) },
+            // One-shot, and the counting sink cannot fail.
+            .cancelled, .sink_failure => unreachable,
+        },
         .diagnostic_delivery = result.diagnostic_delivery,
     };
 }

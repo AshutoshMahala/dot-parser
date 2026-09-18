@@ -8,10 +8,11 @@
 //! (part 7), plus the informative part 6 sequence conventions and part 10
 //! presentation palette. Codes read
 //! `namespace:Severity.Component.Primary.Sequence`, where the namespace is
-//! this library (`dot_parser`), the component is the internal module that
-//! reported the problem, and sequences follow part 6 (001 MISSING,
-//! 002 MISMATCH, 003 INVALID, 009 UNSUPPORTED, 026 EXHAUSTED; 031+
-//! project-specific). The hashing algorithms are verified against the
+//! this library (`dot_parser`), the component is the logical domain of the
+//! problem (`Syntax`, `Validation`, `Resource`, `Profile` — never the source
+//! module that noticed it), the primary is the failure domain within it,
+//! and sequences follow part 6 (001 MISSING, 002 MISMATCH, 003 INVALID,
+//! 009 UNSUPPORTED, 026 EXHAUSTED; 031+ project-specific). The hashing algorithms are verified against the
 //! spec's test vectors below; upgrading the WDP baseline requires
 //! re-verifying those vectors and reviewing the current registry.
 //!
@@ -85,20 +86,25 @@ pub const Severity = enum(u4) {
     }
 };
 
-/// WDP component: the internal module that reported the diagnostic. The
-/// library itself is identified by `namespace`, not by the component.
+/// WDP component: the domain of responsibility a diagnostic belongs to
+/// (WDP part 2 allows logical components; these are not source modules).
+/// A consumer filtering on `E.Syntax.*` receives every malformed-input
+/// problem, whether the scanner or the grammar noticed it. The library
+/// itself is identified by `namespace`, not by the component.
 pub const Component = enum {
-    lexer,
-    parser,
+    /// The input is not well-formed DOT: lexical and grammatical problems.
+    syntax,
+    /// The document parsed but violates a rule (kind/operator agreement).
     validation,
+    /// A caller-configured capacity or the allocator was exhausted.
     resource,
+    /// Recognized DOT that this build profile does not process.
     profile,
 
     /// PascalCase display form used inside structured codes.
     pub fn name(self: Component) []const u8 {
         return switch (self) {
-            .lexer => "Lexer",
-            .parser => "Parser",
+            .syntax => "Syntax",
             .validation => "Validation",
             .resource => "Resource",
             .profile => "Profile",
@@ -106,11 +112,15 @@ pub const Component = enum {
     }
 };
 
-/// WDP primary: the failure domain within a component.
+/// WDP primary: the failure domain within a component (WDP part 3).
 pub const Primary = enum {
     byte,
-    syntax,
+    token,
     operator,
+    numeral,
+    concatenation,
+    grammar,
+    keyword,
     capacity,
     memory,
     feature,
@@ -119,8 +129,12 @@ pub const Primary = enum {
     pub fn name(self: Primary) []const u8 {
         return switch (self) {
             .byte => "Byte",
-            .syntax => "Syntax",
+            .token => "Token",
             .operator => "Operator",
+            .numeral => "Numeral",
+            .concatenation => "Concatenation",
+            .grammar => "Grammar",
+            .keyword => "Keyword",
             .capacity => "Capacity",
             .memory => "Memory",
             .feature => "Feature",
@@ -140,28 +154,57 @@ pub const SequenceDefinition = struct {
 /// diagnostic identity. Conventional numbers follow the pinned WDP baseline.
 pub const Sequence = struct {
     // WDP part 6 conventional assignments.
+    pub const missing: SequenceDefinition = .{ .number = 1, .alias = "MISSING" };
     pub const mismatch: SequenceDefinition = .{ .number = 2, .alias = "MISMATCH" };
     pub const invalid: SequenceDefinition = .{ .number = 3, .alias = "INVALID" };
     pub const unsupported: SequenceDefinition = .{ .number = 9, .alias = "UNSUPPORTED" };
     pub const exhausted: SequenceDefinition = .{ .number = 26, .alias = "EXHAUSTED" };
 
-    // Project-specific assignments (031–999).
+    // Project-specific assignments (031–897). 031 and 032 follow the parser
+    // example in WDP part 6 §9.5.
     pub const unexpected_end: SequenceDefinition = .{ .number = 31, .alias = "UNEXPECTED_END" };
+    pub const unterminated: SequenceDefinition = .{ .number = 32, .alias = "UNTERMINATED" };
+    pub const ambiguous: SequenceDefinition = .{ .number = 33, .alias = "AMBIGUOUS" };
 };
 
 /// The diagnostic registry.
 ///
 /// Each current code is unique, documented here, and covered by registry
-/// tests (R-DIAG-005). During experimental 0.x development, codes and payload
-/// enums may change; obsolete entries are removed, not retained for replay.
+/// tests (R-DIAG-005). A code names one *condition*; where in the grammar
+/// it occurred travels in the typed payload (`ParseContext`), never in the
+/// identity. During experimental 0.x development, codes and payload enums
+/// may change; obsolete entries are removed, not retained for replay.
 pub const Code = enum {
-    /// E.Lexer.Byte.003 (INVALID) — a byte is invalid at this location.
-    lexer_invalid_byte,
-    /// E.Parser.Syntax.003 (INVALID) — the token found violates the grammar.
-    parser_unexpected_token,
-    /// E.Parser.Syntax.031 (UNEXPECTED_END, project-specific) — input ended
-    /// mid-document. Matches the parser example in WDP part 6 §9.5.
-    parser_unexpected_end,
+    /// E.Syntax.Byte.003 (INVALID) — a byte that cannot start or continue
+    /// any DOT token here, including NUL inside a quoted identifier.
+    syntax_invalid_byte,
+    /// E.Syntax.Operator.003 (INVALID) — a '-' that does not complete an
+    /// edge operator (`a - b`, `a - > b`), or an over-long one (`-->`, `---`).
+    /// Emitted with `Details.invalid_operator`.
+    syntax_invalid_operator,
+    /// E.Syntax.Numeral.001 (MISSING) — '.' or '-.' without the digit a DOT
+    /// numeral requires. Emitted with `Details.incomplete_numeral`.
+    syntax_incomplete_numeral,
+    /// E.Syntax.Token.032 (UNTERMINATED) — a quoted identifier or block
+    /// comment is never closed. Always emitted with `Details.unterminated`
+    /// naming the construct; the span marks its opener.
+    syntax_unterminated_construct,
+    /// E.Syntax.Concatenation.003 (INVALID) — '+' must join two quoted
+    /// identifiers. Emitted with `Details.expected_quote`.
+    syntax_invalid_concatenation,
+    /// E.Syntax.Grammar.003 (INVALID) — the token found violates the grammar.
+    syntax_unexpected_token,
+    /// E.Syntax.Grammar.031 (UNEXPECTED_END) — input ended mid-document.
+    syntax_unexpected_end,
+    /// E.Syntax.Keyword.003 (INVALID) — a reserved keyword where a name was
+    /// needed, or an attribute keyword (`node`, `edge`, `graph`) not followed
+    /// by its '[' list. Emitted with `Details.reserved_keyword`.
+    syntax_reserved_keyword,
+    /// W.Syntax.Numeral.033 (AMBIGUOUS) — a numeral runs directly into a
+    /// letter or a second dot (`1e3`, `1.2.3`); it tokenizes as two tokens,
+    /// exactly as Graphviz does, and Graphviz warns the same way. The parse
+    /// continues. Emitted with `Details.ambiguous_numeral`.
+    syntax_ambiguous_numeral,
     /// E.Validation.Operator.002 (MISMATCH) — edge operator does not match
     /// the document's graph kind.
     validation_operator_mismatch,
@@ -174,12 +217,6 @@ pub const Code = enum {
     /// E.Resource.Memory.026 (EXHAUSTED) — the allocator could not provide
     /// memory for the retained document.
     resource_memory_exhausted,
-    /// E.Lexer.Syntax.031 (UNEXPECTED_END) — a lexical construct is unclosed.
-    /// Always emitted with `Details.unterminated` naming the construct.
-    lexer_unterminated_construct,
-    /// E.Lexer.Syntax.003 (INVALID) — '+' must join two quoted identifiers.
-    /// Emitted with `Details.expected_quote` (next byte, or null at EOF).
-    lexer_invalid_concatenation,
 
     /// Comptime metadata for one diagnostic code. All strings are static.
     pub const Info = struct {
@@ -192,7 +229,9 @@ pub const Code = enum {
         alias: []const u8,
         /// What went wrong.
         summary: []const u8,
-        /// What the user can do about it.
+        /// What the user can do about it. The registry text is the
+        /// fallback; renderers derive a more specific hint from the typed
+        /// payload whenever they can.
         hint: []const u8,
     };
 
@@ -209,29 +248,77 @@ pub const Code = enum {
 
     pub fn info(self: Code) Info {
         const definition: Definition = switch (self) {
-            .lexer_invalid_byte => .{
+            .syntax_invalid_byte => .{
                 .severity = .err,
-                .component = .lexer,
+                .component = .syntax,
                 .primary = .byte,
                 .sequence = Sequence.invalid,
-                .summary = "input byte is not valid at this location",
-                .hint = "use a supported DOT token; NUL is not allowed in quoted identifiers",
+                .summary = "input byte cannot start a DOT token",
+                .hint = "remove the byte, or put the text inside a double-quoted identifier",
             },
-            .parser_unexpected_token => .{
+            .syntax_invalid_operator => .{
                 .severity = .err,
-                .component = .parser,
-                .primary = .syntax,
+                .component = .syntax,
+                .primary = .operator,
+                .sequence = Sequence.invalid,
+                .summary = "malformed edge operator",
+                .hint = "an edge operator is '--' (undirected) or '->' (directed), written with no space inside",
+            },
+            .syntax_incomplete_numeral => .{
+                .severity = .err,
+                .component = .syntax,
+                .primary = .numeral,
+                .sequence = Sequence.missing,
+                .summary = "a numeral needs a digit after '.'",
+                .hint = "write a digit after the dot (for example '.5'), or quote the text to use it as a name",
+            },
+            .syntax_unterminated_construct => .{
+                .severity = .err,
+                .component = .syntax,
+                .primary = .token,
+                .sequence = Sequence.unterminated,
+                .summary = "input ended inside an unterminated construct",
+                .hint = "close the construct opened at the highlighted location",
+            },
+            .syntax_invalid_concatenation => .{
+                .severity = .err,
+                .component = .syntax,
+                .primary = .concatenation,
+                .sequence = Sequence.invalid,
+                .summary = "expected a quoted identifier after '+'",
+                .hint = "'+' joins quoted identifiers only; put the next identifier in double quotes",
+            },
+            .syntax_unexpected_token => .{
+                .severity = .err,
+                .component = .syntax,
+                .primary = .grammar,
                 .sequence = Sequence.invalid,
                 .summary = "unexpected token",
-                .hint = "the milestone grammar is: graph { statement* } where a statement is 'a;' or 'a -- b;'",
+                .hint = "check this statement against the DOT grammar: a body holds node, edge, attribute, assignment and subgraph statements",
             },
-            .parser_unexpected_end => .{
+            .syntax_unexpected_end => .{
                 .severity = .err,
-                .component = .parser,
-                .primary = .syntax,
+                .component = .syntax,
+                .primary = .grammar,
                 .sequence = Sequence.unexpected_end,
                 .summary = "input ended before the document was complete",
-                .hint = "check for an unclosed '{' or a truncated final statement",
+                .hint = "the input stops early; check for an unclosed delimiter or a truncated final statement",
+            },
+            .syntax_reserved_keyword => .{
+                .severity = .err,
+                .component = .syntax,
+                .primary = .keyword,
+                .sequence = Sequence.invalid,
+                .summary = "reserved keyword used as a name",
+                .hint = "DOT keywords are reserved in every position; write the name in double quotes to use it as an identifier",
+            },
+            .syntax_ambiguous_numeral => .{
+                .severity = .warning,
+                .component = .syntax,
+                .primary = .numeral,
+                .sequence = Sequence.ambiguous,
+                .summary = "numeral runs directly into the next token",
+                .hint = "Graphviz reads this as two tokens; quote the text, or separate the tokens with whitespace",
             },
             .validation_operator_mismatch => .{
                 .severity = .err,
@@ -265,22 +352,6 @@ pub const Code = enum {
                 .summary = "memory for the retained document was exhausted",
                 .hint = "provide a larger allocator or arena, or parse into fixed pools sized for the document; the input itself may still be valid",
             },
-            .lexer_unterminated_construct => .{
-                .severity = .err,
-                .component = .lexer,
-                .primary = .syntax,
-                .sequence = Sequence.unexpected_end,
-                .summary = "input ended inside an unterminated construct",
-                .hint = "close the construct opened at the highlighted location",
-            },
-            .lexer_invalid_concatenation => .{
-                .severity = .err,
-                .component = .lexer,
-                .primary = .syntax,
-                .sequence = Sequence.invalid,
-                .summary = "expected a quoted identifier after '+'",
-                .hint = "'+' joins quoted identifiers only; put the next identifier in double quotes",
-            },
         };
         return .{
             .severity = definition.severity,
@@ -297,7 +368,7 @@ pub const Code = enum {
         return self.info().severity;
     }
 
-    /// The WDP structured code in display form, e.g. "E.Parser.Syntax.003".
+    /// The WDP structured code in display form, e.g. "E.Syntax.Grammar.003".
     pub fn structured(self: Code) []const u8 {
         return switch (self) {
             inline else => |code| comptime structuredText(code),
@@ -377,20 +448,62 @@ pub fn computeNamespaceHash(namespace_text: []const u8) [5]u8 {
 /// localization, consistent phrasing, and telemetry all want typed values.
 pub const Details = union(enum) {
     none,
-    /// For `lexer_invalid_byte`: the offending byte.
+    /// For `syntax_invalid_byte`: the offending byte.
     invalid_byte: u8,
-    /// For `parser_unexpected_token` and `parser_unexpected_end`.
+    /// For `syntax_invalid_operator`: the byte that broke the operator (the
+    /// byte after '-' or '--'), or null when the input ended there.
+    invalid_operator: ?u8,
+    /// For `syntax_incomplete_numeral`: the byte found where a digit was
+    /// required, or null when the input ended there.
+    incomplete_numeral: ?u8,
+    /// For `syntax_ambiguous_numeral`: the byte the numeral runs into.
+    ambiguous_numeral: u8,
+    /// For `syntax_unexpected_token` and `syntax_unexpected_end`.
     unexpected: Unexpected,
+    /// For `syntax_reserved_keyword`.
+    reserved_keyword: ReservedKeyword,
     /// For `validation_operator_mismatch`.
     operator_mismatch: OperatorMismatch,
     /// For `profile_unsupported_feature`.
     unsupported_feature: Feature,
     /// For `resource_capacity_exhausted`.
     capacity: Capacity,
-    /// For `lexer_unterminated_construct`; the primary span is the opener.
+    /// For `syntax_unterminated_construct`; the primary span is the opener.
     unterminated: UnterminatedConstruct,
-    /// For `lexer_invalid_concatenation`: next raw byte, or null at EOF.
+    /// For `syntax_invalid_concatenation`: next raw byte, or null at EOF.
     expected_quote: ?u8,
+};
+
+/// The DOT keywords, for `ReservedKeyword`.
+pub const Keyword = enum(u8) {
+    graph,
+    digraph,
+    strict,
+    subgraph,
+    node,
+    edge,
+
+    /// The canonical lowercase spelling.
+    pub fn lexeme(self: Keyword) []const u8 {
+        return switch (self) {
+            .graph => "graph",
+            .digraph => "digraph",
+            .strict => "strict",
+            .subgraph => "subgraph",
+            .node => "node",
+            .edge => "edge",
+        };
+    }
+};
+
+/// A reserved keyword in a position that needed a name. With context
+/// `.attribute_list` the keyword began an attribute statement (`node`,
+/// `edge`, `graph`) and the required '[' did not follow — the two readings
+/// (attribute statement or a name that needs quoting) are both possible,
+/// and the span marks the keyword itself.
+pub const ReservedKeyword = struct {
+    keyword: Keyword,
+    context: ParseContext,
 };
 
 /// Currently supported lexical constructs requiring a closing delimiter.
@@ -442,6 +555,9 @@ pub const ParseContext = enum(u8) {
     attribute_key,
     attribute_value,
     assignment_value,
+    /// Directly after a standalone subgraph: where ports and attribute
+    /// lists are not allowed.
+    subgraph_suffix,
 };
 
 /// A secondary source location related to a diagnostic. The role is typed;
@@ -457,6 +573,10 @@ pub const Related = struct {
         suffix_started_here,
         /// The declaration that established the violated expectation.
         declared_here,
+        /// A closing '}' that sits at a smaller indentation than the line
+        /// that opened the scope it closed — it probably belongs to an
+        /// enclosing scope, and the real omission is above it.
+        misindented_close,
     };
 };
 
@@ -464,7 +584,12 @@ pub const Unexpected = struct {
     expected: ExpectedSet,
     found: SyntaxItem,
     context: ParseContext,
+    /// The still-open delimiter (or pending port colon) this failure
+    /// traces back to.
     related: ?Related = null,
+    /// A location the parser suspects is the actual mistake, when a
+    /// heuristic found one (`.misindented_close`).
+    suspect: ?Related = null,
 };
 
 pub const OperatorMismatch = struct {
@@ -669,11 +794,15 @@ test "severity alphabet matches WDP part 1" {
 }
 
 test "structured codes follow the documented registry" {
-    try expectEqualStrings("E.Lexer.Syntax.003", Code.lexer_invalid_concatenation.structured());
-    try expectEqualStrings("E.Lexer.Syntax.031", Code.lexer_unterminated_construct.structured());
-    try expectEqualStrings("E.Lexer.Byte.003", Code.lexer_invalid_byte.structured());
-    try expectEqualStrings("E.Parser.Syntax.003", Code.parser_unexpected_token.structured());
-    try expectEqualStrings("E.Parser.Syntax.031", Code.parser_unexpected_end.structured());
+    try expectEqualStrings("E.Syntax.Byte.003", Code.syntax_invalid_byte.structured());
+    try expectEqualStrings("E.Syntax.Operator.003", Code.syntax_invalid_operator.structured());
+    try expectEqualStrings("E.Syntax.Numeral.001", Code.syntax_incomplete_numeral.structured());
+    try expectEqualStrings("E.Syntax.Token.032", Code.syntax_unterminated_construct.structured());
+    try expectEqualStrings("E.Syntax.Concatenation.003", Code.syntax_invalid_concatenation.structured());
+    try expectEqualStrings("E.Syntax.Grammar.003", Code.syntax_unexpected_token.structured());
+    try expectEqualStrings("E.Syntax.Grammar.031", Code.syntax_unexpected_end.structured());
+    try expectEqualStrings("E.Syntax.Keyword.003", Code.syntax_reserved_keyword.structured());
+    try expectEqualStrings("W.Syntax.Numeral.033", Code.syntax_ambiguous_numeral.structured());
     try expectEqualStrings("E.Validation.Operator.002", Code.validation_operator_mismatch.structured());
     try expectEqualStrings("E.Profile.Feature.009", Code.profile_unsupported_feature.structured());
     try expectEqualStrings("E.Resource.Capacity.026", Code.resource_capacity_exhausted.structured());
@@ -682,8 +811,15 @@ test "structured codes follow the documented registry" {
 
 test "registry is coherent: unique identities, valid fields (R-DIAG-005)" {
     const codes = std.enums.values(Code);
+    // Components are logical domains (WDP part 2), never source modules.
+    for (std.enums.values(Component)) |component| {
+        try expect(!std.mem.eql(u8, component.name(), "Lexer"));
+        try expect(!std.mem.eql(u8, component.name(), "Parser"));
+    }
     for (codes, 0..) |a, i| {
         const ia = a.info();
+        // A primary never repeats its component (WDP part 3 naming rule).
+        try expect(!std.mem.eql(u8, ia.component.name(), ia.primary.name()));
 
         // Sequence range: 001–999; 000 is reserved by WDP part 4.
         try expect(ia.sequence >= 1 and ia.sequence <= 999);
@@ -750,11 +886,11 @@ test "namespace hashes match the official WDP test vectors" {
 }
 
 test "qualified compact ID is namespace_hash-code_hash (part 7 §5.2)" {
-    const qualified = Code.parser_unexpected_token.qualifiedCompactId();
+    const qualified = Code.syntax_unexpected_token.qualifiedCompactId();
     try expectEqual(@as(usize, 11), qualified.len);
     try expectEqualStrings(&namespace_hash, qualified[0..5]);
     try expectEqual(@as(u8, '-'), qualified[5]);
-    const code_id = Code.parser_unexpected_token.compactId();
+    const code_id = Code.syntax_unexpected_token.compactId();
     try expectEqualStrings(&code_id, qualified[6..11]);
 }
 
@@ -763,7 +899,7 @@ test "fixed bag retains the first diagnostics and counts the rest" {
     const sink = bag.sink();
 
     const diagnostic: Diagnostic = .{
-        .code = .parser_unexpected_token,
+        .code = .syntax_unexpected_token,
         .span = .{ .start = .{ .byte_offset = 4, .line = 1, .byte_column = 5 }, .byte_len = 2 },
     };
     try sink.emit(diagnostic);
@@ -772,7 +908,7 @@ test "fixed bag retains the first diagnostics and counts the rest" {
 
     try expectEqual(@as(usize, 2), bag.items().len);
     try expectEqual(@as(usize, 1), bag.omitted);
-    try expectEqual(Code.parser_unexpected_token, bag.items()[0].code);
+    try expectEqual(Code.syntax_unexpected_token, bag.items()[0].code);
 
     bag.reset();
     try expectEqual(@as(usize, 0), bag.items().len);
@@ -781,7 +917,7 @@ test "fixed bag retains the first diagnostics and counts the rest" {
 
 test "zero-capacity bag only counts" {
     var bag: FixedBag(0) = .{};
-    bag.push(.{ .code = .parser_unexpected_end, .span = .{ .start = .start, .byte_len = 0 } });
+    bag.push(.{ .code = .syntax_unexpected_end, .span = .{ .start = .start, .byte_len = 0 } });
     try expectEqual(@as(usize, 0), bag.items().len);
     try expectEqual(@as(usize, 1), bag.omitted);
 }
@@ -797,14 +933,14 @@ test "direct sink receives diagnostics without retention" {
     };
     var counter: Counter = .{};
     const sink: Sink = .{ .context = &counter, .emit_fn = Counter.emit };
-    try sink.emit(.{ .code = .lexer_invalid_byte, .span = .{ .start = .start, .byte_len = 1 } });
-    try sink.emit(.{ .code = .lexer_invalid_byte, .span = .{ .start = .start, .byte_len = 1 } });
+    try sink.emit(.{ .code = .syntax_invalid_byte, .span = .{ .start = .start, .byte_len = 1 } });
+    try sink.emit(.{ .code = .syntax_invalid_byte, .span = .{ .start = .start, .byte_len = 1 } });
     try expectEqual(@as(usize, 2), counter.count);
 }
 
 test "the discard sink accepts and drops everything" {
     try discard.emit(.{
-        .code = .parser_unexpected_end,
+        .code = .syntax_unexpected_end,
         .span = .{ .start = .start, .byte_len = 0 },
     });
 }
@@ -818,6 +954,6 @@ test "failing sink propagates its error" {
         }
     };
     const sink: Sink = .{ .context = null, .emit_fn = Rejecting.emit };
-    const result = sink.emit(.{ .code = .parser_unexpected_end, .span = .{ .start = .start, .byte_len = 0 } });
+    const result = sink.emit(.{ .code = .syntax_unexpected_end, .span = .{ .start = .start, .byte_len = 0 } });
     try std.testing.expectError(error.DiagnosticSinkFailure, result);
 }

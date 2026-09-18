@@ -38,6 +38,7 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | HTML identifiers (`<…>`) | Deferred | Feature `html_identifier` |
 | Non-ASCII identifiers (bytes `0x80`–`0xFF`) | Deferred | Feature `non_ascii_identifier`; the whole run is one span |
 | Port suffixes (`a:n`, `a:out:e`) | **Supported** | Raw first/optional second identifier; no attachment resolution |
+| Leading UTF-8 byte order mark | **Supported** | Skipped at the start of the input, as Graphviz does; byte columns on line 1 still count its three bytes |
 
 ## Compatibility notes
 
@@ -51,7 +52,7 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
   Preprocessor line numbers and file names are discarded; diagnostics always
   use physical positions in the supplied bytes. Comment bodies are opaque
   bytes, with no encoding validation. An unterminated block comment is
-  `invalid_syntax`, diagnosed at its opening `/*` as `E.Lexer.Syntax.031`
+  `invalid_syntax`, diagnosed at its opening `/*` as `E.Syntax.Token.032`
   with `.unterminated = .block_comment`.
   Comments separate tokens; they cannot splice a keyword or edge operator.
   Comment markers inside quoted identifiers are content. HTML-like identifiers
@@ -92,22 +93,26 @@ endings within quotes are preserved as written. This is DOT lexical decoding,
 not a C/JSON unescaper or Graphviz label/attribute interpretation.
 
 Non-ASCII bytes and non-NUL control bytes inside quotes are preserved without
-UTF-8 validation. NUL inside quotes is rejected as `E.Lexer.Byte.003` at the
-offending byte, not silently truncated. Non-ASCII bare IDs and a leading UTF-8
-BOM remain on the existing deferred-feature path; BOM stripping, transcoding,
-and encoding validation are not implemented.
+UTF-8 validation. NUL inside quotes is rejected as `E.Syntax.Byte.003` at the
+offending byte, not silently truncated. Non-ASCII bare IDs remain on the
+deferred-feature path. A UTF-8 byte order mark at the very start of the input
+is skipped (Graphviz's scanner ignores it too); elsewhere those bytes are a
+non-ASCII run. Transcoding and encoding validation are not implemented.
 
-An unterminated quoted segment reports `E.Lexer.Syntax.031` with
+An unterminated quoted segment reports `E.Syntax.Token.032` with
 `.unterminated = .quoted_identifier` at that segment's opening quote, including
 when it is a later part of a concatenation. A missing quoted operand after `+`
-reports `E.Lexer.Syntax.003` with `.expected_quote` containing the next raw byte,
-or null at EOF. Neither failure returns a partial document.
+reports `E.Syntax.Concatenation.003` with `.expected_quote` containing the next
+raw byte, or null at EOF. Neither failure returns a partial document.
 
 Numerals have no leading `+`, exponent, or numeric normalization. Maximal
 matching means `1e3` is tokens `1` and `e3`, and `1.2.3` is `1.2` and `.3`;
 in a statement list these can be separate nodes because separators are optional.
-This parser emits no ambiguity warning for those cases. Bare `.` and `-.`
-remain invalid.
+Exactly as Graphviz warns ("syntax ambiguity - badly delimited number"), the
+parser emits `W.Syntax.Numeral.033` on the numeral and continues. Bare `.` and
+`-.` are `E.Syntax.Numeral.001`. A lone `-`, a spaced `- >`, or an over-long
+`-->` is `E.Syntax.Operator.003`, never an invalid byte: those bytes are legal
+DOT in the wrong shape.
 
 **Verification:** the written [DOT grammar](https://graphviz.org/doc/info/lang.html)
 is primary and Graphviz 15.1.0 remains the pinned differential baseline.

@@ -174,10 +174,14 @@ for whenever fragments arrive. *(Embodied: façade surface.)*
 **Q20 — Which WDP component, primary namespaces, sequence ranges, and catalog
 conformance level will the project publish?**
 Namespace `dot_parser` (WDP part 7, fully qualified compact IDs
-`nshash-codehash`); components are internal modules (`Lexer`, `Parser`,
-`Validation`, `Resource`, `Profile`); sequences follow the part 6 conventions
+`nshash-codehash`); components are logical domains (`Syntax`, `Validation`,
+`Resource`, `Profile`) — revised 2026-09-18 from internal module names, which
+had split one user-visible kind of problem across `Lexer`/`Parser` and tied
+identities to the file layout; primaries name the failure domain (`Byte`,
+`Operator`, `Numeral`, `Token`, `Concatenation`, `Grammar`, `Keyword`,
+`Capacity`, `Memory`, `Feature`); sequences follow the part 6 conventions
 (001 MISSING, 002 MISMATCH, 003 INVALID, 009 UNSUPPORTED, 026 EXHAUSTED,
-031+ project-specific). Sequence numbers and aliases are defined together in
+031+ project-specific: 031 UNEXPECTED_END, 032 UNTERMINATED, 033 AMBIGUOUS). Sequence numbers and aliases are defined together in
 `diagnostic.Sequence`; numbers may recur across diagnostic domains. Registry
 uniqueness, format validity, and compact-ID collisions are test-enforced;
 compact-ID generation is also checked against the official WDP test vectors.
@@ -261,8 +265,9 @@ identifier continuation bytes) are reported as deferred, not decoded or
 accepted identifiers. Outside comments and quoted content, control bytes other
 than supported whitespace are invalid when reached by the lexer. HTML-like
 constructs stop at a deferred boundary; their bodies have not been validated.
-**Still open:** timing and exact policy for non-ASCII identifier support, BOM
-handling, whether version 1 ships a UTF-8 validator and its invalid-sequence
+A leading UTF-8 BOM is skipped, matching Graphviz's scanner (decided
+2026-09-18). **Still open:** timing and exact policy for non-ASCII identifier
+support, whether version 1 ships a UTF-8 validator and its invalid-sequence
 policy, and HTML-like ID validation. Resolve these as lexical support grows;
 they are not all promised
 deliverables of the next slice. *(Embodied: `src/lexer.zig`,
@@ -355,6 +360,10 @@ Open; nothing currently forces the choice.
 - 2026-09-12 — Attribute slice: added Q30 for representation/event decisions;
   Q10 records supplemental Graphviz checks. Q7 still requires a concrete target;
   Q27's byte/work budgets are not satisfied by the new pair-count limit.
+
+- 2026-09-18 — Diagnostics overhaul: Q20 components are logical domains and
+  the registry names conditions (operator, numeral, keyword, ambiguous
+  numeral warning); Q23 BOM policy decided (skipped). R-DIAG-001 amended.
 
 - 2026-09-12 — Q24: removed the premature diagnostic stability exception;
   experimental 0.x now has no backward-compatibility retention requirement.

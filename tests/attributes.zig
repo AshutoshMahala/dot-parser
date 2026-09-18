@@ -121,7 +121,7 @@ test "EOF in a later attribute group points at its own opener" {
     defer parsed.deinit(std.testing.allocator);
     try expect(parsed.outcome == .invalid_syntax);
     const failure = bag.items()[0];
-    try equal(dot.Code.parser_unexpected_end, failure.code);
+    try equal(dot.Code.syntax_unexpected_end, failure.code);
     try equal(dot.diagnostic.ParseContext.attribute_value, failure.details.unexpected.context);
     try expect(failure.details.unexpected.expected.contains(.identifier));
     try equal(@as(usize, 14), failure.details.unexpected.related.?.span.start.byte_offset);

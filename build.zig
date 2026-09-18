@@ -60,6 +60,7 @@ pub fn build(b: *std.Build) void {
         "ports",
         "subgraphs",
         "subgraph_endpoints",
+        "check_file",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
