@@ -43,10 +43,11 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 ## Compatibility notes
 
 - **Comment handling**: `#` starts a line comment at any token boundary,
-  including after indentation or another token (matching Graphviz 15.1.0).
+  including after indentation or another token (matching Graphviz 16.0.0,
+  whose scanner treats `#` as a comment introducer at any position).
   Block comments do not nest and end at the first `*/`. Line comments end at
   LF, CRLF, standalone CR, or EOF. Standalone CR termination is an intentional
-  difference: Graphviz 15.1.0 rejects `graph { a // c\r b }` and its `#`
+  difference: Graphviz 16.0.0 rejects `graph { a // c\r b }` and its `#`
   equivalent, while this library treats CR as a physical newline and accepts
   both (here `\r` denotes one CR byte).
   Preprocessor line numbers and file names are discarded; diagnostics always
@@ -59,12 +60,14 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
   remain deferred and their bodies are not scanned.
 - **Whole-document consumption**: after the root closing `}`, only whitespace,
   complete comments, and end of input are accepted. Malformed trailing comments
-  and additional tokens are errors. Graphviz 15.1.0 accepts the specific inputs
-  `graph {} /* unfinished` and `graph { a; } x`; this library rejects both.
+  and additional tokens are errors. Graphviz accepts the specific inputs
+  `graph {} /* unfinished` and `graph { a; } x` (verified by running 15.1.0;
+  the 16.0.0 grammar reads one graph the same way); this library rejects both.
 - **Keywords are reserved words everywhere**, matching Graphviz: an
   unquoted keyword is never an identifier. `graph graph {}` and
   `graph { a -- node; }` are syntax errors (verified against Graphviz
-  15.1.0), not deferred features.
+  16.0.0, whose grammar never accepts a keyword token as an ID), not
+  deferred features.
 - **Kind-agnostic parsing**: `digraph { a -- b; }` parses successfully;
   the operator/kind mismatch is reported by validation as
   `E.Validation.Operator.002`. Consumers with dialect-tolerant needs can
@@ -115,9 +118,12 @@ parser emits `W.Syntax.Numeral.033` on the numeral and continues. Bare `.` and
 DOT in the wrong shape.
 
 **Verification:** the written [DOT grammar](https://graphviz.org/doc/info/lang.html)
-is primary and Graphviz 15.1.0 remains the pinned differential baseline.
-Additional manual identifier probes used the locally installed Graphviz 16.0.0
-on 2026-09-12; they do not replace a pinned automated suite. The checked forms
+is primary and Graphviz 16.0.0 is the pinned differential baseline
+(reconciled from 15.1.0 on 2026-09-18 against the 16.0.0 `grammar.y` and
+`scan.l` sources; the BOM, stray-semicolon and numeral-ambiguity notes above
+come from those sources). The manual identifier probes ran on the locally
+installed Graphviz 16.0.0 on 2026-09-12; they do not replace a pinned
+automated suite. The checked forms
 include numeral boundaries, quoted concatenation, raw multiline content,
 escaped quotes/backslashes, and control bytes. A deliberate difference in the
 checked 16.0.0 behavior: it removes escaped LF but preserves escaped CRLF/CR;

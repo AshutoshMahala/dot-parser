@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-09-13
+Original draft: 2026-07-13 · Last amended: 2026-09-18
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -1187,3 +1187,7 @@ recorded here.
 - 2026-09-12 — **R-DIAG-005/R-ARCH-009**: removed the premature diagnostic
   stability exception. No backward-compatibility scaffolding is required while
   the library is experimental and has no users; keep only current behavior.
+
+- 2026-09-18 — **R-DIAG-001**: components are logical domains, never source
+  modules, and a code names one condition. The differential baseline (Q10)
+  is reconciled to Graphviz 16.0.0.

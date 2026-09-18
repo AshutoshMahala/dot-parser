@@ -1,8 +1,8 @@
 # Open design decisions
 
-Last reconciled: 2026-09-14 (subgraph endpoints).
+Last reconciled: 2026-09-18 (diagnostics overhaul).
 
-Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q34)
+Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q37)
 are stable: they are never renumbered, deleted, or reused, and new questions
 append with fresh numbers. Answered questions are not removed — the
 **Decided** section doubles as the project's decision log, each entry naming
@@ -142,15 +142,18 @@ Zig, minimum 0.16.0. *(Embodied: `build.zig.zon`.)*
 No. *(Embodied: non-goals §14.)*
 
 **Q10 — What compatibility baseline defines correct behavior?**
-The written DOT specification is primary; Graphviz 15.1.0 is the current
-differential reference, not an instruction to reproduce every implementation
-quirk. Intentional differences are listed in
+The written DOT specification is primary; Graphviz 16.0.0 is the pinned
+differential reference (reconciled 2026-09-18 from 15.1.0: the 16.0.0
+`lib/cgraph/grammar.y` and `scan.l` carry the same rules every compatibility
+note relies on, and the identifier/attribute probes of 2026-09-12 already ran
+on 16.0.0), not an instruction to reproduce every implementation quirk.
+Intentional differences are listed in
 [supported syntax](../SUPPORTED_SYNTAX.md), including standalone-CR comment
 termination and whole-document consumption. Keywords, numeral IDs, and quoted
 IDs and basic attributes are implemented; non-ASCII bare IDs remain deferred.
-Additional identifier and attribute probes used the locally available Graphviz 16.0.0, separately labeled in the
-compatibility notes. **Verification pending:** automate the differential
-harness against the pinned reference and record exceptions explicitly.
+**Verification pending:** automate the differential harness against the
+pinned reference and record exceptions explicitly; notes first verified by
+running 15.1.0 keep that attribution until the harness re-runs them.
 *(Embodied: `src/lexer.zig`, compatibility notes, corpus; R-ROB-004.)*
 
 **Q13 — What language-specific policy governs raw pointers, unchecked
@@ -355,6 +358,26 @@ Gated on the profile slice; the current default keeps the detectors
 syntax index over retained source?**
 Open; nothing currently forces the choice.
 
+**Q35 — Which validation policy does the library expose, and how are mixed
+graphs represented?**
+Open. Direction: the document records the declared kind and the observed
+operator usage as facts; a runtime validation policy reads the `graph`
+keyword as undirected or generic, sets the mismatch rule's severity, and
+chooses how a mismatched operator is read; no third declared kind. Defaults
+stay strict. Design and the end-user policy guide follow implementation.
+
+**Q36 — Which syntax deviations may be accepted leniently, and how are they
+reported?**
+Open. Direction: only deviations with one reading (empty statement, over-long
+operator, bare dash, keyword as a name), each configurable as reject, warn or
+accept per R-FUNC-007 and reported with `W.Syntax.*` codes. Everything
+ambiguous stays an error or a recovery point.
+
+**Q37 — How are fix suggestions carried on diagnostics for linters?**
+Open. Direction: an optional typed fix (span, edit, replacement enum,
+applicability) on `Diagnostic`, with rustc's machine-applicable versus maybe
+distinction; its size cost is a candidate for a diagnostic-richness profile.
+
 ---
 
 ## Reconciliation log
@@ -378,6 +401,9 @@ Open; nothing currently forces the choice.
   numeral warning); Q23 BOM policy decided (skipped); Q22 statement-boundary
   recovery implemented as an opt-in runtime policy with its cost measured;
   Q16 state-size guard raised to 896 B (872 B measured). R-DIAG-001 amended.
+  Q10 baseline reconciled to Graphviz 16.0.0. Added Q35–Q37 (validation
+  policy and mixed graphs, lenient syntax, fix suggestions) as open
+  questions with their agreed direction.
 
 - 2026-09-12 — Q24: removed the premature diagnostic stability exception;
   experimental 0.x now has no backward-compatibility retention requirement.

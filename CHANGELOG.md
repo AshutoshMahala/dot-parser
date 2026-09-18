@@ -37,6 +37,9 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   at a smaller indentation than the line that opened it
   (`Unexpected.suspect`, role `misindented_close`).
 - The compact renderer says "byte column".
+- The differential compatibility baseline is Graphviz 16.0.0 (was 15.1.0);
+  the BOM, stray-semicolon and numeral-ambiguity behaviours were checked
+  against its `grammar.y` and `scan.l`.
 - Several annotations on one excerpt line share a single mark row: the
   rightmost label stays inline, the others hang below from a `┬` junction
   and `└────` connector, leftmost lowest so connectors never cross labels.
