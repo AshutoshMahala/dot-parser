@@ -71,9 +71,16 @@ statement/pair counts; no event queue, allocation, or source-sized copy is added
 Zero credits leave normal work untouched. One-credit calls can yield before
 begin, pair, owner, and commit callbacks; successful commit is immediately
 terminal. Failures still perform at most one diagnostic attempt and one cleanup
-abort, even when discovered on the last credit. Callback/allocator work remains
+abort, even when discovered on the last credit. Under the opt-in recovery
+policy (`recovery = .statements`, 2026-09-18) the first body syntax failure
+performs that diagnostic attempt and the single abort, and parsing then
+continues through ordinary charged microsteps; each later failure is one more
+diagnostic attempt attached to the grammar step that found it, with no second
+abort and no extra scan. A lexical warning is one diagnostic attempt attached
+to the scan step that completed its token and is never terminal. Callback/allocator work remains
 excluded as specified below. Progress counts accepted syntax events, not
-statement/pair reservations or semantically validated output.
+statement/pair reservations or semantically validated output; after the abort,
+recovery attempts no further events and progress stops advancing.
 
 Identifier-only chains retain the first edge in machine state. Continuations
 stream directly into the link pool; the chain-owner callback consumes their
@@ -192,6 +199,9 @@ fixed parser-side cost. On a terminal path, allow **at most one diagnostic
 delivery attempt and one abort callback** outside the remaining work credit.
 This lets an error or cancellation discovered on the final microstep terminate
 cleanly. This exception permits no extra source scan or normal syntax events.
+Recovered failures and lexical warnings attach one diagnostic delivery attempt
+to the charged microstep that found them; like every sink callout their
+duration is excluded, and they add neither a scan nor a syntax event.
 Callback and cleanup duration remains excluded. Successful commit is a normal
 charged dispatch, not a housekeeping exception.
 
@@ -317,8 +327,11 @@ chain loop inside one transition. Cancellation/abort discards staged records;
 only document commit exposes them. Ports require no new source scan, clock,
 allocator, cancellation protocol, or public event-sink API.
 
-Further syntax, recovery, public pull sinks, streaming input, total-work limits,
+Further syntax, public pull sinks, streaming input, total-work limits,
 scheduling and bounded validation are outside this contract's implemented scope.
+Statement-boundary recovery runs inside it: after the one abort,
+resynchronization is ordinary charged grammar work, and the partition
+equivalence tests cover the recovering drivers.
 Measured optionality and callout costs are recorded in [baselines](../BASELINES.md).
 
 ## Subgraph endpoint continuation

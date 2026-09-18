@@ -1,7 +1,7 @@
 # Project Structure
 
 Status: living document — updated as slices land  
-Last updated: 2026-09-14 (subgraph endpoints)
+Last updated: 2026-09-18 (diagnostics overhaul)
 
 The package is a standalone Zig DOT-language library and must not depend on
 Zigraph.
@@ -44,8 +44,11 @@ dot-parser/
 │   ├── edge_chains.zig
 │   ├── ports.zig
 │   ├── subgraphs.zig
+│   ├── subgraph_endpoints.zig
 │   ├── sessions.zig
 │   ├── freestanding_session.zig
+│   ├── diagnostics.zig        (probe table: identity, location, wording)
+│   ├── measure.zig            (count-only dry run equals retained pools)
 │   └── corpus/
 │       ├── README.md          (corpus governance)
 │       ├── valid/
@@ -60,7 +63,9 @@ dot-parser/
 │   ├── bounded.zig
 │   ├── edge_chains.zig
 │   ├── ports.zig
-│   └── subgraphs.zig
+│   ├── subgraphs.zig
+│   ├── subgraph_endpoints.zig
+│   └── check_file.zig         (command-line checker: recovery + renderer)
 ├── bench/
 │   ├── throughput.zig         (parse + validate, retained memory)
 │   ├── lexer.zig              (lexical fixtures, no timed allocation)
@@ -107,13 +112,17 @@ width.
 
 WDP diagnostic identities and typed diagnostic fields:
 
-- Diagnostic severity and code.
-- Source location/span.
+- Diagnostic severity and code. Components are logical domains (`Syntax`,
+  `Validation`, `Resource`, `Profile`), never source modules; a code names
+  one condition and the grammar position travels in the payload.
+- Source location/span, plus typed related locations (the open delimiter,
+  the suspect misindented brace).
 - Parse/validation outcome categories.
 - Fixed-capacity and streaming diagnostic sink helpers.
 
 Human-readable catalogs, localization, JSON, and runtime hashing do not belong
-in the initial core.
+in the initial core; `console.zig` is the optional renderer that turns the
+payloads into wording and is dropped by the linker when unused.
 
 ### `src/lexer.zig`
 
@@ -126,12 +135,17 @@ drivers are not re-exported. It recognizes:
   whether one is legal in its position is the parser's decision.
 - Bare ASCII, numeral, and quoted identifiers (including `+` concatenation).
 - `{`, `}`, `;`, `:`, `[`, `]`, `=`, `,`, `--`, and `->`.
-- Whitespace and physical line endings (LF, CRLF, standalone CR).
+- Whitespace and physical line endings (LF, CRLF, standalone CR); a leading
+  UTF-8 byte order mark is skipped.
 - Comments, skipped without retaining trivia (see [supported syntax](../SUPPORTED_SYNTAX.md)).
-- End of input and invalid bytes.
+- End of input, invalid bytes, malformed operators (`-`, `-->`) and
+  incomplete numerals (`.`, `-.`), each its own typed failure; a numeral
+  running into a letter or second dot raises a warning the parser forwards.
 - Introducers of deferred *lexical* constructs (HTML/non-ASCII bare
   identifiers), reported
   as typed unsupported-feature failures.
+- Resumption after a failure, so the parser's statement-boundary recovery
+  can continue past malformed bytes.
 
 It borrows source spans, performs no hidden allocation, and owns no AST types.
 Ordinary lexing and the private metered parser share one resumable scanner.
@@ -153,6 +167,10 @@ methods over this module without adding fields to retained records.
 The parser state machine and a private, provisional syntax-event contract. It
 parses one document and emits source-shaped events. It does not allocate AST
 nodes directly and does not know about graph engines.
+
+Under the opt-in `recovery = .statements` policy a body syntax error aborts
+the sink once and the grammar keeps running for diagnostics only,
+resynchronizing at `;`/`}`; the default remains fail-fast.
 
 Public facades offer run-to-completion and fixed-storage sessions. The metered specialization
 separately charges scanning, grammar transitions, and event attempts, retaining

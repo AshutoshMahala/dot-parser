@@ -234,7 +234,7 @@ whether convenience APIs should ship with non-trivial defaults is open.
 
 **Q16 — What size thresholds establish that disabling a feature removed its
 cost?**
-Parser-state size is regression-guarded (≤ 832 B; currently 808 B native) and baselines exist;
+Parser-state size is regression-guarded (≤ 896 B; currently 872 B native) and baselines exist;
 per-profile binary-size thresholds await the profile work. *(Embodied:
 `docs/BASELINES.md`; parser-size test.)*
 
@@ -308,6 +308,24 @@ checks accompany the API. Ordinary-path and optional costs are recorded in
 limits and bounded validation remain outside this implemented slice.
 *(R-MOD-010/R-MOD-013; `root.FixedSession`, `parser.Machine`, `lexer.Scanner`.)*
 
+**Q22 — Which grammar boundaries are safe recovery points, and what is the
+measured binary-size cost of recovery support?**
+**Implemented (2026-09-18):** statement boundaries are the sync points. With
+the runtime policy `recovery = .statements` (default `.fail_fast`, per
+R-FUNC-007), a syntax error inside the body aborts the sink once, the parser
+skips to the next `;` or `}` at the same brace depth (skipped `{` are matched
+by counting), and every later syntax error is reported through the same bag.
+No document is ever published; the outcome stays `invalid_syntax`. Lexical
+errors resume after the malformed bytes; unterminated quotes/comments, header
+errors, end of input, trailing tokens, limits and deferred features remain
+terminal. Measured: renderer-free ReleaseSmall examples grew by 350–650 B and
+ordinary throughput did not change, so compile-time exclusion is not yet
+warranted (R-FUNC-007's "material" threshold). **Still open:** a caller-
+provided diagnostic limit that ends recovery early (R-FUNC-007, R-SEC-002),
+the per-class abort/report/ignore policy, and lenient acceptance of
+unambiguous deviations as warnings. *(Embodied: `parser.Recovery`,
+`ParseOptions.recovery`, `tests/diagnostics.zig`; R-FUNC-007, R-DX-002.)*
+
 ---
 
 ## Open
@@ -333,12 +351,6 @@ prefer the absolute smallest binary?**
 Gated on the profile slice; the current default keeps the detectors
 (R-MOD-006).
 
-**Q22 — Which grammar boundaries are safe recovery points, and what is the
-measured binary-size cost of recovery support?**
-Direction sketched — statement boundaries (`;`, `}`) are the natural sync
-points, and recovery reuses the same reporting surface (bag gains entries) —
-but design and measurement belong to a dedicated recovery slice.
-
 **Q28 — Does version 1 provide lazy semantic lowering only, or also a lazy
 syntax index over retained source?**
 Open; nothing currently forces the choice.
@@ -363,7 +375,9 @@ Open; nothing currently forces the choice.
 
 - 2026-09-18 — Diagnostics overhaul: Q20 components are logical domains and
   the registry names conditions (operator, numeral, keyword, ambiguous
-  numeral warning); Q23 BOM policy decided (skipped). R-DIAG-001 amended.
+  numeral warning); Q23 BOM policy decided (skipped); Q22 statement-boundary
+  recovery implemented as an opt-in runtime policy with its cost measured;
+  Q16 state-size guard raised to 896 B (872 B measured). R-DIAG-001 amended.
 
 - 2026-09-12 — Q24: removed the premature diagnostic stability exception;
   experimental 0.x now has no backward-compatibility retention requirement.

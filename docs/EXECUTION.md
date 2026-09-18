@@ -44,7 +44,9 @@ pools still produce `.storage_failure` with a diagnostic.
 Credits do not bound CPU instructions or wall-clock time. User diagnostic and
 cancellation hooks are callouts; their execution time is excluded. Terminal
 housekeeping can attempt one diagnostic and one internal cleanup abort without
-another credit. Validation, identifier decoding, and rendering are separate,
+another credit. With `recovery = .statements` in the options, each recovered
+syntax error and each lexical warning is one more diagnostic callout attached
+to the microstep that found it; the abort still happens once. Validation, identifier decoding, and rendering are separate,
 unbudgeted operations. There is no OS clock, scheduler, thread, or hidden worker.
 
 ## Progress and completion
@@ -151,5 +153,6 @@ lengths, not the underlying bytes: it is not a secure-erasure facility.
 
 See [ownership](OWNERSHIP.md), [measured costs](BASELINES.md), and the precise
 [execution contract](architecture/EXECUTION_CONTRACT.md). Public pull events,
-chunked input, recovery, total-operation work limits and bounded validation
-remain outside this slice.
+chunked input, total-operation work limits and bounded validation remain
+outside this slice; statement-boundary recovery is available through the
+session options.
