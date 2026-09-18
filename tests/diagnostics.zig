@@ -58,7 +58,7 @@ const cases = [_]Case{
     .{ .source = "digraph { a [label=<b>]; }", .code = .profile_unsupported_feature, .line = 1, .column = 20 },
     // Operators and numerals as typed.
     .{ .source = "digraph { a - b; }", .code = .syntax_invalid_operator, .line = 1, .column = 13, .len = 1, .hint = "single '-' is not an operator" },
-    .{ .source = "digraph { a - > b; }", .code = .syntax_invalid_operator, .line = 1, .column = 13, .len = 1, .hint = "no space between" },
+    .{ .source = "digraph { a - > b; }", .code = .syntax_invalid_operator, .line = 1, .column = 13, .len = 3, .hint = "no whitespace is allowed inside", .label = "no whitespace inside an edge operator" },
     .{ .source = "digraph { a --> b; }", .code = .syntax_invalid_operator, .line = 1, .column = 13, .len = 3, .hint = "write '->'" },
     .{ .source = "digraph { a => b; }", .code = .syntax_invalid_byte, .line = 1, .column = 14, .hint = "second character of '->'" },
     .{ .source = "digraph { a -> -> b; }", .code = .syntax_unexpected_token, .line = 1, .column = 16, .hint = "two edge operators in a row" },
@@ -125,6 +125,85 @@ test "every probe reports the expected identity, location, and wording" {
             try std.testing.expect(std.mem.indexOf(u8, text, label) != null);
         }
     }
+}
+
+/// Apply `fix` to `source` into a fresh buffer, the way a linter would.
+fn applyFix(allocator: std.mem.Allocator, source: []const u8, fix: dot.diagnostic.Fix) ![]u8 {
+    const start = fix.span.start.byte_offset;
+    const end = start + fix.span.byte_len;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    switch (fix.edit) {
+        .delete => {
+            try out.appendSlice(allocator, source[0..start]);
+            try out.appendSlice(allocator, source[end..]);
+        },
+        .replace => |replacement| {
+            try out.appendSlice(allocator, source[0..start]);
+            try out.appendSlice(allocator, replacement.text());
+            try out.appendSlice(allocator, source[end..]);
+        },
+        .insert_before => |replacement| {
+            try out.appendSlice(allocator, source[0..start]);
+            try out.appendSlice(allocator, replacement.text());
+            try out.appendSlice(allocator, source[start..]);
+        },
+        .insert_after => |replacement| {
+            try out.appendSlice(allocator, source[0..end]);
+            try out.appendSlice(allocator, replacement.text());
+            try out.appendSlice(allocator, source[end..]);
+        },
+        .wrap_in_quotes => {
+            try out.appendSlice(allocator, source[0..start]);
+            try out.append(allocator, '"');
+            try out.appendSlice(allocator, source[start..end]);
+            try out.append(allocator, '"');
+            try out.appendSlice(allocator, source[end..]);
+        },
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+test "applying every machine-applicable fix yields a document that parses" {
+    const allocator = std.testing.allocator;
+    var checked_any = false;
+    for (cases) |case| {
+        // Start from a fresh copy; fixes are applied one parse at a time,
+        // highest offset first, until the parse is clean or stalls.
+        var source = try allocator.dupe(u8, case.source);
+        defer allocator.free(source);
+        var rounds: usize = 0;
+        while (rounds < 4) : (rounds += 1) {
+            var bag: dot.FixedDiagnosticBag(16) = .{};
+            var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{ .parse = .{ .recovery = .statements } });
+            defer checked.deinit(allocator);
+            // Machine-applicable fixes only, from the end of the source back.
+            var best: ?dot.diagnostic.Fix = null;
+            for (bag.items()) |d| {
+                const fix = d.fix orelse continue;
+                if (fix.applicability != .machine_applicable) continue;
+                if (best == null or fix.span.start.byte_offset > best.?.span.start.byte_offset) best = fix;
+            }
+            const fix = best orelse break;
+            checked_any = true;
+            const next = try applyFix(allocator, source, fix);
+            allocator.free(source);
+            source = next;
+        }
+        if (rounds == 0) continue;
+        errdefer std.debug.print("probe source: {s}\nafter fixes: {s}\n", .{ case.source, source });
+        var bag: dot.FixedDiagnosticBag(16) = .{};
+        var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
+        defer checked.deinit(allocator);
+        try std.testing.expect(checked.outcome == .success);
+        // Only a validation error or a warning may remain: no syntax error,
+        // and no machine-applicable fix still on offer.
+        for (bag.items()) |d| {
+            try std.testing.expect(d.code.info().component != .syntax or d.code.severity() == .warning);
+            if (d.fix) |fix| try std.testing.expect(fix.applicability == .maybe);
+        }
+    }
+    try std.testing.expect(checked_any);
 }
 
 test "a byte order mark is not a diagnostic" {

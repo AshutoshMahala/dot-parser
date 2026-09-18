@@ -144,6 +144,55 @@ belongs above that `}`. The console renderer turns the payload into a
 rule statement and a hint per context; consumers rendering their own text
 have the same fields.
 
+## Fix suggestions
+
+When the producer knows the one edit that repairs a problem, the diagnostic
+carries it as `fix: ?Fix`: a span, a typed edit, and an applicability.
+Nothing in it is a string — a replacement is a `Replacement` enum whose
+`text()` gives the bytes — so it costs no allocation and a linter can act on
+it without parsing wording.
+
+| Edit | Meaning |
+| --- | --- |
+| `.delete` | remove the span |
+| `.replace = r` | replace the span with `r.text()` |
+| `.insert_before = r` / `.insert_after = r` | insert `r.text()` at the span's start / end (a zero-length span is a position, such as end of input) |
+| `.wrap_in_quotes` | put the span in double quotes |
+
+`applicability` is the contract for tools: `.machine_applicable` means the
+edit is the single correct repair and may be applied unattended (`-->` to
+`->`, quoting a keyword used as a name, deleting a stray `;`, closing an
+open `[` at end of input); `.maybe` means it is one plausible repair among
+several or its position is a guess (a `,` between statements, a missing
+`=`, closing a quote at end of input, an operator mismatch where changing
+the keyword would do as well). Apply fixes from the highest offset down so
+earlier spans stay valid, then re-parse; the library never applies fixes
+itself.
+
+Which diagnostics carry a fix, and how confident it is:
+
+| Diagnostic | Situation | Fix |
+| --- | --- | --- |
+| `E.Syntax.Operator.003` | `-->`, `---`, `- >`, `- -` | replace with the operator the last byte names, machine-applicable |
+| `E.Syntax.Operator.003` | lone `-` | replace with the declared kind's operator, machine-applicable (none before the kind keyword) |
+| `E.Syntax.Byte.003` | `=>` | replace with the declared kind's operator, maybe |
+| `E.Syntax.Keyword.003` | keyword as a name | wrap in quotes, machine-applicable; none for `node;`, which has two readings |
+| `E.Syntax.Grammar.003` | stray `;`, extra `}`, doubled operator, doubled or leading `,`/`;` in a list | delete, machine-applicable |
+| `E.Syntax.Grammar.003` | `,` between statements | replace with `;`, maybe |
+| `E.Syntax.Grammar.003` | missing `=` after a key; `]` missing before a token; `{` missing after the header | insert, maybe |
+| `E.Syntax.Grammar.003` | header typo | replace with the nearest header keyword, maybe |
+| `E.Syntax.Grammar.031` | input ends inside `[` / `{` | insert `]` / `}` at end of input, machine-applicable unless a misindented `}` was found |
+| `E.Syntax.Token.032` | unterminated quote or comment | insert the closer at end of input, maybe |
+| `E.Validation.Operator.002` | operator mismatch | replace with the declared kind's operator, maybe |
+
+`W.Syntax.Numeral.033` carries no fix: the repair would quote the whole run
+(`"1e3"`), and the scanner has not seen where the following token ends.
+
+The console renderer prints the fix under the hint (`Fix: replace '-->'
+with '->'`, with `(one possible repair)` appended for `maybe`); the compact
+renderer adds a `fix:` line. `Diagnostic` is 200 bytes with the field, so a
+`FixedDiagnosticBag(32)` is 6.4 KB.
+
 This table describes library-produced diagnostics. `Diagnostic` is publicly
 constructible: its separate `code` and `details` fields do not enforce these
 pairings in the type system. Consumers must not assume every diagnostic has

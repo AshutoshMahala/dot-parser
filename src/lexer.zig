@@ -97,6 +97,9 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             /// After `--`: one byte of lookahead so `-->` / `---` are one
             /// malformed-operator diagnostic instead of a stray byte.
             double_dash,
+            /// After `- `: whitespace inside an operator (`- >`, `- -`) is
+            /// one diagnostic covering the whole thing, with a fix.
+            dash_gap,
             leading_dot,
             integral,
             fraction,
@@ -106,7 +109,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             ready,
         };
         const Trivia = enum { ordinary, after_quote, after_plus };
-        const Terminal = enum { none, eof, invalid, operator, numeral, block, quote, concat, non_ascii, html };
+        const Terminal = enum { none, eof, invalid, operator, operator_long, operator_spaced, numeral, block, quote, concat, non_ascii, html };
 
         source: []const u8,
         tracker: location.Tracker = .{},
@@ -156,7 +159,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             const target: usize = switch (self.terminal) {
                 .block, .quote => self.source.len,
                 .concat => start,
-                .invalid, .operator, .numeral => if (start == anchor) start + self.terminal_len else self.source.len,
+                .invalid, .operator, .operator_long, .operator_spaced, .numeral => if (start == anchor) start + self.terminal_len else self.source.len,
                 .none, .eof, .non_ascii, .html => unreachable,
             };
             // `fail` left the tracker at the token anchor; walk forward so
@@ -176,6 +179,8 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         pub fn takeWarning(self: *Self) ?diagnostic.Diagnostic {
             const byte = self.ambiguous_numeral orelse return null;
             self.ambiguous_numeral = null;
+            // No fix: the repair would quote the whole run (`"1e3"`), and
+            // the scanner has not seen where the following token ends.
             return .{
                 .code = .syntax_ambiguous_numeral,
                 .span = .{ .start = self.anchor.location, .byte_len = self.here().byte_offset - self.anchor.location.byte_offset },
@@ -328,18 +333,43 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                             continuation = .leading_dot;
                             return continuation;
                         },
+                        ' ', '\t' => {
+                            // Look past the gap: `- >` is a spaced operator.
+                            self.found = b;
+                            self.consume(b);
+                            continuation = .dash_gap;
+                            return continuation;
+                        },
                         else => {},
                     };
-                    // `a - b`, `a - > b`, `-` at EOF: the operator is
-                    // incomplete. Legal DOT bytes, wrong shape.
+                    // `a -b`, `-` at EOF: the operator is incomplete. Legal
+                    // DOT bytes, wrong shape.
                     return self.fail(.operator, self.anchor.location, 1, byte);
+                },
+                .dash_gap => {
+                    if (byte) |b| switch (b) {
+                        ' ', '\t' => {
+                            self.consume(b);
+                            return continuation;
+                        },
+                        '>', '-' => {
+                            // `- >` / `- -`: one diagnostic over the whole
+                            // run, so the fix can replace it outright.
+                            self.consume(b);
+                            const len = self.here().byte_offset - self.anchor.location.byte_offset;
+                            return self.fail(.operator_spaced, self.anchor.location, len, b);
+                        },
+                        else => {},
+                    };
+                    // `a - b`: a lone dash; `found` is the byte after it.
+                    return self.fail(.operator, self.anchor.location, 1, self.found);
                 },
                 .double_dash => {
                     if (byte == '>' or byte == '-') {
                         // `-->` / `---`: one over-long operator, reported
                         // whole so the fix ("write '->'") is obvious.
                         self.consume(byte.?);
-                        return self.fail(.operator, self.anchor.location, 3, byte);
+                        return self.fail(.operator_long, self.anchor.location, 3, byte);
                     }
                     return self.finish(.edge_undirected);
                 },
@@ -497,29 +527,45 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 .tag = .eof,
                 .span = .{ .start = self.here(), .byte_len = 0 },
             } };
-            return .{ .failure = .{
-                .code = switch (self.terminal) {
-                    .invalid => .syntax_invalid_byte,
-                    .operator => .syntax_invalid_operator,
-                    .numeral => .syntax_incomplete_numeral,
-                    .block, .quote => .syntax_unterminated_construct,
-                    .concat => .syntax_invalid_concatenation,
-                    .non_ascii, .html => .profile_unsupported_feature,
-                    .none, .eof => unreachable,
+            const span: location.Span = .{ .start = self.opener.location, .byte_len = self.terminal_len };
+            return .{
+                .failure = .{
+                    .code = switch (self.terminal) {
+                        .invalid => .syntax_invalid_byte,
+                        .operator, .operator_long, .operator_spaced => .syntax_invalid_operator,
+                        .numeral => .syntax_incomplete_numeral,
+                        .block, .quote => .syntax_unterminated_construct,
+                        .concat => .syntax_invalid_concatenation,
+                        .non_ascii, .html => .profile_unsupported_feature,
+                        .none, .eof => unreachable,
+                    },
+                    .span = span,
+                    .details = switch (self.terminal) {
+                        .invalid => .{ .invalid_byte = self.found.? },
+                        .operator => .{ .invalid_operator = .{ .found = self.found, .shape = .lone } },
+                        .operator_long => .{ .invalid_operator = .{ .found = self.found, .shape = .long } },
+                        .operator_spaced => .{ .invalid_operator = .{ .found = self.found, .shape = .spaced } },
+                        .numeral => .{ .incomplete_numeral = self.found },
+                        .block => .{ .unterminated = .block_comment },
+                        .quote => .{ .unterminated = .quoted_identifier },
+                        .concat => .{ .expected_quote = self.found },
+                        .non_ascii => .{ .unsupported_feature = .non_ascii_identifier },
+                        .html => .{ .unsupported_feature = .html_identifier },
+                        .none, .eof => unreachable,
+                    },
+                    // An over-long or spaced operator has exactly one repair:
+                    // the operator its last byte names. A lone '-' needs the
+                    // document kind, which the parser supplies.
+                    .fix = switch (self.terminal) {
+                        .operator_long, .operator_spaced => .{
+                            .span = span,
+                            .edit = .{ .replace = if (self.found == '>') .directed_operator else .undirected_operator },
+                            .applicability = .machine_applicable,
+                        },
+                        else => null,
+                    },
                 },
-                .span = .{ .start = self.opener.location, .byte_len = self.terminal_len },
-                .details = switch (self.terminal) {
-                    .invalid => .{ .invalid_byte = self.found.? },
-                    .operator => .{ .invalid_operator = self.found },
-                    .numeral => .{ .incomplete_numeral = self.found },
-                    .block => .{ .unterminated = .block_comment },
-                    .quote => .{ .unterminated = .quoted_identifier },
-                    .concat => .{ .expected_quote = self.found },
-                    .non_ascii => .{ .unsupported_feature = .non_ascii_identifier },
-                    .html => .{ .unsupported_feature = .html_identifier },
-                    .none, .eof => unreachable,
-                },
-            } };
+            };
         }
     };
 }
@@ -597,7 +643,7 @@ test "one-credit calls expose every lexical continuation and trivia mode" {
     var states = std.EnumSet(AuditedLexer.State).initEmpty();
     var trivia_modes = std.EnumSet(AuditedLexer.Trivia).initEmpty();
     for ([_][]const u8{
-        " \r\n#x\r//y\n/*z**/a;",        "a\xff;", "-1.2 -.5 .1 1->2 3--4 5-->6",
+        " \r\n#x\r//y\n/*z**/a;",        "a\xff;", "-1.2 -.5 .1 1->2 3--4 5-->6", "7 - > 8",
         "\"a\\\"b\" /*glue*/ + \"c\" x",
     }) |source| {
         var lexer = AuditedLexer.init(source);
@@ -674,6 +720,8 @@ test "metered scanner partitions preserve tokens diagnostics positions and total
         "",                                            " \t\r\n\r\n",                                                  "graph { a -- b; x [label=\"hi\"]; }",
         "DiGraph STRICT SubGraph Node EDGE Graphical", "0 -0 123 -12 .5 -.5 12. -12.30 000.00 1->-2 3--4 1e3 1.2.3",   "-",
         "-->",                                         "---",                                                          "\xEF\xBB\xBFgraph {",
+        "- >",                                         "-  -",                                                         "- x",
+        "-\t",                                         "a - b; c - > d",                                               "-",
         "-.",                                          "-.x",                                                          ".",
         ".x",                                          "+1",                                                           "/x",
         "/",                                           "// comment\r\n# inline\ra /* ** / * */ -- b",                  "/* unterminated **",
@@ -790,12 +838,22 @@ fn expectInvalidByte(lexer: *Lexer, byte: u8) !void {
     try expectEqual(byte, result.failure.details.invalid_byte);
 }
 
-fn expectInvalidOperator(lexer: *Lexer, text: []const u8, found: ?u8) !void {
+fn expectInvalidOperator(lexer: *Lexer, text: []const u8, found: ?u8, shape: diagnostic.InvalidOperator.Shape) !void {
     const result = lexer.next();
     try expect(result == .failure);
     try expectEqual(diagnostic.Code.syntax_invalid_operator, result.failure.code);
-    try expectEqual(found, result.failure.details.invalid_operator);
+    try expectEqual(found, result.failure.details.invalid_operator.found);
+    try expectEqual(shape, result.failure.details.invalid_operator.shape);
     try expectEqualStrings(text, result.failure.span.slice(lexer.source));
+    // Shape alone decides the repair of long and spaced operators.
+    if (shape == .lone) {
+        try expect(result.failure.fix == null);
+    } else {
+        const fix = result.failure.fix.?;
+        try expectEqual(diagnostic.Applicability.machine_applicable, fix.applicability);
+        try expectEqualStrings(text, fix.span.slice(lexer.source));
+        try expectEqual(if (found == '>') diagnostic.Replacement.directed_operator else diagnostic.Replacement.undirected_operator, fix.edit.replace);
+    }
 }
 
 fn expectIncompleteNumeral(lexer: *Lexer, text: []const u8, found: ?u8) !void {
@@ -827,7 +885,7 @@ test "comments separate tokens without joining identifiers or operators" {
     try expectToken(&lexer, .eof, "");
 
     var split_operator = Lexer.init("-/**/-");
-    try expectInvalidOperator(&split_operator, "-", '/');
+    try expectInvalidOperator(&split_operator, "-", '/', .lone);
     var split_keyword = Lexer.init("gr/**/aph");
     try expectToken(&split_keyword, .identifier, "gr");
     try expectToken(&split_keyword, .identifier, "aph");
@@ -987,21 +1045,33 @@ test "truncated operators fail; keyword prefixes are identifiers" {
     // malformed operator: legal DOT bytes in the wrong shape, reported as
     // such (never as an invalid byte) with the byte that broke it.
     var lone = Lexer.init("-");
-    try expectInvalidOperator(&lone, "-", null);
+    try expectInvalidOperator(&lone, "-", null, .lone);
 
     var stray = Lexer.init("-x");
-    try expectInvalidOperator(&stray, "-", 'x');
+    try expectInvalidOperator(&stray, "-", 'x', .lone);
 
+    // A dash followed by whitespace and then nothing operator-like is a
+    // lone dash; `found` is the byte after it.
+    var dash = Lexer.init("a - b");
+    try expectToken(&dash, .identifier, "a");
+    try expectInvalidOperator(&dash, "-", ' ', .lone);
+    var dash_end = Lexer.init("- ");
+    try expectInvalidOperator(&dash_end, "-", ' ', .lone);
+
+    // Whitespace inside the operator is one diagnostic over the whole run.
     var spaced = Lexer.init("a - > b");
     try expectToken(&spaced, .identifier, "a");
-    try expectInvalidOperator(&spaced, "-", ' ');
+    try expectInvalidOperator(&spaced, "- >", '>', .spaced);
+    var spaced_undirected = Lexer.init("a -\t\t- b");
+    try expectToken(&spaced_undirected, .identifier, "a");
+    try expectInvalidOperator(&spaced_undirected, "-\t\t-", '-', .spaced);
 
     // Over-long operators are one diagnostic covering the whole run.
     var long = Lexer.init("a --> b");
     try expectToken(&long, .identifier, "a");
-    try expectInvalidOperator(&long, "-->", '>');
+    try expectInvalidOperator(&long, "-->", '>', .long);
     var triple = Lexer.init("---");
-    try expectInvalidOperator(&triple, "---", '-');
+    try expectInvalidOperator(&triple, "---", '-', .long);
     // `--` directly followed by an identifier stays a valid operator.
     var tight = Lexer.init("a--b");
     try expectToken(&tight, .identifier, "a");

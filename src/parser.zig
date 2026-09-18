@@ -1069,9 +1069,11 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         /// before a supported header. Returns null when the parse continues
         /// in recovery (the caller resynchronizes), else the terminal result.
         fn fail(self: *Self, failure: diagnostic.Diagnostic) ?Result {
+            var d = failure;
+            if (d.fix == null) d.fix = self.lexicalFix(d);
             // A failing diagnostic sink must not mask the parse outcome;
             // the loss is surfaced via `Result.diagnostic_delivery`.
-            self.diagnostics.emit(failure) catch {
+            self.diagnostics.emit(d) catch {
                 self.delivery = .failed;
             };
             const reason: syntax_event.AbortReason = switch (failure.code) {
@@ -1098,6 +1100,56 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             };
             self.abortEvents(reason);
             return self.finish(outcome);
+        }
+
+        /// Repairs for scanner failures that need what only the parser
+        /// knows: the document kind and the surrounding text.
+        fn lexicalFix(self: *const Self, d: diagnostic.Diagnostic) ?diagnostic.Fix {
+            switch (d.details) {
+                .invalid_operator => |operator| {
+                    // A lone '-' becomes the operator the document kind
+                    // needs; the scanner already repaired the other shapes.
+                    if (operator.shape != .lone or !self.kindKnown()) return null;
+                    return .{ .span = d.span, .edit = .{ .replace = self.kindOperator() }, .applicability = .machine_applicable };
+                },
+                .invalid_byte => |byte| {
+                    // `=>`: an arrow spelled with '='. The parser has just
+                    // taken the '=' as an assignment, so the two bytes are
+                    // adjacent on one line.
+                    const offset = d.span.start.byte_offset;
+                    if (byte != '>' or offset == 0 or self.tokens.source[offset - 1] != '=' or !self.kindKnown()) return null;
+                    var span = d.span;
+                    span.start.byte_offset -= 1;
+                    span.start.byte_column -= 1;
+                    span.byte_len = 2;
+                    return .{ .span = span, .edit = .{ .replace = self.kindOperator() }, .applicability = .maybe };
+                },
+                .unterminated => |construct| {
+                    // Closing at end of input makes the document scan; the
+                    // intended position is unknown, so it is only an offer.
+                    // One linear scan for the location, on a terminal path.
+                    const source = self.tokens.source;
+                    const end: location.Span = .{ .start = location.locate(source, source.len), .byte_len = 0 };
+                    return .{
+                        .span = end,
+                        .edit = .{ .insert_before = switch (construct) {
+                            .quoted_identifier => .double_quote,
+                            .block_comment => .comment_close,
+                        } },
+                        .applicability = .maybe,
+                    };
+                },
+                else => return null,
+            }
+        }
+
+        /// True once the header has said which kind the document is.
+        fn kindKnown(self: *const Self) bool {
+            return self.state != .prologue and self.state != .kind_keyword;
+        }
+
+        fn kindOperator(self: *const Self) diagnostic.Replacement {
+            return if (self.kind == .digraph) .directed_operator else .undirected_operator;
         }
 
         /// True once a syntax error has been recovered from: the sink was
@@ -1158,6 +1210,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         .code = .syntax_reserved_keyword,
                         .span = token.span,
                         .details = .{ .reserved_keyword = .{ .keyword = keyword, .context = context } },
+                        .fix = .{ .span = token.span, .edit = .wrap_in_quotes, .applicability = .machine_applicable },
                     };
                 }
             }
@@ -1208,6 +1261,76 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                     .related = related,
                     .suspect = suspect,
                 } },
+                .fix = self.unexpectedFix(context, found, expected_set, token, related, suspect),
+            };
+        }
+
+        /// The repair for an unexpected token, when one is known. Machine-
+        /// applicable only where the edit is the single reading of the
+        /// mistake; a plausible repair among several is `maybe`.
+        fn unexpectedFix(
+            self: *const Self,
+            context: diagnostic.ParseContext,
+            found: diagnostic.SyntaxItem,
+            expected: diagnostic.ExpectedSet,
+            token: lex.Token,
+            related: ?diagnostic.Related,
+            suspect: ?diagnostic.Related,
+        ) ?diagnostic.Fix {
+            const here = token.span;
+            const machine: diagnostic.Applicability = .machine_applicable;
+            const maybe: diagnostic.Applicability = .maybe;
+            if (found == .end_of_input) {
+                // Close what is open. A missing ']' has one place to go;
+                // a missing '}' too, unless a misindented brace suggests
+                // the omission is somewhere above.
+                const opener = related orelse return null;
+                if (opener.role != .opened_here) return null;
+                if (self.open_bracket_span != null) {
+                    return .{ .span = here, .edit = .{ .insert_before = .right_bracket }, .applicability = machine };
+                }
+                return .{ .span = here, .edit = .{ .insert_before = .right_brace }, .applicability = if (suspect == null) machine else maybe };
+            }
+            return switch (context) {
+                .document_body => switch (found) {
+                    .semicolon => .{ .span = here, .edit = .delete, .applicability = machine },
+                    else => null,
+                },
+                .document_epilogue => switch (found) {
+                    .right_brace => .{ .span = here, .edit = .delete, .applicability = machine },
+                    else => null,
+                },
+                .statement => switch (found) {
+                    .comma => .{ .span = here, .edit = .{ .replace = .semicolon }, .applicability = maybe },
+                    else => null,
+                },
+                .edge_endpoint => switch (found) {
+                    .undirected_operator, .directed_operator => .{ .span = here, .edit = .delete, .applicability = machine },
+                    else => null,
+                },
+                .attribute_key => switch (found) {
+                    .comma, .semicolon => .{ .span = here, .edit = .delete, .applicability = machine },
+                    .identifier => .{ .span = self.attribute_key, .edit = .{ .insert_after = .equals }, .applicability = maybe },
+                    else => if (listToken(found)) null else .{ .span = here, .edit = .{ .insert_before = .right_bracket }, .applicability = maybe },
+                },
+                .attribute_list => if (listToken(found)) null else .{ .span = here, .edit = .{ .insert_before = .right_bracket }, .applicability = maybe },
+                .port_component => switch (found) {
+                    .colon => .{ .span = here, .edit = .delete, .applicability = maybe },
+                    else => null,
+                },
+                .document_header => switch (found) {
+                    .identifier => if (expected.contains(.digraph_keyword))
+                        (if (headerKeywordSuggestion(here.slice(self.tokens.source))) |keyword|
+                            diagnostic.Fix{ .span = here, .edit = .{ .replace = keyword }, .applicability = maybe }
+                        else
+                            null)
+                    else if (expected.contains(.left_brace) and !expected.contains(.identifier))
+                        .{ .span = here, .edit = .{ .insert_before = .left_brace }, .applicability = maybe }
+                    else
+                        null,
+                    else => null,
+                },
+                else => null,
             };
         }
 
@@ -1272,6 +1395,42 @@ fn tokenItem(tag: lex.Token.Tag) diagnostic.SyntaxItem {
         .equals => .equals,
         .comma => .comma,
     };
+}
+
+/// A header keyword within edit distance two of `text`, for the "did you
+/// mean" repair. Conservative on purpose: short or very different text
+/// gets no guess, and only the keywords legal in a header are candidates.
+fn headerKeywordSuggestion(text: []const u8) ?diagnostic.Replacement {
+    if (text.len < 3 or text.len > 12) return null;
+    var lowered: [12]u8 = undefined;
+    for (text, 0..) |byte, i| lowered[i] = std.ascii.toLower(byte);
+    const candidate = lowered[0..text.len];
+    var best: ?diagnostic.Replacement = null;
+    var best_distance: usize = 3;
+    for ([_]diagnostic.Replacement{ .graph_keyword, .digraph_keyword, .strict_keyword }) |keyword| {
+        const distance = editDistance(candidate, keyword.text());
+        if (distance < best_distance) {
+            best_distance = distance;
+            best = keyword;
+        }
+    }
+    return best;
+}
+
+/// Levenshtein distance over two short ASCII strings (both at most 12 bytes).
+fn editDistance(a: []const u8, b: []const u8) usize {
+    var previous: [13]usize = undefined;
+    var current: [13]usize = undefined;
+    for (0..b.len + 1) |j| previous[j] = j;
+    for (a, 0..) |byte_a, i| {
+        current[0] = i + 1;
+        for (b, 0..) |byte_b, j| {
+            const substitution = previous[j] + @intFromBool(byte_a != byte_b);
+            current[j + 1] = @min(@min(previous[j + 1] + 1, current[j] + 1), substitution);
+        }
+        @memcpy(previous[0 .. b.len + 1], current[0 .. b.len + 1]);
+    }
+    return previous[b.len];
 }
 
 /// Tokens that can appear inside an attribute list.
@@ -1400,6 +1559,7 @@ test "cancellation can stop every lexical continuation and execution phase" {
         " \r\n#x\r//y\n/*z**/graph {a;}",
         "graph {a\xff;}",
         "graph {-1.2 -.5 .1 1->2 3--4 5-->6}",
+        "graph {7 - > 8}",
         "graph {\"a\\\"b\" /*glue*/ + \"c\" [x=y] }",
     };
     for (sources) |source| for (0..source.len * 4 + 16) |budget| {
@@ -1751,7 +1911,7 @@ test "ordinary parser compiles out pending work and audit storage" {
     try expect(@FieldType(Ordinary, "work") == void);
     try expect(@FieldType(Ordinary, "audit") == void);
     try expect(@FieldType(lex.Scanner(false, false), "source_frontier") == void);
-    try expect(@sizeOf(Ordinary) <= 896);
+    try expect(@sizeOf(Ordinary) <= 960);
 }
 
 test "unaudited metered driver charges empty document exactly and runs to completion" {
@@ -2161,6 +2321,76 @@ test "a misindented closing brace is the suspect when the input ends inside a sc
     try expect(tidy_bag.items()[0].details.unexpected.suspect == null);
 }
 
+test "diagnostics carry the one known repair, with honest applicability" {
+    const Expect = struct {
+        source: []const u8,
+        text: []const u8,
+        edit: std.meta.Tag(diagnostic.Edit),
+        replacement: ?diagnostic.Replacement = null,
+        applicability: diagnostic.Applicability = .machine_applicable,
+    };
+    inline for ([_]Expect{
+        .{ .source = "digraph { a - b; }", .text = "-", .edit = .replace, .replacement = .directed_operator },
+        .{ .source = "graph { a - b; }", .text = "-", .edit = .replace, .replacement = .undirected_operator },
+        .{ .source = "graph { a - > b; }", .text = "- >", .edit = .replace, .replacement = .directed_operator },
+        .{ .source = "digraph { a --> b; }", .text = "-->", .edit = .replace, .replacement = .directed_operator },
+        .{ .source = "digraph { a => b; }", .text = "=>", .edit = .replace, .replacement = .directed_operator, .applicability = .maybe },
+        .{ .source = "digraph { a -> node; }", .text = "node", .edit = .wrap_in_quotes },
+        .{ .source = "digraph { ; }", .text = ";", .edit = .delete },
+        .{ .source = "digraph { a; } }", .text = "}", .edit = .delete },
+        .{ .source = "digraph { a, b; }", .text = ",", .edit = .replace, .replacement = .semicolon, .applicability = .maybe },
+        .{ .source = "digraph { a -> -> b; }", .text = "->", .edit = .delete },
+        .{ .source = "digraph { a [color=red,,x=1] }", .text = ",", .edit = .delete },
+        .{ .source = "digraph { a [,color=red] }", .text = ",", .edit = .delete },
+        .{ .source = "digraph { a [color red] }", .text = "color", .edit = .insert_after, .replacement = .equals, .applicability = .maybe },
+        .{ .source = "digraph { a [color=red; }", .text = "}", .edit = .insert_before, .replacement = .right_bracket, .applicability = .maybe },
+        .{ .source = "digraph { a [color=red", .text = "", .edit = .insert_before, .replacement = .right_bracket },
+        .{ .source = "digraph { a -> b", .text = "", .edit = .insert_before, .replacement = .right_brace },
+        .{ .source = "digrph { }", .text = "digrph", .edit = .replace, .replacement = .digraph_keyword, .applicability = .maybe },
+        .{ .source = "digraph G\na -> b;\n}", .text = "a", .edit = .insert_before, .replacement = .left_brace, .applicability = .maybe },
+        .{ .source = "digraph { a::n }", .text = ":", .edit = .delete, .applicability = .maybe },
+        .{ .source = "digraph { \"abc", .text = "", .edit = .insert_before, .replacement = .double_quote, .applicability = .maybe },
+        .{ .source = "digraph { /* x", .text = "", .edit = .insert_before, .replacement = .comment_close, .applicability = .maybe },
+    }) |case| {
+        errdefer std.debug.print("source: {s}\n", .{case.source});
+        var events: Recording = .{};
+        var bag: Bag = .{};
+        _ = parse(case.source, &events, bag.sink(), .{});
+        const fix = bag.items()[0].fix orelse return error.MissingFix;
+        try expectEqual(case.edit, std.meta.activeTag(fix.edit));
+        try expectEqual(case.applicability, fix.applicability);
+        try expectEqualStrings(case.text, fix.span.slice(case.source));
+        if (case.replacement) |replacement| {
+            const actual = switch (fix.edit) {
+                .replace, .insert_before, .insert_after => |r| r,
+                else => return error.WrongEdit,
+            };
+            try expectEqual(replacement, actual);
+        }
+    }
+    // No single repair: attribute keyword without its list, a missing
+    // endpoint, a second graph, or a misplaced `strict`.
+    inline for (.{ "digraph { node; }", "digraph { a -> ; }", "digraph { a } digraph { b }", "digraph strict { }", "G { a; }" }) |source| {
+        var events: Recording = .{};
+        var bag: Bag = .{};
+        _ = parse(source, &events, bag.sink(), .{});
+        try expect(bag.items()[0].fix == null);
+    }
+    // Before the kind keyword there is nothing to coerce a lone '-' to.
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    _ = parse("- graph { }", &events, bag.sink(), .{});
+    try expect(bag.items()[0].fix == null);
+    // A misindented closing brace makes the end-of-input insertion a guess.
+    const misindented = "digraph {\n  subgraph s {\n    a -> b;\n  b -> c;\n}\n";
+    var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
+    var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var nested_events: Recording = .{};
+    var nested_bag: Bag = .{};
+    _ = parse(misindented, &nested_events, nested_bag.sink(), .{ .scratch = &stack });
+    try expectEqual(diagnostic.Applicability.maybe, nested_bag.items()[0].fix.?.applicability);
+}
+
 test "ambiguous numerals warn and the parse still succeeds" {
     var events: Recording = .{};
     var bag: Bag = .{};
@@ -2453,12 +2683,13 @@ test "failing beginDocument still receives the cleanup abort" {
 
 test "parser state stays small (R-PERF-005 parser-state-size regression guard)" {
     // The whole machine — lexer, continuation state, options, bookkeeping —
-    // must remain a small constant, independent of input size. 896 B is the
-    // current measured value (872 B: the suspect-brace span added 48 B) plus
-    // headroom (see docs/BASELINES.md), not an architectural budget: if a
-    // slice legitimately grows the state, measure, update the baseline doc,
-    // and raise this bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 896);
+    // must remain a small constant, independent of input size. 960 B is the
+    // current measured value (896 B: the suspect-brace span and the recovery
+    // fields added 72 B over the 824 B of 0.2.0) plus headroom (see
+    // docs/BASELINES.md), not an architectural budget: if a slice
+    // legitimately grows the state, measure, update the baseline doc, and
+    // raise this bound in the same commit.
+    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 960);
 }
 
 test "step is terminal-idempotent after success and after failure" {

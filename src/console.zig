@@ -113,8 +113,13 @@ pub fn render(d: Diagnostic, writer: anytype) !void {
         try writer.writeAll("\n");
     }
     try writer.writeAll("  help: ");
-    try writeHint(d, info, null, writer);
+    try writeHint(d, info, writer);
     try writer.writeAll("\n");
+    if (d.fix) |fix| {
+        try writer.writeAll("  fix: ");
+        try writeFix(fix, null, writer);
+        try writer.writeAll("\n");
+    }
 }
 
 /// Render one diagnostic as a numbered box: message-first header, location,
@@ -165,8 +170,14 @@ pub fn renderBoxed(
 
     try writeRail(g, pal, writer);
     try writer.print("{s}Hint:{s} ", .{ pal.hint, pal.reset });
-    try writeHint(d, info, options.source, writer);
+    try writeHint(d, info, writer);
     try writer.writeAll("\n");
+    if (d.fix) |fix| {
+        try writeRail(g, pal, writer);
+        try writer.print("{s}Fix:{s} ", .{ pal.hint, pal.reset });
+        try writeFix(fix, options.source, writer);
+        try writer.writeAll("\n");
+    }
 
     // Closing line: the box's number tag pairs the closer with its opener
     // (boxes grow tall with excerpts), followed by the searchable identity.
@@ -372,8 +383,10 @@ fn writeHeadline(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !vo
         .invalid_byte => |byte| {
             if (byte == 0) try writer.writeAll("NUL byte in the input") else try writer.writeAll(info.summary);
         },
-        .invalid_operator => |found| {
-            try writer.print("'{s}' is not an edge operator", .{operatorText(d.span.byte_len, found)});
+        .invalid_operator => |operator| switch (operator.shape) {
+            .lone => try writer.writeAll("'-' is not an edge operator"),
+            .long => try writer.print("'{s}' is not an edge operator", .{if (operator.found == '>') "-->" else "---"}),
+            .spaced => try writer.writeAll("whitespace inside an edge operator"),
         },
         .incomplete_numeral => {
             try writer.print("'{s}' must be followed by a digit", .{if (d.span.byte_len == 2) "-." else "."});
@@ -386,18 +399,66 @@ fn writeHeadline(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !vo
     }
 }
 
-/// The operator text an `invalid_operator` span covers, reconstructed from
-/// its length and the byte that broke it (no source needed).
-fn operatorText(len: usize, found: ?u8) []const u8 {
-    if (len == 1) return "-";
-    return if (found == '>') "-->" else "---";
+/// The repair, as an instruction. With the source, the marked text is
+/// quoted (when short and printable) so the line reads on its own.
+fn writeFix(fix: diagnostic.Fix, source: ?[]const u8, writer: anytype) !void {
+    const marked = markedText(fix.span, source);
+    switch (fix.edit) {
+        .delete => if (marked) |text| {
+            try writer.print("delete '{s}'", .{text});
+        } else {
+            try writer.writeAll("delete the marked text");
+        },
+        .replace => |replacement| if (marked) |text| {
+            try writer.print("replace '{s}' with '{s}'", .{ text, replacement.text() });
+        } else {
+            try writer.print("replace the marked text with '{s}'", .{replacement.text()});
+        },
+        .insert_before => |replacement| if (fix.span.byte_len == 0) {
+            // A position rather than text: usually end of input.
+            if (source != null and fix.span.start.byte_offset == source.?.len) {
+                try writer.print("insert '{s}' at end of input", .{replacement.text()});
+            } else {
+                try writer.print("insert '{s}' at line {d}, byte column {d}", .{ replacement.text(), fix.span.start.line, fix.span.start.byte_column });
+            }
+        } else if (marked) |text| {
+            try writer.print("insert '{s}' before '{s}'", .{ replacement.text(), text });
+        } else {
+            try writer.print("insert '{s}' before the marked text", .{replacement.text()});
+        },
+        .insert_after => |replacement| if (marked) |text| {
+            try writer.print("insert '{s}' after '{s}'", .{ replacement.text(), text });
+        } else {
+            try writer.print("insert '{s}' after the marked text", .{replacement.text()});
+        },
+        .wrap_in_quotes => if (marked) |text| {
+            try writer.print("write it as \"{s}\"", .{text});
+        } else {
+            try writer.writeAll("put the marked text in double quotes");
+        },
+    }
+    switch (fix.applicability) {
+        .machine_applicable => {},
+        .maybe => try writer.writeAll(" (one possible repair)"),
+    }
+}
+
+/// The span's text when it is short and printable, for quoting in a fix.
+fn markedText(span: location.Span, source: ?[]const u8) ?[]const u8 {
+    const bytes = source orelse return null;
+    if (span.byte_len == 0 or span.byte_len > 24 or !spanFits(span, bytes)) return null;
+    const text = span.slice(bytes);
+    for (text) |byte| {
+        if (!std.ascii.isPrint(byte)) return null;
+    }
+    return text;
 }
 
 /// The hint line: what to do about it, derived from the typed payload
-/// (the grammar context, the token found, the related opener, the byte)
-/// and — when the presenter passed the source — from the offending text.
-/// The registry's static hint is the fallback that keeps every code covered.
-fn writeHint(d: Diagnostic, info: diagnostic.Code.Info, source: ?[]const u8, writer: anytype) !void {
+/// (the grammar context, the token found, the related opener, the byte,
+/// the attached fix). The registry's static hint is the fallback that
+/// keeps every code covered.
+fn writeHint(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !void {
     switch (d.details) {
         .unterminated => |construct| switch (construct) {
             .block_comment => try writer.writeAll("close the block comment opened here with '*/'; block comments do not nest"),
@@ -421,14 +482,14 @@ fn writeHint(d: Diagnostic, info: diagnostic.Code.Info, source: ?[]const u8, wri
             ),
             else => try writer.writeAll(info.hint),
         },
-        .invalid_operator => |found| {
-            if (d.span.byte_len != 1) {
-                try writer.print("write '{s}'; an edge operator is exactly two characters", .{if (found == '>') "->" else "--"});
-            } else if (found == null) {
+        .invalid_operator => |operator| switch (operator.shape) {
+            .long => try writer.print("write '{s}'; an edge operator is exactly two characters", .{if (operator.found == '>') "->" else "--"}),
+            .spaced => try writer.print("write '{s}' as two adjacent characters; no whitespace is allowed inside an edge operator", .{if (operator.found == '>') "->" else "--"}),
+            .lone => if (operator.found == null) {
                 try writer.writeAll("the input ends after '-'; complete the operator as '--' or '->'");
             } else {
-                try writer.writeAll("a single '-' is not an operator; write '--' for an undirected edge or '->' for a directed edge, with no space between the two characters");
-            }
+                try writer.writeAll("a single '-' is not an operator; write '--' for an undirected edge or '->' for a directed edge");
+            },
         },
         .incomplete_numeral => |found| {
             if (found == null) {
@@ -457,7 +518,7 @@ fn writeHint(d: Diagnostic, info: diagnostic.Code.Info, source: ?[]const u8, wri
                 ),
             }
         },
-        .unexpected => |unexpected| try writeUnexpectedHint(d, unexpected, info, source, writer),
+        .unexpected => |unexpected| try writeUnexpectedHint(d, unexpected, info, writer),
         else => try writer.writeAll(info.hint),
     }
 }
@@ -469,7 +530,6 @@ fn writeUnexpectedHint(
     d: Diagnostic,
     unexpected: diagnostic.Unexpected,
     info: diagnostic.Code.Info,
-    source: ?[]const u8,
     writer: anytype,
 ) !void {
     const found = unexpected.found;
@@ -484,9 +544,9 @@ fn writeUnexpectedHint(
                 } else if (found == .subgraph_keyword) {
                     try writer.writeAll("a subgraph cannot be the root of a document; start the file with 'graph' or 'digraph' (subgraphs go inside the body)");
                 } else if (found == .identifier) {
-                    if (source) |bytes| {
-                        if (keywordSuggestion(d.span.slice(bytes))) |keyword| {
-                            try writer.print("did you mean '{s}'? a DOT file starts with 'graph' or 'digraph'", .{keyword});
+                    if (d.fix) |fix| {
+                        if (fix.edit == .replace) {
+                            try writer.print("did you mean '{s}'? a DOT file starts with 'graph' or 'digraph'", .{fix.edit.replace.text()});
                             return;
                         }
                     }
@@ -620,41 +680,6 @@ fn writeUnclosedScopeHint(unexpected: diagnostic.Unexpected, writer: anytype) !v
             suspect.span.start.line, suspect.span.start.byte_column,
         });
     }
-}
-
-/// A keyword within a small edit distance of `text`, for "did you mean".
-/// Conservative on purpose: short or very different text gets no guess.
-fn keywordSuggestion(text: []const u8) ?[]const u8 {
-    if (text.len < 3 or text.len > 12) return null;
-    var lowered: [12]u8 = undefined;
-    for (text, 0..) |byte, i| lowered[i] = std.ascii.toLower(byte);
-    const candidate = lowered[0..text.len];
-    var best: ?[]const u8 = null;
-    var best_distance: usize = 3;
-    for ([_][]const u8{ "graph", "digraph", "strict", "subgraph", "node", "edge" }) |keyword| {
-        const distance = editDistance(candidate, keyword);
-        if (distance < best_distance) {
-            best_distance = distance;
-            best = keyword;
-        }
-    }
-    return best;
-}
-
-/// Levenshtein distance over two short ASCII strings (both ≤ 12 bytes).
-fn editDistance(a: []const u8, b: []const u8) usize {
-    var previous: [13]usize = undefined;
-    var current: [13]usize = undefined;
-    for (0..b.len + 1) |j| previous[j] = j;
-    for (a, 0..) |byte_a, i| {
-        current[0] = i + 1;
-        for (b, 0..) |byte_b, j| {
-            const substitution = previous[j] + @intFromBool(byte_a != byte_b);
-            current[j + 1] = @min(@min(previous[j + 1] + 1, current[j] + 1), substitution);
-        }
-        @memcpy(previous[0 .. b.len + 1], current[0 .. b.len + 1]);
-    }
-    return previous[b.len];
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,12 +1065,13 @@ fn writePrimaryLabel(details: Details, writer: anytype) !void {
                 try writer.print("byte 0x{X:0>2} cannot start a DOT token", .{byte});
             }
         },
-        .invalid_operator => |found| {
-            if (found == null) {
+        .invalid_operator => |operator| switch (operator.shape) {
+            .spaced => try writer.writeAll("no whitespace inside an edge operator"),
+            .long, .lone => if (operator.found == null) {
                 try writer.writeAll("expected '--' or '->', found end of input");
             } else {
                 try writer.writeAll("expected '--' or '->'");
-            }
+            },
         },
         .incomplete_numeral => |found| {
             if (found) |byte| {
@@ -1140,9 +1166,13 @@ fn writeDetailValue(details: Details, writer: anytype) !void {
                 try writer.print("offending byte 0x{X:0>2}", .{byte});
             }
         },
-        .invalid_operator => |found| {
-            try writer.writeAll("expected '--' or '->', found ");
-            try writeByteOrEnd(found, writer);
+        .invalid_operator => |operator| {
+            try writer.writeAll(switch (operator.shape) {
+                .lone => "expected '--' or '->', found ",
+                .long => "one character too many; the operator ended at ",
+                .spaced => "whitespace inside the operator; it ended at ",
+            });
+            try writeByteOrEnd(operator.found, writer);
         },
         .incomplete_numeral => |found| {
             try writer.writeAll("expected a digit, found ");

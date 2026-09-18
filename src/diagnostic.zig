@@ -450,9 +450,8 @@ pub const Details = union(enum) {
     none,
     /// For `syntax_invalid_byte`: the offending byte.
     invalid_byte: u8,
-    /// For `syntax_invalid_operator`: the byte that broke the operator (the
-    /// byte after '-' or '--'), or null when the input ended there.
-    invalid_operator: ?u8,
+    /// For `syntax_invalid_operator`.
+    invalid_operator: InvalidOperator,
     /// For `syntax_incomplete_numeral`: the byte found where a digit was
     /// required, or null when the input ended there.
     incomplete_numeral: ?u8,
@@ -472,6 +471,23 @@ pub const Details = union(enum) {
     unterminated: UnterminatedConstruct,
     /// For `syntax_invalid_concatenation`: next raw byte, or null at EOF.
     expected_quote: ?u8,
+};
+
+/// A `-` that did not become an edge operator.
+pub const InvalidOperator = struct {
+    /// The byte that broke it: after a lone '-', after '--' (`-->`), or the
+    /// '>' / '-' that ended a spaced operator (`- >`); null at end of input.
+    found: ?u8,
+    shape: Shape,
+
+    pub const Shape = enum(u8) {
+        /// A single '-' followed by something that cannot continue it.
+        lone,
+        /// `-->` or `---`: one character too many.
+        long,
+        /// `- >` or `- -`: whitespace inside the operator.
+        spaced,
+    };
 };
 
 /// The DOT keywords, for `ReservedKeyword`.
@@ -678,11 +694,83 @@ pub const Capacity = struct {
     };
 };
 
-/// One reported problem: identity, where, and typed context.
+/// One reported problem: identity, where, typed context, and — when the
+/// producer knows one — the edit that repairs it.
 pub const Diagnostic = struct {
     code: Code,
     span: location.Span,
     details: Details = .none,
+    /// A repair a tool can apply. Typed and allocation-free: the edit names
+    /// a known replacement, never a string. Null when no single edit is
+    /// known to be right.
+    fix: ?Fix = null,
+};
+
+/// A source edit that repairs the reported problem.
+///
+/// `span` is the text the edit applies to; inserts use it as the anchor
+/// (`insert_before` at its start, `insert_after` at its end). A consumer
+/// applying several fixes to one source should apply them from the highest
+/// offset down so earlier spans stay valid, and re-parse afterwards.
+pub const Fix = struct {
+    span: location.Span,
+    edit: Edit,
+    applicability: Applicability,
+};
+
+pub const Edit = union(enum) {
+    /// Remove the span.
+    delete,
+    /// Replace the span with the replacement text.
+    replace: Replacement,
+    /// Insert the replacement text before the span.
+    insert_before: Replacement,
+    /// Insert the replacement text after the span.
+    insert_after: Replacement,
+    /// Put the span in double quotes (a keyword or numeral used as a name).
+    wrap_in_quotes,
+};
+
+/// Every replacement is a known text; `text` returns it.
+pub const Replacement = enum(u8) {
+    directed_operator,
+    undirected_operator,
+    semicolon,
+    equals,
+    right_bracket,
+    right_brace,
+    left_brace,
+    double_quote,
+    comment_close,
+    graph_keyword,
+    digraph_keyword,
+    strict_keyword,
+
+    pub fn text(self: Replacement) []const u8 {
+        return switch (self) {
+            .directed_operator => "->",
+            .undirected_operator => "--",
+            .semicolon => ";",
+            .equals => "=",
+            .right_bracket => "]",
+            .right_brace => "}",
+            .left_brace => "{",
+            .double_quote => "\"",
+            .comment_close => "*/",
+            .graph_keyword => "graph",
+            .digraph_keyword => "digraph",
+            .strict_keyword => "strict",
+        };
+    }
+};
+
+/// Whether a tool may apply the fix without asking. `machine_applicable`
+/// means the edit is the one correct repair; `maybe` means it is a plausible
+/// repair among others, or its position is a guess — offer it, do not apply
+/// it unattended.
+pub const Applicability = enum(u8) {
+    machine_applicable,
+    maybe,
 };
 
 pub const SinkError = error{DiagnosticSinkFailure};

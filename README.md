@@ -103,10 +103,12 @@ try dot.console.renderBoxedList(bag.items(), bag.omitted, .{ .source = source },
 ```
 
 Every diagnostic is a typed value — a WDP code such as `E.Syntax.Keyword.003`,
-a span, and a payload naming what was found and where in the grammar — so a
-custom renderer can say as much as the console one. The registry is in
-[OUTCOMES.md](docs/OUTCOMES.md); `examples/check_file.zig` is a ready-made
-command-line checker.
+a span, a payload naming what was found and where in the grammar, and, when
+one edit is known to repair it, a typed `fix` a linter can apply (with an
+applicability flag saying whether it may do so unattended) — so a custom
+renderer or an auto-fixer can do as much as the console renderer. The
+registry and the fix table are in [OUTCOMES.md](docs/OUTCOMES.md);
+`examples/check_file.zig` is a ready-made command-line checker.
 
 ### Build a linter
 

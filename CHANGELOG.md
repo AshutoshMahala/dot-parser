@@ -20,7 +20,9 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   Compact IDs change accordingly.
 - Malformed operators (`a - b`, `a - > b`, `-->`) and incomplete numerals
   (`.`, `-.`) are their own conditions with their own payloads, no longer
-  "invalid byte". A stray `>` says to write `->`.
+  "invalid byte"; the payload names the shape (lone, over-long, spaced) and
+  a spaced operator is one diagnostic over the whole `- >`. A stray `>`
+  says to write `->`.
 - A reserved keyword where a name was needed, or `node`/`edge`/`graph` without
   its `[` list, is `E.Syntax.Keyword.003` with the keyword and context; the
   hint says to quote it.
@@ -48,6 +50,13 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
 
 ### Added
 
+- `Diagnostic.fix`: a typed, allocation-free repair (span, edit, replacement
+  enum, applicability) on every diagnostic whose producer knows the one
+  edit that fixes it — operators, keyword quoting, stray tokens, missing
+  closers, header typos, `=>`, unterminated constructs and operator
+  mismatches. `machine_applicable` fixes may be applied
+  unattended; `maybe` fixes are offers. Both renderers print them.
+  `Diagnostic` grows from 152 to 200 bytes.
 - `W.Syntax.Numeral.033`: numerals running into a letter or second dot
   (`1e3`, `1.2.3`) warn, matching Graphviz, and the parse continues. First
   use of the warning severity.

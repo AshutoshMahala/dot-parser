@@ -107,6 +107,16 @@ pub fn validate(
                 .found = operatorDetail(edge.operator),
                 .declaration = declaration.?,
             } },
+            // Two repairs are plausible — change the operator, or change
+            // the keyword — so this one is offered, never applied unasked.
+            .fix = .{
+                .span = operator_span,
+                .edit = .{ .replace = switch (expected) {
+                    .directed => .directed_operator,
+                    .undirected => .undirected_operator,
+                } },
+                .applicability = .maybe,
+            },
         }) catch {
             delivery = .failed;
         };

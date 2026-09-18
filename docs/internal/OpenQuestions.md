@@ -237,7 +237,7 @@ whether convenience APIs should ship with non-trivial defaults is open.
 
 **Q16 — What size thresholds establish that disabling a feature removed its
 cost?**
-Parser-state size is regression-guarded (≤ 896 B; currently 872 B native) and baselines exist;
+Parser-state size is regression-guarded (≤ 960 B; currently 896 B native) and baselines exist;
 per-profile binary-size thresholds await the profile work. *(Embodied:
 `docs/BASELINES.md`; parser-size test.)*
 
@@ -374,9 +374,19 @@ accept per R-FUNC-007 and reported with `W.Syntax.*` codes. Everything
 ambiguous stays an error or a recovery point.
 
 **Q37 — How are fix suggestions carried on diagnostics for linters?**
-Open. Direction: an optional typed fix (span, edit, replacement enum,
-applicability) on `Diagnostic`, with rustc's machine-applicable versus maybe
-distinction; its size cost is a candidate for a diagnostic-richness profile.
+**Implemented (2026-09-18):** `Diagnostic.fix: ?Fix` — a span, a typed edit
+(`delete`, `replace`, `insert_before`, `insert_after`, `wrap_in_quotes`), a
+`Replacement` enum whose `text()` is the only source of replacement bytes,
+and an `Applicability` of `machine_applicable` (the one correct repair) or
+`maybe` (a plausible repair, or a guessed position). Producers: the scanner
+(over-long and spaced operators), the parser (a lone
+`-` coerced to the declared kind, quoting a keyword, stray `;`, `}` or
+operator, separators, missing `=`, `]`, `}` and `{`, header typos, `=>`,
+unterminated constructs) and validation (operator mismatch, `maybe` because
+changing the keyword is equally plausible). `Diagnostic` grew 152 → 200 B;
+a 32-slot bag is 6.4 KB. The lean-diagnostics profile that would compile the
+field out stays with the profile slice. *(Embodied: `diagnostic.Fix`,
+`tests/diagnostics.zig` round trip; R-DX-007, R-FUNC-005.)*
 
 ---
 
