@@ -11,6 +11,8 @@ test {
     _ = @import("ports.zig");
     _ = @import("subgraphs.zig");
     _ = @import("subgraph_endpoints.zig");
+    _ = @import("diagnostics.zig");
+    _ = @import("measure.zig");
 }
 
 const Rejecting = struct {
@@ -139,7 +141,7 @@ test "unterminated comments abort both storage paths after partial construction"
     try std.testing.expect(parsed.document == null);
     try std.testing.expectEqual(dot.diagnostic.Delivery.complete, parsed.diagnostic_delivery);
     try std.testing.expectEqual(@as(usize, 1), bag.items().len);
-    try std.testing.expectEqual(dot.Code.lexer_unterminated_construct, bag.items()[0].code);
+    try std.testing.expectEqual(dot.Code.syntax_unterminated_construct, bag.items()[0].code);
     try std.testing.expectEqual(dot.diagnostic.UnterminatedConstruct.block_comment, bag.items()[0].details.unterminated);
     try std.testing.expectEqualStrings("/*", bag.items()[0].span.slice(source));
     try std.testing.expectEqual(@as(usize, 2), bag.items()[0].span.start.line);
@@ -157,7 +159,7 @@ test "unterminated comments abort both storage paths after partial construction"
     var buffer: [2048]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
     try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source, .style = .ascii }, &writer);
-    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "E.Lexer.Syntax.031") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "E.Syntax.Token.032") != null);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "close the block comment") != null);
 }
 
@@ -249,7 +251,7 @@ test "consumer can render boxed output in unicode and ascii styles" {
 
     const source = "graph} a; }";
     const diagnostics = [_]dot.Diagnostic{.{
-        .code = .parser_unexpected_token,
+        .code = .syntax_unexpected_token,
         .span = .{
             .start = .{ .byte_offset = 5, .line = 1, .byte_column = 6 },
             .byte_len = 1,
@@ -260,12 +262,12 @@ test "consumer can render boxed output in unicode and ascii styles" {
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "┌─ Error 1: unexpected token") != null);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "│ pipe:1:6") != null);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "│ 1 │ graph} a; }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "└─ E1 ─ [dot_parser:E.Parser.Syntax.003]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "└─ E1 ─ [dot_parser:E.Syntax.Grammar.003]") != null);
 
     var ascii_writer = std.Io.Writer.fixed(&buffer);
     try dot.console.renderBoxedList(&diagnostics, 0, .{ .source_name = "pipe", .style = .ascii }, &ascii_writer);
     try std.testing.expect(std.mem.indexOf(u8, ascii_writer.buffered(), "-- Error 1: unexpected token") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ascii_writer.buffered(), "-- E1 - [dot_parser:E.Parser.Syntax.003]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ascii_writer.buffered(), "-- E1 - [dot_parser:E.Syntax.Grammar.003]") != null);
 }
 
 test "consumer can bring their own reporter through the sink interface" {
@@ -287,11 +289,11 @@ test "consumer can bring their own reporter through the sink interface" {
     const sink: dot.DiagnosticSink = .{ .context = &logger, .emit_fn = LineLogger.emit };
 
     try sink.emit(.{
-        .code = .parser_unexpected_end,
+        .code = .syntax_unexpected_end,
         .span = .{ .start = .{ .byte_offset = 9, .line = 4, .byte_column = 2 }, .byte_len = 0 },
     });
 
-    try std.testing.expectEqualStrings("E.Parser.Syntax.031 at 4:2\n", writer.buffered());
+    try std.testing.expectEqualStrings("E.Syntax.Grammar.031 at 4:2\n", writer.buffered());
 }
 
 test "compact IDs are exposed and match the WDP spec vectors" {
@@ -627,20 +629,20 @@ const InvalidEntry = struct {
 };
 
 const invalid_corpus = [_]InvalidEntry{
-    .{ .name = "missing_subgraph_brace", .source = @embedFile("corpus/invalid/missing_subgraph_brace.dot"), .code = .parser_unexpected_token, .offset = 18 },
-    .{ .name = "missing_attribute_value", .source = @embedFile("corpus/invalid/missing_attribute_value.dot"), .code = .parser_unexpected_token, .offset = 13 },
-    .{ .name = "missing_attribute_equals", .source = @embedFile("corpus/invalid/missing_attribute_equals.dot"), .code = .parser_unexpected_token, .offset = 12 },
-    .{ .name = "truncated_attribute", .source = @embedFile("corpus/invalid/truncated_attribute.dot"), .code = .parser_unexpected_end, .offset = 15 },
-    .{ .name = "unterminated_comment", .source = @embedFile("corpus/invalid/unterminated_comment.dot"), .code = .lexer_unterminated_construct, .offset = 11, .construct = .block_comment },
-    .{ .name = "unterminated_comment_before_header", .source = @embedFile("corpus/invalid/unterminated_comment_before_header.dot"), .code = .lexer_unterminated_construct, .offset = 0, .construct = .block_comment },
-    .{ .name = "unterminated_comment_after_document", .source = @embedFile("corpus/invalid/unterminated_comment_after_document.dot"), .code = .lexer_unterminated_construct, .offset = 9, .construct = .block_comment },
-    .{ .name = "unterminated_quoted_identifier", .source = @embedFile("corpus/invalid/unterminated_quoted_identifier.dot"), .code = .lexer_unterminated_construct, .offset = 8, .construct = .quoted_identifier },
-    .{ .name = "invalid_quoted_concatenation", .source = @embedFile("corpus/invalid/invalid_quoted_concatenation.dot"), .code = .lexer_invalid_concatenation, .offset = 14 },
-    .{ .name = "truncated", .source = @embedFile("corpus/invalid/truncated.dot"), .code = .parser_unexpected_end, .offset = 7 },
-    .{ .name = "missing_brace", .source = @embedFile("corpus/invalid/missing_brace.dot"), .code = .parser_unexpected_token, .offset = 6 },
-    .{ .name = "invalid_byte", .source = @embedFile("corpus/invalid/invalid_byte.dot"), .code = .lexer_invalid_byte, .offset = 8 },
-    .{ .name = "trailing", .source = @embedFile("corpus/invalid/trailing.dot"), .code = .parser_unexpected_token, .offset = 13 },
-    .{ .name = "missing_endpoint", .source = @embedFile("corpus/invalid/missing_endpoint.dot"), .code = .parser_unexpected_token, .offset = 13 },
+    .{ .name = "missing_subgraph_brace", .source = @embedFile("corpus/invalid/missing_subgraph_brace.dot"), .code = .syntax_unexpected_token, .offset = 18 },
+    .{ .name = "missing_attribute_value", .source = @embedFile("corpus/invalid/missing_attribute_value.dot"), .code = .syntax_unexpected_token, .offset = 13 },
+    .{ .name = "missing_attribute_equals", .source = @embedFile("corpus/invalid/missing_attribute_equals.dot"), .code = .syntax_unexpected_token, .offset = 12 },
+    .{ .name = "truncated_attribute", .source = @embedFile("corpus/invalid/truncated_attribute.dot"), .code = .syntax_unexpected_end, .offset = 15 },
+    .{ .name = "unterminated_comment", .source = @embedFile("corpus/invalid/unterminated_comment.dot"), .code = .syntax_unterminated_construct, .offset = 11, .construct = .block_comment },
+    .{ .name = "unterminated_comment_before_header", .source = @embedFile("corpus/invalid/unterminated_comment_before_header.dot"), .code = .syntax_unterminated_construct, .offset = 0, .construct = .block_comment },
+    .{ .name = "unterminated_comment_after_document", .source = @embedFile("corpus/invalid/unterminated_comment_after_document.dot"), .code = .syntax_unterminated_construct, .offset = 9, .construct = .block_comment },
+    .{ .name = "unterminated_quoted_identifier", .source = @embedFile("corpus/invalid/unterminated_quoted_identifier.dot"), .code = .syntax_unterminated_construct, .offset = 8, .construct = .quoted_identifier },
+    .{ .name = "invalid_quoted_concatenation", .source = @embedFile("corpus/invalid/invalid_quoted_concatenation.dot"), .code = .syntax_invalid_concatenation, .offset = 14 },
+    .{ .name = "truncated", .source = @embedFile("corpus/invalid/truncated.dot"), .code = .syntax_unexpected_end, .offset = 7 },
+    .{ .name = "missing_brace", .source = @embedFile("corpus/invalid/missing_brace.dot"), .code = .syntax_unexpected_token, .offset = 6 },
+    .{ .name = "invalid_byte", .source = @embedFile("corpus/invalid/invalid_byte.dot"), .code = .syntax_invalid_byte, .offset = 8 },
+    .{ .name = "trailing", .source = @embedFile("corpus/invalid/trailing.dot"), .code = .syntax_unexpected_token, .offset = 13 },
+    .{ .name = "missing_endpoint", .source = @embedFile("corpus/invalid/missing_endpoint.dot"), .code = .syntax_unexpected_token, .offset = 13 },
 };
 
 /// A valid-but-deferred fixture with the exact feature it must name.
@@ -747,7 +749,7 @@ test "invalid corpus fails with the expected diagnostic and terminates" {
         const failure = bag.items()[0];
         try std.testing.expectEqual(entry.code, failure.code);
         try std.testing.expectEqual(entry.offset, failure.span.start.byte_offset);
-        if (failure.code == .lexer_unterminated_construct) {
+        if (failure.code == .syntax_unterminated_construct) {
             try std.testing.expectEqual(entry.construct.?, failure.details.unterminated);
         }
         var pools: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4, .attributes = 8, .assignments = 4, .attribute_statements = 4 }) = .{};

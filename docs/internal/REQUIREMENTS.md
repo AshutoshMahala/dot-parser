@@ -571,12 +571,15 @@ original line can be expanded for a terminal or editor.
 All parser diagnostics must use Waddling Diagnostic Protocol (WDP)
 structured codes and, where useful, their precomputed compact IDs. The WDP
 part 7 namespace `dot_parser` is the error boundary carrying the library's
-identity; the component names the internal module that reported the
-diagnostic (`Lexer`, `Parser`, `Validation`, `Resource`, `Profile`, and
-later `Observer`/`Internal`); the primary names the failure domain within
-that component. Sequence numbers follow the WDP part 6 conventions.
-Rendered codes may show the fully qualified form
-(`dot_parser:E.Parser.Syntax.003 -> nshash-codehash`).
+identity; the component names the logical domain of the problem
+(`Syntax`, `Validation`, `Resource`, `Profile`, and later
+`Observer`/`Internal`) — never the source module that noticed it, so the
+identity survives refactors and a consumer can filter one prefix for every
+malformed-input problem; the primary names the failure domain within that
+component. A code identifies one condition; the grammar position travels in
+the typed payload, never in the identity. Sequence numbers follow the WDP
+part 6 conventions. Rendered codes may show the fully qualified form
+(`dot_parser:E.Syntax.Grammar.003 -> nshash-codehash`).
 
 The WDP sequence and its meaning must be documented in an authoritative source
 such as the project diagnostic registry or generated catalog.

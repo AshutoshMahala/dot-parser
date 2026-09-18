@@ -94,6 +94,9 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             bare,
             non_ascii,
             dash,
+            /// After `--`: one byte of lookahead so `-->` / `---` are one
+            /// malformed-operator diagnostic instead of a stray byte.
+            double_dash,
             leading_dot,
             integral,
             fraction,
@@ -103,7 +106,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             ready,
         };
         const Trivia = enum { ordinary, after_quote, after_plus };
-        const Terminal = enum { none, eof, invalid, block, quote, concat, non_ascii, html };
+        const Terminal = enum { none, eof, invalid, operator, numeral, block, quote, concat, non_ascii, html };
 
         source: []const u8,
         tracker: location.Tracker = .{},
@@ -118,11 +121,66 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         found: ?u8 = null,
         initial: u8 = 0,
         ready_tag: Token.Tag = .eof,
+        /// Set when the token just produced is a numeral that runs directly
+        /// into a letter or dot (`1e3`, `1.2.3`): the byte it runs into.
+        /// The token stream is unchanged (Graphviz splits identically);
+        /// `takeWarning` turns it into a `syntax_ambiguous_numeral`.
+        ambiguous_numeral: ?u8 = null,
         source_frontier: if (metered) usize else void = if (metered) 0 else {},
         examinations: if (audited) usize else void = if (audited) 0 else {},
 
         pub fn init(source: []const u8) Self {
-            return .{ .source = source };
+            var self: Self = .{ .source = source };
+            // A leading UTF-8 byte order mark is not content; Graphviz's
+            // scanner ignores it and so does this one. Advancing the
+            // tracker keeps every later byte column honest (the BOM
+            // occupies columns 1–3 of line 1).
+            if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) self.tracker.advanceSlice(source[0..3]);
+            return self;
+        }
+
+        /// Error-recovery support: clear a latched failure and continue
+        /// scanning past it, so the parser can resynchronize at the next
+        /// statement boundary. The parser owns the policy; this only makes
+        /// resumption sound:
+        /// - a malformed operator, numeral, or stray byte is skipped whole;
+        /// - a bad `+` concatenation resumes at the byte that followed it,
+        ///   which starts a valid token;
+        /// - an unterminated quote or comment, or a failure inside a quoted
+        ///   identifier, jumps to end of input — the rest of the source is
+        ///   the construct's body, and re-scanning it would only cascade.
+        /// Never valid for deferred-feature boundaries, which are not errors.
+        pub fn resumeAfterFailure(self: *Self) void {
+            const anchor = self.anchor.location.byte_offset;
+            const start = self.opener.location.byte_offset;
+            const target: usize = switch (self.terminal) {
+                .block, .quote => self.source.len,
+                .concat => start,
+                .invalid, .operator, .numeral => if (start == anchor) start + self.terminal_len else self.source.len,
+                .none, .eof, .non_ascii, .html => unreachable,
+            };
+            // `fail` left the tracker at the token anchor; walk forward so
+            // line and column stay exact through whatever was skipped.
+            std.debug.assert(self.tracker.location.byte_offset == anchor and target >= anchor);
+            self.tracker.advanceSlice(self.source[anchor..target]);
+            self.terminal = .none;
+            self.terminal_len = 0;
+            self.found = null;
+            self.state = .trivia;
+            self.trivia = .ordinary;
+        }
+
+        /// The warning attached to the most recently produced token, if any,
+        /// clearing it. Warnings never change the token stream or the
+        /// outcome; the parser forwards them to the diagnostic sink.
+        pub fn takeWarning(self: *Self) ?diagnostic.Diagnostic {
+            const byte = self.ambiguous_numeral orelse return null;
+            self.ambiguous_numeral = null;
+            return .{
+                .code = .syntax_ambiguous_numeral,
+                .span = .{ .start = self.anchor.location, .byte_len = self.here().byte_offset - self.anchor.location.byte_offset },
+                .details = .{ .ambiguous_numeral = byte },
+            };
         }
 
         pub fn next(self: *Self) Result {
@@ -251,9 +309,14 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 },
                 .dash => {
                     if (byte) |b| switch (b) {
-                        '-', '>' => {
+                        '>' => {
                             self.consume(b);
-                            return self.finish(if (b == '-') .edge_undirected else .edge_directed);
+                            return self.finish(.edge_directed);
+                        },
+                        '-' => {
+                            self.consume(b);
+                            continuation = .double_dash;
+                            return continuation;
                         },
                         '0'...'9' => {
                             self.consume(b);
@@ -267,7 +330,18 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                         },
                         else => {},
                     };
-                    return self.fail(.invalid, self.anchor.location, 1, '-');
+                    // `a - b`, `a - > b`, `-` at EOF: the operator is
+                    // incomplete. Legal DOT bytes, wrong shape.
+                    return self.fail(.operator, self.anchor.location, 1, byte);
+                },
+                .double_dash => {
+                    if (byte == '>' or byte == '-') {
+                        // `-->` / `---`: one over-long operator, reported
+                        // whole so the fix ("write '->'") is obvious.
+                        self.consume(byte.?);
+                        return self.fail(.operator, self.anchor.location, 3, byte);
+                    }
+                    return self.finish(.edge_undirected);
                 },
                 .leading_dot => {
                     if (byte) |b| {
@@ -277,7 +351,9 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                             return continuation;
                         }
                     }
-                    return self.fail(.invalid, self.anchor.location, 1, self.initial);
+                    // `.` or `-.` without a digit: the numeral is incomplete.
+                    const len = self.here().byte_offset - self.anchor.location.byte_offset;
+                    return self.fail(.numeral, self.anchor.location, len, byte);
                 },
                 .integral, .fraction => {
                     if (byte) |b| {
@@ -290,6 +366,10 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                             continuation = .fraction;
                             return continuation;
                         }
+                        // Maximal munch ends the numeral here, exactly as
+                        // Graphviz does — and Graphviz warns when the next
+                        // byte could have been meant as part of it.
+                        if (isIdentifierByte(b) or b == '.') self.ambiguous_numeral = b;
                     }
                     return self.finish(.identifier);
                 },
@@ -419,15 +499,19 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             } };
             return .{ .failure = .{
                 .code = switch (self.terminal) {
-                    .invalid => .lexer_invalid_byte,
-                    .block, .quote => .lexer_unterminated_construct,
-                    .concat => .lexer_invalid_concatenation,
+                    .invalid => .syntax_invalid_byte,
+                    .operator => .syntax_invalid_operator,
+                    .numeral => .syntax_incomplete_numeral,
+                    .block, .quote => .syntax_unterminated_construct,
+                    .concat => .syntax_invalid_concatenation,
                     .non_ascii, .html => .profile_unsupported_feature,
                     .none, .eof => unreachable,
                 },
                 .span = .{ .start = self.opener.location, .byte_len = self.terminal_len },
                 .details = switch (self.terminal) {
                     .invalid => .{ .invalid_byte = self.found.? },
+                    .operator => .{ .invalid_operator = self.found },
+                    .numeral => .{ .incomplete_numeral = self.found },
                     .block => .{ .unterminated = .block_comment },
                     .quote => .{ .unterminated = .quoted_identifier },
                     .concat => .{ .expected_quote = self.found },
@@ -513,7 +597,7 @@ test "one-credit calls expose every lexical continuation and trivia mode" {
     var states = std.EnumSet(AuditedLexer.State).initEmpty();
     var trivia_modes = std.EnumSet(AuditedLexer.Trivia).initEmpty();
     for ([_][]const u8{
-        " \r\n#x\r//y\n/*z**/a;",        "a\xff;", "-1.2 -.5 .1 1->2 3--4",
+        " \r\n#x\r//y\n/*z**/a;",        "a\xff;", "-1.2 -.5 .1 1->2 3--4 5-->6",
         "\"a\\\"b\" /*glue*/ + \"c\" x",
     }) |source| {
         var lexer = AuditedLexer.init(source);
@@ -589,6 +673,7 @@ test "metered scanner partitions preserve tokens diagnostics positions and total
     const cases = [_][]const u8{
         "",                                            " \t\r\n\r\n",                                                  "graph { a -- b; x [label=\"hi\"]; }",
         "DiGraph STRICT SubGraph Node EDGE Graphical", "0 -0 123 -12 .5 -.5 12. -12.30 000.00 1->-2 3--4 1e3 1.2.3",   "-",
+        "-->",                                         "---",                                                          "\xEF\xBB\xBFgraph {",
         "-.",                                          "-.x",                                                          ".",
         ".x",                                          "+1",                                                           "/x",
         "/",                                           "// comment\r\n# inline\ra /* ** / * */ -- b",                  "/* unterminated **",
@@ -701,8 +786,24 @@ fn expectUnsupported(lexer: *Lexer, feature: diagnostic.Feature) !void {
 fn expectInvalidByte(lexer: *Lexer, byte: u8) !void {
     const result = lexer.next();
     try expect(result == .failure);
-    try expectEqual(diagnostic.Code.lexer_invalid_byte, result.failure.code);
+    try expectEqual(diagnostic.Code.syntax_invalid_byte, result.failure.code);
     try expectEqual(byte, result.failure.details.invalid_byte);
+}
+
+fn expectInvalidOperator(lexer: *Lexer, text: []const u8, found: ?u8) !void {
+    const result = lexer.next();
+    try expect(result == .failure);
+    try expectEqual(diagnostic.Code.syntax_invalid_operator, result.failure.code);
+    try expectEqual(found, result.failure.details.invalid_operator);
+    try expectEqualStrings(text, result.failure.span.slice(lexer.source));
+}
+
+fn expectIncompleteNumeral(lexer: *Lexer, text: []const u8, found: ?u8) !void {
+    const result = lexer.next();
+    try expect(result == .failure);
+    try expectEqual(diagnostic.Code.syntax_incomplete_numeral, result.failure.code);
+    try expectEqual(found, result.failure.details.incomplete_numeral);
+    try expectEqualStrings(text, result.failure.span.slice(lexer.source));
 }
 
 test "empty input yields eof forever" {
@@ -726,7 +827,7 @@ test "comments separate tokens without joining identifiers or operators" {
     try expectToken(&lexer, .eof, "");
 
     var split_operator = Lexer.init("-/**/-");
-    try expectInvalidByte(&split_operator, '-');
+    try expectInvalidOperator(&split_operator, "-", '/');
     var split_keyword = Lexer.init("gr/**/aph");
     try expectToken(&split_keyword, .identifier, "gr");
     try expectToken(&split_keyword, .identifier, "aph");
@@ -775,7 +876,7 @@ test "block comment truncation reports the opener on repeated calls" {
         var lexer = Lexer.init(body[0..end]);
         const first = lexer.next();
         try expect(first == .failure);
-        try expectEqual(diagnostic.Code.lexer_unterminated_construct, first.failure.code);
+        try expectEqual(diagnostic.Code.syntax_unterminated_construct, first.failure.code);
         try expectEqual(location.Location.start, first.failure.span.start);
         try expectEqual(@as(usize, 2), first.failure.span.byte_len);
         try expectEqual(diagnostic.UnterminatedConstruct.block_comment, first.failure.details.unterminated);
@@ -882,13 +983,30 @@ test "every whitespace and newline combination separates tokens" {
 }
 
 test "truncated operators fail; keyword prefixes are identifiers" {
-    // '-' alone, or followed by anything but '-', '>', digit, '.', is
-    // invalid in any DOT document.
+    // '-' alone, or followed by anything but '-', '>', digit, '.', is a
+    // malformed operator: legal DOT bytes in the wrong shape, reported as
+    // such (never as an invalid byte) with the byte that broke it.
     var lone = Lexer.init("-");
-    try expectInvalidByte(&lone, '-');
+    try expectInvalidOperator(&lone, "-", null);
 
     var stray = Lexer.init("-x");
-    try expectInvalidByte(&stray, '-');
+    try expectInvalidOperator(&stray, "-", 'x');
+
+    var spaced = Lexer.init("a - > b");
+    try expectToken(&spaced, .identifier, "a");
+    try expectInvalidOperator(&spaced, "-", ' ');
+
+    // Over-long operators are one diagnostic covering the whole run.
+    var long = Lexer.init("a --> b");
+    try expectToken(&long, .identifier, "a");
+    try expectInvalidOperator(&long, "-->", '>');
+    var triple = Lexer.init("---");
+    try expectInvalidOperator(&triple, "---", '-');
+    // `--` directly followed by an identifier stays a valid operator.
+    var tight = Lexer.init("a--b");
+    try expectToken(&tight, .identifier, "a");
+    try expectToken(&tight, .edge_undirected, "--");
+    try expectToken(&tight, .identifier, "b");
 
     // Every proper prefix of "graph" is just a shorter identifier.
     inline for (.{ "g", "gr", "gra", "grap" }) |prefix| {
@@ -905,17 +1023,68 @@ test "invalid leading bytes are reported with the byte itself" {
     }
 }
 
-test "a dot without a following digit is invalid, not a numeral" {
-    // DOT numerals require a digit after a leading '.'.
-    inline for (.{ ".", ".x", ". " }) |source| {
-        var lexer = Lexer.init(source);
-        try expectInvalidByte(&lexer, '.');
+test "a dot without a following digit is an incomplete numeral" {
+    // DOT numerals require a digit after a leading '.'. The span covers the
+    // numeral prefix and the payload names the byte found instead.
+    inline for (.{ .{ ".", null }, .{ ".x", 'x' }, .{ ". ", ' ' } }) |case| {
+        var lexer = Lexer.init(case[0]);
+        try expectIncompleteNumeral(&lexer, ".", case[1]);
     }
     // Same lookahead through a leading '-': `-.` needs a digit after '.'.
-    inline for (.{ "-.", "-.x" }) |source| {
-        var lexer = Lexer.init(source);
-        try expectInvalidByte(&lexer, '-');
+    inline for (.{ .{ "-.", null }, .{ "-.x", 'x' } }) |case| {
+        var lexer = Lexer.init(case[0]);
+        try expectIncompleteNumeral(&lexer, "-.", case[1]);
     }
+}
+
+test "numerals running into letters or dots warn without changing tokens" {
+    // Graphviz: "syntax ambiguity - badly delimited number ... splits into
+    // two tokens". Same split here, same warning, parse continues.
+    var lexer = Lexer.init("1e3 1.2.3 12.x 7 8_ .5e 9 ");
+    try expectToken(&lexer, .identifier, "1");
+    const first = lexer.takeWarning().?;
+    try expectEqual(diagnostic.Code.syntax_ambiguous_numeral, first.code);
+    try expectEqual(@as(u8, 'e'), first.details.ambiguous_numeral);
+    try expectEqualStrings("1", first.span.slice(lexer.source));
+    try expectEqual(@as(?diagnostic.Diagnostic, null), lexer.takeWarning());
+    try expectToken(&lexer, .identifier, "e3");
+    try expectEqual(@as(?diagnostic.Diagnostic, null), lexer.takeWarning());
+    try expectToken(&lexer, .identifier, "1.2");
+    try expectEqual(@as(u8, '.'), lexer.takeWarning().?.details.ambiguous_numeral);
+    try expectToken(&lexer, .identifier, ".3");
+    try expectEqual(@as(?diagnostic.Diagnostic, null), lexer.takeWarning());
+    try expectToken(&lexer, .identifier, "12.");
+    try expectEqual(@as(u8, 'x'), lexer.takeWarning().?.details.ambiguous_numeral);
+    try expectToken(&lexer, .identifier, "x");
+    try expectToken(&lexer, .identifier, "7");
+    try expectEqual(@as(?diagnostic.Diagnostic, null), lexer.takeWarning());
+    try expectToken(&lexer, .identifier, "8");
+    try expectEqual(@as(u8, '_'), lexer.takeWarning().?.details.ambiguous_numeral);
+    try expectToken(&lexer, .identifier, "_");
+    try expectToken(&lexer, .identifier, ".5");
+    try expectEqual(@as(u8, 'e'), lexer.takeWarning().?.details.ambiguous_numeral);
+    try expectToken(&lexer, .identifier, "e");
+    try expectToken(&lexer, .identifier, "9");
+    try expectEqual(@as(?diagnostic.Diagnostic, null), lexer.takeWarning());
+    try expectToken(&lexer, .eof, "");
+}
+
+test "a leading UTF-8 byte order mark is skipped, keeping byte columns honest" {
+    var lexer = Lexer.init("\xEF\xBB\xBFgraph {");
+    const result = lexer.next();
+    try expect(result == .token);
+    try expectEqual(Token.Tag.keyword_graph, result.token.tag);
+    try expectEqual(@as(usize, 3), result.token.span.start.byte_offset);
+    try expectEqual(@as(usize, 1), result.token.span.start.line);
+    try expectEqual(@as(usize, 4), result.token.span.start.byte_column);
+    try expectToken(&lexer, .left_brace, "{");
+    // Only at the very start: elsewhere the bytes are a non-ASCII run.
+    var inner = Lexer.init("a \xEF\xBB\xBFb");
+    try expectToken(&inner, .identifier, "a");
+    try expectUnsupported(&inner, .non_ascii_identifier);
+    // A BOM alone is an empty document.
+    var alone = Lexer.init("\xEF\xBB\xBF");
+    try expectToken(&alone, .eof, "");
 }
 
 test "non-ASCII bytes are the deferred identifier range, not invalid input" {
@@ -1001,7 +1170,7 @@ test "quoted content preserves physical positions and accepts opaque non-NUL byt
     inline for (.{ "\"a\x00b\"", "\"a\\\x00b\"" }) |raw| {
         var lexer = Lexer.init(raw);
         const failure = lexer.next().failure;
-        try expectEqual(diagnostic.Code.lexer_invalid_byte, failure.code);
+        try expectEqual(diagnostic.Code.syntax_invalid_byte, failure.code);
         try expectEqual(@as(u8, 0), failure.details.invalid_byte);
         try expectEqualStrings("\x00", failure.span.slice(raw));
         try expectEqual(failure, lexer.next().failure);
@@ -1031,7 +1200,7 @@ test "malformed concatenation distinguishes expected quote from unclosed comment
     inline for (.{ "\"a\"+", "\"a\"+b", "\"a\"+1", "\"a\"+}", "\"a\"++\"b\"", "\"a\"+<html>" }) |raw| {
         var lexer = Lexer.init(raw);
         const first = lexer.next().failure;
-        try expectEqual(diagnostic.Code.lexer_invalid_concatenation, first.code);
+        try expectEqual(diagnostic.Code.syntax_invalid_concatenation, first.code);
         try expectEqual(@as(usize, 4), first.span.start.byte_offset);
         try expectEqual(if (raw.len == 4) @as(?u8, null) else raw[4], first.details.expected_quote);
         try expectEqual(first, lexer.next().failure);

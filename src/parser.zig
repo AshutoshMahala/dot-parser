@@ -37,11 +37,20 @@
 //!
 //! Guarantees:
 //! - Instance-owned state, no mutable globals (R-ROB-003).
-//! - Fail fast on the first structural failure; the sink lifecycle from
-//!   `syntax_event.zig` is honored: no events before a supported header,
-//!   abort after begin when the document cannot commit — including the
-//!   documented cleanup abort after an attempted `beginDocument` that
-//!   itself failed.
+//! - Fail fast on the first structural failure by default; the sink
+//!   lifecycle from `syntax_event.zig` is honored: no events before a
+//!   supported header, abort after begin when the document cannot commit —
+//!   including the documented cleanup abort after an attempted
+//!   `beginDocument` that itself failed.
+//! - With `Options.recovery = .statements`, a syntax error inside the body
+//!   aborts the sink once, then parsing continues for diagnostics only:
+//!   tokens are skipped to the next `;` or `}` at the same brace depth
+//!   (a skipped `{` is matched by counting), the next statement parses
+//!   normally, and every further syntax error is reported the same way.
+//!   The outcome is still `invalid_syntax`, no document is ever published,
+//!   and the sink sees exactly one terminal event. Lexical errors resume
+//!   through `Scanner.resumeAfterFailure`; end of input, header errors,
+//!   trailing tokens, limits and deferred features still stop the parse.
 //! - Iterative state-machine parsing has no recursion, so input size and shape
 //!   cannot exhaust the call stack (R-PERF-002).
 //! - Work is a single linear scan of the input (R-PERF-001, R-SEC-003);
@@ -82,6 +91,17 @@ pub const Options = struct {
     max_nesting: usize = std.math.maxInt(usize),
     /// Facade-owned temporary storage; parser retains no owning allocator.
     scratch: ?*scratch_impl.Stack = null,
+    recovery: Recovery = .fail_fast,
+};
+
+/// What happens after a syntax error inside the document body.
+pub const Recovery = enum {
+    /// Stop at the first failure: one failure diagnostic per parse.
+    fail_fast,
+    /// Resynchronize at statement boundaries and keep reporting syntax
+    /// errors. Still no document, still one abort; later diagnostics can be
+    /// consequences of an earlier one.
+    statements,
 };
 
 /// The parse outcome category. The diagnostics explaining a failure travel
@@ -190,9 +210,21 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         /// Span of the innermost scope's `{`, once consumed — the related location
         /// reported when the input ends inside the body.
         open_brace_span: ?location.Span = null,
+        /// The first `}` that closed a scope while sitting at a smaller
+        /// indentation than the line that opened it. Brace matching alone
+        /// cannot tell which brace is missing when the input ends inside a
+        /// scope; this heuristic usually can, and is reported as the
+        /// `.misindented_close` suspect on the end-of-input diagnostic.
+        suspect_close: ?location.Span = null,
         /// True once `beginDocument` has been issued; from then on every
         /// exit path must emit a terminal event.
         begun: bool = false,
+        /// True once the sink received its terminal abort. Recovery keeps
+        /// the grammar running for diagnostics after that point, with no
+        /// further events and an `invalid_syntax` outcome.
+        aborted: bool = false,
+        /// Braces skipped (and not yet matched) while resynchronizing.
+        skip_depth: usize = 0,
         /// Latched once a terminal result is produced. Further driver calls
         /// return it unchanged — no re-emitted events or diagnostics. Metered
         /// calls report zero work used.
@@ -272,6 +304,8 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             attribute_value,
             attribute_after_value,
             after_attributes,
+            /// Skipping to the next statement boundary after a syntax error.
+            recovering,
         };
 
         pub fn runToCompletion(self: *Self) Result {
@@ -298,7 +332,19 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .token => |token| token,
                 .failure => |failure| return self.fail(failure),
             };
+            self.forwardWarning();
             return self.transition(token);
+        }
+
+        /// Lexical warnings (`syntax_ambiguous_numeral`) ride along with the
+        /// token that raised them: reported, never fatal, and excluded from
+        /// work credits like every other diagnostic callout.
+        fn forwardWarning(self: *Self) void {
+            if (self.tokens.takeWarning()) |warning| {
+                self.diagnostics.emit(warning) catch {
+                    self.delivery = .failed;
+                };
+            }
         }
 
         /// Private bounded driver. A credit buys a lexical examination, one
@@ -331,6 +377,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         if (bounded) remaining -= scanned.work_used;
                         if (scanned.result) |result| switch (result) {
                             .token => |token| {
+                                self.forwardWarning();
                                 self.work.token = token;
                                 self.work.phase = .grammar;
                             },
@@ -361,8 +408,18 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         /// Explicit cleanup works even without a polling hook or positive budget.
         pub fn cancel(self: *Self) Result {
             if (self.terminal) |result| return result;
-            if (self.begun) self.events.abortDocument(.cancelled);
-            return self.finish(.cancelled);
+            // Syntax errors already reported during recovery are the
+            // truthful outcome; cancellation only ends the search for more.
+            const outcome: Outcome = if (self.recovered()) .invalid_syntax else .cancelled;
+            self.abortEvents(.cancelled);
+            return self.finish(outcome);
+        }
+
+        /// The sink's one terminal abort, if it has begun and not yet
+        /// received one.
+        fn abortEvents(self: *Self, reason: syntax_event.AbortReason) void {
+            if (self.begun and !self.aborted) self.events.abortDocument(reason);
+            self.aborted = self.aborted or self.begun;
         }
 
         fn progress(self: *const Self, used: usize) Progress {
@@ -438,6 +495,13 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                             self.operator = if (token.tag == .edge_undirected) .undirected else .directed;
                             self.operator_span = token.span;
                             self.state = .edge_right;
+                        } else if (token.tag == .colon or token.tag == .left_bracket) {
+                            // `{ a }:n` / `{ a } [x=1]`: a rule violation the
+                            // renderer can state, not merely an expected set.
+                            var expected = statementEndExpected(false);
+                            expected.undirected_operator = true;
+                            expected.directed_operator = true;
+                            return self.unexpected(expected, .subgraph_suffix, token);
                         } else {
                             self.state = .completed;
                             if (self.dispatchThenReplay(.subgraph_statement, token)) |result| return result;
@@ -582,9 +646,36 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         .eof => return self.schedule(.commit, token),
                         else => return self.unexpected(.{ .end_of_input = true }, .document_epilogue, token),
                     },
+                    .recovering => return self.recover(token),
                 }
                 return null;
             }
+        }
+
+        /// One token of resynchronization: a `;` at the current depth or a
+        /// `}` ends the skip; a skipped `{` is matched by counting so the
+        /// scope stack stays honest. Reaching end of input ends the parse.
+        fn recover(self: *Self, token: lex.Token) ?Result {
+            switch (token.tag) {
+                .semicolon => if (self.skip_depth == 0) {
+                    self.state = .statement;
+                },
+                .left_brace => self.skip_depth += 1,
+                .right_brace => {
+                    if (self.skip_depth > 0) {
+                        self.skip_depth -= 1;
+                    } else if (self.nestingDepth() == 0) {
+                        self.state = .epilogue;
+                    } else {
+                        const stack = self.options.scratch.?;
+                        self.leaveScope(stack.pop());
+                        self.state = .statement;
+                    }
+                },
+                .eof => return self.finish(.invalid_syntax),
+                else => {},
+            }
+            return null;
         }
 
         fn acceptKind(self: *Self, kind: syntax_event.GraphKind, token: lex.Token) void {
@@ -714,7 +805,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             }) catch {
                 self.delivery = .failed;
             };
-            if (self.begun) self.events.abortDocument(.scratch_failure);
+            self.abortEvents(.scratch_failure);
             return self.finish(.{ .scratch_failure = err });
         }
 
@@ -810,6 +901,24 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         /// of a source-sized collection. Callback execution is a callout.
         fn dispatch(self: *Self, action: Action, token: lex.Token) ?Result {
             if (audited) self.audit.dispatch += 1;
+            if (self.aborted) {
+                // Recovery: the sink is terminal, so no event is attempted;
+                // only the grammar's own scope and port bookkeeping continues.
+                switch (action) {
+                    .end_subgraph => {
+                        const stack = self.options.scratch.?;
+                        self.leaveScope(stack.pop());
+                    },
+                    .ported_reference => switch (self.port_target) {
+                        .left => self.left_port = 0,
+                        .right => self.right_port = 0,
+                        .link => self.link_port = 0,
+                    },
+                    .commit => return self.finish(.invalid_syntax),
+                    else => {},
+                }
+                return null;
+            }
             switch (action) {
                 .begin => {
                     self.begun = true;
@@ -837,32 +946,15 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                     const frame = stack.frames[stack.len - 1];
                     self.events.endSubgraph(.{ .close = token.span, .entry = frame.entry }) catch |err| return self.sinkFailure(err);
                     _ = stack.pop();
-                    self.open_brace_span = frame.parent_open;
-                    self.completed_scope = frame.entry.id;
-                    if (frame.role == .left) {
-                        self.left = frame.start;
-                        self.left_scope = frame.entry.id;
-                        self.left_port = null;
-                        self.pending = .node;
-                        self.state = .after_subgraph;
-                    } else {
-                        const edge = frame.edge.?;
-                        self.left = edge.left;
-                        self.left_port = edge.left_port;
-                        self.left_scope = edge.left_scope;
-                        self.right = edge.right;
-                        self.right_port = edge.right_port;
-                        self.right_scope = edge.right_scope;
-                        self.operator = edge.operator;
-                        self.operator_span = edge.operator_span;
-                        if (frame.role == .right) {
-                            self.right = frame.start;
-                            self.right_port = null;
-                            self.right_scope = frame.entry.id;
+                    if (self.suspect_close == null) {
+                        if (leadingIndent(self.tokens.source, token.span)) |close_indent| {
+                            if (lineIndent(self.tokens.source, self.open_brace_span.?)) |open_indent| {
+                                if (close_indent < open_indent) self.suspect_close = token.span;
+                            }
                         }
-                        self.pending = if (frame.role == .right) .edge else .edge_chain;
-                        self.state = .edge_terminate;
                     }
+                    self.completed_scope = frame.entry.id;
+                    self.leaveScope(frame);
                 },
                 .subgraph_statement => self.events.subgraphStatement(self.completed_scope) catch |err| return self.sinkFailure(err),
                 .node => self.events.nodeStatement(.{ .identifier = self.left, .port = self.left_port }) catch |err| return self.sinkFailure(err),
@@ -932,6 +1024,38 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             return null;
         }
 
+        /// Restore the grammar state suspended when `frame`'s scope opened.
+        /// Shared by the normal exit and the recovering (event-less) exit;
+        /// `frame.entry` is only meaningful before the abort, so the scope
+        /// id lives on `completed_scope`, set by the caller.
+        fn leaveScope(self: *Self, frame: scratch_impl.Frame) void {
+            self.open_brace_span = frame.parent_open;
+            if (frame.role == .left) {
+                self.left = frame.start;
+                self.left_scope = if (self.aborted) 0 else frame.entry.id;
+                self.left_port = null;
+                self.pending = .node;
+                self.state = .after_subgraph;
+            } else {
+                const edge = frame.edge.?;
+                self.left = edge.left;
+                self.left_port = edge.left_port;
+                self.left_scope = edge.left_scope;
+                self.right = edge.right;
+                self.right_port = edge.right_port;
+                self.right_scope = edge.right_scope;
+                self.operator = edge.operator;
+                self.operator_span = edge.operator_span;
+                if (frame.role == .right) {
+                    self.right = frame.start;
+                    self.right_port = null;
+                    self.right_scope = if (self.aborted) 0 else frame.entry.id;
+                }
+                self.pending = if (frame.role == .right) .edge else .edge_chain;
+                self.state = .edge_terminate;
+            }
+        }
+
         fn finish(self: *Self, outcome: Outcome) Result {
             if (self.options.scratch) |scratch| scratch.len = 0;
             const result: Result = .{ .outcome = outcome, .diagnostic_delivery = self.delivery };
@@ -942,8 +1066,9 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
 
         /// Report a failure diagnostic through the caller's sink, honoring
         /// the event lifecycle: abort follows begin; nothing is emitted
-        /// before a supported header.
-        fn fail(self: *Self, failure: diagnostic.Diagnostic) Result {
+        /// before a supported header. Returns null when the parse continues
+        /// in recovery (the caller resynchronizes), else the terminal result.
+        fn fail(self: *Self, failure: diagnostic.Diagnostic) ?Result {
             // A failing diagnostic sink must not mask the parse outcome;
             // the loss is surfaced via `Result.diagnostic_delivery`.
             self.diagnostics.emit(failure) catch {
@@ -954,21 +1079,51 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .resource_capacity_exhausted => .resource_exhausted,
                 else => .invalid_syntax,
             };
-            if (self.begun) self.events.abortDocument(reason);
-            return self.finish(switch (reason) {
+            if (reason == .invalid_syntax and self.canRecover(failure)) {
+                self.abortEvents(.invalid_syntax);
+                if (self.tokens.terminal != .none) self.tokens.resumeAfterFailure();
+                self.state = .recovering;
+                self.skip_depth = 0;
+                return null;
+            }
+            // A limit or deferred feature met while recovering does not
+            // change what the document is: still invalid syntax.
+            const outcome: Outcome = if (self.recovered()) .invalid_syntax else switch (reason) {
                 .invalid_syntax => .invalid_syntax,
                 .unsupported_feature => .unsupported_feature,
                 .resource_exhausted => .resource_exhausted,
                 // `fail` only handles diagnostic-classified failures; event
                 // sink failures route through `sinkFailure` exclusively.
                 .sink_failure, .scratch_failure, .cancelled => unreachable,
-            });
+            };
+            self.abortEvents(reason);
+            return self.finish(outcome);
+        }
+
+        /// True once a syntax error has been recovered from: the sink was
+        /// aborted while the grammar kept running.
+        fn recovered(self: *const Self) bool {
+            return self.aborted and self.terminal == null and self.begun;
+        }
+
+        /// Recovery is a body-only policy: a header has no statement
+        /// boundary to return to, trailing tokens have nothing left to
+        /// parse, and end of input is already the end.
+        fn canRecover(self: *const Self, failure: diagnostic.Diagnostic) bool {
+            if (self.options.recovery != .statements or !self.begun) return false;
+            if (self.state == .epilogue) return false;
+            if (failure.details == .unexpected and failure.details.unexpected.found == .end_of_input) return false;
+            if (self.tokens.terminal != .none) return switch (self.tokens.terminal) {
+                .non_ascii, .html, .none, .eof => false,
+                else => true,
+            };
+            return true;
         }
 
         fn sinkFailure(self: *Self, err: anyerror) Result {
             // The event sink failed mid-lifecycle; abort so it can release
             // staged state. `abortDocument` is infallible by contract.
-            self.events.abortDocument(.sink_failure);
+            self.abortEvents(.sink_failure);
             return self.finish(.{ .sink_failure = err });
         }
 
@@ -977,32 +1132,86 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             expected: std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false),
             context: diagnostic.ParseContext,
             token: lex.Token,
-        ) Result {
+        ) ?Result {
+            if (self.fail(self.unexpectedDiagnostic(expected, context, token))) |result| return result;
+            // Recovering: the offending token itself may be the boundary.
+            return self.recover(token);
+        }
+
+        fn unexpectedDiagnostic(
+            self: *Self,
+            expected: std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false),
+            context: diagnostic.ParseContext,
+            token: lex.Token,
+        ) diagnostic.Diagnostic {
             const found = tokenItem(token.tag);
-            // EOF traces back to the pending suffix colon, otherwise the
-            // innermost still-open delimiter (typed relation; renderers word it).
+            const expected_set = diagnostic.ExpectedSet.init(expected);
+            // A keyword where a name was needed is its own condition: the
+            // word is legal DOT, just reserved, and the fix is to quote it.
+            // Positions that legitimately accept a keyword list it in
+            // `expected`, so this never fires for them.
+            if (keywordOf(found)) |keyword| {
+                // `digraph strict {` is a misplaced modifier, not a name.
+                const misplaced_strict = context == .document_header and found == .strict_keyword;
+                if (expected_set.contains(.identifier) and !expected_set.contains(found) and !misplaced_strict) {
+                    return .{
+                        .code = .syntax_reserved_keyword,
+                        .span = token.span,
+                        .details = .{ .reserved_keyword = .{ .keyword = keyword, .context = context } },
+                    };
+                }
+            }
+            // `node;`, `edge = red`: an attribute keyword without its list.
+            // The keyword is the likely mistake (a node named `node`), so
+            // the diagnostic marks it rather than the token after it.
+            if (self.state == .attribute_open) {
+                return .{
+                    .code = .syntax_reserved_keyword,
+                    .span = self.left,
+                    .details = .{ .reserved_keyword = .{
+                        .keyword = switch (self.attribute_target) {
+                            .graph => .graph,
+                            .node => .node,
+                            .edge => .edge,
+                        },
+                        .context = .attribute_list,
+                    } },
+                };
+            }
+            const at_end = found == .end_of_input;
             const missing_port = self.state == .port_first or self.state == .port_second;
-            const origin: ?location.Span = if (missing_port) self.port_colon else self.open_bracket_span orelse self.open_brace_span;
-            const related: ?diagnostic.Related = if (found == .end_of_input)
-                (if (origin) |span|
-                    .{ .span = span, .role = if (missing_port) .suffix_started_here else .opened_here }
-                else
-                    null)
+            // The delimiter this failure traces back to (typed relation;
+            // renderers word it). An open `[` list is worth showing when
+            // the token found cannot belong to a list — `a [color=red; }`
+            // fails on the `}` one token after the omission — but not for
+            // a mistake inside a list. A scope's `{` is only informative
+            // at end of input.
+            const related: ?diagnostic.Related = if (at_end and missing_port)
+                .{ .span = self.port_colon, .role = .suffix_started_here }
+            else if (self.open_bracket_span != null and (at_end or !listToken(found)))
+                .{ .span = self.open_bracket_span.?, .role = .opened_here }
+            else if (at_end)
+                (if (self.open_brace_span) |span| .{ .span = span, .role = .opened_here } else null)
             else
                 null;
-            return self.fail(.{
-                .code = if (found == .end_of_input) .parser_unexpected_end else .parser_unexpected_token,
+            const suspect: ?diagnostic.Related = if (at_end and !missing_port and self.open_bracket_span == null)
+                (if (self.suspect_close) |span| .{ .span = span, .role = .misindented_close } else null)
+            else
+                null;
+            return .{
+                .code = if (at_end) .syntax_unexpected_end else .syntax_unexpected_token,
                 .span = token.span,
                 .details = .{ .unexpected = .{
-                    .expected = diagnostic.ExpectedSet.init(expected),
+                    .expected = expected_set,
                     .found = found,
                     .context = context,
                     .related = related,
+                    .suspect = suspect,
                 } },
-            });
+            };
         }
 
-        fn unsupportedAt(self: *Self, span: location.Span, feature: diagnostic.Feature) Result {
+        fn unsupportedAt(self: *Self, span: location.Span, feature: diagnostic.Feature) ?Result {
             return self.fail(.{
                 .code = .profile_unsupported_feature,
                 .span = span,
@@ -1063,6 +1272,57 @@ fn tokenItem(tag: lex.Token.Tag) diagnostic.SyntaxItem {
         .equals => .equals,
         .comma => .comma,
     };
+}
+
+/// Tokens that can appear inside an attribute list.
+fn listToken(item: diagnostic.SyntaxItem) bool {
+    return switch (item) {
+        .identifier, .comma, .semicolon, .equals, .right_bracket => true,
+        else => false,
+    };
+}
+
+fn keywordOf(item: diagnostic.SyntaxItem) ?diagnostic.Keyword {
+    return switch (item) {
+        .graph_keyword => .graph,
+        .digraph_keyword => .digraph,
+        .strict_keyword => .strict,
+        .subgraph_keyword => .subgraph,
+        .node_keyword => .node,
+        .edge_keyword => .edge,
+        else => null,
+    };
+}
+
+/// Longest line prefix the indentation heuristic will inspect. A `}` (or an
+/// opener) further into its line than this is not "indented", and bounding
+/// the scan keeps every scope exit a constant-cost step (R-PERF-001).
+const max_indent_scan = 128;
+
+/// The indentation of `span`'s line when `span` is the first non-blank
+/// text on it: the number of leading spaces and tabs. Null otherwise.
+fn leadingIndent(source: []const u8, span: location.Span) ?usize {
+    const prefix_len = span.start.byte_column - 1;
+    if (prefix_len > max_indent_scan) return null;
+    const line_start = span.start.byte_offset - prefix_len;
+    for (source[line_start..span.start.byte_offset]) |byte| {
+        if (byte != ' ' and byte != '\t') return null;
+    }
+    return prefix_len;
+}
+
+/// The indentation of `span`'s line (its first non-blank column), whatever
+/// precedes `span` on that line. Null when the prefix exceeds the bound.
+fn lineIndent(source: []const u8, span: location.Span) ?usize {
+    const prefix_len = span.start.byte_column - 1;
+    if (prefix_len > max_indent_scan) return null;
+    const line_start = span.start.byte_offset - prefix_len;
+    var indent: usize = 0;
+    for (source[line_start..span.start.byte_offset]) |byte| {
+        if (byte != ' ' and byte != '\t') break;
+        indent += 1;
+    }
+    return indent;
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,7 +1399,7 @@ test "cancellation can stop every lexical continuation and execution phase" {
     const sources = [_][]const u8{
         " \r\n#x\r//y\n/*z**/graph {a;}",
         "graph {a\xff;}",
-        "graph {-1.2 -.5 .1 1->2 3--4}",
+        "graph {-1.2 -.5 .1 1->2 3--4 5-->6}",
         "graph {\"a\\\"b\" /*glue*/ + \"c\" [x=y] }",
     };
     for (sources) |source| for (0..source.len * 4 + 16) |budget| {
@@ -1286,13 +1546,19 @@ const BudgetSink = struct {
 const BudgetDiagnostics = struct {
     bag: Bag = .{},
     attempts: usize = 0,
+    /// Warnings ride along with tokens mid-parse; failures are terminal.
+    warnings: usize = 0,
     reject: bool = false,
     fn sink(self: *@This()) diagnostic.Sink {
         return .{ .context = self, .emit_fn = emit };
     }
+    fn failures(self: *const @This()) usize {
+        return self.attempts - self.warnings;
+    }
     fn emit(context: ?*anyopaque, item: diagnostic.Diagnostic) diagnostic.SinkError!void {
         const self: *@This() = @ptrCast(@alignCast(context.?));
         self.attempts += 1;
+        if (item.code.severity() == .warning) self.warnings += 1;
         if (self.reject) return error.DiagnosticSinkFailure;
         try self.bag.sink().emit(item);
     }
@@ -1329,12 +1595,16 @@ fn checkBudgetPartition(source: []const u8, budgets: []const usize, options: Opt
         const dispatch = machine.audit.dispatch;
         const attempts = events.attempts;
         const aborts = events.aborts;
-        const diagnostics = diags.attempts;
+        const diagnostics = diags.failures();
         const before = machine.progress(0);
         const progress = machine.advance(budget);
         const examined = machine.tokens.examinations - reads;
         try expectEqual(progress.work_used, examined + (machine.audit.grammar - grammar) + (machine.audit.dispatch - dispatch));
-        try expectEqual(machine.audit.dispatch - dispatch, events.attempts - attempts);
+        // After a recovered failure, dispatches keep the grammar's own
+        // bookkeeping without attempting events, and several failures can
+        // fall inside one budget; the end-state comparisons below still hold.
+        const recovering = options.recovery == .statements;
+        if (!recovering) try expectEqual(machine.audit.dispatch - dispatch, events.attempts - attempts);
         try expect(progress.work_used <= budget);
         try expect(examined <= progress.work_used);
         try expect(progress.source_frontier >= frontier);
@@ -1343,12 +1613,12 @@ fn checkBudgetPartition(source: []const u8, budgets: []const usize, options: Opt
         try expectEqual(events.pairs, progress.completed_pairs);
         if (budget == 0) try std.testing.expectEqualDeep(before, progress);
         if (progress.result == null) {
-            try expectEqual(aborts, events.aborts);
-            try expectEqual(diagnostics, diags.attempts);
+            if (!recovering) try expectEqual(aborts, events.aborts);
+            if (!recovering) try expectEqual(diagnostics, diags.failures());
             if (budget != 0) try expect(progress.work_used != 0);
         } else {
             try expect(events.aborts - aborts <= 1);
-            try expect(diags.attempts - diagnostics <= 1);
+            if (!recovering) try expect(diags.failures() - diagnostics <= 1);
         }
         total += progress.work_used;
         frontier = progress.source_frontier;
@@ -1481,7 +1751,7 @@ test "ordinary parser compiles out pending work and audit storage" {
     try expect(@FieldType(Ordinary, "work") == void);
     try expect(@FieldType(Ordinary, "audit") == void);
     try expect(@FieldType(lex.Scanner(false, false), "source_frontier") == void);
-    try expect(@sizeOf(Ordinary) <= 832);
+    try expect(@sizeOf(Ordinary) <= 896);
 }
 
 test "unaudited metered driver charges empty document exactly and runs to completion" {
@@ -1596,6 +1866,126 @@ fn expectAborted(source: []const u8, expected_reason: syntax_event.AbortReason) 
     try expectEqual(expected_reason, recorded[recorded.len - 1].abort_document);
 }
 
+const recovery_options: Options = .{ .recovery = .statements };
+
+fn countCode(bag: anytype, code: diagnostic.Code) usize {
+    var count: usize = 0;
+    for (bag.items()) |d| {
+        if (d.code == code) count += 1;
+    }
+    return count;
+}
+
+test "statement recovery reports every syntax error and aborts the sink once" {
+    const source = "digraph { a -> ; b -> ; c [x=1 =]; e -- }";
+    var events: Recording = .{};
+    var bag: diagnostic.FixedBag(8) = .{};
+    const result = parse(source, &events, bag.sink(), recovery_options);
+    try expect(result.outcome == .invalid_syntax);
+    // `a -> ;`, `b -> ;`, the `=` after `x=1`, `e -- }`.
+    try expectEqual(@as(usize, 4), bag.items().len);
+    try expectEqualStrings(";", bag.items()[0].span.slice(source));
+    try expectEqualStrings(";", bag.items()[1].span.slice(source));
+    try expectEqualStrings("=", bag.items()[2].span.slice(source));
+    try expectEqualStrings("}", bag.items()[3].span.slice(source));
+    // One begin, one abort, nothing after the abort.
+    const recorded = events.recorded();
+    try expect(recorded[0] == .begin_document);
+    try expect(recorded[recorded.len - 1] == .abort_document);
+    var aborts: usize = 0;
+    for (recorded) |event| {
+        if (event == .abort_document) aborts += 1;
+    }
+    try expectEqual(@as(usize, 1), aborts);
+    try expectEqual(@as(usize, 0), bag.omitted);
+}
+
+test "statement recovery resumes after lexical errors and through scopes" {
+    var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
+    var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var options = recovery_options;
+    options.scratch = &stack;
+    const source = "digraph { a - b; c => d; subgraph s { e -> ; f } g -> ; h [k=v]; i -> { j -> ; k } }";
+    var events: Recording = .{};
+    var bag: diagnostic.FixedBag(8) = .{};
+    try expect(parse(source, &events, bag.sink(), options).outcome == .invalid_syntax);
+    try expectEqual(@as(usize, 1), countCode(&bag, .syntax_invalid_operator));
+    try expectEqual(@as(usize, 1), countCode(&bag, .syntax_invalid_byte));
+    try expectEqual(@as(usize, 3), countCode(&bag, .syntax_unexpected_token));
+    try expectEqual(@as(usize, 5), bag.items().len);
+    // Every scope was left again: no frames remain.
+    try expectEqual(@as(usize, 0), stack.len);
+    // The unterminated cases cannot resume: the rest of the input is the body.
+    for ([_][]const u8{ "digraph { a -> ; b -> \"x; c -> d }", "digraph { a -> ; b /* c -> ; d }" }) |truncated| {
+        var truncated_events: Recording = .{};
+        var truncated_bag: Bag = .{};
+        try expect(parse(truncated, &truncated_events, truncated_bag.sink(), recovery_options).outcome == .invalid_syntax);
+        try expectEqual(@as(usize, 2), truncated_bag.items().len);
+        try expectEqual(diagnostic.Code.syntax_unterminated_construct, truncated_bag.items()[1].code);
+    }
+}
+
+test "statement recovery stops where there is no boundary to return to" {
+    // Header errors, end of input, trailing tokens, limits and deferred
+    // features end the parse exactly as they do without recovery.
+    inline for (.{
+        .{ "graph graph { a -> ; b }", 1, Outcome.invalid_syntax },
+        .{ "digraph { a -> ; subgraph { b", 2, Outcome.invalid_syntax },
+        .{ "digraph { a -> ; } b c", 2, Outcome.invalid_syntax },
+        .{ "digraph { a -> ; b [label=<x>]; c -> ; }", 2, Outcome.invalid_syntax },
+    }) |case| {
+        var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
+        var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+        var options = recovery_options;
+        options.scratch = &stack;
+        var events: Recording = .{};
+        var bag: Bag = .{};
+        try expectEqual(case[2], parse(case[0], &events, bag.sink(), options).outcome);
+        try expectEqual(@as(usize, case[1]), bag.items().len);
+    }
+    // A limit reached after a recovered error keeps the truthful outcome
+    // but still reports the limit.
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    var limited = recovery_options;
+    limited.max_statements = 2;
+    try expect(parse("digraph { a -> ; b; c; d; }", &events, bag.sink(), limited).outcome == .invalid_syntax);
+    try expectEqual(@as(usize, 2), bag.items().len);
+    try expectEqual(diagnostic.Code.resource_capacity_exhausted, bag.items()[1].code);
+    // A full bag counts what it could not keep.
+    var small: diagnostic.FixedBag(2) = .{};
+    try expect(parse("digraph { a -> ; b -> ; c -> ; d -> ; }", &events, small.sink(), recovery_options).outcome == .invalid_syntax);
+    try expectEqual(@as(usize, 2), small.items().len);
+    try expectEqual(@as(usize, 2), small.omitted);
+}
+
+test "metered and cancellable drivers recover identically to the immediate one" {
+    const source = "digraph { a - b; subgraph s { c -> ; d } e [x=1 f; g -> h -> ; i:p:q:r; j }";
+    const total = try checkBudgetPartition(source, &.{1}, recovery_options, null, false);
+    try expectEqual(total, try checkBudgetPartition(source, &.{ 0, 3, 17 }, recovery_options, null, false));
+    _ = try checkBudgetPartition(source, &.{ 0, 1, 5 }, recovery_options, null, true);
+    // Cancellation after a recovered error reports the errors, not a cancel.
+    var request: CancellationProbe = .{};
+    var events: BudgetSink = .{};
+    var bag: Bag = .{};
+    var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
+    var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var options = recovery_options;
+    options.scratch = &stack;
+    var machine: Machine(*BudgetSink, true, true, true) = .{
+        .tokens = lex.Scanner(true, true).init(source),
+        .events = &events,
+        .diagnostics = bag.sink(),
+        .options = options,
+        .cancellation = request.hook(),
+    };
+    while (bag.items().len == 0) _ = machine.advance(1);
+    request.flag = true;
+    const progress = machine.advance(1);
+    try expect(progress.result.?.outcome == .invalid_syntax);
+    try expectEqual(@as(usize, 1), events.aborts);
+}
+
 test "fail-fast means the bag contains exactly one diagnostic" {
     var events: Recording = .{};
     var bag: Bag = .{};
@@ -1603,7 +1993,7 @@ test "fail-fast means the bag contains exactly one diagnostic" {
     try expect(result.outcome == .invalid_syntax);
 
     try expectEqual(@as(usize, 1), bag.items().len);
-    try expectEqual(diagnostic.Code.lexer_invalid_byte, bag.items()[0].code);
+    try expectEqual(diagnostic.Code.syntax_invalid_byte, bag.items()[0].code);
 
     try expectAborted("graph { @ }", .invalid_syntax);
 }
@@ -1668,11 +2058,132 @@ test "an unquoted keyword is not a valid graph name (matches Graphviz)" {
     const result = parse("graph graph { }", &events, bag.sink(), .{});
     try expect(result.outcome == .invalid_syntax);
 
-    const unexpected = bag.items()[0].details.unexpected;
-    try expect(unexpected.expected.contains(.identifier));
-    try expect(unexpected.expected.contains(.left_brace));
-    try expectEqual(diagnostic.SyntaxItem.graph_keyword, unexpected.found);
+    // Reported as the condition it is — a reserved word where a name was
+    // needed — rather than as an expected-token set.
+    try expectEqual(diagnostic.Code.syntax_reserved_keyword, bag.items()[0].code);
+    const reserved = bag.items()[0].details.reserved_keyword;
+    try expectEqual(diagnostic.Keyword.graph, reserved.keyword);
+    try expectEqual(diagnostic.ParseContext.document_header, reserved.context);
+    try expectEqualStrings("graph", bag.items()[0].span.slice("graph graph { }"));
     try expectEqual(@as(usize, 0), events.recorded().len);
+}
+
+test "reserved keywords where a name was needed name the keyword and context" {
+    inline for (.{
+        .{ "graph { a -- node; }", diagnostic.Keyword.node, diagnostic.ParseContext.edge_endpoint, "node" },
+        .{ "digraph { subgraph edge { } }", diagnostic.Keyword.edge, diagnostic.ParseContext.subgraph_header, "edge" },
+        .{ "graph { a [node=1] }", diagnostic.Keyword.node, diagnostic.ParseContext.attribute_key, "node" },
+        .{ "graph { a [x=graph] }", diagnostic.Keyword.graph, diagnostic.ParseContext.attribute_value, "graph" },
+        .{ "graph { a:digraph }", diagnostic.Keyword.digraph, diagnostic.ParseContext.port_component, "digraph" },
+        .{ "graph { x = strict }", diagnostic.Keyword.strict, diagnostic.ParseContext.assignment_value, "strict" },
+        .{ "graph subgraph { }", diagnostic.Keyword.subgraph, diagnostic.ParseContext.document_header, "subgraph" },
+        // An attribute keyword without its list marks the keyword itself.
+        .{ "graph { node; }", diagnostic.Keyword.node, diagnostic.ParseContext.attribute_list, "node" },
+        .{ "graph { edge = red; }", diagnostic.Keyword.edge, diagnostic.ParseContext.attribute_list, "edge" },
+        .{ "digraph { graph }", diagnostic.Keyword.graph, diagnostic.ParseContext.attribute_list, "graph" },
+        .{ "graph { node", diagnostic.Keyword.node, diagnostic.ParseContext.attribute_list, "node" },
+    }) |case| {
+        var events: Recording = .{};
+        var bag: Bag = .{};
+        try expect(parse(case[0], &events, bag.sink(), .{}).outcome == .invalid_syntax);
+        try expectEqual(diagnostic.Code.syntax_reserved_keyword, bag.items()[0].code);
+        try expectEqual(case[1], bag.items()[0].details.reserved_keyword.keyword);
+        try expectEqual(case[2], bag.items()[0].details.reserved_keyword.context);
+        try expectEqualStrings(case[3], bag.items()[0].span.slice(case[0]));
+    }
+    // `digraph strict {` is a misplaced modifier, reported as a plain
+    // unexpected token so the renderer can say where 'strict' goes.
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    try expect(parse("digraph strict { }", &events, bag.sink(), .{}).outcome == .invalid_syntax);
+    try expectEqual(diagnostic.Code.syntax_unexpected_token, bag.items()[0].code);
+    try expectEqual(diagnostic.SyntaxItem.strict_keyword, bag.items()[0].details.unexpected.found);
+}
+
+test "ports and attribute lists after a standalone subgraph get their own context" {
+    inline for (.{ "graph { { a }:n -- b }", "graph { subgraph s { a } [x=1] }" }) |source| {
+        var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
+        var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+        var events: Recording = .{};
+        var bag: Bag = .{};
+        try expect(parse(source, &events, bag.sink(), .{ .scratch = &stack }).outcome == .invalid_syntax);
+        try expectEqual(diagnostic.Code.syntax_unexpected_token, bag.items()[0].code);
+        try expectEqual(diagnostic.ParseContext.subgraph_suffix, bag.items()[0].details.unexpected.context);
+    }
+}
+
+test "an open attribute list is related even when the failure is not at end of input" {
+    const source = "graph { a [color=red; }";
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    try expect(parse(source, &events, bag.sink(), .{}).outcome == .invalid_syntax);
+    const unexpected = bag.items()[0].details.unexpected;
+    try expectEqual(diagnostic.SyntaxItem.right_brace, unexpected.found);
+    try expectEqualStrings("[", unexpected.related.?.span.slice(source));
+    try expectEqual(diagnostic.Related.Role.opened_here, unexpected.related.?.role);
+    // A scope's '{' is not dragged in for ordinary mid-body failures.
+    var plain_events: Recording = .{};
+    var plain_bag: Bag = .{};
+    try expect(parse("graph { a -- ; }", &plain_events, plain_bag.sink(), .{}).outcome == .invalid_syntax);
+    try expect(plain_bag.items()[0].details.unexpected.related == null);
+}
+
+test "a misindented closing brace is the suspect when the input ends inside a scope" {
+    const source =
+        \\digraph {
+        \\  subgraph s {
+        \\    a -> b;
+        \\  b -> c;
+        \\}
+        \\
+    ;
+    var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
+    var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    try expect(parse(source, &events, bag.sink(), .{ .scratch = &stack }).outcome == .invalid_syntax);
+    try expectEqual(diagnostic.Code.syntax_unexpected_end, bag.items()[0].code);
+    const unexpected = bag.items()[0].details.unexpected;
+    // Brace matching still names the only open brace, the document's...
+    try expectEqual(@as(usize, 1), unexpected.related.?.span.start.line);
+    // ...and the heuristic points at the '}' that closed the wrong scope.
+    const suspect = unexpected.suspect.?;
+    try expectEqual(diagnostic.Related.Role.misindented_close, suspect.role);
+    try expectEqual(@as(usize, 5), suspect.span.start.line);
+    try expectEqualStrings("}", suspect.span.slice(source));
+
+    // Consistent indentation raises no suspicion, even when a brace is missing.
+    const tidy = "digraph {\n  subgraph s {\n    a -> b;\n  }\n  b -> c;\n";
+    var tidy_stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var tidy_events: Recording = .{};
+    var tidy_bag: Bag = .{};
+    try expect(parse(tidy, &tidy_events, tidy_bag.sink(), .{ .scratch = &tidy_stack }).outcome == .invalid_syntax);
+    try expect(tidy_bag.items()[0].details.unexpected.suspect == null);
+}
+
+test "ambiguous numerals warn and the parse still succeeds" {
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    const result = parse("graph { 1e3; 2.5.5 }", &events, bag.sink(), .{});
+    try expect(result.outcome == .success);
+    try expectEqual(@as(usize, 2), bag.items().len);
+    try expectEqual(diagnostic.Code.syntax_ambiguous_numeral, bag.items()[0].code);
+    try expectEqual(diagnostic.Severity.warning, bag.items()[0].code.severity());
+    try expectEqual(@as(u8, 'e'), bag.items()[0].details.ambiguous_numeral);
+    try expectEqual(@as(u8, '.'), bag.items()[1].details.ambiguous_numeral);
+    // Four node statements: 1, e3, 2.5, .5 — exactly Graphviz's split.
+    var nodes: usize = 0;
+    for (events.recorded()) |event| {
+        if (event == .node_statement) nodes += 1;
+    }
+    try expectEqual(@as(usize, 4), nodes);
+}
+
+test "a leading byte order mark does not stop the parse" {
+    var events: Recording = .{};
+    var bag: Bag = .{};
+    try expect(parse("\xEF\xBB\xBFdigraph { a -> b; }", &events, bag.sink(), .{}).outcome == .success);
+    try expectEqual(@as(usize, 0), bag.items().len);
 }
 
 test "strict must be followed by a kind keyword" {
@@ -1719,7 +2230,7 @@ test "missing edge endpoint is invalid syntax at the terminator" {
     try expect(parse("graph { a -- ; }", &events, bag.sink(), .{}).outcome == .invalid_syntax);
 
     const failure = bag.items()[0];
-    try expectEqual(diagnostic.Code.parser_unexpected_token, failure.code);
+    try expectEqual(diagnostic.Code.syntax_unexpected_token, failure.code);
     try expect(failure.details.unexpected.expected.contains(.identifier));
     try expectEqual(diagnostic.SyntaxItem.semicolon, failure.details.unexpected.found);
     try expectEqual(diagnostic.ParseContext.edge_endpoint, failure.details.unexpected.context);
@@ -1744,7 +2255,7 @@ test "truncation at token boundaries reports unexpected end of input" {
         var events: Recording = .{};
         var bag: Bag = .{};
         try expect(parse(source, &events, bag.sink(), .{}).outcome == .invalid_syntax);
-        try expectEqual(diagnostic.Code.parser_unexpected_end, bag.items()[0].code);
+        try expectEqual(diagnostic.Code.syntax_unexpected_end, bag.items()[0].code);
     }
 }
 
@@ -1777,7 +2288,7 @@ test "failures before a supported header emit no events but do fill the bag" {
     const quoted_result = parse("\"g\" { a; }", &quoted_events, quoted_bag.sink(), .{});
     try expect(quoted_result.outcome == .invalid_syntax);
     try expectEqual(
-        diagnostic.Code.parser_unexpected_token,
+        diagnostic.Code.syntax_unexpected_token,
         quoted_bag.items()[0].code,
     );
     try expectEqual(@as(usize, 0), quoted_events.recorded().len);
@@ -1818,22 +2329,33 @@ test "deferred keywords in illegal positions are syntax errors, not unsupported"
     // unquoted graph name or edge endpoint (Graphviz rejects all of
     // these). Reporting them as unsupported features would claim the input
     // uses a deferred construct when it is simply malformed.
+    // Positions that never take a name report the keyword as an unexpected
+    // token; positions that wanted a name report a reserved keyword.
     inline for (.{
         .{ "subgraph s { a; }", diagnostic.SyntaxItem.subgraph_keyword },
         .{ "strict subgraph { }", diagnostic.SyntaxItem.subgraph_keyword },
-        .{ "graph subgraph { }", diagnostic.SyntaxItem.subgraph_keyword },
-        .{ "graph node { }", diagnostic.SyntaxItem.node_keyword },
         .{ "node { }", diagnostic.SyntaxItem.node_keyword },
-        .{ "graph { a -- node; }", diagnostic.SyntaxItem.node_keyword },
-        .{ "graph { a -- edge; }", diagnostic.SyntaxItem.edge_keyword },
         .{ "graph { a; } subgraph", diagnostic.SyntaxItem.subgraph_keyword },
     }) |case| {
         var events: Recording = .{};
         var bag: Bag = .{};
         const result = parse(case[0], &events, bag.sink(), .{});
         try expect(result.outcome == .invalid_syntax);
-        try expectEqual(diagnostic.Code.parser_unexpected_token, bag.items()[0].code);
+        try expectEqual(diagnostic.Code.syntax_unexpected_token, bag.items()[0].code);
         try expectEqual(case[1], bag.items()[0].details.unexpected.found);
+    }
+    inline for (.{
+        .{ "graph subgraph { }", diagnostic.Keyword.subgraph },
+        .{ "graph node { }", diagnostic.Keyword.node },
+        .{ "graph { a -- node; }", diagnostic.Keyword.node },
+        .{ "graph { a -- edge; }", diagnostic.Keyword.edge },
+    }) |case| {
+        var events: Recording = .{};
+        var bag: Bag = .{};
+        const result = parse(case[0], &events, bag.sink(), .{});
+        try expect(result.outcome == .invalid_syntax);
+        try expectEqual(diagnostic.Code.syntax_reserved_keyword, bag.items()[0].code);
+        try expectEqual(case[1], bag.items()[0].details.reserved_keyword.keyword);
     }
 }
 
@@ -1855,7 +2377,8 @@ test "attribute keywords require a bracket list; malformed subgraph headers fail
         var events: Recording = .{};
         var bag: Bag = .{};
         try expect(parse(source, &events, bag.sink(), .{}).outcome == .invalid_syntax);
-        try expect(bag.items()[0].details.unexpected.expected.contains(.left_bracket));
+        try expectEqual(diagnostic.Code.syntax_reserved_keyword, bag.items()[0].code);
+        try expectEqual(diagnostic.ParseContext.attribute_list, bag.items()[0].details.reserved_keyword.context);
     }
     try expectAborted("graph { subgraph; }", .invalid_syntax);
 }
@@ -1930,11 +2453,12 @@ test "failing beginDocument still receives the cleanup abort" {
 
 test "parser state stays small (R-PERF-005 parser-state-size regression guard)" {
     // The whole machine — lexer, continuation state, options, bookkeeping —
-    // must remain a small constant, independent of input size. 832 B is the
-    // current measured value plus headroom (see docs/BASELINES.md), not an
-    // architectural budget: if a slice legitimately grows the state, measure,
-    // update the baseline doc, and raise this bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 832);
+    // must remain a small constant, independent of input size. 896 B is the
+    // current measured value (872 B: the suspect-brace span added 48 B) plus
+    // headroom (see docs/BASELINES.md), not an architectural budget: if a
+    // slice legitimately grows the state, measure, update the baseline doc,
+    // and raise this bound in the same commit.
+    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 896);
 }
 
 test "step is terminal-idempotent after success and after failure" {

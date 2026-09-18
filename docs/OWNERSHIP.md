@@ -39,8 +39,11 @@ defer checked.deinit(gpa);
 
 **Arena** — parse many documents, free all at once. `deinit` is still safe
 to call, but dropping the arena releases everything anyway. Pass
-`document_capacities` hints to skip pool-growth churn when the document
-size is known:
+`document_capacities` hints so the pools are reserved once: an arena never
+reclaims an outgrown pool copy, so an unhinted parse backs the document with
+several times its retained size (`zig build bench -Doptimize=ReleaseFast`
+prints both numbers). `measure` reports the exact capacities for a source
+when they are not known:
 
 ```zig
 var checked = dot.parseAndValidate(arena.allocator(), source, bag.sink(), .{

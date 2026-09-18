@@ -6,7 +6,64 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
-No changes yet.
+Diagnostics overhaul, driven by an external probe of 79 malformed inputs.
+Breaking (0.x): every structured code changes, `Details` gains variants, and
+`DocumentStorage` pools are all optional.
+
+### Changed
+
+- WDP components are now logical domains, not source modules: `Syntax`,
+  `Validation`, `Resource`, `Profile`. `E.Lexer.*` and `E.Parser.*` are gone;
+  filter on `E.Syntax.*` for every malformed-input problem. New primaries name
+  the failure domain: `E.Syntax.Byte.003`, `Operator.003`, `Numeral.001`,
+  `Token.032`, `Concatenation.003`, `Grammar.003`/`031`, `Keyword.003`.
+  Compact IDs change accordingly.
+- Malformed operators (`a - b`, `a - > b`, `-->`) and incomplete numerals
+  (`.`, `-.`) are their own conditions with their own payloads, no longer
+  "invalid byte". A stray `>` says to write `->`.
+- A reserved keyword where a name was needed, or `node`/`edge`/`graph` without
+  its `[` list, is `E.Syntax.Keyword.003` with the keyword and context; the
+  hint says to quote it.
+- Every console hint is derived from the payload: the grammar rule that was
+  broken per parse context and token found (attribute list before the operator,
+  ports on subgraphs, a second graph, `strict` after the kind, a comma between
+  statements, …), "did you mean 'digraph'" for header typos, byte-specific
+  advice for stray bytes. The stale milestone-grammar hint is gone.
+- Expected sets collapse statement starters and the two edge operators into
+  "a statement" and "an edge operator".
+- An open `[` list is annotated whenever a token that cannot belong to a list
+  is found, not only at end of input.
+- End of input inside a scope points at a suspect `}` when one closed a scope
+  at a smaller indentation than the line that opened it
+  (`Unexpected.suspect`, role `misindented_close`).
+- The compact renderer says "byte column".
+- Several annotations on one excerpt line share a single mark row: the
+  rightmost label stays inline, the others hang below from a `┬` junction
+  and `└────` connector, leftmost lowest so connectors never cross labels.
+  Overlapping spans keep one row each.
+- A leading UTF-8 byte order mark is skipped, as Graphviz does.
+
+### Added
+
+- `W.Syntax.Numeral.033`: numerals running into a letter or second dot
+  (`1e3`, `1.2.3`) warn, matching Graphviz, and the parse continues. First
+  use of the warning severity.
+- `ParseOptions.recovery = .statements` (also fixed and session options):
+  after a body syntax error, resynchronize at `;`/`}` and keep reporting
+  syntax errors. Still no document, one abort, `invalid_syntax`.
+- `measure` / `measureIn`: count-only dry run returning the exact
+  `DocumentCapacities` for a source, for arena hints and fixed-pool sizing.
+- `Document.rootStatementCount()`; `statementCount()` is documented as
+  counting every scope.
+- `examples/check_file.zig`: command-line checker with recovery and the
+  console renderer.
+- Diagnostics regression table (`tests/diagnostics.zig`) and measure
+  verification (`tests/measure.zig`).
+
+### Fixed
+
+- `DocumentStorage` no longer requires three pools while defaulting the rest:
+  every pool defaults to empty.
 
 ## 0.2.0 — 2026-09-14
 

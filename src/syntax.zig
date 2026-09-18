@@ -539,8 +539,27 @@ pub const Document = struct {
         return .{ .identifier = .{ .start = reference.index_or_start, .len = reference.raw_len } };
     }
 
+    /// Every statement in the document, in every scope: statements nested
+    /// in subgraph bodies (standalone or endpoint) are in `order` too. For
+    /// the root scope alone, use `rootStatementCount`.
     pub fn statementCount(self: *const Document) usize {
         return self.order.len;
+    }
+
+    /// Statements written directly in the root scope: `statementCount()`
+    /// minus everything nested inside a subgraph body. O(top-level scopes).
+    pub fn rootStatementCount(self: *const Document) usize {
+        var nested: usize = 0;
+        var index: usize = 0;
+        // Records are in opening order and each carries the index one past
+        // its last descendant, so this walk visits exactly the top-level
+        // scopes; a body length already includes its nested bodies.
+        while (index < self.subgraph_records.len) {
+            const record = self.subgraph_records[index];
+            nested += record.body.len;
+            index = @max(record.subtree_end, index + 1);
+        }
+        return self.order.len - nested;
     }
 
     /// Bounds-checked lookup: null for an id that does not name a statement
@@ -1142,17 +1161,20 @@ pub const Capacities = struct {
 /// Caller-provided pools for allocation-free document building
 /// (R-MEM-003). Any memory works: static arrays, stack buffers, or a
 /// carved-up region — capacity is visible at the declaration site, nothing
-/// grows, and failure is deterministic.
+/// grows, and failure is deterministic. Every pool defaults to empty (zero
+/// capacity): a document that needs a pool you did not provide fails with
+/// `pool_exhausted` naming that pool. Size the pools with `measure` /
+/// `measureIn`, or with `FixedDocumentStorage` for compile-time budgets.
 pub const DocumentStorage = struct {
-    statement_ids: []StatementId,
-    nodes: []NodeStatement,
+    statement_ids: []StatementId = &.{},
+    nodes: []NodeStatement = &.{},
     edge_chains: []EdgeChainStatement = &.{},
     scoped_edges: []ScopedEdgeStatement = &.{},
     scoped_edge_links: []ScopedEdgeLink = &.{},
     edge_links: []EdgeLink = &.{},
     ported_references: []PortedReference = &.{},
     subgraphs: []Subgraph = &.{},
-    edges: []EdgeStatement,
+    edges: []EdgeStatement = &.{},
     attributes: []Attribute = &.{},
     assignments: []Assignment = &.{},
     attribute_statements: []AttributeStatement = &.{},
@@ -1208,6 +1230,108 @@ pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
         }
     };
 }
+
+/// Event sink that retains nothing and counts what each pool would hold:
+/// the exact `Capacities` a retained parse of the same source needs.
+/// It mirrors the builders' pool bookkeeping — edge promotion to the
+/// scoped pools, reserved order slots, link routing — so the numbers are
+/// exact, never estimates. It cannot fail and never allocates; this is the
+/// "count-only dry run" behind `measure` / `measureIn` (R-MEM-003).
+pub const CountingSink = struct {
+    counts: Capacities = .{},
+    scope_state: syntax_event.ScopeState = .{},
+    phase: enum { idle, building, committed, terminal } = .idle,
+
+    pub const Error = error{};
+
+    pub fn beginDocument(self: *CountingSink, _: syntax_event.BeginDocument) Error!void {
+        std.debug.assert(self.phase == .idle);
+        self.phase = .building;
+    }
+    pub fn nodeStatement(self: *CountingSink, _: syntax_event.NodeStatement) Error!void {
+        self.counts.nodes += 1;
+        self.counts.statements += 1;
+    }
+    pub fn edgeStatement(self: *CountingSink, event: syntax_event.EdgeStatement) Error!void {
+        if (self.isScoped(event)) return self.finishScopedEdge();
+        self.counts.edges += 1;
+        self.counts.statements += 1;
+    }
+    pub fn edgeChainStatement(self: *CountingSink, event: syntax_event.EdgeStatement) Error!void {
+        if (self.isScoped(event)) return self.finishScopedEdge();
+        self.counts.edge_chains += 1;
+        self.counts.statements += 1;
+    }
+    pub fn edgeLink(self: *CountingSink, _: syntax_event.EdgeLink) Error!void {
+        if (self.scope_state.scoped_owner != null) {
+            self.counts.scoped_edge_links += 1;
+        } else {
+            self.counts.edge_links += 1;
+        }
+    }
+    pub fn beginSubgraph(self: *CountingSink, event: syntax_event.BeginSubgraph) Error!syntax_event.ScopeEntry {
+        if (event.role == .left) {
+            self.scope_state.reserved_order = @intCast(self.counts.statements);
+            self.counts.statements += 1;
+        } else {
+            self.promoteEdge();
+            if (event.role == .link) self.counts.scoped_edge_links += 1;
+        }
+        const entry: syntax_event.ScopeEntry = .{ .id = @intCast(self.counts.subgraphs + 1), .state = self.scope_state };
+        self.counts.subgraphs += 1;
+        self.scope_state = .{};
+        return entry;
+    }
+    pub fn endSubgraph(self: *CountingSink, event: syntax_event.EndSubgraph) Error!void {
+        self.scope_state = event.entry.state;
+    }
+    pub fn subgraphStatement(self: *CountingSink, _: u32) Error!void {
+        self.scope_state = .{};
+    }
+    pub fn portedReference(self: *CountingSink, _: syntax_event.PortedReference) Error!u32 {
+        const index: u32 = @intCast(self.counts.ported_references);
+        self.counts.ported_references += 1;
+        return index;
+    }
+    pub fn attribute(self: *CountingSink, _: syntax_event.Attribute) Error!void {
+        self.counts.attributes += 1;
+    }
+    pub fn assignment(self: *CountingSink, _: syntax_event.Attribute) Error!void {
+        self.counts.assignments += 1;
+        self.counts.statements += 1;
+    }
+    pub fn attributeStatement(self: *CountingSink, _: syntax_event.AttributeStatement) Error!void {
+        self.counts.attribute_statements += 1;
+        self.counts.statements += 1;
+    }
+    pub fn endDocument(self: *CountingSink) Error!void {
+        std.debug.assert(self.phase == .building);
+        self.phase = .committed;
+    }
+    pub fn abortDocument(self: *CountingSink, _: syntax_event.AbortReason) void {
+        self.phase = .terminal;
+    }
+
+    fn isScoped(self: *const CountingSink, event: syntax_event.EdgeStatement) bool {
+        return self.scope_state.scoped_owner != null or event.left_scope != null or event.right_scope != null;
+    }
+    /// Same rule as the builders' `promoteEdge`: the first subgraph
+    /// endpoint moves the owning edge into the scoped pool, reserving an
+    /// order slot unless the statement already has one.
+    fn promoteEdge(self: *CountingSink) void {
+        if (self.scope_state.scoped_owner != null) return;
+        self.scope_state.scoped_owner = @intCast(self.counts.scoped_edges);
+        self.counts.scoped_edges += 1;
+        if (self.scope_state.reserved_order == null) {
+            self.scope_state.reserved_order = @intCast(self.counts.statements);
+            self.counts.statements += 1;
+        }
+    }
+    fn finishScopedEdge(self: *CountingSink) void {
+        self.promoteEdge();
+        self.scope_state = .{};
+    }
+};
 
 /// Event-sink twin of `Builder` that writes into caller-provided fixed
 /// pools: no allocator interface, nothing grows, and the handoff is

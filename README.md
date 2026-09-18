@@ -88,6 +88,26 @@ The quick-start switch uses `.node` endpoints because its input is node-only.
 For arbitrary DOT, handle both `Endpoint` variants as shown in the
 [subgraph endpoint example](examples/subgraph_endpoints.zig).
 
+### Show every error
+
+Parsing is fail-fast by default: one syntax error, then the outcome. Ask for
+statement-level recovery and one run reports them all, resynchronizing at the
+next `;` or `}`:
+
+```zig
+var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{
+    .parse = .{ .recovery = .statements },
+});
+// checked.outcome == .invalid_syntax; bag holds every syntax error, in order.
+try dot.console.renderBoxedList(bag.items(), bag.omitted, .{ .source = source }, stdout);
+```
+
+Every diagnostic is a typed value — a WDP code such as `E.Syntax.Keyword.003`,
+a span, and a payload naming what was found and where in the grammar — so a
+custom renderer can say as much as the console one. The registry is in
+[OUTCOMES.md](docs/OUTCOMES.md); `examples/check_file.zig` is a ready-made
+command-line checker.
+
 ### Build a linter
 
 For a pairwise engine-adapter view, use `document.edgeIterator()`. It visits
@@ -145,6 +165,30 @@ The root has depth zero; siblings reuse frames.
 (The allocator-based calls also accept arenas and
 `std.heap.FixedBufferAllocator` with `document_capacities` hints, if an
 allocator fits your architecture better.)
+
+### Size the pools
+
+`measure` is a count-only dry run: the same grammar and limits, nothing
+retained, and the exact `DocumentCapacities` a retained parse of that source
+needs. Use it to size fixed pools for an input you do not know in advance,
+or as the hint that keeps an arena parse allocation-exact:
+
+```zig
+const measured = dot.measure(allocator, source, bag.sink(), .{});
+if (measured.capacities) |capacities| {
+    var checked = dot.parseAndValidate(arena.allocator(), source, bag.sink(), .{
+        .parse = .{ .document_capacities = capacities },
+    });
+    // ...
+}
+```
+
+This matters for arenas: growing pools leave every outgrown copy behind, so
+an unhinted parse into an arena backs a document with four to seven times its
+retained size. Hinted or measured parses reserve once. Fixed pools are a
+memory and determinism feature rather than a speed one — the parse performs
+at most a few dozen allocations either way. `measureIn` is the allocator-free
+twin, taking the same nesting scratch as `parseBorrowedIn`.
 
 ### Integrate a graph engine
 

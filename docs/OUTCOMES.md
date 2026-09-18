@@ -67,8 +67,8 @@ grammar-aware — a deferred keyword in a position where it is not legal DOT
 Basic attributes produce syntax errors for malformed supported forms.
 `Feature` contains only currently deferred constructs; implemented features
 have no unsupported-feature entry. Attribute failures reuse
-`E.Parser.Syntax.003` / `031` with typed key/value/list contexts, expected
-`=` / `]` vocabulary and a related opener at EOF. Capacity diagnostics identify
+`E.Syntax.Grammar.003` / `031` with typed key/value/list contexts, expected
+`=` / `]` vocabulary and a related opener whenever the list was left open. Capacity diagnostics identify
 the attribute, assignment or attribute-statement pool, or the total
 `max_attributes` limit.
 
@@ -91,10 +91,20 @@ stops at the first.
 
 ## The diagnostic bag
 
-Parsing is fail-fast and attempts at most one failure diagnostic. Retention
-depends on the sink: a full bag, discard sink, or rejected delivery can leave
-no retained entry, and `.internal` emits no diagnostic. Validation attempts
-one diagnostic per violation. A
+By default parsing is fail-fast: at most one failure diagnostic. With
+`ParseOptions.recovery = .statements` (also on `FixedParseOptions` and
+session options) a syntax error inside the body does not end the parse: the
+document is aborted once, the parser skips to the next `;` or `}` at the
+same brace depth, and every further syntax error is reported too. The
+outcome is still `invalid_syntax`, no document is published, and validation
+never runs — later diagnostics can be consequences of an earlier one, so
+read them in order. Header errors, end of input, trailing tokens, limits,
+deferred features, and unterminated quotes or comments still stop the parse.
+
+Warnings (`W.Syntax.Numeral.033`) accompany a successful parse; they never
+change the outcome. Retention depends on the sink: a full bag, discard
+sink, or rejected delivery can leave no retained entry, and `.internal`
+emits no diagnostic. Validation attempts one diagnostic per violation. A
 `FixedDiagnosticBag(N)` keeps the first `N` and counts the rest in
 `omitted` — diagnostics are never silently dropped.
 
@@ -104,19 +114,35 @@ never pre-rendered strings. Wording belongs to renderers; the
 out-of-the-box console renderer is one consumer of these payloads, and
 your logger, LSP, or JSON emitter can be another via `DiagnosticSink`.
 
-Current registry:
+Current registry. The component is the logical domain of the problem
+(`Syntax`, `Validation`, `Resource`, `Profile`), never the source module
+that noticed it: filter on `E.Syntax.*` for every malformed-input problem.
+A code names one condition; where in the grammar it occurred travels in the
+payload (`Unexpected.context`, `ReservedKeyword.context`).
 
 | Code | When | Details emitted by the library |
 | --- | --- | --- |
-| `E.Lexer.Byte.003` | A byte invalid at its location, including NUL inside quotes | `.invalid_byte` |
-| `E.Lexer.Syntax.003` | `+` is not followed by a quoted identifier | `.expected_quote` (next byte, or null at EOF) |
-| `E.Lexer.Syntax.031` | Input ended inside an unclosed lexical construct; span marks its opener | `.unterminated` (`.block_comment` or `.quoted_identifier`) |
-| `E.Parser.Syntax.003` | Unexpected token | `.unexpected` |
-| `E.Parser.Syntax.031` | Input ended before the document was complete | `.unexpected` |
+| `E.Syntax.Byte.003` | A byte that cannot start any DOT token, or NUL inside quotes | `.invalid_byte` |
+| `E.Syntax.Operator.003` | `-` that does not form `--`/`->` (`a - b`, `a - > b`), or `-->`/`---` | `.invalid_operator` (the byte that broke it, or null at EOF) |
+| `E.Syntax.Numeral.001` | `.` or `-.` without the required digit | `.incomplete_numeral` (the byte found, or null at EOF) |
+| `E.Syntax.Token.032` | Input ended inside an unclosed quote or block comment; span marks its opener | `.unterminated` (`.block_comment` or `.quoted_identifier`) |
+| `E.Syntax.Concatenation.003` | `+` is not followed by a quoted identifier | `.expected_quote` (next byte, or null at EOF) |
+| `E.Syntax.Grammar.003` | Unexpected token | `.unexpected` (expected set, found, context, related opener, suspect brace) |
+| `E.Syntax.Grammar.031` | Input ended before the document was complete | `.unexpected` |
+| `E.Syntax.Keyword.003` | Reserved keyword where a name was needed, or `node`/`edge`/`graph` without its `[` list | `.reserved_keyword` (keyword, context) |
+| `W.Syntax.Numeral.033` | A numeral runs into a letter or a second dot (`1e3`, `1.2.3`); the parse continues with two tokens, as Graphviz does | `.ambiguous_numeral` (the byte it runs into) |
 | `E.Validation.Operator.002` | Edge operator does not match the graph kind | `.operator_mismatch` |
 | `E.Profile.Feature.009` | Recognized-but-deferred DOT construct | `.unsupported_feature` |
 | `E.Resource.Capacity.026` | A configured capacity was exhausted | `.capacity` when available, otherwise `.none` |
 | `E.Resource.Memory.026` | Document memory was exhausted | `.none` |
+
+`Unexpected.related` is the still-open `[` or `{` (or the port colon) the
+failure traces back to; `Unexpected.suspect` is set when the input ends
+inside a scope and an earlier `}` sat at a smaller indentation than the
+line that opened the scope it closed — the brace that is probably missing
+belongs above that `}`. The console renderer turns the payload into a
+rule statement and a hint per context; consumers rendering their own text
+have the same fields.
 
 This table describes library-produced diagnostics. `Diagnostic` is publicly
 constructible: its separate `code` and `details` fields do not enforce these
