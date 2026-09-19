@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-09-18
+Original draft: 2026-07-13 · Last amended: 2026-09-19
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -210,7 +210,7 @@ Features that add memory or code-size cost should not be mandatory when they are
 not needed. Candidates include:
 
 - Subgraph parsing and retention.
-- HTML-like identifier validation.
+- HTML-like markup parsing, retained structure and validation (R-MOD-014).
 - Ports and compass-point support.
 - Retained AST construction.
 - String copying.
@@ -352,6 +352,51 @@ thread sets, while a freestanding caller may use an ordinary flag or callback.
 Cancellation is a terminal caller request and triggers sink abort semantics. A
 bounded-driver yield is not cancellation and remains resumable. Callers must be
 able to disable cancellation checks when they do not want their hot-path cost.
+
+### R-MOD-014: HTML-like markup has its own optional staged subsystem
+
+HTML-like identifiers must be recognized and preserved in every position where
+the DOT grammar permits an ID. DOT recognition retains the raw spelling and
+does not by itself establish inner-markup well-formedness or Graphviz label
+validity. Excluding HTML-like identifiers follows R-MOD-006; accepting them
+without inner-markup parsing is a distinct, opaque-preservation capability.
+
+Dedicated XML-like markup processing belongs in its own source directory,
+with independently usable parsing, syntax/events and validation stages rather
+than being folded into the DOT grammar engine. Structural parsing must be
+separable from Graphviz-specific label validation. Label vocabulary and
+placement restrictions must not be applied to unrelated DOT identifiers.
+Rendering and consumer-specific interpretation remain outside these stages.
+
+The same markup engine must support three usage paths:
+
+- Standalone markup parsing/validation without a DOT document or a dependency
+  on the DOT grammar engine.
+- Opt-in markup parsing during DOT parsing, without first completing or
+  retaining an entire DOT document.
+- Explicit delayed parsing of selected preserved identifiers after DOT
+  parsing, including the choice never to parse their markup.
+
+These paths are independent of mode selection, validation and retained-tree
+materialization. Delayed use requires live, unchanged source bytes or explicit
+caller-owned copies; it must not require re-parsing the DOT grammar. Composed
+bounded execution must account for markup work and support yield/cancellation
+within it. DOT syntax, markup syntax and label validity must remain separately
+identifiable outcomes, with diagnostics mapped to the corresponding source.
+The exact composed failure/lifecycle and public API contracts remain with Q40.
+
+The subsystem must preserve the existing ownership, raw-source, diagnostic,
+deterministic-execution, fixed-storage, security and optional-feature contracts.
+It must not force a retained markup tree on event-only consumers or force the
+markup parser/validator into callers that only need opaque identifiers.
+Material optional costs must be excludable at compile time (R-MOD-005).
+
+The planned modes are `none`, `opaque`, `structural`, `extended`, and
+`graphviz`. Q40 in [OpenQuestions.md](OpenQuestions.md) defines their roles in
+a comparison table. The exact fragment grammar, extended label vocabulary,
+public configuration and decoding/form API are not yet settled. General XML
+conformance is not promised. These are intended capabilities, not implemented
+syntax coverage or a commitment to ship all modes in the next slice.
 
 ## 5. Memory requirements
 
@@ -1193,3 +1238,10 @@ recorded here.
 - 2026-09-18 — **R-DIAG-001**: components are logical domains, never source
   modules, and a code names one condition. The differential baseline (Q10)
   is reconciled to Graphviz 16.0.0.
+
+- 2026-09-19 — **R-MOD-014 added; R-MOD-004 clarified**: dedicated optional
+  markup subsystem with separate DOT recognition, XML-like structural parsing
+  and Graphviz label validation. The modes are `none`, `opaque`, `structural`,
+  `extended`, and `graphviz`; standalone, during-DOT and delayed processing
+  share one markup engine. Q40 records usage/lifetime/budget boundaries and
+  unresolved grammar/API/policy details, separately from implementation status.

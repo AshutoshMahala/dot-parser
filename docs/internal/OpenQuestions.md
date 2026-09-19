@@ -1,8 +1,8 @@
 # Open design decisions
 
-Last reconciled: 2026-09-18 (non-ASCII bare identifiers).
+Last reconciled: 2026-09-19 (HTML-like identifier and markup architecture).
 
-Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q39)
+Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
 append with fresh numbers. Answered questions are not removed — the
 **Decided** section doubles as the project's decision log, each entry naming
@@ -270,6 +270,150 @@ that helper separately from the settled ownership boundary.
 
 ## Partially decided
 
+**Q40 — How are HTML-like identifiers recognized, parsed and validated, and
+which markup policies are offered?**
+**Architecture, mode names and usage paths decided (2026-09-19); detailed
+contracts and implementation pending.** HTML-like identifiers must work
+wherever the DOT grammar permits an ID, not only as label values. DOT parsing
+recognizes and preserves the complete raw identifier; recognition alone makes
+no claim that its inner markup is well-formed or is a valid Graphviz label.
+
+Markup gets its own dedicated source directory (proposed name:
+`src/markup/`) and independently usable stages, like the DOT subsystem:
+
+```text
+DOT parsing -> raw HTML-like identifier range
+                         |
+                         +-> optional markup parsing -> structural syntax/events
+                                                       -> optional validation
+                                                       -> downstream consumer
+```
+
+The markup parser is XML-like, not a browser HTML parser. It establishes
+elements, attributes, text and matching/nested structure without a Graphviz
+tag whitelist. Graphviz-specific validation then checks the permitted label
+elements, attributes and placement; it is not imposed on unrelated DOT IDs.
+Further interpretation, rendering and consumer-specific lowering remain
+separate, not implied deliverables. Source ranges, diagnostics and execution
+primitives should be reused without introducing graph-engine dependencies.
+Markup-fragment input is distinct from partial DOT-document parsing and does
+not change Q19.
+
+**Modes:** the names are `none`, `opaque`, `structural`, `extended`, and
+`graphviz`. They select processing stages and validation policies, not an
+increasing ladder of compatible dialects. Names and high-level roles are
+settled; API representation, defaults, exact rules and delivery remain pending.
+
+| Mode | DOT HTML-like identifier | Inner structure | Validation policy |
+| --- | --- | --- | --- |
+| `none` | Unsupported feature (R-MOD-006); never silently skipped | Not parsed | Not run |
+| `opaque` | Recognized and preserved | Not parsed | No inner-markup validity claim |
+| `structural` | Recognized and preserved | Parsed | Structural correctness under the defined fragment grammar; arbitrary element names |
+| `extended` | Recognized and preserved | Parsed | Extended label vocabulary and rules, including additional basic tags; exact rules pending |
+| `graphviz` | Recognized and preserved | Parsed | Graphviz label vocabulary, attributes and placement rules |
+
+`opaque` stops before markup parsing. `structural` checks matching tags,
+nesting and the defined attribute syntax without assigning meaning to element
+names. `extended` and `graphviz` additionally apply their selected label
+rules where label interpretation is requested; they must not impose those
+vocabularies on unrelated DOT IDs. Accepting extended markup does not promise
+Graphviz label compatibility. None of these modes performs rendering.
+
+**Usage paths:** standalone use, parsing during DOT processing, and delayed
+parsing must use the same markup engine. These are integration/timing choices,
+not additional modes or forks of the grammar. Choosing when to parse does not
+require running label validation or retaining a markup tree.
+
+| Usage path | When markup parsing runs | Caller contract |
+| --- | --- | --- |
+| Standalone | Directly on caller-supplied markup, without parsing a DOT document | No DOT wrapper or retained DOT document is required; common source, diagnostic and execution primitives may be shared. |
+| During DOT parsing | As HTML-like identifiers are encountered, before the DOT parse operation completes | Opt-in composition of the DOT and markup stages; no completed DOT document is required before markup processing can start. |
+| Delayed | After DOT parsing, on an explicit request for selected preserved identifiers | Keep their source bytes available; parse any subset later or never invoke the markup parser. |
+
+For delayed use, a caller can first parse DOT with `opaque` preservation and
+later explicitly request `structural`, `extended`, or `graphviz` processing
+for a selected identifier. This does not require re-parsing the DOT grammar
+or automatically processing every label. `none` cannot supply this path:
+it rejects HTML-like identifiers instead of retaining them.
+
+The paths share the existing contracts:
+
+- Borrowed source must remain alive and unchanged while later parsing or any
+  source-backed result uses it. Longer-lived copies require explicit
+  caller-owned storage; no hidden copying or background parsing is implied.
+- When composed with a bounded DOT driver, markup work must be accounted for
+  and able to yield/cancel within long or nested markup. It must not run as an
+  unbounded library-owned callback outside the driver's work budget. Running
+  during DOT parsing does not itself promise a single scan of each byte.
+- DOT syntax success, markup parse success and label-validation success are
+  distinct guarantees. Unparsed markup is not reported as structurally valid;
+  deferred failures are reported by the later operation.
+- All paths use the same markup rules and source-backed diagnostic model.
+  Integrated and delayed diagnostics must map to the original DOT source;
+  standalone diagnostics refer to their supplied markup source. Source-origin
+  mapping must not require rescanning the DOT grammar.
+- The standalone markup subsystem must be usable without depending on the DOT
+  grammar engine, DOT retained document or any renderer. Equivalent markup
+  input and mode must produce equivalent markup outcomes across the paths,
+  with offsets mapped to the corresponding source origin.
+
+For example, opaque recognition can preserve `<<B>x</I>>`, while structural
+checking must reject its mismatched tags. `<<widget>x</widget>>` can pass
+structural checking but fails Graphviz label validation. `<<B>x</B>>` can
+pass all three stages. These are intended-contract examples, not claims of
+implemented behavior or completed differential tests.
+
+**Compatibility boundary:** the [DOT specification](https://graphviz.org/doc/info/lang.html#html-strings)
+allows legal XML strings as HTML-like IDs; when interpreted as labels they
+must follow the narrower [Graphviz label grammar](https://graphviz.org/doc/info/shapes.html#html).
+This does not make Graphviz an arbitrary-XML renderer. Label bodies are
+fragments, not necessarily standalone XML documents. Recognition, structural
+checking and label validation must state their separate success guarantees.
+Q10's written-specification-first policy and pinned Graphviz 16.0.0 reference
+continue to apply; scanner boundary cases still require investigation/tests.
+
+**Existing constraints remain binding:** preserve raw bytes and physical
+source offsets; no implicit normalization, entity expansion or layout
+interpretation in DOT parsing. Keep explicit ownership, fixed-storage paths,
+iterative bounded work, optional cancellation/metering and compile-time
+exclusion of material optional costs. No external-entity loading, URL/file
+access, execution or rendering. Event processing must not force retained
+trees on callers. These are inherited requirements, not newly negotiable
+tradeoffs for markup support.
+
+**Still open before the relevant implementation:**
+
+- Exact XML-like fragment grammar: names and case rules, attributes and
+  duplicates, references/entities, comments, CDATA, processing instructions,
+  declarations and byte/encoding policy. Structural checking does not imply
+  full XML conformance.
+- DOT delimiter-scanning behavior, including quoted attributes, embedded
+  comments, malformed/truncated input and recovery. Preserve the same contract
+  across both scanner backends and bounded execution.
+- Public stage APIs, syntax/events and optional retained representation,
+  diagnostics, scratch capacities and work accounting; default behavior and
+  how configuration composes the stages. The five mode names above are settled.
+- Standalone fragment input and DOT-envelope adapter contracts, source-origin
+  mapping, and composed yield/cancellation state. Define how markup failures
+  affect the enclosing DOT operation and its sink lifecycle without conflating
+  DOT syntax, markup syntax and label validity. Optional caching, if provided,
+  needs an explicit owner, lifetime and cost contract.
+- Identifier decoding/form API. Preserve the distinction between quoted and
+  HTML-like spelling: `"<B>x</B>"` and `<<B>x</B>>` can have identical inner
+  bytes but different label interpretation. Removing only the outer angle
+  delimiters and exposing a separate source-derived form query was proposed;
+  neither that API nor a tagged decoded result has been selected. Entity
+  decoding and label interpretation must remain distinct from DOT lexical
+  decoding.
+- The `extended` mode's concrete consumer, tag vocabulary, attributes and
+  nesting rules, and which stages ship in which slice. Structural acceptance
+  of arbitrary names already permits preserving additional tags; `extended`
+  needs a specific label-validation contract beyond that.
+
+*(Recorded contract: R-MOD-014; implementation/verification pending.
+`src/markup/` does not yet exist and HTML-like IDs remain deferred in
+[supported syntax](../SUPPORTED_SYNTAX.md).)*
+
 **Q1 — Is version 1 the complete documented DOT grammar or a named subset?**
 Direction: the complete documented grammar, reached through vertical slices;
 every interim release documents its exact supported subset. The end-state
@@ -322,11 +466,13 @@ than supported whitespace are invalid when reached by the lexer. HTML-like
 constructs stop at a deferred boundary; their bodies have not been validated.
 A leading UTF-8 BOM is skipped, matching Graphviz's scanner (decided
 2026-09-18); elsewhere its bytes are identifier content, including when
-decoding an extracted identifier starting with those bytes. **Still open:**
-whether version 1 ships a UTF-8 validator and its invalid-sequence policy,
-and HTML-like ID validation. Resolve these as lexical support grows;
-they are not all promised
-deliverables of the next slice. *(Embodied: `src/lexer/`,
+decoding an extracted identifier starting with those bytes. **HTML-like direction
+(2026-09-19):** Q40 records recognition in all DOT ID positions and a separate,
+optional staged markup subsystem. This is not implemented support.
+**Still open:** whether version 1 ships a UTF-8 validator and its
+invalid-sequence policy; the markup-specific byte/encoding and validation
+contract is tracked by Q40. These are not all promised deliverables of the
+next slice. *(Embodied: `src/lexer/`,
 [supported syntax](../SUPPORTED_SYNTAX.md); R-PORT-006.)*
 
 **Q24 — When will the first stable compatibility boundary be declared?**
@@ -444,6 +590,18 @@ field out stays with the profile slice. *(Embodied: `diagnostic.Fix`,
 ---
 
 ## Reconciliation log
+
+- 2026-09-19 — Added Q40 for the dedicated, optional staged markup subsystem
+  and recognition in every DOT ID position. Distinguished opaque preservation,
+  XML-like structural checking and Graphviz label validation. Settled the mode
+  names `none`, `opaque`, `structural`, `extended`, and `graphviz`, with a
+  comparison table of their processing stages and validation policies.
+  Recorded standalone, during-DOT and delayed use of one markup engine, with
+  a usage-path table and explicit source-lifetime, work-budget and validity
+  boundaries.
+  Q23 links the remaining markup policy to Q40. The fragment grammar,
+  extended vocabulary, decoding/form API, configuration and delivery scope
+  remain open; no implementation claimed.
 
 - 2026-09-18 — Non-ASCII identifier slice: Q10/Q23 record acceptance of raw
   high bytes in every bare-ID position, byte-preserving decoding, ASCII-only
