@@ -4,6 +4,9 @@ Initial baselines recorded at the close of milestone 1 (R-PERF-004),
 **before any optimization work** — future performance changes are measured
 against these numbers, not against intuition.
 
+Historical sections retain their original measurements. For the latest comparison,
+see [scanner backends and 32-bit positions](#scanner-backends-and-32-bit-positions-2026-09-18).
+
 ## Environment
 
 | | |
@@ -541,3 +544,162 @@ integration), Debug and ReleaseSafe; ten runnable examples; eight consumed
 RISC-V32/Wasm32 freestanding profile probes. Prefix partitioning, nested operator
 ordering, long-prefix promotion, pool/OOM failures and boundary cancellation are
 covered. These are compile probes, not MCU runtime measurements.
+
+## Scanner backends and 32-bit positions (2026-09-18)
+
+Fresh same-host measurements, not a comparison against old wall-clock timings:
+
+- **0.2.0:** `84166eb`.
+- **Main scalar / Main block:** `4fa9eee`, with the scanner backend explicitly
+  selected. Native `auto` selects **block** on this target; this was checked
+  through the normal build target.
+- Host: native aarch64 macOS 27.0 (26A428), Zig 0.16.0, ReleaseFast for both the
+  benchmark root and library module. The Environment section above is historical.
+- Five invocations per revision/backend and fixture, each with two warm-ups and
+  nine timed rounds. Revision order rotates between invocations. Compilation and
+  tests finished before timing; benchmark processes ran sequentially.
+- Cells below are **median of the five invocation medians**, followed by their
+  **min–max range**, in milliseconds. These ranges are not confidence intervals.
+  No CPU affinity or frequency controls were used; small differences remain noise.
+- The checked-in fixtures, sizes, loops and timing boundaries are unchanged from
+  0.2.0. Main adds backend selection and a printed backend label outside timing.
+  All lexer checksums agree across revisions/backends and invocations.
+
+### End-to-end parse and validation
+
+`bench/throughput.zig`: 2,733,345 source bytes / 200,000 alternating node and
+single-edge statements, default parse/validation policies. The hinted run
+pre-reserves document pools. This is not a mixed-feature or malformed-input corpus.
+
+| Document allocation | 0.2.0 | Main scalar | Main block |
+| --- | ---: | ---: | ---: |
+| default pools | 14.870 (14.250–15.090) | 13.830 (12.950–14.080) | 15.740 (15.540–16.060) |
+| capacity hints | 13.270 (13.220–13.470) | 12.360 (12.110–12.560) | 14.140 (13.940–14.390) |
+
+On this fixture, main block takes **13.8–14.4% more time than main scalar**. Its roughly 166 MiB/s default / 184 MiB/s hinted throughput is therefore
+not a speedup here. Relative to 0.2.0, main block takes about 6% more time; main
+scalar takes about 7% less. These are elapsed-time changes, not throughput-change
+percentages.
+
+### Fixed sessions
+
+`bench/session.zig`: 200,000 `a;` statements, preallocated fixed pools;
+construction/allocation excluded from timing. Metered calls use 256 credits.
+
+**Metering** limits work per call: exhausting credits yields with state preserved
+so the caller can resume. **Cancellation** enables cooperative stop checks: an
+observed request terminates the parse as `.cancelled`, without publishing a
+partial document; it cannot resume that parse. The two capabilities are independent.
+Neither imposes a memory budget or wall-clock deadline. See [bounded execution](EXECUTION.md).
+
+| Metering / cancellation | 0.2.0 | Main scalar | Main block |
+| --- | ---: | ---: | ---: |
+| metering false, cancellation false | 6.570 (6.250–6.600) | 5.530 (5.310–5.660) | 7.320 (7.110–7.500) |
+| metering false, cancellation true | 9.440 (9.140–9.510) | 8.560 (8.240–8.670) | 9.290 (9.140–9.520) |
+| metering true, cancellation false | 7.910 (7.850–8.000) | 7.440 (7.260–7.620) | 8.600 (8.410–8.700) |
+| metering true, cancellation true | 9.530 (9.440–9.570) | 8.910 (8.520–9.080) | 9.040 (8.720–9.180) |
+
+Block is not uniformly faster under metering: without cancellation this fixture
+takes about **16% more time than main scalar**; with cancellation the median
+difference is small and invocation ranges overlap. The ordinary block session
+takes about **32% more time than main scalar**.
+
+A credit is backend-specific: scalar examines a byte; block classifies a
+64-byte block or performs a bounded within-block advance. Equal credit counts
+do not imply equal source work, latency or cancellation granularity. In the
+metered+cancellable fixture, polls are 1,405,484 for scalar and 1,217,247 for
+block; fewer polls did not produce a clear elapsed-time win. This run did not
+test one-credit calls or establish a general bounded-session speedup.
+
+### Lexer fixtures
+
+`bench/lexer.zig`: five repeated lexical patterns, source construction excluded.
+
+| Lexical pattern | 0.2.0 | Main scalar | Main block |
+| --- | ---: | ---: | ---: |
+| short IDs/punctuation | 8.850 (8.740–8.960) | 12.180 (11.890–12.320) | 11.500 (11.410–11.600) |
+| short IDs/trivia | 5.490 (5.420–5.660) | 4.860 (4.720–5.050) | 5.600 (5.370–5.740) |
+| keywords/numerals | 10.620 (10.420–11.120) | 10.720 (10.320–10.810) | 11.970 (11.620–12.070) |
+| quotes/comments | 5.680 (5.480–5.810) | 7.140 (6.580–7.290) | 8.030 (7.940–8.150) |
+| long identifier | 7.700 (7.640–7.730) | 7.670 (7.050–7.870) | 3.790 (3.580–3.890) |
+
+The clear block-scanner gain is **long identifiers: about 51% less time than
+main scalar (approximately 2.0x throughput)**. The short-ID/punctuation fixture
+improves by about 6% relative to main scalar, but both main backends remain slower
+than 0.2.0 on that fixture. Short-ID/trivia, keywords/numerals
+and quotes/comments take about 12–15% more time on block than main scalar.
+The quotes/comments pattern combines short quoted tokens with short comments;
+it is not a standalone long-comment parse benchmark.
+
+The scalar short-ID/punctuation regression (8.850 → 12.180 ms relative to
+0.2.0) also warrants attention; pinning scalar does not restore every old
+microbenchmark result. Attribution to specific implementation details remains
+unprofiled.
+
+### Empty subgraph fixtures
+
+`bench/subgraphs.zig`: fixed storage, empty sibling or fully nested scopes.
+No endpoint products or semantic expansion are timed.
+
+| Shape / scope count | 0.2.0 | Main scalar | Main block |
+| --- | ---: | ---: | ---: |
+| siblings, 1000 scopes | 0.056 (0.048–0.079) | 0.044 (0.043–0.050) | 0.042 (0.038–0.047) |
+| siblings, 10000 scopes | 0.506 (0.495–0.542) | 0.441 (0.392–0.481) | 0.435 (0.412–0.469) |
+| siblings, 100000 scopes | 5.659 (5.325–5.763) | 4.585 (4.553–4.779) | 4.455 (4.319–4.492) |
+| nested, 1000 scopes | 0.055 (0.051–0.060) | 0.046 (0.041–0.054) | 0.040 (0.040–0.052) |
+| nested, 10000 scopes | 0.578 (0.518–0.620) | 0.477 (0.445–0.516) | 0.466 (0.418–0.496) |
+| nested, 100000 scopes | 5.905 (5.699–5.944) | 4.625 (4.472–4.910) | 4.605 (4.539–4.679) |
+
+At 100,000 scopes, main scalar and block are close: roughly 0–3% median
+differences, with overlapping invocation ranges. Both remain faster than 0.2.0,
+but these measurements do not establish a material block-specific nesting win.
+
+### Memory and scope of conclusions
+
+- The flat fixture retains **6,800,000 bytes (34 B/statement)** in every version.
+  Arena backing capacity is unchanged at **37,620,470 B default / 8,400,148 B
+  hinted**; this is not process RSS.
+- Retained record sizes remain `StatementId=8`, `NodeStatement=16`,
+  `EdgeStatement=36`, `Endpoint=12`, `ScopedEdgeStatement=64`,
+  `ScopedEdgeLink=44`, `Subgraph=36` bytes.
+- The native nesting frame is **272 B in 0.2.0; 164 B in both main
+  backends**. At 100,000 active levels, exact fixed scratch falls from 27.2 MB to
+  16.4 MB (decimal), saving 10.8 MB; retained scope/statement payload stays 4.4 MB.
+  This saving precedes block scanning. Growing-arena peaks for nested input
+  were not measured in this run.
+- Main block adds **104 B** to each session/driver relative to main scalar:
+
+| Metering / cancellation | Main scalar session / driver | Main block session / driver |
+| --- | ---: | ---: |
+| Off / Off | 1,264 / 544 B | 1,368 / 648 B |
+| Off / On | 1,312 / 592 B | 1,416 / 696 B |
+| On / Off | 1,312 / 592 B | 1,416 / 696 B |
+| On / On | 1,336 / 616 B | 1,440 / 720 B |
+
+**Conclusion:** this is a workload-dependent backend trade-off, not a universal
+improvement. Long-identifier scanning benefits; the default native backend
+regresses the current short-token-heavy parse fixture. No default/backend/code
+changes were made as part of this measurement. Invalid-input recovery, diagnostic
+rendering, additional comment-heavy parse fixtures, code size and MCU runtime
+performance are outside this run.
+
+Verification: **302 tests** (200 unit, 102 public integration) pass in Debug and
+ReleaseSafe; all eight consumed RISC-V32/Wasm32 freestanding profile checks pass.
+Formatting and diff-whitespace checks also pass.
+
+### Reproduction
+
+For each main backend, run each target separately (do not run the four
+benchmarks concurrently):
+
+```sh
+zig build bench -Doptimize=ReleaseFast -Dlexer=scalar
+zig build bench-lexer -Doptimize=ReleaseFast -Dlexer=scalar
+zig build bench-session -Doptimize=ReleaseFast -Dlexer=scalar
+zig build bench-subgraphs -Doptimize=ReleaseFast -Dlexer=scalar
+```
+
+Repeat with `-Dlexer=block`. For 0.2.0, omit `-Dlexer`.
+The recorded comparison compiled executables first and then invoked them
+directly in rotating revision order, excluding compilation from measured runs.
+A build-target smoke check confirmed native `-Dlexer=auto` selects block.
