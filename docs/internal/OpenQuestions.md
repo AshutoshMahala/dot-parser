@@ -33,7 +33,8 @@ node membership or edge products. Generalized links use indices so nested owners
 can interleave; global edges/validation merge operators in lexical order.
 Statement traversal is owner-first. Endpoint scopes have no extra statement entry.
 
-Explicit frames preserve suspended outer-edge state (272 native bytes/level).
+Explicit frames preserve suspended outer-edge state (164 native bytes/level
+with 32-bit positions; 272 before).
 Scope records add a descendant-scope boundary (36 native bytes). Scope enter/exit
 and standalone completion are separately charged; endpoint scopes count toward
 nesting/pool capacity, not an extra `max_statements` item. No separate total-scope
@@ -237,7 +238,7 @@ whether convenience APIs should ship with non-trivial defaults is open.
 
 **Q16 — What size thresholds establish that disabling a feature removed its
 cost?**
-Parser-state size is regression-guarded (≤ 960 B; currently 896 B native) and baselines exist;
+Parser-state size is regression-guarded (≤ 640 B; currently 544 B native with 32-bit positions) and baselines exist;
 per-profile binary-size thresholds await the profile work. *(Embodied:
 `docs/BASELINES.md`; parser-size test.)*
 
@@ -250,7 +251,8 @@ deduplication, no implicit nodes, no attribute semantics. The `DotIR` side
 **Q18 — Which index widths and pool sizes define the first embedded retained
 representation?**
 `u32` indices with checked overflow, declared once so profiles can narrow
-them; 8-byte compact ranges with a checked 4 GiB domain. u16/u24 variants
+them; 8-byte compact ranges and 32-bit positions sharing one 4 GiB domain,
+enforced once at the scanner entry. u16/u24 variants
 await the profile work. *(Embodied: `syntax.Index`, `location.Range`.)*
 
 **Q23 — Does version 1 ship the optional UTF-8 validator, and what policy
@@ -383,8 +385,8 @@ and an `Applicability` of `machine_applicable` (the one correct repair) or
 `-` coerced to the declared kind, quoting a keyword, stray `;`, `}` or
 operator, separators, missing `=`, `]`, `}` and `{`, header typos, `=>`,
 unterminated constructs) and validation (operator mismatch, `maybe` because
-changing the keyword is equally plausible). `Diagnostic` grew 152 → 200 B;
-a 32-slot bag is 6.4 KB. The lean-diagnostics profile that would compile the
+changing the keyword is equally plausible). `Diagnostic` is 112 B with the
+field (32-bit positions); a 32-slot bag is 3.6 KB. The lean-diagnostics profile that would compile the
 field out stays with the profile slice. *(Embodied: `diagnostic.Fix`,
 `tests/diagnostics.zig` round trip; R-DX-007, R-FUNC-005.)*
 
@@ -410,7 +412,8 @@ field out stays with the profile slice. *(Embodied: `diagnostic.Fix`,
   the registry names conditions (operator, numeral, keyword, ambiguous
   numeral warning); Q23 BOM policy decided (skipped); Q22 statement-boundary
   recovery implemented as an opt-in runtime policy with its cost measured;
-  Q16 state-size guard raised to 896 B (872 B measured). R-DIAG-001 amended.
+  Q16 state-size guard raised to 896 B (872 B measured), then lowered to
+  640 B once positions became 32-bit (544 B measured). R-DIAG-001 amended.
   Q10 baseline reconciled to Graphviz 16.0.0. Added Q35–Q37 (validation
   policy and mixed graphs, lenient syntax, fix suggestions) as open
   questions with their agreed direction.

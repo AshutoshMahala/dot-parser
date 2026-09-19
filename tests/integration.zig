@@ -326,13 +326,10 @@ test "consumer can lex the milestone document from caller-supplied bytes" {
 
 test "consumer sees a structured failure for deferred DOT features" {
     var lexer = dot.lexer.Lexer.init("<html>");
-    const result = lexer.next();
-    try std.testing.expect(result == .failure);
-    try std.testing.expectEqual(dot.Code.profile_unsupported_feature, result.failure.code);
-    try std.testing.expectEqual(
-        dot.diagnostic.Feature.html_identifier,
-        result.failure.details.unsupported_feature,
-    );
+    try std.testing.expect(lexer.next() == .failure);
+    const failure = lexer.failureDiagnostic();
+    try std.testing.expectEqual(dot.Code.profile_unsupported_feature, failure.code);
+    try std.testing.expectEqual(dot.diagnostic.Feature.html_identifier, failure.details.unsupported_feature);
 }
 
 test "milestone acceptance through the public façade" {

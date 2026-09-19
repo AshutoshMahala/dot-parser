@@ -842,7 +842,7 @@ const Placed = struct {
 };
 
 fn place(annotation: Annotation, view: View) Placed {
-    const offset = annotation.span.start.byte_offset;
+    const offset: usize = annotation.span.start.byte_offset;
     const start = @min(offset, view.end);
     const len = if (offset < view.end) @min(annotation.span.byte_len, view.end - offset) else 0;
     if (len == 0) return .{ .annotation = annotation, .start = start, .end = start, .connector = start };
@@ -1417,7 +1417,7 @@ const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const Code = diagnostic.Code;
 
-fn spanAt(offset: usize, line: usize, column: usize, len: usize) location.Span {
+fn spanAt(offset: u32, line: u32, column: u32, len: u32) location.Span {
     return .{
         .start = .{ .byte_offset = offset, .line = line, .byte_column = column },
         .byte_len = len,

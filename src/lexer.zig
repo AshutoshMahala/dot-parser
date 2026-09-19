@@ -57,9 +57,12 @@ pub const Token = struct {
 
 /// The outcome of one `Lexer.next` call. Failures and EOF are latched:
 /// repeated calls return the same terminal result without rescanning input.
+/// A failure carries no payload here — `failureDiagnostic` builds the typed
+/// diagnostic on request — so the value returned on every token stays small
+/// (a `Diagnostic` is several times the size of a `Token`).
 pub const Result = union(enum) {
     token: Token,
-    failure: diagnostic.Diagnostic,
+    failure,
 };
 
 /// Ordinary lexing and the internal metered fixture share one scanner.
@@ -109,7 +112,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             ready,
         };
         const Trivia = enum { ordinary, after_quote, after_plus };
-        const Terminal = enum { none, eof, invalid, operator, operator_long, operator_spaced, numeral, block, quote, concat, non_ascii, html };
+        const Terminal = enum { none, eof, invalid, operator, operator_long, operator_spaced, numeral, block, quote, concat, non_ascii, html, oversize };
 
         source: []const u8,
         tracker: location.Tracker = .{},
@@ -117,7 +120,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         opener: location.Tracker = .{},
         quote_end: location.Tracker = .{},
         keyword: u64 = 0,
-        terminal_len: usize = 0,
+        terminal_len: u32 = 0,
         state: State = .trivia,
         trivia: Trivia = .ordinary,
         terminal: Terminal = .none,
@@ -134,6 +137,12 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
 
         pub fn init(source: []const u8) Self {
             var self: Self = .{ .source = source };
+            // Positions are 32-bit: refuse a longer source before reading
+            // a byte of it, as a latched capacity failure.
+            if (source.len > location.max_source_len) {
+                self.terminal = .oversize;
+                return self;
+            }
             // A leading UTF-8 byte order mark is not content; Graphviz's
             // scanner ignores it and so does this one. Advancing the
             // tracker keeps every later byte column honest (the BOM
@@ -160,7 +169,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 .block, .quote => self.source.len,
                 .concat => start,
                 .invalid, .operator, .operator_long, .operator_spaced, .numeral => if (start == anchor) start + self.terminal_len else self.source.len,
-                .none, .eof, .non_ascii, .html => unreachable,
+                .none, .eof, .non_ascii, .html, .oversize => unreachable,
             };
             // `fail` left the tracker at the token anchor; walk forward so
             // line and column stay exact through whatever was skipped.
@@ -190,6 +199,55 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
 
         pub fn next(self: *Self) Result {
             return self.drive(false, 0).result.?;
+        }
+
+        /// The diagnostic for the latched failure. Valid only after `next`
+        /// (or a bounded call) returned `.failure`; built from the saved
+        /// terminal state, so calling it repeatedly costs nothing else.
+        pub fn failureDiagnostic(self: *const Self) diagnostic.Diagnostic {
+            std.debug.assert(self.terminal != .none and self.terminal != .eof);
+            if (self.terminal == .oversize) return .{
+                .code = .resource_capacity_exhausted,
+                .span = .{ .start = .start, .byte_len = 0 },
+                .details = .{ .capacity = .{ .resource = .source_range, .limit = location.max_source_len } },
+            };
+            const span: location.Span = .{ .start = self.opener.location, .byte_len = self.terminal_len };
+            return .{
+                .code = switch (self.terminal) {
+                    .invalid => .syntax_invalid_byte,
+                    .operator, .operator_long, .operator_spaced => .syntax_invalid_operator,
+                    .numeral => .syntax_incomplete_numeral,
+                    .block, .quote => .syntax_unterminated_construct,
+                    .concat => .syntax_invalid_concatenation,
+                    .non_ascii, .html => .profile_unsupported_feature,
+                    .none, .eof, .oversize => unreachable,
+                },
+                .span = span,
+                .details = switch (self.terminal) {
+                    .invalid => .{ .invalid_byte = self.found.? },
+                    .operator => .{ .invalid_operator = .{ .found = self.found, .shape = .lone } },
+                    .operator_long => .{ .invalid_operator = .{ .found = self.found, .shape = .long } },
+                    .operator_spaced => .{ .invalid_operator = .{ .found = self.found, .shape = .spaced } },
+                    .numeral => .{ .incomplete_numeral = self.found },
+                    .block => .{ .unterminated = .block_comment },
+                    .quote => .{ .unterminated = .quoted_identifier },
+                    .concat => .{ .expected_quote = self.found },
+                    .non_ascii => .{ .unsupported_feature = .non_ascii_identifier },
+                    .html => .{ .unsupported_feature = .html_identifier },
+                    .none, .eof, .oversize => unreachable,
+                },
+                // An over-long or spaced operator has exactly one repair:
+                // the operator its last byte names. A lone '-' needs the
+                // document kind, which the parser supplies.
+                .fix = switch (self.terminal) {
+                    .operator_long, .operator_spaced => .{
+                        .span = span,
+                        .edit = .{ .replace = if (self.found == '>') .directed_operator else .undirected_operator },
+                        .applicability = .machine_applicable,
+                    },
+                    else => null,
+                },
+            };
         }
 
         // Internal until the fixed-storage session is published.
@@ -242,7 +300,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             if (audited) self.examinations += 1;
             const offset = self.here().byte_offset;
             if (offset == self.source.len) return null;
-            if (metered) self.source_frontier = @max(self.source_frontier, offset + 1);
+            if (metered) self.source_frontier = @max(self.source_frontier, @as(usize, offset) + 1);
             return self.source[offset];
         }
 
@@ -513,7 +571,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             } };
         }
 
-        fn fail(self: *Self, kind: Terminal, start: location.Location, len: usize, found: ?u8) State {
+        fn fail(self: *Self, kind: Terminal, start: location.Location, len: u32, found: ?u8) State {
             self.terminal = kind;
             self.opener.location = start;
             self.terminal_len = len;
@@ -527,45 +585,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 .tag = .eof,
                 .span = .{ .start = self.here(), .byte_len = 0 },
             } };
-            const span: location.Span = .{ .start = self.opener.location, .byte_len = self.terminal_len };
-            return .{
-                .failure = .{
-                    .code = switch (self.terminal) {
-                        .invalid => .syntax_invalid_byte,
-                        .operator, .operator_long, .operator_spaced => .syntax_invalid_operator,
-                        .numeral => .syntax_incomplete_numeral,
-                        .block, .quote => .syntax_unterminated_construct,
-                        .concat => .syntax_invalid_concatenation,
-                        .non_ascii, .html => .profile_unsupported_feature,
-                        .none, .eof => unreachable,
-                    },
-                    .span = span,
-                    .details = switch (self.terminal) {
-                        .invalid => .{ .invalid_byte = self.found.? },
-                        .operator => .{ .invalid_operator = .{ .found = self.found, .shape = .lone } },
-                        .operator_long => .{ .invalid_operator = .{ .found = self.found, .shape = .long } },
-                        .operator_spaced => .{ .invalid_operator = .{ .found = self.found, .shape = .spaced } },
-                        .numeral => .{ .incomplete_numeral = self.found },
-                        .block => .{ .unterminated = .block_comment },
-                        .quote => .{ .unterminated = .quoted_identifier },
-                        .concat => .{ .expected_quote = self.found },
-                        .non_ascii => .{ .unsupported_feature = .non_ascii_identifier },
-                        .html => .{ .unsupported_feature = .html_identifier },
-                        .none, .eof => unreachable,
-                    },
-                    // An over-long or spaced operator has exactly one repair:
-                    // the operator its last byte names. A lone '-' needs the
-                    // document kind, which the parser supplies.
-                    .fix = switch (self.terminal) {
-                        .operator_long, .operator_spaced => .{
-                            .span = span,
-                            .edit = .{ .replace = if (self.found == '>') .directed_operator else .undirected_operator },
-                            .applicability = .machine_applicable,
-                        },
-                        else => null,
-                    },
-                },
-            };
+            return .failure;
         }
     };
 }
@@ -699,6 +719,7 @@ fn checkPartition(source: []const u8, budgets: []const usize) !usize {
         if (report.result) |result| {
             try expectEqual(reference.next(), result);
             try expectEqual(reference.tracker, bounded.tracker);
+            if (result == .failure) try std.testing.expectEqualDeep(reference.failureDiagnostic(), bounded.failureDiagnostic());
             if (result == .failure or result.token.tag == .eof) {
                 const terminal_reads = bounded.examinations;
                 inline for (.{ 0, 1, std.math.maxInt(usize) }) |after| {
@@ -814,7 +835,8 @@ test "metering storage and source-examination instrumentation compile out" {
     try expectEqual(@sizeOf(Lexer) + @sizeOf(usize), @sizeOf(Scanner(true, false)));
     // Fixed native-state guard, independent of source size; no allocation in
     // either scanner. Test buffers above are caller-owned fixture storage.
-    try expect(@sizeOf(Lexer) <= 176);
+    // 104 B measured with 32-bit positions (was 176 B); 128 B leaves headroom.
+    try expect(@sizeOf(Lexer) <= 128);
 }
 
 fn expectToken(lexer: *Lexer, tag: Token.Tag, text: []const u8) !void {
@@ -824,32 +846,35 @@ fn expectToken(lexer: *Lexer, tag: Token.Tag, text: []const u8) !void {
     try expectEqualStrings(text, result.token.span.slice(lexer.source));
 }
 
+/// The next result must be a failure; returns its diagnostic.
+fn expectFailure(lexer: anytype) !diagnostic.Diagnostic {
+    try expect(lexer.next() == .failure);
+    return lexer.failureDiagnostic();
+}
+
 fn expectUnsupported(lexer: *Lexer, feature: diagnostic.Feature) !void {
-    const result = lexer.next();
-    try expect(result == .failure);
-    try expectEqual(diagnostic.Code.profile_unsupported_feature, result.failure.code);
-    try expectEqual(feature, result.failure.details.unsupported_feature);
+    const failure = try expectFailure(lexer);
+    try expectEqual(diagnostic.Code.profile_unsupported_feature, failure.code);
+    try expectEqual(feature, failure.details.unsupported_feature);
 }
 
 fn expectInvalidByte(lexer: *Lexer, byte: u8) !void {
-    const result = lexer.next();
-    try expect(result == .failure);
-    try expectEqual(diagnostic.Code.syntax_invalid_byte, result.failure.code);
-    try expectEqual(byte, result.failure.details.invalid_byte);
+    const failure = try expectFailure(lexer);
+    try expectEqual(diagnostic.Code.syntax_invalid_byte, failure.code);
+    try expectEqual(byte, failure.details.invalid_byte);
 }
 
 fn expectInvalidOperator(lexer: *Lexer, text: []const u8, found: ?u8, shape: diagnostic.InvalidOperator.Shape) !void {
-    const result = lexer.next();
-    try expect(result == .failure);
-    try expectEqual(diagnostic.Code.syntax_invalid_operator, result.failure.code);
-    try expectEqual(found, result.failure.details.invalid_operator.found);
-    try expectEqual(shape, result.failure.details.invalid_operator.shape);
-    try expectEqualStrings(text, result.failure.span.slice(lexer.source));
+    const failure = try expectFailure(lexer);
+    try expectEqual(diagnostic.Code.syntax_invalid_operator, failure.code);
+    try expectEqual(found, failure.details.invalid_operator.found);
+    try expectEqual(shape, failure.details.invalid_operator.shape);
+    try expectEqualStrings(text, failure.span.slice(lexer.source));
     // Shape alone decides the repair of long and spaced operators.
     if (shape == .lone) {
-        try expect(result.failure.fix == null);
+        try expect(failure.fix == null);
     } else {
-        const fix = result.failure.fix.?;
+        const fix = failure.fix.?;
         try expectEqual(diagnostic.Applicability.machine_applicable, fix.applicability);
         try expectEqualStrings(text, fix.span.slice(lexer.source));
         try expectEqual(if (found == '>') diagnostic.Replacement.directed_operator else diagnostic.Replacement.undirected_operator, fix.edit.replace);
@@ -857,11 +882,10 @@ fn expectInvalidOperator(lexer: *Lexer, text: []const u8, found: ?u8, shape: dia
 }
 
 fn expectIncompleteNumeral(lexer: *Lexer, text: []const u8, found: ?u8) !void {
-    const result = lexer.next();
-    try expect(result == .failure);
-    try expectEqual(diagnostic.Code.syntax_incomplete_numeral, result.failure.code);
-    try expectEqual(found, result.failure.details.incomplete_numeral);
-    try expectEqualStrings(text, result.failure.span.slice(lexer.source));
+    const failure = try expectFailure(lexer);
+    try expectEqual(diagnostic.Code.syntax_incomplete_numeral, failure.code);
+    try expectEqual(found, failure.details.incomplete_numeral);
+    try expectEqualStrings(text, failure.span.slice(lexer.source));
 }
 
 test "empty input yields eof forever" {
@@ -932,14 +956,13 @@ test "block comment truncation reports the opener on repeated calls" {
     const body = "/* body **/";
     for (2..body.len) |end| {
         var lexer = Lexer.init(body[0..end]);
-        const first = lexer.next();
-        try expect(first == .failure);
-        try expectEqual(diagnostic.Code.syntax_unterminated_construct, first.failure.code);
-        try expectEqual(location.Location.start, first.failure.span.start);
-        try expectEqual(@as(usize, 2), first.failure.span.byte_len);
-        try expectEqual(diagnostic.UnterminatedConstruct.block_comment, first.failure.details.unterminated);
-        try expectEqual(first, lexer.next());
-        try expectEqual(first, lexer.next());
+        const first = try expectFailure(&lexer);
+        try expectEqual(diagnostic.Code.syntax_unterminated_construct, first.code);
+        try expectEqual(location.Location.start, first.span.start);
+        try expectEqual(@as(usize, 2), first.span.byte_len);
+        try expectEqual(diagnostic.UnterminatedConstruct.block_comment, first.details.unterminated);
+        try expectEqual(first, try expectFailure(&lexer));
+        try expectEqual(first, try expectFailure(&lexer));
     }
     var complete = Lexer.init(body);
     try expectToken(&complete, .eof, "");
@@ -954,12 +977,11 @@ test "unterminated comments preserve nonzero physical locations on repeated call
         const source = "// ignored" ++ newline ++ "  /* x";
         var lexer = Lexer.init(source);
         const expected = location.locate(source, source.len - 4);
-        const first = lexer.next();
-        try expect(first == .failure);
-        try expectEqual(expected, first.failure.span.start);
-        try expectEqual(@as(usize, 2), first.failure.span.start.line);
-        try expectEqual(@as(usize, 3), first.failure.span.start.byte_column);
-        try expectEqual(first, lexer.next());
+        const first = try expectFailure(&lexer);
+        try expectEqual(expected, first.span.start);
+        try expectEqual(@as(usize, 2), first.span.start.line);
+        try expectEqual(@as(usize, 3), first.span.start.byte_column);
+        try expectEqual(first, try expectFailure(&lexer));
         try expectEqual(expected, lexer.here());
     }
 }
@@ -1139,6 +1161,20 @@ test "numerals running into letters or dots warn without changing tokens" {
     try expectToken(&lexer, .eof, "");
 }
 
+test "a source longer than the 32-bit position domain is refused unread" {
+    if (@sizeOf(usize) <= @sizeOf(u32)) return error.SkipZigTest;
+    // A slice whose length exceeds the domain; its bytes are never read,
+    // so the address only has to be non-null.
+    const base: [*]const u8 = @ptrFromInt(4096);
+    const huge: []const u8 = base[0 .. @as(usize, std.math.maxInt(u32)) + 1];
+    var lexer = Lexer.init(huge);
+    const failure = try expectFailure(&lexer);
+    try expectEqual(diagnostic.Code.resource_capacity_exhausted, failure.code);
+    try expectEqual(diagnostic.Capacity.Resource.source_range, failure.details.capacity.resource);
+    try expectEqual(location.max_source_len, failure.details.capacity.limit);
+    try expectEqual(failure, try expectFailure(&lexer));
+}
+
 test "a leading UTF-8 byte order mark is skipped, keeping byte columns honest" {
     var lexer = Lexer.init("\xEF\xBB\xBFgraph {");
     const result = lexer.next();
@@ -1166,17 +1202,15 @@ test "non-ASCII bytes are the deferred identifier range, not invalid input" {
     // not split into an ASCII identifier plus an error — and the span
     // covers the complete run, not just the first non-ASCII byte.
     var mixed = Lexer.init("caf\xC3\xA9 x");
-    const result = mixed.next();
-    try expect(result == .failure);
-    try expectEqual(diagnostic.Feature.non_ascii_identifier, result.failure.details.unsupported_feature);
-    try expectEqual(@as(usize, 0), result.failure.span.start.byte_offset);
-    try expectEqual(@as(usize, 5), result.failure.span.byte_len);
+    const failure = try expectFailure(&mixed);
+    try expectEqual(diagnostic.Feature.non_ascii_identifier, failure.details.unsupported_feature);
+    try expectEqual(@as(usize, 0), failure.span.start.byte_offset);
+    try expectEqual(@as(usize, 5), failure.span.byte_len);
 
     // A leading multi-byte identifier is spanned whole as well.
     var leading_run = Lexer.init("\xC3\xA9tat;");
-    const leading_result = leading_run.next();
-    try expect(leading_result == .failure);
-    try expectEqual(@as(usize, 5), leading_result.failure.span.byte_len);
+    const leading_failure = try expectFailure(&leading_run);
+    try expectEqual(@as(usize, 5), leading_failure.span.byte_len);
 
     // Control bytes below 0x80 remain invalid, as before.
     var control = Lexer.init("\x7f");
@@ -1239,11 +1273,11 @@ test "quoted content preserves physical positions and accepts opaque non-NUL byt
     }
     inline for (.{ "\"a\x00b\"", "\"a\\\x00b\"" }) |raw| {
         var lexer = Lexer.init(raw);
-        const failure = lexer.next().failure;
+        const failure = try expectFailure(&lexer);
         try expectEqual(diagnostic.Code.syntax_invalid_byte, failure.code);
         try expectEqual(@as(u8, 0), failure.details.invalid_byte);
         try expectEqualStrings("\x00", failure.span.slice(raw));
-        try expectEqual(failure, lexer.next().failure);
+        try expectEqual(failure, try expectFailure(&lexer));
     }
 }
 
@@ -1251,53 +1285,47 @@ test "unterminated strings report their own opener including later concatenated 
     const raw = "\"a\\\"b\\\\c\"";
     for (1..raw.len) |end| {
         var lexer = Lexer.init(raw[0..end]);
-        const result = lexer.next();
-        try expect(result == .failure);
-        try expectEqual(diagnostic.UnterminatedConstruct.quoted_identifier, result.failure.details.unterminated);
-        try expectEqual(@as(usize, 0), result.failure.span.start.byte_offset);
-        try expectEqual(@as(usize, 1), result.failure.span.byte_len);
-        try expectEqual(result, lexer.next());
+        const failure = try expectFailure(&lexer);
+        try expectEqual(diagnostic.UnterminatedConstruct.quoted_identifier, failure.details.unterminated);
+        try expectEqual(@as(usize, 0), failure.span.start.byte_offset);
+        try expectEqual(@as(usize, 1), failure.span.byte_len);
+        try expectEqual(failure, try expectFailure(&lexer));
     }
     var lexer = Lexer.init("\"a\" +\r\n \"bc");
-    const first = lexer.next().failure;
+    const first = try expectFailure(&lexer);
     try expectEqual(@as(usize, 8), first.span.start.byte_offset);
     try expectEqual(@as(usize, 2), first.span.start.line);
     try expectEqual(@as(usize, 2), first.span.start.byte_column);
-    try expectEqual(first, lexer.next().failure);
+    try expectEqual(first, try expectFailure(&lexer));
 }
 
 test "malformed concatenation distinguishes expected quote from unclosed comment" {
     inline for (.{ "\"a\"+", "\"a\"+b", "\"a\"+1", "\"a\"+}", "\"a\"++\"b\"", "\"a\"+<html>" }) |raw| {
         var lexer = Lexer.init(raw);
-        const first = lexer.next().failure;
+        const first = try expectFailure(&lexer);
         try expectEqual(diagnostic.Code.syntax_invalid_concatenation, first.code);
         try expectEqual(@as(usize, 4), first.span.start.byte_offset);
         try expectEqual(if (raw.len == 4) @as(?u8, null) else raw[4], first.details.expected_quote);
-        try expectEqual(first, lexer.next().failure);
+        try expectEqual(first, try expectFailure(&lexer));
     }
     var after_plus = Lexer.init("\"a\"+/*");
-    const failure = after_plus.next().failure;
+    const failure = try expectFailure(&after_plus);
     try expectEqual(diagnostic.UnterminatedConstruct.block_comment, failure.details.unterminated);
     try expectEqual(@as(usize, 4), failure.span.start.byte_offset);
     var trailing = Lexer.init("\"a\" /*");
     try expectToken(&trailing, .identifier, "\"a\"");
-    try expectEqual(diagnostic.UnterminatedConstruct.block_comment, trailing.next().failure.details.unterminated);
+    try expectEqual(diagnostic.UnterminatedConstruct.block_comment, (try expectFailure(&trailing)).details.unterminated);
 }
 
 test "failures are terminal and idempotent" {
     var lexer = Lexer.init("graph @ x");
     try expectToken(&lexer, .keyword_graph, "graph");
 
-    const first = lexer.next();
-    const second = lexer.next();
-    try expect(first == .failure);
-    try expect(second == .failure);
-    try expectEqual(first.failure.code, second.failure.code);
-    try expectEqual(first.failure.span.start, second.failure.span.start);
-    try expectEqual(
-        first.failure.details.invalid_byte,
-        second.failure.details.invalid_byte,
-    );
+    const first = try expectFailure(&lexer);
+    const second = try expectFailure(&lexer);
+    try expectEqual(first.code, second.code);
+    try expectEqual(first.span.start, second.span.start);
+    try expectEqual(first.details.invalid_byte, second.details.invalid_byte);
 }
 
 test "full milestone document produces the expected token stream" {

@@ -11,16 +11,24 @@
 //! - LF, CRLF, and standalone CR each terminate one physical line. CRLF
 //!   advances the byte offset by two but the line counter by one.
 //!
+//! - Positions are 32-bit. A source is at most `max_source_len` bytes; the
+//!   scanner refuses longer input before reading it. Every per-token and
+//!   per-scope value the parser copies carries positions, so their width
+//!   is a throughput and footprint decision, not just a range one.
+//!
 //! This module performs no allocation and does not interpret Unicode.
+
+/// The longest source the library scans: positions are `u32`.
+pub const max_source_len: usize = std.math.maxInt(u32);
 
 /// A position in the source, immediately before the byte at `byte_offset`.
 pub const Location = struct {
     /// Zero-based byte offset from the start of the source.
-    byte_offset: usize,
+    byte_offset: u32,
     /// One-based physical line number.
-    line: usize,
+    line: u32,
     /// One-based byte column within the current line.
-    byte_column: usize,
+    byte_column: u32,
 
     /// The position of the first byte of any source, including empty sources.
     pub const start: Location = .{ .byte_offset = 0, .line = 1, .byte_column = 1 };
@@ -32,11 +40,11 @@ pub const Location = struct {
 /// the source bytes the caller keeps alive.
 pub const Span = struct {
     start: Location,
-    byte_len: usize,
+    byte_len: u32,
 
     /// Zero-based offset one past the last byte of the span.
     pub fn endOffset(self: Span) usize {
-        return self.start.byte_offset + self.byte_len;
+        return @as(usize, self.start.byte_offset) + self.byte_len;
     }
 
     /// The source bytes this span covers. `source` must be the buffer the
@@ -54,8 +62,7 @@ pub const Span = struct {
 /// This is the retained-data representation (R-MEM-008): full positions —
 /// line and column — are not stored per retained element; they are derived
 /// on demand via `locate` (or, later, an optional source-index side table).
-/// The u32 fields limit retained sources to 4 GiB; producers must use the
-/// checked `fromSpan` narrowing.
+/// Spans and ranges share the 32-bit domain, so narrowing cannot fail.
 pub const Range = struct {
     start: u32,
     len: u32,
@@ -78,16 +85,10 @@ pub const Range = struct {
         return source[self.start..@intCast(end)];
     }
 
-    /// Checked narrowing from a full span; null unless the whole range —
-    /// including its one-past-end offset — fits the 4 GiB retained domain,
-    /// so `endOffset` of an accepted range can never leave u32.
-    pub fn fromSpan(span: Span) ?Range {
-        const end = std.math.add(usize, span.start.byte_offset, span.byte_len) catch return null;
-        if (end > std.math.maxInt(u32)) return null;
-        return .{
-            .start = @intCast(span.start.byte_offset),
-            .len = @intCast(span.byte_len),
-        };
+    /// The range a span covers. Positions are already 32-bit, so this is
+    /// a projection, never a narrowing.
+    pub fn fromSpan(span: Span) Range {
+        return .{ .start = span.start.byte_offset, .len = span.byte_len };
     }
 
     /// Rehydrate a full span, deriving line and column by scanning `source`
@@ -103,7 +104,7 @@ pub const Range = struct {
 /// policy: retained data stays small and positions are computed only when
 /// a diagnostic or tool actually needs one (R-MEM-008).
 pub fn locate(source: []const u8, byte_offset: usize) Location {
-    std.debug.assert(byte_offset <= source.len);
+    std.debug.assert(byte_offset <= source.len and byte_offset <= max_source_len);
     var tracker: Tracker = .{};
     tracker.advanceSlice(source[0..byte_offset]);
     return tracker.location;
@@ -272,7 +273,7 @@ test "range slices and converts to and from spans" {
         .byte_len = 1,
     };
 
-    const range = Range.fromSpan(span).?;
+    const range = Range.fromSpan(span);
     try expectEqual(@as(u32, 10), range.start);
     try expectEqual(@as(u64, 11), range.endOffset());
     try std.testing.expectEqualStrings("a", range.slice(source));
@@ -281,41 +282,17 @@ test "range slices and converts to and from spans" {
     try expectEqual(span, range.toSpan(source));
 }
 
-test "range narrowing is checked" {
-    if (@sizeOf(usize) <= @sizeOf(u32)) return error.SkipZigTest;
-    const too_far: Span = .{
-        .start = .{
-            .byte_offset = @as(usize, std.math.maxInt(u32)) + 1,
-            .line = 1,
-            .byte_column = 1,
-        },
-        .byte_len = 0,
-    };
-    try expectEqual(@as(?Range, null), Range.fromSpan(too_far));
-}
-
-test "range narrowing rejects ends beyond the retained domain" {
-    // start and len each fit u32 on their own; their sum does not.
-    const straddling: Span = .{
-        .start = .{
-            .byte_offset = std.math.maxInt(u32) - 1,
-            .line = 1,
-            .byte_column = 1,
-        },
-        .byte_len = 2,
-    };
-    try expectEqual(@as(?Range, null), Range.fromSpan(straddling));
-
-    // The exact boundary is still accepted: end == maxInt(u32).
+test "positions are 32-bit and the boundary span still converts" {
+    try expectEqual(@as(usize, std.math.maxInt(u32)), max_source_len);
+    try expectEqual(@as(usize, 12), @sizeOf(Location));
+    try expectEqual(@as(usize, 16), @sizeOf(Span));
+    // The last representable byte: end == maxInt(u32).
     const boundary: Span = .{
-        .start = .{
-            .byte_offset = std.math.maxInt(u32) - 1,
-            .line = 1,
-            .byte_column = 1,
-        },
+        .start = .{ .byte_offset = std.math.maxInt(u32) - 1, .line = 1, .byte_column = 1 },
         .byte_len = 1,
     };
-    try expectEqual(@as(u64, std.math.maxInt(u32)), Range.fromSpan(boundary).?.endOffset());
+    try expectEqual(@as(u64, std.math.maxInt(u32)), Range.fromSpan(boundary).endOffset());
+    try expectEqual(@as(usize, std.math.maxInt(u32)), boundary.endOffset());
 }
 
 test "locate recomputes positions across newline styles" {

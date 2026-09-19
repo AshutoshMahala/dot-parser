@@ -24,9 +24,10 @@ are for humans and tooling.
 `storage_failure` carries its own cause: `.out_of_memory` (allocator),
 `.pool_exhausted` (a fixed pool filled — the diagnostic names the pool and
 its capacity), `.statement_index_overflow`, `.attribute_index_overflow`,
-`.edge_link_index_overflow`, `.ported_reference_index_overflow`, `.source_offset_overflow`
-(source beyond the 4 GiB retained-range limit), or `.internal` (never
-expected; a bug report is welcome). `.internal` currently has no corresponding
+`.edge_link_index_overflow`, `.ported_reference_index_overflow`, or
+`.internal` (never expected; a bug report is welcome). A source longer than
+4 GiB is refused before a byte is read: positions are 32-bit, so the parse
+reports `.resource_exhausted` with capacity resource `.source_range`. `.internal` currently has no corresponding
 diagnostic; inspect the outcome even when the diagnostic bag is empty.
 
 Chain storage failures use the existing WDP capacity diagnostic, with typed
@@ -190,8 +191,8 @@ Which diagnostics carry a fix, and how confident it is:
 
 The console renderer prints the fix under the hint (`Fix: replace '-->'
 with '->'`, with `(one possible repair)` appended for `maybe`); the compact
-renderer adds a `fix:` line. `Diagnostic` is 200 bytes with the field, so a
-`FixedDiagnosticBag(32)` is 6.4 KB.
+renderer adds a `fix:` line. `Diagnostic` is 112 bytes with the field, so a
+`FixedDiagnosticBag(32)` is 3.6 KB.
 
 This table describes library-produced diagnostics. `Diagnostic` is publicly
 constructible: its separate `code` and `details` fields do not enforce these

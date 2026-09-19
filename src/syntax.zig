@@ -215,7 +215,7 @@ pub const ScopeView = struct {
         return if (self.id == .root) self.document.name else self.record().name;
     }
     pub fn sourceRange(self: ScopeView) ?location.Range {
-        return if (self.id == .root) location.Range.fromSpan(.{ .start = .start, .byte_len = self.document.source.len }) else self.record().source;
+        return if (self.id == .root) location.Range{ .start = 0, .len = @intCast(self.document.source.len) } else self.record().source;
     }
     fn record(self: ScopeView) Subgraph {
         return self.document.subgraph_records[@intFromEnum(self.id) - 1];
@@ -751,8 +751,6 @@ pub const Builder = struct {
         AttributeIndexOverflow,
         EdgeLinkIndexOverflow,
         PortedReferenceIndexOverflow,
-        /// A source position beyond the 4 GiB retained-range limit.
-        SourceOffsetOverflow,
     };
 
     const Phase = enum { idle, building, committed, terminal };
@@ -906,8 +904,8 @@ pub const Builder = struct {
         self.phase = .building;
         self.kind = event.kind;
         self.strict = event.strict;
-        self.keyword = try self.range(event.keyword_span);
-        self.name = if (event.name_span) |name_span| try self.range(name_span) else null;
+        self.keyword = self.range(event.keyword_span);
+        self.name = if (event.name_span) |name_span| self.range(name_span) else null;
     }
 
     pub fn nodeStatement(self: *Builder, statement_event: syntax_event.NodeStatement) Error!void {
@@ -934,7 +932,7 @@ pub const Builder = struct {
         const edge: EdgeStatement = .{
             .left = try self.reference(statement_event.left, statement_event.left_port),
             .operator = statement_event.operator,
-            .operator_range = try self.range(statement_event.operator_span),
+            .operator_range = self.range(statement_event.operator_span),
             .right = try self.reference(statement_event.right, statement_event.right_port),
             .attributes = self.pendingRange(),
         };
@@ -952,7 +950,7 @@ pub const Builder = struct {
             return;
         }
         std.debug.assert(self.phase == .building);
-        const value: EdgeLink = .{ .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.reference(event.right, event.right_port) };
+        const value: EdgeLink = .{ .operator = event.operator, .operator_range = self.range(event.operator_span), .right = try self.reference(event.right, event.right_port) };
         if (self.edge_links.items.len >= std.math.maxInt(Index)) {
             self.failure_info = .{ .span = event.operator_span, .capacity = .{ .resource = .edge_link_index, .limit = std.math.maxInt(Index) } };
             return error.EdgeLinkIndexOverflow;
@@ -966,7 +964,7 @@ pub const Builder = struct {
             return finishScopedEdge(self, event);
         std.debug.assert(self.phase == .building and self.edge_links.items.len > self.pending_links);
         const value: EdgeChainStatement = .{
-            .first = .{ .left = try self.reference(event.left, event.left_port), .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.reference(event.right, event.right_port), .attributes = self.pendingRange() },
+            .first = .{ .left = try self.reference(event.left, event.left_port), .operator = event.operator, .operator_range = self.range(event.operator_span), .right = try self.reference(event.right, event.right_port), .attributes = self.pendingRange() },
             .links = .{ .start = @intCast(self.pending_links), .len = @intCast(self.edge_links.items.len - self.pending_links) },
         };
         const index = try self.statementIndex(self.edge_chains.items.len, event.left);
@@ -994,8 +992,8 @@ pub const Builder = struct {
     pub fn portedReference(self: *Builder, event: syntax_event.PortedReference) Error!u32 {
         std.debug.assert(self.phase == .building);
         const value: PortedReference = .{
-            .identifier = try self.range(event.identifier),
-            .port = .{ .first = try self.range(event.first), .second = if (event.second) |span| try self.range(span) else null },
+            .identifier = self.range(event.identifier),
+            .port = .{ .first = self.range(event.first), .second = if (event.second) |span| self.range(span) else null },
         };
         if (self.ported_references.items.len >= std.math.maxInt(Index)) {
             self.failure_info = .{ .span = event.first, .capacity = .{ .resource = .ported_reference_index, .limit = std.math.maxInt(Index) } };
@@ -1012,7 +1010,7 @@ pub const Builder = struct {
             std.debug.assert(index < self.ported_references.items.len);
             return NodeReference.pooled(index);
         }
-        return NodeReference.fromRange(try self.range(span)).?;
+        return NodeReference.fromRange(self.range(span)).?;
     }
 
     fn pendingRange(self: *const Builder) AttributeRange {
@@ -1021,7 +1019,7 @@ pub const Builder = struct {
 
     pub fn attribute(self: *Builder, event: syntax_event.Attribute) Error!void {
         std.debug.assert(self.phase == .building);
-        const value: Attribute = .{ .key = try self.range(event.key), .value = try self.range(event.value) };
+        const value: Attribute = .{ .key = self.range(event.key), .value = self.range(event.value) };
         if (self.attributes.items.len >= std.math.maxInt(Index)) {
             self.failure_info = .{ .span = event.key, .capacity = .{ .resource = .attribute_index, .limit = std.math.maxInt(Index) } };
             return error.AttributeIndexOverflow;
@@ -1032,7 +1030,7 @@ pub const Builder = struct {
 
     pub fn assignment(self: *Builder, event: syntax_event.Attribute) Error!void {
         std.debug.assert(self.phase == .building and self.pending_attributes == self.attributes.items.len);
-        const value: Assignment = .{ .key = try self.range(event.key), .value = try self.range(event.value) };
+        const value: Assignment = .{ .key = self.range(event.key), .value = self.range(event.value) };
         const index = try self.statementIndex(self.assignments.items.len, event.key);
         try self.reserve(&self.assignments, event.key);
         try self.reserve(&self.order, event.key);
@@ -1044,7 +1042,7 @@ pub const Builder = struct {
         std.debug.assert(self.phase == .building);
         const value: AttributeStatement = .{
             .target = event.target,
-            .keyword = try self.range(event.keyword_span),
+            .keyword = self.range(event.keyword_span),
             .attributes = self.pendingRange(),
         };
         const index = try self.statementIndex(self.attribute_statements.items.len, event.keyword_span);
@@ -1055,14 +1053,8 @@ pub const Builder = struct {
         self.pending_attributes = self.attributes.items.len;
     }
 
-    fn range(self: *Builder, span: location.Span) Error!location.Range {
-        return toRange(span) catch |err| {
-            self.failure_info = .{ .span = span, .capacity = .{
-                .resource = .source_range,
-                .limit = std.math.maxInt(u32),
-            } };
-            return err;
-        };
+    fn range(_: *Builder, span: location.Span) location.Range {
+        return location.Range.fromSpan(span);
     }
 
     fn statementIndex(self: *Builder, length: usize, at: location.Span) Error!Index {
@@ -1122,10 +1114,6 @@ pub const StorageFailureInfo = struct {
     /// allocator memory.
     capacity: ?diagnostic.Capacity,
 };
-
-fn toRange(span: location.Span) error{SourceOffsetOverflow}!location.Range {
-    return location.Range.fromSpan(span) orelse error.SourceOffsetOverflow;
-}
 
 fn checkedIndex(length: usize, total: usize) error{StatementIndexOverflow}!Index {
     // Scope intervals and the root statement count share the compact domain.
@@ -1371,8 +1359,6 @@ pub const FixedBuilder = struct {
     pub const Error = error{
         /// A caller-provided pool filled up.
         PoolExhausted,
-        /// A source position beyond the 4 GiB retained-range limit.
-        SourceOffsetOverflow,
         /// A per-kind pool or global order exceeds the compact count/index domain.
         StatementIndexOverflow,
         AttributeIndexOverflow,
@@ -1444,8 +1430,8 @@ pub const FixedBuilder = struct {
         self.phase = .building;
         self.kind = event.kind;
         self.strict = event.strict;
-        self.keyword = try self.range(event.keyword_span);
-        self.name = if (event.name_span) |name_span| try self.range(name_span) else null;
+        self.keyword = self.range(event.keyword_span);
+        self.name = if (event.name_span) |name_span| self.range(name_span) else null;
     }
 
     pub fn edgeLink(self: *FixedBuilder, event: syntax_event.EdgeLink) Error!void {
@@ -1454,7 +1440,7 @@ pub const FixedBuilder = struct {
             return;
         }
         std.debug.assert(self.phase == .building);
-        const value: EdgeLink = .{ .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.reference(event.right, event.right_port) };
+        const value: EdgeLink = .{ .operator = event.operator, .operator_range = self.range(event.operator_span), .right = try self.reference(event.right, event.right_port) };
         if (self.edge_links_len >= std.math.maxInt(Index)) {
             self.failure_info = .{ .span = event.operator_span, .capacity = .{ .resource = .edge_link_index, .limit = std.math.maxInt(Index) } };
             return error.EdgeLinkIndexOverflow;
@@ -1469,7 +1455,7 @@ pub const FixedBuilder = struct {
             return finishScopedEdge(self, event);
         std.debug.assert(self.phase == .building and self.edge_links_len > self.pending_links);
         const value: EdgeChainStatement = .{
-            .first = .{ .left = try self.reference(event.left, event.left_port), .operator = event.operator, .operator_range = try self.range(event.operator_span), .right = try self.reference(event.right, event.right_port), .attributes = self.pendingRange() },
+            .first = .{ .left = try self.reference(event.left, event.left_port), .operator = event.operator, .operator_range = self.range(event.operator_span), .right = try self.reference(event.right, event.right_port), .attributes = self.pendingRange() },
             .links = .{ .start = @intCast(self.pending_links), .len = @intCast(self.edge_links_len - self.pending_links) },
         };
         const index = try self.statementIndex(self.edge_chains_len, event.left);
@@ -1499,8 +1485,8 @@ pub const FixedBuilder = struct {
     pub fn portedReference(self: *FixedBuilder, event: syntax_event.PortedReference) Error!u32 {
         std.debug.assert(self.phase == .building);
         const value: PortedReference = .{
-            .identifier = try self.range(event.identifier),
-            .port = .{ .first = try self.range(event.first), .second = if (event.second) |span| try self.range(span) else null },
+            .identifier = self.range(event.identifier),
+            .port = .{ .first = self.range(event.first), .second = if (event.second) |span| self.range(span) else null },
         };
         if (self.ported_references_len >= std.math.maxInt(Index)) {
             self.failure_info = .{ .span = event.first, .capacity = .{ .resource = .ported_reference_index, .limit = std.math.maxInt(Index) } };
@@ -1518,7 +1504,7 @@ pub const FixedBuilder = struct {
             std.debug.assert(index < self.ported_references_len);
             return NodeReference.pooled(index);
         }
-        return NodeReference.fromRange(try self.range(span)).?;
+        return NodeReference.fromRange(self.range(span)).?;
     }
 
     fn pendingRange(self: *const FixedBuilder) AttributeRange {
@@ -1527,7 +1513,7 @@ pub const FixedBuilder = struct {
 
     pub fn attribute(self: *FixedBuilder, event: syntax_event.Attribute) Error!void {
         std.debug.assert(self.phase == .building);
-        const value: Attribute = .{ .key = try self.range(event.key), .value = try self.range(event.value) };
+        const value: Attribute = .{ .key = self.range(event.key), .value = self.range(event.value) };
         if (self.attributes_len >= std.math.maxInt(Index)) {
             self.failure_info = .{ .span = event.key, .capacity = .{ .resource = .attribute_index, .limit = std.math.maxInt(Index) } };
             return error.AttributeIndexOverflow;
@@ -1539,7 +1525,7 @@ pub const FixedBuilder = struct {
 
     pub fn assignment(self: *FixedBuilder, event: syntax_event.Attribute) Error!void {
         std.debug.assert(self.phase == .building and self.pending_attributes == self.attributes_len);
-        const value: Assignment = .{ .key = try self.range(event.key), .value = try self.range(event.value) };
+        const value: Assignment = .{ .key = self.range(event.key), .value = self.range(event.value) };
         const index = try self.statementIndex(self.assignments_len, event.key);
         try self.checkPool(self.assignments_len, self.storage.assignments.len, .assignment_pool, event.key);
         try self.checkPool(self.order_len, self.storage.statement_ids.len, .statement_pool, event.key);
@@ -1553,7 +1539,7 @@ pub const FixedBuilder = struct {
         std.debug.assert(self.phase == .building);
         const value: AttributeStatement = .{
             .target = event.target,
-            .keyword = try self.range(event.keyword_span),
+            .keyword = self.range(event.keyword_span),
             .attributes = self.pendingRange(),
         };
         const index = try self.statementIndex(self.attribute_statements_len, event.keyword_span);
@@ -1566,14 +1552,8 @@ pub const FixedBuilder = struct {
         self.pending_attributes = self.attributes_len;
     }
 
-    fn range(self: *FixedBuilder, span: location.Span) Error!location.Range {
-        return toRange(span) catch |err| {
-            self.failure_info = .{ .span = span, .capacity = .{
-                .resource = .source_range,
-                .limit = std.math.maxInt(u32),
-            } };
-            return err;
-        };
+    fn range(_: *FixedBuilder, span: location.Span) location.Range {
+        return location.Range.fromSpan(span);
     }
 
     fn statementIndex(self: *FixedBuilder, length: usize, at: location.Span) Error!Index {
@@ -1627,7 +1607,7 @@ pub const FixedBuilder = struct {
         const edge: EdgeStatement = .{
             .left = try self.reference(statement_event.left, statement_event.left_port),
             .operator = statement_event.operator,
-            .operator_range = try self.range(statement_event.operator_span),
+            .operator_range = self.range(statement_event.operator_span),
             .right = try self.reference(statement_event.right, statement_event.right_port),
             .attributes = self.pendingRange(),
         };
@@ -1730,7 +1710,7 @@ fn endpoint(self: anytype, span: location.Span, port: ?u32, scope: ?u32) @TypeOf
 fn promoteEdge(self: anytype, event: syntax_event.EdgeStatement) @TypeOf(self.*).Error!void {
     if (self.scope_state.scoped_owner != null) return;
     const value: ScopedEdgeStatement = .{
-        .first = .{ .left = try endpoint(self, event.left, event.left_port, event.left_scope), .right = try endpoint(self, event.right, event.right_port, event.right_scope), .operator = event.operator, .operator_range = try self.range(event.operator_span) },
+        .first = .{ .left = try endpoint(self, event.left, event.left_port, event.left_scope), .right = try endpoint(self, event.right, event.right_port, event.right_scope), .operator = event.operator, .operator_range = self.range(event.operator_span) },
         .prefix = .{ .start = @intCast(self.pending_links), .len = @intCast(poolLen(self, .edge_links) - self.pending_links) },
     };
     const index = try appendPool(self, .scoped_edges, value, event.operator_span);
@@ -1744,7 +1724,7 @@ fn appendScopedLink(self: anytype, right: Endpoint, operator: EdgeOperator, at: 
     const owner_index = self.scope_state.scoped_owner.?;
     const owner = poolItems(self, .scoped_edges)[owner_index];
     const left = if (owner.last_link != no_link) poolItems(self, .scoped_edge_links)[owner.last_link].right else if (owner.prefix.len != 0) Endpoint{ .node = poolItems(self, .edge_links)[owner.prefix.start + owner.prefix.len - 1].right } else owner.first.right;
-    const index = try appendPool(self, .scoped_edge_links, .{ .left = left, .right = right, .operator = operator, .operator_range = try self.range(at), .owner = owner_index }, at);
+    const index = try appendPool(self, .scoped_edge_links, .{ .left = left, .right = right, .operator = operator, .operator_range = self.range(at), .owner = owner_index }, at);
     const updated = &poolItems(self, .scoped_edges)[owner_index];
     if (owner.last_link == no_link) updated.first_link = index else poolItems(self, .scoped_edge_links)[owner.last_link].next = index;
     updated.last_link = index;
@@ -1770,8 +1750,8 @@ fn beginScope(self: anytype, event: syntax_event.BeginSubgraph) @TypeOf(self.*).
     const entry: syntax_event.ScopeEntry = .{ .id = id, .state = self.scope_state };
     _ = try appendPool(self, .subgraphs, .{
         .parent = self.current_scope,
-        .name = if (event.name) |name| try self.range(name) else null,
-        .source = try self.range(event.start),
+        .name = if (event.name) |name| self.range(name) else null,
+        .source = self.range(event.start),
         .body = .{ .start = @intCast(poolLen(self, .order)), .len = 0 },
     }, event.start);
     self.current_scope = @enumFromInt(id);
@@ -1784,7 +1764,6 @@ fn endScope(self: anytype, event: syntax_event.EndSubgraph) @TypeOf(self.*).Erro
     std.debug.assert(self.phase == .building and @intFromEnum(self.current_scope) == event.entry.id);
     std.debug.assert(self.pendingRange().len == 0);
     const record = &poolItems(self, .subgraphs)[event.entry.id - 1];
-    _ = try self.range(event.close);
     record.source.len = @intCast(event.close.endOffset() - record.source.start);
     record.body.len = @intCast(poolLen(self, .order) - record.body.start);
     record.subtree_end = @intCast(poolLen(self, .subgraphs));
@@ -1828,9 +1807,6 @@ test "ported index and source overflow fail before pool access and reset cleanly
     var allocated = Builder.init(std.testing.allocator, "graph{}");
     defer allocated.deinit();
     try allocated.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
-    const huge: location.Span = .{ .start = .{ .byte_offset = std.math.maxInt(u32), .line = 1, .byte_column = 1 }, .byte_len = 1 };
-    try std.testing.expectError(error.SourceOffsetOverflow, allocated.portedReference(.{ .identifier = at, .first = huge }));
-    try expectEqual(@as(usize, 0), allocated.ported_references.items.len);
     allocated.abortDocument(.sink_failure);
 }
 
@@ -2256,9 +2232,7 @@ test "scope order and ID overflow are typed before narrowing or pool access" {
     }
     var builder = FixedBuilder.init("graph{}", pools.storage());
     try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
-    const entry = try builder.beginSubgraph(.{ .start = at, .name = null });
-    const huge: location.Span = .{ .start = .{ .byte_offset = std.math.maxInt(u32), .line = 1, .byte_column = 1 }, .byte_len = 1 };
-    try std.testing.expectError(error.SourceOffsetOverflow, builder.endSubgraph(.{ .close = huge, .entry = entry }));
+    _ = try builder.beginSubgraph(.{ .start = at, .name = null });
     builder.abortDocument(.sink_failure);
     try expectEqual(ScopeId.root, builder.current_scope);
 }

@@ -211,11 +211,12 @@ Endpoint scopes have no extra statement entry: their edge owns the statement.
 Descendants are never copied into ancestors.
 
 Temporary frames now preserve a suspended outer edge as well as scope/diagnostic
-state: **272 bytes per reserved nesting level** on the measured native target.
+state: **164 bytes per reserved nesting level** on the measured native target
+(272 before positions became 32-bit).
 This is an increase from the standalone-only 32-byte frame, including for standalone
 scopes. One frame still handles arbitrarily many sequential siblings. Scratch is
 O(maximum active depth), never O(total scopes). Fixed RAM is reserved capacity:
-`36 * subgraphs_capacity + 8 * statements_capacity + 272 * nesting_capacity`,
+`36 * subgraphs_capacity + 8 * statements_capacity + 164 * nesting_capacity`,
 plus all other pools, source/session metadata and diagnostics. Use `byte_size`
 and `@sizeOf` on your target; these are native, not universal sizes.
 

@@ -143,8 +143,6 @@ pub const StorageFailure = enum {
     pool_exhausted,
     /// A statement pool or global order exceeds the compact index/count domain.
     statement_index_overflow,
-    /// A source position beyond the retained-range limit (4 GiB).
-    source_offset_overflow,
     /// An unexpected internal failure — please report a bug. Never produced
     /// by the documented builder error sets; exists so an unmapped future
     /// error is visible instead of being mislabeled.
@@ -281,7 +279,6 @@ fn storageFailure(err: anyerror) StorageFailure {
         error.AttributeIndexOverflow => .attribute_index_overflow,
         error.EdgeLinkIndexOverflow => .edge_link_index_overflow,
         error.PortedReferenceIndexOverflow => .ported_reference_index_overflow,
-        error.SourceOffsetOverflow => .source_offset_overflow,
         else => .internal,
     };
 }
@@ -303,7 +300,7 @@ fn emitStorageDiagnostic(
             .code = .resource_memory_exhausted,
             .span = span,
         },
-        .pool_exhausted, .statement_index_overflow, .source_offset_overflow, .attribute_index_overflow, .edge_link_index_overflow, .ported_reference_index_overflow => .{
+        .pool_exhausted, .statement_index_overflow, .attribute_index_overflow, .edge_link_index_overflow, .ported_reference_index_overflow => .{
             .code = .resource_capacity_exhausted,
             .span = span,
             .details = if (info) |i|

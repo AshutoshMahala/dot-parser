@@ -72,8 +72,9 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
   the operator/kind mismatch is reported by validation as
   `E.Validation.Operator.002`. Consumers with dialect-tolerant needs can
   skip or ignore validation.
-- **Limits**: retained positions address at most 4 GiB of source
-  (`storage_failure: .source_offset_overflow` beyond that);
+- **Limits**: positions are 32-bit, so a source is at most 4 GiB; a longer
+  one is refused before scanning (`resource_exhausted`, capacity resource
+  `source_range`);
   `max_statements` bounds statement count and `max_attributes` bounds total
   key/value pairs, including standalone assignments. Standalone subgraphs count as
   statements; endpoint subgraphs do not add a statement beyond their owning edge.

@@ -330,7 +330,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             if (self.terminal) |result| return result;
             const token = switch (self.tokens.next()) {
                 .token => |token| token,
-                .failure => |failure| return self.fail(failure),
+                .failure => return self.fail(self.tokens.failureDiagnostic()),
             };
             self.forwardWarning();
             return self.transition(token);
@@ -381,9 +381,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                                 self.work.token = token;
                                 self.work.phase = .grammar;
                             },
-                            .failure => |failure| {
-                                _ = self.fail(failure);
-                            },
+                            .failure => _ = self.fail(self.tokens.failureDiagnostic()),
                         };
                     },
                     .grammar => {
@@ -1166,7 +1164,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             if (self.state == .epilogue) return false;
             if (failure.details == .unexpected and failure.details.unexpected.found == .end_of_input) return false;
             if (self.tokens.terminal != .none) return switch (self.tokens.terminal) {
-                .non_ascii, .html, .none, .eof => false,
+                .non_ascii, .html, .oversize, .none, .eof => false,
                 else => true,
             };
             return true;
@@ -1911,7 +1909,7 @@ test "ordinary parser compiles out pending work and audit storage" {
     try expect(@FieldType(Ordinary, "work") == void);
     try expect(@FieldType(Ordinary, "audit") == void);
     try expect(@FieldType(lex.Scanner(false, false), "source_frontier") == void);
-    try expect(@sizeOf(Ordinary) <= 960);
+    try expect(@sizeOf(Ordinary) <= 640);
 }
 
 test "unaudited metered driver charges empty document exactly and runs to completion" {
@@ -2683,13 +2681,12 @@ test "failing beginDocument still receives the cleanup abort" {
 
 test "parser state stays small (R-PERF-005 parser-state-size regression guard)" {
     // The whole machine — lexer, continuation state, options, bookkeeping —
-    // must remain a small constant, independent of input size. 960 B is the
-    // current measured value (896 B: the suspect-brace span and the recovery
-    // fields added 72 B over the 824 B of 0.2.0) plus headroom (see
-    // docs/BASELINES.md), not an architectural budget: if a slice
-    // legitimately grows the state, measure, update the baseline doc, and
-    // raise this bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 960);
+    // must remain a small constant, independent of input size. 640 B is the
+    // current measured value (544 B with 32-bit positions, down from 896 B)
+    // plus headroom (see docs/BASELINES.md), not an architectural budget: if
+    // a slice legitimately grows the state, measure, update the baseline
+    // doc, and raise this bound in the same commit.
+    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 640);
 }
 
 test "step is terminal-idempotent after success and after failure" {

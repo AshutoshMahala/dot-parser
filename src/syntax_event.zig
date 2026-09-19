@@ -422,7 +422,7 @@ test "recording sink preserves event order and borrowed spans" {
     var sink: RecordingSink(8) = .{};
 
     const span = struct {
-        fn at(offset: usize, len: usize) location.Span {
+        fn at(offset: u32, len: u32) location.Span {
             return .{
                 .start = .{ .byte_offset = offset, .line = 1, .byte_column = offset + 1 },
                 .byte_len = len,

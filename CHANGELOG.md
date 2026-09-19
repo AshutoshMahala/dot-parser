@@ -56,7 +56,7 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   closers, header typos, `=>`, unterminated constructs and operator
   mismatches. `machine_applicable` fixes may be applied
   unattended; `maybe` fixes are offers. Both renderers print them.
-  `Diagnostic` grows from 152 to 200 bytes.
+  `Diagnostic` is 112 bytes with the field (positions are 32-bit, see below).
 - `W.Syntax.Numeral.033`: numerals running into a letter or second dot
   (`1e3`, `1.2.3`) warn, matching Graphviz, and the parse continues. First
   use of the warning severity.
@@ -71,6 +71,21 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   console renderer.
 - Diagnostics regression table (`tests/diagnostics.zig`) and measure
   verification (`tests/measure.zig`).
+
+### Performance
+
+- Positions (`Location`, `Span`) are 32-bit. Sources are capped at 4 GiB, as
+  retained ranges already were; a longer source is refused before scanning
+  with `resource_exhausted` / `source_range`, and the
+  `storage_failure.source_offset_overflow` outcome is gone with the builder
+  path that produced it. Every per-token and per-scope value shrinks: token
+  40 → 20 B, lexer 176 → 104 B, parser state 896 → 544 B, nesting frame
+  272 → 164 B, `Diagnostic` 200 → 112 B.
+- The lexer result no longer carries a `Diagnostic` by value on every
+  token; `Lexer.failureDiagnostic()` builds it on request (`lexer.Result`
+  208 → 24 B).
+- Measured together on the 200k-statement bench: 229 → 277 MiB/s default,
+  246 → 311 MiB/s hinted; nested-subgraph parsing 34% faster.
 
 ### Fixed
 
