@@ -1,0 +1,8 @@
+digraph 名 {
+    subgraph 群 {
+        café [色=青];
+        café -> 東京 [名=辺];
+    }
+    node [形=箱];
+    方角=右;
+}

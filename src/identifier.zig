@@ -58,7 +58,7 @@ pub fn writeDecoded(raw: []const u8, writer: anytype) !void {
 }
 
 fn validate(raw: []const u8) error{InvalidIdentifier}!void {
-    var lexer = lex.Lexer.init(raw);
+    var lexer = lex.Lexer.initRaw(raw);
     const result = lexer.next();
     if (result != .token or result.token.tag != .identifier or
         result.token.span.start != 0 or result.token.span.len != raw.len)
@@ -138,6 +138,13 @@ const Chunks = struct {
 test "decode preserves numeral identity and only removes DOT lexical escapes" {
     const cases = .{
         .{ "abc_2", "abc_2" },
+        .{ "café", "café" },
+        .{ "東京", "東京" },
+        .{ "caf\xe9", "caf\xe9" },
+        .{ "\x80\xff\xc0\xaf", "\x80\xff\xc0\xaf" },
+        .{ "e\xcc\x81", "e\xcc\x81" },
+        .{ "\xEF\xBB\xBF", "\xEF\xBB\xBF" },
+        .{ "\xEF\xBB\xBFgraph", "\xEF\xBB\xBFgraph" },
         .{ "-00.50", "-00.50" },
         .{ "\"\"", "" },
         .{ "\"graph\"", "graph" },

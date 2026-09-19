@@ -91,7 +91,7 @@ fn expectEquivalent(source: []const u8) !void {
             try expectEqualDeep(a.failureDiagnostic(), b.failureDiagnostic());
             try expectEqual(a.terminal, b.terminal);
             switch (a.terminal) {
-                .non_ascii, .html, .oversize, .none, .eof => return,
+                .html, .oversize, .none, .eof => return,
                 else => {
                     a.resumeAfterFailure();
                     b.resumeAfterFailure();
@@ -152,6 +152,13 @@ const fixtures = [_][]const u8{
     "1e3 1.2.3 12.x 7 8_ .5e 9 ",
     "caf\xC3\xA9 x",
     "\xC3\xA9tat;",
+    "digraph 名 { café:出口:北 -> 東京 [色=青]; }",
+    "graphé node\xff \x80edge strict名 graph node edge strict",
+    "é e\xcc\x81 \xc0\xaf \x80\xff caf\xe9",
+    "a \xEF\xBB\xBFb \xEF\xBB\xBF \xEF\xBB\xBFgraph",
+    "\xEF\xBB\xBF\xEF\xBB\xBFgraph",
+    "café\x00 x",
+    "1é 2\xff .3名",
     "\x7f",
     "a\tb\rc\nd\r\ne",
     "graph { @ }",
@@ -164,6 +171,49 @@ const fixtures = [_][]const u8{
     "\"a\" //c\n+ \"b\" ; \"c\" #x\r\n + \"d\" /*x*/ + \"e\"",
     "a;b;c;d;e;f;g;h;i;j;k;l;m;n;o;p;q;r;s;t;u;v;w;x;y;z;aa;bb;cc;dd;ee;ff;gg;hh;ii;jj;kk;ll;mm",
 };
+
+test "every high byte can start and continue a bare identifier in both scanners" {
+    inline for (.{ scalar.Lexer, block.Lexer }) |ScannerType| {
+        for (0x80..0x100) |value| {
+            const byte: u8 = @intCast(value);
+            const source = [_]u8{ byte, '_', '0', ' ', 'a', byte, ';' };
+            var scanner = ScannerType.init(&source);
+            for ([_]location.Span{ .{ .start = 0, .len = 3 }, .{ .start = 4, .len = 2 } }) |span| {
+                const result = scanner.next();
+                try expect(result == .token);
+                try expectEqual(Token.Tag.identifier, result.token.tag);
+                try expectEqual(span, result.token.span);
+            }
+            try expectEqual(Token.Tag.semicolon, scanner.next().token.tag);
+            try expectEqual(Token.Tag.eof, scanner.next().token.tag);
+        }
+    }
+}
+
+test "high bytes keep keyword lookalikes as identifiers" {
+    inline for (.{ scalar.Lexer, block.Lexer }) |ScannerType| {
+        inline for (.{ "graph", "DiGraph", "node", "edge", "strict", "subgraph" }) |keyword| {
+            inline for (.{ keyword ++ "é", "\xff" ++ keyword }) |source| {
+                var scanner = ScannerType.init(source);
+                try expectEqual(Token.Tag.identifier, scanner.next().token.tag);
+                try expectEqual(Token.Tag.eof, scanner.next().token.tag);
+            }
+        }
+    }
+}
+
+test "raw token scanning preserves BOM bytes at the start of an identifier" {
+    inline for (.{ scalar.Lexer, block.Lexer }) |ScannerType| {
+        inline for (.{ "\xEF\xBB\xBF", "\xEF\xBB\xBFgraph" }) |source| {
+            var scanner = ScannerType.initRaw(source);
+            const token = scanner.next().token;
+            try expectEqual(Token.Tag.identifier, token.tag);
+            try expectEqual(@as(u32, 0), token.span.start);
+            try std.testing.expectEqualStrings(source, token.span.slice(source));
+            try expectEqual(Token.Tag.eof, scanner.next().token.tag);
+        }
+    }
+}
 
 test "both scanners agree on every fixture and on every truncation of it" {
     for (fixtures) |source| {
@@ -193,7 +243,7 @@ test "both scanners agree on inputs that straddle block boundaries" {
         .{ "//", 'x', "\r\nx" }, .{ "#", 'x', "\rx" },                .{ "/*", '*', "/x" },
         .{ "/*", 'x', "" },      .{ "\"", 'x', "\";" },               .{ "\"", '\\', "\";" },
         .{ "\"", 'x', "" },      .{ "\"a\" /*", 'x', "*/ + \"b\";" }, .{ "a -", ' ', "> b" },
-        .{ "\"", '\n', "\"" },   .{ "\xff", 'a', ";" },
+        .{ "\"", '\n', "\"" },   .{ "\xff", 'a', ";" },               .{ "", 0x80, ";" },
     };
     inline for (runs) |run| {
         inline for (.{ 63, 64, 65, 127, 128, 200 }) |size| {

@@ -55,11 +55,11 @@
 //!   cannot exhaust the call stack (R-PERF-002).
 //! - Work is a single linear scan of the input (R-PERF-001, R-SEC-003);
 //!   `Options.max_statements` additionally bounds the statements processed.
-//! - Subgraph edge endpoints and HTML/non-ASCII bare identifiers remain
-//!   deferred. Attributes are parsed and retained without default resolution,
-//!   key deduplication or value interpretation. Malformed supported attribute
-//!   syntax is invalid, not unsupported. Unsupported boundaries still make
-//!   no claim about validity beyond the detected construct.
+//! - HTML identifiers remain deferred. Attributes are parsed and retained
+//!   without default resolution, key deduplication or value interpretation.
+//!   Malformed supported attribute syntax is invalid, not unsupported.
+//!   Unsupported boundaries still make no claim about validity beyond the
+//!   detected construct.
 //!
 //! Only a run-to-completion `parse` is exposed for now, but the machine is
 //! internally resumable: the metered specialization retains lexical, grammar,
@@ -1166,7 +1166,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             if (self.state == .epilogue) return false;
             if (failure.details == .unexpected and failure.details.unexpected.found == .end_of_input) return false;
             if (self.tokens.terminal != .none) return switch (self.tokens.terminal) {
-                .non_ascii, .html, .oversize, .none, .eof => false,
+                .html, .oversize, .none, .eof => false,
                 else => true,
             };
             return true;

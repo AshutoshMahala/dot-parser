@@ -271,6 +271,12 @@ and does not cache results. Callers needing repeated access may retain the
 decoded value in memory they own. Writer output contains the actual value
 bytes, not terminal-escaped presentation.
 
+Bare identifiers, including bytes 0x80–0xFF, decode to the identical byte
+sequence. Encoding validation and normalization are not performed. BOM bytes
+inside an identifier are preserved too; only document-level scanning skips a
+BOM at source offset zero. Low-level `Lexer.initRaw` applies this token-level
+rule, while `Lexer.init` keeps document-level BOM handling.
+
 These byte-transformation helpers use local Zig errors, not the parse/validation
 diagnostic sink. `InvalidIdentifier` means the range is not exactly one
 supported identifier expression; `NoSpaceLeft` means the output is too small;

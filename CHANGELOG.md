@@ -12,6 +12,9 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
 
 ### Changed
 
+- Removed `diagnostic.Feature.non_ascii_identifier` now that the feature is
+  supported, following the experimental `0.x` policy. HTML identifiers remain
+  the only deferred lexical feature.
 - Positions are byte offsets only. `Span` is `{ start: u32, len: u32 }`,
   eight bytes, and `Range` is the same type; `Diagnostic.span.start`,
   `Fix.span`, `Related.span`, token and event spans no longer carry a line
@@ -61,6 +64,12 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
 
 ### Added
 
+- Non-ASCII bare identifiers in all ID positions: bytes 0x80–0xFF may start
+  or continue an identifier, with exact spelling preserved by both scanners,
+  bounded sessions and explicit decoding. No UTF-8 validation, normalization,
+  allocation or retained-layout changes. A document's leading BOM is still
+  skipped; BOM bytes inside an identifier are preserved. `Lexer.initRaw`
+  provides token scanning without document-level BOM handling for decoding.
 - `Diagnostic.fix`: a typed, allocation-free repair (span, edit, replacement
   enum, applicability) on every diagnostic whose producer knows the one
   edit that fixes it — operators, keyword quoting, stray tokens, missing

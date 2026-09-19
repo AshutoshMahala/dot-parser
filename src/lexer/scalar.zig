@@ -5,8 +5,8 @@
 //! Result and the selected Lexer.
 //!
 //! Recognizes the current subset: every DOT keyword (`graph` maps to the
-//! `undigraph` kind at reading time, `digraph`, `strict`, `node`, `edge`, and the deferred
-//! `subgraph`); bare ASCII, numeral, and quoted identifiers;
+//! `undigraph` kind at reading time, `digraph`, `strict`, `node`, `edge`, and
+//! `subgraph`); bare byte-oriented, numeral, and quoted identifiers;
 //! `{`, `}`, `;`, `:`, `[`, `]`, `=`, `,`; the
 //! edge operators `--` and `->`; whitespace (space, tab, LF, CRLF, CR);
 //! and comments (`//`, `/* ... */`, and `#` through the physical line end).
@@ -18,10 +18,10 @@
 //! - State is instance-owned (R-ROB-003); no OS or filesystem access.
 //! - Every `next` call either consumes input or returns a terminal result
 //!   (`eof` or a failure); the lexer cannot loop forever.
-//! - Every keyword tokenizes, including keywords of deferred constructs:
+//! - Every keyword tokenizes:
 //!   whether `subgraph` legally introduces a subgraph or sits in an illegal
 //!   grammar position is the parser's decision, which the lexer cannot
-//!   make. Only *lexical* deferred constructs — HTML/non-ASCII identifiers — are
+//!   make. The remaining lexical deferred construct — HTML identifiers — is
 //!   reported here as structured `profile_unsupported_feature` failures,
 //!   distinct from invalid syntax (R-MOD-006).
 //!   Detection stops at the introducer: neither the construct's body nor
@@ -53,7 +53,6 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             block_comment,
             block_star,
             bare,
-            non_ascii,
             dash,
             /// After `--`: one byte of lookahead so `-->` / `---` are one
             /// malformed-operator diagnostic instead of a stray byte.
@@ -94,17 +93,22 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         examinations: if (audited) usize else void = if (audited) 0 else {},
 
         pub fn init(source: []const u8) Self {
-            var self: Self = .{ .source = source };
-            // Positions are 32-bit: refuse a longer source before reading
-            // a byte of it, as a latched capacity failure.
-            if (source.len > location.max_source_len) {
-                self.terminal = .oversize;
-                return self;
-            }
+            var self = initRaw(source);
+            if (self.terminal != .none) return self;
             // A leading UTF-8 byte order mark is not content; Graphviz's
             // scanner ignores it and so does this one. Offsets keep counting
             // it, so every later position stays honest.
             if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) self.cursor = 3;
+            return self;
+        }
+
+        /// Scan raw token bytes without document-level BOM handling. An
+        /// identifier extracted from inside a document may start with BOM
+        /// bytes; decoding must preserve them as ordinary identifier content.
+        pub fn initRaw(source: []const u8) Self {
+            var self: Self = .{ .source = source };
+            // Refuse an oversized source before reading any of its bytes.
+            if (source.len > location.max_source_len) self.terminal = .oversize;
             return self;
         }
 
@@ -126,7 +130,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 .block, .quote => @intCast(self.source.len),
                 .concat => start,
                 .invalid, .operator, .operator_long, .operator_spaced, .numeral => if (start == anchor) start + self.terminal_len else @intCast(self.source.len),
-                .none, .eof, .non_ascii, .html, .oversize => unreachable,
+                .none, .eof, .html, .oversize => unreachable,
             };
             // `fail` left the cursor at the token anchor.
             std.debug.assert(self.cursor == anchor and target >= anchor);
@@ -175,7 +179,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                     .numeral => .syntax_incomplete_numeral,
                     .block, .quote => .syntax_unterminated_construct,
                     .concat => .syntax_invalid_concatenation,
-                    .non_ascii, .html => .profile_unsupported_feature,
+                    .html => .profile_unsupported_feature,
                     .none, .eof, .oversize => unreachable,
                 },
                 .span = span,
@@ -188,7 +192,6 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                     .block => .{ .unterminated = .block_comment },
                     .quote => .{ .unterminated = .quoted_identifier },
                     .concat => .{ .expected_quote = self.found },
-                    .non_ascii => .{ .unsupported_feature = .non_ascii_identifier },
                     .html => .{ .unsupported_feature = .html_identifier },
                     .none, .eof, .oversize => unreachable,
                 },
@@ -314,17 +317,14 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                     self.consume();
                     continuation = if (closed) .trivia else if (b == '*') .block_star else .block_comment;
                 },
-                .bare, .non_ascii => {
+                .bare => {
                     if (byte) |b| {
                         if (isIdentifierByte(b)) {
-                            if (b >= 0x80) continuation = .non_ascii;
                             self.cacheKeyword(b);
                             self.consume();
                             return continuation;
                         }
                     }
-                    if (state == .non_ascii)
-                        return self.fail(.non_ascii, self.anchor, self.cursor - self.anchor, null);
                     return self.finish(keywordTag(self.keyword, self.cursor - self.anchor));
                 },
                 .dash => {
@@ -481,7 +481,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 'A'...'Z', 'a'...'z', '_', 0x80...0xff => {
                     self.keyword = 0;
                     self.cacheKeyword(b);
-                    continuation = if (b >= 0x80) .non_ascii else .bare;
+                    continuation = .bare;
                 },
                 '-' => continuation = .dash,
                 '.' => continuation = .leading_dot,
@@ -1124,34 +1124,38 @@ test "a leading UTF-8 byte order mark is skipped, keeping byte columns honest" {
     // Only at the very start: elsewhere the bytes are a non-ASCII run.
     var inner = Lexer.init("a \xEF\xBB\xBFb");
     try expectToken(&inner, .identifier, "a");
-    try expectUnsupported(&inner, .non_ascii_identifier);
+    try expectToken(&inner, .identifier, "\xEF\xBB\xBFb");
     // A BOM alone is an empty document.
     var alone = Lexer.init("\xEF\xBB\xBF");
     try expectToken(&alone, .eof, "");
 }
 
-test "non-ASCII bytes are the deferred identifier range, not invalid input" {
-    // DOT unquoted identifiers may use bytes \200-\377.
-    var leading = Lexer.init("\xC3\xA9");
-    try expectUnsupported(&leading, .non_ascii_identifier);
+test "bare identifiers preserve UTF-8 Latin-1 and arbitrary high bytes" {
+    inline for (.{ "é", "東京", "caf\xe9", "\x80\xff", "\xc0\xaf", "e\xcc\x81" }) |raw| {
+        var lexer = Lexer.init(raw);
+        try expectToken(&lexer, .identifier, raw);
+        try expectToken(&lexer, .eof, "");
+    }
 
-    // One identifier running into the non-ASCII range is reported whole,
-    // not split into an ASCII identifier plus an error — and the span
-    // covers the complete run, not just the first non-ASCII byte.
+    // One source range covers the complete mixed identifier, in bytes.
     var mixed = Lexer.init("caf\xC3\xA9 x");
-    const failure = try expectFailure(&mixed);
-    try expectEqual(diagnostic.Feature.non_ascii_identifier, failure.details.unsupported_feature);
-    try expectEqual(@as(usize, 0), failure.span.start);
-    try expectEqual(@as(usize, 5), failure.span.len);
+    const token = mixed.next().token;
+    try expectEqual(Token.Tag.identifier, token.tag);
+    try expectEqual(@as(u32, 0), token.span.start);
+    try expectEqual(@as(u32, 5), token.span.len);
+    try expectToken(&mixed, .identifier, "x");
+    try expectToken(&mixed, .eof, "");
 
-    // A leading multi-byte identifier is spanned whole as well.
     var leading_run = Lexer.init("\xC3\xA9tat;");
-    const leading_failure = try expectFailure(&leading_run);
-    try expectEqual(@as(usize, 5), leading_failure.span.len);
+    try expectToken(&leading_run, .identifier, "état");
+    try expectToken(&leading_run, .semicolon, ";");
 
-    // Control bytes below 0x80 remain invalid, as before.
-    var control = Lexer.init("\x7f");
-    try expectInvalidByte(&control, 0x7f);
+    // Controls do not become identifier bytes or get silently swallowed.
+    inline for (.{ "\x00", "\x01", "\x1b", "\x7f" }) |control| {
+        var lexer = Lexer.init("café" ++ control);
+        try expectToken(&lexer, .identifier, "café");
+        try expectInvalidByte(&lexer, control[0]);
+    }
 }
 
 test "recognized lexical deferred features are unsupported, not invalid" {

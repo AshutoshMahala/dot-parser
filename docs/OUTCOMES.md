@@ -57,7 +57,7 @@ The distinction the taxonomy is built around:
 - **`unsupported_feature`** means *this is recognized DOT syntax that this
   library does not process yet*. The parse stopped at the construct's
   introducer, and the diagnostic names the exact feature as a typed enum
-  (`Feature.html_identifier`, `Feature.non_ascii_identifier`) that tooling can
+  (`Feature.html_identifier`) that tooling can
   aggregate or test against.
 
 An unsupported outcome is a **boundary, not a validity claim**: nothing at

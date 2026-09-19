@@ -68,8 +68,6 @@ pub const Terminal = enum {
     quote,
     /// '+' not followed by a quoted identifier.
     concat,
-    /// A bare identifier containing non-ASCII bytes (deferred feature).
-    non_ascii,
     /// An HTML-like identifier introducer (deferred feature).
     html,
     /// The source exceeds the 32-bit position domain.

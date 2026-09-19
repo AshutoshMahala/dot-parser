@@ -20,11 +20,12 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | `graph { … }` documents | **Supported** | Exposed as kind `.undigraph` |
 | `digraph { … }` documents | **Supported** | Exposed as kind `.digraph` |
 | `strict` modifier | **Supported** | Parsed and retained (`Document.strict`); strictness semantics (duplicate-edge rules) are not enforced |
-| Graph names | **Supported** | Bare ASCII, numeral, or quoted identifier expressions (`Document.name`); HTML/non-ASCII bare names remain deferred |
+| Graph names | **Supported** | Bare (including non-ASCII), numeral, or quoted identifier expressions (`Document.name`); HTML names remain deferred |
 | Node statements (`a;`) | **Supported** | |
 | Edge statements (`a -- b;`, `a -> b;`) | **Supported** | Both operators always *parse*; kind×operator legality is a validation rule, not a parse error |
 | Optional semicolons | **Supported** | As in Graphviz: `digraph G { a -> b b -> c }` |
 | Bare ASCII identifiers | **Supported** | `[A-Za-z_][A-Za-z0-9_]*`; keywords are case-independent and reserved in every position |
+| Non-ASCII bare identifiers (bytes `0x80`–`0xFF`) | **Supported** | High bytes may start or continue an identifier; exact bytes retained without encoding validation or normalization |
 | Numeral identifiers | **Supported** | `-?(.[0-9]+ \| [0-9]+(.[0-9]*)?)`; exact text, no numeric conversion |
 | Quoted identifiers and `+` concatenation | **Supported** | Exact raw range; explicit value decoding, including escaped quotes and physical line continuations |
 | Whitespace / line endings | **Supported** | Space, tab; LF, CRLF, and standalone CR each end a line |
@@ -36,7 +37,6 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | Attribute statements (`graph`/`node`/`edge` + `[…]`) | **Supported** | Target and ordered pairs retained; defaults are not applied |
 | ID assignments (`rankdir = LR`) | **Supported** | Separate assignment statements, retained as written |
 | HTML identifiers (`<…>`) | Deferred | Feature `html_identifier` |
-| Non-ASCII identifiers (bytes `0x80`–`0xFF`) | Deferred | Feature `non_ascii_identifier`; the whole run is one span |
 | Port suffixes (`a:n`, `a:out:e`) | **Supported** | Raw first/optional second identifier; no attachment resolution |
 | Leading UTF-8 byte order mark | **Supported** | Skipped at the start of the input, as Graphviz does; byte columns on line 1 still count its three bytes |
 
@@ -83,11 +83,20 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 
 ## Identifier lexical rules
 
-All supported forms work as document/subgraph names, node IDs, and node-reference edge endpoints.
+All supported forms work as document/subgraph names, node IDs, node-reference
+edge endpoints, port components, attribute keys/values and assignment keys/values.
 Quoted keywords such as `"graph"` are identifiers, never keyword tokens. An
 empty quoted identifier is accepted. Adjacent quoted strings without `+` are
 separate tokens; only quoted strings may be joined by `+`. Whitespace and
 comments may occur on either side of it.
+
+Bare identifiers follow `[A-Za-z_\x80-\xFF][A-Za-z0-9_\x80-\xFF]*`, measured
+in bytes. `café`, `東京`, Latin-1 bytes and byte sequences that are invalid UTF-8
+are all accepted and preserved exactly. There is no transcoding, normalization
+or Unicode case folding. Keywords match only complete ASCII words, so `graphé`
+is one identifier, not a keyword plus a suffix. ASCII digits cannot start a
+bare identifier; existing numeral tokenization and ambiguity warnings still
+apply (for example, `1é` is a numeral followed by a bare identifier).
 
 The lexer retains one raw-expression range. Explicit decoding removes the
 quotes and concatenation glue, converts `\"` to `"`, and removes a backslash
@@ -98,10 +107,15 @@ not a C/JSON unescaper or Graphviz label/attribute interpretation.
 
 Non-ASCII bytes and non-NUL control bytes inside quotes are preserved without
 UTF-8 validation. NUL inside quotes is rejected as `E.Syntax.Byte.003` at the
-offending byte, not silently truncated. Non-ASCII bare IDs remain on the
-deferred-feature path. A UTF-8 byte order mark at the very start of the input
-is skipped (Graphviz's scanner ignores it too); elsewhere those bytes are a
-non-ASCII run. Transcoding and encoding validation are not implemented.
+offending byte, not silently truncated. Outside comments and quotes, NUL and
+other ASCII control bytes except supported whitespace are invalid.
+A UTF-8 byte order mark at the very start of the document is skipped
+(Graphviz's scanner ignores it too); elsewhere those bytes are ordinary
+identifier content. Explicit identifier decoding preserves all bare bytes,
+including a BOM at the start of an extracted identifier. A partial UTF-8
+sequence is valid identifier content too: truncating a multibyte character
+does not by itself make that identifier malformed. Transcoding and encoding
+validation are not implemented.
 
 An unterminated quoted segment reports `E.Syntax.Token.032` with
 `.unterminated = .quoted_identifier` at that segment's opening quote, including
@@ -155,7 +169,7 @@ No default propagation, last-value selection, layout-attribute validation,
 external resource loading or engine-specific interpretation occurs. Subgraph-local
 assignments and graph/node/edge attribute statements are retained in their scope;
 there is no bracket-list attachment after a standalone closing subgraph brace.
-HTML-like values and non-ASCII bare values retain their deferred boundary.
+HTML-like values retain their deferred boundary.
 
 Incomplete lists use the existing parser syntax diagnostics. EOF inside a list
 carries the current group's opening `[` as its related location; after that

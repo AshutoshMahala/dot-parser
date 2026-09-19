@@ -24,8 +24,9 @@ strict digraph Routes {
 - One root document: `graph` or `digraph`, optionally `strict`, optionally
   named (the source keyword `graph` maps to the library kind `undigraph`;
   in this library `graph` always means "either kind").
-- Bare ASCII, numeral, and quoted identifiers (including quoted `+`
-  concatenation), node statements, single-edge statements and edge chains;
+- Bare identifiers (ASCII and raw non-ASCII bytes), numeral, and quoted
+  identifiers (including quoted `+` concatenation), node statements,
+  single-edge statements and edge chains;
   semicolons are optional, as in Graphviz.
 - Basic attributes: standalone assignments, graph/node/edge attribute statements,
   and node/edge lists. Duplicate keys and written order are preserved.
@@ -35,7 +36,10 @@ strict digraph Routes {
 - Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
 - Port suffixes (`a:out`, `a:n`, `a:out:e`) on node statements and node endpoints.
 
-Other features (HTML/non-ASCII bare IDs, semantic edge-product expansion, …) are deliberately deferred to later vertical slices. The authoritative construct-by-construct table is [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
+Bare identifiers such as `café` and `東京` preserve their bytes exactly;
+parsing does not validate UTF-8 or normalize Unicode.
+
+Other features (HTML IDs, semantic edge-product expansion, …) are deliberately deferred to later vertical slices. The authoritative construct-by-construct table is [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
 
 See [the attribute example](examples/attributes.zig) for fixed-storage parsing
 and ordered attribute traversal. Parsing does not apply defaults or resolve values.

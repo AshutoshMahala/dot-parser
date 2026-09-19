@@ -13,6 +13,7 @@ test {
     _ = @import("subgraph_endpoints.zig");
     _ = @import("diagnostics.zig");
     _ = @import("measure.zig");
+    _ = @import("non_ascii.zig");
 }
 
 const Rejecting = struct {
@@ -598,6 +599,7 @@ const ValidEntry = struct {
 };
 
 const valid_corpus = [_]ValidEntry{
+    .{ .name = "non_ascii_identifiers", .source = @embedFile("corpus/valid/non_ascii_identifiers.dot"), .shape = "sneda", .nodes = 1, .edges = 1, .first_text = "群", .kind = .digraph, .graph_name = "名" },
     .{ .name = "subgraph", .source = @embedFile("corpus/valid/subgraph.dot"), .shape = "sn", .nodes = 1, .edges = 0, .first_text = null },
     .{ .name = "named_subgraph", .source = @embedFile("corpus/valid/named_subgraph.dot"), .shape = "sn", .nodes = 1, .edges = 0, .first_text = "s" },
     .{ .name = "nested_subgraphs", .source = @embedFile("corpus/valid/nested_subgraphs.dot"), .shape = "snsns", .nodes = 2, .edges = 0, .first_text = "named" },
@@ -630,6 +632,7 @@ const InvalidEntry = struct {
 };
 
 const invalid_corpus = [_]InvalidEntry{
+    .{ .name = "non_ascii_missing_endpoint", .source = @embedFile("corpus/invalid/non_ascii_missing_endpoint.dot"), .code = .syntax_unexpected_token, .offset = 19 },
     .{ .name = "missing_subgraph_brace", .source = @embedFile("corpus/invalid/missing_subgraph_brace.dot"), .code = .syntax_unexpected_token, .offset = 18 },
     .{ .name = "missing_attribute_value", .source = @embedFile("corpus/invalid/missing_attribute_value.dot"), .code = .syntax_unexpected_token, .offset = 13 },
     .{ .name = "missing_attribute_equals", .source = @embedFile("corpus/invalid/missing_attribute_equals.dot"), .code = .syntax_unexpected_token, .offset = 12 },

@@ -19,6 +19,7 @@ const sources = [_][]const u8{
     @embedFile("corpus/valid/nested_subgraphs.dot"),
     @embedFile("corpus/valid/edge_chain.dot"),
     @embedFile("corpus/valid/mixed.dot"),
+    @embedFile("corpus/valid/non_ascii_identifiers.dot"),
 };
 
 fn poolCounts(document: *const dot.Document) dot.DocumentCapacities {

@@ -3,8 +3,8 @@ const std = @import("std");
 const dot = @import("dot_parser");
 
 pub fn main(init: std.process.Init) !void {
-    const source = "digraph { \"sen\" /* join */ + \"sor\" -> -00.50; }";
-    var storage: dot.FixedDocumentStorage(.{ .statements = 1, .edges = 1 }) = .{};
+    const source = "digraph { \"sen\" /* join */ + \"sor\" -> -00.50; café -> 東京; }";
+    var storage: dot.FixedDocumentStorage(.{ .statements = 2, .edges = 2 }) = .{};
     var bag: dot.FixedDiagnosticBag(1) = .{};
     const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
     var stdout_buffer: [1024]u8 = undefined;
@@ -24,6 +24,12 @@ pub fn main(init: std.process.Init) !void {
     });
     try writer.writeAll("numeral value (no conversion): ");
     try document.writeIdentifier(document.nodeReference(edge.right).?.identifier, writer);
+    try writer.writeAll("\n");
+    try writer.writeAll("bare identifiers (bytes preserved): ");
+    const bare_edge = document.edges[1];
+    try document.writeIdentifier(document.nodeReference(bare_edge.left).?.identifier, writer);
+    try writer.writeAll(" -> ");
+    try document.writeIdentifier(document.nodeReference(bare_edge.right).?.identifier, writer);
     try writer.writeAll("\n");
     try writer.flush();
 }

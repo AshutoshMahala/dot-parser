@@ -87,6 +87,9 @@ test "fixed sessions preserve documents diagnostics and work across partitions" 
         "graph { subgraph{} }",
         "digraph { subgraph s { a:p->b->c[x=y] { q=r } subgraph s {} } z }",
         "graph { {a}--b }",
+        "\xEF\xBB\xBFdigraph 名 { subgraph 群 { café:出口:北->東京[色=青] } 方角=右 }",
+        "graph { \x80\xff--\xEF\xBB\xBFgraph; \xc0\xaf; e\xcc\x81; }",
+        "graph { café\x00; 東京 }",
         "graph{/*",
         "",
     };
@@ -97,8 +100,12 @@ test "fixed sessions preserve documents diagnostics and work across partitions" 
             try equal(total, try partition(source, &.{ 0, 2, 7, 1 }, cancellable));
         }
     }
-    const source = "graph { a:p[k=\"x\"/*glue*/+\"y\"] b:q--c:r:s; key=-.5 }";
-    for (0..source.len + 1) |end| _ = try partition(source[0..end], &.{ 0, 1, 3 }, true);
+    for ([_][]const u8{
+        "graph { a:p[k=\"x\"/*glue*/+\"y\"] b:q--c:r:s; key=-.5 }",
+        "digraph 名 { café:出口->東京[色=青]; \xEF\xBB\xBF; \xc3; }",
+    }) |source| {
+        for (0..source.len + 1) |end| _ = try partition(source[0..end], &.{ 0, 1, 3 }, true);
+    }
 }
 
 test "cancellation at every work boundary exposes no partial document" {
@@ -236,6 +243,7 @@ test "long lexical scans yield and cancel without allocating parser storage" {
         .{ "graph {/*", "*/}", 'a' },
         .{ "graph {a[x=\"", "\"]}", 'a' },
         .{ "graph {", "}", 'a' },
+        .{ "graph {", "}", 0xff },
         .{ "graph {", "}", ' ' },
     };
     inline for (cases) |parts| {

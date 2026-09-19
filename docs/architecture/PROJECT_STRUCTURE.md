@@ -147,7 +147,8 @@ drivers are not re-exported. The scanner recognizes:
 - Every DOT keyword (`graph`, `digraph`, `strict`, `node`, `edge`, and
   `subgraph`), case-independently. Keywords always tokenize;
   whether one is legal in its position is the parser's decision.
-- Bare ASCII, numeral, and quoted identifiers (including `+` concatenation).
+- Bare byte-oriented identifiers (ASCII plus bytes 0x80–0xFF), numeral, and
+  quoted identifiers (including `+` concatenation).
 - `{`, `}`, `;`, `:`, `[`, `]`, `=`, `,`, `--`, and `->`.
 - Whitespace and physical line endings (LF, CRLF, standalone CR); a leading
   UTF-8 byte order mark is skipped.
@@ -155,9 +156,8 @@ drivers are not re-exported. The scanner recognizes:
 - End of input, invalid bytes, malformed operators (`-`, `-->`) and
   incomplete numerals (`.`, `-.`), each its own typed failure; a numeral
   running into a letter or second dot raises a warning the parser forwards.
-- Introducers of deferred *lexical* constructs (HTML/non-ASCII bare
-  identifiers), reported
-  as typed unsupported-feature failures.
+- Introducers of deferred HTML identifiers, reported as typed
+  unsupported-feature failures.
 - Resumption after a failure, so the parser's statement-boundary recovery
   can continue past malformed bytes.
 

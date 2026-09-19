@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-18 (diagnostics overhaul).
+Last reconciled: 2026-09-18 (non-ASCII bare identifiers).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q39)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -195,8 +195,8 @@ note relies on, and the identifier/attribute probes of 2026-09-12 already ran
 on 16.0.0), not an instruction to reproduce every implementation quirk.
 Intentional differences are listed in
 [supported syntax](../SUPPORTED_SYNTAX.md), including standalone-CR comment
-termination and whole-document consumption. Keywords, numeral IDs, and quoted
-IDs and basic attributes are implemented; non-ASCII bare IDs remain deferred.
+termination and whole-document consumption. Keywords, numeral IDs, quoted
+IDs, non-ASCII bare IDs and basic attributes are implemented.
 **Verification pending:** automate the differential harness against the
 pinned reference and record exceptions explicitly; notes first verified by
 running 15.1.0 keep that attribution until the harness re-runs them.
@@ -310,15 +310,21 @@ and preprocessor directives do not alter physical locations.
 only on explicit request into caller storage or a writer. Escaped LF/CRLF/CR
 continuations are removed on decoding; raw line endings are preserved. Quoted
 content accepts non-ASCII and non-NUL control bytes without validation of its
-encoding; NUL is rejected. Non-ASCII bare identifier runs (bytes 0x80–0xFF plus
-identifier continuation bytes) are reported as deferred, not decoded or
-accepted identifiers. Outside comments and quoted content, control bytes other
+encoding; NUL is rejected. **Non-ASCII bare IDs (decided and implemented
+2026-09-18):** bytes 0x80–0xFF may start or continue a bare identifier alongside
+the existing ASCII identifier bytes. Preserve the whole run as one borrowed
+range, with no normalization, transcoding, encoding validation or implicit
+allocation. Invalid and partial UTF-8 sequences are accepted raw bytes;
+keywords remain ASCII-only. The same rule applies in every ID position and
+to both scanner backends, including bounded execution and explicit decoding.
+Outside comments and quoted content, control bytes other
 than supported whitespace are invalid when reached by the lexer. HTML-like
 constructs stop at a deferred boundary; their bodies have not been validated.
 A leading UTF-8 BOM is skipped, matching Graphviz's scanner (decided
-2026-09-18). **Still open:** timing and exact policy for non-ASCII identifier
-support, whether version 1 ships a UTF-8 validator and its invalid-sequence
-policy, and HTML-like ID validation. Resolve these as lexical support grows;
+2026-09-18); elsewhere its bytes are identifier content, including when
+decoding an extracted identifier starting with those bytes. **Still open:**
+whether version 1 ships a UTF-8 validator and its invalid-sequence policy,
+and HTML-like ID validation. Resolve these as lexical support grows;
 they are not all promised
 deliverables of the next slice. *(Embodied: `src/lexer/`,
 [supported syntax](../SUPPORTED_SYNTAX.md); R-PORT-006.)*
@@ -438,6 +444,12 @@ field out stays with the profile slice. *(Embodied: `diagnostic.Fix`,
 ---
 
 ## Reconciliation log
+
+- 2026-09-18 — Non-ASCII identifier slice: Q10/Q23 record acceptance of raw
+  high bytes in every bare-ID position, byte-preserving decoding, ASCII-only
+  keywords, and document-only BOM skipping. Encoding validation stays optional
+  future work. Removed the implemented feature's diagnostic variant per
+  R-DIAG-005; no retained-layout or memory-policy change.
 
 - 2026-09-12 — Q10, Q13, Q25, and Q29 moved to **Decided**, with pending
   verification and future API scope stated separately. Corrected Q4's

@@ -58,8 +58,6 @@ const Masks = struct {
     /// [A-Za-z0-9_] and bytes >= 0x80.
     ident: u64,
     digit: u64,
-    /// Bytes >= 0x80.
-    high: u64,
     quote: u64,
     /// Quotes escaped by an odd run of backslashes.
     escaped: u64,
@@ -129,7 +127,6 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         mode: Mode = .trivia,
         trivia: TriviaMode = .ordinary,
         part: NumeralPart = .integral,
-        saw_high: bool = false,
         /// Start of the token being built (or the failing token).
         anchor: u32 = 0,
         /// Failure span start: a quote or comment opener, or the bad byte.
@@ -149,15 +146,19 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         examinations: if (audited) usize else void = if (audited) 0 else {},
 
         pub fn init(source: []const u8) Self {
-            var self: Self = .{ .source = source };
-            // Positions are 32-bit: refuse a longer source before reading it.
-            if (source.len > location.max_source_len) {
-                self.terminal = .oversize;
-                return self;
-            }
+            var self = initRaw(source);
+            if (self.terminal != .none) return self;
             // A leading UTF-8 byte order mark is not content (Graphviz skips
             // it too); the bytes still occupy columns 1–3 of line 1.
             if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) self.cursor = 3;
+            return self;
+        }
+
+        /// Scan raw token bytes without document-level BOM handling; see
+        /// the scalar scanner's `initRaw` and identifier decoding.
+        pub fn initRaw(source: []const u8) Self {
+            var self: Self = .{ .source = source };
+            if (source.len > location.max_source_len) self.terminal = .oversize;
             return self;
         }
 
@@ -209,7 +210,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                     .numeral => .syntax_incomplete_numeral,
                     .block, .quote => .syntax_unterminated_construct,
                     .concat => .syntax_invalid_concatenation,
-                    .non_ascii, .html => .profile_unsupported_feature,
+                    .html => .profile_unsupported_feature,
                     .none, .eof, .oversize => unreachable,
                 },
                 .span = span,
@@ -222,7 +223,6 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                     .block => .{ .unterminated = .block_comment },
                     .quote => .{ .unterminated = .quoted_identifier },
                     .concat => .{ .expected_quote = self.found },
-                    .non_ascii => .{ .unsupported_feature = .non_ascii_identifier },
                     .html => .{ .unsupported_feature = .html_identifier },
                     .none, .eof, .oversize => unreachable,
                 },
@@ -257,7 +257,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 .block, .quote => @intCast(self.source.len),
                 .concat => start,
                 .invalid, .operator, .operator_long, .operator_spaced, .numeral => if (start == anchor) start + self.terminal_len else @intCast(self.source.len),
-                .none, .eof, .non_ascii, .html, .oversize => unreachable,
+                .none, .eof, .html, .oversize => unreachable,
             };
             std.debug.assert(self.cursor == anchor and target >= anchor);
             self.skipTo(target);
@@ -292,7 +292,6 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 .newline_byte = lf | cr,
                 .ident = (alpha | digit | eq(v, '_') | high) & valid,
                 .digit = digit,
-                .high = high,
                 .quote = eq(v, '"') & valid,
                 .escaped = findEscaped(backslash, &self.prev_escaped),
                 .star = eq(v, '*') & valid,
@@ -486,7 +485,6 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 },
                 'A'...'Z', 'a'...'z', '_', 0x80...0xff => {
                     self.mode = .ident;
-                    self.saw_high = false;
                     return self.stepIdent();
                 },
                 '0'...'9' => {
@@ -562,20 +560,13 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         }
 
         fn stepIdent(self: *Self) ?Result {
-            const run = self.runLen(self.masks.ident);
-            if (run != 0) {
-                const low: u6 = @intCast(self.cursor - self.block_start);
-                const bits: u64 = if (run == 64) std.math.maxInt(u64) else ((@as(u64, 1) << @intCast(run)) - 1) << low;
-                if (self.masks.high & bits != 0) self.saw_high = true;
-                self.advanceTo(self.cursor + run);
-            }
+            self.advanceTo(self.cursor + self.runLen(self.masks.ident));
             if (self.cursor == self.blockEnd()) return null;
             return self.finishIdent();
         }
 
         fn finishIdent(self: *Self) ?Result {
             const len = self.cursor - self.anchor;
-            if (self.saw_high) return self.fail(.non_ascii, self.anchor, len, null);
             var tag: Token.Tag = .identifier;
             if (len <= 8) {
                 var word: u64 = 0;
