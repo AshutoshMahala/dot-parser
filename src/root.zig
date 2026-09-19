@@ -34,7 +34,7 @@ const scratch_impl = @import("scratch.zig");
 
 pub const location = @import("location.zig");
 pub const diagnostic = @import("diagnostic.zig");
-const lexer_impl = @import("lexer.zig");
+const lexer_impl = @import("lexer/lexer.zig");
 pub const lexer = struct {
     pub const Token = lexer_impl.Token;
     pub const Result = lexer_impl.Result;
@@ -704,5 +704,5 @@ test {
     _ = @import("parser.zig");
     _ = @import("syntax.zig");
     _ = @import("validate.zig");
-    _ = @import("lexer.zig");
+    _ = @import("lexer/lexer.zig");
 }

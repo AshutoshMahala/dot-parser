@@ -1,10 +1,10 @@
-//! Vocabulary shared by both scanner implementations (`lexer_scalar.zig`,
-//! `lexer_block.zig`): tokens, results, the latched terminal kinds, and the
+//! Vocabulary shared by both scanner implementations (`scalar.zig`,
+//! `block.zig`): tokens, results, the latched terminal kinds, and the
 //! byte classes and keyword table the DOT lexical grammar is built from.
 //! `lexer.zig` selects the implementation and re-exports the public types.
 
 const std = @import("std");
-const location = @import("location.zig");
+const location = @import("../location.zig");
 
 pub const Token = struct {
     tag: Tag,

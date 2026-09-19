@@ -44,12 +44,11 @@ simd128. Without a vector unit the compares lower to byte loops: 1.9x
 slower than scalar on wasm32 under V8 and 27 KB (wasm32) to 52 KB
 (riscv32) larger, hence the scalar default there; 256-bit targets are
 unmeasured. The scalar scanner also stays as the differential oracle: the
-equivalence tests in `src/lexer.zig` (fixtures, truncations, block shifts,
+equivalence tests in `src/lexer/lexer.zig` (fixtures, truncations, block shifts,
 random streams with 64- and 32-bit draws, budget partitions) found two
 block-scanner bugs before release, and the block tests run on wasm32 with
 and without simd128 under Node's WASI. The execution contract accounts
-credits per backend. *(Embodied: `src/lexer.zig`, `src/lexer_block.zig`,
-`src/lexer_scalar.zig`; R-MOD-010, Q16, Q27.)*
+credits per backend. *(Embodied: `src/lexer/`; R-MOD-010, Q16, Q27.)*
 
 **Q34 — How are subgraph edge endpoints retained without inflating ordinary edges?**
 Use separate generalized owner/link pools and a uniform public `Endpoint`
@@ -182,7 +181,7 @@ IDs and basic attributes are implemented; non-ASCII bare IDs remain deferred.
 **Verification pending:** automate the differential harness against the
 pinned reference and record exceptions explicitly; notes first verified by
 running 15.1.0 keep that attribution until the harness re-runs them.
-*(Embodied: `src/lexer.zig`, compatibility notes, corpus; R-ROB-004.)*
+*(Embodied: `src/lexer/`, compatibility notes, corpus; R-ROB-004.)*
 
 **Q13 — What language-specific policy governs raw pointers, unchecked
 blocks, integer casts, and dependency review?**
@@ -302,7 +301,7 @@ A leading UTF-8 BOM is skipped, matching Graphviz's scanner (decided
 support, whether version 1 ships a UTF-8 validator and its invalid-sequence
 policy, and HTML-like ID validation. Resolve these as lexical support grows;
 they are not all promised
-deliverables of the next slice. *(Embodied: `src/lexer.zig`,
+deliverables of the next slice. *(Embodied: `src/lexer/`,
 [supported syntax](../SUPPORTED_SYNTAX.md); R-PORT-006.)*
 
 **Q24 — When will the first stable compatibility boundary be declared?**

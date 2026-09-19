@@ -72,10 +72,10 @@
 const std = @import("std");
 const location = @import("location.zig");
 const diagnostic = @import("diagnostic.zig");
-const lex = @import("lexer.zig");
+const lex = @import("lexer/lexer.zig");
 // Both scanner backends, for tests that pin one (the selected one is `lex.Scanner`).
-const scalar_lex = @import("lexer_scalar.zig");
-const block_lex = @import("lexer_block.zig");
+const scalar_lex = @import("lexer/scalar.zig");
+const block_lex = @import("lexer/block.zig");
 const execution = @import("execution.zig");
 const syntax_event = @import("syntax_event.zig");
 const scratch_impl = @import("scratch.zig");

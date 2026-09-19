@@ -16,7 +16,7 @@ backed bounded sessions, streaming input and bounded validation remain deferred.
 
 ### Implemented groundwork: lexical scanning
 
-`src/lexer.zig` selects one of two scanner implementations behind one
+`src/lexer/lexer.zig` selects one of two scanner implementations behind one
 interface at compile time (`lexer.backend`: the block scanner where the
 target has 128-bit or wider vectors, the scalar scanner elsewhere; a root
 file's `dot_parser_options.lexer_backend` overrides it). `root.zig`
@@ -25,7 +25,7 @@ parser imports internal scan helpers. Returning a lexical token is not a
 syntax-sink event; grammar and event dispatch are separately charged by the
 parser.
 
-With the scalar scanner (`lexer_scalar.zig`), each lexical credit
+With the scalar scanner (`lexer/scalar.zig`), each lexical credit
 performs one source-byte or EOF examination, with cached-byte classification
 and incremental position tracking:
 
@@ -39,7 +39,7 @@ and incremental position tracking:
 | Concatenation trivia | Saved quoted end and trivia mode; after a completed token, trailing trivia may be revisited once, with every reread charged |
 | Location tracking | Advance from the byte already examined; no post-token bulk scan |
 
-With the block scanner (`lexer_block.zig`), each lexical credit either
+With the block scanner (`lexer/block.zig`), each lexical credit either
 classifies the next 64-byte block into bit masks (byte classes, newlines,
 quotes with backslash parity carried across blocks, comment delimiters) or
 advances the token machine once inside the classified block: a run of one
@@ -52,7 +52,7 @@ and counts as examined too. Trailing trivia after a quoted token is revisited
 once, re-classifying the block when the lookahead had crossed into the next
 one. Both backends produce identical tokens, spans, diagnostics, fixes,
 warnings and resume positions on every fixture, truncation, block shift,
-random stream and budget partition (`lexer.zig` tests); their credit counts
+random stream and budget partition (`lexer/lexer.zig` tests); their credit counts
 differ, and no numeric accounting is promised across backends.
 
 `nextBounded` stays private. Tests cover budget partitions, all continuation

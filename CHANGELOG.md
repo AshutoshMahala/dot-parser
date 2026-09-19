@@ -39,6 +39,8 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   at a smaller indentation than the line that opened it
   (`Unexpected.suspect`, role `misindented_close`).
 - The compact renderer says "byte column".
+- The lexer lives in `src/lexer/` (`lexer.zig`, `token.zig`, `scalar.zig`,
+  `block.zig`), the first subsystem to take a directory of its own.
 - The differential compatibility baseline is Graphviz 16.0.0 (was 15.1.0);
   the BOM, stray-semicolon and numeral-ambiguity behaviours were checked
   against its `grammar.y` and `scan.l`.
@@ -71,11 +73,11 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   console renderer.
 - Diagnostics regression table (`tests/diagnostics.zig`) and measure
   verification (`tests/measure.zig`).
-- A second scanner, `src/lexer_block.zig`: it classifies 64-byte blocks into
+- A second scanner, `src/lexer/block.zig`: it classifies 64-byte blocks into
   bit masks with vector compares (byte classes, newlines, quotes with
   backslash parity carried across blocks, comment delimiters) and extracts
   tokens from the masks, behind the same resumable interface as the
-  byte-at-a-time scanner (now `src/lexer_scalar.zig`). `src/lexer.zig`
+  byte-at-a-time scanner (now `src/lexer/scalar.zig`). `src/lexer/lexer.zig`
   selects the backend at compile time: the block scanner where the target
   has 128-bit or wider vectors, the scalar scanner elsewhere; a root file's
   `pub const dot_parser_options = .{ .lexer_backend = ... };` overrides it,

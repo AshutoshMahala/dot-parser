@@ -1,8 +1,8 @@
 //! The lexer as the rest of the library sees it: one scanner interface, two
-//! implementations. `lexer_block.zig` classifies 64-byte blocks into bit
+//! implementations. `block.zig` classifies 64-byte blocks into bit
 //! masks with vector compares and extracts tokens from the masks, and is
 //! the default where the target has 128-bit or wider vectors;
-//! `lexer_scalar.zig` examines one byte per credit and is the default
+//! `scalar.zig` examines one byte per credit and is the default
 //! elsewhere. Both produce identical tokens, spans, diagnostics, fixes and
 //! warnings — the tests below hold them to it on fixtures, random inputs,
 //! every truncation, every block shift and every work-budget partition.
@@ -28,12 +28,12 @@
 
 const std = @import("std");
 const root = @import("root");
-const location = @import("location.zig");
-const diagnostic = @import("diagnostic.zig");
-const types = @import("lexer_types.zig");
+const location = @import("../location.zig");
+const diagnostic = @import("../diagnostic.zig");
+const types = @import("token.zig");
 
-pub const scalar = @import("lexer_scalar.zig");
-pub const block = @import("lexer_block.zig");
+pub const scalar = @import("scalar.zig");
+pub const block = @import("block.zig");
 
 pub const Token = types.Token;
 pub const Result = types.Result;

@@ -6,7 +6,7 @@
 //! numerals. Repeated calls repeat linear work. Output memory is caller-owned.
 
 const std = @import("std");
-const lex = @import("lexer.zig");
+const lex = @import("lexer/lexer.zig");
 
 pub const DecodeError = error{ InvalidIdentifier, NoSpaceLeft, OverlappingBuffers };
 

@@ -30,10 +30,11 @@ dot-parser/
 │   ├── location.zig
 │   ├── diagnostic.zig
 │   ├── console.zig
-│   ├── lexer.zig              (scanner backend selection + equivalence tests)
-│   ├── lexer_types.zig        (Token, Result, keyword folding shared by both)
-│   ├── lexer_scalar.zig       (one byte per credit; default without vectors)
-│   ├── lexer_block.zig        (64-byte block masks; default with 128-bit vectors)
+│   ├── lexer/
+│   │   ├── lexer.zig          (scanner backend selection + equivalence tests)
+│   │   ├── token.zig          (Token, Result, keyword folding shared by both)
+│   │   ├── scalar.zig         (one byte per credit; default without vectors)
+│   │   └── block.zig          (64-byte block masks; default with 128-bit vectors)
 │   ├── execution.zig          (feature flags and borrowed cancellation hook)
 │   ├── identifier.zig
 │   ├── syntax_event.zig
@@ -127,15 +128,16 @@ Human-readable catalogs, localization, JSON, and runtime hashing do not belong
 in the initial core; `console.zig` is the optional renderer that turns the
 payloads into wording and is dropped by the linker when unused.
 
-### `src/lexer.zig`, `lexer_scalar.zig`, `lexer_block.zig`, `lexer_types.zig`
+### `src/lexer/`
 
 The raw-byte scanner: one interface, two implementations, chosen at compile
-time. `lexer.zig` selects the backend (`lexer_block.zig` where the target has
-128-bit or wider vectors, `lexer_scalar.zig` elsewhere, or whichever the root
-file's `dot_parser_options.lexer_backend` names) and holds the differential
-tests that hold both to identical output.
-`lexer_types.zig` carries the `Token`, `Result` and keyword-folding
-definitions they share. `root.zig` selects `Token`, `Result`, ordinary `Lexer`
+time. It is the first subsystem to get its own directory, as its
+responsibilities grew to four files. `lexer.zig` selects the backend
+(`block.zig` where the target has 128-bit or wider vectors, `scalar.zig`
+elsewhere, or whichever the root file's `dot_parser_options.lexer_backend`
+names) and holds the differential tests that hold both to identical output.
+`token.zig` carries the `Token`, `Result` and keyword-folding definitions
+they share. `root.zig` selects `Token`, `Result`, ordinary `Lexer`
 and the backend enum for the public namespace; internal factories and scan
 drivers are not re-exported. The scanner recognizes:
 
@@ -248,9 +250,11 @@ src/
 │   ├── bytes.zig
 │   ├── chunks.zig
 │   └── decoding_adapter.zig
-├── lexer/
+├── lexer/                     (realized: lexer, token, scalar, block)
 │   ├── token.zig
-│   └── lexer.zig
+│   ├── lexer.zig
+│   ├── scalar.zig
+│   └── block.zig
 ├── parser/
 │   ├── parser.zig
 │   ├── syntax_sink.zig

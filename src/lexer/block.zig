@@ -23,9 +23,9 @@
 //! chooses the scalar scanner there by default.
 
 const std = @import("std");
-const location = @import("location.zig");
-const diagnostic = @import("diagnostic.zig");
-const types = @import("lexer_types.zig");
+const location = @import("../location.zig");
+const diagnostic = @import("../diagnostic.zig");
+const types = @import("token.zig");
 
 pub const Token = types.Token;
 pub const Result = types.Result;

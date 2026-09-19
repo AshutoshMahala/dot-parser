@@ -1,7 +1,7 @@
 //! The byte-at-a-time scanner: one resumable state machine over the source,
 //! charging one credit per byte examined. It is the reference implementation
 //! and the one every target can run; `lexer.zig` selects it or the block
-//! scanner (`lexer_block.zig`) per target, and root.zig exposes only Token,
+//! scanner (`block.zig`) per target, and root.zig exposes only Token,
 //! Result and the selected Lexer.
 //!
 //! Recognizes the current subset: every DOT keyword (`graph` maps to the
@@ -29,10 +29,10 @@
 //!   whole-input validity claim.
 
 const std = @import("std");
-const location = @import("location.zig");
-const diagnostic = @import("diagnostic.zig");
+const location = @import("../location.zig");
+const diagnostic = @import("../diagnostic.zig");
 
-const types = @import("lexer_types.zig");
+const types = @import("token.zig");
 pub const Token = types.Token;
 pub const Result = types.Result;
 const Advance = types.Advance;
