@@ -228,11 +228,19 @@ Newer Zig versions are not yet verified.
 zig build test        # unit + public integration tests
 zig build examples    # build and run the examples
 zig build check-freestanding # consumed session profiles for RISC-V32/Wasm32
+zig build bench -Doptimize=ReleaseFast -Dlexer=block  # every bench takes scalar|block
 ```
 
 The library target has no OS, network, or filesystem dependency: it parses
 caller-supplied bytes, so input can come from a file, a pipe, a socket, or
 generated in memory — reading it is the application's job.
+
+Two scanner backends share one interface and produce identical results: a
+64-byte block scanner that classifies input with vector compares (the default
+where the target has 128-bit vectors) and the byte-at-a-time scalar scanner
+(the default elsewhere, and the smaller build). Pin one from the root source
+file of your build with `pub const dot_parser_options = .{ .lexer_backend = .scalar };`
+[Bounded execution](docs/EXECUTION.md#scanner-backends) has the trade-off.
 
 ## Documentation
 

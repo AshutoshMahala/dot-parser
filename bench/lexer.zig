@@ -2,6 +2,15 @@
 //! Run with: zig build bench-lexer -Doptimize=ReleaseFast
 const std = @import("std");
 const dot = @import("dot_parser");
+const build_options = @import("build_options");
+
+/// `-Dlexer=scalar|block` pins the scanner; `auto` follows the target.
+pub const dot_parser_options = .{ .lexer_backend = selectedBackend() };
+
+fn selectedBackend() dot.lexer.Backend {
+    if (std.mem.eql(u8, build_options.lexer, "auto")) return dot.lexer.default_backend;
+    return std.meta.stringToEnum(dot.lexer.Backend, build_options.lexer) orelse @compileError("-Dlexer must be auto, scalar, or block");
+}
 
 const rounds = 9;
 const warmups = 2;
@@ -11,6 +20,7 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var file: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
     const out = &file.interface;
+    try out.print("scanner backend: {s}\n", .{@tagName(dot.lexer.backend)});
     const cases = .{
         .{ "short IDs/punctuation", "a;b;c;d;x=y;[k=v]" },
         .{ "short IDs/trivia", "a b\tc\r\nd -- e;\n" },

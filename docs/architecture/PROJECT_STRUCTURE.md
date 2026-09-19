@@ -30,7 +30,10 @@ dot-parser/
 │   ├── location.zig
 │   ├── diagnostic.zig
 │   ├── console.zig
-│   ├── lexer.zig
+│   ├── lexer.zig              (scanner backend selection + equivalence tests)
+│   ├── lexer_types.zig        (Token, Result, keyword folding shared by both)
+│   ├── lexer_scalar.zig       (one byte per credit; default without vectors)
+│   ├── lexer_block.zig        (64-byte block masks; default with 128-bit vectors)
 │   ├── execution.zig          (feature flags and borrowed cancellation hook)
 │   ├── identifier.zig
 │   ├── syntax_event.zig
@@ -124,11 +127,17 @@ Human-readable catalogs, localization, JSON, and runtime hashing do not belong
 in the initial core; `console.zig` is the optional renderer that turns the
 payloads into wording and is dropped by the linker when unused.
 
-### `src/lexer.zig`
+### `src/lexer.zig`, `lexer_scalar.zig`, `lexer_block.zig`, `lexer_types.zig`
 
-The shared raw-byte scanner implementation. `root.zig` selects `Token`, `Result`,
-and ordinary `Lexer` for the public namespace; internal factories and scan
-drivers are not re-exported. It recognizes:
+The raw-byte scanner: one interface, two implementations, chosen at compile
+time. `lexer.zig` selects the backend (`lexer_block.zig` where the target has
+128-bit or wider vectors, `lexer_scalar.zig` elsewhere, or whichever the root
+file's `dot_parser_options.lexer_backend` names) and holds the differential
+tests that hold both to identical output.
+`lexer_types.zig` carries the `Token`, `Result` and keyword-folding
+definitions they share. `root.zig` selects `Token`, `Result`, ordinary `Lexer`
+and the backend enum for the public namespace; internal factories and scan
+drivers are not re-exported. The scanner recognizes:
 
 - Every DOT keyword (`graph`, `digraph`, `strict`, `node`, `edge`, and
   `subgraph`), case-independently. Keywords always tokenize;
@@ -153,6 +162,15 @@ Metered scanning can yield within every supported lexical form; public parsing
 can run to completion or through fixed-storage sessions. Budget/frontier counters compile out of
 ordinary lexing; shared continuation-state and throughput costs are recorded
 in [baselines](../BASELINES.md).
+
+The scalar scanner walks one byte per step through a small state machine. The
+block scanner classifies each 64-byte block into bit masks with vector
+compares (byte classes, newlines, quotes with backslash parity carried across
+blocks, comment delimiters) and runs a token machine over the masks, advancing
+a whole run or delimiter search per step and never past the block; its state
+is 208 B against 104 B. The [execution contract](EXECUTION_CONTRACT.md) gives
+each backend's credit accounting, and the benches take `-Dlexer=scalar|block`
+to compare them.
 
 ### `src/identifier.zig`
 

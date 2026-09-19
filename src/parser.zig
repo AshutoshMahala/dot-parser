@@ -73,6 +73,9 @@ const std = @import("std");
 const location = @import("location.zig");
 const diagnostic = @import("diagnostic.zig");
 const lex = @import("lexer.zig");
+// Both scanner backends, for tests that pin one (the selected one is `lex.Scanner`).
+const scalar_lex = @import("lexer_scalar.zig");
+const block_lex = @import("lexer_block.zig");
 const execution = @import("execution.zig");
 const syntax_event = @import("syntax_event.zig");
 const scratch_impl = @import("scratch.zig");
@@ -166,7 +169,7 @@ pub fn parse(
         }
         syntax_event.assertSyntaxSink(info.pointer.child);
     }
-    var machine: Machine(EventsPtr, false, false, false) = .{
+    var machine: Machine(EventsPtr, false, false, false, lex.Scanner) = .{
         .tokens = lex.Lexer.init(source),
         .events = events,
         .diagnostics = diagnostics,
@@ -175,7 +178,9 @@ pub fn parse(
     return machine.runToCompletion();
 }
 
-pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool) type {
+/// `ScannerOf` is the lexer implementation (`lex.Scanner` in production;
+/// tests pin `scalar_lex.Scanner` or `block_lex.Scanner` to compare them).
+pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool, comptime ScannerOf: fn (comptime bool, comptime bool) type) type {
     return struct {
         const Self = @This();
 
@@ -193,7 +198,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             dispatch: usize = 0,
         };
 
-        tokens: lex.Scanner(metered, audited),
+        tokens: ScannerOf(metered, audited),
         work: if (metered or cancellable) Work else void = if (metered or cancellable) .{} else {},
         cancellation: if (cancellable) ?execution.Cancellation else void = if (cancellable) null else {},
         audit: if (audited) Audit else void = if (audited) .{} else {},
@@ -371,9 +376,9 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 switch (self.work.phase) {
                     .scan => {
                         const scanned = if (cancellable)
-                            lex.advanceOne(metered, audited, &self.tokens)
+                            self.tokens.drive(true, 1)
                         else
-                            lex.advanceBounded(audited, &self.tokens, remaining);
+                            self.tokens.nextBounded(remaining);
                         if (bounded) remaining -= scanned.work_used;
                         if (scanned.result) |result| switch (result) {
                             .token => |token| {
@@ -1495,10 +1500,10 @@ const Bag = diagnostic.FixedBag(4);
 
 test "chain dispatch failures preserve budget accounting and terminal cleanup" {
     const source = "digraph {a->b->c->d[x=1] z->q->r}";
-    const total = try checkBudgetPartition(source, &.{1}, .{}, null, false);
-    try expectEqual(total, try checkBudgetPartition(source, &.{ 0, 3, 17 }, .{}, null, false));
+    const total = try checkBudgetPartition(lex.Scanner, source, &.{1}, .{}, null, false);
+    try expectEqual(total, try checkBudgetPartition(lex.Scanner, source, &.{ 0, 3, 17 }, .{}, null, false));
     // begin, two links, attribute, owner, link, owner, commit.
-    for (0..8) |at| _ = try checkBudgetPartition(source, &.{ 0, 1, 5 }, .{}, at, false);
+    for (0..8) |at| _ = try checkBudgetPartition(lex.Scanner, source, &.{ 0, 1, 5 }, .{}, at, false);
 }
 
 const CancellationProbe = struct {
@@ -1520,7 +1525,7 @@ test "cancellation during successful and failed events preserves terminal preced
         var request: CancellationProbe = .{};
         var events: BudgetSink = .{ .cancel_flag = &request.flag, .cancel_at = at, .fail_at = if (fails) at else null };
         var diags: BudgetDiagnostics = .{};
-        var machine: Machine(*BudgetSink, true, true, true) = .{
+        var machine: Machine(*BudgetSink, true, true, true, lex.Scanner) = .{
             .tokens = lex.Scanner(true, true).init(source),
             .events = &events,
             .diagnostics = diags.sink(),
@@ -1549,7 +1554,7 @@ test "cancellation during successful and failed events preserves terminal preced
 }
 
 test "cancellation can stop every lexical continuation and execution phase" {
-    const Scanner = lex.Scanner(true, true);
+    const Scanner = scalar_lex.Scanner(true, true);
     const State = @FieldType(Scanner, "state");
     var states = std.EnumSet(State).initEmpty();
     var phases = std.EnumSet(Phase).initEmpty();
@@ -1563,7 +1568,7 @@ test "cancellation can stop every lexical continuation and execution phase" {
     for (sources) |source| for (0..source.len * 4 + 16) |budget| {
         var request: CancellationProbe = .{};
         var events: BudgetSink = .{};
-        var machine: Machine(*BudgetSink, true, true, true) = .{
+        var machine: Machine(*BudgetSink, true, true, true, scalar_lex.Scanner) = .{
             .tokens = Scanner.init(source),
             .events = &events,
             .diagnostics = diagnostic.discard,
@@ -1607,7 +1612,7 @@ test "late cancellation from a rejected syntax diagnostic does not mask failure"
     var request: CancellationProbe = .{};
     var reporter: Reporter = .{ .request = &request };
     var events: BudgetSink = .{};
-    var machine: Machine(*BudgetSink, true, true, true) = .{
+    var machine: Machine(*BudgetSink, true, true, true, lex.Scanner) = .{
         .tokens = lex.Scanner(true, true).init("graph {a[x=]}"),
         .events = &events,
         .diagnostics = .{ .context = &reporter, .emit_fn = Reporter.emit },
@@ -1722,7 +1727,7 @@ const BudgetDiagnostics = struct {
     }
 };
 
-fn checkBudgetPartition(source: []const u8, budgets: []const usize, options: Options, fail_at: ?usize, reject: bool) !usize {
+fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool) type, source: []const u8, budgets: []const usize, options: Options, fail_at: ?usize, reject: bool) !usize {
     var reference_frames: scratch_impl.Fixed(.{ .nesting = 32 }) = .{};
     var frames: scratch_impl.Fixed(.{ .nesting = 32 }) = .{};
     var reference_stack: scratch_impl.Stack = .{ .frames = reference_frames.storage().frames };
@@ -1736,8 +1741,8 @@ fn checkBudgetPartition(source: []const u8, budgets: []const usize, options: Opt
     const expected = parse(source, &reference, reference_diags.sink(), reference_options);
     var events: BudgetSink = .{ .fail_at = fail_at };
     var diags: BudgetDiagnostics = .{ .reject = reject };
-    var machine: Machine(*BudgetSink, true, true, false) = .{
-        .tokens = lex.Scanner(true, true).init(source),
+    var machine: Machine(*BudgetSink, true, true, false, ScannerOf) = .{
+        .tokens = ScannerOf(true, true).init(source),
         .events = &events,
         .diagnostics = diags.sink(),
         .options = machine_options,
@@ -1819,25 +1824,25 @@ test "metered parser partitions preserve events diagnostics and independent work
         "graph{} /*",                                                      "digraph { a-> }",
     };
     for (sources) |source| {
-        const total = try checkBudgetPartition(source, &.{std.math.maxInt(usize)}, .{}, null, false);
-        try expectEqual(total, try checkBudgetPartition(source, &.{1}, .{}, null, false));
-        try expectEqual(total, try checkBudgetPartition(source, &.{2}, .{}, null, false));
-        try expectEqual(total, try checkBudgetPartition(source, &.{ 0, 1, 3, 0, 7, 2 }, .{}, null, false));
+        const total = try checkBudgetPartition(lex.Scanner, source, &.{std.math.maxInt(usize)}, .{}, null, false);
+        try expectEqual(total, try checkBudgetPartition(lex.Scanner, source, &.{1}, .{}, null, false));
+        try expectEqual(total, try checkBudgetPartition(lex.Scanner, source, &.{2}, .{}, null, false));
+        try expectEqual(total, try checkBudgetPartition(lex.Scanner, source, &.{ 0, 1, 3, 0, 7, 2 }, .{}, null, false));
     }
 }
 
 test "metered parser every prefix and callback failure preserve lifecycle" {
     const source = "strict digraph \"g\" { a[x=1][y=2] node[] z=3 a->b[w=\"v\"+\"x\"] }";
     for (0..source.len + 1) |end| {
-        _ = try checkBudgetPartition(source[0..end], &.{ 0, 1, 2 }, .{}, null, false);
+        _ = try checkBudgetPartition(lex.Scanner, source[0..end], &.{ 0, 1, 2 }, .{}, null, false);
     }
     // Includes failed begin, all payload variants, and failed commit.
     for (0..9) |index| {
-        _ = try checkBudgetPartition(source, &.{1}, .{}, index, false);
-        _ = try checkBudgetPartition(source, &.{ 0, 3, 7 }, .{}, index, false);
+        _ = try checkBudgetPartition(lex.Scanner, source, &.{1}, .{}, index, false);
+        _ = try checkBudgetPartition(lex.Scanner, source, &.{ 0, 3, 7 }, .{}, index, false);
     }
-    _ = try checkBudgetPartition("graph {a[x=]}", &.{1}, .{}, null, true);
-    _ = try checkBudgetPartition("@", &.{1}, .{}, null, true);
+    _ = try checkBudgetPartition(lex.Scanner, "graph {a[x=]}", &.{1}, .{}, null, true);
+    _ = try checkBudgetPartition(lex.Scanner, "@", &.{1}, .{}, null, true);
 }
 
 test "ported reference callback failures preserve lifecycle and accounting" {
@@ -1845,21 +1850,21 @@ test "ported reference callback failures preserve lifecycle and accounting" {
     var events: BudgetSink = .{};
     try expect(parse(source, &events, diagnostic.discard, .{}).outcome == .success);
     for (0..events.attempts) |index| {
-        _ = try checkBudgetPartition(source, &.{1}, .{}, index, false);
-        _ = try checkBudgetPartition(source, &.{ 0, 3, 7 }, .{}, index, false);
+        _ = try checkBudgetPartition(lex.Scanner, source, &.{1}, .{}, index, false);
+        _ = try checkBudgetPartition(lex.Scanner, source, &.{ 0, 3, 7 }, .{}, index, false);
     }
 }
 
 test "metered parser capacities remain output limits not work budgets" {
     inline for (.{ 0, 1, 2 }) |limit| {
-        _ = try checkBudgetPartition("graph { a[x=1] b[y=2] c=z }", &.{1}, .{ .max_statements = limit }, null, false);
-        _ = try checkBudgetPartition("graph { a[x=1] b[y=2] c=z }", &.{ 0, 2, 9 }, .{ .max_attributes = limit }, null, false);
+        _ = try checkBudgetPartition(lex.Scanner, "graph { a[x=1] b[y=2] c=z }", &.{1}, .{ .max_statements = limit }, null, false);
+        _ = try checkBudgetPartition(lex.Scanner, "graph { a[x=1] b[y=2] c=z }", &.{ 0, 2, 9 }, .{ .max_attributes = limit }, null, false);
     }
 }
 
 test "metered parser yields before begin pair owner and commit dispatch" {
     var events: BudgetSink = .{};
-    var machine: Machine(*BudgetSink, true, true, false) = .{
+    var machine: Machine(*BudgetSink, true, true, false, lex.Scanner) = .{
         .tokens = lex.Scanner(true, true).init("graph {a[x=1]}"),
         .events = &events,
         .diagnostics = diagnostic.discard,
@@ -1900,22 +1905,23 @@ test "metered parser yields inside megabyte trivia and attribute values" {
         @memcpy(source[0..parts[0].len], parts[0]);
         @memset(source[parts[0].len..][0..n], parts[2]);
         @memcpy(source[parts[0].len + n ..][0..parts[1].len], parts[1]);
-        _ = try checkBudgetPartition(source[0 .. parts[0].len + n + parts[1].len], &.{1}, .{}, null, false);
+        _ = try checkBudgetPartition(lex.Scanner, source[0 .. parts[0].len + n + parts[1].len], &.{1}, .{}, null, false);
     }
 }
 
 test "ordinary parser compiles out pending work and audit storage" {
-    const Ordinary = Machine(*BudgetSink, false, false, false);
+    const Ordinary = Machine(*BudgetSink, false, false, false, lex.Scanner);
     try expect(@FieldType(Ordinary, "work") == void);
     try expect(@FieldType(Ordinary, "audit") == void);
     try expect(@FieldType(lex.Scanner(false, false), "source_frontier") == void);
-    try expect(@sizeOf(Ordinary) <= 640);
+    try expect(@sizeOf(Machine(*BudgetSink, false, false, false, scalar_lex.Scanner)) <= 640);
+    try expect(@sizeOf(Machine(*BudgetSink, false, false, false, block_lex.Scanner)) <= 768);
 }
 
 test "unaudited metered driver charges empty document exactly and runs to completion" {
     var events: BudgetSink = .{};
-    var machine: Machine(*BudgetSink, true, false, false) = .{
-        .tokens = lex.Scanner(true, false).init("graph{}"),
+    var machine: Machine(*BudgetSink, true, false, false, scalar_lex.Scanner) = .{
+        .tokens = scalar_lex.Scanner(true, false).init("graph{}"),
         .events = &events,
         .diagnostics = diagnostic.discard,
         .options = .{},
@@ -1928,7 +1934,7 @@ test "unaudited metered driver charges empty document exactly and runs to comple
     try expectEqual(@as(usize, 1), events.attempts);
     try expect(machine.runToCompletion().outcome == .success);
     try expectEqual(@as(usize, 2), events.attempts);
-    try expectEqual(@as(usize, 15), try checkBudgetPartition("graph{}", &.{1}, .{}, null, false));
+    try expectEqual(@as(usize, 15), try checkBudgetPartition(scalar_lex.Scanner, "graph{}", &.{1}, .{}, null, false));
 }
 
 test "metered parser deterministic arbitrary-byte inputs match immediate grammar" {
@@ -1937,10 +1943,10 @@ test "metered parser deterministic arbitrary-byte inputs match immediate grammar
     for (0..400) |_| {
         random.random().bytes(&bytes);
         const len = random.random().uintLessThan(usize, bytes.len + 1);
-        _ = try checkBudgetPartition(bytes[0..len], &.{ 0, 1, 5 }, .{}, null, false);
+        _ = try checkBudgetPartition(lex.Scanner, bytes[0..len], &.{ 0, 1, 5 }, .{}, null, false);
         // A supported header also exercises arbitrary bytes inside the body.
         @memcpy(bytes[0..7], "graph {");
-        _ = try checkBudgetPartition(bytes[0..@max(7, len)], &.{ 1, 2, 11 }, .{}, null, false);
+        _ = try checkBudgetPartition(lex.Scanner, bytes[0..@max(7, len)], &.{ 1, 2, 11 }, .{}, null, false);
     }
 }
 
@@ -2119,9 +2125,9 @@ test "statement recovery stops where there is no boundary to return to" {
 
 test "metered and cancellable drivers recover identically to the immediate one" {
     const source = "digraph { a - b; subgraph s { c -> ; d } e [x=1 f; g -> h -> ; i:p:q:r; j }";
-    const total = try checkBudgetPartition(source, &.{1}, recovery_options, null, false);
-    try expectEqual(total, try checkBudgetPartition(source, &.{ 0, 3, 17 }, recovery_options, null, false));
-    _ = try checkBudgetPartition(source, &.{ 0, 1, 5 }, recovery_options, null, true);
+    const total = try checkBudgetPartition(lex.Scanner, source, &.{1}, recovery_options, null, false);
+    try expectEqual(total, try checkBudgetPartition(lex.Scanner, source, &.{ 0, 3, 17 }, recovery_options, null, false));
+    _ = try checkBudgetPartition(lex.Scanner, source, &.{ 0, 1, 5 }, recovery_options, null, true);
     // Cancellation after a recovered error reports the errors, not a cancel.
     var request: CancellationProbe = .{};
     var events: BudgetSink = .{};
@@ -2130,7 +2136,7 @@ test "metered and cancellable drivers recover identically to the immediate one" 
     var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
     var options = recovery_options;
     options.scratch = &stack;
-    var machine: Machine(*BudgetSink, true, true, true) = .{
+    var machine: Machine(*BudgetSink, true, true, true, lex.Scanner) = .{
         .tokens = lex.Scanner(true, true).init(source),
         .events = &events,
         .diagnostics = bag.sink(),
@@ -2142,6 +2148,43 @@ test "metered and cancellable drivers recover identically to the immediate one" 
     const progress = machine.advance(1);
     try expect(progress.result.?.outcome == .invalid_syntax);
     try expectEqual(@as(usize, 1), events.aborts);
+}
+
+test "both scanner backends drive the grammar to identical events and diagnostics" {
+    const sources = [_][]const u8{
+        "graph { a -- b; }",
+        "strict digraph named { a b; c->d; e--f }",
+        "graph { a[x=1][y=2] node[] z=3 a--b[w=4] graph[k=v] edge[k=v] }",
+        "#line\n/* pre */graph { \"a\" + /* gap */ \"b\"[x=\"v\\\"q\" y=-.5] // tail\r\n }",
+        "digraph { a -> ; b - c; e --> f; 1e3; }",
+        "digraph { a [color=red; }",
+        "graph { a -- \"unterminated",
+        "digraph { a:p:n -> b:q; c => d }",
+    };
+    inline for (.{ .fail_fast, .statements }) |recovery| {
+        for (sources) |source| {
+            errdefer std.debug.print("source: {s}\n", .{source});
+            var scalar_events: Recording = .{};
+            var scalar_bag: diagnostic.FixedBag(8) = .{};
+            var scalar_machine: Machine(*Recording, false, false, false, scalar_lex.Scanner) = .{
+                .tokens = scalar_lex.Lexer.init(source),
+                .events = &scalar_events,
+                .diagnostics = scalar_bag.sink(),
+                .options = .{ .recovery = recovery },
+            };
+            var block_events: Recording = .{};
+            var block_bag: diagnostic.FixedBag(8) = .{};
+            var block_machine: Machine(*Recording, false, false, false, block_lex.Scanner) = .{
+                .tokens = block_lex.Lexer.init(source),
+                .events = &block_events,
+                .diagnostics = block_bag.sink(),
+                .options = .{ .recovery = recovery },
+            };
+            try std.testing.expectEqualDeep(scalar_machine.runToCompletion(), block_machine.runToCompletion());
+            try std.testing.expectEqualDeep(scalar_events.recorded(), block_events.recorded());
+            try std.testing.expectEqualDeep(scalar_bag.items(), block_bag.items());
+        }
+    }
 }
 
 test "fail-fast means the bag contains exactly one diagnostic" {
@@ -2681,18 +2724,19 @@ test "failing beginDocument still receives the cleanup abort" {
 
 test "parser state stays small (R-PERF-005 parser-state-size regression guard)" {
     // The whole machine — lexer, continuation state, options, bookkeeping —
-    // must remain a small constant, independent of input size. 640 B is the
-    // current measured value (544 B with 32-bit positions, down from 896 B)
-    // plus headroom (see docs/BASELINES.md), not an architectural budget: if
-    // a slice legitimately grows the state, measure, update the baseline
-    // doc, and raise this bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording, false, false, false)) <= 640);
+    // must remain a small constant, independent of input size. The bounds
+    // are the measured values (544 B with the scalar scanner, 648 B with the
+    // block scanner's saved masks) plus headroom, not architectural budgets:
+    // if a slice legitimately grows the state, measure, update the baseline
+    // doc, and raise the bound in the same commit.
+    try expect(@sizeOf(Machine(*Recording, false, false, false, scalar_lex.Scanner)) <= 640);
+    try expect(@sizeOf(Machine(*Recording, false, false, false, block_lex.Scanner)) <= 768);
 }
 
 test "step is terminal-idempotent after success and after failure" {
     var events: Recording = .{};
     var bag: Bag = .{};
-    var machine: Machine(*Recording, false, false, false) = .{
+    var machine: Machine(*Recording, false, false, false, lex.Scanner) = .{
         .tokens = lex.Lexer.init("graph { a; }"),
         .events = &events,
         .diagnostics = bag.sink(),
@@ -2709,7 +2753,7 @@ test "step is terminal-idempotent after success and after failure" {
 
     var failed_events: Recording = .{};
     var failed_bag: Bag = .{};
-    var failed_machine: Machine(*Recording, false, false, false) = .{
+    var failed_machine: Machine(*Recording, false, false, false, lex.Scanner) = .{
         .tokens = lex.Lexer.init("graph {"),
         .events = &failed_events,
         .diagnostics = failed_bag.sink(),
@@ -2777,10 +2821,10 @@ test "attribute pairs stream before owners and abort if any event is refused" {
 
 test "nested scope callbacks and all prefixes preserve budget partitioning" {
     const source = "digraph { a->subgraph s { a:p->b->{c}[x=1] {z=q} }->{} }";
-    const total = try checkBudgetPartition(source, &.{1}, .{}, null, false);
-    try expectEqual(total, try checkBudgetPartition(source, &.{ 0, 3, 17 }, .{}, null, false));
-    for (0..source.len + 1) |end| _ = try checkBudgetPartition(source[0..end], &.{ 0, 1, 2 }, .{}, null, false);
+    const total = try checkBudgetPartition(lex.Scanner, source, &.{1}, .{}, null, false);
+    try expectEqual(total, try checkBudgetPartition(lex.Scanner, source, &.{ 0, 3, 17 }, .{}, null, false));
+    for (0..source.len + 1) |end| _ = try checkBudgetPartition(lex.Scanner, source[0..end], &.{ 0, 1, 2 }, .{}, null, false);
     // Includes failures in begin/end scope, normal owner callbacks, and commit.
-    for (0..16) |at| _ = try checkBudgetPartition(source, &.{ 0, 1, 5 }, .{}, at, false);
-    for (0..3) |depth| _ = try checkBudgetPartition(source, &.{1}, .{ .max_nesting = depth }, null, false);
+    for (0..16) |at| _ = try checkBudgetPartition(lex.Scanner, source, &.{ 0, 1, 5 }, .{}, at, false);
+    for (0..3) |depth| _ = try checkBudgetPartition(lex.Scanner, source, &.{1}, .{ .max_nesting = depth }, null, false);
 }

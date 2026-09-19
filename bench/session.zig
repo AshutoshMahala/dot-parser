@@ -1,7 +1,15 @@
 //! Fixed-session overhead; allocation/source construction are outside timing.
 const std = @import("std");
 const dot = @import("dot_parser");
+const build_options = @import("build_options");
 const count = 200_000;
+
+pub const dot_parser_options = .{ .lexer_backend = selectedBackend() };
+
+fn selectedBackend() dot.lexer.Backend {
+    if (std.mem.eql(u8, build_options.lexer, "auto")) return dot.lexer.default_backend;
+    return std.meta.stringToEnum(dot.lexer.Backend, build_options.lexer) orelse @compileError("-Dlexer must be auto, scalar, or block");
+}
 const Polls = struct {
     count: usize = 0,
     fn poll(context: ?*anyopaque) bool {
@@ -24,6 +32,7 @@ pub fn main(init: std.process.Init) !void {
     };
     var buffer: [4096]u8 = undefined;
     var file: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    try file.interface.print("scanner backend: {s}\n", .{@tagName(dot.lexer.backend)});
     inline for (.{ false, true }) |metering| inline for (.{ false, true }) |cancellation| {
         const Session = dot.FixedSession(.{ .metering = metering, .cancellation = cancellation });
         var times: [9]u64 = undefined;

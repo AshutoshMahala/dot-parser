@@ -34,11 +34,21 @@ const scratch_impl = @import("scratch.zig");
 
 pub const location = @import("location.zig");
 pub const diagnostic = @import("diagnostic.zig");
+const lexer_impl = @import("lexer.zig");
 pub const lexer = struct {
-    const impl = @import("lexer.zig");
-    pub const Token = impl.Token;
-    pub const Result = impl.Result;
-    pub const Lexer = impl.Lexer;
+    pub const Token = lexer_impl.Token;
+    pub const Result = lexer_impl.Result;
+    /// The selected scanner (see `backend`).
+    pub const Lexer = lexer_impl.Lexer;
+    /// Which scanner implementation this build uses: `.block` (64-byte
+    /// vector classification) where the target has 128-bit or wider
+    /// vectors, `.scalar` (one byte per step) elsewhere, unless the root
+    /// source file declares `pub const dot_parser_options = .{ .lexer_backend = ... }`.
+    /// Both give identical results.
+    pub const Backend = lexer_impl.Backend;
+    pub const backend = lexer_impl.backend;
+    /// The backend a build gets without an override.
+    pub const default_backend = lexer_impl.default_backend;
 };
 /// Explicit raw-identifier decoding into caller storage or a writer.
 pub const identifier = @import("identifier.zig");
@@ -381,7 +391,7 @@ pub const BoundedSession = FixedSession(.{});
 pub fn FixedSession(comptime features: ExecutionFeatures) type {
     return struct {
         const Self = @This();
-        const Driver = parser_impl.Machine(*syntax_impl.FixedBuilder, features.metering, false, features.cancellation);
+        const Driver = parser_impl.Machine(*syntax_impl.FixedBuilder, features.metering, false, features.cancellation, lexer_impl.Scanner);
 
         pub const Options = struct {
             /// Maximum active subgraph depth; root is zero. Independent of scratch capacity.
@@ -694,4 +704,5 @@ test {
     _ = @import("parser.zig");
     _ = @import("syntax.zig");
     _ = @import("validate.zig");
+    _ = @import("lexer.zig");
 }

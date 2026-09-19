@@ -81,6 +81,14 @@ pub fn build(b: *std.Build) void {
         examples_step.dependOn(&run_example.step);
     }
 
+    // Benches can pin a scanner backend (`-Dlexer=scalar|block`; `auto`
+    // follows the target) through their root file's `dot_parser_options`.
+    // The library module itself carries no build option.
+    const lexer_choice = b.option([]const u8, "lexer", "Scanner backend for the benches: auto (default), scalar, or block") orelse "auto";
+    const bench_options = b.addOptions();
+    bench_options.addOption([]const u8, "lexer", lexer_choice);
+    const bench_options_module = bench_options.createModule();
+
     // Throughput baseline (R-PERF-004). `zig build bench -Doptimize=ReleaseFast`.
     const bench_exe = b.addExecutable(.{
         .name = "throughput",
@@ -90,6 +98,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "dot_parser", .module = mod },
+                .{ .name = "build_options", .module = bench_options_module },
             },
         }),
     });
@@ -102,7 +111,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("bench/lexer.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "dot_parser", .module = mod }},
+            .imports = &.{
+                .{ .name = "dot_parser", .module = mod },
+                .{ .name = "build_options", .module = bench_options_module },
+            },
         }),
     });
     b.step("bench-lexer", "Run lexical throughput fixtures")
@@ -114,7 +126,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("bench/session.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "dot_parser", .module = mod }},
+            .imports = &.{
+                .{ .name = "dot_parser", .module = mod },
+                .{ .name = "build_options", .module = bench_options_module },
+            },
         }),
     });
     b.step("bench-session", "Compare fixed-session execution policies")
@@ -126,7 +141,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("bench/subgraphs.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "dot_parser", .module = mod }},
+            .imports = &.{
+                .{ .name = "dot_parser", .module = mod },
+                .{ .name = "build_options", .module = bench_options_module },
+            },
         }),
     });
     b.step("bench-subgraphs", "Measure sibling and nested scope parsing")

@@ -130,7 +130,8 @@ escaped quotes/backslashes, and control bytes. A deliberate difference in the
 checked 16.0.0 behavior: it removes escaped LF but preserves escaped CRLF/CR;
 this library removes all three, consistently with its physical-line policy.
 
-Optional fixed-session work budgets cover lexical examinations, grammar transitions,
+Optional fixed-session work budgets cover lexical steps (byte examinations, or
+64-byte block classifications with the block scanner), grammar transitions,
 and event attempts; see [bounded execution](EXECUTION.md). Token-length limits
 remain future work. Output pools bound retained records, not source length.
 

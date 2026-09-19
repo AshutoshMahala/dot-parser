@@ -30,10 +30,14 @@ cancellation. `parseBorrowedIn` remains the simplest fixed-storage one-shot API.
 
 ## What a credit means
 
-One credit buys one source-byte/EOF examination, one fixed-size grammar
-transition, or one normal event attempt, including begin and commit. These are
-separate operations. A budget of N permits at most N such steps; unused credits
-are not carried forward. One credit can advance an uncancelled, nonterminal
+One credit buys one lexical step, one fixed-size grammar transition, or one
+normal event attempt, including begin and commit. These are separate
+operations. A lexical step is one source-byte/EOF examination with the scalar
+scanner; with the block scanner (the default on targets with 128-bit vectors)
+it is the classification of one 64-byte block or one bounded advance inside it
+(see [scanner backends](#scanner-backends)).
+A budget of N permits at most N such steps; unused credits are not carried
+forward. One credit can advance an uncancelled, nonterminal
 session even inside a long comment or quoted identifier.
 
 `advance(0)` does no normal work. It yields, or observes cancellation and performs
@@ -56,7 +60,8 @@ unbudgeted operations. There is no OS clock, scheduler, thread, or hidden worker
 - `phase`: scan, grammar, dispatch, or terminal.
 - `source_frontier`: one past the highest byte offset examined, including
   lookahead; zero before any byte read. EOF costs work but does not move it.
-  It is monotonic but is not a count of accepted source bytes.
+  It is monotonic but is not a count of accepted source bytes; the block
+  scanner moves it a whole 64-byte block at a time.
 - `completed_statements` and `completed_pairs`: accepted syntax events, not
   reservations. A yielded attribute list can have pairs but no completed owner.
   A chain counts as one statement when its owner is accepted, not once per
@@ -150,6 +155,30 @@ not overlap or reenter. A completed document borrows source/pools, not the sessi
 parse using the same pools. It invalidates all previous document views into
 those pools; retire those views before reuse. Cancellation/abort clears logical
 lengths, not the underlying bytes: it is not a secure-erasure facility.
+
+## Scanner backends
+
+Two lexers implement the same scanner interface and produce identical tokens,
+spans, diagnostics, fixes and warnings; the choice only changes speed, state
+size and what a lexical credit buys. The block scanner is the default where
+the target has 128-bit or wider vectors; the scalar scanner, which examines
+one byte per credit and keeps 104 B of state, is the default elsewhere and
+the smaller build anywhere. The block scanner classifies 64-byte blocks with
+vector compares and extracts tokens from the resulting bit masks; it keeps
+208 B of state, and measured on Apple silicon it
+is faster on comment-heavy, deeply nested and long-token sources but a few
+percent slower on sources made of short tokens. Because one credit classifies
+64 bytes, it needs 2–6x fewer credits for the same input and resumes more
+cheaply, so bounded sessions run markedly faster with it, most of all at small
+budgets (numbers in the [changelog](../CHANGELOG.md)). Pin a backend from the
+root source file of the build:
+
+```zig
+pub const dot_parser_options = .{ .lexer_backend = .block }; // or .scalar
+```
+
+`dot.lexer.backend` reports the selection. Session storage sizes follow the
+choice, so measure the containing struct after pinning.
 
 See [ownership](OWNERSHIP.md), [measured costs](BASELINES.md), and the precise
 [execution contract](architecture/EXECUTION_CONTRACT.md). Public pull events,

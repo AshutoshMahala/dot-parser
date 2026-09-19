@@ -248,7 +248,9 @@ test "long lexical scans yield and cancel without allocating parser storage" {
         var session = dot.FixedSession(.{ .cancellation = true }).init(source, .{ .document = storage.storage() }, dot.diagnostic.discard, .{ .cancellation = request.hook() });
         const yielded = session.advance(64);
         try expect(yielded.outcome == null);
-        try expect(yielded.source_frontier <= 64);
+        // One credit examines one byte (scalar scanner) or classifies one
+        // 64-byte block (block scanner); either way the frontier is bounded.
+        try expect(yielded.source_frontier <= 64 * 64);
         request.flag = true;
         try expect(session.advance(0).outcome.? == .cancelled);
         session.reset(source, dot.diagnostic.discard, .{});

@@ -1,11 +1,21 @@
 //! Fixed storage excludes allocation from timing; these are synthetic fixtures.
 const std = @import("std");
 const dot = @import("dot_parser");
+const build_options = @import("build_options");
+
+/// `-Dlexer=scalar|block` pins the scanner; `auto` follows the target.
+pub const dot_parser_options = .{ .lexer_backend = selectedBackend() };
+
+fn selectedBackend() dot.lexer.Backend {
+    if (std.mem.eql(u8, build_options.lexer, "auto")) return dot.lexer.default_backend;
+    return std.meta.stringToEnum(dot.lexer.Backend, build_options.lexer) orelse @compileError("-Dlexer must be auto, scalar, or block");
+}
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     var buffer: [4096]u8 = undefined;
     var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    try output.interface.print("scanner backend: {s}\n", .{@tagName(dot.lexer.backend)});
     inline for (.{ false, true }) |nested| {
         for ([_]usize{ 1000, 10000, 100000 }) |n| {
             const bytes = try allocator.alloc(u8, 8 + 2 * n);

@@ -71,6 +71,22 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   console renderer.
 - Diagnostics regression table (`tests/diagnostics.zig`) and measure
   verification (`tests/measure.zig`).
+- A second scanner, `src/lexer_block.zig`: it classifies 64-byte blocks into
+  bit masks with vector compares (byte classes, newlines, quotes with
+  backslash parity carried across blocks, comment delimiters) and extracts
+  tokens from the masks, behind the same resumable interface as the
+  byte-at-a-time scanner (now `src/lexer_scalar.zig`). `src/lexer.zig`
+  selects the backend at compile time: the block scanner where the target
+  has 128-bit or wider vectors, the scalar scanner elsewhere; a root file's
+  `pub const dot_parser_options = .{ .lexer_backend = ... };` overrides it,
+  `dot.lexer.backend` reports the choice, and every bench takes
+  `-Dlexer=scalar|block`. Differential tests hold both backends to
+  identical tokens, spans, diagnostics, fixes, warnings and resume positions
+  on fixtures, every truncation and block shift, random streams and budget
+  partitions. The execution contract defines a lexical credit per backend:
+  one byte or EOF examination for the scalar scanner; one block
+  classification or one bounded advance inside the block for the block
+  scanner, whose `source_frontier` moves a block at a time.
 
 ### Performance
 
@@ -86,6 +102,24 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   208 → 24 B).
 - Measured together on the 200k-statement bench: 229 → 277 MiB/s default,
   246 → 311 MiB/s hinted; nested-subgraph parsing 34% faster.
+- Block scanning, measured on Apple silicon (128-bit vectors) against the
+  scalar scanner at the parse level. Running to completion: comment-heavy
+  sources 18–21% faster, deeply nested subgraphs 14–18% faster, long runs
+  of one byte class several times faster in the lexer bench, the
+  200k-statement bench equal (283 vs 284 MiB/s default, 316 vs 319
+  hinted), sources of short bare and quoted tokens 4–8% slower. Under work
+  budgets the block scanner needs 2–6x fewer credits for the same input
+  (one credit classifies 64 bytes) and resumes more cheaply, so metered
+  sessions run 7–55% faster at 256 credits per call and 2–4x faster at one
+  credit per call; the session bench's `a;a;a;` source, the worst case for
+  a block scanner, is 8–14% slower. Scanner state is 208 B against 104 B,
+  so every machine and session grows by 104 B, and code grows 6–8 KB per
+  native build (a probe holding both machine instantiations: 58 → 65 KB
+  in ReleaseSmall) and 9 KB on wasm32 with simd128; nothing else changes.
+  Without a vector unit the block compares lower to byte loops: 1.9x
+  slower than scalar on wasm32 under V8 and 27 KB (wasm32) to 52 KB
+  (riscv32) larger. Hence the default: block where the target has 128-bit
+  or wider vectors, scalar elsewhere.
 
 ### Fixed
 

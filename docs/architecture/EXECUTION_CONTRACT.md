@@ -16,12 +16,18 @@ backed bounded sessions, streaming input and bounded validation remain deferred.
 
 ### Implemented groundwork: lexical scanning
 
-`src/lexer.zig` contains the single scanner implementation. `root.zig` exposes
-only Token, Result and ordinary Lexer; the parser imports internal scan helpers.
-Each lexical credit performs one source-byte or EOF examination, with cached-byte
-classification and incremental position tracking.
-Returning a lexical token is not a syntax-sink event; grammar and event dispatch
-are separately charged by the parser.
+`src/lexer.zig` selects one of two scanner implementations behind one
+interface at compile time (`lexer.backend`: the block scanner where the
+target has 128-bit or wider vectors, the scalar scanner elsewhere; a root
+file's `dot_parser_options.lexer_backend` overrides it). `root.zig`
+exposes only Token, Result, ordinary Lexer and the backend selection; the
+parser imports internal scan helpers. Returning a lexical token is not a
+syntax-sink event; grammar and event dispatch are separately charged by the
+parser.
+
+With the scalar scanner (`lexer_scalar.zig`), each lexical credit
+performs one source-byte or EOF examination, with cached-byte classification
+and incremental position tracking:
 
 | Input-dependent path | Continuation and charging |
 | --- | --- |
@@ -32,6 +38,22 @@ are separately charged by the parser.
 | Quoted text/escapes | Saved quote opener and escape state; no segment restart on yield |
 | Concatenation trivia | Saved quoted end and trivia mode; after a completed token, trailing trivia may be revisited once, with every reread charged |
 | Location tracking | Advance from the byte already examined; no post-token bulk scan |
+
+With the block scanner (`lexer_block.zig`), each lexical credit either
+classifies the next 64-byte block into bit masks (byte classes, newlines,
+quotes with backslash parity carried across blocks, comment delimiters) or
+advances the token machine once inside the classified block: a run of one
+class, a delimiter search or a fixed shape check, never past the block's end.
+Line events are counted from the newline mask on each advance, so positions
+stay exact. Classifying a block moves the frontier to its end at once, so the
+frontier includes up to 63 bytes of lookahead; the machine's own lookahead of
+at most two bytes for operator and numeral shapes may reach past the block
+and counts as examined too. Trailing trivia after a quoted token is revisited
+once, re-classifying the block when the lookahead had crossed into the next
+one. Both backends produce identical tokens, spans, diagnostics, fixes,
+warnings and resume positions on every fixture, truncation, block shift,
+random stream and budget partition (`lexer.zig` tests); their credit counts
+differ, and no numeric accounting is promised across backends.
 
 `nextBounded` stays private. Tests cover budget partitions, all continuation
 states, zero-credit nonmutation, terminal latching, frontier monotonicity,
@@ -255,7 +277,8 @@ Source progress is one past the highest byte offset examined by the scanner,
 initialized to zero. EOF costs work but does not advance this monotonic frontier.
 Call it `source_frontier` rather than implying that every examined byte has
 already been accepted into a token or statement. It can include lookahead and
-an incomplete lexical construct. This sharpens the earlier “bytes consumed”
+an incomplete lexical construct; with the block scanner it jumps to the end of
+each 64-byte block as the block is classified. This sharpens the earlier “bytes consumed”
 wording; work accounting remains separate because rereads and grammar steps
 cost work without moving that frontier.
 
