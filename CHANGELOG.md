@@ -6,9 +6,13 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
-Diagnostics overhaul, driven by an external probe of 79 malformed inputs.
-Breaking (0.x): every structured code changes, `Details` gains variants, and
-`DocumentStorage` pools are all optional.
+## 0.3.0 — 2026-09-19
+
+Improve diagnostics and tooling, support non-ASCII bare identifiers, and reduce
+position-tracking overhead. Add opt-in statement recovery, typed fix suggestions,
+exact pool measurement and a block scanner alongside the scalar default.
+This is an experimental, breaking minor release. HTML-like identifiers
+and the planned markup subsystem are deferred until after this release.
 
 ### Changed
 
@@ -24,6 +28,11 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   and `PositionCursor.spanFor` are gone. `console.render` takes
   `RenderOptions`; with `source` set, every renderer prints line and byte
   column exactly as before, and without it prints the offset.
+- Sources are limited to `2^32 - 1` bytes and refused before scanning when
+  oversized (`resource_exhausted` / `source_range`). Remove the former
+  `StorageFailure.source_offset_overflow` switch branch. The lexer result no
+  longer carries a diagnostic by value: use `Lexer.failureDiagnostic()` to
+  obtain it and `Lexer.takeWarning()` to consume warnings when lexing directly.
 - WDP components are now logical domains, not source modules: `Syntax`,
   `Validation`, `Resource`, `Profile`. `E.Lexer.*` and `E.Parser.*` are gone;
   filter on `E.Syntax.*` for every malformed-input problem. New primaries name
@@ -76,7 +85,8 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   closers, header typos, `=>`, unterminated constructs and operator
   mismatches. `machine_applicable` fixes may be applied
   unattended; `maybe` fixes are offers. Both renderers print them.
-  `Diagnostic` is 112 bytes with the field (positions are 32-bit, see below).
+  `Diagnostic` is 80 bytes on the measured native target with the field and
+  offset-only spans; see [baselines](docs/BASELINES.md).
 - `W.Syntax.Numeral.033`: numerals running into a letter or second dot
   (`1e3`, `1.2.3`) warn, matching Graphviz, and the parse continues. First
   use of the warning severity.
@@ -109,44 +119,33 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
 
 ### Performance
 
-- Positions (`Location`, `Span`) are 32-bit. Sources are capped at 4 GiB, as
-  retained ranges already were; a longer source is refused before scanning
-  with `resource_exhausted` / `source_range`, and the
-  `storage_failure.source_offset_overflow` outcome is gone with the builder
-  path that produced it. Every per-token and per-scope value shrinks: token
-  40 → 20 B, lexer 176 → 104 B, parser state 896 → 544 B, nesting frame
-  272 → 164 B, `Diagnostic` 200 → 112 B.
-- The lexer result no longer carries a `Diagnostic` by value on every
-  token; `Lexer.failureDiagnostic()` builds it on request (`lexer.Result`
-  208 → 24 B).
-- Measured together on the 200k-statement bench: 229 → 277 MiB/s default,
-  246 → 311 MiB/s hinted; nested-subgraph parsing 34% faster.
-- Lazy positions: with no per-byte line and column tracking, the scalar
-  scanner's lexing cost drops by about a fifth and every position-carrying
-  structure shrinks — `Span` 16 → 8 B, token 20 → 12 B, `Diagnostic`
-  112 → 80 B, nesting frame 164 → 116 B (the worst-case `{{{{…`
-  amplification with it), scalar scanner 104 → 56 B, block scanner
-  208 → 160 B, parser state 544 → 368 B (scalar) and 648 → 472 B (block),
-  a fixed session 1264 → 1080 B. On the 200k-statement bench the scalar
-  scanner goes 275 → 336 MiB/s default and 326 → 397 hinted; the corpus
-  files 3–33% faster (comments most), the empty-subgraph fixtures 21–26%
-  faster; the block scanner gains 2–20%. The misindented-brace probe
-  stops at the first non-blank byte, so a brace deep in a dense line costs
-  one byte read.
-- Block scanning, measured on Apple silicon against the scalar scanner at
-  the parse level with positions derived on demand: running to completion
-  the scalar scanner is 3–15% faster on every corpus file and on the
-  200k-statement bench (336 vs 292 MiB/s), and faster at 256 credits per
-  call. The block scanner needs 2–6x fewer credits for the same input (one
-  credit classifies 64 bytes) and resumes more cheaply, so it wins at very
-  small budgets — 2–4x faster at one credit per call — and on long runs of
-  one byte class (2x on the long-identifier lexer fixture). Its state is
-  160 B against 56 B, so every machine and session grows by 104 B with it,
-  and code grows 6–8 KB per native build (a probe holding both machine
-  instantiations: 58 → 65 KB in ReleaseSmall) and 9 KB on wasm32 with
-  simd128. Without a vector unit its compares lower to byte loops: 1.9x
-  slower than scalar on wasm32 under V8 and 27 KB (wasm32) to 52 KB
-  (riscv32) larger. Hence scalar by default, block opt-in.
+The [0.3.0 baseline](docs/BASELINES.md#030-baseline-2026-09-19) compares the
+unchanged release implementation with 0.2.0 on the project's standard benchmark
+machine: five invocations per revision/backend/fixture, each with two warm-ups
+and nine measured rounds. These results replace the intermediate development
+figures previously listed here; no timings from the secondary release-preparation
+machine are used.
+
+- On the 200,000-statement parse-and-validate fixture, the scalar default takes
+  **17.6% less time with growing pools** and **20.6% less with capacity hints**
+  than 0.2.0 (12.260 / 10.680 ms, approximately 213 / 244 MiB/s).
+- The ordinary scalar fixed session takes about **22% less time** than 0.2.0.
+  Empty sibling and nested subgraph fixtures at 100,000 scopes take about
+  **31% less time**. These are fixture-specific elapsed-time improvements.
+- The native nesting frame falls from **272 to 116 B**; the ordinary scalar
+  fixed session from **1,560 to 1,080 B**. The flat fixture still retains
+  **34 B/statement**, with unchanged arena backing capacities; these are not
+  process-RSS measurements.
+- Block scanning remains a workload-dependent choice. Its parse-and-validate
+  medians overlap scalar's ranges; its long-identifier lexer fixture takes
+  **28% less time** than scalar, while the mixed short-quotes/comments fixture
+  takes **59% more time**. It adds **96 B** to native fixed session/driver state.
+  Cancellation-enabled session profiles favor block in this run; unmetered,
+  non-cancellable and metered-only profiles favor scalar.
+- Lexer comparisons normalize the checksum across revisions. Lazy source
+  positions move line/column derivation out of parsing; that later work is not
+  timed. Non-ASCII-heavy input, recovery, one-credit calls, code size and MCU
+  runtime performance are outside this measurement.
 
 ### Fixed
 
@@ -158,8 +157,7 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
 Expand the borrowed syntax parser with comments, quoted/numeral identifiers,
 basic attributes, edge chains, ports and nested subgraphs, including subgraph
 endpoints. Add fixed-storage resumable parsing with optional work metering and
-cooperative cancellation. This is an experimental, breaking minor release;
-see the [0.2.0 release and migration notes](docs/RELEASE_0.2.0.md).
+cooperative cancellation. This is an experimental, breaking minor release.
 
 ### Added and changed
 

@@ -82,7 +82,7 @@ pub fn build(b: *std.Build) void {
     }
 
     // Benches can pin a scanner backend (`-Dlexer=scalar|block`; `auto`
-    // follows the target) through their root file's `dot_parser_options`.
+    // uses the scalar default) through their root file's `dot_parser_options`.
     // The library module itself carries no build option.
     const lexer_choice = b.option([]const u8, "lexer", "Scanner backend for the benches: auto (default), scalar, or block") orelse "auto";
     const bench_options = b.addOptions();

@@ -5,7 +5,7 @@ Initial baselines recorded at the close of milestone 1 (R-PERF-004),
 against these numbers, not against intuition.
 
 Historical sections retain their original measurements. For the latest comparison,
-see [byte-offset spans and the scalar default](#byte-offset-spans-and-scalar-default-2026-09-19).
+see the [0.3.0 baseline](#030-baseline-2026-09-19).
 
 ## Environment
 
@@ -704,9 +704,14 @@ The recorded comparison compiled executables first and then invoked them
 directly in rotating revision order, excluding compilation from measured runs.
 A build-target smoke check confirmed native `-Dlexer=auto` selects block.
 
-## Byte-offset spans and scalar default (2026-09-19)
+## 0.3.0 baseline (2026-09-19)
 
-Latest measured source: **`4c494b9`**; release reference: **0.2.0, `84166eb`**.
+Release label: **0.3.0**; measured source: **`4c494b9`**;
+comparison release: **0.2.0, `84166eb`**. The 0.3.0 release preparation changes
+metadata and documentation only; the measured library and benchmark sources are
+unchanged. These measurements were run on the project's standard benchmark
+machine, not the secondary machine used to prepare the release.
+
 Scalar is now the default on every target; block scanning is opt-in. This section
 supersedes the default-backend description in the dated September 18 snapshot,
 which remains a historical measurement of `4fa9eee`.
@@ -723,17 +728,17 @@ which remains a historical measurement of `4fa9eee`.
   in milliseconds. Ranges are not confidence intervals. No CPU affinity or
   frequency controls; small differences and overlapping ranges remain inconclusive.
 - Throughput, session and subgraph fixture construction/timing are unchanged from
-  0.2.0. Latest sources add backend selection and a label printed outside timing.
+  0.2.0. The 0.3.0 sources add backend selection and a label printed outside timing.
 - **Lexer checksum normalization:** in a temporary 0.2.0 benchmark copy only,
   remove the additions of `token.span.start.line` and
   `token.span.start.byte_column` to `checksum`. Both revisions then checksum
-  token tag, byte offset and byte length. Latest spells those fields
+  token tag, byte offset and byte length. Version 0.3.0 spells those fields
   `token.span.start` / `token.span.len`; 0.2.0 spells them
   `token.span.start.byte_offset` / `token.span.byte_len`. All resulting
   checksums match across revisions, backends and invocations. Lexer timings
   below are **not directly comparable** with the earlier, unnormalized tables.
   No library source or current benchmark source was modified.
-- Latest scanning no longer maintains line/column positions per byte; spans
+- Version 0.3.0 scanning no longer maintains line/column positions per byte; spans
   contain byte offsets and lengths. Position derivation and diagnostic rendering
   are not timed here. This is a consumer-visible work-placement change, not a
   claim that every downstream task gets the same speedup.
@@ -749,7 +754,7 @@ which remains a historical measurement of `4fa9eee`.
 single-edge statements. Default policies; document capacity hints in the second
 row. Source construction is outside timing.
 
-| Document allocation | 0.2.0 | `4c494b9` scalar | `4c494b9` block |
+| Document allocation | 0.2.0 | 0.3.0 scalar | 0.3.0 block |
 | --- | ---: | ---: | ---: |
 | Default pools | 14.870 (14.380–15.270) | 12.260 (12.190–12.500) | 12.540 (12.080–12.660) |
 | Capacity hints | 13.450 (13.180–13.570) | 10.680 (10.370–10.850) | 10.970 (10.680–11.210) |
@@ -769,7 +774,7 @@ cooperatively checks for a permanent stop request. They are independent; neither
 is a memory budget or wall-clock deadline. Cancellation is enabled but never
 requested in these benchmarks, so the measured cost is polling, not abort latency.
 
-| Metering / cancellation | 0.2.0 | `4c494b9` scalar | `4c494b9` block |
+| Metering / cancellation | 0.2.0 | 0.3.0 scalar | 0.3.0 block |
 | --- | ---: | ---: | ---: |
 | metering false, cancellation false | 6.430 (6.380–6.560) | 5.000 (4.850–5.050) | 6.170 (5.990–6.520) |
 | metering false, cancellation true | 9.530 (9.090–9.570) | 8.040 (7.880–8.250) | 7.580 (7.420–7.830) |
@@ -791,7 +796,7 @@ or cancellation granularity. Metered+cancellable polling counts remain
 `bench/lexer.zig`: the same five repeated byte patterns, with the normalized
 checksum described above. No allocation/source construction inside the timer.
 
-| Lexical pattern | 0.2.0 normalized | `4c494b9` scalar | `4c494b9` block |
+| Lexical pattern | 0.2.0 normalized | 0.3.0 scalar | 0.3.0 block |
 | --- | ---: | ---: | ---: |
 | short IDs/punctuation | 8.760 (8.640–9.160) | 9.220 (9.080–9.290) | 8.410 (8.140–8.780) |
 | short IDs/trivia | 4.420 (4.350–4.770) | 4.410 (4.200–4.790) | 4.640 (4.480–4.760) |
@@ -799,12 +804,12 @@ checksum described above. No allocation/source construction inside the timer.
 | quotes/comments | 6.810 (6.290–7.040) | 4.670 (4.450–4.920) | 7.410 (7.110–7.480) |
 | long identifier | 7.710 (7.170–7.860) | 4.710 (4.470–4.840) | 3.400 (3.230–3.520) |
 
-Main scalar improves keywords/numerals, quotes/comments and long identifiers
+The 0.3.0 scalar scanner improves keywords/numerals, quotes/comments and long identifiers
 relative to the normalized release reference; short-ID/trivia is effectively
 unchanged. Short-ID/punctuation has a roughly 5% higher scalar median, with
 slightly overlapping invocation ranges.
 
-Block's long-identifier fixture takes **28% less time than main scalar**
+Block's long-identifier fixture takes **28% less time than 0.3.0 scalar**
 (about **1.39x throughput**), while its quotes/comments fixture takes **59% more
 time**. Short-ID/punctuation favors block by about 9%; other small backend
 differences should be read with their ranges. The quotes/comments pattern mixes
@@ -815,7 +820,7 @@ short quotes and short comments; it is not a long-comment-only parsing benchmark
 `bench/subgraphs.zig`: fixed storage, empty sibling or fully nested scopes;
 the 100,000-scope cases are summarized here.
 
-| Shape / scope count | 0.2.0 | `4c494b9` scalar | `4c494b9` block |
+| Shape / scope count | 0.2.0 | 0.3.0 scalar | 0.3.0 block |
 | --- | ---: | ---: | ---: |
 | siblings, 100000 scopes | 5.712 (5.539–5.874) | 3.951 (3.791–3.993) | 4.082 (3.945–4.206) |
 | nested, 100000 scopes | 5.708 (5.622–6.048) | 3.917 (3.778–3.983) | 4.068 (3.923–4.183) |

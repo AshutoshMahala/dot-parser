@@ -7,7 +7,7 @@ performing layout and without depending on any particular graph engine.
 > **Status: experimental `0.x`.** Backward compatibility is not promised and
 > breaking changes are expected.
 
-Version **0.2.0**: [release highlights and migration notes](docs/RELEASE_0.2.0.md).
+Version **0.3.0**: see the [changelog](CHANGELOG.md#030--2026-09-19).
 
 ## Current support (growing by vertical slices)
 
@@ -39,7 +39,10 @@ strict digraph Routes {
 Bare identifiers such as `café` and `東京` preserve their bytes exactly;
 parsing does not validate UTF-8 or normalize Unicode.
 
-Other features (HTML IDs, semantic edge-product expansion, …) are deliberately deferred to later vertical slices. The authoritative construct-by-construct table is [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
+HTML-like identifiers and the planned standalone markup subsystem are not part
+of 0.3.0; implementation follows this release. Other features, including
+semantic edge-product expansion, remain deferred. The authoritative
+construct-by-construct table is [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
 
 See [the attribute example](examples/attributes.zig) for fixed-storage parsing
 and ordered attribute traversal. Parsing does not apply defaults or resolve values.

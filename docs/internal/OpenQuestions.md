@@ -278,6 +278,13 @@ wherever the DOT grammar permits an ID, not only as label values. DOT parsing
 recognizes and preserves the complete raw identifier; recognition alone makes
 no claim that its inner markup is well-formed or is a valid Graphviz label.
 
+**Release sequencing (2026-09-19):** release the current DOT implementation as
+0.3.0 before implementing HTML-like identifiers or the markup subsystem. The
+decisions below describe post-0.3.0 work, not capabilities of that release.
+Whether markup eventually has its own package/version and how DOT would depend
+on it remain open; a dedicated source directory does not settle packaging or
+release versioning. No particular later release number is assigned yet.
+
 Markup gets its own dedicated source directory (proposed name:
 `src/markup/`) and independently usable stages, like the DOT subsystem:
 
@@ -381,34 +388,120 @@ access, execution or rendering. Event processing must not force retained
 trees on callers. These are inherited requirements, not newly negotiable
 tradeoffs for markup support.
 
+**Review outcomes (2026-09-19).** Decided in review, recorded here until
+the contracts they belong to are written:
+
+- **`none` is a policy, not a size lever.** DOT-level recognition of
+  `<...>` (one scanner state and a depth counter) is always compiled in;
+  `none` rejects the identifier with the unsupported-feature diagnostic but
+  still finds its end, so statement-boundary recovery (Q22) can continue
+  past it. The binary lever is whether `src/markup/` is linked, which
+  `opaque` never does.
+- **The delimiter rule is Graphviz's, verified against the 16.0.0 scanner
+  (`lib/cgraph/scan.l`, start condition `hstring`):** `<` increments a
+  depth counter, `>` decrements it, the identifier ends when the counter
+  returns to zero, newlines are allowed, nothing inside is special (quotes,
+  DOT comments, `#`, CDATA and entities do not protect a bracket; the state
+  has exactly the rules `<`, `>`, newline, anything else). Diagnostics: end
+  of input with depth above zero is `E.Syntax.Token.032` with a new
+  `html_identifier` construct at the opener, recovery to end of input; a
+  `>` outside markup stays an invalid byte; nothing inside `<...>` raises a
+  DOT diagnostic. Same rule in both scanner backends and under every
+  budget partition. A survey of other DOT parsers' boundary rules is a
+  separate discussion and does not gate the opaque slice.
+- **XML structure for every parsing mode.** An element is `<x/>` or
+  `<x>…</x>`; a lone `<x>` is an error in `structural`, `extended` and
+  `graphviz` alike. The open-tag versus self-closing distinction lives once
+  in the structural stage; `extended` and `graphviz` add vocabulary checks
+  only.
+- **Stage inclusion is compile-time, mode is runtime.** A feature gate
+  decides which stages (markup parser, each validator) are compiled in; the
+  runtime mode value is restricted to what the build compiled in, which is
+  what the delayed path needs to choose a policy per identifier.
+- **Origin mapping is one rule.** The markup stages receive the identifier
+  minus its outer brackets; every markup span is fragment-relative and maps
+  to the DOT source by adding the inner range's start; standalone input has
+  origin zero. No markup diagnostic needs the DOT grammar.
+- **Decoding stays explicit and lazy by default; eager is an opt-in
+  composition.** Nothing inspects a string's content to classify it: the
+  form (`bare`, `numeral`, `quoted`, `html`) is a property of the spelling's
+  first byte, so `"<B>x</B>"` is a quoted string whose value looks like
+  markup and `<<B>x</B>>` is HTML-like. Explicit decoding of an HTML-like
+  ID returns its inner bytes unchanged. Parsing every label during the DOT
+  parse is the during-DOT usage path, chosen by the consumer that knows it
+  wants all of them.
+- **Concatenations are never collapsed by the library.** Graphviz's own
+  `concat` demotes `<a> + "b"` and `"a" + <b>` to a plain string; we retain
+  the raw expression and expose its parts, each with its own form and
+  inner range, so a consumer that wants Graphviz's behaviour can collapse
+  and one that wants the information does not lose it.
+- **Bounded nesting, no stack compression.** Structural parsing keeps the
+  open-element stack in caller-provided fixed frames with a capacity and a
+  `max_nesting` limit reported through the existing resource-exhausted
+  outcome (an iterative parser, so no recursion to bound; CWE-400/674 are
+  the concern). Frames are small — a name offset and length, about 8 B, so
+  1 KB supports 128 levels — rather than compressed: run-length or
+  cycle-pattern shrinking of the stack only helps repeated patterns an
+  attacker can break by alternating tags, needs periodicity detection
+  (linear amortized at best) and complicates matching, and real deep
+  markup is nested tables, a three-tag cycle. The limit is the protection;
+  compression could be a later frame variant without API change.
+- **Both backends for both scanners, independently selected.** The DOT
+  scanner and the markup scanner each come in `scalar` and `block` form,
+  chosen by separate compile-time options in any combination; the mask
+  helpers (chunked compares, backslash parity) move to a shared file so the
+  two block scanners do not duplicate them, and each pair gets its own
+  differential tests. The depth rule is ported to the DOT block scanner
+  (masks for `<` and `>`, a walk over the bits) rather than retiring it:
+  long labels are exactly the long-run case where block wins.
+- **Parallelism is the caller's, and the design allows it.** After opaque
+  recognition every HTML-like identifier is an independent fragment with a
+  known range; the delayed path parses one fragment into caller-provided
+  storage with no shared mutable state in the engine, so a caller can hand
+  disjoint subsets of identifiers to worker threads. The library stays
+  thread-agnostic.
+
+**Direction, not yet decided — the retained markup representation.**
+Proposed layering, to be designed with concrete records: a per-identifier
+summary index (an optional pool with one small entry per HTML-like ID: its
+range plus cheap facts such as maximum depth, tag count, presence of
+entities, computable while the boundary is found or on demand) that gives
+O(1) lookup and lets consumers filter labels without parsing bodies; then
+structure on demand per identifier or eagerly for all — elements,
+attributes and text as index-based borrowed records with parent, first
+child and next sibling links, the same shape as the DOT document — and
+validation results as a third layer. Event-only consumers must be able to
+skip every retained layer.
+
 **Still open before the relevant implementation:**
 
 - Exact XML-like fragment grammar: names and case rules, attributes and
   duplicates, references/entities, comments, CDATA, processing instructions,
   declarations and byte/encoding policy. Structural checking does not imply
   full XML conformance.
-- DOT delimiter-scanning behavior, including quoted attributes, embedded
-  comments, malformed/truncated input and recovery. Preserve the same contract
-  across both scanner backends and bounded execution.
-- Public stage APIs, syntax/events and optional retained representation,
-  diagnostics, scratch capacities and work accounting; default behavior and
-  how configuration composes the stages. The five mode names above are settled.
-- Standalone fragment input and DOT-envelope adapter contracts, source-origin
-  mapping, and composed yield/cancellation state. Define how markup failures
-  affect the enclosing DOT operation and its sink lifecycle without conflating
-  DOT syntax, markup syntax and label validity. Optional caching, if provided,
-  needs an explicit owner, lifetime and cost contract.
-- Identifier decoding/form API. Preserve the distinction between quoted and
-  HTML-like spelling: `"<B>x</B>"` and `<<B>x</B>>` can have identical inner
-  bytes but different label interpretation. Removing only the outer angle
-  delimiters and exposing a separate source-derived form query was proposed;
-  neither that API nor a tagged decoded result has been selected. Entity
-  decoding and label interpretation must remain distinct from DOT lexical
-  decoding.
+- Public stage APIs, syntax/events and optional retained representation
+  (the layering above), diagnostics, scratch capacities and work
+  accounting; default behavior and how configuration composes the stages.
+- Standalone fragment input and DOT-envelope adapter contracts beyond the
+  origin rule, and composed yield/cancellation state. Define how markup
+  failures affect the enclosing DOT operation and its sink lifecycle
+  without conflating DOT syntax, markup syntax and label validity. Optional
+  caching, if provided, needs an explicit owner, lifetime and cost contract.
+- The form and parts API: the exact shape of the per-part view of an
+  identifier expression (form, raw range, inner range) and whether decode
+  returns bytes plus a separate form query or a tagged result.
+- Concatenation with HTML-like operands: accepted syntactically as in
+  Graphviz 16.0.0 (its scanner returns HTML strings as `T_qatom`, so
+  `qatom '+' T_qatom` admits them); what a mixed expression's form reports
+  and what explicit decoding yields, given that parts are preserved. Also
+  port components: IDs, so `n:<p>` is recognized though no renderer gives it
+  meaning. A separate discussion.
 - The `extended` mode's concrete consumer, tag vocabulary, attributes and
-  nesting rules, and which stages ship in which slice. Structural acceptance
-  of arbitrary names already permits preserving additional tags; `extended`
-  needs a specific label-validation contract beyond that.
+  nesting rules, and which stages ship in which slice.
+- Nesting defaults and capacities per profile (`max_nesting`, frame
+  contents beyond name offset and length, where the scratch comes from in
+  each usage path).
+- A survey of other DOT parsers' HTML boundary rules, for the record.
 
 *(Recorded contract: R-MOD-014; implementation/verification pending.
 `src/markup/` does not yet exist and HTML-like IDs remain deferred in
@@ -602,6 +695,17 @@ field out stays with the profile slice. *(Embodied: `diagnostic.Fix`,
   Q23 links the remaining markup policy to Q40. The fragment grammar,
   extended vocabulary, decoding/form API, configuration and delivery scope
   remain open; no implementation claimed.
+- 2026-09-19 — Q40 review: nine clarification questions raised and, after
+  discussion, resolved into recorded decisions (`none` as policy with
+  recognition always compiled, the Graphviz delimiter rule verified against
+  the 16.0.0 scanner, XML structure for every parsing mode, compile-time
+  stage inclusion with runtime mode, the origin-mapping rule, explicit lazy
+  decoding with form from spelling, no collapsing of concatenations, bounded
+  nesting with small frames and no stack compression, both backends for both
+  scanners independently selected, caller-side parallelism) plus a proposed
+  retained-representation layering (summary index, structure, validation)
+  left as direction. Concatenation with HTML operands, the parts API, the
+  fragment grammar and the cross-parser boundary survey stay open.
 
 - 2026-09-18 — Non-ASCII identifier slice: Q10/Q23 record acceptance of raw
   high bytes in every bare-ID position, byte-preserving decoding, ASCII-only
