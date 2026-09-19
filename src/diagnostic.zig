@@ -988,7 +988,7 @@ test "fixed bag retains the first diagnostics and counts the rest" {
 
     const diagnostic: Diagnostic = .{
         .code = .syntax_unexpected_token,
-        .span = .{ .start = .{ .byte_offset = 4, .line = 1, .byte_column = 5 }, .byte_len = 2 },
+        .span = .{ .start = 4, .len = 2 },
     };
     try sink.emit(diagnostic);
     try sink.emit(diagnostic);
@@ -1005,7 +1005,7 @@ test "fixed bag retains the first diagnostics and counts the rest" {
 
 test "zero-capacity bag only counts" {
     var bag: FixedBag(0) = .{};
-    bag.push(.{ .code = .syntax_unexpected_end, .span = .{ .start = .start, .byte_len = 0 } });
+    bag.push(.{ .code = .syntax_unexpected_end, .span = .{ .start = 0, .len = 0 } });
     try expectEqual(@as(usize, 0), bag.items().len);
     try expectEqual(@as(usize, 1), bag.omitted);
 }
@@ -1021,15 +1021,15 @@ test "direct sink receives diagnostics without retention" {
     };
     var counter: Counter = .{};
     const sink: Sink = .{ .context = &counter, .emit_fn = Counter.emit };
-    try sink.emit(.{ .code = .syntax_invalid_byte, .span = .{ .start = .start, .byte_len = 1 } });
-    try sink.emit(.{ .code = .syntax_invalid_byte, .span = .{ .start = .start, .byte_len = 1 } });
+    try sink.emit(.{ .code = .syntax_invalid_byte, .span = .{ .start = 0, .len = 1 } });
+    try sink.emit(.{ .code = .syntax_invalid_byte, .span = .{ .start = 0, .len = 1 } });
     try expectEqual(@as(usize, 2), counter.count);
 }
 
 test "the discard sink accepts and drops everything" {
     try discard.emit(.{
         .code = .syntax_unexpected_end,
-        .span = .{ .start = .start, .byte_len = 0 },
+        .span = .{ .start = 0, .len = 0 },
     });
 }
 
@@ -1042,6 +1042,6 @@ test "failing sink propagates its error" {
         }
     };
     const sink: Sink = .{ .context = null, .emit_fn = Rejecting.emit };
-    const result = sink.emit(.{ .code = .syntax_unexpected_end, .span = .{ .start = .start, .byte_len = 0 } });
+    const result = sink.emit(.{ .code = .syntax_unexpected_end, .span = .{ .start = 0, .len = 0 } });
     try std.testing.expectError(error.DiagnosticSinkFailure, result);
 }

@@ -131,8 +131,8 @@ test "validation merges chains and ordinary edges in source order and reports ev
     try equal(@as(usize, 4), result.outcome.completed.violations);
     var previous: usize = 0;
     for (bag.items()) |diagnostic| {
-        try expect(diagnostic.span.start.byte_offset > previous);
-        previous = diagnostic.span.start.byte_offset;
+        try expect(diagnostic.span.start > previous);
+        previous = diagnostic.span.start;
         try strings("->", diagnostic.span.slice(input));
         try strings("graph", diagnostic.details.operator_mismatch.declaration.slice(input));
     }

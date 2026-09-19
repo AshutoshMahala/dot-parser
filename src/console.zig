@@ -91,17 +91,21 @@ pub const RenderOptions = struct {
 /// character columns are not misled.
 ///
 /// `writer` is anything with `print`, e.g. a `*std.Io.Writer`.
-pub fn render(d: Diagnostic, writer: anytype) !void {
+pub fn render(d: Diagnostic, options: RenderOptions, writer: anytype) !void {
     const info = d.code.info();
-    const loc = d.span.start;
+    var positions: Positions = .{ .source = options.source };
     try writer.print("{s}[{s}:{s}]: ", .{
         severityWord(info.severity), diagnostic.namespace, d.code.structured(),
     });
     try writeHeadline(d, info, writer);
     try writer.writeAll("\n");
-    try writer.print("  --> line {d}, byte column {d} (offset {d}, len {d})\n", .{
-        loc.line, loc.byte_column, loc.byte_offset, d.span.byte_len,
-    });
+    if (positions.locate(d.span.start)) |at| {
+        try writer.print("  --> line {d}, byte column {d} (offset {d}, len {d})\n", .{
+            at.line, at.byte_column, at.byte_offset, d.span.len,
+        });
+    } else {
+        try writer.print("  --> offset {d}, len {d}\n", .{ d.span.start, d.span.len });
+    }
     if (d.details != .none) {
         try writer.writeAll("  detail: ");
         try writeDetailValue(d.details, writer);
@@ -109,18 +113,52 @@ pub fn render(d: Diagnostic, writer: anytype) !void {
     }
     if (hasNote(d.details)) {
         try writer.writeAll("  note: ");
-        try writeNoteValue(d.details, writer);
+        try writeNoteValue(d.details, &positions, writer);
         try writer.writeAll("\n");
     }
     try writer.writeAll("  help: ");
-    try writeHint(d, info, writer);
+    try writeHint(d, info, &positions, writer);
     try writer.writeAll("\n");
     if (d.fix) |fix| {
         try writer.writeAll("  fix: ");
-        try writeFix(fix, null, writer);
+        try writeFix(fix, &positions, writer);
         try writer.writeAll("\n");
     }
 }
+
+/// Where positions are shown from. Diagnostics carry byte offsets only;
+/// with `options.source` a line and byte column are derived through one
+/// cursor shared by everything a render call prints (so a list of
+/// diagnostics costs one scan of the source, not one per diagnostic),
+/// and without it the offset itself is shown.
+const Positions = struct {
+    source: ?[]const u8,
+    cursor: location.PositionCursor = .{},
+
+    fn locate(self: *Positions, offset: u32) ?location.Location {
+        const source = self.source orelse return null;
+        if (offset > source.len) return null;
+        return self.cursor.locate(source, offset);
+    }
+
+    /// `line:column`, or `offset N` without a source.
+    fn writeColonForm(self: *Positions, offset: u32, writer: anytype) !void {
+        if (self.locate(offset)) |at| {
+            try writer.print("{d}:{d}", .{ at.line, at.byte_column });
+        } else {
+            try writer.print("offset {d}", .{offset});
+        }
+    }
+
+    /// `line L, byte column C`, or `offset N` without a source.
+    fn writeWordForm(self: *Positions, offset: u32, writer: anytype) !void {
+        if (self.locate(offset)) |at| {
+            try writer.print("line {d}, byte column {d}", .{ at.line, at.byte_column });
+        } else {
+            try writer.print("offset {d}", .{offset});
+        }
+    }
+};
 
 /// Render one diagnostic as a numbered box: message-first header, location,
 /// an annotated source excerpt (when `options.source` is set), a hint, and
@@ -129,6 +167,17 @@ pub fn renderBoxed(
     d: Diagnostic,
     number: usize,
     options: RenderOptions,
+    writer: anytype,
+) !void {
+    var positions: Positions = .{ .source = options.source };
+    try renderBoxedWith(d, number, options, &positions, writer);
+}
+
+fn renderBoxedWith(
+    d: Diagnostic,
+    number: usize,
+    options: RenderOptions,
+    positions: *Positions,
     writer: anytype,
 ) !void {
     const info = d.code.info();
@@ -144,13 +193,13 @@ pub fn renderBoxed(
     try writer.writeAll("\n");
 
     try writeRail(g, pal, writer);
-    try writer.print("{s}:{d}:{d}\n", .{
-        options.source_name, d.span.start.line, d.span.start.byte_column,
-    });
+    try writer.print("{s}:", .{options.source_name});
+    try positions.writeColonForm(d.span.start, writer);
+    try writer.writeAll("\n");
 
     if (excerptSource(d, options)) |source| {
         try writeBlankRail(g, pal, writer);
-        try writeExcerpt(d, source, g, pal, writer);
+        try writeExcerpt(d, source, positions, g, pal, writer);
         try writeBlankRail(g, pal, writer);
     } else {
         // Compact fallback: the typed payload and the related location as
@@ -163,19 +212,19 @@ pub fn renderBoxed(
         }
         if (hasNote(d.details)) {
             try writeRail(g, pal, writer);
-            try writeNoteValue(d.details, writer);
+            try writeNoteValue(d.details, positions, writer);
             try writer.writeAll("\n");
         }
     }
 
     try writeRail(g, pal, writer);
     try writer.print("{s}Hint:{s} ", .{ pal.hint, pal.reset });
-    try writeHint(d, info, writer);
+    try writeHint(d, info, positions, writer);
     try writer.writeAll("\n");
     if (d.fix) |fix| {
         try writeRail(g, pal, writer);
         try writer.print("{s}Fix:{s} ", .{ pal.hint, pal.reset });
-        try writeFix(fix, options.source, writer);
+        try writeFix(fix, positions, writer);
         try writer.writeAll("\n");
     }
 
@@ -205,9 +254,10 @@ pub fn renderBoxedList(
     var errors: usize = 0;
     var warnings: usize = 0;
     var worst: Severity = .trace;
+    var positions: Positions = .{ .source = options.source };
     for (diagnostics, 0..) |d, index| {
         if (index != 0) try writer.writeAll("\n");
-        try renderBoxed(d, index + 1, options, writer);
+        try renderBoxedWith(d, index + 1, options, &positions, writer);
         const severity = d.code.severity();
         if (@intFromEnum(severity) > @intFromEnum(worst)) worst = severity;
         switch (severity) {
@@ -389,7 +439,7 @@ fn writeHeadline(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !vo
             .spaced => try writer.writeAll("whitespace inside an edge operator"),
         },
         .incomplete_numeral => {
-            try writer.print("'{s}' must be followed by a digit", .{if (d.span.byte_len == 2) "-." else "."});
+            try writer.print("'{s}' must be followed by a digit", .{if (d.span.len == 2) "-." else "."});
         },
         .reserved_keyword => |reserved| switch (reserved.context) {
             .attribute_list => try writer.print("keyword '{s}' is not followed by its attribute list", .{reserved.keyword.lexeme()}),
@@ -401,7 +451,8 @@ fn writeHeadline(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !vo
 
 /// The repair, as an instruction. With the source, the marked text is
 /// quoted (when short and printable) so the line reads on its own.
-fn writeFix(fix: diagnostic.Fix, source: ?[]const u8, writer: anytype) !void {
+fn writeFix(fix: diagnostic.Fix, positions: *Positions, writer: anytype) !void {
+    const source = positions.source;
     const marked = markedText(fix.span, source);
     switch (fix.edit) {
         .delete => if (marked) |text| {
@@ -414,12 +465,13 @@ fn writeFix(fix: diagnostic.Fix, source: ?[]const u8, writer: anytype) !void {
         } else {
             try writer.print("replace the marked text with '{s}'", .{replacement.text()});
         },
-        .insert_before => |replacement| if (fix.span.byte_len == 0) {
+        .insert_before => |replacement| if (fix.span.len == 0) {
             // A position rather than text: usually end of input.
-            if (source != null and fix.span.start.byte_offset == source.?.len) {
+            if (source != null and fix.span.start == source.?.len) {
                 try writer.print("insert '{s}' at end of input", .{replacement.text()});
             } else {
-                try writer.print("insert '{s}' at line {d}, byte column {d}", .{ replacement.text(), fix.span.start.line, fix.span.start.byte_column });
+                try writer.print("insert '{s}' at ", .{replacement.text()});
+                try positions.writeWordForm(fix.span.start, writer);
             }
         } else if (marked) |text| {
             try writer.print("insert '{s}' before '{s}'", .{ replacement.text(), text });
@@ -446,7 +498,7 @@ fn writeFix(fix: diagnostic.Fix, source: ?[]const u8, writer: anytype) !void {
 /// The span's text when it is short and printable, for quoting in a fix.
 fn markedText(span: location.Span, source: ?[]const u8) ?[]const u8 {
     const bytes = source orelse return null;
-    if (span.byte_len == 0 or span.byte_len > 24 or !spanFits(span, bytes)) return null;
+    if (span.len == 0 or span.len > 24 or !spanFits(span, bytes)) return null;
     const text = span.slice(bytes);
     for (text) |byte| {
         if (!std.ascii.isPrint(byte)) return null;
@@ -458,7 +510,7 @@ fn markedText(span: location.Span, source: ?[]const u8) ?[]const u8 {
 /// (the grammar context, the token found, the related opener, the byte,
 /// the attached fix). The registry's static hint is the fallback that
 /// keeps every code covered.
-fn writeHint(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !void {
+fn writeHint(d: Diagnostic, info: diagnostic.Code.Info, positions: *Positions, writer: anytype) !void {
     switch (d.details) {
         .unterminated => |construct| switch (construct) {
             .block_comment => try writer.writeAll("close the block comment opened here with '*/'; block comments do not nest"),
@@ -518,7 +570,7 @@ fn writeHint(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !void {
                 ),
             }
         },
-        .unexpected => |unexpected| try writeUnexpectedHint(d, unexpected, info, writer),
+        .unexpected => |unexpected| try writeUnexpectedHint(d, unexpected, info, positions, writer),
         else => try writer.writeAll(info.hint),
     }
 }
@@ -530,6 +582,7 @@ fn writeUnexpectedHint(
     d: Diagnostic,
     unexpected: diagnostic.Unexpected,
     info: diagnostic.Code.Info,
+    positions: *Positions,
     writer: anytype,
 ) !void {
     const found = unexpected.found;
@@ -588,7 +641,7 @@ fn writeUnexpectedHint(
             .undirected_operator, .directed_operator => try writer.writeAll("an edge needs a left endpoint before the operator: a node name, a subgraph, or '{ ... }'"),
             .colon => try writer.writeAll("a port suffix must follow a node name"),
             .comma => try writer.writeAll("',' only separates attributes inside '[...]'; statements are separated by ';' or a newline"),
-            .end_of_input => try writeUnclosedScopeHint(unexpected, writer),
+            .end_of_input => try writeUnclosedScopeHint(unexpected, positions, writer),
             else => try writer.writeAll(info.hint),
         },
         .subgraph_suffix => switch (found) {
@@ -601,7 +654,7 @@ fn writeUnexpectedHint(
             .colon => try writer.writeAll("a node reference has at most two port components: 'name:port' or 'name:port:compass'"),
             .equals => try writer.writeAll("an assignment key cannot carry a port suffix; write 'name = value'"),
             .right_bracket => try writer.writeAll("there is no open attribute list for this ']'"),
-            .end_of_input => try writeUnclosedScopeHint(unexpected, writer),
+            .end_of_input => try writeUnclosedScopeHint(unexpected, positions, writer),
             else => try writer.writeAll("after a node name, write ';', an edge operator, an attribute list '[...]', or the next statement"),
         },
         .statement_terminator => switch (found) {
@@ -610,7 +663,7 @@ fn writeUnexpectedHint(
             .comma => try writer.writeAll("',' does not separate statements; use ';' or a newline"),
             .equals => try writer.writeAll("an edge statement cannot be assigned to; give it attributes in '[...]' instead"),
             .right_bracket => try writer.writeAll("there is no open attribute list for this ']'"),
-            .end_of_input => try writeUnclosedScopeHint(unexpected, writer),
+            .end_of_input => try writeUnclosedScopeHint(unexpected, positions, writer),
             else => try writer.writeAll("after an edge, write ';', another operator to extend the chain, an attribute list '[...]', or the next statement"),
         },
         .edge_endpoint => switch (found) {
@@ -673,12 +726,12 @@ fn outsideList(found: diagnostic.SyntaxItem) bool {
 
 /// End of input inside a scope: name the fix, and point at the suspect
 /// brace when the indentation heuristic found one.
-fn writeUnclosedScopeHint(unexpected: diagnostic.Unexpected, writer: anytype) !void {
+fn writeUnclosedScopeHint(unexpected: diagnostic.Unexpected, positions: *Positions, writer: anytype) !void {
     try writer.writeAll("the input ends inside this scope; add the missing '}'");
     if (unexpected.suspect) |suspect| {
-        try writer.print("; the '}}' at {d}:{d} is indented like an outer scope, so the missing brace probably belongs above it", .{
-            suspect.span.start.line, suspect.span.start.byte_column,
-        });
+        try writer.writeAll("; the '}' at ");
+        try positions.writeColonForm(suspect.span.start, writer);
+        try writer.writeAll(" is indented like an outer scope, so the missing brace probably belongs above it");
     }
 }
 
@@ -704,8 +757,7 @@ fn excerptSource(d: Diagnostic, options: RenderOptions) ?[]const u8 {
 }
 
 fn spanFits(span: location.Span, source: []const u8) bool {
-    return span.start.byte_offset <= source.len and
-        span.byte_len <= source.len - span.start.byte_offset;
+    return span.start <= source.len and span.len <= source.len - span.start;
 }
 
 const Annotation = struct {
@@ -713,6 +765,8 @@ const Annotation = struct {
     primary: bool,
     /// The typed relation for a secondary annotation; null for the primary.
     role: ?diagnostic.Related.Role = null,
+    /// Derived when the excerpt is laid out.
+    line: u32 = 0,
 };
 
 /// At most two secondary locations per payload today (the related opener
@@ -758,6 +812,7 @@ const View = struct {
 fn writeExcerpt(
     d: Diagnostic,
     source: []const u8,
+    positions: *Positions,
     g: Glyphs,
     pal: Palette,
     writer: anytype,
@@ -773,27 +828,28 @@ fn writeExcerpt(
     // Source order, so the excerpt reads top to bottom.
     std.mem.sort(Annotation, annotations[0..count], {}, struct {
         fn lessThan(_: void, a: Annotation, b: Annotation) bool {
-            return a.span.start.byte_offset < b.span.start.byte_offset;
+            return a.span.start < b.span.start;
         }
     }.lessThan);
 
     var gutter_width: usize = 0;
-    for (annotations[0..count]) |annotation| {
-        gutter_width = @max(gutter_width, digits(annotation.span.start.line));
+    for (annotations[0..count]) |*annotation| {
+        annotation.line = positions.cursor.locate(source, annotation.span.start).line;
+        gutter_width = @max(gutter_width, digits(annotation.line));
     }
 
     var previous_line: usize = 0;
     var index: usize = 0;
     while (index < count) {
-        const line = annotations[index].span.start.line;
+        const line = annotations[index].line;
         var group_end = index + 1;
-        while (group_end < count and annotations[group_end].span.start.line == line) group_end += 1;
+        while (group_end < count and annotations[group_end].line == line) group_end += 1;
 
         if (previous_line != 0 and line > previous_line + 1) {
             try writeRail(g, pal, writer);
             try writer.print("{s}\n", .{g.gap});
         }
-        const view = viewFor(source, annotations[index].span.start.byte_offset);
+        const view = viewFor(source, annotations[index].span.start);
         try writeRail(g, pal, writer);
         try writeUnsigned(writer, line, gutter_width);
         try writer.print(" {s} ", .{g.gutter});
@@ -842,9 +898,9 @@ const Placed = struct {
 };
 
 fn place(annotation: Annotation, view: View) Placed {
-    const offset: usize = annotation.span.start.byte_offset;
+    const offset: usize = annotation.span.start;
     const start = @min(offset, view.end);
-    const len = if (offset < view.end) @min(annotation.span.byte_len, view.end - offset) else 0;
+    const len = if (offset < view.end) @min(annotation.span.len, view.end - offset) else 0;
     if (len == 0) return .{ .annotation = annotation, .start = start, .end = start, .connector = start };
     // The middle cell, so the connector reads as belonging to the whole
     // span; a one-byte span puts it under that byte.
@@ -1248,7 +1304,7 @@ fn hasNote(details: Details) bool {
 }
 
 /// The note content: secondary locations related to the failure.
-fn writeNoteValue(details: Details, writer: anytype) !void {
+fn writeNoteValue(details: Details, positions: *Positions, writer: anytype) !void {
     switch (details) {
         .unexpected => |unexpected| {
             var first = true;
@@ -1256,18 +1312,13 @@ fn writeNoteValue(details: Details, writer: anytype) !void {
                 const related = maybe orelse continue;
                 if (!first) try writer.writeAll("; ");
                 first = false;
-                try writer.print("{s} at {d}:{d}", .{
-                    roleName(related.role),
-                    related.span.start.line,
-                    related.span.start.byte_column,
-                });
+                try writer.print("{s} at ", .{roleName(related.role)});
+                try positions.writeColonForm(related.span.start, writer);
             }
         },
         .operator_mismatch => |mismatch| {
-            try writer.print("graph kind declared at {d}:{d}", .{
-                mismatch.declaration.start.line,
-                mismatch.declaration.start.byte_column,
-            });
+            try writer.writeAll("graph kind declared at ");
+            try positions.writeColonForm(mismatch.declaration.start, writer);
         },
         else => unreachable,
     }
@@ -1417,23 +1468,20 @@ const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const Code = diagnostic.Code;
 
-fn spanAt(offset: u32, line: u32, column: u32, len: u32) location.Span {
-    return .{
-        .start = .{ .byte_offset = offset, .line = line, .byte_column = column },
-        .byte_len = len,
-    };
+fn spanAt(offset: u32, len: u32) location.Span {
+    return .{ .start = offset, .len = len };
 }
 
 test "unterminated constructs render typed wording and safe fallbacks" {
     const source = "graph { /* unfinished";
     var d: Diagnostic = .{
         .code = .syntax_unterminated_construct,
-        .span = spanAt(8, 1, 9, 2),
+        .span = spanAt(8, 2),
         .details = .{ .unterminated = .block_comment },
     };
     var buffer: [2048]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
-    try render(d, &writer);
+    try render(d, .{}, &writer);
     try expect(std.mem.indexOf(u8, writer.buffered(), "input ended inside a block comment") != null);
     try expect(std.mem.indexOf(u8, writer.buffered(), "close the block comment opened here with '*/'") != null);
 
@@ -1446,7 +1494,7 @@ test "unterminated constructs render typed wording and safe fallbacks" {
     // generic summary/hint still render without taking an unreachable arm.
     d.details = .none;
     writer = std.Io.Writer.fixed(&buffer);
-    try render(d, &writer);
+    try render(d, .{}, &writer);
     try expect(std.mem.indexOf(u8, writer.buffered(), d.code.info().summary) != null);
     writer = std.Io.Writer.fixed(&buffer);
     try renderBoxed(d, 1, .{ .source = source }, &writer);
@@ -1458,7 +1506,7 @@ test "identifier diagnostics render typed quote and concatenation context" {
     var writer = std.Io.Writer.fixed(&buffer);
     var d: Diagnostic = .{
         .code = .syntax_unterminated_construct,
-        .span = spanAt(0, 1, 1, 1),
+        .span = spanAt(0, 1),
         .details = .{ .unterminated = .quoted_identifier },
     };
     try renderBoxed(d, 1, .{ .source = "\"unfinished", .style = .ascii }, &writer);
@@ -1468,7 +1516,7 @@ test "identifier diagnostics render typed quote and concatenation context" {
     inline for (.{ @as(?u8, 'b'), @as(?u8, 0x1b), @as(?u8, null) }) |found| {
         d.details = .{ .expected_quote = found };
         writer = std.Io.Writer.fixed(&buffer);
-        try render(d, &writer);
+        try render(d, .{}, &writer);
         try expect(std.mem.indexOf(u8, writer.buffered(), "E.Syntax.Concatenation.003") != null);
         try expect(std.mem.indexOf(u8, writer.buffered(), if (found == null) "found end of input" else "found byte 0x") != null);
         try expect(std.mem.indexOfScalar(u8, writer.buffered(), 0x1b) == null);
@@ -1479,15 +1527,16 @@ test "render produces informative text" {
     var buffer: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
 
+    // Positions are derived from the source the caller passes.
     try render(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(13, 2, 7, 2),
+        .span = spanAt(13, 2),
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
             .found = .directed,
-            .declaration = .{ .start = .start, .byte_len = 5 },
+            .declaration = .{ .start = 0, .len = 5 },
         } },
-    }, &writer);
+    }, .{ .source = "graph{\n  a   -> b" }, &writer);
 
     const text = writer.buffered();
     try expect(std.mem.indexOf(u8, text, "error[dot_parser:E.Validation.Operator.002]") != null);
@@ -1503,7 +1552,7 @@ test "unexpected details render the expected set, context, and relation" {
 
     try render(.{
         .code = .syntax_unexpected_end,
-        .span = spanAt(9, 1, 10, 0),
+        .span = spanAt(9, 0),
         .details = .{ .unexpected = .{
             .expected = diagnostic.ExpectedSet.init(.{
                 .semicolon = true,
@@ -1512,13 +1561,31 @@ test "unexpected details render the expected set, context, and relation" {
             }),
             .found = .end_of_input,
             .context = .statement,
-            .related = .{ .span = spanAt(6, 1, 7, 1), .role = .opened_here },
+            .related = .{ .span = spanAt(6, 1), .role = .opened_here },
         } },
-    }, &writer);
+    }, .{ .source = "graph { a" }, &writer);
 
     const text = writer.buffered();
     try expect(std.mem.indexOf(u8, text, "detail: while parsing a statement: expected ';' or an edge operator, found end of input") != null);
     try expect(std.mem.indexOf(u8, text, "note: unclosed delimiter opened at 1:7") != null);
+}
+
+test "without a source the compact form shows byte offsets" {
+    var buffer: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try render(.{
+        .code = .syntax_unexpected_end,
+        .span = spanAt(9, 0),
+        .details = .{ .unexpected = .{
+            .expected = diagnostic.ExpectedSet.init(.{ .semicolon = true }),
+            .found = .end_of_input,
+            .context = .statement,
+            .related = .{ .span = spanAt(6, 1), .role = .opened_here },
+        } },
+    }, .{}, &writer);
+    const text = writer.buffered();
+    try expect(std.mem.indexOf(u8, text, "  --> offset 9, len 0\n") != null);
+    try expect(std.mem.indexOf(u8, text, "note: unclosed delimiter opened at offset 6") != null);
 }
 
 test "boxed excerpt annotates both spans with role labels" {
@@ -1528,11 +1595,11 @@ test "boxed excerpt annotates both spans with role labels" {
 
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(14, 2, 7, 2),
+        .span = spanAt(14, 2),
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
             .found = .directed,
-            .declaration = spanAt(0, 1, 1, 5),
+            .declaration = spanAt(0, 5),
         } },
     }, 1, .{ .source_name = "example.dot", .source = source }, &writer);
 
@@ -1559,7 +1626,7 @@ test "non-adjacent excerpt lines are separated by a gap marker" {
 
     try renderBoxed(.{
         .code = .syntax_unexpected_end,
-        .span = spanAt(source.len, 3, 11, 0),
+        .span = spanAt(source.len, 0),
         .details = .{ .unexpected = .{
             .expected = diagnostic.ExpectedSet.init(.{
                 .semicolon = true,
@@ -1568,7 +1635,7 @@ test "non-adjacent excerpt lines are separated by a gap marker" {
             }),
             .found = .end_of_input,
             .context = .statement_terminator,
-            .related = .{ .span = spanAt(6, 1, 7, 1), .role = .opened_here },
+            .related = .{ .span = spanAt(6, 1), .role = .opened_here },
         } },
     }, 1, .{ .source = source }, &writer);
 
@@ -1588,11 +1655,11 @@ test "same-line annotations share one mark row and hang their labels" {
 
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(10, 1, 11, 2),
+        .span = spanAt(10, 2),
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
             .found = .directed,
-            .declaration = spanAt(0, 1, 1, 5),
+            .declaration = spanAt(0, 5),
         } },
     }, 1, .{ .source = source }, &writer);
 
@@ -1608,11 +1675,11 @@ test "same-line annotations share one mark row and hang their labels" {
     var ascii_writer = std.Io.Writer.fixed(&ascii_buffer);
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(10, 1, 11, 2),
+        .span = spanAt(10, 2),
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
             .found = .directed,
-            .declaration = spanAt(0, 1, 1, 5),
+            .declaration = spanAt(0, 5),
         } },
     }, 1, .{ .source = source, .style = .ascii }, &ascii_writer);
     const ascii = ascii_writer.buffered();
@@ -1627,13 +1694,13 @@ test "three same-line annotations hang leftmost lowest with continuations" {
     var writer = std.Io.Writer.fixed(&buffer);
     try renderBoxed(.{
         .code = .syntax_unexpected_token,
-        .span = spanAt(13, 1, 14, 1),
+        .span = spanAt(13, 1),
         .details = .{ .unexpected = .{
             .expected = diagnostic.ExpectedSet.init(.{ .identifier = true, .right_bracket = true }),
             .found = .right_brace,
             .context = .attribute_key,
-            .related = .{ .span = spanAt(10, 1, 11, 1), .role = .opened_here },
-            .suspect = .{ .span = spanAt(6, 1, 7, 1), .role = .misindented_close },
+            .related = .{ .span = spanAt(10, 1), .role = .opened_here },
+            .suspect = .{ .span = spanAt(6, 1), .role = .misindented_close },
         } },
     }, 1, .{ .source = source }, &writer);
     const text = writer.buffered();
@@ -1647,12 +1714,12 @@ test "three same-line annotations hang leftmost lowest with continuations" {
     var overlap_writer = std.Io.Writer.fixed(&overlap_buffer);
     try renderBoxed(.{
         .code = .syntax_unexpected_token,
-        .span = spanAt(8, 1, 9, 3),
+        .span = spanAt(8, 3),
         .details = .{ .unexpected = .{
             .expected = diagnostic.ExpectedSet.init(.{ .identifier = true }),
             .found = .identifier,
             .context = .statement,
-            .related = .{ .span = spanAt(6, 1, 7, 4), .role = .opened_here },
+            .related = .{ .span = spanAt(6, 4), .role = .opened_here },
         } },
     }, 1, .{ .source = source }, &overlap_writer);
     const overlap = overlap_writer.buffered();
@@ -1667,11 +1734,11 @@ test "underline padding mirrors tabs so carets stay aligned" {
 
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(11, 2, 4, 2),
+        .span = spanAt(11, 2),
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
             .found = .directed,
-            .declaration = spanAt(0, 1, 1, 5),
+            .declaration = spanAt(0, 5),
         } },
     }, 1, .{ .source = source }, &writer);
 
@@ -1685,7 +1752,7 @@ test "long lines are clamped to a window around the span" {
 
     try renderBoxed(.{
         .code = .syntax_unexpected_token,
-        .span = spanAt(8 + 80 + 1, 1, 8 + 80 + 2, 2),
+        .span = spanAt(8 + 80 + 1, 2),
         .details = .{ .unexpected = .{
             .expected = diagnostic.ExpectedSet.init(.{ .semicolon = true }),
             .found = .undirected_operator,
@@ -1710,11 +1777,11 @@ test "CR-only line endings excerpt the same line the tracker counted" {
 
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(14, 2, 7, 2),
+        .span = spanAt(14, 2),
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
             .found = .directed,
-            .declaration = spanAt(0, 1, 1, 5),
+            .declaration = spanAt(0, 5),
         } },
     }, 1, .{ .source = source }, &writer);
 
@@ -1731,11 +1798,11 @@ test "carriage returns never leak into excerpts" {
 
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(15, 2, 7, 2),
+        .span = spanAt(15, 2),
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
             .found = .directed,
-            .declaration = spanAt(0, 1, 1, 5),
+            .declaration = spanAt(0, 5),
         } },
     }, 1, .{ .source = source }, &writer);
 
@@ -1750,19 +1817,19 @@ test "without source bytes the box degrades to compact lines" {
 
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(13, 2, 7, 2),
+        .span = spanAt(13, 2),
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
             .found = .directed,
-            .declaration = .{ .start = .start, .byte_len = 5 },
+            .declaration = .{ .start = 0, .len = 5 },
         } },
     }, 1, .{ .source_name = "example.dot" }, &writer);
 
     const text = writer.buffered();
     try expect(std.mem.startsWith(u8, text, "┌─ Error 1: edge operator does not match the graph kind\n"));
-    try expect(std.mem.indexOf(u8, text, "│ example.dot:2:7\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│ example.dot:offset 13\n") != null);
     try expect(std.mem.indexOf(u8, text, "│ expected '--', found '->'\n") != null);
-    try expect(std.mem.indexOf(u8, text, "│ graph kind declared at 1:1\n") != null);
+    try expect(std.mem.indexOf(u8, text, "│ graph kind declared at offset 0\n") != null);
     try expect(std.mem.indexOf(u8, text, "│ Hint: ") != null);
     try expect(std.mem.indexOf(u8, text, "└─ E1 ─ [dot_parser:E.Validation.Operator.002]\n") != null);
 }
@@ -1773,7 +1840,7 @@ test "a mismatched source degrades instead of crashing the renderer" {
 
     try renderBoxed(.{
         .code = .syntax_unexpected_token,
-        .span = spanAt(100, 9, 9, 2),
+        .span = spanAt(100, 2),
     }, 1, .{ .source = "short" }, &writer);
 
     try expect(std.mem.indexOf(u8, writer.buffered(), "┌─ Error 1: unexpected token") != null);
@@ -1787,7 +1854,7 @@ test "unsupported constructs put the feature name in the headline" {
 
     try renderBoxed(.{
         .code = .profile_unsupported_feature,
-        .span = spanAt(8, 1, 9, 8),
+        .span = spanAt(8, 8),
         .details = .{ .unsupported_feature = .html_identifier },
     }, 1, .{ .source = source }, &writer);
 
@@ -1802,7 +1869,7 @@ test "verbose adds the alias and qualified compact ID to the closing line" {
 
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(13, 2, 7, 2),
+        .span = spanAt(13, 2),
     }, 2, .{ .verbose = true }, &writer);
 
     const qualified_id = Code.validation_operator_mismatch.qualifiedCompactId();
@@ -1818,11 +1885,11 @@ test "ascii style is 7-bit clean with the same structure" {
 
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(14, 2, 7, 2),
+        .span = spanAt(14, 2),
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
             .found = .directed,
-            .declaration = spanAt(0, 1, 1, 5),
+            .declaration = spanAt(0, 5),
         } },
     }, 1, .{ .source_name = "example.dot", .source = source, .style = .ascii }, &writer);
 
@@ -1841,7 +1908,7 @@ test "ansi colors follow the WDP palette and reset cleanly" {
 
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(13, 2, 7, 2),
+        .span = spanAt(13, 2),
     }, 1, .{ .color = .ansi }, &writer);
 
     const text = writer.buffered();
@@ -1855,7 +1922,7 @@ test "ansi colors follow the WDP palette and reset cleanly" {
     var plain_writer = std.Io.Writer.fixed(&plain_buffer);
     try renderBoxed(.{
         .code = .validation_operator_mismatch,
-        .span = spanAt(13, 2, 7, 2),
+        .span = spanAt(13, 2),
     }, 1, .{}, &plain_writer);
     try expect(std.mem.indexOf(u8, plain_writer.buffered(), "\x1b") == null);
 }
@@ -1865,8 +1932,8 @@ test "a list of two or more diagnostics closes with a summary block" {
     var writer = std.Io.Writer.fixed(&buffer);
 
     const diagnostics = [_]Diagnostic{
-        .{ .code = .validation_operator_mismatch, .span = spanAt(10, 2, 7, 2) },
-        .{ .code = .validation_operator_mismatch, .span = spanAt(21, 3, 7, 2) },
+        .{ .code = .validation_operator_mismatch, .span = spanAt(10, 2) },
+        .{ .code = .validation_operator_mismatch, .span = spanAt(21, 2) },
     };
     try renderBoxedList(&diagnostics, 3, .{}, &writer);
 
@@ -1883,7 +1950,7 @@ test "a single complete diagnostic renders no summary block" {
     var writer = std.Io.Writer.fixed(&buffer);
 
     const diagnostics = [_]Diagnostic{
-        .{ .code = .validation_operator_mismatch, .span = spanAt(10, 2, 7, 2) },
+        .{ .code = .validation_operator_mismatch, .span = spanAt(10, 2) },
     };
     try renderBoxedList(&diagnostics, 0, .{}, &writer);
     try expect(std.mem.indexOf(u8, writer.buffered(), "Summary") == null);
@@ -1908,9 +1975,9 @@ test "render shows non-printable bytes as hex only" {
 
     try render(.{
         .code = .syntax_invalid_byte,
-        .span = .{ .start = .start, .byte_len = 1 },
+        .span = .{ .start = 0, .len = 1 },
         .details = .{ .invalid_byte = 0x01 },
-    }, &writer);
+    }, .{}, &writer);
 
     const text = writer.buffered();
     try expect(std.mem.indexOf(u8, text, "0x01") != null);

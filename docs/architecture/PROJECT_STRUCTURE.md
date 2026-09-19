@@ -33,8 +33,8 @@ dot-parser/
 │   ├── lexer/
 │   │   ├── lexer.zig          (scanner backend selection + equivalence tests)
 │   │   ├── token.zig          (Token, Result, keyword folding shared by both)
-│   │   ├── scalar.zig         (one byte per credit; default without vectors)
-│   │   └── block.zig          (64-byte block masks; default with 128-bit vectors)
+│   │   ├── scalar.zig         (one byte per credit; the default)
+│   │   └── block.zig          (64-byte block masks; opt-in)
 │   ├── execution.zig          (feature flags and borrowed cancellation hook)
 │   ├── identifier.zig
 │   ├── syntax_event.zig
@@ -105,9 +105,12 @@ because they are convenient during development.
 
 Small source primitives:
 
-- `Location`: byte offset, physical line, and byte column.
-- `Span`: start and byte length, with optional starting location.
-- Newline tracking for LF, CRLF, and CR.
+- `Span` (also `Range`): start offset and byte length, eight bytes — the
+  only position the library stores, in tokens, events, diagnostics and
+  retained records alike.
+- `Location`: byte offset, physical line, and byte column, derived on demand
+  by `locate` / `Span.locate`, or through a `PositionCursor` for many.
+- One newline policy for LF, CRLF, and CR.
 
 This module performs no allocation and does not interpret Unicode display
 width.
@@ -133,9 +136,9 @@ payloads into wording and is dropped by the linker when unused.
 The raw-byte scanner: one interface, two implementations, chosen at compile
 time. It is the first subsystem to get its own directory, as its
 responsibilities grew to four files. `lexer.zig` selects the backend
-(`block.zig` where the target has 128-bit or wider vectors, `scalar.zig`
-elsewhere, or whichever the root file's `dot_parser_options.lexer_backend`
-names) and holds the differential tests that hold both to identical output.
+(`scalar.zig` unless the root file's `dot_parser_options.lexer_backend`
+names `block.zig`) and holds the differential tests that hold both to
+identical output.
 `token.zig` carries the `Token`, `Result` and keyword-folding definitions
 they share. `root.zig` selects `Token`, `Result`, ordinary `Lexer`
 and the backend enum for the public namespace; internal factories and scan
@@ -170,7 +173,7 @@ block scanner classifies each 64-byte block into bit masks with vector
 compares (byte classes, newlines, quotes with backslash parity carried across
 blocks, comment delimiters) and runs a token machine over the masks, advancing
 a whole run or delimiter search per step and never past the block; its state
-is 208 B against 104 B. The [execution contract](EXECUTION_CONTRACT.md) gives
+is 160 B against 56 B. The [execution contract](EXECUTION_CONTRACT.md) gives
 each backend's credit accounting, and the benches take `-Dlexer=scalar|block`
 to compare them.
 

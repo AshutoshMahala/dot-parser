@@ -40,11 +40,10 @@ pub const lexer = struct {
     pub const Result = lexer_impl.Result;
     /// The selected scanner (see `backend`).
     pub const Lexer = lexer_impl.Lexer;
-    /// Which scanner implementation this build uses: `.block` (64-byte
-    /// vector classification) where the target has 128-bit or wider
-    /// vectors, `.scalar` (one byte per step) elsewhere, unless the root
-    /// source file declares `pub const dot_parser_options = .{ .lexer_backend = ... }`.
-    /// Both give identical results.
+    /// Which scanner implementation this build uses: `.scalar` (one byte
+    /// per step) unless the root source file declares
+    /// `pub const dot_parser_options = .{ .lexer_backend = .block };` for
+    /// the 64-byte block scanner. Both give identical results.
     pub const Backend = lexer_impl.Backend;
     pub const backend = lexer_impl.backend;
     /// The backend a build gets without an override.
@@ -304,7 +303,7 @@ fn emitStorageDiagnostic(
     info: ?syntax_impl.StorageFailureInfo,
     delivery: diagnostic.Delivery,
 ) diagnostic.Delivery {
-    const span: location.Span = if (info) |i| i.span else .{ .start = .start, .byte_len = 0 };
+    const span: location.Span = if (info) |i| i.span else .{ .start = 0, .len = 0 };
     const d: diagnostic.Diagnostic = switch (storageFailure(err)) {
         .out_of_memory => .{
             .code = .resource_memory_exhausted,

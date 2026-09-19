@@ -98,7 +98,7 @@ test "quoted identifiers do not hide validation mismatches or unsafe excerpt byt
     try std.testing.expect(!checked.documentValid());
     const d = bag.items()[0];
     const at = std.mem.indexOf(u8, source, "->").?;
-    try std.testing.expectEqual(dot.location.locate(source, at), d.span.start);
+    try std.testing.expectEqual(@as(u32, @intCast(at)), d.span.start);
     var buffer: [2048]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
     try dot.console.renderBoxed(d, 1, .{ .source = source, .style = .ascii }, &writer);
@@ -122,9 +122,9 @@ test "comments work through fixed storage and preserve validation positions" {
     try std.testing.expectEqual(@as(usize, 1), bag.items().len);
     const failure = bag.items()[0];
     try std.testing.expectEqual(dot.Code.validation_operator_mismatch, failure.code);
-    try std.testing.expectEqual(@as(usize, 3), failure.span.start.line);
+    try std.testing.expectEqual(@as(usize, 3), failure.span.locate(source).line);
     try std.testing.expectEqualStrings("->", failure.span.slice(source));
-    try std.testing.expectEqual(@as(usize, 2), failure.details.operator_mismatch.declaration.start.line);
+    try std.testing.expectEqual(@as(usize, 2), failure.details.operator_mismatch.declaration.locate(source).line);
 
     var empty: dot.FixedDocumentStorage(.{}) = .{};
     const only_comments = dot.parseBorrowedIn("/* before */graph {// body\n}# after", .{ .document = empty.storage() }, dot.diagnostic.discard, .{ .max_statements = 0 });
@@ -144,8 +144,8 @@ test "unterminated comments abort both storage paths after partial construction"
     try std.testing.expectEqual(dot.Code.syntax_unterminated_construct, bag.items()[0].code);
     try std.testing.expectEqual(dot.diagnostic.UnterminatedConstruct.block_comment, bag.items()[0].details.unterminated);
     try std.testing.expectEqualStrings("/*", bag.items()[0].span.slice(source));
-    try std.testing.expectEqual(@as(usize, 2), bag.items()[0].span.start.line);
-    try std.testing.expectEqual(@as(usize, 6), bag.items()[0].span.start.byte_column);
+    try std.testing.expectEqual(@as(usize, 2), bag.items()[0].span.locate(source).line);
+    try std.testing.expectEqual(@as(usize, 6), bag.items()[0].span.locate(source).byte_column);
 
     var storage: dot.FixedDocumentStorage(.{ .statements = 1, .nodes = 1 }) = .{};
     var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
@@ -181,14 +181,14 @@ test "consumer can collect diagnostics through a fixed bag" {
 
     // Simulate what validating `graph { a -> b; c -> d; }` will emit.
     const declaration: dot.Span = .{
-        .start = .{ .byte_offset = 0, .line = 1, .byte_column = 1 },
-        .byte_len = 5,
+        .start = 0,
+        .len = 5,
     };
     try sink.emit(.{
         .code = .validation_operator_mismatch,
         .span = .{
-            .start = .{ .byte_offset = 10, .line = 2, .byte_column = 7 },
-            .byte_len = 2,
+            .start = 10,
+            .len = 2,
         },
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
@@ -199,8 +199,8 @@ test "consumer can collect diagnostics through a fixed bag" {
     try sink.emit(.{
         .code = .validation_operator_mismatch,
         .span = .{
-            .start = .{ .byte_offset = 21, .line = 3, .byte_column = 7 },
-            .byte_len = 2,
+            .start = 21,
+            .len = 2,
         },
         .details = .{ .operator_mismatch = .{
             .expected = .undirected,
@@ -220,9 +220,9 @@ test "consumer can collect diagnostics through a fixed bag" {
     );
     try std.testing.expectEqual(dot.Severity.err, first.code.severity());
     try std.testing.expect(first.code.severity().isBlocking());
-    try std.testing.expectEqual(@as(usize, 2), first.span.start.line);
+    try std.testing.expectEqual(@as(u32, 10), first.span.start);
     try std.testing.expect(
-        bag.items()[0].span.start.byte_offset < bag.items()[1].span.start.byte_offset,
+        bag.items()[0].span.start < bag.items()[1].span.start,
     );
 }
 
@@ -233,11 +233,11 @@ test "consumer can render a diagnostic into caller-owned memory" {
     try dot.console.render(.{
         .code = .profile_unsupported_feature,
         .span = .{
-            .start = .{ .byte_offset = 0, .line = 1, .byte_column = 1 },
-            .byte_len = 8,
+            .start = 0,
+            .len = 8,
         },
         .details = .{ .unsupported_feature = .html_identifier },
-    }, &writer);
+    }, .{}, &writer);
 
     const text = writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, text, "dot_parser:E.Profile.Feature.009") != null);
@@ -253,8 +253,8 @@ test "consumer can render boxed output in unicode and ascii styles" {
     const diagnostics = [_]dot.Diagnostic{.{
         .code = .syntax_unexpected_token,
         .span = .{
-            .start = .{ .byte_offset = 5, .line = 1, .byte_column = 6 },
-            .byte_len = 1,
+            .start = 5,
+            .len = 1,
         },
     }};
 
@@ -273,24 +273,28 @@ test "consumer can render boxed output in unicode and ascii styles" {
 test "consumer can bring their own reporter through the sink interface" {
     // A custom Sink that forwards diagnostics into the consumer's own
     // logging system — here, one line per diagnostic into a fixed buffer.
+    // Diagnostics carry byte offsets; the reporter derives line and column
+    // from the source it holds.
     const LineLogger = struct {
         writer: *std.Io.Writer,
+        source: []const u8,
         fn emit(context: ?*anyopaque, d: dot.Diagnostic) dot.DiagnosticSinkError!void {
             const self: *@This() = @ptrCast(@alignCast(context.?));
+            const at = d.span.locate(self.source);
             self.writer.print("{s} at {d}:{d}\n", .{
-                d.code.structured(), d.span.start.line, d.span.start.byte_column,
+                d.code.structured(), at.line, at.byte_column,
             }) catch return error.DiagnosticSinkFailure;
         }
     };
 
     var buffer: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
-    var logger: LineLogger = .{ .writer = &writer };
+    var logger: LineLogger = .{ .writer = &writer, .source = "a\nbc\nde\nfg" };
     const sink: dot.DiagnosticSink = .{ .context = &logger, .emit_fn = LineLogger.emit };
 
     try sink.emit(.{
         .code = .syntax_unexpected_end,
-        .span = .{ .start = .{ .byte_offset = 9, .line = 4, .byte_column = 2 }, .byte_len = 0 },
+        .span = .{ .start = 9, .len = 0 },
     });
 
     try std.testing.expectEqualStrings("E.Syntax.Grammar.031 at 4:2\n", writer.buffered());
@@ -351,9 +355,9 @@ test "milestone acceptance through the public façade" {
     const first = bag.items()[0];
     try std.testing.expectEqualStrings("E.Validation.Operator.002", first.code.structured());
     try std.testing.expectEqualStrings("->", first.span.slice(source));
-    try std.testing.expectEqual(@as(usize, 2), first.span.start.line);
+    try std.testing.expectEqual(@as(usize, 2), first.span.locate(source).line);
     try std.testing.expect(
-        first.span.start.byte_offset < bag.items()[1].span.start.byte_offset,
+        first.span.start < bag.items()[1].span.start,
     );
 }
 
@@ -745,7 +749,7 @@ test "invalid corpus fails with the expected diagnostic and terminates" {
 
         const failure = bag.items()[0];
         try std.testing.expectEqual(entry.code, failure.code);
-        try std.testing.expectEqual(entry.offset, failure.span.start.byte_offset);
+        try std.testing.expectEqual(entry.offset, failure.span.start);
         if (failure.code == .syntax_unterminated_construct) {
             try std.testing.expectEqual(entry.construct.?, failure.details.unterminated);
         }
@@ -835,7 +839,7 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
     for (bag.items(), second_bag.items()) |first_diag, second_diag| {
         try std.testing.expectEqual(first_diag.code, second_diag.code);
         try std.testing.expectEqual(first_diag.span.start, second_diag.span.start);
-        try std.testing.expectEqual(first_diag.span.byte_len, second_diag.span.byte_len);
+        try std.testing.expectEqual(first_diag.span.len, second_diag.span.len);
         // The typed payload too: same code at the same position with a
         // different Feature or Capacity resource is still a regression.
         try std.testing.expectEqual(first_diag.details, second_diag.details);

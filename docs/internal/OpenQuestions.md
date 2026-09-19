@@ -2,7 +2,7 @@
 
 Last reconciled: 2026-09-18 (diagnostics overhaul).
 
-Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q38)
+Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q39)
 are stable: they are never renumbered, deleted, or reused, and new questions
 append with fresh numbers. Answered questions are not removed — the
 **Decided** section doubles as the project's decision log, each entry naming
@@ -24,31 +24,50 @@ authoritative for what the current release actually processes.
 
 ## Decided
 
+**Q39 — Are line and column tracked while scanning, or derived on demand?**
+**Decided (2026-09-18):** derived. Every position the library stores is a
+`Span` — byte offset and length, eight bytes, the same type as the retained
+records' `Range` — in tokens, events, scratch frames and diagnostics alike;
+`location.locate` / `Span.locate` derive line and byte column from the
+source for one position and `PositionCursor` for many (queries in any
+order, one shared scan when they ascend), and the renderers do so when
+given the source, printing offsets otherwise. Measured on Apple silicon:
+`Span` 16 → 8 B, token 20 → 12 B, `Diagnostic` 112 → 80 B, nesting frame
+164 → 116 B, scalar scanner 104 → 56 B, block scanner 208 → 160 B, parser
+state 544 → 368 B (scalar) and 648 → 472 B (block), fixed session 1264 →
+1080 B; the 200k-statement bench 275 → 336 MiB/s default and 326 → 397
+hinted with the scalar scanner (the per-byte tracker was a fifth of its
+lexing time), the corpus files 3–33% faster, the empty-subgraph fixtures
+21–26% faster; the block scanner gains 2–20%.
+No numeric accounting changes. *(Embodied: `src/location.zig`,
+`src/lexer/`, `src/console.zig` `Positions`; R-MEM-008 and R-DIAG-001
+amended.)*
+
 **Q38 — Which scanner backend is the default, and how is a backend chosen?**
 **Decided (2026-09-18):** two implementations behind one interface, selected
-at compile time: the block scanner (64-byte vector classification into bit
-masks, tokens extracted from the masks, backslash parity carried across
-blocks) where the target has 128-bit or wider vectors
-(`std.simd.suggestVectorLength(u8) >= 16`), the scalar byte-at-a-time
-scanner elsewhere; a root file's `dot_parser_options.lexer_backend` pins
-either. Evidence, at the parse level on Apple silicon: running to
-completion the block scanner is 18–21% faster on comment-heavy and 14–18%
-on deeply nested sources, several times faster on long runs of one byte
-class, equal on the 200k-statement bench, 4–8% slower on sources of short
-bare and quoted tokens; under work budgets it needs 2–6x fewer credits per
-input and metered sessions run 7–55% faster at 256 credits per call (2–4x
-at one credit), 8–14% slower only on the degenerate `a;a;a;` session bench.
-Costs: 208 B of scanner state against 104 B (each machine and session
+at compile time: the scalar byte-at-a-time scanner on every target, with
+the block scanner (64-byte vector classification into bit masks, tokens
+extracted from the masks, backslash parity carried across blocks) opt-in
+through a root file's `dot_parser_options.lexer_backend`. Evidence at the
+parse level on Apple silicon, with positions derived on demand (Q39):
+running to completion the scalar scanner is 3–15% faster on every corpus
+file and on the 200k-statement bench (336 vs 292 MiB/s), and faster at 256
+credits per call; the block scanner wins only at very small budgets (2–4x
+at one credit per call, needing 2–6x fewer credits for the same input) and
+on long runs of one byte class (2x on the long-identifier fixture). Costs
+of block: 160 B of scanner state against 56 B (each machine and session
 +104 B); code 6–8 KB larger per native build and 9 KB on wasm32 with
-simd128. Without a vector unit the compares lower to byte loops: 1.9x
+simd128; without a vector unit its compares lower to byte loops, 1.9x
 slower than scalar on wasm32 under V8 and 27 KB (wasm32) to 52 KB
-(riscv32) larger, hence the scalar default there; 256-bit targets are
-unmeasured. The scalar scanner also stays as the differential oracle: the
-equivalence tests in `src/lexer/lexer.zig` (fixtures, truncations, block shifts,
-random streams with 64- and 32-bit draws, budget partitions) found two
-block-scanner bugs before release, and the block tests run on wasm32 with
-and without simd128 under Node's WASI. The execution contract accounts
-credits per backend. *(Embodied: `src/lexer/`; R-MOD-010, Q16, Q27.)*
+(riscv32) larger. An earlier measurement, before Q39 removed the per-byte
+tracker, had block ahead on comment-heavy and nested inputs and on every
+bounded session; the tracker was most of that gap. The scalar scanner is
+also the differential oracle: the equivalence tests in `src/lexer/lexer.zig`
+(fixtures, truncations, block shifts, random streams with 64- and 32-bit
+draws, budget partitions) found two block-scanner bugs before release, and
+the whole suite runs on wasm32 with and without simd128 under Node's WASI.
+The execution contract accounts credits per backend. *(Embodied:
+`src/lexer/`; R-MOD-010, Q16, Q27.)*
 
 **Q34 — How are subgraph edge endpoints retained without inflating ordinary edges?**
 Use separate generalized owner/link pools and a uniform public `Endpoint`
@@ -264,7 +283,7 @@ whether convenience APIs should ship with non-trivial defaults is open.
 
 **Q16 — What size thresholds establish that disabling a feature removed its
 cost?**
-Parser-state size is regression-guarded (≤ 640 B with the scalar scanner, currently 544 B native with 32-bit positions; ≤ 768 B with the block scanner, 648 B measured) and baselines exist;
+Parser-state size is regression-guarded (≤ 512 B with the scalar scanner, currently 368 B native with offset-only positions; ≤ 640 B with the block scanner, 472 B measured) and baselines exist;
 per-profile binary-size thresholds await the profile work. *(Embodied:
 `docs/BASELINES.md`; parser-size test.)*
 
@@ -443,11 +462,14 @@ field out stays with the profile slice. *(Embodied: `diagnostic.Fix`,
   Q10 baseline reconciled to Graphviz 16.0.0. Added Q35–Q37 (validation
   policy and mixed graphs, lenient syntax, fix suggestions) as open
   questions with their agreed direction.
-- 2026-09-18 — Scanner backends: added Q38 (block scanner as a second
-  implementation; default where the target has 128-bit vectors, scalar
-  elsewhere, on parse-level, bounded-session, code-size and no-vector-unit
-  measurements); Q16 gains the block-machine guard (768 B, 648 B measured);
-  Q27's contract now accounts lexical credits per backend.
+- 2026-09-18 — Scanner backends: added Q38 (block scanner as an opt-in
+  second implementation; the default was block on vector targets until
+  Q39 removed the per-byte tracker and scalar pulled ahead everywhere but
+  tiny budgets and long runs); Q16 gains the block-machine guard; Q27's
+  contract now accounts lexical credits per backend.
+- 2026-09-18 — Lazy positions: added Q39 (offsets only; line and column
+  derived on demand); Q16 guards lowered to 512/640 B (368/472 measured);
+  R-MEM-008 and R-DIAG-001 amended.
 
 - 2026-09-12 — Q24: removed the premature diagnostic stability exception;
   experimental 0.x now has no backward-compatibility retention requirement.

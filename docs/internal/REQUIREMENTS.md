@@ -111,9 +111,9 @@ inside the library. A diagnostic should be able to include:
 - Expected construct when practical.
 
 Diagnostic richness may be configurable so embedded users do not pay for
-metadata they do not need. The parser tracks its current byte offset, physical
-line, and byte column as constant-size state. Retaining locations for syntax
-nodes is separate and optional.
+metadata they do not need. The parser tracks only its current byte offset;
+physical line and byte column are derived from the source when a position is
+shown. Retaining locations for syntax nodes is separate and optional.
 
 ### R-FUNC-006: Offer syntax and intermediate representations separately
 
@@ -438,8 +438,10 @@ merge/lowering phase.
 
 ### R-MEM-008: Source-location retention is optional
 
-Current byte offset, line, and byte-column counters require only constant parser
-state. Diagnostics copy or stream the small location they need. Per-token and
+The parser's only position state is its byte offset. Tokens, events,
+diagnostics and retained records carry byte offsets and lengths; line and
+byte column are derived from the source on demand (`location.locate`, or a
+`PositionCursor` for many positions). Per-token and
 per-node spans, source excerpts, line indexes, and Unicode/display columns must
 live in optional caller-provided side tables or tooling components. They can be
 omitted from a build, reset with an arena, or discarded after diagnostics have
@@ -558,8 +560,8 @@ later over the same raw bytes. UTF-16 is not an input encoding of the byte lexer
 support would require an explicit decoding source adapter, with clearly defined
 mapping between original and decoded source offsets.
 
-Physical line tracking treats LF, CRLF, and standalone CR according to one
-documented policy while preserving byte offsets. Canonical byte column counts
+Physical line derivation treats LF, CRLF, and standalone CR according to one
+documented policy; byte offsets are what is stored. Canonical byte column counts
 bytes; a tab therefore advances it by one byte. Configurable tab stops and
 Unicode display-cell columns belong to diagnostic presentation, where the
 original line can be expanded for a terminal or editor.

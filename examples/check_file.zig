@@ -64,7 +64,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (stdout_file.supportsAnsiEscapeCodes(io) catch false) .ansi else .none;
 
     if (compact) {
-        for (bag.items()) |d| try dot.console.render(d, stdout);
+        for (bag.items()) |d| try dot.console.render(d, .{ .source = source }, stdout);
     } else {
         try dot.console.renderBoxedList(bag.items(), bag.omitted, .{
             .source_name = if (path) |p| std.fs.path.basename(p) else "sample.dot",

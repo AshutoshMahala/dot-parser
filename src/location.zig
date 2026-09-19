@@ -1,4 +1,10 @@
-//! Source positions (milestone 1, step 1).
+//! Source positions.
+//!
+//! The scanners, the parser, the events and the diagnostics carry byte
+//! offsets only: a `Span` is an offset and a length, eight bytes. Physical
+//! line and byte column are derived from the source when something shows
+//! them — `locate` for one position, `PositionCursor` for many — and never
+//! tracked per byte while scanning (R-MEM-008).
 //!
 //! Conventions, tested below:
 //! - `byte_offset` is zero-based.
@@ -10,18 +16,53 @@
 //!   concern outside this module.
 //! - LF, CRLF, and standalone CR each terminate one physical line. CRLF
 //!   advances the byte offset by two but the line counter by one.
-//!
 //! - Positions are 32-bit. A source is at most `max_source_len` bytes; the
-//!   scanner refuses longer input before reading it. Every per-token and
-//!   per-scope value the parser copies carries positions, so their width
-//!   is a throughput and footprint decision, not just a range one.
+//!   scanner refuses longer input before reading it.
 //!
 //! This module performs no allocation and does not interpret Unicode.
+
+const std = @import("std");
 
 /// The longest source the library scans: positions are `u32`.
 pub const max_source_len: usize = std.math.maxInt(u32);
 
-/// A position in the source, immediately before the byte at `byte_offset`.
+/// A contiguous byte range of the source: zero-based start offset and byte
+/// length. It is the only position the library stores — in tokens, events,
+/// diagnostics and retained records alike (the retained records call it
+/// `Range`). Spans borrow nothing themselves; they are only meaningful
+/// together with the source bytes the caller keeps alive.
+pub const Span = struct {
+    start: u32,
+    len: u32,
+
+    /// Zero-based offset one past the last byte. Computed in u64, so it
+    /// cannot overflow even for hand-constructed spans on 32-bit targets.
+    pub fn endOffset(self: Span) u64 {
+        return @as(u64, self.start) + self.len;
+    }
+
+    /// The source bytes this span covers. `source` must be the buffer the
+    /// span was produced from; safe builds assert the span lies within it
+    /// (overflow-free bounds check) rather than slicing out of bounds.
+    pub fn slice(self: Span, source: []const u8) []const u8 {
+        const end = self.endOffset();
+        std.debug.assert(end <= source.len);
+        return source[self.start..@intCast(end)];
+    }
+
+    /// The full position of the span's first byte, derived by scanning
+    /// `source` from its start: O(start). For many spans, or spans that
+    /// arrive in source order, use a `PositionCursor`.
+    pub fn locate(self: Span, source: []const u8) Location {
+        return resolve(source, self.start);
+    }
+};
+
+/// The retained-record name for the same type (R-MEM-008).
+pub const Range = Span;
+
+/// A resolved position, immediately before the byte at `byte_offset`:
+/// derived from the source on demand, never stored by the parser.
 pub const Location = struct {
     /// Zero-based byte offset from the start of the source.
     byte_offset: u32,
@@ -34,100 +75,68 @@ pub const Location = struct {
     pub const start: Location = .{ .byte_offset = 0, .line = 1, .byte_column = 1 };
 };
 
-/// A contiguous byte range of the source, anchored at its starting location.
-///
-/// Spans borrow nothing themselves; they are only meaningful together with
-/// the source bytes the caller keeps alive.
-pub const Span = struct {
-    start: Location,
-    byte_len: u32,
-
-    /// Zero-based offset one past the last byte of the span.
-    pub fn endOffset(self: Span) usize {
-        return @as(usize, self.start.byte_offset) + self.byte_len;
-    }
-
-    /// The source bytes this span covers. `source` must be the buffer the
-    /// span was produced from; safe builds assert the span lies within it
-    /// (overflow-free bounds check) rather than slicing out of bounds.
-    pub fn slice(self: Span, source: []const u8) []const u8 {
-        std.debug.assert(self.start.byte_offset <= source.len);
-        std.debug.assert(self.byte_len <= source.len - self.start.byte_offset);
-        return source[self.start.byte_offset..][0..self.byte_len];
-    }
-};
-
-/// A compact borrowed source range: byte offset and length only, 8 bytes.
-///
-/// This is the retained-data representation (R-MEM-008): full positions —
-/// line and column — are not stored per retained element; they are derived
-/// on demand via `locate` (or, later, an optional source-index side table).
-/// Spans and ranges share the 32-bit domain, so narrowing cannot fail.
-pub const Range = struct {
-    start: u32,
-    len: u32,
-
-    /// Zero-based offset one past the last byte of the range. Computed in
-    /// u64, so it cannot overflow even for hand-constructed ranges on
-    /// 32-bit targets.
-    pub fn endOffset(self: Range) u64 {
-        return @as(u64, self.start) + self.len;
-    }
-
-    /// The source bytes this range covers. `source` must be the buffer the
-    /// range was produced from; safe builds assert the range lies within it
-    /// (overflow-free bounds check) rather than slicing out of bounds.
-    pub fn slice(self: Range, source: []const u8) []const u8 {
-        const end = self.endOffset();
-        std.debug.assert(end <= source.len);
-        // The narrowing is sound because of the assert: end <= source.len,
-        // and a slice length always fits usize.
-        return source[self.start..@intCast(end)];
-    }
-
-    /// The range a span covers. Positions are already 32-bit, so this is
-    /// a projection, never a narrowing.
-    pub fn fromSpan(span: Span) Range {
-        return .{ .start = span.start.byte_offset, .len = span.byte_len };
-    }
-
-    /// Rehydrate a full span, deriving line and column by scanning `source`
-    /// (O(start); intended for diagnostic emission, where positions are
-    /// needed rarely).
-    pub fn toSpan(self: Range, source: []const u8) Span {
-        return .{ .start = locate(source, self.start), .byte_len = self.len };
-    }
-};
-
-/// Recompute the full location of `byte_offset` by scanning `source` from
-/// the start. O(byte_offset) — the deliberate trade of the compact-range
-/// policy: retained data stays small and positions are computed only when
-/// a diagnostic or tool actually needs one (R-MEM-008).
+/// The full position of `byte_offset`, scanning `source` from the start:
+/// O(byte_offset). The deliberate trade of storing offsets only: positions
+/// cost nothing until a diagnostic or a tool actually shows one.
 pub fn locate(source: []const u8, byte_offset: usize) Location {
+    return resolve(source, byte_offset);
+}
+
+fn resolve(source: []const u8, byte_offset: usize) Location {
     std.debug.assert(byte_offset <= source.len and byte_offset <= max_source_len);
     var tracker: Tracker = .{};
     tracker.advanceSlice(source[0..byte_offset]);
     return tracker.location;
 }
 
-/// Derives full positions for ascending ranges incrementally: one shared
-/// scan instead of one scan per query, so a source-ordered pass (like
-/// validation) pays O(source) total no matter how many diagnostics it
-/// emits.
+/// Derives full positions for many offsets with one shared scan. Queries
+/// at or past the scan advance it, so a source-ordered pass pays O(source)
+/// in total however many positions it asks for. A query behind the scan is
+/// answered from whichever end is nearer — the start of the source or the
+/// scan's own position — so a related span that points back a little
+/// (an opener, a declaration near the top) costs a little.
 pub const PositionCursor = struct {
     tracker: Tracker = .{},
 
-    /// The full span of `range`. Ranges must be requested in non-decreasing
-    /// `start` order against the same `source` the ranges were produced from.
-    pub fn spanFor(self: *PositionCursor, source: []const u8, range: Range) Span {
-        std.debug.assert(range.start >= self.tracker.location.byte_offset);
-        self.tracker.advanceSlice(source[self.tracker.location.byte_offset..range.start]);
-        return .{ .start = self.tracker.location, .byte_len = range.len };
+    pub fn locate(self: *PositionCursor, source: []const u8, byte_offset: u32) Location {
+        std.debug.assert(byte_offset <= source.len);
+        const high = self.tracker.location.byte_offset;
+        if (byte_offset >= high) {
+            self.tracker.advanceSlice(source[high..byte_offset]);
+            return self.tracker.location;
+        }
+        if (byte_offset < high - byte_offset) return resolve(source, byte_offset);
+        return behind(source, self.tracker.location, byte_offset);
     }
 };
 
-/// Constant-size newline-aware position tracker (R-MEM-008:
-/// tracking the current position needs only this struct, never a line index).
+/// The position of `byte_offset` given the position `high` of a later
+/// offset: lines are counted back over `source[byte_offset..high]` and the
+/// column from the line start. Same terminator policy as `Tracker`: LF,
+/// CRLF and standalone CR each end one line.
+fn behind(source: []const u8, high: Location, byte_offset: u32) Location {
+    var lines: u32 = 0;
+    var i: usize = byte_offset;
+    while (i < high.byte_offset) : (i += 1) {
+        switch (source[i]) {
+            '\r' => lines += 1,
+            '\n' => if (i == 0 or source[i - 1] != '\r') {
+                lines += 1;
+            },
+            else => {},
+        }
+    }
+    var line_start: usize = byte_offset;
+    while (line_start > 0 and source[line_start - 1] != '\n' and source[line_start - 1] != '\r') line_start -= 1;
+    return .{
+        .byte_offset = byte_offset,
+        .line = high.line - lines,
+        .byte_column = @intCast(byte_offset - line_start + 1),
+    };
+}
+
+/// Constant-size newline-aware position tracker: the scan behind `locate`
+/// and `PositionCursor`. Nothing in the parser runs one per byte.
 pub const Tracker = struct {
     location: Location = .start,
     /// True when the previous byte was CR, so a following LF is the second
@@ -165,7 +174,6 @@ pub const Tracker = struct {
 // Tests
 // ---------------------------------------------------------------------------
 
-const std = @import("std");
 const expectEqual = std.testing.expectEqual;
 
 fn expectLocation(tracker: Tracker, byte_offset: usize, line: usize, byte_column: usize) !void {
@@ -256,43 +264,24 @@ test "location after every byte boundary of a mixed input" {
     }
 }
 
-test "span end offset and slicing" {
-    const source = "graph { a -- b; }";
-    const span: Span = .{
-        .start = .{ .byte_offset = 8, .line = 1, .byte_column = 9 },
-        .byte_len = 1,
-    };
-    try expectEqual(@as(usize, 9), span.endOffset());
-    try std.testing.expectEqualStrings("a", span.slice(source));
-}
-
-test "range slices and converts to and from spans" {
+test "span end offset, slicing and locating" {
     const source = "graph {\n  a -- b;\n}";
-    const span: Span = .{
-        .start = .{ .byte_offset = 10, .line = 2, .byte_column = 3 },
-        .byte_len = 1,
-    };
-
-    const range = Range.fromSpan(span);
-    try expectEqual(@as(u32, 10), range.start);
-    try expectEqual(@as(u64, 11), range.endOffset());
-    try std.testing.expectEqualStrings("a", range.slice(source));
-
-    // Rehydration derives the identical full position by scanning.
-    try expectEqual(span, range.toSpan(source));
+    const span: Span = .{ .start = 10, .len = 1 };
+    try expectEqual(@as(u64, 11), span.endOffset());
+    try std.testing.expectEqualStrings("a", span.slice(source));
+    try expectEqual(Location{ .byte_offset = 10, .line = 2, .byte_column = 3 }, span.locate(source));
+    // Ranges are spans: the retained records store the same eight bytes.
+    const range: Range = span;
+    try expectEqual(span, range);
 }
 
-test "positions are 32-bit and the boundary span still converts" {
+test "positions are 32-bit and the boundary span still fits" {
     try expectEqual(@as(usize, std.math.maxInt(u32)), max_source_len);
     try expectEqual(@as(usize, 12), @sizeOf(Location));
-    try expectEqual(@as(usize, 16), @sizeOf(Span));
+    try expectEqual(@as(usize, 8), @sizeOf(Span));
     // The last representable byte: end == maxInt(u32).
-    const boundary: Span = .{
-        .start = .{ .byte_offset = std.math.maxInt(u32) - 1, .line = 1, .byte_column = 1 },
-        .byte_len = 1,
-    };
-    try expectEqual(@as(u64, std.math.maxInt(u32)), Range.fromSpan(boundary).endOffset());
-    try expectEqual(@as(usize, std.math.maxInt(u32)), boundary.endOffset());
+    const boundary: Span = .{ .start = std.math.maxInt(u32) - 1, .len = 1 };
+    try expectEqual(@as(u64, std.math.maxInt(u32)), boundary.endOffset());
 }
 
 test "locate recomputes positions across newline styles" {
@@ -306,10 +295,24 @@ test "locate recomputes positions across newline styles" {
 test "position cursor matches locate for ascending queries" {
     const source = "graph {\n  a -> b;\r\n  c -> d;\n}";
     var cursor: PositionCursor = .{};
-    for ([_]u32{ 0, 12, 23 }) |offset| {
-        const range: Range = .{ .start = offset, .len = 2 };
-        const span = cursor.spanFor(source, range);
-        try expectEqual(locate(source, offset), span.start);
-        try expectEqual(@as(usize, 2), span.byte_len);
+    for ([_]u32{ 0, 12, 23, 23, 30 }) |offset| {
+        try expectEqual(locate(source, offset), cursor.locate(source, offset));
+    }
+}
+
+test "position cursor matches locate for queries in any order" {
+    // Every newline style, including a CRLF split by a query, and queries
+    // that jump back both near the scan and near the start.
+    const source = "ab\r\ncd\r\n\n\ref\rg\n\nhi\r\n\r\njk";
+    var cursor: PositionCursor = .{};
+    var prng = std.Random.DefaultPrng.init(0x706f73);
+    for (0..2000) |_| {
+        const offset = prng.random().uintAtMost(u32, @intCast(source.len));
+        try expectEqual(locate(source, offset), cursor.locate(source, offset));
+    }
+    // Every position after the scan sits at the end.
+    _ = cursor.locate(source, @intCast(source.len));
+    for (0..source.len + 1) |offset| {
+        try expectEqual(locate(source, offset), cursor.locate(source, @intCast(offset)));
     }
 }

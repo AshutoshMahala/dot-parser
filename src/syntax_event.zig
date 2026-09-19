@@ -424,8 +424,8 @@ test "recording sink preserves event order and borrowed spans" {
     const span = struct {
         fn at(offset: u32, len: u32) location.Span {
             return .{
-                .start = .{ .byte_offset = offset, .line = 1, .byte_column = offset + 1 },
-                .byte_len = len,
+                .start = offset,
+                .len = len,
             };
         }
     }.at;
@@ -464,7 +464,7 @@ test "abort after begin models a failed parse" {
     var sink: RecordingSink(4) = .{};
     try sink.beginDocument(.{
         .kind = .undigraph,
-        .keyword_span = .{ .start = .start, .byte_len = 5 },
+        .keyword_span = .{ .start = 0, .len = 5 },
     });
     sink.abortDocument(.invalid_syntax);
 
@@ -478,11 +478,11 @@ test "sink failure propagates through the fallible methods" {
     var sink: RecordingSink(1) = .{};
     try sink.beginDocument(.{
         .kind = .undigraph,
-        .keyword_span = .{ .start = .start, .byte_len = 5 },
+        .keyword_span = .{ .start = 0, .len = 5 },
     });
     // Capacity exhausted: the next fallible event reports the sink's error.
     const result = sink.nodeStatement(.{
-        .identifier = .{ .start = .start, .byte_len = 1 },
+        .identifier = .{ .start = 0, .len = 1 },
     });
     try std.testing.expectError(error.EventCapacityExceeded, result);
 }
@@ -491,10 +491,10 @@ test "abort is always recorded, even when event capacity is exhausted" {
     var sink: RecordingSink(1) = .{};
     try sink.beginDocument(.{
         .kind = .undigraph,
-        .keyword_span = .{ .start = .start, .byte_len = 5 },
+        .keyword_span = .{ .start = 0, .len = 5 },
     });
     try std.testing.expectError(error.EventCapacityExceeded, sink.nodeStatement(.{
-        .identifier = .{ .start = .start, .byte_len = 1 },
+        .identifier = .{ .start = 0, .len = 1 },
     }));
 
     // The parser reacts to a sink failure by aborting; the terminal event
@@ -512,7 +512,7 @@ test "zero-capacity sink still records its terminal event" {
     var sink: RecordingSink(0) = .{};
     try std.testing.expectError(error.EventCapacityExceeded, sink.beginDocument(.{
         .kind = .undigraph,
-        .keyword_span = .{ .start = .start, .byte_len = 5 },
+        .keyword_span = .{ .start = 0, .len = 5 },
     }));
     sink.abortDocument(.sink_failure);
     try expectEqual(@as(usize, 1), sink.recorded().len);

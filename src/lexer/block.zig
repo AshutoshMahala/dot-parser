@@ -55,9 +55,6 @@ const Masks = struct {
     blank: u64,
     /// LF or CR bytes.
     newline_byte: u64,
-    /// Line-terminator events, one per physical line end: an LF, or a CR
-    /// not followed by LF (CRLF is one event, carried by its LF).
-    newline: u64,
     /// [A-Za-z0-9_] and bytes >= 0x80.
     ident: u64,
     digit: u64,
@@ -123,9 +120,6 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         source: []const u8,
         /// Next byte to consider.
         cursor: u32 = 0,
-        line: u32 = 1,
-        /// Offset of the first byte of the current line (after its terminator).
-        line_start: u32 = 0,
         /// The classified block, when `classified`; always 64-aligned.
         block_start: u32 = 0,
         masks: Masks = undefined,
@@ -137,11 +131,11 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         part: NumeralPart = .integral,
         saw_high: bool = false,
         /// Start of the token being built (or the failing token).
-        anchor: location.Location = .start,
+        anchor: u32 = 0,
         /// Failure span start: a quote or comment opener, or the bad byte.
-        opener: location.Location = .start,
+        opener: u32 = 0,
         /// One past the last closing quote of the current quoted token.
-        quote_end: location.Location = .start,
+        quote_end: u32 = 0,
         /// First byte of a block comment's body (after `/*`).
         body_start: u32 = 0,
         /// The most recently completed token.
@@ -194,8 +188,9 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             }
         }
 
-        pub fn here(self: *const Self) location.Location {
-            return .{ .byte_offset = self.cursor, .line = self.line, .byte_column = self.cursor - self.line_start + 1 };
+        /// The byte offset the scanner is at.
+        pub fn here(self: *const Self) u32 {
+            return self.cursor;
         }
 
         /// The diagnostic for the latched failure; see the scalar scanner.
@@ -203,10 +198,10 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             std.debug.assert(self.terminal != .none and self.terminal != .eof);
             if (self.terminal == .oversize) return .{
                 .code = .resource_capacity_exhausted,
-                .span = .{ .start = .start, .byte_len = 0 },
+                .span = .{ .start = 0, .len = 0 },
                 .details = .{ .capacity = .{ .resource = .source_range, .limit = location.max_source_len } },
             };
-            const span: location.Span = .{ .start = self.opener, .byte_len = self.terminal_len };
+            const span: location.Span = .{ .start = self.opener, .len = self.terminal_len };
             return .{
                 .code = switch (self.terminal) {
                     .invalid => .syntax_invalid_byte,
@@ -256,8 +251,8 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
 
         /// Error-recovery support; same policy as the scalar scanner.
         pub fn resumeAfterFailure(self: *Self) void {
-            const anchor = self.anchor.byte_offset;
-            const start = self.opener.byte_offset;
+            const anchor = self.anchor;
+            const start = self.opener;
             const target: u32 = switch (self.terminal) {
                 .block, .quote => @intCast(self.source.len),
                 .concat => start,
@@ -286,15 +281,6 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             const lf = eq(v, '\n') & valid;
             const cr = eq(v, '\r') & valid;
             const blank = (eq(v, ' ') | eq(v, '\t')) & valid;
-            // A CR directly followed by LF hands its event to the LF; a CR in
-            // the last cell looks at the next source byte (examined, so it
-            // counts toward the frontier).
-            var cr_before_lf = (lf >> 1) & cr;
-            const last_cell: u64 = @as(u64, 1) << 63;
-            if (cr & last_cell != 0 and n == block_len and start + block_len < self.source.len) {
-                if (metered) self.source_frontier = @max(self.source_frontier, start + block_len + 1);
-                if (self.source[start + block_len] == '\n') cr_before_lf |= last_cell;
-            }
             const digit = ge(v, '0') & le(v, '9') & valid;
             const high = ge(v, 0x80) & valid;
             const alpha = (ge(v, 'a') & le(v, 'z')) | (ge(v, 'A') & le(v, 'Z'));
@@ -304,7 +290,6 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 .ws = blank | lf | cr,
                 .blank = blank,
                 .newline_byte = lf | cr,
-                .newline = lf | (cr & ~cr_before_lf),
                 .ident = (alpha | digit | eq(v, '_') | high) & valid,
                 .digit = digit,
                 .high = high,
@@ -341,24 +326,13 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             return self.cursor + @ctz(r);
         }
 
-        /// Move forward within the block, counting the line events passed.
+        /// Move forward within the block.
         fn advanceTo(self: *Self, target: u32) void {
             std.debug.assert(target >= self.cursor and target <= self.blockEnd());
-            const width: u6 = @intCast(@min(target - self.cursor, 63));
-            if (target == self.cursor) return;
-            const low: u6 = @intCast(self.cursor - self.block_start);
-            // Bits [low, low + width'), where width' is the true width (≤ 64).
-            const true_width = target - self.cursor;
-            const range: u64 = if (true_width == 64) std.math.maxInt(u64) else ((@as(u64, 1) << width) - 1) << low;
-            const events = self.masks.newline & range;
-            if (events != 0) {
-                self.line += @popCount(events);
-                self.line_start = self.block_start + (63 - @clz(events)) + 1;
-            }
             self.cursor = target;
         }
 
-        /// Skip forward across blocks (recovery), keeping line tracking exact.
+        /// Skip forward across blocks (recovery).
         fn skipTo(self: *Self, target: u32) void {
             while (self.cursor < target) {
                 if (!self.classified or self.cursor >= self.block_start + block_len) {
@@ -368,8 +342,8 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             }
         }
 
-        /// Move to a saved location (backwards or forwards within the source
-        /// already seen). The saved location follows a closing quote or is a
+        /// Move to a saved offset (backwards or forwards within the source
+        /// already seen). The saved offset follows a closing quote or is a
         /// token start, so no escape or comment state crosses it. Within the
         /// classified block nothing else changes: the backslash parity the
         /// block left behind still describes its last byte and must reach
@@ -377,10 +351,8 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         /// dropped and re-derived; the parity restarts at zero, which is
         /// exact for every byte the scanner can still visit (a byte at a
         /// token start or after a closing quote is never escaped).
-        fn restore(self: *Self, loc: location.Location) void {
-            self.cursor = loc.byte_offset;
-            self.line = loc.line;
-            self.line_start = loc.byte_offset - (loc.byte_column - 1);
+        fn restore(self: *Self, offset: u32) void {
+            self.cursor = offset;
             if (!self.classified or self.cursor < self.block_start or self.cursor >= self.block_start + block_len) {
                 self.classified = false;
                 self.prev_escaped = false;
@@ -583,7 +555,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             if (self.cursor == self.blockEnd()) return null;
             const b = self.source[self.cursor];
             if (b == '>' or b == '-') {
-                const len = self.cursor + 1 - self.anchor.byte_offset;
+                const len = self.cursor + 1 - self.anchor;
                 return self.fail(.operator_spaced, self.anchor, len, b);
             }
             return self.fail(.operator, self.anchor, 1, self.found);
@@ -602,12 +574,12 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         }
 
         fn finishIdent(self: *Self) ?Result {
-            const len = self.cursor - self.anchor.byte_offset;
+            const len = self.cursor - self.anchor;
             if (self.saw_high) return self.fail(.non_ascii, self.anchor, len, null);
             var tag: Token.Tag = .identifier;
             if (len <= 8) {
                 var word: u64 = 0;
-                for (self.source[self.anchor.byte_offset..self.cursor]) |byte| word = types.foldKeywordByte(word, byte);
+                for (self.source[self.anchor..self.cursor]) |byte| word = types.foldKeywordByte(word, byte);
                 tag = types.keywordTag(word, len);
             }
             return self.emit(tag);
@@ -694,18 +666,18 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             self.restore(end);
             self.trivia = .ordinary;
             self.mode = .trivia;
-            self.ready = .{ .tag = .identifier, .span = .{ .start = self.anchor, .byte_len = end.byte_offset - self.anchor.byte_offset } };
+            self.ready = .{ .tag = .identifier, .span = .{ .start = self.anchor, .len = end - self.anchor } };
             return .{ .token = self.ready };
         }
 
         fn emit(self: *Self, tag: Token.Tag) ?Result {
-            self.ready = .{ .tag = tag, .span = .{ .start = self.anchor, .byte_len = self.cursor - self.anchor.byte_offset } };
+            self.ready = .{ .tag = tag, .span = .{ .start = self.anchor, .len = self.cursor - self.anchor } };
             self.mode = .trivia;
             self.trivia = .ordinary;
             return .{ .token = self.ready };
         }
 
-        fn fail(self: *Self, kind: Terminal, start: location.Location, len: u32, found: ?u8) ?Result {
+        fn fail(self: *Self, kind: Terminal, start: u32, len: u32, found: ?u8) ?Result {
             self.terminal = kind;
             self.opener = start;
             self.terminal_len = len;
@@ -719,7 +691,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         fn terminalResult(self: *const Self) Result {
             if (self.terminal == .eof) return .{ .token = .{
                 .tag = .eof,
-                .span = .{ .start = self.here(), .byte_len = 0 },
+                .span = .{ .start = self.here(), .len = 0 },
             } };
             return .failure;
         }
@@ -789,21 +761,22 @@ test "tokens across a block boundary keep their spans and positions" {
     var lexer = Lexer.init(source);
     var result = lexer.next();
     try expect(result == .token);
-    try expectEqual(@as(u32, 70), result.token.span.byte_len);
+    try expectEqual(@as(u32, 70), result.token.span.len);
     try expectToken(&lexer, .edge_directed, "->");
     // The quoted identifier crosses the second boundary, on line 2.
     result = lexer.next();
     try expect(result == .token);
-    try expectEqual(@as(u32, 2), result.token.span.start.line);
-    try expectEqual(@as(u32, 56), result.token.span.byte_len);
-    try expectEqual(@as(u32, 75), result.token.span.start.byte_offset);
-    try expectEqual(@as(u32, 4), result.token.span.start.byte_column);
+    try expectEqual(@as(u32, 56), result.token.span.len);
+    try expectEqual(@as(u32, 75), result.token.span.start);
+    try expectEqual(@as(u32, 2), result.token.span.locate(source).line);
+    try expectEqual(@as(u32, 4), result.token.span.locate(source).byte_column);
     try expectToken(&lexer, .semicolon, ";");
     try expectToken(&lexer, .eof, "");
 }
 
 test "block scanner state is a small constant" {
-    try expect(@sizeOf(Lexer) <= 256);
+    // 160 B measured (the saved masks are 88 of them); 192 B leaves headroom.
+    try expect(@sizeOf(Lexer) <= 192);
     try expectEqual(void, @FieldType(Lexer, "source_frontier"));
     try expectEqual(usize, @FieldType(Scanner(true, false), "source_frontier"));
 }

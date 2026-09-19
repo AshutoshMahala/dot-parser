@@ -56,10 +56,8 @@ noinline fn scan(source: []const u8) !u64 {
         .failure => return error.InvalidFixture,
         .token => |token| {
             checksum +%= @intFromEnum(token.tag);
-            checksum +%= token.span.start.byte_offset;
-            checksum +%= token.span.start.line;
-            checksum +%= token.span.start.byte_column;
-            checksum +%= token.span.byte_len;
+            checksum +%= token.span.start;
+            checksum +%= token.span.len;
             if (token.tag == .eof) return checksum;
         },
     };

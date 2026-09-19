@@ -12,6 +12,15 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
 
 ### Changed
 
+- Positions are byte offsets only. `Span` is `{ start: u32, len: u32 }`,
+  eight bytes, and `Range` is the same type; `Diagnostic.span.start`,
+  `Fix.span`, `Related.span`, token and event spans no longer carry a line
+  or column. Derive them from the source when showing a position:
+  `span.locate(source)` for one, `location.PositionCursor.locate` for many
+  (any order; one shared scan when ascending). `Range.fromSpan`, `toSpan`
+  and `PositionCursor.spanFor` are gone. `console.render` takes
+  `RenderOptions`; with `source` set, every renderer prints line and byte
+  column exactly as before, and without it prints the offset.
 - WDP components are now logical domains, not source modules: `Syntax`,
   `Validation`, `Resource`, `Profile`. `E.Lexer.*` and `E.Parser.*` are gone;
   filter on `E.Syntax.*` for every malformed-input problem. New primaries name
@@ -78,11 +87,10 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   backslash parity carried across blocks, comment delimiters) and extracts
   tokens from the masks, behind the same resumable interface as the
   byte-at-a-time scanner (now `src/lexer/scalar.zig`). `src/lexer/lexer.zig`
-  selects the backend at compile time: the block scanner where the target
-  has 128-bit or wider vectors, the scalar scanner elsewhere; a root file's
-  `pub const dot_parser_options = .{ .lexer_backend = ... };` overrides it,
-  `dot.lexer.backend` reports the choice, and every bench takes
-  `-Dlexer=scalar|block`. Differential tests hold both backends to
+  selects the backend at compile time: the scalar scanner unless a root
+  file's `pub const dot_parser_options = .{ .lexer_backend = .block };`
+  says otherwise; `dot.lexer.backend` reports the choice, and every bench
+  takes `-Dlexer=scalar|block`. Differential tests hold both backends to
   identical tokens, spans, diagnostics, fixes, warnings and resume positions
   on fixtures, every truncation and block shift, random streams and budget
   partitions. The execution contract defines a lexical credit per backend:
@@ -104,24 +112,32 @@ Breaking (0.x): every structured code changes, `Details` gains variants, and
   208 → 24 B).
 - Measured together on the 200k-statement bench: 229 → 277 MiB/s default,
   246 → 311 MiB/s hinted; nested-subgraph parsing 34% faster.
-- Block scanning, measured on Apple silicon (128-bit vectors) against the
-  scalar scanner at the parse level. Running to completion: comment-heavy
-  sources 18–21% faster, deeply nested subgraphs 14–18% faster, long runs
-  of one byte class several times faster in the lexer bench, the
-  200k-statement bench equal (283 vs 284 MiB/s default, 316 vs 319
-  hinted), sources of short bare and quoted tokens 4–8% slower. Under work
-  budgets the block scanner needs 2–6x fewer credits for the same input
-  (one credit classifies 64 bytes) and resumes more cheaply, so metered
-  sessions run 7–55% faster at 256 credits per call and 2–4x faster at one
-  credit per call; the session bench's `a;a;a;` source, the worst case for
-  a block scanner, is 8–14% slower. Scanner state is 208 B against 104 B,
-  so every machine and session grows by 104 B, and code grows 6–8 KB per
-  native build (a probe holding both machine instantiations: 58 → 65 KB
-  in ReleaseSmall) and 9 KB on wasm32 with simd128; nothing else changes.
-  Without a vector unit the block compares lower to byte loops: 1.9x
+- Lazy positions: with no per-byte line and column tracking, the scalar
+  scanner's lexing cost drops by about a fifth and every position-carrying
+  structure shrinks — `Span` 16 → 8 B, token 20 → 12 B, `Diagnostic`
+  112 → 80 B, nesting frame 164 → 116 B (the worst-case `{{{{…`
+  amplification with it), scalar scanner 104 → 56 B, block scanner
+  208 → 160 B, parser state 544 → 368 B (scalar) and 648 → 472 B (block),
+  a fixed session 1264 → 1080 B. On the 200k-statement bench the scalar
+  scanner goes 275 → 336 MiB/s default and 326 → 397 hinted; the corpus
+  files 3–33% faster (comments most), the empty-subgraph fixtures 21–26%
+  faster; the block scanner gains 2–20%. The misindented-brace probe
+  stops at the first non-blank byte, so a brace deep in a dense line costs
+  one byte read.
+- Block scanning, measured on Apple silicon against the scalar scanner at
+  the parse level with positions derived on demand: running to completion
+  the scalar scanner is 3–15% faster on every corpus file and on the
+  200k-statement bench (336 vs 292 MiB/s), and faster at 256 credits per
+  call. The block scanner needs 2–6x fewer credits for the same input (one
+  credit classifies 64 bytes) and resumes more cheaply, so it wins at very
+  small budgets — 2–4x faster at one credit per call — and on long runs of
+  one byte class (2x on the long-identifier lexer fixture). Its state is
+  160 B against 56 B, so every machine and session grows by 104 B with it,
+  and code grows 6–8 KB per native build (a probe holding both machine
+  instantiations: 58 → 65 KB in ReleaseSmall) and 9 KB on wasm32 with
+  simd128. Without a vector unit its compares lower to byte loops: 1.9x
   slower than scalar on wasm32 under V8 and 27 KB (wasm32) to 52 KB
-  (riscv32) larger. Hence the default: block where the target has 128-bit
-  or wider vectors, scalar elsewhere.
+  (riscv32) larger. Hence scalar by default, block opt-in.
 
 ### Fixed
 

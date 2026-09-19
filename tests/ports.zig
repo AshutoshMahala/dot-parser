@@ -67,11 +67,11 @@ test "malformed ports and ports outside node references are syntax errors" {
     var pools: Storage = .{};
     _ = dot.parseBorrowedIn("graph {a:p:", .{ .document = pools.storage() }, bag.sink(), .{});
     try equal(dot.diagnostic.ParseContext.port_component, bag.items()[0].details.unexpected.context);
-    try equal(@as(usize, 10), bag.items()[0].details.unexpected.related.?.span.start.byte_offset);
+    try equal(@as(usize, 10), bag.items()[0].details.unexpected.related.?.span.start);
     try equal(dot.diagnostic.Related.Role.suffix_started_here, bag.items()[0].details.unexpected.related.?.role);
     var bytes: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&bytes);
-    try dot.console.render(bag.items()[0], &writer);
+    try dot.console.render(bag.items()[0], .{}, &writer);
     try expect(std.mem.indexOf(u8, writer.buffered(), "port suffix component") != null);
 }
 

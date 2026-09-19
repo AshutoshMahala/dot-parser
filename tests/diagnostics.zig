@@ -108,9 +108,10 @@ test "every probe reports the expected identity, location, and wording" {
         try std.testing.expect(bag.items().len >= 1);
         const d = bag.items()[0];
         try std.testing.expectEqual(case.code, d.code);
-        try std.testing.expectEqual(case.line, d.span.start.line);
-        try std.testing.expectEqual(case.column, d.span.start.byte_column);
-        if (case.len) |len| try std.testing.expectEqual(len, d.span.byte_len);
+        const at = d.span.locate(case.source);
+        try std.testing.expectEqual(case.line, at.line);
+        try std.testing.expectEqual(case.column, at.byte_column);
+        if (case.len) |len| try std.testing.expectEqual(len, d.span.len);
 
         var buffer: [2048]u8 = undefined;
         var writer = std.Io.Writer.fixed(&buffer);
@@ -129,8 +130,8 @@ test "every probe reports the expected identity, location, and wording" {
 
 /// Apply `fix` to `source` into a fresh buffer, the way a linter would.
 fn applyFix(allocator: std.mem.Allocator, source: []const u8, fix: dot.diagnostic.Fix) ![]u8 {
-    const start = fix.span.start.byte_offset;
-    const end = start + fix.span.byte_len;
+    const start = fix.span.start;
+    const end = start + fix.span.len;
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     switch (fix.edit) {
@@ -182,7 +183,7 @@ test "applying every machine-applicable fix yields a document that parses" {
             for (bag.items()) |d| {
                 const fix = d.fix orelse continue;
                 if (fix.applicability != .machine_applicable) continue;
-                if (best == null or fix.span.start.byte_offset > best.?.span.start.byte_offset) best = fix;
+                if (best == null or fix.span.start > best.?.span.start) best = fix;
             }
             const fix = best orelse break;
             checked_any = true;
@@ -218,11 +219,12 @@ test "a byte order mark is not a diagnostic" {
 
 test "the compact renderer says byte column and lists every note" {
     var bag: dot.FixedDiagnosticBag(4) = .{};
-    var checked = dot.parseAndValidate(std.testing.allocator, "digraph {\n  subgraph s {\n    a -> b;\n  b -> c;\n}\n", bag.sink(), .{});
+    const source = "digraph {\n  subgraph s {\n    a -> b;\n  b -> c;\n}\n";
+    var checked = dot.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});
     defer checked.deinit(std.testing.allocator);
     var buffer: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
-    try dot.console.render(bag.items()[0], &writer);
+    try dot.console.render(bag.items()[0], .{ .source = source }, &writer);
     const text = writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, text, "line 6, byte column 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "note: unclosed delimiter opened at 1:9; misindented closing brace at 5:1") != null);

@@ -124,7 +124,7 @@ test "EOF in a later attribute group points at its own opener" {
     try equal(dot.Code.syntax_unexpected_end, failure.code);
     try equal(dot.diagnostic.ParseContext.attribute_value, failure.details.unexpected.context);
     try expect(failure.details.unexpected.expected.contains(.identifier));
-    try equal(@as(usize, 14), failure.details.unexpected.related.?.span.start.byte_offset);
+    try equal(@as(usize, 14), failure.details.unexpected.related.?.span.start);
     var buffer: [2048]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
     try dot.console.renderBoxedList(bag.items(), 0, .{ .source = input }, &writer);

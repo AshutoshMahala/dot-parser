@@ -33,8 +33,8 @@ cancellation. `parseBorrowedIn` remains the simplest fixed-storage one-shot API.
 One credit buys one lexical step, one fixed-size grammar transition, or one
 normal event attempt, including begin and commit. These are separate
 operations. A lexical step is one source-byte/EOF examination with the scalar
-scanner; with the block scanner (the default on targets with 128-bit vectors)
-it is the classification of one 64-byte block or one bounded advance inside it
+scanner; with the opt-in block scanner it is the classification of one
+64-byte block or one bounded advance inside it
 (see [scanner backends](#scanner-backends)).
 A budget of N permits at most N such steps; unused credits are not carried
 forward. One credit can advance an uncancelled, nonterminal
@@ -160,21 +160,20 @@ lengths, not the underlying bytes: it is not a secure-erasure facility.
 
 Two lexers implement the same scanner interface and produce identical tokens,
 spans, diagnostics, fixes and warnings; the choice only changes speed, state
-size and what a lexical credit buys. The block scanner is the default where
-the target has 128-bit or wider vectors; the scalar scanner, which examines
-one byte per credit and keeps 104 B of state, is the default elsewhere and
-the smaller build anywhere. The block scanner classifies 64-byte blocks with
-vector compares and extracts tokens from the resulting bit masks; it keeps
-208 B of state, and measured on Apple silicon it
-is faster on comment-heavy, deeply nested and long-token sources but a few
-percent slower on sources made of short tokens. Because one credit classifies
-64 bytes, it needs 2–6x fewer credits for the same input and resumes more
-cheaply, so bounded sessions run markedly faster with it, most of all at small
-budgets (numbers in the [changelog](../CHANGELOG.md)). Pin a backend from the
-root source file of the build:
+size and what a lexical credit buys. The default is the scalar scanner, which
+examines one byte per credit and keeps 56 B of state; measured on Apple
+silicon it is the faster of the two on every ordinary workload, run to
+completion or at ordinary budgets. The block scanner classifies 64-byte
+blocks with vector compares and extracts tokens from the resulting bit masks;
+it keeps 160 B of state, and because one credit classifies 64 bytes it needs
+2–6x fewer credits for the same input and resumes more cheaply, so it wins
+when sessions run on very small budgets (2–4x at one credit per call) or the
+input is dominated by long identifiers, strings or comments (numbers in the
+[changelog](../CHANGELOG.md)). Pin a backend from the root source file of the
+build:
 
 ```zig
-pub const dot_parser_options = .{ .lexer_backend = .block }; // or .scalar
+pub const dot_parser_options = .{ .lexer_backend = .block }; // the default is .scalar
 ```
 
 `dot.lexer.backend` reports the selection. Session storage sizes follow the

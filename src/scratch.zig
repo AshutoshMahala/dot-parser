@@ -64,7 +64,7 @@ pub const Stack = struct {
 test "fixed nesting frames are reused by siblings" {
     var fixed: Fixed(.{ .nesting = 1 }) = .{};
     var stack: Stack = .{ .frames = fixed.storage().frames };
-    const span: location.Span = .{ .start = .start, .byte_len = 1 };
+    const span: location.Span = .{ .start = 0, .len = 1 };
     for (0..1000) |_| {
         try stack.push(.{ .parent_open = span });
         try std.testing.expectError(error.NestingStorageExhausted, stack.push(.{ .parent_open = span }));

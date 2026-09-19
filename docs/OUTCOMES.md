@@ -110,8 +110,11 @@ emits no diagnostic. Validation attempts one diagnostic per violation. A
 `omitted` — diagnostics are never silently dropped.
 
 Each diagnostic carries a WDP identity, a source span, and **optional
-typed details** (`Details.none` means no additional context). Details are
-never pre-rendered strings. Wording belongs to renderers; the
+typed details** (`Details.none` means no additional context). The span is a
+byte offset and length; line and byte column are derived from the source
+when they are shown (`span.locate(source)`, or a `location.PositionCursor`
+for many spans), which the renderers do when given `RenderOptions.source`
+and otherwise print the offset. Details are never pre-rendered strings. Wording belongs to renderers; the
 out-of-the-box console renderer is one consumer of these payloads, and
 your logger, LSP, or JSON emitter can be another via `DiagnosticSink`.
 

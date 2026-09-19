@@ -73,10 +73,10 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         const Terminal = types.Terminal;
 
         source: []const u8,
-        tracker: location.Tracker = .{},
-        anchor: location.Tracker = .{},
-        opener: location.Tracker = .{},
-        quote_end: location.Tracker = .{},
+        cursor: u32 = 0,
+        anchor: u32 = 0,
+        opener: u32 = 0,
+        quote_end: u32 = 0,
         keyword: u64 = 0,
         terminal_len: u32 = 0,
         state: State = .trivia,
@@ -102,10 +102,9 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 return self;
             }
             // A leading UTF-8 byte order mark is not content; Graphviz's
-            // scanner ignores it and so does this one. Advancing the
-            // tracker keeps every later byte column honest (the BOM
-            // occupies columns 1–3 of line 1).
-            if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) self.tracker.advanceSlice(source[0..3]);
+            // scanner ignores it and so does this one. Offsets keep counting
+            // it, so every later position stays honest.
+            if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) self.cursor = 3;
             return self;
         }
 
@@ -121,18 +120,17 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         ///   the construct's body, and re-scanning it would only cascade.
         /// Never valid for deferred-feature boundaries, which are not errors.
         pub fn resumeAfterFailure(self: *Self) void {
-            const anchor = self.anchor.location.byte_offset;
-            const start = self.opener.location.byte_offset;
-            const target: usize = switch (self.terminal) {
-                .block, .quote => self.source.len,
+            const anchor = self.anchor;
+            const start = self.opener;
+            const target: u32 = switch (self.terminal) {
+                .block, .quote => @intCast(self.source.len),
                 .concat => start,
-                .invalid, .operator, .operator_long, .operator_spaced, .numeral => if (start == anchor) start + self.terminal_len else self.source.len,
+                .invalid, .operator, .operator_long, .operator_spaced, .numeral => if (start == anchor) start + self.terminal_len else @intCast(self.source.len),
                 .none, .eof, .non_ascii, .html, .oversize => unreachable,
             };
-            // `fail` left the tracker at the token anchor; walk forward so
-            // line and column stay exact through whatever was skipped.
-            std.debug.assert(self.tracker.location.byte_offset == anchor and target >= anchor);
-            self.tracker.advanceSlice(self.source[anchor..target]);
+            // `fail` left the cursor at the token anchor.
+            std.debug.assert(self.cursor == anchor and target >= anchor);
+            self.cursor = target;
             self.terminal = .none;
             self.terminal_len = 0;
             self.found = null;
@@ -150,7 +148,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             // the scanner has not seen where the following token ends.
             return .{
                 .code = .syntax_ambiguous_numeral,
-                .span = .{ .start = self.anchor.location, .byte_len = self.here().byte_offset - self.anchor.location.byte_offset },
+                .span = .{ .start = self.anchor, .len = self.cursor - self.anchor },
                 .details = .{ .ambiguous_numeral = byte },
             };
         }
@@ -166,10 +164,10 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             std.debug.assert(self.terminal != .none and self.terminal != .eof);
             if (self.terminal == .oversize) return .{
                 .code = .resource_capacity_exhausted,
-                .span = .{ .start = .start, .byte_len = 0 },
+                .span = .{ .start = 0, .len = 0 },
                 .details = .{ .capacity = .{ .resource = .source_range, .limit = location.max_source_len } },
             };
-            const span: location.Span = .{ .start = self.opener.location, .byte_len = self.terminal_len };
+            const span: location.Span = .{ .start = self.opener, .len = self.terminal_len };
             return .{
                 .code = switch (self.terminal) {
                     .invalid => .syntax_invalid_byte,
@@ -249,22 +247,22 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             return .{ .result = self.readyResult(), .work_used = if (bounded) budget - remaining else 0 };
         }
 
-        pub fn here(self: *const Self) location.Location {
-            return self.tracker.location;
+        /// The byte offset the scanner is at.
+        pub fn here(self: *const Self) u32 {
+            return self.cursor;
         }
 
-        // Sole source-byte fetch site. Keyword classification uses cached bytes;
-        // location tracking consumes this same value, never rescans a range.
+        // Sole source-byte fetch site. Keyword classification uses cached bytes.
         fn examine(self: *Self) ?u8 {
             if (audited) self.examinations += 1;
-            const offset = self.here().byte_offset;
+            const offset = self.cursor;
             if (offset == self.source.len) return null;
             if (metered) self.source_frontier = @max(self.source_frontier, @as(usize, offset) + 1);
             return self.source[offset];
         }
 
-        fn consume(self: *Self, byte: u8) void {
-            self.tracker.advance(byte);
+        fn consume(self: *Self) void {
+            self.cursor += 1;
         }
 
         inline fn microstep(self: *Self, comptime state: State) State {
@@ -274,15 +272,15 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 .ready => unreachable,
                 .trivia => {
                     if (byte) |b| switch (b) {
-                        ' ', '\t', '\r', '\n' => self.consume(b),
+                        ' ', '\t', '\r', '\n' => self.consume(),
                         '#' => {
-                            self.consume(b);
+                            self.consume();
                             continuation = .line_comment;
                         },
                         '/' => {
-                            self.opener = self.tracker;
-                            if (self.trivia == .ordinary) self.anchor = self.tracker;
-                            self.consume(b);
+                            self.opener = self.cursor;
+                            if (self.trivia == .ordinary) self.anchor = self.cursor;
+                            self.consume();
                             continuation = .slash;
                         },
                         else => return self.afterTrivia(byte),
@@ -290,18 +288,18 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 },
                 .slash => {
                     if (byte == '/' or byte == '*') {
-                        self.consume(byte.?);
+                        self.consume();
                         continuation = if (byte == '/') .line_comment else .block_comment;
                     } else {
                         // The slash was lookahead, not trivia. Restore its
                         // position and classify the cached introducer.
-                        self.tracker = self.opener;
+                        self.cursor = self.opener;
                         return self.afterTrivia('/');
                     }
                 },
                 .line_comment => {
                     if (byte) |b| {
-                        self.consume(b);
+                        self.consume();
                         if (b == '\r' or b == '\n') continuation = .trivia;
                     } else return self.afterTrivia(null);
                 },
@@ -310,10 +308,10 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                         // Malformed trailing trivia belongs to the next token
                         // unless '+' has committed us to another quoted part.
                         if (self.trivia == .after_quote) return self.finishQuoted();
-                        return self.fail(.block, self.opener.location, 2, null);
+                        return self.fail(.block, self.opener, 2, null);
                     };
                     const closed = state == .block_star and b == '/';
-                    self.consume(b);
+                    self.consume();
                     continuation = if (closed) .trivia else if (b == '*') .block_star else .block_comment;
                 },
                 .bare, .non_ascii => {
@@ -321,39 +319,39 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                         if (isIdentifierByte(b)) {
                             if (b >= 0x80) continuation = .non_ascii;
                             self.cacheKeyword(b);
-                            self.consume(b);
+                            self.consume();
                             return continuation;
                         }
                     }
                     if (state == .non_ascii)
-                        return self.fail(.non_ascii, self.anchor.location, self.here().byte_offset - self.anchor.location.byte_offset, null);
-                    return self.finish(keywordTag(self.keyword, self.here().byte_offset - self.anchor.location.byte_offset));
+                        return self.fail(.non_ascii, self.anchor, self.cursor - self.anchor, null);
+                    return self.finish(keywordTag(self.keyword, self.cursor - self.anchor));
                 },
                 .dash => {
                     if (byte) |b| switch (b) {
                         '>' => {
-                            self.consume(b);
+                            self.consume();
                             return self.finish(.edge_directed);
                         },
                         '-' => {
-                            self.consume(b);
+                            self.consume();
                             continuation = .double_dash;
                             return continuation;
                         },
                         '0'...'9' => {
-                            self.consume(b);
+                            self.consume();
                             continuation = .integral;
                             return continuation;
                         },
                         '.' => {
-                            self.consume(b);
+                            self.consume();
                             continuation = .leading_dot;
                             return continuation;
                         },
                         ' ', '\t' => {
                             // Look past the gap: `- >` is a spaced operator.
                             self.found = b;
-                            self.consume(b);
+                            self.consume();
                             continuation = .dash_gap;
                             return continuation;
                         },
@@ -361,55 +359,55 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                     };
                     // `a -b`, `-` at EOF: the operator is incomplete. Legal
                     // DOT bytes, wrong shape.
-                    return self.fail(.operator, self.anchor.location, 1, byte);
+                    return self.fail(.operator, self.anchor, 1, byte);
                 },
                 .dash_gap => {
                     if (byte) |b| switch (b) {
                         ' ', '\t' => {
-                            self.consume(b);
+                            self.consume();
                             return continuation;
                         },
                         '>', '-' => {
                             // `- >` / `- -`: one diagnostic over the whole
                             // run, so the fix can replace it outright.
-                            self.consume(b);
-                            const len = self.here().byte_offset - self.anchor.location.byte_offset;
-                            return self.fail(.operator_spaced, self.anchor.location, len, b);
+                            self.consume();
+                            const len = self.cursor - self.anchor;
+                            return self.fail(.operator_spaced, self.anchor, len, b);
                         },
                         else => {},
                     };
                     // `a - b`: a lone dash; `found` is the byte after it.
-                    return self.fail(.operator, self.anchor.location, 1, self.found);
+                    return self.fail(.operator, self.anchor, 1, self.found);
                 },
                 .double_dash => {
                     if (byte == '>' or byte == '-') {
                         // `-->` / `---`: one over-long operator, reported
                         // whole so the fix ("write '->'") is obvious.
-                        self.consume(byte.?);
-                        return self.fail(.operator_long, self.anchor.location, 3, byte);
+                        self.consume();
+                        return self.fail(.operator_long, self.anchor, 3, byte);
                     }
                     return self.finish(.edge_undirected);
                 },
                 .leading_dot => {
                     if (byte) |b| {
                         if (std.ascii.isDigit(b)) {
-                            self.consume(b);
+                            self.consume();
                             continuation = .fraction;
                             return continuation;
                         }
                     }
                     // `.` or `-.` without a digit: the numeral is incomplete.
-                    const len = self.here().byte_offset - self.anchor.location.byte_offset;
-                    return self.fail(.numeral, self.anchor.location, len, byte);
+                    const len = self.cursor - self.anchor;
+                    return self.fail(.numeral, self.anchor, len, byte);
                 },
                 .integral, .fraction => {
                     if (byte) |b| {
                         if (std.ascii.isDigit(b)) {
-                            self.consume(b);
+                            self.consume();
                             return continuation;
                         }
                         if (state == .integral and b == '.') {
-                            self.consume(b);
+                            self.consume();
                             continuation = .fraction;
                             return continuation;
                         }
@@ -421,17 +419,15 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                     return self.finish(.identifier);
                 },
                 .quoted, .escape => {
-                    const b = byte orelse return self.fail(.quote, self.opener.location, 1, null);
+                    const b = byte orelse return self.fail(.quote, self.opener, 1, null);
                     if (b == 0) return self.fail(.invalid, self.here(), 1, b);
-                    self.consume(b);
+                    self.consume();
                     if (state == .escape) {
-                        // CR/LF tracking is incremental; an escaped CR followed
-                        // by LF has the same raw span as consuming the pair.
                         continuation = .quoted;
                     } else switch (b) {
                         '\\' => continuation = .escape,
                         '"' => {
-                            self.quote_end = self.tracker;
+                            self.quote_end = self.cursor;
                             self.trivia = .after_quote;
                             continuation = .trivia;
                         },
@@ -447,21 +443,21 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             switch (self.trivia) {
                 .after_quote => {
                     if (byte != '+') return self.finishQuoted();
-                    self.consume('+');
+                    self.consume();
                     self.trivia = .after_plus;
                     continuation = .trivia;
                     return continuation;
                 },
                 .after_plus => {
                     if (byte != '"') return self.fail(.concat, self.here(), if (byte == null) 0 else 1, byte);
-                    self.opener = self.tracker;
-                    self.consume('"');
+                    self.opener = self.cursor;
+                    self.consume();
                     continuation = .quoted;
                     return continuation;
                 },
                 .ordinary => {},
             }
-            self.anchor = self.tracker;
+            self.anchor = self.cursor;
             const b = byte orelse {
                 self.terminal = .eof;
                 return .ready;
@@ -469,7 +465,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             self.initial = b;
             switch (b) {
                 '{', '}', ';', ':', '[', ']', '=', ',' => {
-                    self.consume(b);
+                    self.consume();
                     return self.finish(switch (b) {
                         '{' => .left_brace,
                         '}' => .right_brace,
@@ -491,13 +487,13 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 '.' => continuation = .leading_dot,
                 '0'...'9' => continuation = .integral,
                 '"' => {
-                    self.opener = self.tracker;
+                    self.opener = self.cursor;
                     continuation = .quoted;
                 },
                 '<' => return self.fail(.html, self.here(), 1, null),
                 else => return self.fail(.invalid, self.here(), 1, b),
             }
-            self.consume(b);
+            self.consume();
             return continuation;
         }
 
@@ -511,7 +507,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         fn finishQuoted(self: *Self) State {
             // Trivia is examined speculatively but excluded from the raw span.
             // Revisit it once on the next token, never once per resumed call.
-            self.tracker = self.quote_end;
+            self.cursor = self.quote_end;
             return self.finish(.identifier);
         }
 
@@ -526,23 +522,23 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             if (self.terminal != .none) return self.terminalResult();
             return .{ .token = .{
                 .tag = self.ready_tag,
-                .span = .{ .start = self.anchor.location, .byte_len = self.here().byte_offset - self.anchor.location.byte_offset },
+                .span = .{ .start = self.anchor, .len = self.cursor - self.anchor },
             } };
         }
 
-        fn fail(self: *Self, kind: Terminal, start: location.Location, len: u32, found: ?u8) State {
+        fn fail(self: *Self, kind: Terminal, start: u32, len: u32, found: ?u8) State {
             self.terminal = kind;
-            self.opener.location = start;
+            self.opener = start;
             self.terminal_len = len;
             self.found = found;
-            self.tracker = self.anchor;
+            self.cursor = self.anchor;
             return .ready;
         }
 
         fn terminalResult(self: *const Self) Result {
             if (self.terminal == .eof) return .{ .token = .{
                 .tag = .eof,
-                .span = .{ .start = self.here(), .byte_len = 0 },
+                .span = .{ .start = self.cursor, .len = 0 },
             } };
             return .failure;
         }
@@ -556,6 +552,13 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
+
+fn lineOf(source: []const u8, span: location.Span) u32 {
+    return span.locate(source).line;
+}
+fn columnOf(source: []const u8, span: location.Span) u32 {
+    return span.locate(source).byte_column;
+}
 
 test "ordinary token completion restores the known entry state" {
     var scanner = Lexer.init("graph {a[x=1] b--c; \"q\" + \"r\" /*tail*/}");
@@ -650,7 +653,7 @@ fn checkPartition(source: []const u8, budgets: []const usize) !usize {
         try expect(total <= 4 * source.len + 16);
         if (report.result) |result| {
             try expectEqual(reference.next(), result);
-            try expectEqual(reference.tracker, bounded.tracker);
+            try expectEqual(reference.cursor, bounded.cursor);
             if (result == .failure) try std.testing.expectEqualDeep(reference.failureDiagnostic(), bounded.failureDiagnostic());
             if (result == .failure or result.token.tag == .eof) {
                 const terminal_reads = bounded.examinations;
@@ -717,7 +720,7 @@ test "frontier includes speculative trivia without claiming it in the token" {
     var result: ?Result = null;
     while (result == null) result = lexer.nextBounded(1).result;
     try expectEqualStrings("\"a\"", result.?.token.span.slice(lexer.source));
-    try expectEqual(@as(usize, 3), lexer.here().byte_offset);
+    try expectEqual(@as(usize, 3), lexer.here());
     try expectEqual(lexer.source.len, lexer.source_frontier);
     const frontier = lexer.source_frontier;
     while (true) {
@@ -769,8 +772,8 @@ test "metering storage and source-examination instrumentation compile out" {
     try expect(growth >= @sizeOf(usize) and growth < @sizeOf(usize) + @alignOf(Lexer));
     // Fixed native-state guard, independent of source size; no allocation in
     // either scanner. Test buffers above are caller-owned fixture storage.
-    // 104 B measured with 32-bit positions (was 176 B); 128 B leaves headroom.
-    try expect(@sizeOf(Lexer) <= 128);
+    // 56 B measured with offset-only positions (was 104 B); 96 B leaves headroom.
+    try expect(@sizeOf(Lexer) <= 96);
 }
 
 fn expectToken(lexer: *Lexer, tag: Token.Tag, text: []const u8) !void {
@@ -826,7 +829,7 @@ test "empty input yields eof forever" {
     var lexer = Lexer.init("");
     try expectToken(&lexer, .eof, "");
     try expectToken(&lexer, .eof, "");
-    try expectEqual(location.Location.start, lexer.here());
+    try expectEqual(@as(u32, 0), lexer.here());
 }
 
 test "comments separate tokens without joining identifiers or operators" {
@@ -862,7 +865,7 @@ test "line comments accept EOF and all physical line endings" {
                 .byte_offset = source.len - 1,
                 .line = 2,
                 .byte_column = 1,
-            }, token.span.start);
+            }, token.span.locate(source));
         }
     }
 }
@@ -871,10 +874,10 @@ test "hash comments match Graphviz token-boundary behavior without remapping lin
     var lexer = Lexer.init("  # 42 \"elsewhere.dot\"\na# inline\nb");
     const a = lexer.next().token;
     try expectEqualStrings("a", a.span.slice(lexer.source));
-    try expectEqual(@as(usize, 2), a.span.start.line);
+    try expectEqual(@as(usize, 2), lineOf(lexer.source, a.span));
     const b = lexer.next().token;
     try expectEqualStrings("b", b.span.slice(lexer.source));
-    try expectEqual(@as(usize, 3), b.span.start.line);
+    try expectEqual(@as(usize, 3), lineOf(lexer.source, b.span));
 }
 
 test "block comments preserve mixed physical positions and opaque contents" {
@@ -882,8 +885,8 @@ test "block comments preserve mixed physical positions and opaque contents" {
     var lexer = Lexer.init(source);
     const token = lexer.next().token;
     try expectEqualStrings("x", token.span.slice(source));
-    try expectEqual(location.locate(source, source.len - 1), token.span.start);
-    try expectEqual(@as(usize, 4), token.span.start.line);
+    try expectEqual(location.locate(source, source.len - 1), token.span.locate(source));
+    try expectEqual(@as(usize, 4), lineOf(lexer.source, token.span));
 }
 
 test "block comment truncation reports the opener on repeated calls" {
@@ -892,8 +895,8 @@ test "block comment truncation reports the opener on repeated calls" {
         var lexer = Lexer.init(body[0..end]);
         const first = try expectFailure(&lexer);
         try expectEqual(diagnostic.Code.syntax_unterminated_construct, first.code);
-        try expectEqual(location.Location.start, first.span.start);
-        try expectEqual(@as(usize, 2), first.span.byte_len);
+        try expectEqual(@as(u32, 0), first.span.start);
+        try expectEqual(@as(usize, 2), first.span.len);
         try expectEqual(diagnostic.UnterminatedConstruct.block_comment, first.details.unterminated);
         try expectEqual(first, try expectFailure(&lexer));
         try expectEqual(first, try expectFailure(&lexer));
@@ -912,11 +915,11 @@ test "unterminated comments preserve nonzero physical locations on repeated call
         var lexer = Lexer.init(source);
         const expected = location.locate(source, source.len - 4);
         const first = try expectFailure(&lexer);
-        try expectEqual(expected, first.span.start);
-        try expectEqual(@as(usize, 2), first.span.start.line);
-        try expectEqual(@as(usize, 3), first.span.start.byte_column);
+        try expectEqual(expected, first.span.locate(source));
+        try expectEqual(@as(usize, 2), lineOf(lexer.source, first.span));
+        try expectEqual(@as(usize, 3), columnOf(lexer.source, first.span));
         try expectEqual(first, try expectFailure(&lexer));
-        try expectEqual(expected, lexer.here());
+        try expectEqual(expected.byte_offset, lexer.here());
     }
 }
 
@@ -979,19 +982,19 @@ test "every whitespace and newline combination separates tokens" {
 
     const a = lexer.next();
     try expectEqual(Token.Tag.identifier, a.token.tag);
-    try expectEqual(@as(usize, 2), a.token.span.start.line);
-    try expectEqual(@as(usize, 1), a.token.span.start.byte_column);
+    try expectEqual(@as(usize, 2), lineOf(lexer.source, a.token.span));
+    try expectEqual(@as(usize, 1), columnOf(lexer.source, a.token.span));
 
     try expectToken(&lexer, .semicolon, ";");
 
     const b = lexer.next();
     try expectEqual(Token.Tag.identifier, b.token.tag);
-    try expectEqual(@as(usize, 3), b.token.span.start.line);
-    try expectEqual(@as(usize, 1), b.token.span.start.byte_column);
+    try expectEqual(@as(usize, 3), lineOf(lexer.source, b.token.span));
+    try expectEqual(@as(usize, 1), columnOf(lexer.source, b.token.span));
 
     const brace = lexer.next();
     try expectEqual(Token.Tag.right_brace, brace.token.tag);
-    try expectEqual(@as(usize, 4), brace.token.span.start.line);
+    try expectEqual(@as(usize, 4), lineOf(lexer.source, brace.token.span));
 
     try expectToken(&lexer, .eof, "");
 }
@@ -1114,9 +1117,9 @@ test "a leading UTF-8 byte order mark is skipped, keeping byte columns honest" {
     const result = lexer.next();
     try expect(result == .token);
     try expectEqual(Token.Tag.keyword_graph, result.token.tag);
-    try expectEqual(@as(usize, 3), result.token.span.start.byte_offset);
-    try expectEqual(@as(usize, 1), result.token.span.start.line);
-    try expectEqual(@as(usize, 4), result.token.span.start.byte_column);
+    try expectEqual(@as(usize, 3), result.token.span.start);
+    try expectEqual(@as(usize, 1), lineOf(lexer.source, result.token.span));
+    try expectEqual(@as(usize, 4), columnOf(lexer.source, result.token.span));
     try expectToken(&lexer, .left_brace, "{");
     // Only at the very start: elsewhere the bytes are a non-ASCII run.
     var inner = Lexer.init("a \xEF\xBB\xBFb");
@@ -1138,13 +1141,13 @@ test "non-ASCII bytes are the deferred identifier range, not invalid input" {
     var mixed = Lexer.init("caf\xC3\xA9 x");
     const failure = try expectFailure(&mixed);
     try expectEqual(diagnostic.Feature.non_ascii_identifier, failure.details.unsupported_feature);
-    try expectEqual(@as(usize, 0), failure.span.start.byte_offset);
-    try expectEqual(@as(usize, 5), failure.span.byte_len);
+    try expectEqual(@as(usize, 0), failure.span.start);
+    try expectEqual(@as(usize, 5), failure.span.len);
 
     // A leading multi-byte identifier is spanned whole as well.
     var leading_run = Lexer.init("\xC3\xA9tat;");
     const leading_failure = try expectFailure(&leading_run);
-    try expectEqual(@as(usize, 5), leading_failure.span.byte_len);
+    try expectEqual(@as(usize, 5), leading_failure.span.len);
 
     // Control bytes below 0x80 remain invalid, as before.
     var control = Lexer.init("\x7f");
@@ -1187,7 +1190,7 @@ test "quoted identifiers include concatenations but exclude trailing trivia" {
     const raw = "\"gr\" /* \" */ + // \"\r\n \"aph\"";
     var lexer = Lexer.init(raw ++ " /* trailing */ -> \"b\"");
     try expectToken(&lexer, .identifier, raw);
-    try expectEqual(@as(usize, raw.len), lexer.here().byte_offset);
+    try expectEqual(@as(usize, raw.len), lexer.here());
     try expectToken(&lexer, .edge_directed, "->");
     try expectToken(&lexer, .identifier, "\"b\"");
     try expectToken(&lexer, .eof, "");
@@ -1202,8 +1205,8 @@ test "quoted content preserves physical positions and accepts opaque non-NUL byt
         var lexer = Lexer.init(raw ++ " x");
         try expectToken(&lexer, .identifier, raw);
         const next = lexer.next().token;
-        try expectEqual(location.locate(lexer.source, raw.len + 1), next.span.start);
-        try expectEqual(@as(usize, 3), next.span.start.line);
+        try expectEqual(location.locate(lexer.source, raw.len + 1), next.span.locate(lexer.source));
+        try expectEqual(@as(usize, 3), lineOf(lexer.source, next.span));
     }
     inline for (.{ "\"a\x00b\"", "\"a\\\x00b\"" }) |raw| {
         var lexer = Lexer.init(raw);
@@ -1221,15 +1224,15 @@ test "unterminated strings report their own opener including later concatenated 
         var lexer = Lexer.init(raw[0..end]);
         const failure = try expectFailure(&lexer);
         try expectEqual(diagnostic.UnterminatedConstruct.quoted_identifier, failure.details.unterminated);
-        try expectEqual(@as(usize, 0), failure.span.start.byte_offset);
-        try expectEqual(@as(usize, 1), failure.span.byte_len);
+        try expectEqual(@as(usize, 0), failure.span.start);
+        try expectEqual(@as(usize, 1), failure.span.len);
         try expectEqual(failure, try expectFailure(&lexer));
     }
     var lexer = Lexer.init("\"a\" +\r\n \"bc");
     const first = try expectFailure(&lexer);
-    try expectEqual(@as(usize, 8), first.span.start.byte_offset);
-    try expectEqual(@as(usize, 2), first.span.start.line);
-    try expectEqual(@as(usize, 2), first.span.start.byte_column);
+    try expectEqual(@as(usize, 8), first.span.start);
+    try expectEqual(@as(usize, 2), lineOf(lexer.source, first.span));
+    try expectEqual(@as(usize, 2), columnOf(lexer.source, first.span));
     try expectEqual(first, try expectFailure(&lexer));
 }
 
@@ -1238,14 +1241,14 @@ test "malformed concatenation distinguishes expected quote from unclosed comment
         var lexer = Lexer.init(raw);
         const first = try expectFailure(&lexer);
         try expectEqual(diagnostic.Code.syntax_invalid_concatenation, first.code);
-        try expectEqual(@as(usize, 4), first.span.start.byte_offset);
+        try expectEqual(@as(usize, 4), first.span.start);
         try expectEqual(if (raw.len == 4) @as(?u8, null) else raw[4], first.details.expected_quote);
         try expectEqual(first, try expectFailure(&lexer));
     }
     var after_plus = Lexer.init("\"a\"+/*");
     const failure = try expectFailure(&after_plus);
     try expectEqual(diagnostic.UnterminatedConstruct.block_comment, failure.details.unterminated);
-    try expectEqual(@as(usize, 4), failure.span.start.byte_offset);
+    try expectEqual(@as(usize, 4), failure.span.start);
     var trailing = Lexer.init("\"a\" /*");
     try expectToken(&trailing, .identifier, "\"a\"");
     try expectEqual(diagnostic.UnterminatedConstruct.block_comment, (try expectFailure(&trailing)).details.unterminated);
@@ -1276,8 +1279,8 @@ test "full milestone document produces the expected token stream" {
 
     const op = lexer.next();
     try expectEqual(Token.Tag.edge_undirected, op.token.tag);
-    try expectEqual(@as(usize, 4), op.token.span.start.line);
-    try expectEqual(@as(usize, 7), op.token.span.start.byte_column);
+    try expectEqual(@as(usize, 4), lineOf(lexer.source, op.token.span));
+    try expectEqual(@as(usize, 7), columnOf(lexer.source, op.token.span));
 
     try expectToken(&lexer, .identifier, "b");
     try expectToken(&lexer, .semicolon, ";");

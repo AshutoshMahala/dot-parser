@@ -152,8 +152,8 @@ test "validation visits mismatched operators around nested endpoints in lexical 
     try equal(@as(usize, 7), bag.items().len);
     var previous: usize = 0;
     for (bag.items()) |item| {
-        try expect(item.span.start.byte_offset > previous);
-        previous = item.span.start.byte_offset;
+        try expect(item.span.start > previous);
+        previous = item.span.start;
         try std.testing.expectEqualStrings("->", item.span.slice(input));
     }
 }

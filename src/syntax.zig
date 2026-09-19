@@ -20,9 +20,10 @@
 //! - statement indices are `Index` (u32) with checked overflow; the width is
 //!   a single declaration so a future embedded profile can shrink it,
 //! - retained positions are compact 8-byte `location.Range`s — offset and
-//!   length only. Line/column are derived on demand (`location.locate`,
-//!   `Range.toSpan`) by whoever emits a diagnostic; the retained document never
-//!   pays for positions it may never need (R-MEM-008). The document therefore
+//!   length only, the same type as every `Span` the parser hands over.
+//!   Line/column are derived on demand (`Range.locate`) by whoever shows a
+//!   position; the retained document never pays for positions it may never
+//!   need (R-MEM-008). The document therefore
 //!   has its own statement types rather than aliasing the event protocol's
 //!   span-carrying ones.
 //!
@@ -1054,7 +1055,7 @@ pub const Builder = struct {
     }
 
     fn range(_: *Builder, span: location.Span) location.Range {
-        return location.Range.fromSpan(span);
+        return span;
     }
 
     fn statementIndex(self: *Builder, length: usize, at: location.Span) Error!Index {
@@ -1553,7 +1554,7 @@ pub const FixedBuilder = struct {
     }
 
     fn range(_: *FixedBuilder, span: location.Span) location.Range {
-        return location.Range.fromSpan(span);
+        return span;
     }
 
     fn statementIndex(self: *FixedBuilder, length: usize, at: location.Span) Error!Index {
@@ -1797,7 +1798,7 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 test "ported index and source overflow fail before pool access and reset cleanly" {
     var pools: FixedDocumentStorage(.{}) = .{};
     var builder = FixedBuilder.init("graph{}", pools.storage());
-    const at: location.Span = .{ .start = .start, .byte_len = 1 };
+    const at: location.Span = .{ .start = 0, .len = 1 };
     try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
     builder.ported_references_len = std.math.maxInt(Index);
     try std.testing.expectError(error.PortedReferenceIndexOverflow, builder.portedReference(.{ .identifier = at, .first = at }));
@@ -1813,7 +1814,7 @@ test "ported index and source overflow fail before pool access and reset cleanly
 test "link index overflow is reported before accessing a fixed pool" {
     var pools: FixedDocumentStorage(.{}) = .{};
     var builder = FixedBuilder.init("graph{}", pools.storage());
-    const at: location.Span = .{ .start = .start, .byte_len = 1 };
+    const at: location.Span = .{ .start = 0, .len = 1 };
     try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
     // Simulate the counter boundary, without allocating a huge pool.
     builder.edge_links_len = std.math.maxInt(Index);
@@ -1879,9 +1880,9 @@ test "document preserves statement order, kinds, and borrowed ranges" {
     try expect(document.nodeReference(first.reference).?.identifier.slice(source).ptr == source.ptr + 8);
 
     // Positions are derived on demand, not stored (R-MEM-008).
-    const operator_span = edge.operator_range.toSpan(source);
-    try expectEqual(@as(usize, 1), operator_span.start.line);
-    try expectEqual(@as(usize, 14), operator_span.start.byte_column);
+    const operator_at = edge.operator_range.locate(source);
+    try expectEqual(@as(usize, 1), operator_at.line);
+    try expectEqual(@as(usize, 14), operator_at.byte_column);
 }
 
 test "statement lookups are bounds-checked against foreign ids" {
@@ -2178,11 +2179,11 @@ test "builder driven directly through the event contract" {
 
     try builder.beginDocument(.{
         .kind = .undigraph,
-        .keyword_span = .{ .start = .start, .byte_len = 5 },
+        .keyword_span = .{ .start = 0, .len = 5 },
     });
     try builder.nodeStatement(.{ .identifier = .{
-        .start = .{ .byte_offset = 8, .line = 1, .byte_column = 9 },
-        .byte_len = 1,
+        .start = 8,
+        .len = 1,
     } });
     try builder.endDocument();
 
@@ -2195,9 +2196,9 @@ test "builder driven directly through the event contract" {
 test "attribute index overflow is checked before fixed pool access" {
     var pools: FixedDocumentStorage(.{}) = .{};
     var builder = FixedBuilder.init("graph", pools.storage());
-    try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = .start, .byte_len = 5 } });
+    try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } });
     builder.attributes_len = std.math.maxInt(Index);
-    const at: location.Span = .{ .start = .start, .byte_len = 1 };
+    const at: location.Span = .{ .start = 0, .len = 1 };
     try std.testing.expectError(error.AttributeIndexOverflow, builder.attribute(.{ .key = at, .value = at }));
     try expectEqual(diagnostic.Capacity.Resource.attribute_index, builder.failure_info.?.capacity.?.resource);
     builder.abortDocument(.sink_failure);
@@ -2220,7 +2221,7 @@ test "new capacity hints reserve even when all original pool hints are zero" {
 
 test "scope order and ID overflow are typed before narrowing or pool access" {
     var pools: FixedDocumentStorage(.{ .statements = 1, .subgraphs = 1 }) = .{};
-    const at: location.Span = .{ .start = .start, .byte_len = 1 };
+    const at: location.Span = .{ .start = 0, .len = 1 };
     inline for (.{ "order_len", "subgraphs_len" }) |field| {
         var builder = FixedBuilder.init("graph{}", pools.storage());
         try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });

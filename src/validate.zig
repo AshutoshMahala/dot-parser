@@ -19,9 +19,9 @@
 //! that legality policy lives. Each mismatch carries the operator's full
 //! position and the document's kind declaration as a typed relation.
 //!
-//! Positions are derived, not stored: the document keeps compact ranges, and a
-//! `location.PositionCursor` rehydrates line/column with one shared O(source)
-//! scan across all diagnostics (R-MEM-008).
+//! Positions are derived, not stored: the document keeps compact ranges and
+//! the diagnostics carry those same ranges; whoever shows a position derives
+//! its line and column (R-MEM-008).
 
 const std = @import("std");
 const location = @import("location.zig");
@@ -73,30 +73,24 @@ pub fn validate(
     options: Options,
 ) Result {
     _ = options;
-    const source = document.source;
 
     const expected: syntax.EdgeOperator = switch (document.kind) {
         .undigraph => .undirected,
         .digraph => .directed,
     };
 
-    var cursor: location.PositionCursor = .{};
     var declaration: ?location.Span = null;
     var emitted: usize = 0;
     var delivery: diagnostic.Delivery = .complete;
 
-    // Merge ordinary edges and chain links in source order so the position
-    // cursor advances monotonically. The iterator allocates nothing.
+    // Ordinary edges and chain links merge in source order; the iterator
+    // allocates nothing.
     var edges = document.edgeIterator();
     while (edges.next()) |edge| {
         if (edge.operator == expected) continue;
 
-        if (declaration == null) {
-            // The kind declaration precedes every edge; derive it on the
-            // first violation, before the cursor moves past it.
-            declaration = cursor.spanFor(source, document.keyword);
-        }
-        const operator_span = cursor.spanFor(source, edge.operator_range);
+        if (declaration == null) declaration = document.keyword;
+        const operator_span = edge.operator_range;
 
         emitted += 1;
         diagnostics.emit(.{
@@ -178,20 +172,20 @@ test "the milestone acceptance case: two mismatches, both reported" {
     const first = bag.items()[0];
     try expectEqual(diagnostic.Code.validation_operator_mismatch, first.code);
     try expectEqualStrings("->", first.span.slice(source));
-    try expectEqual(@as(usize, 2), first.span.start.line);
-    try expectEqual(@as(usize, 5), first.span.start.byte_column);
+    try expectEqual(@as(usize, 2), first.span.locate(source).line);
+    try expectEqual(@as(usize, 5), first.span.locate(source).byte_column);
 
     const second = bag.items()[1];
-    try expectEqual(@as(usize, 3), second.span.start.line);
-    try expectEqual(@as(usize, 5), second.span.start.byte_column);
-    try expect(first.span.start.byte_offset < second.span.start.byte_offset);
+    try expectEqual(@as(usize, 3), second.span.locate(source).line);
+    try expectEqual(@as(usize, 5), second.span.locate(source).byte_column);
+    try expect(first.span.start < second.span.start);
 
     // Typed details point back at the kind declaration.
     const details = first.details.operator_mismatch;
     try expectEqual(diagnostic.OperatorMismatch.Operator.undirected, details.expected);
     try expectEqual(diagnostic.OperatorMismatch.Operator.directed, details.found);
     try expectEqualStrings("graph", details.declaration.slice(source));
-    try expectEqual(@as(usize, 1), details.declaration.start.line);
+    try expectEqual(@as(usize, 1), details.declaration.locate(source).line);
 }
 
 test "a valid undigraph completes with an empty bag" {
@@ -230,7 +224,7 @@ test "validation continues past valid edges between violations" {
     try expectEqual(@as(usize, 2), result.outcome.completed.violations);
     try expectEqual(@as(usize, 2), bag.items().len);
     // The two violations are the first and third edges.
-    try expect(bag.items()[0].span.start.byte_offset < bag.items()[1].span.start.byte_offset);
+    try expect(bag.items()[0].span.start < bag.items()[1].span.start);
 }
 
 test "the rule is kind-agnostic: a digraph flags '--'" {

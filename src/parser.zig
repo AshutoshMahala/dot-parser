@@ -1119,20 +1119,17 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                     // `=>`: an arrow spelled with '='. The parser has just
                     // taken the '=' as an assignment, so the two bytes are
                     // adjacent on one line.
-                    const offset = d.span.start.byte_offset;
+                    const offset = d.span.start;
                     if (byte != '>' or offset == 0 or self.tokens.source[offset - 1] != '=' or !self.kindKnown()) return null;
                     var span = d.span;
-                    span.start.byte_offset -= 1;
-                    span.start.byte_column -= 1;
-                    span.byte_len = 2;
+                    span.start -= 1;
+                    span.len = 2;
                     return .{ .span = span, .edit = .{ .replace = self.kindOperator() }, .applicability = .maybe };
                 },
                 .unterminated => |construct| {
-                    // Closing at end of input makes the document scan; the
-                    // intended position is unknown, so it is only an offer.
-                    // One linear scan for the location, on a terminal path.
-                    const source = self.tokens.source;
-                    const end: location.Span = .{ .start = location.locate(source, source.len), .byte_len = 0 };
+                    // Closing at end of input; the intended position is
+                    // unknown, so it is only an offer.
+                    const end: location.Span = .{ .start = @intCast(self.tokens.source.len), .len = 0 };
                     return .{
                         .span = end,
                         .edit = .{ .insert_before = switch (construct) {
@@ -1464,23 +1461,37 @@ const max_indent_scan = 128;
 /// The indentation of `span`'s line when `span` is the first non-blank
 /// text on it: the number of leading spaces and tabs. Null otherwise.
 fn leadingIndent(source: []const u8, span: location.Span) ?usize {
-    const prefix_len = span.start.byte_column - 1;
-    if (prefix_len > max_indent_scan) return null;
-    const line_start = span.start.byte_offset - prefix_len;
-    for (source[line_start..span.start.byte_offset]) |byte| {
+    // Walk back from the span: the first non-blank byte settles it at once,
+    // so a brace deep inside a dense line costs one byte read, and only a
+    // genuinely indented one pays for its indentation (bounded).
+    var start: usize = span.start;
+    while (start > 0) {
+        const byte = source[start - 1];
+        if (byte == '\n' or byte == '\r') break;
         if (byte != ' ' and byte != '\t') return null;
+        if (span.start - start >= max_indent_scan) return null;
+        start -= 1;
     }
-    return prefix_len;
+    return span.start - start;
+}
+
+/// The offset where `offset`'s line begins, or null when that is more than
+/// `max_indent_scan` bytes back. Same terminators as `location`: LF, CR.
+fn lineStart(source: []const u8, offset: usize) ?usize {
+    var start = offset;
+    while (start > 0 and source[start - 1] != '\n' and source[start - 1] != '\r') {
+        if (offset - start >= max_indent_scan) return null;
+        start -= 1;
+    }
+    return start;
 }
 
 /// The indentation of `span`'s line (its first non-blank column), whatever
 /// precedes `span` on that line. Null when the prefix exceeds the bound.
 fn lineIndent(source: []const u8, span: location.Span) ?usize {
-    const prefix_len = span.start.byte_column - 1;
-    if (prefix_len > max_indent_scan) return null;
-    const line_start = span.start.byte_offset - prefix_len;
+    const line_start = lineStart(source, span.start) orelse return null;
     var indent: usize = 0;
-    for (source[line_start..span.start.byte_offset]) |byte| {
+    for (source[line_start..span.start]) |byte| {
         if (byte != ' ' and byte != '\t') break;
         indent += 1;
     }
@@ -1914,8 +1925,8 @@ test "ordinary parser compiles out pending work and audit storage" {
     try expect(@FieldType(Ordinary, "work") == void);
     try expect(@FieldType(Ordinary, "audit") == void);
     try expect(@FieldType(lex.Scanner(false, false), "source_frontier") == void);
-    try expect(@sizeOf(Machine(*BudgetSink, false, false, false, scalar_lex.Scanner)) <= 640);
-    try expect(@sizeOf(Machine(*BudgetSink, false, false, false, block_lex.Scanner)) <= 768);
+    try expect(@sizeOf(Machine(*BudgetSink, false, false, false, scalar_lex.Scanner)) <= 512);
+    try expect(@sizeOf(Machine(*BudgetSink, false, false, false, block_lex.Scanner)) <= 640);
 }
 
 test "unaudited metered driver charges empty document exactly and runs to completion" {
@@ -2346,11 +2357,11 @@ test "a misindented closing brace is the suspect when the input ends inside a sc
     try expectEqual(diagnostic.Code.syntax_unexpected_end, bag.items()[0].code);
     const unexpected = bag.items()[0].details.unexpected;
     // Brace matching still names the only open brace, the document's...
-    try expectEqual(@as(usize, 1), unexpected.related.?.span.start.line);
+    try expectEqual(@as(usize, 1), unexpected.related.?.span.locate(source).line);
     // ...and the heuristic points at the '}' that closed the wrong scope.
     const suspect = unexpected.suspect.?;
     try expectEqual(diagnostic.Related.Role.misindented_close, suspect.role);
-    try expectEqual(@as(usize, 5), suspect.span.start.line);
+    try expectEqual(@as(usize, 5), suspect.span.locate(source).line);
     try expectEqualStrings("}", suspect.span.slice(source));
 
     // Consistent indentation raises no suspicion, even when a brace is missing.
@@ -2725,12 +2736,12 @@ test "failing beginDocument still receives the cleanup abort" {
 test "parser state stays small (R-PERF-005 parser-state-size regression guard)" {
     // The whole machine — lexer, continuation state, options, bookkeeping —
     // must remain a small constant, independent of input size. The bounds
-    // are the measured values (544 B with the scalar scanner, 648 B with the
+    // are the measured values (368 B with the scalar scanner, 472 B with the
     // block scanner's saved masks) plus headroom, not architectural budgets:
     // if a slice legitimately grows the state, measure, update the baseline
     // doc, and raise the bound in the same commit.
-    try expect(@sizeOf(Machine(*Recording, false, false, false, scalar_lex.Scanner)) <= 640);
-    try expect(@sizeOf(Machine(*Recording, false, false, false, block_lex.Scanner)) <= 768);
+    try expect(@sizeOf(Machine(*Recording, false, false, false, scalar_lex.Scanner)) <= 512);
+    try expect(@sizeOf(Machine(*Recording, false, false, false, block_lex.Scanner)) <= 640);
 }
 
 test "step is terminal-idempotent after success and after failure" {

@@ -61,7 +61,7 @@ fn validate(raw: []const u8) error{InvalidIdentifier}!void {
     var lexer = lex.Lexer.init(raw);
     const result = lexer.next();
     if (result != .token or result.token.tag != .identifier or
-        result.token.span.start.byte_offset != 0 or result.token.span.byte_len != raw.len)
+        result.token.span.start != 0 or result.token.span.len != raw.len)
         return error.InvalidIdentifier;
 }
 

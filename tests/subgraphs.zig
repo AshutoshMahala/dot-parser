@@ -190,7 +190,7 @@ test "validation sees nested edges in source order without resolving scope seman
     try expect(result.outcome == .success);
     try expect(!result.documentValid());
     try equal(@as(usize, 4), bag.items().len);
-    for (bag.items()[1..], bag.items()[0..3]) |current, previous| try expect(current.span.start.byte_offset > previous.span.start.byte_offset);
+    for (bag.items()[1..], bag.items()[0..3]) |current, previous| try expect(current.span.start > previous.span.start);
 }
 
 test "EOF points to the innermost still-open scope and restores the parent" {
@@ -199,7 +199,7 @@ test "EOF points to the innermost still-open scope and restores the parent" {
         var result = dot.parseBorrowed(std.testing.allocator, case[0], bag.sink(), .{});
         defer result.deinit(std.testing.allocator);
         try expect(result.outcome == .invalid_syntax);
-        try equal(case[1], bag.items()[0].details.unexpected.related.?.span.start.byte_offset);
+        try equal(case[1], bag.items()[0].details.unexpected.related.?.span.start);
     }
 }
 test "separate temporary allocator fails independently and is not retained" {

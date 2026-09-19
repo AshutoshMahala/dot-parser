@@ -17,9 +17,9 @@ backed bounded sessions, streaming input and bounded validation remain deferred.
 ### Implemented groundwork: lexical scanning
 
 `src/lexer/lexer.zig` selects one of two scanner implementations behind one
-interface at compile time (`lexer.backend`: the block scanner where the
-target has 128-bit or wider vectors, the scalar scanner elsewhere; a root
-file's `dot_parser_options.lexer_backend` overrides it). `root.zig`
+interface at compile time (`lexer.backend`: the scalar scanner unless a
+root file's `dot_parser_options.lexer_backend` selects the block scanner).
+`root.zig`
 exposes only Token, Result, ordinary Lexer and the backend selection; the
 parser imports internal scan helpers. Returning a lexical token is not a
 syntax-sink event; grammar and event dispatch are separately charged by the
@@ -37,15 +37,14 @@ and incremental position tracking:
 | Numerals/operators | Saved dash, leading-dot, integer and fraction states |
 | Quoted text/escapes | Saved quote opener and escape state; no segment restart on yield |
 | Concatenation trivia | Saved quoted end and trivia mode; after a completed token, trailing trivia may be revisited once, with every reread charged |
-| Location tracking | Advance from the byte already examined; no post-token bulk scan |
+| Positions | Byte offsets only: no per-byte line or column tracking; line and column derive from the source when shown |
 
 With the block scanner (`lexer/block.zig`), each lexical credit either
 classifies the next 64-byte block into bit masks (byte classes, newlines,
 quotes with backslash parity carried across blocks, comment delimiters) or
 advances the token machine once inside the classified block: a run of one
 class, a delimiter search or a fixed shape check, never past the block's end.
-Line events are counted from the newline mask on each advance, so positions
-stay exact. Classifying a block moves the frontier to its end at once, so the
+Classifying a block moves the frontier to its end at once, so the
 frontier includes up to 63 bytes of lookahead; the machine's own lookahead of
 at most two bytes for operator and numeral shapes may reach past the block
 and counts as examined too. Trailing trivia after a quoted token is revisited

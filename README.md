@@ -128,7 +128,7 @@ while (statements.next()) |statement| switch (statement) {
     .node => |node| {
         const name = document.nodeReference(node.reference).?.identifier;
         if (name.len > 8) {
-            const where = name.toSpan(document.source).start;
+            const where = name.locate(document.source);
             std.log.warn("{d}:{d}: long node name '{s}'", .{
                 where.line, where.byte_column, document.text(name),
             });
@@ -235,11 +235,12 @@ The library target has no OS, network, or filesystem dependency: it parses
 caller-supplied bytes, so input can come from a file, a pipe, a socket, or
 generated in memory — reading it is the application's job.
 
-Two scanner backends share one interface and produce identical results: a
-64-byte block scanner that classifies input with vector compares (the default
-where the target has 128-bit vectors) and the byte-at-a-time scalar scanner
-(the default elsewhere, and the smaller build). Pin one from the root source
-file of your build with `pub const dot_parser_options = .{ .lexer_backend = .scalar };`
+Two scanner backends share one interface and produce identical results: the
+byte-at-a-time scalar scanner (the default) and a 64-byte block scanner that
+classifies input with vector compares, which wins when sessions run on very
+small work budgets or the input is dominated by long identifiers, strings or
+comments. Pin one from the root source file of your build with
+`pub const dot_parser_options = .{ .lexer_backend = .block };`
 [Bounded execution](docs/EXECUTION.md#scanner-backends) has the trade-off.
 
 ## Documentation

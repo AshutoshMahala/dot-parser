@@ -1,11 +1,10 @@
 //! The lexer as the rest of the library sees it: one scanner interface, two
-//! implementations. `block.zig` classifies 64-byte blocks into bit
-//! masks with vector compares and extracts tokens from the masks, and is
-//! the default where the target has 128-bit or wider vectors;
-//! `scalar.zig` examines one byte per credit and is the default
-//! elsewhere. Both produce identical tokens, spans, diagnostics, fixes and
-//! warnings — the tests below hold them to it on fixtures, random inputs,
-//! every truncation, every block shift and every work-budget partition.
+//! implementations. `scalar.zig` examines one byte per credit and is the
+//! default; `block.zig` classifies 64-byte blocks into bit masks with
+//! vector compares and extracts tokens from the masks. Both produce
+//! identical tokens, spans, diagnostics, fixes and warnings — the tests
+//! below hold them to it on fixtures, random inputs, every truncation,
+//! every block shift and every work-budget partition.
 //!
 //! Selection is compile-time. A root source file overrides the default with
 //!
@@ -14,17 +13,16 @@
 //! ```
 //!
 //! which is how the benches compare the two and how a consumer pins one.
-//! Measured on Apple silicon (128-bit vectors) at the parse level: running
-//! to completion, the block scanner is 18–21% faster on comment-heavy and
-//! 14–18% on deeply nested sources, equal on the 200k-statement bench, and
-//! 4–8% slower on sources made of short bare and quoted tokens; under work
-//! budgets it needs 2–6x fewer credits and resumes far more cheaply, so
-//! bounded sessions run 7–55% faster at 256 credits per call and 2–4x
-//! faster at one. Its state is 208 B against 104 B and its code 6–9 KB
-//! larger per build. Without a vector unit its compares lower to byte
-//! loops: 1.9x slower than the scalar scanner on wasm32 and 27–52 KB
-//! larger there and on riscv32, which is why those targets default to
-//! scalar; see `docs/internal/OpenQuestions.md` (Q38).
+//! Measured on Apple silicon at the parse level, with positions derived on
+//! demand rather than tracked per byte: running to completion the scalar
+//! scanner is 3–15% faster on every corpus file and on the 200k-statement
+//! bench, and faster at 256 credits per call; the block scanner wins only
+//! at very small budgets (2–4x at one credit per call, since one credit
+//! classifies 64 bytes) and on long runs of one byte class (2x on the
+//! long-identifier fixture). Block state is 160 B against 56 B and its
+//! code 6–9 KB larger per build; without a vector unit its compares lower
+//! to byte loops, 1.9x slower on wasm32. Hence scalar everywhere, block
+//! opt-in; see `docs/internal/OpenQuestions.md` (Q38).
 
 const std = @import("std");
 const root = @import("root");
@@ -41,14 +39,9 @@ pub const Advance = types.Advance;
 
 pub const Backend = enum { scalar, block };
 
-/// Block scanning where the target has 128-bit or wider vectors, so each
-/// compare-to-mask step is native; the scalar scanner where the vector code
-/// would lower to byte loops (measured 1.9x slower and 30–70% larger on
-/// wasm32 and riscv32 without vector units). `backend` is the override.
-pub const default_backend: Backend = if (std.simd.suggestVectorLength(u8)) |lanes|
-    (if (lanes >= 16) .block else .scalar)
-else
-    .scalar;
+/// The scalar scanner on every target (see the module comment for the
+/// measurements); `backend` is the override point.
+pub const default_backend: Backend = .scalar;
 
 /// The selected backend: the root file's `dot_parser_options.lexer_backend`
 /// when it declares one, else `default_backend`.
@@ -367,12 +360,8 @@ test "block scanner megabyte runs resume in linear work" {
     }
 }
 
-test "the selected backend follows the target unless the root overrides it" {
+test "the selected backend is the default unless the root overrides it" {
     // The test root declares no `dot_parser_options`.
     try expectEqual(default_backend, backend);
-    if (std.simd.suggestVectorLength(u8)) |lanes| {
-        try expectEqual(if (lanes >= 16) Backend.block else Backend.scalar, default_backend);
-    } else {
-        try expectEqual(Backend.scalar, default_backend);
-    }
+    try expectEqual(Backend.scalar, default_backend);
 }
