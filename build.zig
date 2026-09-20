@@ -55,6 +55,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "digraph_treatment", .message = "error: no field named 'treated_as' in struct 'policy.Policy.Operators'" },
         .{ .name = "invalid_policy_mismatch", .message = "error: invalid policy: graph_operator_mismatch_not_applicable" },
         .{ .name = "invalid_policy_reading", .message = "error: invalid policy: graph_operator_reading_not_applicable" },
+        .{ .name = "fixed_parse_override", .message = "tests/compile_fail/fixed_parse_override.zig:3:41: error: no field named 'policy' in struct /?/" },
+        .{ .name = "unmetered_advance", .message = "error: metering is disabled; use run()" },
     }) |fixture| {
         const rejected = b.addObject(.{
             .name = fixture.name,
@@ -104,9 +106,8 @@ pub fn build(b: *std.Build) void {
         examples_step.dependOn(&run_example.step);
     }
 
-    // Benches can pin a scanner backend (`-Dlexer=scalar|block`; `auto`
-    // uses the scalar default) through their root file's `dot_parser_options`.
-    // The library module itself carries no build option.
+    // Benches pin Policy.scanner (`auto` uses the scalar default). The library
+    // module itself carries no build option or root-file configuration hook.
     const lexer_choice = b.option([]const u8, "lexer", "Scanner backend for the benches: auto (default), scalar, or block") orelse "auto";
     const bench_options = b.addOptions();
     bench_options.addOption([]const u8, "lexer", lexer_choice);
@@ -172,6 +173,23 @@ pub fn build(b: *std.Build) void {
     });
     b.step("bench-subgraphs", "Measure sibling and nested scope parsing")
         .dependOn(&b.addRunArtifact(subgraph_bench).step);
+
+    const policy_bench = b.addExecutable(.{
+        .name = "policy_throughput",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/policies.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "dot_parser", .module = mod }},
+        }),
+    });
+    b.step("bench-policy", "Compare fixed/runtime policy costs on the standard benchmark machine")
+        .dependOn(&b.addRunArtifact(policy_bench).step);
+    const check_benches = b.step("check-benches", "Compile benchmarks without updating or running baselines");
+    for ([_]*std.Build.Step.Compile{ bench_exe, lexer_bench, session_bench, subgraph_bench, policy_bench }) |bench| {
+        _ = bench.getEmittedBin();
+        check_benches.dependOn(&bench.step);
+    }
 
     const freestanding = b.step("check-freestanding", "Compile consumed session and policy profiles for RISC-V32 and Wasm32");
     for ([_]std.Target.Cpu.Arch{ .riscv32, .wasm32 }) |arch| {

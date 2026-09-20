@@ -1,4 +1,4 @@
-//! Fixed baseline, per-operation overrides and a source-preserving view.
+//! Fixed baselines, overrides, source-preserving views and policy-bound sessions.
 const std = @import("std");
 const dot = @import("dot_parser");
 
@@ -38,4 +38,24 @@ pub fn main() !void {
             @tagName(edge.operator), @tagName(edge.effectiveOperator(doc, view)),
         });
     }
+
+    // Limits/scanner/execution share the same policy as validation. Storage and
+    // work credits remain explicit resources, not hidden policy allocations.
+    var storage: dot.FixedDocumentStorage(.{ .statements = 1, .edge_chains = 1, .edge_links = 2 }) = .{};
+    const Bounded = dot.Profile(.{
+        .runtime_policy = true,
+        .policy = .{ .execution = .{ .metering = true }, .limits = .{ .max_statements = 1 } },
+    });
+    var session = try Bounded.Session.init(source, .{ .document = storage.storage() }, dot.diagnostic.discard, .{
+        .policy = .{ .scanner = .block, .validation = patch.validation },
+    });
+    defer session.deinit();
+    while ((try session.advance(16)).outcome == null) {}
+    const parsed = session.result().?;
+    if (parsed.outcome != .success) return error.ParseFailed;
+    if (!session.validate(dot.diagnostic.discard).?.documentValid()) return error.InvalidDocument;
+    std.debug.print("policy session: {s}, {d} statement\n", .{
+        @tagName(parsed.document.?.effectiveKind(session.interpretation().?)),
+        parsed.document.?.statementCount(),
+    });
 }

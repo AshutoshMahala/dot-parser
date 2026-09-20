@@ -18,9 +18,8 @@ pub fn main(init: std.process.Init) !void {
     }) = .{};
     var bag: dot.FixedDiagnosticBag(4) = .{};
 
-    const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{
-        .max_statements = 8,
-    });
+    const Parser = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 8 } } });
+    const parsed = Parser.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
 
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);

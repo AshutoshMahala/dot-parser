@@ -181,7 +181,7 @@ test "port storage remains compact and accessors reject out of bounds handles" {
 test "ports do not consume statement or attribute budgets and run in all execution profiles" {
     inline for (.{ false, true }) |metering| inline for (.{ false, true }) |cancellation| {
         var pools: Storage = .{};
-        var session = dot.FixedSession(.{ .metering = metering, .cancellation = cancellation }).init("digraph {a:p->b:q->c:r[k=v]}", .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_statements = 1, .max_attributes = 1 });
+        var session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = metering, .cancellation = cancellation }, .limits = .{ .max_statements = 1, .max_attributes = 1 } } }).Session.init("digraph {a:p->b:q->c:r[k=v]}", .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
         defer session.deinit();
         const result = session.run();
         try expect(result.outcome == .success);

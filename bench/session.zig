@@ -4,11 +4,11 @@ const dot = @import("dot_parser");
 const build_options = @import("build_options");
 const count = 200_000;
 
-pub const dot_parser_options = .{ .lexer_backend = selectedBackend() };
+const Parser = dot.Profile(.{ .policy = .{ .scanner = selectedBackend() } });
 
-fn selectedBackend() dot.lexer.Backend {
-    if (std.mem.eql(u8, build_options.lexer, "auto")) return dot.lexer.default_backend;
-    return std.meta.stringToEnum(dot.lexer.Backend, build_options.lexer) orelse @compileError("-Dlexer must be auto, scalar, or block");
+fn selectedBackend() dot.ScannerBackend {
+    if (std.mem.eql(u8, build_options.lexer, "auto")) return dot.Profile(.{}).baseline.scanner;
+    return std.meta.stringToEnum(dot.ScannerBackend, build_options.lexer) orelse @compileError("-Dlexer must be auto, scalar, or block");
 }
 const Polls = struct {
     count: usize = 0,
@@ -32,9 +32,9 @@ pub fn main(init: std.process.Init) !void {
     };
     var buffer: [4096]u8 = undefined;
     var file: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
-    try file.interface.print("scanner backend: {s}\n", .{@tagName(dot.lexer.backend)});
+    try file.interface.print("scanner backend: {s}\n", .{@tagName(Parser.baseline.scanner)});
     inline for (.{ false, true }) |metering| inline for (.{ false, true }) |cancellation| {
-        const Session = dot.FixedSession(.{ .metering = metering, .cancellation = cancellation });
+        const Session = dot.Profile(.{ .policy = .{ .scanner = selectedBackend(), .execution = .{ .metering = metering, .cancellation = cancellation } } }).Session;
         var times: [9]u64 = undefined;
         var polls: usize = 0;
         for (0..11) |round| {
@@ -54,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
         }
         std.mem.sort(u64, &times, {}, std.sort.asc(u64));
         try file.interface.print("metering={any}, cancellation={any}: session {d} B, driver {d} B, median {d:.2} ms ({d:.2}–{d:.2}), polls {d}\n", .{
-            metering,                                cancellation,                            @sizeOf(Session),                        @sizeOf(@FieldType(Session, "machine")),
+            metering,                                cancellation,                            @sizeOf(Session),                        @sizeOf(@FieldType(@FieldType(Session, "driver"), "machine")),
             @as(f64, @floatFromInt(times[4])) / 1e6, @as(f64, @floatFromInt(times[0])) / 1e6, @as(f64, @floatFromInt(times[8])) / 1e6, polls,
         });
     };

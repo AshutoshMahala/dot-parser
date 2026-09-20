@@ -48,7 +48,8 @@ amended.)*
 at compile time: the scalar byte-at-a-time scanner on every target, with
 the block scanner (64-byte vector classification into bit masks, tokens
 extracted from the masks, backslash parity carried across blocks) opt-in
-through a root file's `dot_parser_options.lexer_backend`. Evidence at the
+originally through a root file's `dot_parser_options.lexer_backend` (superseded
+by the policy extension below). Evidence at the
 parse level on Apple silicon, with positions derived on demand (Q39):
 running to completion the scalar scanner is 3–15% faster on every corpus
 file and on the 200k-statement bench (336 vs 292 MiB/s), and faster at 256
@@ -69,12 +70,13 @@ the whole suite runs on wasm32 with and without simd128 under Node's WASI.
 The execution contract accounts credits per backend. *(Embodied:
 `src/lexer/`; R-MOD-010, Q16, Q27.)*
 
-**Configuration extension decided (2026-09-20), not implemented:** Q35 puts
-scanner selection in the unified policy model with compile-time/runtime parity.
-Fixed-only profiles may still exclude the other backend; runtime-selectable
-profiles must retain both. The root-file interface above describes current
-implementation, not an exception to the future parity contract. Defaults and
-the existing measurement evidence are unchanged.
+**Configuration extension implemented (2026-09-20):** Q35 puts scanner selection
+in `Policy.scanner` with compile-time/runtime parity. Fixed-only profiles can
+exclude the other backend; runtime-selectable profiles retain both and select
+at operation/session initialization. The root-file override is removed; direct
+lexical callers use `lexer.For(backend)`. Scalar remains the default. The
+measurements above predate this migration; the new policy-path performance
+comparison still needs the standard benchmark machine.
 
 **Q34 — How are subgraph edge endpoints retained without inflating ordinary edges?**
 Use separate generalized owner/link pools and a uniform public `Endpoint`
@@ -174,9 +176,9 @@ Tolerant by design: the parser is kind-agnostic (both operators always parse,
 the written operator is preserved), and the kind×operator legality rule lives
 solely in validation, which reports every independent mismatch in source
 order. Sink filtering changes reporting, not `document_valid`. Consumers may
-parse without validation or apply their own acceptance policy; configurable
-validation-rule policy is not implemented yet. *(Embodied: `src/parser.zig`,
-`src/validate.zig`, corpus.)*
+parse without validation or select independent graph/operator validation and
+interpretation policies through `Profile` (Q35). *(Embodied: `src/parser.zig`,
+`src/validate.zig`, `src/policy.zig`, corpus.)*
 
 **Q5 — Is semantic resolution part of this package or a sibling package?**
 This package, as a separate optional layer (`DotIR` + explicit lowering
@@ -279,7 +281,8 @@ that helper separately from the settled ownership boundary.
 
 **Q35 — Which validation policy does the library expose, and how are mixed
 graphs represented?**
-**Behavior decided (2026-09-20); first graph-policy slice implemented.**
+**Behavior decided (2026-09-20); graph policies and existing-settings migration
+implemented. Lenient syntax remains the next slice.**
 
 **Configuration contract.** Use one typed policy model for behavioral settings,
 not an all-boolean feature mask, string-keyed map or a second lenient parser.
@@ -297,7 +300,7 @@ require custom rule implementations or trait machinery.
 - Runtime overrides are partial per-operation patches. Omitted fields, including
   nested siblings, inherit the consumer's compiled baseline, not fresh library
   defaults. No override means the compiled baseline. Optional typed fields with
-  `null` meaning inherit are proposed; exact types and names remain provisional.
+  `null` meaning inherit are implemented; the experimental API can still change.
 - Resolve the effective policy once at operation/session initialization. Settings
   stay fixed across yields and may change on reset; no mutable global policy or
   leakage between operations. Each stage consumes the settings it needs.
@@ -457,9 +460,41 @@ exercise forbidden overrides, runtime verification on fixed profiles, invalid
 baselines and `digraph.treated_as`. Consumed profiles compile for Wasm32 and
 RISC-V32. [Consumer API and costs](../POLICIES.md).
 
+**Existing-settings slice implemented:** `limits.max_nesting`, `max_statements`
+and `max_attributes`, `recovery`, `scanner`, and `execution.metering` /
+`cancellation` now use the same baseline/patch model. The default ordinary parse
+is scalar, fail-fast, unmetered and uncancellable, with limits at `maxInt(usize)`;
+`BoundedSession` is the metered fixed-profile convenience. Allocators, pool hints,
+actual memory and cancellation callbacks remain explicit resources.
+
+`Profile.Session` resolves once at init/reset and latches parsing/validation
+settings across yields. Runtime scanner/execution choices select a specialized
+engine; one tagged union stores only the largest variant, not eight simultaneous
+machines. Fixed profiles specialize the same grammar, without runtime settings
+or the disabled recovery-depth field. Invalid reset leaves the current work and
+views intact; successful reset uses the compiled baseline plus the new patch.
+Validation/interpretation of a committed session document is separate and
+unbudgeted. Enabled cancellation also applies to one-shot parse/measure calls,
+which publish no document/capacities when cancelled.
+
+The former parse-option limit/recovery fields, `FixedSession(ExecutionFeatures)`
+and root-file scanner hook are removed rather than retained as a second
+configuration path. Runtime parse/measure calls are now fallible. Tests cover
+the full scanner/execution/recovery matrix, fixed/runtime parity, policy latching,
+atomic rejected resets, early configuration failure, state shape and freestanding
+consumers. `bench-policy` compares fixed, runtime-baseline and runtime-override
+paths; its standard-machine timing/binary-size gate remains pending. Recorded
+baselines and package version are unchanged.
+
+The parser has one policy-specialized `Machine`, with `ParseSettings` and
+borrowed scratch kept separate. The previous machine/validation wrappers,
+duplicated options, scanner-selection aliases and retired-root-hook detection
+are removed. Direct sink fixtures use a test-only driver over that same machine;
+production adapters do not translate through an old options structure.
+
 **Still open:** confirmation of the provisional mode-switch/irrelevant-field
-rule; migration of remaining settings and live-session integration; observation
-and promotion APIs; standard-machine performance gates. Semantic resolution,
+rule; observation and live promotion APIs; standard-machine performance gates.
+Semantic resolution,
 custom rules, trait-style adapters and marshal/unmarshal remain separate designs.
 
 **Verification contract (2026-09-20):** one public name, `validatePolicy`, and
@@ -804,7 +839,7 @@ compatibility statement is written when the slices land. *(Embodied: README
 **Q12 — What default security limits apply to convenience APIs?**
 `max_statements` exists and is caller-visible, but defaults to unlimited;
 whether convenience APIs should ship with non-trivial defaults is open.
-*(Embodied: `ParseOptions.max_statements`.)*
+*(Embodied: `Policy.limits.max_statements`.)*
 
 **Q16 — What size thresholds establish that disabling a feature removed its
 cost?**
@@ -862,7 +897,10 @@ release, not a source-API stability declaration. The stable boundary and its
 criteria remain open. There is no compatibility guarantee for source APIs,
 diagnostic identities, payload discriminants or retained layouts during this
 experimental phase. Obsolete entries and compatibility-only scaffolding are
-removed; WDP conformance and current registry consistency remain required. *(Embodied: `CHANGELOG.md`,
+removed, including retired-API detection and compatibility-only tests. Internal
+callers and correctness tests use the current implementation; they do not justify
+retaining an old wrapper or settings schema. WDP conformance and current registry
+consistency remain required. *(Embodied: `CHANGELOG.md`,
 `build.zig.zon`, `src/root.zig`; R-ARCH-009/R-DIAG-005.)*
 
 **Q26 — Which named profiles are public conveniences?**
@@ -871,8 +909,8 @@ consumer-defined typed compile-time baselines and default-off runtime override
 support. This supersedes the 2026-07-17 named-profiles-first/custom-structs-later
 ordering. Named presets remain possible conveniences over the same policy model,
 not separate behavior systems. Which names to publish (`micro`/`core`/`full` were
-earlier candidates), their contents, public type shapes and implementation remain
-open. No current profile implementation is claimed.
+earlier candidates) and their contents remain open. `Profile` and the existing
+`BoundedSession` convenience are implemented; no broader named set is promised.
 
 **Q27 — Which progress budgets does the bounded driver support, and what
 work unit is deterministic?**
@@ -885,19 +923,21 @@ a whole-pipeline percentage.
 defines charged scan/grammar/dispatch microsteps, zero/one-credit behavior,
 callback exclusions and terminal cleanup, cancellation precedence, source
 frontier semantics, and acceptance tests. `BoundedSession` now provides public
-fixed-storage bounded parsing. `FixedSession` independently selects metering and
-cancellation; the hook is a borrowed context/non-failing predicate pair. Explicit
+fixed-storage bounded parsing. `Profile.Session` independently selects metering
+and cancellation through `Policy.execution`; the hook is a borrowed
+context/non-failing predicate pair. Explicit
 cancel/deinit cleans up abandoned work, and reset reuses pools after cleanup.
 Partition, cancellation-boundary, failure-precedence, lifetime and freestanding
 checks accompany the API. Ordinary-path and optional costs are recorded in
-`docs/BASELINES.md`. Public pull events, streaming input, total-operation work
+`docs/BASELINES.md` for the pre-migration implementation; policy-path comparisons
+remain pending on the standard machine. Public pull events, streaming input, total-operation work
 limits and bounded validation remain outside this implemented slice.
-*(R-MOD-010/R-MOD-013; `root.FixedSession`, `parser.Machine`, `lexer.Scanner`.)*
+*(R-MOD-010/R-MOD-013; `profile.Session`, `parser.Machine`, `lexer.scannerFor`.)*
 
 **Q22 — Which grammar boundaries are safe recovery points, and what is the
 measured binary-size cost of recovery support?**
 **Implemented (2026-09-18):** statement boundaries are the sync points. With
-the runtime policy `recovery = .statements` (default `.fail_fast`, per
+the policy `recovery = .statements` (default `.fail_fast`, per
 R-FUNC-007), a syntax error inside the body aborts the sink once, the parser
 skips to the next `;` or `}` at the same brace depth (skipped `{` are matched
 by counting), and every later syntax error is reported through the same bag.
@@ -905,12 +945,13 @@ No document is ever published; the outcome stays `invalid_syntax`. Lexical
 errors resume after the malformed bytes; unterminated quotes/comments, header
 errors, end of input, trailing tokens, limits and deferred features remain
 terminal. Measured: renderer-free ReleaseSmall examples grew by 350–650 B and
-ordinary throughput did not change, so compile-time exclusion is not yet
-warranted (R-FUNC-007's "material" threshold). **Still open:** a caller-
+ordinary throughput did not change. These measurements predate Q35's unified
+policy migration: fixed fail-fast profiles now exclude recovery handling and
+skip-depth storage; runtime profiles support both values. **Still open:** a caller-
 provided diagnostic limit that ends recovery early (R-FUNC-007, R-SEC-002),
 the per-class abort/report/ignore policy, and lenient acceptance of
-unambiguous deviations as warnings. *(Embodied: `parser.Recovery`,
-`ParseOptions.recovery`, `tests/diagnostics.zig`; R-FUNC-007, R-DX-002.)*
+unambiguous deviations as warnings. *(Embodied: `Policy.recovery`,
+`tests/diagnostics.zig`, `tests/policy_settings.zig`; R-FUNC-007, R-DX-002.)*
 
 ---
 
@@ -1065,3 +1106,10 @@ field out stays with the profile slice. *(Embodied: `diagnostic.Fix`,
 
 - 2026-09-13 — Q33: standalone scope occurrence/tree views, explicit nesting
   scratch, depth policy, charged enter/exit events and deferred endpoint semantics.
+
+- 2026-09-20 — Q35/Q38/Q27: unified existing limits, recovery, scanner and
+  execution controls under `Policy`, with full runtime parity and policy-bound
+  sessions. Fixed specializations keep disabled state/code exclusion; runtime
+  sessions select one specialized variant and latch it across yields. Removed
+  legacy configuration paths, added migration coverage and benchmark harness;
+  standard-machine performance approval and lenient syntax remain pending.

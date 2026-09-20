@@ -48,7 +48,7 @@ pools still produce `.storage_failure` with a diagnostic.
 Credits do not bound CPU instructions or wall-clock time. User diagnostic and
 cancellation hooks are callouts; their execution time is excluded. Terminal
 housekeeping can attempt one diagnostic and one internal cleanup abort without
-another credit. With `recovery = .statements` in the options, each recovered
+another credit. With `Policy.recovery = .statements`, each recovered
 syntax error and each lexical warning is one more diagnostic callout attached
 to the microstep that found it; the abort still happens once. Validation, identifier decoding, and rendering are separate,
 unbudgeted operations. There is no OS clock, scheduler, thread, or hidden worker.
@@ -114,7 +114,9 @@ the result. They perform no more scans, polls, diagnostics or lifecycle events.
 ## Optional cancellation
 
 ```zig
-const Session = dot.FixedSession(.{ .cancellation = true });
+const Session = dot.Profile(.{ .policy = .{ .execution = .{
+    .metering = true, .cancellation = true,
+} } }).Session;
 var session = Session.init(source, .{ .document = storage.storage() }, bag.sink(), .{
     .cancellation = .{ .context = &request, .is_requested = Request.poll },
 });
@@ -141,10 +143,18 @@ the value.
 
 ## Independent features and lifetime
 
-`FixedSession(.{ .metering = false, .cancellation = true })` supports cancellable
-run without work counters. With metering disabled, advance is a compile
-error. With cancellation disabled (the default), hook storage and checks compile
-out. Explicit cancel cleanup remains available in every configuration.
+`Profile(.{ .policy = .{ .execution = .{ .metering = false, .cancellation = true } } }).Session`
+supports cancellable run without work counters. With metering disabled in a fixed
+profile, advance is a compile error. With cancellation disabled in a fixed
+profile (the default), hook storage and checks compile out. Runtime profiles
+retain the cancellable alternative. Explicit cancel cleanup remains available
+in every configuration.
+
+Profiles default to unmetered execution; `dot.BoundedSession` is the named
+metered preset. Runtime-enabled profiles accept the same execution settings at
+init/reset. They select a driver once and dispatch only at call boundaries;
+`advance` returns `error.MeteringDisabled` without work when the selected runtime
+policy is unmetered. [Policies](POLICIES.md) covers the full API.
 
 Keep source bytes, pools, nesting scratch, diagnostic context and cancellation context alive at stable addresses
 across yields. Do not inspect/mutate the pools while parsing or copy a live
@@ -155,6 +165,11 @@ not overlap or reenter. A completed document borrows source/pools, not the sessi
 parse using the same pools. It invalidates all previous document views into
 those pools; retire those views before reuse. Cancellation/abort clears logical
 lengths, not the underlying bytes: it is not a secure-erasure facility.
+Runtime reset verifies configuration first; rejection leaves the old session
+and views intact. Each successful reset inherits the compiled baseline, not
+the previous operation's overrides. Source/scanner/execution/limits remain
+fixed across yields. Session `validate(diagnostics)` and `interpretation()` use
+the latched graph policy after success, as explicit unbudgeted operations.
 
 ## Scanner backends
 
@@ -169,18 +184,22 @@ it keeps 160 B of state, and because one credit classifies 64 bytes it needs
 2–6x fewer credits for the same input and resumes more cheaply, so it wins
 when sessions run on very small budgets (2–4x at one credit per call) or the
 input is dominated by long identifiers, strings or comments (numbers in the
-[changelog](../CHANGELOG.md)). Pin a backend from the root source file of the
-build:
+[changelog](../CHANGELOG.md)). These are the recorded pre-migration measurements;
+the policy refactor still needs standard-machine remeasurement. Select a backend
+in the profile:
 
 ```zig
-pub const dot_parser_options = .{ .lexer_backend = .block }; // the default is .scalar
+const Parser = dot.Profile(.{ .policy = .{ .scanner = .block } });
 ```
 
-`dot.lexer.backend` reports the selection. Session storage sizes follow the
-choice, so measure the containing struct after pinning.
+`Parser.baseline.scanner` reports the compiled baseline. Runtime-enabled profiles
+may override it per operation/reset. Fixed session storage follows the selected
+backend; runtime session storage holds the largest selectable driver plus a tag.
+Measure the containing struct. Direct lexical consumers can use
+`dot.lexer.For(.block)`; `dot.lexer.Lexer` and
+`dot.Profile(.{}).baseline.scanner` describe the scalar default.
 
 See [ownership](OWNERSHIP.md), [measured costs](BASELINES.md), and the precise
 [execution contract](architecture/EXECUTION_CONTRACT.md). Public pull events,
 chunked input, total-operation work limits and bounded validation remain
-outside this slice; statement-boundary recovery is available through the
-session options.
+outside this slice; statement-boundary recovery is available through the policy.

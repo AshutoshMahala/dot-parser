@@ -112,7 +112,7 @@ test "nesting policy scratch capacity and retained subgraph capacity are distinc
     var bag: dot.FixedDiagnosticBag(2) = .{};
     const source = "graph {{ {a} }}";
     const memory: dot.ParseMemory = .{ .document = pools.storage(), .scratch = scratch.storage() };
-    const policy = dot.parseBorrowedIn(source, memory, bag.sink(), .{ .max_nesting = 1 });
+    const policy = dot.Profile(.{ .policy = .{ .limits = .{ .max_nesting = 1 } } }).parseBorrowedIn(source, memory, bag.sink(), .{});
     try expect(policy.outcome == .resource_exhausted);
     try equal(dot.diagnostic.Capacity.Resource.nesting_depth, bag.items()[0].details.capacity.resource);
     bag = .{};
@@ -125,10 +125,10 @@ test "nesting policy scratch capacity and retained subgraph capacity are distinc
     const retained = dot.parseBorrowedIn("graph {{}}", .{ .document = no_scopes.storage(), .scratch = scratch.storage() }, bag.sink(), .{});
     try expect(retained.outcome == .storage_failure);
     try equal(dot.diagnostic.Capacity.Resource.subgraph_pool, bag.items()[0].details.capacity.resource);
-    try expect(dot.parseBorrowedIn("graph {}", .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_nesting = 0 }).outcome == .success);
-    try expect(dot.parseBorrowedIn("graph {{}}", memory, dot.diagnostic.discard, .{ .max_nesting = 0 }).outcome == .resource_exhausted);
-    try expect(dot.parseBorrowedIn("graph {{a}}", memory, dot.diagnostic.discard, .{ .max_statements = 1 }).outcome == .resource_exhausted);
-    try expect(dot.parseBorrowedIn("graph {{a}}", memory, dot.diagnostic.discard, .{ .max_statements = 2 }).outcome == .success);
+    try expect(dot.Profile(.{ .policy = .{ .limits = .{ .max_nesting = 0 } } }).parseBorrowedIn("graph {}", .{ .document = pools.storage() }, dot.diagnostic.discard, .{}).outcome == .success);
+    try expect(dot.Profile(.{ .policy = .{ .limits = .{ .max_nesting = 0 } } }).parseBorrowedIn("graph {{}}", memory, dot.diagnostic.discard, .{}).outcome == .resource_exhausted);
+    try expect(dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 1 } } }).parseBorrowedIn("graph {{a}}", memory, dot.diagnostic.discard, .{}).outcome == .resource_exhausted);
+    try expect(dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 2 } } }).parseBorrowedIn("graph {{a}}", memory, dot.diagnostic.discard, .{}).outcome == .success);
 }
 test "many sibling scopes reuse one scratch frame" {
     var bytes: [2048]u8 = undefined;
@@ -138,7 +138,7 @@ test "many sibling scopes reuse one scratch frame" {
     try writer.writeAll("}");
     var pools: dot.FixedDocumentStorage(.{ .statements = 1000, .subgraphs = 1000 }) = .{};
     var scratch: dot.FixedParseScratch(.{ .nesting = 1 }) = .{};
-    const result = dot.parseBorrowedIn(writer.buffered(), .{ .document = pools.storage(), .scratch = scratch.storage() }, dot.diagnostic.discard, .{ .max_nesting = 1 });
+    const result = dot.Profile(.{ .policy = .{ .limits = .{ .max_nesting = 1 } } }).parseBorrowedIn(writer.buffered(), .{ .document = pools.storage(), .scratch = scratch.storage() }, dot.diagnostic.discard, .{});
     try expect(result.outcome == .success);
     try equal(@as(usize, 1000), result.document.?.subgraph_records.len);
 }
@@ -153,7 +153,7 @@ test "deep nesting uses explicit frames and one-credit execution without recursi
     try writer.writeAll("}");
     var pools: dot.FixedDocumentStorage(.{ .statements = depth + 1, .subgraphs = depth, .nodes = 1 }) = .{};
     var scratch: dot.FixedParseScratch(.{ .nesting = depth }) = .{};
-    var session = dot.BoundedSession.init(writer.buffered(), .{ .document = pools.storage(), .scratch = scratch.storage() }, dot.diagnostic.discard, .{ .max_nesting = depth });
+    var session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true }, .limits = .{ .max_nesting = depth } } }).Session.init(writer.buffered(), .{ .document = pools.storage(), .scratch = scratch.storage() }, dot.diagnostic.discard, .{});
     defer session.deinit();
     var progress = session.advance(1);
     while (progress.outcome == null) {
@@ -257,7 +257,7 @@ test "all execution profiles accept nested standalone scopes" {
     inline for (.{ false, true }) |metering| inline for (.{ false, true }) |cancellation| {
         var pools: Pools = .{};
         var scratch: Scratch = .{};
-        var session = dot.FixedSession(.{ .metering = metering, .cancellation = cancellation }).init(
+        var session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = metering, .cancellation = cancellation } } }).Session.init(
             "digraph {{a:p->b->c[k=v]} subgraph s {{z}}}",
             .{ .document = pools.storage(), .scratch = scratch.storage() },
             dot.diagnostic.discard,

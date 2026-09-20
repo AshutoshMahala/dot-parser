@@ -17,7 +17,7 @@ DOT processing and does not produce a source diagnostic.
 | Outcome | Meaning | Document? |
 | --- | --- | --- |
 | `.success` | The document parsed completely | Yes |
-| `.cancelled` | A session was cancelled; never produced by one-shot parsing | No |
+| `.cancelled` | A session was cancelled, or an enabled cancellation hook stopped a one-shot operation | No |
 | `.invalid_syntax` | The input is malformed in any DOT dialect | No |
 | `.unsupported_feature` | The parse stopped at a recognized-but-deferred DOT construct | No |
 | `.resource_exhausted` | A caller-configured limit (e.g. `max_statements` or `max_attributes`) was reached; the input may still be valid | No |
@@ -98,8 +98,7 @@ stops at the first.
 ## The diagnostic bag
 
 By default parsing is fail-fast: at most one failure diagnostic. With
-`ParseOptions.recovery = .statements` (also on `FixedParseOptions` and
-session options) a syntax error inside the body does not end the parse: the
+`Policy.recovery = .statements` a syntax error inside the body does not end the parse: the
 document is aborted once, the parser skips to the next `;` or `}` at the
 same brace depth, and every further syntax error is reported too. The
 outcome is still `invalid_syntax`, no document is published, and validation

@@ -163,10 +163,10 @@ test "each fixed pool exhaustion has an exact resource and storage is reusable" 
 test "attribute budgets include assignments but not empty groups, independently of statements" {
     inline for (.{ @as(usize, 0), 9, 10 }) |limit| {
         var bag: dot.FixedDiagnosticBag(1) = .{};
-        var parsed = dot.parseBorrowed(std.testing.allocator, source, bag.sink(), .{ .max_attributes = limit });
+        var parsed = dot.Profile(.{ .policy = .{ .limits = .{ .max_attributes = limit } } }).parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
         defer parsed.deinit(std.testing.allocator);
         var pools: dot.FixedDocumentStorage(capacities) = .{};
-        const fixed = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_attributes = limit });
+        const fixed = dot.Profile(.{ .policy = .{ .limits = .{ .max_attributes = limit } } }).parseBorrowedIn(source, .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
         try equal(std.meta.activeTag(parsed.outcome), std.meta.activeTag(fixed.outcome));
         if (limit < 10) {
             try expect(parsed.outcome == .resource_exhausted);
@@ -175,8 +175,8 @@ test "attribute budgets include assignments but not empty groups, independently 
         } else try expect(parsed.outcome == .success);
     }
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .attribute_statements = 1 }) = .{};
-    try expect(dot.parseBorrowedIn("graph { node[][] }", .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_attributes = 0 }).outcome == .success);
-    try expect(dot.parseBorrowedIn("graph { node[] }", .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_statements = 0 }).outcome == .resource_exhausted);
+    try expect(dot.Profile(.{ .policy = .{ .limits = .{ .max_attributes = 0 } } }).parseBorrowedIn("graph { node[][] }", .{ .document = pools.storage() }, dot.diagnostic.discard, .{}).outcome == .success);
+    try expect(dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 0 } } }).parseBorrowedIn("graph { node[] }", .{ .document = pools.storage() }, dot.diagnostic.discard, .{}).outcome == .resource_exhausted);
 }
 
 test "all attribute corpus prefixes terminate identically without exposing partial storage" {
@@ -236,11 +236,11 @@ fn fuzzAttributes(_: void, smith: *std.testing.Smith) !void {
     }
     try writer.writeAll(" }");
     const bytes = writer.buffered();
-    var parsed = dot.parseBorrowed(std.testing.allocator, bytes, dot.diagnostic.discard, .{ .max_attributes = count });
+    var parsed = try dot.Profile(.{ .runtime_policy = true }).parseBorrowed(std.testing.allocator, bytes, dot.diagnostic.discard, .{ .policy = .{ .limits = .{ .max_attributes = count } } });
     defer parsed.deinit(std.testing.allocator);
     try expect(parsed.outcome == .success);
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .nodes = 1, .attributes = 63 }) = .{};
-    const fixed = dot.parseBorrowedIn(bytes, .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_attributes = count });
+    const fixed = try dot.Profile(.{ .runtime_policy = true }).parseBorrowedIn(bytes, .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .policy = .{ .limits = .{ .max_attributes = count } } });
     try expect(fixed.outcome == .success);
     try sameDocument(&parsed.document.?, &fixed.document.?);
     const doc = &parsed.document.?;

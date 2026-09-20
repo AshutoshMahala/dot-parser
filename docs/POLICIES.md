@@ -1,8 +1,9 @@
-# Graph policies
+# Parsing and graph policies
 
 `dot.Profile(...)` binds a typed policy at compile time. Runtime overrides are
-off by default. This first slice configures graph validation and effective
-interpretation; it does not change the DOT grammar or rewrite source.
+off by default. Policies configure limits, recovery, scanner selection,
+execution, graph validation and effective interpretation. Syntax leniency is
+the next slice; this work does not broaden the grammar or rewrite source.
 
 The ordinary `dot.validate` and `dot.parseAndValidate` functions keep their strict
 defaults. [Runnable example](../examples/policies.zig).
@@ -72,12 +73,12 @@ const Checks = dot.Profile(.{
         .graph = .{ .operator_mismatch = .warning },
     } },
 });
-const patch: dot.Policy = .{ .validation = .{
-    .graph = .{ .treated_as = .auto },
-} };
+const patch: dot.Policy = .{
+    .limits = .{ .max_statements = 1000 },
+    .validation = .{ .graph = .{ .treated_as = .auto } },
+};
 var result = try Checks.parseAndValidate(allocator, source, bag.sink(), .{
     .policy = patch,
-    .parse = .{ .max_statements = 1000 },
 });
 defer result.deinit(allocator);
 ```
@@ -104,9 +105,10 @@ Invalid compiled baselines are compile errors. On fixed profiles, explicit
 `validatePolicy` calls require a comptime argument; there is no runtime verifier.
 The top-level `dot.validatePolicy` checks against the library-default fixed profile.
 
-On runtime-enabled profiles, `validate`, `interpretation`, and `parseAndValidate`
-return `PolicyError!T` and automatically check before inspecting the document or
-parsing/allocating. Optional preflight returns the same issue; `issue.asError()`
+On runtime-enabled profiles, all profile-level parse, measure, validation and
+interpretation entry points, plus `Session.init`/`reset`, return `PolicyError!T` and automatically
+check before inspecting source/document, allocating, polling hooks or touching
+session storage. Optional preflight returns the same issue; `issue.asError()`
 maps it to the operation error. The current errors are
 `GraphOperatorMismatchNotApplicable` and `GraphOperatorReadingNotApplicable`.
 Fixed operations return `T` directly, without a configuration-error union.
@@ -114,6 +116,81 @@ Fixed operations return `T` directly, without a configuration-error union.
 These are configuration failures, **not** `ParseOutcome.invalid_syntax` and not
 WDP diagnostics. Successful configuration verification says nothing about DOT
 validity or whether the caller supplied sufficient storage.
+
+## Limits, recovery, scanner and execution
+
+These fields have identical values and semantics at both binding times:
+
+| Policy field | Default | Meaning |
+| --- | --- | --- |
+| `limits.max_statements` | `maxInt(usize)` | Maximum source statements, not an edge or work budget |
+| `limits.max_attributes` | `maxInt(usize)` | Maximum key/value pairs, including assignments |
+| `limits.max_nesting` | `maxInt(usize)` | Maximum active subgraph depth; root depth is zero |
+| `recovery` | `.fail_fast` | `.statements` continues diagnostics after a body syntax failure; never publishes a partial document |
+| `scanner` | `.scalar` | `.block` selects the 64-byte scanner; credit counts differ, language results do not |
+| `execution.metering` | `false` | Enable work-credit accounting and session `advance(budget)` |
+| `execution.cancellation` | `false` | Enable polling of an explicitly supplied cancellation hook |
+
+Zero limits are valid. Policy never disables mandatory capacity/overflow checks
+or supplies backing memory. Limits remain distinct from per-call work credits.
+Every metering/cancellation combination is supported independently.
+
+Source, allocators, pools, scratch and cancellation contexts are **resources**,
+not policy. `ParseOptions` retains `scratch_allocator` and `document_capacities`;
+`CheckOptions.parse` now contains only those `ParseResources`. Capacity hints
+reserve memory rather than limit acceptance. The cancellation resource is a
+nullable hook on parse/session options when compiled in. Runtime policies that
+disable cancellation never poll a supplied hook; an enabled policy with no hook
+is valid. Explicit session `cancel()` always works.
+
+`parseBorrowed`, `parseBorrowedIn`, `measure`, and `measureIn` apply the same
+resolved parsing policy. Count-only measurement returns capacities only on
+success; cancellation and recovery failures publish neither counts nor a
+document. Measurement ignores document preallocation hints. One-shot calls
+always run to completion (or failure/cancellation), even when metering is on;
+they do not promise bounded allocation, diagnostics, or wall-clock time.
+
+## Policy-bound sessions
+
+```zig
+const Parser = dot.Profile(.{
+    .runtime_policy = true,
+    .policy = .{
+        .execution = .{ .metering = true },
+        .limits = .{ .max_nesting = 8 },
+    },
+});
+var session = try Parser.Session.init(source, memory, diagnostics, .{
+    .policy = .{ .scanner = .block },
+});
+defer session.deinit();
+while ((try session.advance(64)).outcome == null) {}
+const parsed = session.result().?;
+const checked = session.validate(diagnostics); // optional until document exists
+const view = session.interpretation();          // optional; separate unbudgeted work
+_ = parsed;
+_ = checked;
+_ = view;
+```
+
+All sessions use caller-owned fixed pools and scratch. Initialization resolves
+once, selects one scanner/execution driver, and latches the policy across yields.
+Changing the caller's options cannot alter the active session. `run`, `cancel`
+and `result` are not configuration-error unions; runtime `advance` returns
+`error.MeteringDisabled` without work when the selected policy is unmetered.
+Calling `advance` on a fixed unmetered profile is a compile error. Use `run()`.
+
+Reset resolves against the **compiled baseline**, not the preceding operation.
+Invalid configuration leaves the old session and document views intact; a
+successful reset cancels old work and invalidates prior pool views. Reset can
+change every supported policy value, including scanner and execution mode.
+Session `validate` and `interpretation` use the latched graph policy after a
+successful parse. They remain separate, unbudgeted operations and are never
+invoked implicitly by `advance`.
+
+`dot.BoundedSession` is a fixed policy preset with metering enabled. The ordinary
+top-level parse/measure functions use the default fixed profile (unmetered,
+uncancellable, scalar). There is no separate execution-settings system.
 
 ## Staged validation and interpretation
 
@@ -147,12 +224,11 @@ No per-edge rescanning, allocation, document cache or retained per-edge policy i
 introduced. Separate validation and interpretation calls should receive the
 same patch when the consumer wants one consistent policy.
 
-`Checks.parseBorrowed` and `Checks.parseBorrowedIn` are raw syntax aliases with
-the existing parser options. They do not accept or apply policy overrides.
-Validate/interpret their results explicitly; preflight before parsing if desired.
-The same staged operations work after a `FixedSession`/`BoundedSession` completes.
-This slice does not attach profiles to live sessions or expose provisional auto
-promotion events. A new completed document needs a new interpretation.
+Parse-only methods still produce syntax, not validated semantics: validate and
+interpret explicitly, or use `parseAndValidate`. Session helpers use the latched
+policy; separate profile methods can intentionally re-interpret a document using
+another policy. Live auto-promotion events remain deferred. A new completed
+document needs a new interpretation.
 
 ## Diagnostics and cost
 
@@ -169,12 +245,24 @@ retain only one input-derived kind. Runtime views retain a kind and a reading,
 not an entire policy. Runtime support retains selectable behavior; it does not
 claim the same code size or throughput as a fixed profile.
 
-On the current native 64-bit Zig 0.16.0 build, these views occupy 0/1/2 bytes,
-respectively, and `Diagnostic` remains 80 bytes. No fields were added to
-`Document` or edge storage. These are layout observations, not a throughput or
-binary-size baseline. Performance comparisons still belong on the standard
-benchmark machine; this work does not replace its baseline.
+Fixed parsers keep limits/recovery in compiled code, not instance settings;
+fail-fast profiles also exclude recovery skip-depth storage. Runtime sessions
+hold one tagged driver union (the largest variant plus tag/alignment), resolved
+parse-stage values and a small validation selection—not eight full sessions or
+a full policy per node. Dispatch happens at operation/call boundaries, never
+per source byte. Allocator-backed and fixed-storage adapters share one grammar.
 
-Still outside this slice: syntax leniency (including bare/long operators),
-migrating limits/recovery/execution/scanner controls, live-session policy
-integration, HTML, semantic resolution, custom rules, and graph conversion/export.
+On the current native 64-bit Zig 0.16.0 build, these views occupy 0/1/2 bytes,
+respectively, and `Diagnostic` remains 80 bytes. The default fixed session is
+1,040 bytes, `BoundedSession` is 1,080 bytes, and a runtime-enabled session is
+1,256 bytes. No fields were added to `Document` or edge storage. These are layout
+observations, not a throughput or
+binary-size baseline. Performance comparisons still belong on the standard
+benchmark machine; this work does not replace its baseline. Run
+`zig build bench-policy -Doptimize=ReleaseFast` there for equivalent fixed,
+runtime-baseline and runtime-override paths. `zig build check-benches` compiles
+the probes without running or changing baselines.
+
+Still outside this slice: syntax leniency (empty statements, bare/long operators
+and factual counters), HTML, bounded validation, allocator-backed resumable
+sessions, semantic resolution, custom rules, and graph conversion/export.

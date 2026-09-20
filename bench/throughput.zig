@@ -8,12 +8,12 @@ const std = @import("std");
 const dot = @import("dot_parser");
 const build_options = @import("build_options");
 
-/// `-Dlexer=scalar|block` pins the scanner; `auto` follows the target.
-pub const dot_parser_options = .{ .lexer_backend = selectedBackend() };
+/// `-Dlexer=scalar|block` pins the scanner; `auto` follows the library default.
+const Parser = dot.Profile(.{ .policy = .{ .scanner = selectedBackend() } });
 
-fn selectedBackend() dot.lexer.Backend {
-    if (std.mem.eql(u8, build_options.lexer, "auto")) return dot.lexer.default_backend;
-    return std.meta.stringToEnum(dot.lexer.Backend, build_options.lexer) orelse @compileError("-Dlexer must be auto, scalar, or block");
+fn selectedBackend() dot.ScannerBackend {
+    if (std.mem.eql(u8, build_options.lexer, "auto")) return dot.Profile(.{}).baseline.scanner;
+    return std.meta.stringToEnum(dot.ScannerBackend, build_options.lexer) orelse @compileError("-Dlexer must be auto, scalar, or block");
 }
 
 const statement_count = 200_000;
@@ -41,7 +41,7 @@ pub fn main(init: std.process.Init) !void {
     var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
     const stdout = &stdout_file_writer.interface;
 
-    try stdout.print("scanner backend: {s}\n", .{@tagName(dot.lexer.backend)});
+    try stdout.print("scanner backend: {s}\n", .{@tagName(Parser.baseline.scanner)});
     try stdout.print("source: {d} bytes, {d} statements\n", .{ source.len, statement_count });
     try stdout.print("element sizes: StatementId={d} NodeStatement={d} EdgeStatement={d}\n\n", .{
         @sizeOf(dot.StatementId), @sizeOf(dot.NodeStatement), @sizeOf(dot.EdgeStatement),
@@ -67,7 +67,7 @@ fn run(
     stdout: *std.Io.Writer,
     source: []const u8,
     label: []const u8,
-    options: dot.CheckOptions,
+    options: Parser.CheckOptions,
 ) !void {
     var times: [rounds]u64 = undefined;
     var retained_bytes: usize = 0;
@@ -80,7 +80,7 @@ fn run(
         var bag: dot.FixedDiagnosticBag(4) = .{};
 
         const start = std.Io.Clock.Timestamp.now(io, .awake);
-        var checked = dot.parseAndValidate(arena.allocator(), source, bag.sink(), options);
+        var checked = Parser.parseAndValidate(arena.allocator(), source, bag.sink(), options);
         const end = std.Io.Clock.Timestamp.now(io, .awake);
         const elapsed: u64 = @intCast(start.durationTo(end).raw.nanoseconds);
 

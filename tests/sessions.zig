@@ -29,7 +29,7 @@ fn partition(source: []const u8, budgets: []const usize, comptime cancellable: b
     var storage: Storage = .{};
     var bag: dot.FixedDiagnosticBag(4) = .{};
     var request: Request = .{};
-    const Session = dot.FixedSession(.{ .cancellation = cancellable });
+    const Session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = cancellable } } }).Session;
     var session = Session.init(source, .{ .document = storage.storage(), .scratch = scratch.storage() }, bag.sink(), .{ .cancellation = if (cancellable) request.hook() else {} });
     defer session.deinit();
     var total: usize = 0;
@@ -116,7 +116,7 @@ test "cancellation at every work boundary exposes no partial document" {
         var storage: Storage = .{};
         var bag: dot.FixedDiagnosticBag(1) = .{};
         var request: Request = .{ .stop_after = stop };
-        var session = dot.FixedSession(.{ .cancellation = true }).init(source, .{ .document = storage.storage(), .scratch = scratch.storage() }, bag.sink(), .{ .cancellation = request.hook() });
+        var session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } }).Session.init(source, .{ .document = storage.storage(), .scratch = scratch.storage() }, bag.sink(), .{ .cancellation = request.hook() });
         const progress = session.advance(std.math.maxInt(usize));
         try equal(stop, progress.work_used);
         try expect(progress.outcome.? == .cancelled);
@@ -132,7 +132,7 @@ test "zero-budget cancellation cleanup and reset reuse caller pools" {
     var storage: Storage = .{};
     var bag: dot.FixedDiagnosticBag(1) = .{};
     var request: Request = .{};
-    const Session = dot.FixedSession(.{ .cancellation = true });
+    const Session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } }).Session;
     var session = Session.init("graph {a[x=1]}", .{ .document = storage.storage() }, bag.sink(), .{ .cancellation = request.hook() });
     while (session.advance(1).completed_pairs == 0) {}
     try expect(session.result() == null);
@@ -171,7 +171,7 @@ test "session supports movement between calls and explicit cleanup without hooks
 
 test "metering and cancellation are independently selectable" {
     inline for (.{ false, true }) |metering| inline for (.{ false, true }) |cancellation| {
-        const Session = dot.FixedSession(.{ .metering = metering, .cancellation = cancellation });
+        const Session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = metering, .cancellation = cancellation } } }).Session;
         var storage: Storage = .{};
         var request: Request = .{ .stop_after = 12 };
         var session = Session.init("graph { a[x=1] }", .{ .document = storage.storage() }, dot.diagnostic.discard, .{
@@ -187,7 +187,7 @@ test "metering and cancellation are independently selectable" {
         try expect(chain_result.outcome == .success);
         try equal(@as(usize, 1), chain_result.document.?.edge_chains.len);
         try equal(@as(usize, 1), chain_result.document.?.edge_links.len);
-        const Driver = @FieldType(Session, "machine");
+        const Driver = @FieldType(@FieldType(Session, "driver"), "machine");
         if (!cancellation) try expect(@FieldType(Driver, "cancellation") == void);
         if (!metering) {
             try expect(@FieldType(@FieldType(Driver, "tokens"), "source_frontier") == void);
@@ -210,7 +210,7 @@ test "fixed-pool failure after yield emits once and wins over late cancellation"
     var storage: dot.FixedDocumentStorage(.{ .statements = 1, .nodes = 1 }) = .{};
     var request: Request = .{};
     var reject: Reject = .{ .request = &request };
-    var session = dot.FixedSession(.{ .cancellation = true }).init("graph {a b}", .{ .document = storage.storage() }, .{ .context = &reject, .emit_fn = Reject.emit }, .{ .cancellation = request.hook() });
+    var session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } }).Session.init("graph {a b}", .{ .document = storage.storage() }, .{ .context = &reject, .emit_fn = Reject.emit }, .{ .cancellation = request.hook() });
     while (session.advance(1).outcome == null) {}
     const result = session.result().?;
     try expect(result.outcome == .storage_failure);
@@ -224,10 +224,10 @@ test "fixed-pool failure after yield emits once and wins over late cancellation"
 }
 
 test "statement and attribute limits stay distinct from per-call budgets" {
-    inline for (.{ dot.BoundedSession.Options{ .max_statements = 0 }, dot.BoundedSession.Options{ .max_attributes = 0 } }) |options| {
+    inline for (.{ dot.Policy.Limits{ .max_statements = 0 }, dot.Policy.Limits{ .max_attributes = 0 } }) |limits| {
         var storage: Storage = .{};
         var bag: dot.FixedDiagnosticBag(1) = .{};
-        var session = dot.BoundedSession.init("graph {a[x=1]}", .{ .document = storage.storage() }, bag.sink(), options);
+        var session = dot.Profile(.{ .policy = .{ .limits = limits, .execution = .{ .metering = true } } }).Session.init("graph {a[x=1]}", .{ .document = storage.storage() }, bag.sink(), .{});
         while (session.advance(1).outcome == null) {}
         try expect(session.result().?.outcome == .resource_exhausted);
         try expect(session.result().?.document == null);
@@ -253,7 +253,7 @@ test "long lexical scans yield and cancel without allocating parser storage" {
         const source = bytes[0 .. parts[0].len + n + parts[1].len];
         var storage: Storage = .{};
         var request: Request = .{};
-        var session = dot.FixedSession(.{ .cancellation = true }).init(source, .{ .document = storage.storage() }, dot.diagnostic.discard, .{ .cancellation = request.hook() });
+        var session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } }).Session.init(source, .{ .document = storage.storage() }, dot.diagnostic.discard, .{ .cancellation = request.hook() });
         const yielded = session.advance(64);
         try expect(yielded.outcome == null);
         // One credit examines one byte (scalar scanner) or classifies one

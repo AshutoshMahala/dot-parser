@@ -775,7 +775,7 @@ pub const Builder = struct {
     /// Preallocate the pools once. With capacities that cover the document,
     /// the build performs no further allocation and `toDocument` is copy-free —
     /// the intended mode for fixed-buffer users, who typically derive the
-    /// numbers from the same budget as `parser.Options.max_statements`.
+    /// numbers from the same budget as `Policy.limits.max_statements`.
     pub fn initCapacity(
         allocator: std.mem.Allocator,
         source: []const u8,
@@ -1851,7 +1851,7 @@ fn parseIntoDocument(allocator: std.mem.Allocator, source: []const u8) !Document
     var builder = Builder.init(allocator, source);
     defer builder.deinit();
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = parser.parse(source, &builder, bag.sink(), .{});
+    const result = parser.testing.run(source, &builder, bag.sink(), .{}, null);
     if (result.outcome != .success) return error.ParseFailed;
     return builder.toDocument();
 }
@@ -1927,7 +1927,7 @@ test "document outlives the builder and the parser state" {
         var builder = Builder.init(std.testing.allocator, source);
         defer builder.deinit();
         var bag: diagnostic.FixedBag(4) = .{};
-        const result = parser.parse(source, &builder, bag.sink(), .{});
+        const result = parser.testing.run(source, &builder, bag.sink(), .{}, null);
         try expect(result.outcome == .success);
         break :blk try builder.toDocument();
     };
@@ -1950,7 +1950,7 @@ test "fixed buffer with exact capacities allocates nothing after init" {
     const high_water = fba.end_index;
 
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = parser.parse(source, &builder, bag.sink(), .{});
+    const result = parser.testing.run(source, &builder, bag.sink(), .{}, null);
     try expect(result.outcome == .success);
 
     var document = try builder.toDocument();
@@ -1973,7 +1973,7 @@ test "undersized fixed buffer aborts the parse with a sink failure" {
     var builder = Builder.init(fba.allocator(), source);
     defer builder.deinit();
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = parser.parse(source, &builder, bag.sink(), .{});
+    const result = parser.testing.run(source, &builder, bag.sink(), .{}, null);
 
     try expect(result.outcome == .sink_failure);
     try expectEqual(anyerror.OutOfMemory, result.outcome.sink_failure);
@@ -1993,7 +1993,7 @@ test "allocation failure at every point aborts cleanly without leaks" {
         var builder = Builder.init(failing.allocator(), source);
         defer builder.deinit();
         var bag: diagnostic.FixedBag(4) = .{};
-        const result = parser.parse(source, &builder, bag.sink(), .{});
+        const result = parser.testing.run(source, &builder, bag.sink(), .{}, null);
 
         if (result.outcome == .success) {
             // toDocument may itself hit the failure injection; both paths are fine.
@@ -2032,7 +2032,7 @@ test "toDocument failure is terminal, complete, and recoverable via reset" {
         var builder = Builder.init(failing.allocator(), source);
         defer builder.deinit();
         var bag: diagnostic.FixedBag(4) = .{};
-        const result = parser.parse(source, &builder, bag.sink(), .{});
+        const result = parser.testing.run(source, &builder, bag.sink(), .{}, null);
         if (result.outcome != .success) continue;
 
         if (builder.toDocument()) |document| {
@@ -2061,7 +2061,7 @@ test "aborted builder is reusable after reset" {
     var bag: diagnostic.FixedBag(4) = .{};
 
     // Invalid document: statements staged, then aborted (terminal).
-    const failed = parser.parse(bad_source, &builder, bag.sink(), .{});
+    const failed = parser.testing.run(bad_source, &builder, bag.sink(), .{}, null);
     try expect(failed.outcome == .invalid_syntax);
     try expect(builder.phase == .terminal);
     try expectEqual(@as(usize, 0), builder.order.items.len);
@@ -2070,7 +2070,7 @@ test "aborted builder is reusable after reset" {
     const source = "graph { ok; }";
     builder.reset(source);
     bag.reset();
-    const succeeded = parser.parse(source, &builder, bag.sink(), .{});
+    const succeeded = parser.testing.run(source, &builder, bag.sink(), .{}, null);
     try expect(succeeded.outcome == .success);
 
     var document = try builder.toDocument();
@@ -2084,13 +2084,13 @@ test "builder is reusable after toDocument via reset" {
     defer builder.deinit();
 
     var bag: diagnostic.FixedBag(4) = .{};
-    try expect(parser.parse(first_source, &builder, bag.sink(), .{}).outcome == .success);
+    try expect(parser.testing.run(first_source, &builder, bag.sink(), .{}, null).outcome == .success);
     var first = try builder.toDocument();
     defer deinitOwnedDocument(&first, std.testing.allocator);
 
     const second_source = "graph { b; c; }";
     builder.reset(second_source);
-    try expect(parser.parse(second_source, &builder, bag.sink(), .{}).outcome == .success);
+    try expect(parser.testing.run(second_source, &builder, bag.sink(), .{}, null).outcome == .success);
     var second = try builder.toDocument();
     defer deinitOwnedDocument(&second, std.testing.allocator);
 
@@ -2112,7 +2112,7 @@ test "fixed builder parses into caller pools with no allocator" {
         .edges = &edges,
     });
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = parser.parse(source, &builder, bag.sink(), .{});
+    const result = parser.testing.run(source, &builder, bag.sink(), .{}, null);
     try expect(result.outcome == .success);
 
     const document = builder.toDocument();
@@ -2139,7 +2139,7 @@ test "fixed builder reports pool exhaustion deterministically" {
         .edges = &edges,
     });
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = parser.parse(source, &builder, bag.sink(), .{});
+    const result = parser.testing.run(source, &builder, bag.sink(), .{}, null);
 
     try expect(result.outcome == .sink_failure);
     try expectEqual(anyerror.PoolExhausted, result.outcome.sink_failure);
@@ -2149,7 +2149,7 @@ test "fixed builder reports pool exhaustion deterministically" {
     const retry_source = "graph { x; y; }";
     builder.reset(retry_source);
     bag.reset();
-    try expect(parser.parse(retry_source, &builder, bag.sink(), .{}).outcome == .success);
+    try expect(parser.testing.run(retry_source, &builder, bag.sink(), .{}, null).outcome == .success);
     const document = builder.toDocument();
     try expectEqual(@as(usize, 2), document.statementCount());
 }
@@ -2160,7 +2160,7 @@ test "fixed document storage sugar owns the pools" {
 
     var builder = FixedBuilder.init(source, storage.storage());
     var bag: diagnostic.FixedBag(4) = .{};
-    try expect(parser.parse(source, &builder, bag.sink(), .{}).outcome == .success);
+    try expect(parser.testing.run(source, &builder, bag.sink(), .{}, null).outcome == .success);
     const document = builder.toDocument();
     try expectEqualStrings("--", document.text(document.statementAt(0).?.edge.operator_range));
 }

@@ -26,10 +26,6 @@ const diagnostic = @import("diagnostic.zig");
 const syntax = @import("syntax.zig");
 const policy = @import("policy.zig");
 
-/// The default facade has fixed strict policy. Configurable validation is
-/// available through Profile; it does not add overrides to the default facade.
-pub const Options = struct {};
-
 /// How the pass ended. Tagged, so meaningless combinations (such as an
 /// incomplete-but-valid pass) are unrepresentable. Only implemented outcomes
 /// are exposed; bounded and cancellable validation remain future work.
@@ -66,25 +62,13 @@ pub const Result = struct {
     }
 };
 
-/// Validate `document` against the milestone rules, emitting diagnostics into
-/// `diagnostics`. Positions are derived from the source the document itself
-/// borrows — there is no separate source parameter to mismatch.
-pub fn validate(
-    document: *const syntax.Document,
-    diagnostics: diagnostic.Sink,
-    options: Options,
-) Result {
-    _ = options;
-    return validateWith(policy.defaults, document, diagnostics, {});
-}
-
 /// One validator, specialized for a fixed policy or supplied one resolved
 /// runtime policy. The fixed instantiation has no runtime settings parameter.
-pub fn validateWith(
-    comptime fixed: ?policy.Effective,
+pub fn validate(
+    comptime fixed: ?policy.ValidationSettings,
     document: *const syntax.Document,
     diagnostics: diagnostic.Sink,
-    runtime: if (fixed == null) policy.Effective else void,
+    runtime: if (fixed == null) policy.ValidationSettings else void,
 ) Result {
     const settings = if (fixed) |value| value else runtime;
     const operators = if (document.kind == .digraph) settings.digraph else settings.graph.operators;
@@ -187,7 +171,7 @@ fn buildDocument(source: []const u8) !syntax.Document {
     var builder = syntax.Builder.init(std.testing.allocator, source);
     defer builder.deinit();
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = parser.parse(source, &builder, bag.sink(), .{});
+    const result = parser.testing.run(source, &builder, bag.sink(), .{}, null);
     if (result.outcome != .success) return error.ParseFailed;
     return builder.toDocument();
 }
@@ -198,7 +182,7 @@ test "the milestone acceptance case: two mismatches, both reported" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(8) = .{};
-    const result = validate(&document, bag.sink(), .{});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
 
     try expect(result.outcome == .completed);
     try expect(!result.documentValid());
@@ -232,7 +216,7 @@ test "a valid undigraph completes with an empty bag" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = validate(&document, bag.sink(), .{});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
 
     try expect(result.outcome == .completed);
     try expect(result.documentValid());
@@ -246,7 +230,7 @@ test "an empty document is valid" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = validate(&document, bag.sink(), .{});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
     try expect(result.outcome == .completed);
     try expect(result.documentValid());
 }
@@ -257,7 +241,7 @@ test "validation continues past valid edges between violations" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(8) = .{};
-    const result = validate(&document, bag.sink(), .{});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
 
     try expectEqual(@as(usize, 2), result.outcome.completed.violations);
     try expectEqual(@as(usize, 2), bag.items().len);
@@ -272,7 +256,7 @@ test "the rule is kind-agnostic: a digraph flags '--'" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = validate(&document, bag.sink(), .{});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
 
     try expect(!result.documentValid());
     try expectEqual(@as(usize, 1), result.outcome.completed.violations);
@@ -291,7 +275,7 @@ test "a full bag bounds retention, not the analysis" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(1) = .{};
-    const result = validate(&document, bag.sink(), .{});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
 
     // The pass still examined everything and counted every violation …
     try expect(result.outcome == .completed);
@@ -314,7 +298,7 @@ test "a failing sink is reported without stopping the analysis" {
         }
     };
     const sink: diagnostic.Sink = .{ .context = null, .emit_fn = Rejecting.emit };
-    const result = validate(&document, sink, .{});
+    const result = validate(policy.defaults.validation, &document, sink, {});
 
     try expect(result.outcome == .completed);
     try expect(!result.documentValid());
@@ -337,7 +321,7 @@ test "policy filtering happens at the sink without touching the document" {
     };
     var filter: Filtering = .{};
     const sink: diagnostic.Sink = .{ .context = &filter, .emit_fn = Filtering.emit };
-    const result = validate(&document, sink, .{});
+    const result = validate(policy.defaults.validation, &document, sink, {});
 
     // The pass still reports the document as invalid under default rules;
     // what the consumer surfaces is their policy. The document is untouched.
@@ -353,8 +337,8 @@ test "repeated validation is deterministic" {
 
     var first_bag: diagnostic.FixedBag(8) = .{};
     var second_bag: diagnostic.FixedBag(8) = .{};
-    const first = validate(&document, first_bag.sink(), .{});
-    const second = validate(&document, second_bag.sink(), .{});
+    const first = validate(policy.defaults.validation, &document, first_bag.sink(), {});
+    const second = validate(policy.defaults.validation, &document, second_bag.sink(), {});
 
     try expectEqual(first, second);
     try expectEqual(first_bag.items().len, second_bag.items().len);

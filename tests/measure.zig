@@ -110,7 +110,7 @@ test "measure reports failures the same way as parsing, with no capacities" {
     try std.testing.expect(invalid.capacities == null);
     try std.testing.expectEqual(dot.Code.syntax_unexpected_token, bag.items()[0].code);
 
-    const limited = dot.measure(std.testing.allocator, "digraph { a; b; c; }", dot.diagnostic.discard, .{ .max_statements = 2 });
+    const limited = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 2 } } }).measure(std.testing.allocator, "digraph { a; b; c; }", dot.diagnostic.discard, .{});
     try std.testing.expect(limited.outcome == .resource_exhausted);
 
     // Nesting scratch is the only storage `measureIn` can run out of.

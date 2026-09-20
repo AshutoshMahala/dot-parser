@@ -7,7 +7,7 @@ const Profile = dot.Profile(.{
 });
 
 export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
-    const input: dot.Policy = .{ .validation = .{
+    const input: dot.Policy = .{ .scanner = if (choice & 1 == 0) .scalar else .block, .execution = .{ .metering = choice & 2 != 0, .cancellation = choice & 4 != 0 }, .limits = .{ .max_statements = @as(usize, choice) + 1, .max_attributes = choice }, .recovery = if (choice & 8 == 0) .fail_fast else .statements, .validation = .{
         .graph = .{
             .treated_as = switch (choice % 4) {
                 0 => .undigraph,
@@ -34,7 +34,10 @@ export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
     if (features.runtime_policy and Profile.validatePolicy(input) != .valid) return 100;
     var storage: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8, .edge_chains = 8, .edge_links = 8 }) = .{};
     var bag: dot.FixedDiagnosticBag(4) = .{};
-    const parsed = Profile.parseBorrowedIn(source[0..len], .{ .document = storage.storage() }, bag.sink(), .{});
+    const parsed = if (features.runtime_policy)
+        Profile.parseBorrowedIn(source[0..len], .{ .document = storage.storage() }, bag.sink(), .{ .policy = input }) catch return 104
+    else
+        Profile.parseBorrowedIn(source[0..len], .{ .document = storage.storage() }, bag.sink(), .{});
     const doc = &(parsed.document orelse return 101);
     const options: Profile.Options = if (features.runtime_policy) .{ .policy = input } else .{};
     const checked = if (features.runtime_policy)
@@ -49,4 +52,35 @@ export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
     var edges = doc.edgeIterator();
     while (edges.next()) |edge| total +%= @intFromEnum(edge.effectiveOperator(doc, view));
     return total +% checked.outcome.completed.violations +% checked.outcome.completed.warnings +% bag.items().len;
+}
+
+fn cancelled(context: ?*anyopaque) bool {
+    const flag: *volatile u8 = @ptrCast(context.?);
+    return flag.* != 0;
+}
+
+// Exercise runtime variant selection, persistent storage and reset in emitted
+// freestanding objects, with genuinely external choices and cancellation input.
+export fn session_policy(source: [*]const u8, len: usize, choice: u8, limit: usize, stop: *u8) usize {
+    if (!features.runtime_policy) return 0;
+    const Dynamic = dot.Profile(.{ .runtime_policy = true });
+    var storage: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8, .edge_chains = 8, .edge_links = 8 }) = .{};
+    const input: dot.Policy = .{
+        .scanner = if (choice & 1 == 0) .scalar else .block,
+        .execution = .{ .metering = choice & 2 != 0, .cancellation = choice & 4 != 0 },
+        .limits = .{ .max_statements = limit, .max_attributes = limit, .max_nesting = limit },
+        .recovery = if (choice & 8 == 0) .fail_fast else .statements,
+        .validation = .{ .graph = .{ .treated_as = .auto } },
+    };
+    var session = Dynamic.Session.init(source[0..len], .{ .document = storage.storage() }, dot.diagnostic.discard, .{ .policy = input, .cancellation = .{ .context = stop, .is_requested = cancelled } }) catch return 100;
+    defer session.deinit();
+    if (input.execution.metering.?) {
+        while ((session.advance(1) catch return 101).outcome == null) {}
+    } else _ = session.run();
+    const result = session.result().?;
+    const count = if (result.document) |doc| doc.statementCount() else 0;
+    // Clear overrides: this must start from the compiled defaults again.
+    session.reset("graph {}", dot.diagnostic.discard, .{}) catch return 102;
+    if (session.run().outcome != .success) return 103;
+    return count + @intFromEnum(session.result().?.document.?.effectiveKind(session.interpretation().?));
 }

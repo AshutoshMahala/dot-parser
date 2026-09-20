@@ -267,12 +267,15 @@ fixed across yields, and measure the distinct costs in R-PERF-005. No hidden
 allocations, per-node/edge policy copies or repeated hot-path merging are implied
 or permitted by the unified configuration model.
 
-The first implementation covers graph validation/interpretation only through
-`Profile`, with `validatePolicy`, compile-time verification and opt-in runtime
-patches. Existing limits/recovery/execution/scanner controls have not migrated,
-and live sessions do not yet bind a policy. Completed session documents can be
-validated/interpreted in a separate stage. Q35 records the provisional handling
-of inapplicable fields and the remaining standard-machine performance gate.
+The implemented `Profile` covers graph validation/interpretation, nesting,
+statement and attribute limits, recovery, scanner selection, metering and
+cancellation, with `validatePolicy`, compile-time verification and opt-in runtime
+patches. Parse/measure operations and `Profile.Session` use the same policy
+model. Sessions bind settings at initialization/reset, retain them across yields,
+and reject invalid resets before touching existing work. Completed session
+documents can be validated/interpreted separately using that bound policy.
+Syntax leniency remains the next slice. Q35 records the provisional handling
+of inapplicable graph fields and the remaining standard-machine performance gate.
 
 ### R-MOD-006: Unsupported input is distinct from invalid input
 
@@ -355,9 +358,11 @@ microstep accounting, callback exclusions, cleanup rules, fixed-storage first
 slice, and acceptance tests; the corresponding session API is experimental 0.x.
 The scanner and parser implement separately charged source examinations, grammar
 transitions and syntax-event attempts, with partition and failure-lifecycle
-tests. `BoundedSession` exposes fixed-storage bounded parsing; `FixedSession`
-independently selects metering and cancellation. Pending work/progress and hook
-storage compile out when not needed. One-shot APIs remain unchanged. Public
+tests. `BoundedSession` exposes fixed-storage bounded parsing; `Profile.Session`
+independently selects metering and cancellation through `Policy.execution`.
+Fixed profiles exclude disabled work/progress and hook storage; runtime profiles
+retain all selectable variants. One-shot APIs remain run-to-completion but can
+also opt into cancellation through policy. Public
 pull events, streaming input, total-work limits and bounded validation remain deferred.
 
 ### R-MOD-011: Active sinks have transactional lifecycle signals
@@ -958,7 +963,10 @@ The project must distinguish and document its compatibility surfaces:
 
 During the initial experimental `0.x` phase, backward compatibility is not
 promised, including for WDP identities and diagnostic payloads, and breaking
-changes are expected. Do not retain compatibility-only code for this phase.
+changes are expected. Do not retain compatibility-only code for this phase:
+remove obsolete wrappers, aliases, configuration detection and tests whose only
+purpose is recognizing retired APIs. Migrate internal callers and correctness
+tests to the current implementation instead of preserving a parallel old path.
 Releases must state that status clearly; no stable binary ABI or retained-tree
 serialization is implied. Once a
 stable compatibility boundary is declared, semantic versioning should govern
@@ -1202,7 +1210,7 @@ parser to forward; they are not a second parse/validation reporting API.
 
 Filtering diagnostics changes reporting, not the validity of the document.
 Rule-level policy that changes validity must be explicit and separate from sink
-filtering; the current validator does not yet expose that policy.
+filtering; `Profile` exposes this distinction for graph/operator validation.
 
 ### R-DX-003: Results are data and lose nothing
 
@@ -1302,3 +1310,9 @@ recorded here.
   and auto promotion. Conformance follows the effective kind while bare-dash
   interpretation follows the written header. Q35/Q36 record the implementation
   and remaining API boundaries.
+
+- 2026-09-20 — **R-MOD-005 implementation status updated**: graph policies and
+  existing limits/recovery/scanner/execution settings now share `Profile` and
+  policy-bound sessions. The fixed-only specialization and runtime parity tests
+  do not replace the pending standard-machine performance gate; lenient syntax
+  remains unimplemented.

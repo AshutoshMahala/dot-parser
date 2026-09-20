@@ -176,7 +176,7 @@ test "applying every machine-applicable fix yields a document that parses" {
         var rounds: usize = 0;
         while (rounds < 4) : (rounds += 1) {
             var bag: dot.FixedDiagnosticBag(16) = .{};
-            var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{ .parse = .{ .recovery = .statements } });
+            var checked = dot.Profile(.{ .policy = .{ .recovery = .statements } }).parseAndValidate(allocator, source, bag.sink(), .{});
             defer checked.deinit(allocator);
             // Machine-applicable fixes only, from the end of the source back.
             var best: ?dot.diagnostic.Fix = null;

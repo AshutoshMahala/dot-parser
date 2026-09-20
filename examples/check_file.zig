@@ -49,8 +49,9 @@ pub fn main(init: std.process.Init) !u8 {
     var bag: dot.FixedDiagnosticBag(32) = .{};
     // Keep going after a syntax error so one run shows every problem
     // (`--fail-fast` stops at the first, the library default).
-    var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{
-        .parse = .{ .recovery = recovery },
+    const Parser = dot.Profile(.{ .runtime_policy = true });
+    var checked = try Parser.parseAndValidate(allocator, source, bag.sink(), .{
+        .policy = .{ .recovery = recovery },
     });
     defer checked.deinit(allocator);
 

@@ -1,7 +1,7 @@
 # Project Structure
 
 Status: living document — updated as slices land  
-Last updated: 2026-09-20 (graph policy slice)
+Last updated: 2026-09-20 (unified settings and policy-bound sessions)
 
 The package is a standalone Zig DOT-language library and must not depend on
 Zigraph.
@@ -29,6 +29,7 @@ dot-parser/
 │   ├── root.zig
 │   ├── policy.zig             (typed inputs, resolution, pure verification)
 │   ├── profile.zig            (compile-time/runtime policy-bound facade)
+│   ├── parse_engine.zig       (shared storage adapters and specialized drivers)
 │   ├── location.zig
 │   ├── diagnostic.zig
 │   ├── console.zig
@@ -37,7 +38,7 @@ dot-parser/
 │   │   ├── token.zig          (Token, Result, keyword folding shared by both)
 │   │   ├── scalar.zig         (one byte per credit; the default)
 │   │   └── block.zig          (64-byte block masks; opt-in)
-│   ├── execution.zig          (feature flags and borrowed cancellation hook)
+│   ├── execution.zig          (borrowed cancellation hook; behavior lives in policy)
 │   ├── identifier.zig
 │   ├── syntax_event.zig
 │   ├── parser.zig
@@ -47,6 +48,7 @@ dot-parser/
 ├── tests/
 │   ├── integration.zig
 │   ├── policies.zig
+│   ├── policy_settings.zig
 │   ├── compile_fail/          (public compile-time policy constraints)
 │   ├── freestanding_policy.zig
 │   ├── attributes.zig
@@ -78,6 +80,7 @@ dot-parser/
 │   └── check_file.zig         (command-line checker: recovery + renderer)
 ├── bench/
 │   ├── throughput.zig         (parse + validate, retained memory)
+│   ├── policies.zig           (fixed/runtime policy costs; no recorded baseline yet)
 │   ├── lexer.zig              (lexical fixtures, no timed allocation)
 │   ├── session.zig            (independent execution-policy costs)
 │   └── subgraphs.zig          (sibling/deep scope costs)
@@ -140,15 +143,15 @@ payloads into wording and is dropped by the linker when unused.
 
 ### `src/lexer/`
 
-The raw-byte scanner: one interface, two implementations, chosen at compile
-time. It is the first subsystem to get its own directory, as its
-responsibilities grew to four files. `lexer.zig` selects the backend
-(`scalar.zig` unless the root file's `dot_parser_options.lexer_backend`
-names `block.zig`) and holds the differential tests that hold both to
-identical output.
+The raw-byte scanner: one interface, two implementations. It is the first
+subsystem to get its own directory, as its responsibilities grew to four files.
+`Policy.scanner` selects `scalar.zig` (the default) or `block.zig`: fixed profiles
+specialize one, while runtime profiles select a specialized engine at operation
+or session initialization. `lexer.zig` supplies the factories and differential
+tests that hold both backends to identical output.
 `token.zig` carries the `Token`, `Result` and keyword-folding definitions
-they share. `root.zig` selects `Token`, `Result`, ordinary `Lexer`
-and the backend enum for the public namespace; internal factories and scan
+they share. `root.zig` selects `Token`, `Result`, ordinary `Lexer`, `For`
+and the backend enum for the public namespace; internal resumable factories and scan
 drivers are not re-exported. The scanner recognizes:
 
 - Every DOT keyword (`graph`, `digraph`, `strict`, `node`, `edge`, and
@@ -249,12 +252,27 @@ are independent of diagnostic delivery.
 
 `policy.zig` owns source-independent typed inputs, per-leaf resolution and pure
 verification. `profile.zig` binds a compile-time baseline, conditionally exposes
-runtime overrides/error returns, and composes the existing parser and validator.
+runtime overrides/error returns, and composes parsing, measurement and validation.
 It receives the facade type as a comptime argument to avoid importing root back
 through a module cycle. Interpretation derives auto facts once per immutable
 document without adding retained syntax fields. The [policy guide](../POLICIES.md)
-records the currently supported slice and costs; other behavioral settings and
-live-session policy composition remain future work.
+records all migrated settings and session ownership/cost contracts.
+
+### `src/parse_engine.zig`
+
+Allocator-backed, fixed-storage and count-only adapters share the grammar in
+`parser.Machine`. Fixed policies capture limits/recovery at compile
+time; runtime policies retain only resolved parse-stage values. Scanner and
+execution choices select an engine before scanning. Fixed-storage sessions
+retain one driver, rebind self-pointers before driving, and latch results once.
+Runtime `Profile.Session` wraps one tagged union plus its latched validation
+selection; reset verifies before cancelling or overwriting old state. Allocator
+callbacks and source-sized pool growth are never advertised as budgeted work.
+
+There is no second parser-options schema or compatibility machine wrapper.
+`Machine` consumes `policy.ParseSettings` directly, separately from borrowed
+scratch; direct event-sink fixtures live in its test-only namespace. Default
+facade functions delegate to the default `Profile`, including validation.
 
 ## Target layout after responsibilities grow
 
