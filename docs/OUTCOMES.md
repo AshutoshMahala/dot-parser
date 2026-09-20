@@ -5,7 +5,9 @@ return a **small outcome value** describing what happened, and the
 **explanation travels through your diagnostic sink** — structured,
 typed, and never printed by the library. There is no error-code soup to
 `catch` and no string parsing; outcomes are for control flow, diagnostics
-are for humans and tooling.
+are for humans and tooling. Runtime-enabled [policy profiles](POLICIES.md)
+add a separate configuration error union: an invalid policy is rejected before
+DOT processing and does not produce a source diagnostic.
 
 ## Parse outcomes
 
@@ -85,8 +87,11 @@ var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
 // checked.documentValid() == false   — validation found violations
 ```
 
-`ValidationResult.outcome` is `.completed { document_valid, violations }`
-today. Bounded/cancellable validation is future work; outcomes for those
+`ValidationResult.outcome` is `.completed { document_valid, violations, warnings }`.
+`violations` counts errors, while `warnings` counts warning-severity mismatches;
+only errors invalidate the document. Both count occurrences independently of sink
+retention/delivery. [Profiles](POLICIES.md) configure severity, graph treatment
+and effective operator reading. Bounded/cancellable validation is future work; outcomes for those
 behaviors will be added when implemented. Validation reports **every** violation, in source order — it never
 stops at the first.
 
@@ -136,6 +141,7 @@ payload (`Unexpected.context`, `ReservedKeyword.context`).
 | `E.Syntax.Keyword.003` | Reserved keyword where a name was needed, or `node`/`edge`/`graph` without its `[` list | `.reserved_keyword` (keyword, context) |
 | `W.Syntax.Numeral.033` | A numeral runs into a letter or a second dot (`1e3`, `1.2.3`); the parse continues with two tokens, as Graphviz does | `.ambiguous_numeral` (the byte it runs into) |
 | `E.Validation.Operator.002` | Edge operator does not match the graph kind | `.operator_mismatch` |
+| `W.Validation.Operator.002` | Mismatch tolerated by the selected policy | `.operator_mismatch` (including reading and original-header relation) |
 | `E.Profile.Feature.009` | Recognized-but-deferred DOT construct | `.unsupported_feature` |
 | `E.Resource.Capacity.026` | A configured capacity was exhausted | `.capacity` when available, otherwise `.none` |
 | `E.Resource.Memory.026` | Document memory was exhausted | `.none` |
@@ -187,7 +193,7 @@ Which diagnostics carry a fix, and how confident it is:
 | `E.Syntax.Grammar.003` | header typo | replace with the nearest header keyword, maybe |
 | `E.Syntax.Grammar.031` | input ends inside `[` / `{` | insert `]` / `}` at end of input, machine-applicable unless a misindented `}` was found |
 | `E.Syntax.Token.032` | unterminated quote or comment | insert the closer at end of input, maybe |
-| `E.Validation.Operator.002` | operator mismatch | replace with the declared kind's operator, maybe |
+| `E.Validation.Operator.002` / `W.Validation.Operator.002` | operator mismatch | replace with the effective kind's operator; machine-applicable under `.conform_to_kind`, otherwise maybe |
 
 `W.Syntax.Numeral.033` carries no fix: the repair would quote the whole run
 (`"1e3"`), and the scanner has not seen where the following token ends.

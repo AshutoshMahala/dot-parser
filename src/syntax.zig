@@ -156,6 +156,12 @@ pub const EdgeView = struct {
     operator_range: location.Range,
     right: Endpoint,
     attributes: AttributeRange = .{},
+
+    /// A policy-aware reading without changing the stored operator or its range.
+    /// The edge and interpretation must both belong to this document.
+    pub fn effectiveOperator(self: EdgeView, document: *const Document, interpretation: anytype) EdgeOperator {
+        return interpretation.effectiveOperator(document.kind, self.operator);
+    }
     fn fromNode(edge: EdgeStatement) EdgeView {
         return .{ .left = .{ .node = edge.left }, .right = .{ .node = edge.right }, .operator = edge.operator, .operator_range = edge.operator_range, .attributes = edge.attributes };
     }
@@ -488,6 +494,12 @@ pub const EdgeIterator = struct {
 /// after `Builder.toDocument`; safe to read concurrently while its memory and
 /// the borrowed source stay alive (R-CON-003).
 pub const Document = struct {
+    /// Use an interpretation prepared for this document, not another document.
+    /// Policy selects the meaning; auto derives its final kind from syntax.
+    pub fn effectiveKind(self: *const Document, interpretation: anytype) @import("policy.zig").GraphKind {
+        return interpretation.effectiveKind(self.kind);
+    }
+
     /// The borrowed source this document was parsed from; every range below
     /// indexes it. Caller-owned and must outlive the document (R-MEM-004).
     /// Storing it here makes document/source pairings unforgeable for consumers

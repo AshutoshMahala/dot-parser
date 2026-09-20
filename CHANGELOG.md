@@ -6,6 +6,17 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add experimental graph policy profiles: independent `graph`/`digraph` rules,
+  `graph.treated_as` (`undigraph`, `digraph`, `generic`, `auto`), error/warning/off
+  severity, and source-preserving `.conform_to_kind` interpretation. Runtime
+  overrides are opt-in; fixed profiles validate configuration at compile time.
+- Add `validatePolicy`, typed configuration failures before DOT processing,
+  `W.Validation.Operator.002`, validation warning counts and policy-aware fixes.
+- **Breaking:** public `GraphKind` now describes effective kinds, including
+  `.generic`. Use `DeclaredGraphKind` for the original two-valued `Document.kind`.
+  Syntax leniency and migration of the remaining settings are not part of this
+  slice. See [Graph policies](docs/POLICIES.md).
+
 ## 0.3.0 — 2026-09-19
 
 Improve diagnostics and tooling, support non-ASCII bare identifiers, and reduce

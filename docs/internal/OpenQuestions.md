@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-19 (HTML-like identifier and markup architecture).
+Last reconciled: 2026-09-20 (separate graph/digraph policies, graph treatment and auto promotion).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -68,6 +68,13 @@ draws, budget partitions) found two block-scanner bugs before release, and
 the whole suite runs on wasm32 with and without simd128 under Node's WASI.
 The execution contract accounts credits per backend. *(Embodied:
 `src/lexer/`; R-MOD-010, Q16, Q27.)*
+
+**Configuration extension decided (2026-09-20), not implemented:** Q35 puts
+scanner selection in the unified policy model with compile-time/runtime parity.
+Fixed-only profiles may still exclude the other backend; runtime-selectable
+profiles must retain both. The root-file interface above describes current
+implementation, not an exception to the future parity contract. Defaults and
+the existing measurement evidence are unchanged.
 
 **Q34 — How are subgraph edge endpoints retained without inflating ordinary edges?**
 Use separate generalized owner/link pools and a uniform public `Endpoint`
@@ -270,6 +277,279 @@ that helper separately from the settled ownership boundary.
 
 ## Partially decided
 
+**Q35 — Which validation policy does the library expose, and how are mixed
+graphs represented?**
+**Behavior decided (2026-09-20); first graph-policy slice implemented.**
+
+**Configuration contract.** Use one typed policy model for behavioral settings,
+not an all-boolean feature mask, string-keyed map or a second lenient parser.
+The library supplies strict defaults, and consumers may define their own
+compile-time baseline using supported rules. Ordinary built-in settings do not
+require custom rule implementations or trait machinery.
+
+- A separate compile-time switch enables runtime overrides and is **off by
+  default**. With it disabled, override fields are absent from operation options
+  and passing them is a compile error, not a silently ignored request.
+- **Every supported policy field has the same allowed values and semantics at
+  compile time and runtime.** This supersedes a selected runtime-overridable
+  subset. The runtime-support switch itself is a compile-time build choice; a
+  running binary cannot enable machinery that was not compiled in.
+- Runtime overrides are partial per-operation patches. Omitted fields, including
+  nested siblings, inherit the consumer's compiled baseline, not fresh library
+  defaults. No override means the compiled baseline. Optional typed fields with
+  `null` meaning inherit are proposed; exact types and names remain provisional.
+- Resolve the effective policy once at operation/session initialization. Settings
+  stay fixed across yields and may change on reset; no mutable global policy or
+  leakage between operations. Each stage consumes the settings it needs.
+- All behavioral settings, including syntax acceptance, validation, recovery,
+  limits, execution and scanner selection, belong to this model. Source bytes,
+  allocators, actual storage and callback contexts remain explicit resources.
+  A configured limit does not supply memory or disable capacity checks.
+
+| Decision | Typed representation | Example |
+| --- | --- | --- |
+| Include runtime-policy machinery | Compile-time boolean, default off | Runtime override support |
+| Accept a syntax deviation | Enum | Reject, accept with warning, accept silently |
+| Validation severity | Enum | Error, warning, off |
+| Interpretation/strategy | Enum | Graph meaning, operator reading, recovery, scanner backend |
+| Work/resource limit | Integer | Maximum nesting, statements or attributes |
+
+Do not add redundant enable flags for a rule whose policy already selects its
+behavior. Fixed policies should specialize code, not be copied into runtime
+state. Full-runtime profiles must retain every implementation reachable through
+their policy values (both scanner backends, for example). They cannot also claim
+those alternatives were compiled out. Fixed-only profiles retain the exclusion
+opportunity; no equivalent binary/state-size claim is made for runtime profiles.
+This updates the older compile-time-only scanner choice and restricted-runtime
+markup configuration direction (Q38/Q40).
+
+**Efficiency and invariants.** No hidden allocations, generic policy interpreter,
+per-token override merging, per-node/edge policy storage or repeated large policy
+copies. Retain only stage-relevant effective values. Resolving once removes
+repeated merging, not necessarily runtime branches. Measure binary size,
+throughput, parser/session state, scratch and retained memory separately on the
+standard benchmark machine, comparing fixed, runtime-without-override and
+runtime-with-override paths under equivalent policies. Secondary-host numbers do
+not replace that baseline. Architectural neatness does not excuse performance or
+memory regressions. Bounds/overflow/storage safety, truthful completion and
+exhaustion, and the distinction between validity and diagnostic delivery cannot
+be disabled by policy.
+
+**Graph policy shape and vocabulary (revised 2026-09-20).** Separate
+`.validation.graph` and `.validation.digraph` settings are selected by the
+**written DOT header**, not the effective kind. Both branches can be configured
+in the same profile, independently. These outer keys deliberately match DOT;
+the `graph` key does not itself mean generic treatment.
+
+| Name | Meaning |
+| --- | --- |
+| `.validation.graph` | Settings for a source document declared with `graph` |
+| `.validation.digraph` | Settings for a source document declared with `digraph` |
+| `GraphKind` | Effective kind: `.undigraph`, `.digraph`, `.generic` |
+| `GraphTreatment` | Selection for `graph.treated_as`: the three graph kinds, plus `.auto` behavior |
+| `.directed`, `.undirected` | Edge/operator vocabulary, not graph-kind policy values |
+
+The selected names and shape are:
+
+```zig
+pub const GraphKind = enum { undigraph, digraph, generic };
+pub const GraphTreatment = enum { undigraph, digraph, generic, auto };
+
+.validation = .{
+    .graph = .{
+        .treated_as = .undigraph,
+        .operator_mismatch = .warning,
+        .operator_reading = .as_written,
+    },
+    .digraph = .{
+        .operator_mismatch = .warning,
+        .operator_reading = .as_written,
+    },
+},
+```
+
+This shape is implemented by `Policy.Validation`. A treatment needs
+its own type because `.auto` is **not** a `GraphKind`. `digraph` has no
+`treated_as` setting: its effective kind is always `.digraph`. The default
+`graph.treated_as` is `.undigraph`. For either concrete kind, mismatch severity
+defaults to `.err` (`.warning` and `.off` are alternatives), and operator reading
+defaults to `.as_written` (`.conform_to_kind` is the alternative). The example
+opts into warnings; it does not change library defaults.
+
+| Written header | Treatment | Effective kind | Operator policy |
+| --- | --- | --- | --- |
+| `graph` | `.undigraph` | Always `.undigraph` | Its `graph` settings govern `->` mismatches |
+| `graph` | `.digraph` | Always `.digraph` | Its `graph` settings govern `--` mismatches; do not switch to the `digraph` settings |
+| `graph` | `.generic` | Always `.generic`, even when empty | Both ordinary operators are preserved; no kind mismatch |
+| `graph` | `.auto` | `.undigraph` until the first directed operator, then `.generic` | Both ordinary operators preserved; promotion is not a mismatch |
+| `digraph` | No setting | Always `.digraph` | Its independent `digraph` settings govern `--` mismatches |
+
+**Auto is treatment, not a fourth kind.** It starts as `.undigraph`; the first
+accepted syntax operator `->` promotes the effective kind to `.generic`, never
+back again and never to `.digraph`. Empty and `--`-only graphs stay `.undigraph`;
+even a graph containing only `->` becomes `.generic`. Operators in chains,
+nested subgraphs and endpoint scopes participate. Detection follows syntax
+normalization, before effective operator interpretation: an accepted `-->`
+supplies `->` and promotes; a bare dash interpreted `.from_keyword` in a written
+`graph` supplies `--` and does not. Do not infer a majority or rewrite earlier
+edges. For streaming consumers the kind is provisional until completion; the
+source declaration never changes. In the first implementation, a document-bound
+interpretation scans syntax edges once, stopping at the first directed edge;
+subsequent queries are O(1). No fields are added to retained documents or edges.
+Live-session provisional-kind/promotion notifications remain future work.
+The policy itself remains `.auto` across yields; only the input-derived kind
+changes. Each new document/reset starts again at `.undigraph`. Even a fixed
+compile-time `.auto` policy must observe runtime input; this is graph-treatment
+work, not runtime policy overriding or verification.
+
+In `.generic` and `.auto`, neither `operator_reading` nor `operator_mismatch`
+has an applicable role: ordinary operators are preserved and promotion accepts
+`->`. These modes should not offer effective mismatch/conformance settings.
+**Provisional implementation rule, awaiting confirmation:** explicitly supplying
+either operator field when the resolved treatment is `.generic`/`.auto` is a
+configuration error, including explicit default values. Inherited concrete
+values remain dormant, and selecting a concrete treatment uses them again unless
+replaced. A mode change never resets sibling leaves. The checker receives both
+resolved settings and the input's explicit-field presence. This makes invalid
+requests observable without making a treatment-only override invalid merely
+because concrete defaults were inherited. This rule was surfaced during
+implementation; it is not recorded as a user-approved final decision.
+Changing a `graph` treatment must never change the independent `digraph` branch.
+
+**Conformance targets the effective kind.** `.conform_to_kind` replaces the
+earlier `.as_declared` name: a written `graph` can now be treated as `.digraph`,
+so the source header is not necessarily the conformance target. `.as_written`
+preserves the operator; `.conform_to_kind` supplies the operator required by the
+effective `.undigraph` or `.digraph` without overwriting retained syntax/ranges.
+Conforming `a -- b` to `.digraph` means `a -> b` in written left-to-right order,
+not two opposing edges. Conforming `->` to `.undigraph` drops direction only in
+the effective view. `.err` still invalidates a mismatched document even if a
+conforming view is available; changing severity never silently converts an edge.
+`.off` selects explicit silence. Source rewriting/materializing a converted
+graph remains a separate transformation/lowering/export operation.
+
+Bare-dash `.from_keyword` deliberately remains different: it follows the written
+header (`graph` -> `--`, `digraph` -> `->`), regardless of `treated_as` (Q36).
+
+Declaration, effective kind and observed usage remain distinct. **Generic is a
+graph kind; mixed is an observation of both operator kinds.** Explicit generic
+treatment stays generic regardless of usage; auto selects between `.undigraph`
+and `.generic`. Ordinary acceptance under a concrete treatment does not reclassify
+the graph. There is no new DOT source keyword, and no inferred `.auto` kind in
+results. These treatments are library dialect behavior, not a claim of standard
+Graphviz compatibility. Source fidelity and kind-agnostic parsing remain binding.
+
+**Implementation status:** `src/policy.zig` and `src/profile.zig` implement the
+optional typed inputs, per-leaf inheritance, default-off runtime gate, checker,
+separate header branches, all four graph treatments, severity and interpretation.
+Validation adds `warnings`, a warning diagnostic twin, policy-aware payloads and
+fix applicability. Source facts stay immutable. Fixed concrete views have zero
+instance storage; fixed auto stores one derived kind; runtime views store only
+kind/reading. Native Zig 0.16.0 layouts are 0/1/2 bytes, respectively, and
+`Diagnostic` remains 80 bytes. Consumed Wasm Debug IR has no `policy.check`,
+`policy.resolve` or runtime preflight function in the fixed profile; runtime
+profiles include them. This is not a throughput or final binary-size benchmark.
+
+Tests cover fixed/runtime equivalence, nested/chain auto detection, branch
+independence, source fidelity, sink failure, staged bounded/reset use and
+configuration rejection before allocation/input access. Compile-fail fixtures
+exercise forbidden overrides, runtime verification on fixed profiles, invalid
+baselines and `digraph.treated_as`. Consumed profiles compile for Wasm32 and
+RISC-V32. [Consumer API and costs](../POLICIES.md).
+
+**Still open:** confirmation of the provisional mode-switch/irrelevant-field
+rule; migration of remaining settings and live-session integration; observation
+and promotion APIs; standard-machine performance gates. Semantic resolution,
+custom rules, trait-style adapters and marshal/unmarshal remain separate designs.
+
+**Verification contract (2026-09-20):** one public name, `validatePolicy`, and
+the same `Policy` input schema for baselines and overrides. Omitted fields inherit
+library defaults when defining a baseline and that compiled baseline at runtime.
+Verify the resolved policy with one pure, allocation-free checker independent of
+DOT source and storage. Fixed profiles verify during compilation; their explicit
+`validatePolicy` calls require comptime arguments and there is no runtime verifier
+or override path. Runtime-enabled profiles support preflight and automatically
+resolve/check once before parsing. Real configuration failures are distinct from
+DOT diagnostics and must precede input consumption/events. Do not invent invalid
+combinations: mismatch error plus conforming interpretation is valid for a
+concrete graph kind. The provisional mode-specific constraints above produce two
+typed issues, with mismatch reported first if both fields are inapplicable.
+Runtime operations return `PolicyError!T`; fixed operations return `T` without
+a configuration-error union. Validity of a policy does not guarantee valid
+DOT or adequate storage. Delivery status is recorded separately.
+
+**Q36 — Which syntax deviations may be accepted leniently, and how are they
+reported?**
+**Partially decided (2026-09-20); implementation pending.** Syntax acceptance is
+policy with the same compile-time/runtime semantics as Q35. It runs during
+parsing; validation of a completed document is a separate stage. Default to
+rejection for the deviations below. Opt-in acceptance should warn with the
+selected assumption; silent acceptance is a separate explicit choice. Accepting
+a deviation precedes failure; a rejected one can enter existing recovery (Q22).
+
+| Deviation | Accepted interpretation | Scope/status |
+| --- | --- | --- |
+| Empty statement | No retained statement | Initial rule; reject/warn/accept |
+| Exact long operators `---` and `-->` | `--` and `->`, respectively, by spelling | Initial rule; independent of graph kind |
+| Bare `-` in an edge-operator position | `.from_keyword`, as below | Interpretation decided; acceptance/reporting separate |
+| Reserved keyword as a name | A name only where grammar permits that reading | Deferred until exact name-only contexts are specified |
+
+**Bare-dash decision.** Use a narrow rule (provisional name `bare_dash` or
+`lone_dash`), not a catch-all `malformed_operator` rule. Unlike a long operator,
+a bare dash does not supply direction. The agreed opt-in action is
+`.from_keyword`, explicitly based on the written header, not an ambiguous
+`.conform` to the interpreted graph kind:
+
+| Written header | Interpreted kind | Bare `-` with `.from_keyword` |
+| --- | --- | --- |
+| `digraph` | `.digraph` | `->` |
+| `graph` | `.undigraph` | `--` |
+| `graph` | `.digraph` via `treated_as` | `--` |
+| `graph` | `.generic`, or either kind selected by `.auto` | `--` |
+
+For example, under generic interpretation, `graph { a - b; b -> c; }` accepts
+the first edge as `--` and keeps the second as `->`; the effective kind stays
+generic. This is an explicit fallback for incomplete syntax, not a claim that
+generic graphs are undirected. Never infer direction from neighboring edges or
+their majority. Only the bare dash in an operator position is affected; negative
+numeric IDs and dashes in strings/comments/other tokens remain unchanged.
+
+Illustrative syntax, not a finalized API:
+
+```zig
+.syntax = .{
+    .bare_dash = .{ .acceptance = .warn, .interpretation = .from_keyword },
+    .long_operator = .warn,
+},
+```
+
+The pipeline order is syntax interpretation/normalization, graph-treatment
+resolution (including auto promotion), graph validation, then any requested
+effective operator view. Thus `-->` first supplies `->` even under `.undigraph`
+treatment; any mismatch and conformance are separate decisions. A bare `-` in a
+written `graph` treated as `.digraph` first supplies `--`, after which the `graph`
+branch may reject, warn or interpret it as conforming. Syntax and mismatch
+warnings may describe separate facts.
+Spaced operators, missing delimiters, unterminated constructs, guessed headers
+and arbitrary trailing input are not made acceptable by these rules.
+
+**Information-loss boundary.** Lenient structural data may normalize an operator
+or omit an empty statement; it is not a lossless record of those decisions.
+Borrowed source remains unchanged, and retained ranges cover the original
+spelling (`-`, `---`, `-->`), not synthetic repaired text. No duplicate spelling
+field is needed on each edge. Dropped constructs may require rescanning; changing
+syntax policy can require reparsing. A policy states what was allowed, not what
+actually occurred. Counters are not detailed history, and diagnostic suppression
+must not masquerade as absence of deviations.
+
+**Still open:** optional typed deviation events or caller-owned history, its
+capacity/overflow/lifetime contract and costs; exact warning/counter payloads and
+fix applicability; keyword contexts; final names/types. Explicit `.directed` or
+`.undirected` bare-dash interpretations are possible later additions, not an
+agreed initial requirement. Recovery remains separate from successful lenient
+acceptance. No always-on per-node/edge audit metadata or hidden history allocation
+is authorized by these decisions.
+
 **Q40 — How are HTML-like identifiers recognized, parsed and validated, and
 which markup policies are offered?**
 **Architecture, mode names and usage paths decided (2026-09-19); detailed
@@ -395,8 +675,9 @@ the contracts they belong to are written:
   `<...>` (one scanner state and a depth counter) is always compiled in;
   `none` rejects the identifier with the unsupported-feature diagnostic but
   still finds its end, so statement-boundary recovery (Q22) can continue
-  past it. The binary lever is whether `src/markup/` is linked, which
-  `opaque` never does.
+  past it. A fixed-only `opaque` profile does not require `src/markup/` to be
+  linked. With Q35 runtime mode selection enabled, the binary must retain the
+  stages reachable through overrides even when its baseline is `opaque`.
 - **The delimiter rule is Graphviz's, verified against the 16.0.0 scanner
   (`lib/cgraph/scan.l`, start condition `hstring`):** `<` increments a
   depth counter, `>` decrements it, the identifier ends when the counter
@@ -414,10 +695,15 @@ the contracts they belong to are written:
   `graphviz` alike. The open-tag versus self-closing distinction lives once
   in the structural stage; `extended` and `graphviz` add vocabulary checks
   only.
-- **Stage inclusion is compile-time, mode is runtime.** A feature gate
-  decides which stages (markup parser, each validator) are compiled in; the
-  runtime mode value is restricted to what the build compiled in, which is
-  what the delayed path needs to choose a policy per identifier.
+- **Stage inclusion follows the policy profile (reconciled 2026-09-20).**
+  Q35 supersedes the earlier restricted-runtime-mode proposal: every supported
+  mode must have the same compile-time/runtime values and semantics. A fixed-only
+  profile may omit stages unreachable from its policy. A profile allowing runtime
+  mode changes must retain the stages needed by every selectable mode; an
+  `opaque` baseline alone does not remove markup code if a runtime override can
+  request structural parsing. Runtime support is separately enabled and off by
+  default. The delayed path can select a supported mode per explicit operation
+  when that support is enabled, or invoke a separately compiled fixed profile.
 - **Origin mapping is one rule.** The markup stages receive the identifier
   minus its outer brackets; every markup span is fragment-relative and maps
   to the DOT source by adding the inner range's start; standalone input has
@@ -448,7 +734,9 @@ the contracts they belong to are written:
   compression could be a later frame variant without API change.
 - **Both backends for both scanners, independently selected.** The DOT
   scanner and the markup scanner each come in `scalar` and `block` form,
-  chosen by separate compile-time options in any combination; the mask
+  chosen independently through Q35's policy model in any combination. Fixed-only
+  selection can exclude the other backend; runtime selection retains both.
+  This extends the original compile-time-only choice (2026-09-20). The mask
   helpers (chunked compares, backslash parity) move to a shared file so the
   two block scanners do not duplicate them, and each pair gets its own
   differential tests. The depth rule is ported to the DOT block scanner
@@ -578,10 +866,13 @@ removed; WDP conformance and current registry consistency remain required. *(Emb
 `build.zig.zon`, `src/root.zig`; R-ARCH-009/R-DIAG-005.)*
 
 **Q26 — Which named profiles are public conveniences?**
-Decision in principle: named profiles first (`micro`/`core`/`full`),
-custom feature structs later, and common consumer types stay non-generic.
-Implementation awaits the profile slice. *(Embodied: DX design discussion,
-2026-07-17.)*
+**Updated direction (2026-09-20):** Q35 requires library defaults plus
+consumer-defined typed compile-time baselines and default-off runtime override
+support. This supersedes the 2026-07-17 named-profiles-first/custom-structs-later
+ordering. Named presets remain possible conveniences over the same policy model,
+not separate behavior systems. Which names to publish (`micro`/`core`/`full` were
+earlier candidates), their contents, public type shapes and implementation remain
+open. No current profile implementation is claimed.
 
 **Q27 — Which progress budgets does the bounded driver support, and what
 work unit is deterministic?**
@@ -650,21 +941,6 @@ Gated on the profile slice; the current default keeps the detectors
 syntax index over retained source?**
 Open; nothing currently forces the choice.
 
-**Q35 — Which validation policy does the library expose, and how are mixed
-graphs represented?**
-Open. Direction: the document records the declared kind and the observed
-operator usage as facts; a runtime validation policy reads the `graph`
-keyword as undirected or generic, sets the mismatch rule's severity, and
-chooses how a mismatched operator is read; no third declared kind. Defaults
-stay strict. Design and the end-user policy guide follow implementation.
-
-**Q36 — Which syntax deviations may be accepted leniently, and how are they
-reported?**
-Open. Direction: only deviations with one reading (empty statement, over-long
-operator, bare dash, keyword as a name), each configurable as reject, warn or
-accept per R-FUNC-007 and reported with `W.Syntax.*` codes. Everything
-ambiguous stays an error or a recovery point.
-
 **Q37 — How are fix suggestions carried on diagnostics for linters?**
 **Implemented (2026-09-18):** `Diagnostic.fix: ?Fix` — a span, a typed edit
 (`delete`, `replace`, `insert_before`, `insert_after`, `wrap_in_quotes`), a
@@ -683,6 +959,37 @@ field out stays with the profile slice. *(Embodied: `diagnostic.Fix`,
 ---
 
 ## Reconciliation log
+
+- 2026-09-20 — Q35 graph-policy refinement: outer `graph`/`digraph` keys match
+  the written DOT header and configure independent branches. Settled
+  `graph.treated_as`, `GraphKind` (`undigraph`, `digraph`, `generic`) and
+  `GraphTreatment` (those selections plus `auto` behavior); no treatment setting
+  on `digraph`. Auto starts as `undigraph` and promotes to `generic` on the first
+  directed syntax operator. Renamed conformance to `conform_to_kind`, targeting
+  the effective kind, while Q36 bare-dash `from_keyword` keeps its written-header
+  meaning. Updated examples, behavior tables and §2 terminology. Irrelevant-field
+  representation, mode-switch inheritance and auto metadata/notifications remain
+  open. The interrupted implementation requires revision and verification.
+
+- 2026-09-20 — Q35/Q36 now record the agreed typed policy model and full
+  compile-time/runtime field/value parity, superseding a restricted override
+  subset. Preserved default-off runtime support, partial baseline inheritance,
+  session stability, explicit resources and efficiency/safety requirements.
+  Recorded the three graph decisions, preservation versus effective conversion,
+  left-to-right directed conversion, and generic meaning versus mixed usage.
+  Settled bare-dash `.from_keyword` interpretation, including `--` in a generic
+  `graph`, independently of long-operator normalization and warning selection.
+  Added behavior tables and the information-loss boundary; moved Q35/Q36 into
+  **Partially decided** without changing IDs. Q26/Q38/Q40 and R-MOD-005 now
+  reconcile earlier configuration directions with full parity. API spelling,
+  history/summary storage and implementation details remain open; no delivered
+  policy implementation or new performance measurement is claimed.
+
+- 2026-09-19 — Q35/Q36 policy configuration: settled a consumer-selectable
+  compile-time baseline with separately enabled, default-off runtime overrides.
+  Runtime patches inherit unspecified compiled defaults, apply per operation and
+  stay fixed during a session. Public API names and rule details remain proposed;
+  no policy implementation or measured cost improvement is claimed.
 
 - 2026-09-19 — Added Q40 for the dedicated, optional staged markup subsystem
   and recognition in every DOT ID position. Distinguished opaque preservation,

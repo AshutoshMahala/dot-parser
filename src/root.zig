@@ -31,6 +31,26 @@ const parser_impl = @import("parser.zig");
 const syntax_impl = @import("syntax.zig");
 const validate_impl = @import("validate.zig");
 const scratch_impl = @import("scratch.zig");
+const policy_impl = @import("policy.zig");
+
+pub const Policy = policy_impl.Policy;
+pub const PolicyValidation = policy_impl.Check;
+pub const PolicyIssue = policy_impl.Issue;
+pub const PolicyError = policy_impl.Error;
+pub const PolicyConfig = policy_impl.Config;
+pub const GraphKind = policy_impl.GraphKind;
+pub const GraphTreatment = policy_impl.GraphTreatment;
+pub const RuleSeverity = policy_impl.RuleSeverity;
+pub const OperatorReading = policy_impl.OperatorReading;
+
+/// Policy-bound graph validation and interpretation. Runtime overrides are off
+/// by default. Parser-option migration and lenient syntax are later slices.
+pub fn Profile(comptime config: PolicyConfig) type {
+    return @import("profile.zig").Profile(@This(), config);
+}
+
+/// Library-default policy verification is compile-time-only.
+pub const validatePolicy = Profile(.{}).validatePolicy;
 
 pub const location = @import("location.zig");
 pub const diagnostic = @import("diagnostic.zig");
@@ -73,7 +93,8 @@ pub const DiagnosticSinkError = diagnostic.SinkError;
 pub const FixedDiagnosticBag = diagnostic.FixedBag;
 
 // The borrowed syntax document and its vocabulary.
-pub const GraphKind = syntax_impl.GraphKind;
+/// The original header, never reclassified by a policy.
+pub const DeclaredGraphKind = syntax_impl.GraphKind;
 pub const EdgeOperator = syntax_impl.EdgeOperator;
 pub const ParseScratch = scratch_impl.Storage;
 pub const FixedParseScratch = scratch_impl.Fixed;
@@ -704,4 +725,5 @@ test {
     _ = @import("syntax.zig");
     _ = @import("validate.zig");
     _ = @import("lexer/lexer.zig");
+    _ = @import("policy.zig");
 }

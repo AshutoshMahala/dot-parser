@@ -1,7 +1,7 @@
 # Project Structure
 
 Status: living document — updated as slices land  
-Last updated: 2026-09-18 (diagnostics overhaul)
+Last updated: 2026-09-20 (graph policy slice)
 
 The package is a standalone Zig DOT-language library and must not depend on
 Zigraph.
@@ -27,6 +27,8 @@ dot-parser/
 ├── README.md
 ├── src/
 │   ├── root.zig
+│   ├── policy.zig             (typed inputs, resolution, pure verification)
+│   ├── profile.zig            (compile-time/runtime policy-bound facade)
 │   ├── location.zig
 │   ├── diagnostic.zig
 │   ├── console.zig
@@ -44,6 +46,9 @@ dot-parser/
 │   └── validate.zig
 ├── tests/
 │   ├── integration.zig
+│   ├── policies.zig
+│   ├── compile_fail/          (public compile-time policy constraints)
+│   ├── freestanding_policy.zig
 │   ├── attributes.zig
 │   ├── edge_chains.zig
 │   ├── ports.zig
@@ -60,6 +65,7 @@ dot-parser/
 │       └── unsupported/       (recognized-but-deferred constructs)
 ├── examples/
 │   ├── parse_undigraph.zig
+│   ├── policies.zig
 │   ├── fixed_buffer.zig
 │   ├── diagnostics_demo.zig
 │   ├── identifiers.zig
@@ -80,6 +86,7 @@ dot-parser/
     ├── SUBGRAPHS.md
     ├── OWNERSHIP.md
     ├── OUTCOMES.md
+    ├── POLICIES.md
     ├── EXECUTION.md
     ├── BASELINES.md
     ├── architecture/
@@ -232,9 +239,22 @@ nodes from an edge statement.
 ### `src/validate.zig`
 
 Validation over syntax data. It completes after independent validation errors
-and writes them to a caller-supplied diagnostic sink or bag. The current rule
-is kind-agnostic: an `undigraph` requires `--` and a `digraph` requires `->`;
-every mismatched edge yields its own diagnostic.
+and writes them to a caller-supplied diagnostic sink or bag. Parsing is
+kind-agnostic; default validation requires `--` for an undigraph and `->` for a
+digraph. Profile-selected treatment, severity and reading specialize this same
+validator rather than creating a second parser. Warning/error occurrence counts
+are independent of diagnostic delivery.
+
+### `src/policy.zig` and `src/profile.zig`
+
+`policy.zig` owns source-independent typed inputs, per-leaf resolution and pure
+verification. `profile.zig` binds a compile-time baseline, conditionally exposes
+runtime overrides/error returns, and composes the existing parser and validator.
+It receives the facade type as a comptime argument to avoid importing root back
+through a module cycle. Interpretation derives auto facts once per immutable
+document without adding retained syntax fields. The [policy guide](../POLICIES.md)
+records the currently supported slice and costs; other behavioral settings and
+live-session policy composition remain future work.
 
 ## Target layout after responsibilities grow
 

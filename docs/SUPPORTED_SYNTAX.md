@@ -9,9 +9,11 @@ construct, never a generic syntax error (see
 
 ## Terminology
 
-In this library **`graph` always means "either kind"**. The undirected
-kind is called `undigraph`, the directed kind `digraph`. Only at reading
-time does the DOT source keyword `graph` map to the kind `undigraph`.
+In general library prose, **graph** means any graph; concrete kinds are called
+`undigraph`, `digraph`, and `generic`. The written DOT keyword `graph` is retained
+as declared kind `.undigraph`, and `digraph` as `.digraph`. [Policy treatment](POLICIES.md)
+can select a different effective kind without changing the source declaration;
+`generic` is not a new DOT keyword, and `.auto` is behavior rather than a kind.
 
 ## Constructs
 
@@ -70,8 +72,9 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
   deferred features.
 - **Kind-agnostic parsing**: `digraph { a -- b; }` parses successfully;
   the operator/kind mismatch is reported by validation as
-  `E.Validation.Operator.002`. Consumers with dialect-tolerant needs can
-  skip or ignore validation.
+  `E.Validation.Operator.002` under the strict defaults. [Graph policies](POLICIES.md)
+  provide warning/off severity, generic/auto treatment and conforming interpretation
+  without weakening syntax parsing or mutating the stored operators.
 - **Limits**: positions are 32-bit, so a source is at most 4 GiB; a longer
   one is refused before scanning (`resource_exhausted`, capacity resource
   `source_range`);

@@ -14,6 +14,7 @@ test {
     _ = @import("diagnostics.zig");
     _ = @import("measure.zig");
     _ = @import("non_ascii.zig");
+    _ = @import("policies.zig");
 }
 
 const Rejecting = struct {
@@ -370,7 +371,7 @@ test "parseBorrowed returns a caller-owned document over borrowed source" {
 
     try std.testing.expect(parsed.outcome == .success);
     const document = parsed.document.?;
-    try std.testing.expectEqual(dot.GraphKind.undigraph, document.kind);
+    try std.testing.expectEqual(dot.DeclaredGraphKind.undigraph, document.kind);
     try std.testing.expectEqual(@as(usize, 2), document.statementCount());
     try std.testing.expectEqualStrings(
         "a",
@@ -413,7 +414,7 @@ test "directed documents check clean end-to-end through the façade" {
     try std.testing.expectEqual(@as(usize, 0), bag.items().len);
 
     const document = checked.document.?;
-    try std.testing.expectEqual(dot.GraphKind.digraph, document.kind);
+    try std.testing.expectEqual(dot.DeclaredGraphKind.digraph, document.kind);
     try std.testing.expect(document.strict);
     try std.testing.expectEqualStrings("Routes", document.text(document.name.?));
     try std.testing.expectEqual(@as(usize, 2), document.edges.len);
@@ -530,7 +531,7 @@ test "parseBorrowedIn carries the full document header" {
     try std.testing.expect(parsed.outcome == .success);
 
     const document = parsed.document.?;
-    try std.testing.expectEqual(dot.GraphKind.digraph, document.kind);
+    try std.testing.expectEqual(dot.DeclaredGraphKind.digraph, document.kind);
     try std.testing.expect(document.strict);
     try std.testing.expectEqualStrings("Name", document.text(document.name.?));
     try std.testing.expectEqual(@as(usize, 1), document.edges.len);
@@ -592,7 +593,7 @@ const ValidEntry = struct {
     /// the document is empty).
     first_text: ?[]const u8,
     // Expected document header.
-    kind: dot.GraphKind = .undigraph,
+    kind: dot.DeclaredGraphKind = .undigraph,
     strict: bool = false,
     /// Expected graph-name text (null for anonymous documents).
     graph_name: ?[]const u8 = null,

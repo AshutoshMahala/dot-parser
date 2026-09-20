@@ -6,11 +6,8 @@
 //! deterministic source order (R-PORT-005). Completing the pass and the
 //! document being valid are separate facts — `Result` reports both.
 //!
-//! The document is never modified; consumers that want to tolerate or downgrade
-//! specific rules filter at their sink (the uniform reporting surface) and
-//! keep working with the same document. Sink filtering is presentation policy —
-//! it does not change `document_valid`; rule-level policy that decides
-//! whether a rule contributes to validity belongs to future `Options`.
+//! The document is never modified. Profiles select rule severity and graph
+//! interpretation. Sink filtering is presentation only and never changes validity.
 //!
 //! ## Milestone rule
 //!
@@ -27,8 +24,10 @@ const std = @import("std");
 const location = @import("location.zig");
 const diagnostic = @import("diagnostic.zig");
 const syntax = @import("syntax.zig");
+const policy = @import("policy.zig");
 
-/// No validation-rule configuration is implemented yet.
+/// The default facade has fixed strict policy. Configurable validation is
+/// available through Profile; it does not add overrides to the default facade.
 pub const Options = struct {};
 
 /// How the pass ended. Tagged, so meaningless combinations (such as an
@@ -40,12 +39,15 @@ pub const Outcome = union(enum) {
     completed: Completed,
 
     pub const Completed = struct {
-        /// No rule violations were found.
+        /// No error-severity violations were found.
         document_valid: bool,
         /// Violations reported. A fixed bag may retain fewer; its `omitted`
         /// counter accounts for the difference (bounded-bag policy: first
         /// diagnostics retained, the rest counted).
         violations: usize,
+        /// Warning-severity mismatches, independent of sink retention/delivery.
+        /// `violations` counts errors; warnings do not invalidate a document.
+        warnings: usize = 0,
     };
 };
 
@@ -73,9 +75,41 @@ pub fn validate(
     options: Options,
 ) Result {
     _ = options;
+    return validateWith(policy.defaults, document, diagnostics, {});
+}
+
+/// One validator, specialized for a fixed policy or supplied one resolved
+/// runtime policy. The fixed instantiation has no runtime settings parameter.
+pub fn validateWith(
+    comptime fixed: ?policy.Effective,
+    document: *const syntax.Document,
+    diagnostics: diagnostic.Sink,
+    runtime: if (fixed == null) policy.Effective else void,
+) Result {
+    const settings = if (fixed) |value| value else runtime;
+    const operators = if (document.kind == .digraph) settings.digraph else settings.graph.operators;
+    if (operators.operator_mismatch == .off or
+        (document.kind == .undigraph and
+            (settings.graph.treated_as == .generic or settings.graph.treated_as == .auto)))
+    {
+        return .{
+            .outcome = .{ .completed = .{ .document_valid = true, .violations = 0 } },
+            .diagnostic_delivery = .complete,
+        };
+    }
+
+    const code: diagnostic.Code = switch (operators.operator_mismatch) {
+        .err => .validation_operator_mismatch,
+        .warning => .validation_operator_tolerated,
+        .off => unreachable,
+    };
+    const reading: diagnostic.OperatorMismatch.Reading = switch (operators.operator_reading) {
+        .as_written => .as_written,
+        .conform_to_kind => .conform_to_kind,
+    };
 
     const expected: syntax.EdgeOperator = switch (document.kind) {
-        .undigraph => .undirected,
+        .undigraph => if (settings.graph.treated_as == .digraph) .directed else .undirected,
         .digraph => .directed,
     };
 
@@ -94,22 +128,25 @@ pub fn validate(
 
         emitted += 1;
         diagnostics.emit(.{
-            .code = .validation_operator_mismatch,
+            .code = code,
             .span = operator_span,
             .details = .{ .operator_mismatch = .{
                 .expected = operatorDetail(expected),
                 .found = operatorDetail(edge.operator),
                 .declaration = declaration.?,
+                .reading = reading,
+                .kind_overridden = document.kind == .undigraph and settings.graph.treated_as == .digraph,
+                .suggest_header_change = settings.graph.treated_as != .digraph,
             } },
-            // Two repairs are plausible — change the operator, or change
-            // the keyword — so this one is offered, never applied unasked.
+            // Conformance explicitly selects this operator reading. Otherwise
+            // replacement is only one possible repair. Never apply it here.
             .fix = .{
                 .span = operator_span,
                 .edit = .{ .replace = switch (expected) {
                     .directed => .directed_operator,
                     .undirected => .undirected_operator,
                 } },
-                .applicability = .maybe,
+                .applicability = if (operators.operator_reading == .conform_to_kind) .machine_applicable else .maybe,
             },
         }) catch {
             delivery = .failed;
@@ -118,8 +155,9 @@ pub fn validate(
 
     return .{
         .outcome = .{ .completed = .{
-            .document_valid = emitted == 0,
-            .violations = emitted,
+            .document_valid = operators.operator_mismatch != .err or emitted == 0,
+            .violations = if (operators.operator_mismatch == .err) emitted else 0,
+            .warnings = if (operators.operator_mismatch == .warning) emitted else 0,
         } },
         .diagnostic_delivery = delivery,
     };

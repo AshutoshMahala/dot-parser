@@ -260,6 +260,8 @@ comments. Pin one from the root source file of your build with
   [Bounded execution](docs/EXECUTION.md) · [runnable example](examples/bounded.zig)
 - Handling results, or telling malformed apart from not-yet-supported? →
   [Outcomes and diagnostics](docs/OUTCOMES.md)
+- Configuring graph kinds, mismatch severity or runtime overrides? →
+  [Graph policies](docs/POLICIES.md) · [runnable example](examples/policies.zig)
 - Learning by running code? → [examples/](examples/)
 - Performance numbers → [Baselines](docs/BASELINES.md) ·
   Architecture → [Project structure](docs/architecture/PROJECT_STRUCTURE.md) ·
