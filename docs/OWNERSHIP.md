@@ -228,7 +228,7 @@ const parsed = dot.parseBorrowedIn(source, .{
 }, bag.sink(), .{ .max_nesting = 4 });
 ```
 
-The same `ParseMemory` bundle goes to `FixedSession.init`. Scratch defaults
+The same `ParseMemory` bundle goes to `Profile.Session.init`. Scratch defaults
 to zero capacity, sufficient for flat documents; it is never hidden allocation.
 `subgraphs` counts retained occurrences; `nesting` counts simultaneously active
 frames. `max_nesting` is a separate policy limit; root depth is zero.

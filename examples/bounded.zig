@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Reuse pools only after all earlier document views are no longer used.
     var request: Request = .{};
-    const Cancellable = dot.FixedSession(.{ .cancellation = true });
+    const Cancellable = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } }).Session;
     var cancellable = Cancellable.init("graph {a[x=1] a--b}", .{ .document = storage.storage() }, bag.sink(), .{
         .cancellation = .{ .context = &request, .is_requested = Request.poll },
     });

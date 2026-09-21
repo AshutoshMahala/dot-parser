@@ -13,7 +13,7 @@ fn requested(context: ?*anyopaque) bool {
 fn consume(comptime metering: bool, comptime cancellation: bool, source: [*]const u8, len: usize, flag: *u8) usize {
     var storage: dot.FixedDocumentStorage(.{ .statements = 8, .subgraphs = 8, .nodes = 8, .edges = 8, .scoped_edges = 4, .scoped_edge_links = 8, .edge_chains = 4, .edge_links = 8, .ported_references = 16, .attributes = 8, .assignments = 8, .attribute_statements = 8 }) = .{};
     var scratch: dot.FixedParseScratch(.{ .nesting = 8 }) = .{};
-    const Session = dot.FixedSession(.{ .metering = metering, .cancellation = cancellation });
+    const Session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = metering, .cancellation = cancellation } } }).Session;
     var session = Session.init(source[0..len], .{ .document = storage.storage(), .scratch = scratch.storage() }, dot.diagnostic.discard, .{
         .cancellation = if (cancellation) .{ .context = flag, .is_requested = requested } else {},
     });

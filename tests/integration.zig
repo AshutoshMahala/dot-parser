@@ -14,6 +14,9 @@ test {
     _ = @import("diagnostics.zig");
     _ = @import("measure.zig");
     _ = @import("non_ascii.zig");
+    _ = @import("policies.zig");
+    _ = @import("policy_settings.zig");
+    _ = @import("lenient.zig");
 }
 
 const Rejecting = struct {
@@ -112,7 +115,7 @@ test "comments work through fixed storage and preserve validation positions" {
     const source = "# 99 \"ignored\"\r\n/* header */graph {\r\na /* -> ignored */ -> // endpoint\r\nb; }# eof";
     var storage: dot.FixedDocumentStorage(.{ .statements = 1, .edges = 1 }) = .{};
     var bag: dot.FixedDiagnosticBag(1) = .{};
-    const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{ .max_statements = 1 });
+    const parsed = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 1 } } }).parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
     try std.testing.expect(parsed.outcome == .success);
     const document = parsed.document.?;
     try std.testing.expectEqual(@as(usize, 1), document.statementCount());
@@ -128,7 +131,7 @@ test "comments work through fixed storage and preserve validation positions" {
     try std.testing.expectEqual(@as(usize, 2), failure.details.operator_mismatch.declaration.locate(source).line);
 
     var empty: dot.FixedDocumentStorage(.{}) = .{};
-    const only_comments = dot.parseBorrowedIn("/* before */graph {// body\n}# after", .{ .document = empty.storage() }, dot.diagnostic.discard, .{ .max_statements = 0 });
+    const only_comments = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 0 } } }).parseBorrowedIn("/* before */graph {// body\n}# after", .{ .document = empty.storage() }, dot.diagnostic.discard, .{});
     try std.testing.expect(only_comments.outcome == .success);
     try std.testing.expectEqual(@as(usize, 0), only_comments.document.?.statementCount());
 }
@@ -370,7 +373,7 @@ test "parseBorrowed returns a caller-owned document over borrowed source" {
 
     try std.testing.expect(parsed.outcome == .success);
     const document = parsed.document.?;
-    try std.testing.expectEqual(dot.GraphKind.undigraph, document.kind);
+    try std.testing.expectEqual(dot.DeclaredGraphKind.undigraph, document.kind);
     try std.testing.expectEqual(@as(usize, 2), document.statementCount());
     try std.testing.expectEqualStrings(
         "a",
@@ -413,7 +416,7 @@ test "directed documents check clean end-to-end through the façade" {
     try std.testing.expectEqual(@as(usize, 0), bag.items().len);
 
     const document = checked.document.?;
-    try std.testing.expectEqual(dot.GraphKind.digraph, document.kind);
+    try std.testing.expectEqual(dot.DeclaredGraphKind.digraph, document.kind);
     try std.testing.expect(document.strict);
     try std.testing.expectEqualStrings("Routes", document.text(document.name.?));
     try std.testing.expectEqual(@as(usize, 2), document.edges.len);
@@ -454,9 +457,8 @@ test "capacity hints enable fixed-buffer parsing through the façade" {
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
 
     var bag: dot.FixedDiagnosticBag(4) = .{};
-    var checked = dot.parseAndValidate(fba.allocator(), source, bag.sink(), .{
+    var checked = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 3 } } }).parseAndValidate(fba.allocator(), source, bag.sink(), .{
         .parse = .{
-            .max_statements = 3,
             .document_capacities = .{ .statements = 3, .nodes = 2, .edges = 1 },
         },
     });
@@ -530,7 +532,7 @@ test "parseBorrowedIn carries the full document header" {
     try std.testing.expect(parsed.outcome == .success);
 
     const document = parsed.document.?;
-    try std.testing.expectEqual(dot.GraphKind.digraph, document.kind);
+    try std.testing.expectEqual(dot.DeclaredGraphKind.digraph, document.kind);
     try std.testing.expect(document.strict);
     try std.testing.expectEqualStrings("Name", document.text(document.name.?));
     try std.testing.expectEqual(@as(usize, 1), document.edges.len);
@@ -592,7 +594,7 @@ const ValidEntry = struct {
     /// the document is empty).
     first_text: ?[]const u8,
     // Expected document header.
-    kind: dot.GraphKind = .undigraph,
+    kind: dot.DeclaredGraphKind = .undigraph,
     strict: bool = false,
     /// Expected graph-name text (null for anonymous documents).
     graph_name: ?[]const u8 = null,
@@ -809,9 +811,8 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
     }
 
     var bag: dot.FixedDiagnosticBag(4) = .{};
-    var checked = dot.parseAndValidate(gpa, input.items, bag.sink(), .{
-        .parse = .{ .max_statements = 4096, .max_attributes = 4096 },
-    });
+    const Limited = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 4096, .max_attributes = 4096 } } });
+    var checked = Limited.parseAndValidate(gpa, input.items, bag.sink(), .{});
     defer checked.deinit(gpa);
 
     // Invariants: reaching here means termination; failures explain
@@ -830,9 +831,7 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
     // the outcome class and count, but on every diagnostic's identity and
     // position, and on the parsed statements when both succeed.
     var second_bag: dot.FixedDiagnosticBag(4) = .{};
-    var second = dot.parseAndValidate(gpa, input.items, second_bag.sink(), .{
-        .parse = .{ .max_statements = 4096, .max_attributes = 4096 },
-    });
+    var second = Limited.parseAndValidate(gpa, input.items, second_bag.sink(), .{});
     defer second.deinit(gpa);
     try std.testing.expectEqual(
         std.meta.activeTag(checked.outcome),

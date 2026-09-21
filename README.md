@@ -33,6 +33,8 @@ strict digraph Routes {
 - Named, anonymous and nested subgraphs, including edge endpoints, with allocation-free scope views.
 - Borrowed source spans, explicit caller memory, fixed-buffer operation.
 - Fixed-storage bounded sessions, with optional cooperative cancellation.
+- Typed compile-time policies and opt-in runtime overrides, including named
+  [`standard` and `lenient` presets](docs/POLICIES.md#standard-and-lenient-presets).
 - Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
 - Port suffixes (`a:out`, `a:n`, `a:out:e`) on node statements and node endpoints.
 
@@ -102,9 +104,8 @@ statement-level recovery and one run reports them all, resynchronizing at the
 next `;` or `}`:
 
 ```zig
-var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{
-    .parse = .{ .recovery = .statements },
-});
+const Parser = dot.Profile(.{ .policy = .{ .recovery = .statements } });
+var checked = Parser.parseAndValidate(allocator, source, bag.sink(), .{});
 // checked.outcome == .invalid_syntax; bag holds every syntax error, in order.
 try dot.console.renderBoxedList(bag.items(), bag.omitted, .{ .source = source }, stdout);
 ```
@@ -246,8 +247,8 @@ Two scanner backends share one interface and produce identical results: the
 byte-at-a-time scalar scanner (the default) and a 64-byte block scanner that
 classifies input with vector compares, which wins when sessions run on very
 small work budgets or the input is dominated by long identifiers, strings or
-comments. Pin one from the root source file of your build with
-`pub const dot_parser_options = .{ .lexer_backend = .block };`
+comments in the recorded benchmarks. Select one for parsing with
+`dot.Profile(.{ .policy = .{ .scanner = .block } })`.
 [Bounded execution](docs/EXECUTION.md#scanner-backends) has the trade-off.
 
 ## Documentation
@@ -260,6 +261,8 @@ comments. Pin one from the root source file of your build with
   [Bounded execution](docs/EXECUTION.md) · [runnable example](examples/bounded.zig)
 - Handling results, or telling malformed apart from not-yet-supported? →
   [Outcomes and diagnostics](docs/OUTCOMES.md)
+- Configuring limits, recovery, execution, graph kinds or runtime overrides? →
+  [Policies](docs/POLICIES.md) · [runnable example](examples/policies.zig)
 - Learning by running code? → [examples/](examples/)
 - Performance numbers → [Baselines](docs/BASELINES.md) ·
   Architecture → [Project structure](docs/architecture/PROJECT_STRUCTURE.md) ·

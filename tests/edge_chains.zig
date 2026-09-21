@@ -34,7 +34,7 @@ test "long chains yield without exposing partially built statements" {
     for (0..4096) |_| try writer.writeAll("->a");
     try writer.writeAll("}");
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .edge_chains = 1, .edge_links = 4095 }) = .{};
-    var session = dot.BoundedSession.init(writer.buffered(), .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_statements = 1 });
+    var session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true }, .limits = .{ .max_statements = 1 } } }).Session.init(writer.buffered(), .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
     defer session.deinit();
     var total: usize = 0;
     while (true) {
@@ -165,7 +165,7 @@ test "chain failures name the exact fixed pool and discard all staged links" {
 
 test "chains count as one statement and ordinary edges need no chain capacity" {
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .edge_chains = 1, .edge_links = 2 }) = .{};
-    var session = dot.BoundedSession.init("digraph {a->b->c->d}", .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .max_statements = 1 });
+    var session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true }, .limits = .{ .max_statements = 1 } } }).Session.init("digraph {a->b->c->d}", .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
     defer session.deinit();
     var progress = session.advance(1);
     while (progress.outcome == null) progress = session.advance(1);

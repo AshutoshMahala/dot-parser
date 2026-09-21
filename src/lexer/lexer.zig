@@ -6,13 +6,11 @@
 //! below hold them to it on fixtures, random inputs, every truncation,
 //! every block shift and every work-budget partition.
 //!
-//! Selection is compile-time. A root source file overrides the default with
-//!
-//! ```zig
-//! pub const dot_parser_options = .{ .lexer_backend = .block };
-//! ```
-//!
-//! which is how the benches compare the two and how a consumer pins one.
+//! Parsing selects through `Policy.scanner`: a fixed profile specializes one
+//! backend, while a runtime-enabled profile selects a specialized engine once
+//! per operation or session init/reset. Direct lexical callers use `For`.
+//! The historical measurements below predate the unified-policy migration;
+//! its standard-machine performance comparison is still pending.
 //! Measured on Apple silicon at the parse level, with positions derived on
 //! demand rather than tracked per byte: running to completion the scalar
 //! scanner is 3–15% faster on every corpus file and on the 200k-statement
@@ -25,7 +23,7 @@
 //! opt-in; see `docs/internal/OpenQuestions.md` (Q38).
 
 const std = @import("std");
-const root = @import("root");
+const policy = @import("../policy.zig");
 const location = @import("../location.zig");
 const diagnostic = @import("../diagnostic.zig");
 const types = @import("token.zig");
@@ -37,31 +35,20 @@ pub const Token = types.Token;
 pub const Result = types.Result;
 pub const Advance = types.Advance;
 
-pub const Backend = enum { scalar, block };
-
-/// The scalar scanner on every target (see the module comment for the
-/// measurements); `backend` is the override point.
-pub const default_backend: Backend = .scalar;
-
-/// The selected backend: the root file's `dot_parser_options.lexer_backend`
-/// when it declares one, else `default_backend`.
-pub const backend: Backend = blk: {
-    if (@hasDecl(root, "dot_parser_options")) {
-        const options = root.dot_parser_options;
-        if (@hasField(@TypeOf(options), "lexer_backend")) break :blk options.lexer_backend;
-    }
-    break :blk default_backend;
-};
-
-pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
-    return switch (backend) {
-        .scalar => scalar.Scanner(metered, audited),
-        .block => block.Scanner(metered, audited),
+pub fn scannerFor(comptime selected: policy.ScannerBackend) fn (comptime bool, comptime bool) type {
+    return switch (selected) {
+        .scalar => scalar.Scanner,
+        .block => block.Scanner,
     };
 }
 
-/// Ordinary lexing with the selected backend.
-pub const Lexer = Scanner(false, false);
+/// Low-level fixed-backend scanner; retained parsing selects through Policy.
+pub fn For(comptime selected: policy.ScannerBackend) type {
+    return scannerFor(selected)(false, false);
+}
+
+/// Ordinary lexing with the library-default backend.
+pub const Lexer = For(policy.defaults.scanner);
 
 // ---------------------------------------------------------------------------
 // Tests: the two backends are indistinguishable from outside.
@@ -410,8 +397,7 @@ test "block scanner megabyte runs resume in linear work" {
     }
 }
 
-test "the selected backend is the default unless the root overrides it" {
-    // The test root declares no `dot_parser_options`.
-    try expectEqual(default_backend, backend);
-    try expectEqual(Backend.scalar, default_backend);
+test "direct lexing defaults to scalar with an explicit fixed-backend factory" {
+    try expect(For(.scalar) == Lexer);
+    try expect(For(.block) == block.Lexer);
 }

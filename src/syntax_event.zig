@@ -102,7 +102,9 @@ pub const GraphKind = enum {
     digraph,
 };
 
-/// The edge operator as written in the source. The parser is kind-agnostic:
+/// The syntax operator: as written when well-formed, or supplied by an explicit
+/// syntax-acceptance policy. Its accompanying span preserves the original text.
+/// The parser is kind-agnostic:
 /// both operators always parse, and whether an operator is legal for the
 /// document's kind is validation policy, not a parse error.
 pub const EdgeOperator = enum {

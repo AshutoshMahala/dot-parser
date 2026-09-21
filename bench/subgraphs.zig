@@ -3,19 +3,19 @@ const std = @import("std");
 const dot = @import("dot_parser");
 const build_options = @import("build_options");
 
-/// `-Dlexer=scalar|block` pins the scanner; `auto` follows the target.
-pub const dot_parser_options = .{ .lexer_backend = selectedBackend() };
+/// `-Dlexer=scalar|block` pins the scanner; `auto` follows the library default.
+const Parser = dot.Profile(.{ .policy = .{ .scanner = selectedBackend() } });
 
-fn selectedBackend() dot.lexer.Backend {
-    if (std.mem.eql(u8, build_options.lexer, "auto")) return dot.lexer.default_backend;
-    return std.meta.stringToEnum(dot.lexer.Backend, build_options.lexer) orelse @compileError("-Dlexer must be auto, scalar, or block");
+fn selectedBackend() dot.ScannerBackend {
+    if (std.mem.eql(u8, build_options.lexer, "auto")) return dot.Profile(.{}).baseline.scanner;
+    return std.meta.stringToEnum(dot.ScannerBackend, build_options.lexer) orelse @compileError("-Dlexer must be auto, scalar, or block");
 }
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     var buffer: [4096]u8 = undefined;
     var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
-    try output.interface.print("scanner backend: {s}\n", .{@tagName(dot.lexer.backend)});
+    try output.interface.print("scanner backend: {s}\n", .{@tagName(Parser.baseline.scanner)});
     inline for (.{ false, true }) |nested| {
         for ([_]usize{ 1000, 10000, 100000 }) |n| {
             const bytes = try allocator.alloc(u8, 8 + 2 * n);
@@ -41,7 +41,7 @@ pub fn main(init: std.process.Init) !void {
             var times: [9]u64 = undefined;
             for (0..11) |round| {
                 const start = std.Io.Clock.Timestamp.now(init.io, .awake);
-                const result = dot.parseBorrowedIn(bytes, memory, dot.diagnostic.discard, .{});
+                const result = Parser.parseBorrowedIn(bytes, memory, dot.diagnostic.discard, .{});
                 const end = std.Io.Clock.Timestamp.now(init.io, .awake);
                 const doc = result.document orelse return error.ParseFailed;
                 if (doc.subgraph_records.len != n) return error.WrongCount;

@@ -5,7 +5,9 @@ return a **small outcome value** describing what happened, and the
 **explanation travels through your diagnostic sink** — structured,
 typed, and never printed by the library. There is no error-code soup to
 `catch` and no string parsing; outcomes are for control flow, diagnostics
-are for humans and tooling.
+are for humans and tooling. Runtime-enabled [policy profiles](POLICIES.md)
+add a separate configuration error union: an invalid policy is rejected before
+DOT processing and does not produce a source diagnostic.
 
 ## Parse outcomes
 
@@ -15,8 +17,8 @@ are for humans and tooling.
 | Outcome | Meaning | Document? |
 | --- | --- | --- |
 | `.success` | The document parsed completely | Yes |
-| `.cancelled` | A session was cancelled; never produced by one-shot parsing | No |
-| `.invalid_syntax` | The input is malformed in any DOT dialect | No |
+| `.cancelled` | A session was cancelled, or an enabled cancellation hook stopped a one-shot operation | No |
+| `.invalid_syntax` | The input is not accepted by the selected syntax policy | No |
 | `.unsupported_feature` | The parse stopped at a recognized-but-deferred DOT construct | No |
 | `.resource_exhausted` | A caller-configured limit (e.g. `max_statements` or `max_attributes`) was reached; the input may still be valid | No |
 | `.storage_failure` | Document storage could not hold the document | No |
@@ -53,7 +55,7 @@ successful commit is never replaced by later cancellation. See
 
 The distinction the taxonomy is built around:
 
-- **`invalid_syntax`** means *no DOT dialect accepts this input*.
+- **`invalid_syntax`** means *the selected syntax policy does not accept this input*.
 - **`unsupported_feature`** means *this is recognized DOT syntax that this
   library does not process yet*. The parse stopped at the construct's
   introducer, and the diagnostic names the exact feature as a typed enum
@@ -85,16 +87,28 @@ var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
 // checked.documentValid() == false   — validation found violations
 ```
 
-`ValidationResult.outcome` is `.completed { document_valid, violations }`
-today. Bounded/cancellable validation is future work; outcomes for those
+`ValidationResult.outcome` is `.completed { document_valid, violations, warnings }`.
+`violations` counts errors, while `warnings` counts warning-severity mismatches;
+only errors invalidate the document. Both count occurrences independently of sink
+retention/delivery. [Profiles](POLICIES.md) configure severity, graph treatment
+and effective operator reading. Bounded/cancellable validation is future work; outcomes for those
 behaviors will be added when implemented. Validation reports **every** violation, in source order — it never
 stops at the first.
 
 ## The diagnostic bag
 
+Parse, fixed-parse, measure and session-progress results contain factual
+`accepted_deviations: u32` and `warnings: u32`. The first counts syntax-policy
+acceptances, including silent `.accept`; the second counts produced syntax
+warnings, including numeral warnings. Neither depends on bag retention,
+filtering or successful delivery. Counts remain available when later work fails
+or is cancelled; they are not a complete deviation history.
+`CheckResult.warnings` totals syntax and validation warnings;
+`CheckResult.accepted_deviations` retains the parse count. Separate validation
+reports only its own warnings. See [syntax policies](POLICIES.md).
+
 By default parsing is fail-fast: at most one failure diagnostic. With
-`ParseOptions.recovery = .statements` (also on `FixedParseOptions` and
-session options) a syntax error inside the body does not end the parse: the
+`Policy.recovery = .statements` a syntax error inside the body does not end the parse: the
 document is aborted once, the parser skips to the next `;` or `}` at the
 same brace depth, and every further syntax error is reported too. The
 outcome is still `invalid_syntax`, no document is published, and validation
@@ -102,7 +116,8 @@ never runs — later diagnostics can be consequences of an earlier one, so
 read them in order. Header errors, end of input, trailing tokens, limits,
 deferred features, and unterminated quotes or comments still stop the parse.
 
-Warnings (`W.Syntax.Numeral.033`) accompany a successful parse; they never
+Warnings (`W.Syntax.Numeral.033`, `W.Syntax.Operator.003`,
+`W.Syntax.Grammar.034`) can accompany a successful parse; they never
 change the outcome. Retention depends on the sink: a full bag, discard
 sink, or rejected delivery can leave no retained entry, and `.internal`
 emits no diagnostic. Validation attempts one diagnostic per violation. A
@@ -128,6 +143,8 @@ payload (`Unexpected.context`, `ReservedKeyword.context`).
 | --- | --- | --- |
 | `E.Syntax.Byte.003` | A byte that cannot start any DOT token, or NUL inside quotes | `.invalid_byte` |
 | `E.Syntax.Operator.003` | `-` that does not form `--`/`->` (`a - b`, `a - > b`), or `-->`/`---` | `.invalid_operator` (the byte that broke it, or null at EOF) |
+| `W.Syntax.Operator.003` | Exact long operator or bare dash accepted with `.warn` | `.accepted_operator`: chosen operator and `.long_shape` or `.from_keyword` reason |
+| `W.Syntax.Grammar.034` | Empty statement accepted with `.warn` | `.none`; the span marks the omitted `;` |
 | `E.Syntax.Numeral.001` | `.` or `-.` without the required digit | `.incomplete_numeral` (the byte found, or null at EOF) |
 | `E.Syntax.Token.032` | Input ended inside an unclosed quote or block comment; span marks its opener | `.unterminated` (`.block_comment` or `.quoted_identifier`) |
 | `E.Syntax.Concatenation.003` | `+` is not followed by a quoted identifier | `.expected_quote` (next byte, or null at EOF) |
@@ -136,6 +153,7 @@ payload (`Unexpected.context`, `ReservedKeyword.context`).
 | `E.Syntax.Keyword.003` | Reserved keyword where a name was needed, or `node`/`edge`/`graph` without its `[` list | `.reserved_keyword` (keyword, context) |
 | `W.Syntax.Numeral.033` | A numeral runs into a letter or a second dot (`1e3`, `1.2.3`); the parse continues with two tokens, as Graphviz does | `.ambiguous_numeral` (the byte it runs into) |
 | `E.Validation.Operator.002` | Edge operator does not match the graph kind | `.operator_mismatch` |
+| `W.Validation.Operator.002` | Mismatch tolerated by the selected policy | `.operator_mismatch` (including reading and original-header relation) |
 | `E.Profile.Feature.009` | Recognized-but-deferred DOT construct | `.unsupported_feature` |
 | `E.Resource.Capacity.026` | A configured capacity was exhausted | `.capacity` when available, otherwise `.none` |
 | `E.Resource.Memory.026` | Document memory was exhausted | `.none` |
@@ -179,6 +197,8 @@ Which diagnostics carry a fix, and how confident it is:
 | --- | --- | --- |
 | `E.Syntax.Operator.003` | `-->`, `---`, `- >`, `- -` | replace with the operator the last byte names, machine-applicable |
 | `E.Syntax.Operator.003` | lone `-` | replace with the declared kind's operator, machine-applicable (none before the kind keyword) |
+| `W.Syntax.Operator.003` | accepted `---`, `-->`, or `-` | replace with the policy-selected syntax operator, machine-applicable |
+| `W.Syntax.Grammar.034` | accepted empty statement | delete the marked `;`, machine-applicable |
 | `E.Syntax.Byte.003` | `=>` | replace with the declared kind's operator, maybe |
 | `E.Syntax.Keyword.003` | keyword as a name | wrap in quotes, machine-applicable; none for `node;`, which has two readings |
 | `E.Syntax.Grammar.003` | stray `;`, extra `}`, doubled operator, doubled or leading `,`/`;` in a list | delete, machine-applicable |
@@ -187,15 +207,15 @@ Which diagnostics carry a fix, and how confident it is:
 | `E.Syntax.Grammar.003` | header typo | replace with the nearest header keyword, maybe |
 | `E.Syntax.Grammar.031` | input ends inside `[` / `{` | insert `]` / `}` at end of input, machine-applicable unless a misindented `}` was found |
 | `E.Syntax.Token.032` | unterminated quote or comment | insert the closer at end of input, maybe |
-| `E.Validation.Operator.002` | operator mismatch | replace with the declared kind's operator, maybe |
+| `E.Validation.Operator.002` / `W.Validation.Operator.002` | operator mismatch | replace with the effective kind's operator; machine-applicable under `.conform_to_kind`, otherwise maybe |
 
 `W.Syntax.Numeral.033` carries no fix: the repair would quote the whole run
 (`"1e3"`), and the scanner has not seen where the following token ends.
 
 The console renderer prints the fix under the hint (`Fix: replace '-->'
 with '->'`, with `(one possible repair)` appended for `maybe`); the compact
-renderer adds a `fix:` line. `Diagnostic` is 112 bytes with the field, so a
-`FixedDiagnosticBag(32)` is 3.6 KB.
+renderer adds a `fix:` line. Diagnostic and bag sizes are target-dependent;
+inspect `@sizeOf` for the selected build instead of assuming a portable size.
 
 This table describes library-produced diagnostics. `Diagnostic` is publicly
 constructible: its separate `code` and `details` fields do not enforce these

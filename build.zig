@@ -47,6 +47,30 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_integration_tests.step);
 
+    // Public policy constraints must fail for actual consumers, not just pass
+    // reflection checks in unit tests. Expected-error builds run with test.
+    for ([_]struct { name: []const u8, message: []const u8 }{
+        .{ .name = "fixed_policy_override", .message = "tests/compile_fail/fixed_policy_override.zig:3:36: error: no field named 'policy' in struct /?/" },
+        .{ .name = "runtime_check_on_fixed_profile", .message = "error: unable to evaluate comptime expression" },
+        .{ .name = "digraph_treatment", .message = "error: no field named 'treated_as' in struct 'policy.Policy.Operators'" },
+        .{ .name = "invalid_policy_mismatch", .message = "error: invalid policy: graph_operator_mismatch_not_applicable" },
+        .{ .name = "invalid_policy_reading", .message = "error: invalid policy: graph_operator_reading_not_applicable" },
+        .{ .name = "fixed_parse_override", .message = "tests/compile_fail/fixed_parse_override.zig:3:41: error: no field named 'policy' in struct /?/" },
+        .{ .name = "unmetered_advance", .message = "error: metering is disabled; use run()" },
+    }) |fixture| {
+        const rejected = b.addObject(.{
+            .name = fixture.name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("tests/compile_fail/{s}.zig", .{fixture.name})),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "dot_parser", .module = mod }},
+            }),
+        });
+        rejected.expect_errors = .{ .contains = fixture.message };
+        test_step.dependOn(&rejected.step);
+    }
+
     // Example targets. `zig build examples` builds and runs them.
     const examples_step = b.step("examples", "Build and run the examples");
     const example_names = [_][]const u8{
@@ -61,6 +85,7 @@ pub fn build(b: *std.Build) void {
         "subgraphs",
         "subgraph_endpoints",
         "check_file",
+        "policies",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -81,9 +106,8 @@ pub fn build(b: *std.Build) void {
         examples_step.dependOn(&run_example.step);
     }
 
-    // Benches can pin a scanner backend (`-Dlexer=scalar|block`; `auto`
-    // uses the scalar default) through their root file's `dot_parser_options`.
-    // The library module itself carries no build option.
+    // Benches pin Policy.scanner (`auto` uses the scalar default). The library
+    // module itself carries no build option or root-file configuration hook.
     const lexer_choice = b.option([]const u8, "lexer", "Scanner backend for the benches: auto (default), scalar, or block") orelse "auto";
     const bench_options = b.addOptions();
     bench_options.addOption([]const u8, "lexer", lexer_choice);
@@ -150,7 +174,24 @@ pub fn build(b: *std.Build) void {
     b.step("bench-subgraphs", "Measure sibling and nested scope parsing")
         .dependOn(&b.addRunArtifact(subgraph_bench).step);
 
-    const freestanding = b.step("check-freestanding", "Compile consumed session profiles for RISC-V32 and Wasm32");
+    const policy_bench = b.addExecutable(.{
+        .name = "policy_throughput",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/policies.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "dot_parser", .module = mod }},
+        }),
+    });
+    b.step("bench-policy", "Compare fixed/runtime policy costs on the standard benchmark machine")
+        .dependOn(&b.addRunArtifact(policy_bench).step);
+    const check_benches = b.step("check-benches", "Compile benchmarks without updating or running baselines");
+    for ([_]*std.Build.Step.Compile{ bench_exe, lexer_bench, session_bench, subgraph_bench, policy_bench }) |bench| {
+        _ = bench.getEmittedBin();
+        check_benches.dependOn(&bench.step);
+    }
+
+    const freestanding = b.step("check-freestanding", "Compile consumed session and policy profiles for RISC-V32 and Wasm32");
     for ([_]std.Target.Cpu.Arch{ .riscv32, .wasm32 }) |arch| {
         const portable_target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .freestanding });
         const portable = b.createModule(.{
@@ -158,6 +199,24 @@ pub fn build(b: *std.Build) void {
             .target = portable_target,
             .optimize = .ReleaseSmall,
         });
+        for ([_]bool{ false, true }) |runtime_policy| {
+            const options = b.addOptions();
+            options.addOption(bool, "runtime_policy", runtime_policy);
+            const probe = b.addObject(.{
+                .name = b.fmt("policy_{s}_r{d}", .{ @tagName(arch), @intFromBool(runtime_policy) }),
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("tests/freestanding_policy.zig"),
+                    .target = portable_target,
+                    .optimize = .ReleaseSmall,
+                    .imports = &.{
+                        .{ .name = "dot_parser", .module = portable },
+                        .{ .name = "policy_features", .module = options.createModule() },
+                    },
+                }),
+            });
+            _ = probe.getEmittedBin();
+            freestanding.dependOn(&probe.step);
+        }
         for ([_]bool{ false, true }) |metering| {
             for ([_]bool{ false, true }) |cancellation| {
                 const options = b.addOptions();

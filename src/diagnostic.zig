@@ -165,6 +165,7 @@ pub const Sequence = struct {
     pub const unexpected_end: SequenceDefinition = .{ .number = 31, .alias = "UNEXPECTED_END" };
     pub const unterminated: SequenceDefinition = .{ .number = 32, .alias = "UNTERMINATED" };
     pub const ambiguous: SequenceDefinition = .{ .number = 33, .alias = "AMBIGUOUS" };
+    pub const empty_statement: SequenceDefinition = .{ .number = 34, .alias = "EMPTY_STATEMENT" };
 };
 
 /// The diagnostic registry.
@@ -182,6 +183,10 @@ pub const Code = enum {
     /// edge operator (`a - b`, `a - > b`), or an over-long one (`-->`, `---`).
     /// Emitted with `Details.invalid_operator`.
     syntax_invalid_operator,
+    /// W.Syntax.Operator.003 — malformed spelling accepted under syntax policy.
+    syntax_operator_accepted,
+    /// W.Syntax.Grammar.034 — an empty statement omitted under syntax policy.
+    syntax_empty_statement,
     /// E.Syntax.Numeral.001 (MISSING) — '.' or '-.' without the digit a DOT
     /// numeral requires. Emitted with `Details.incomplete_numeral`.
     syntax_incomplete_numeral,
@@ -208,6 +213,8 @@ pub const Code = enum {
     /// E.Validation.Operator.002 (MISMATCH) — edge operator does not match
     /// the document's graph kind.
     validation_operator_mismatch,
+    /// W.Validation.Operator.002 — an operator-kind mismatch tolerated by policy.
+    validation_operator_tolerated,
     /// E.Profile.Feature.009 (UNSUPPORTED) — valid DOT was recognized but is
     /// not supported by this milestone/build profile (R-MOD-006).
     profile_unsupported_feature,
@@ -272,6 +279,22 @@ pub const Code = enum {
                 .summary = "a numeral needs a digit after '.'",
                 .hint = "write a digit after the dot (for example '.5'), or quote the text to use it as a name",
             },
+            .syntax_operator_accepted => .{
+                .severity = .warning,
+                .component = .syntax,
+                .primary = .operator,
+                .sequence = Sequence.invalid,
+                .summary = "edge operator accepted with a policy-selected interpretation",
+                .hint = "write the selected two-character operator to make the interpretation explicit",
+            },
+            .syntax_empty_statement => .{
+                .severity = .warning,
+                .component = .syntax,
+                .primary = .grammar,
+                .sequence = Sequence.empty_statement,
+                .summary = "empty statement accepted and omitted",
+                .hint = "remove the extra semicolon; no statement is retained for it",
+            },
             .syntax_unterminated_construct => .{
                 .severity = .err,
                 .component = .syntax,
@@ -326,7 +349,15 @@ pub const Code = enum {
                 .primary = .operator,
                 .sequence = Sequence.mismatch,
                 .summary = "edge operator does not match the graph kind",
-                .hint = "an undirected document ('graph') connects nodes with '--'; '->' is only valid in a 'digraph'",
+                .hint = "the effective undigraph kind requires '--'; the effective digraph kind requires '->'; inspect the selected graph policy",
+            },
+            .validation_operator_tolerated => .{
+                .severity = .warning,
+                .component = .validation,
+                .primary = .operator,
+                .sequence = Sequence.mismatch,
+                .summary = "edge operator mismatch accepted by policy",
+                .hint = "the selected policy determines whether the operator is preserved or interpreted as conforming to the graph kind",
             },
             .profile_unsupported_feature => .{
                 .severity = .err,
@@ -452,6 +483,11 @@ pub const Details = union(enum) {
     invalid_byte: u8,
     /// For `syntax_invalid_operator`.
     invalid_operator: InvalidOperator,
+    /// Records the actual assumption, not an inference from the warning text.
+    accepted_operator: struct {
+        operator: OperatorMismatch.Operator,
+        reason: enum { long_shape, from_keyword },
+    },
     /// For `syntax_incomplete_numeral`: the byte found where a digit was
     /// required, or null when the input ended there.
     incomplete_numeral: ?u8,
@@ -461,7 +497,7 @@ pub const Details = union(enum) {
     unexpected: Unexpected,
     /// For `syntax_reserved_keyword`.
     reserved_keyword: ReservedKeyword,
-    /// For `validation_operator_mismatch`.
+    /// For `validation_operator_mismatch` and `validation_operator_tolerated`.
     operator_mismatch: OperatorMismatch,
     /// For `profile_unsupported_feature`.
     unsupported_feature: Feature,
@@ -609,14 +645,22 @@ pub const Unexpected = struct {
 };
 
 pub const OperatorMismatch = struct {
-    /// The operator the document kind requires.
+    /// The operator the effective concrete kind requires.
     expected: Operator,
     /// The operator actually written.
     found: Operator,
     /// Where the document declared its graph kind.
     declaration: location.Span,
+    /// Selected interpretation; never changes the stored syntax operator.
+    reading: Reading = .as_written,
+    /// True when policy treats a written `graph` as `.digraph`. The keyword
+    /// range still points to the original declaration, not a synthetic header.
+    kind_overridden: bool = false,
+    /// False if changing only the header would still require the same operator.
+    suggest_header_change: bool = true,
 
     pub const Operator = enum(u8) { undirected, directed };
+    pub const Reading = enum(u8) { as_written, conform_to_kind };
 };
 
 /// DOT features recognized but not implemented in the current parser.
@@ -890,6 +934,7 @@ test "structured codes follow the documented registry" {
     try expectEqualStrings("E.Syntax.Keyword.003", Code.syntax_reserved_keyword.structured());
     try expectEqualStrings("W.Syntax.Numeral.033", Code.syntax_ambiguous_numeral.structured());
     try expectEqualStrings("E.Validation.Operator.002", Code.validation_operator_mismatch.structured());
+    try expectEqualStrings("W.Validation.Operator.002", Code.validation_operator_tolerated.structured());
     try expectEqualStrings("E.Profile.Feature.009", Code.profile_unsupported_feature.structured());
     try expectEqualStrings("E.Resource.Capacity.026", Code.resource_capacity_exhausted.structured());
     try expectEqualStrings("E.Resource.Memory.026", Code.resource_memory_exhausted.structured());

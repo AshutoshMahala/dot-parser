@@ -12,7 +12,7 @@ test "empty endpoints count as scopes not statements and cannot carry ports" {
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .subgraphs = 3, .scoped_edges = 1, .scoped_edge_links = 1, .attributes = 1 }) = .{};
     var scratch: dot.FixedParseScratch(.{ .nesting = 1 }) = .{};
     const memory: dot.ParseMemory = .{ .document = pools.storage(), .scratch = scratch.storage() };
-    const result = dot.parseBorrowedIn("graph {subgraph s {}--subgraph s {}--{}[k=v]}", memory, dot.diagnostic.discard, .{ .max_statements = 1, .max_nesting = 1 });
+    const result = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 1, .max_nesting = 1 } } }).parseBorrowedIn("graph {subgraph s {}--subgraph s {}--{}[k=v]}", memory, dot.diagnostic.discard, .{});
     try expect(result.outcome == .success);
     const doc = &result.document.?;
     try equal(@as(usize, 1), doc.statementCount());
@@ -26,7 +26,7 @@ test "empty endpoints count as scopes not statements and cannot carry ports" {
         try expect(parsed.outcome == .invalid_syntax);
         try expect(parsed.document == null);
     }
-    try expect(dot.parseBorrowedIn("graph {a--{b}}", memory, dot.diagnostic.discard, .{ .max_statements = 1 }).outcome == .resource_exhausted);
+    try expect(dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 1 } } }).parseBorrowedIn("graph {a--{b}}", memory, dot.diagnostic.discard, .{}).outcome == .resource_exhausted);
 }
 fn count(value: anytype) usize {
     var it = value;
@@ -83,7 +83,7 @@ test "endpoint prefixes agree across allocated fixed bounded and cancellation pr
             var pools: Pools = .{};
             var scratch: Scratch = .{};
             var other: dot.FixedDiagnosticBag(2) = .{};
-            var session = dot.FixedSession(.{ .metering = metering, .cancellation = cancellation }).init(source[0..end], .{ .document = pools.storage(), .scratch = scratch.storage() }, other.sink(), .{});
+            var session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = metering, .cancellation = cancellation } } }).Session.init(source[0..end], .{ .document = pools.storage(), .scratch = scratch.storage() }, other.sink(), .{});
             defer session.deinit();
             if (metering) {
                 var calls: usize = 0;
@@ -104,7 +104,7 @@ test "late promotion retains a long node-only prefix without copying or unbounde
     try writer.writeAll("->{b->c}->d}");
     var pools: dot.FixedDocumentStorage(.{ .statements = 2, .edges = 1, .subgraphs = 1, .edge_links = 2047, .scoped_edges = 1, .scoped_edge_links = 2 }) = .{};
     var scratch: dot.FixedParseScratch(.{ .nesting = 1 }) = .{};
-    var session = dot.BoundedSession.init(writer.buffered(), .{ .document = pools.storage(), .scratch = scratch.storage() }, dot.diagnostic.discard, .{ .max_statements = 2 });
+    var session = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true }, .limits = .{ .max_statements = 2 } } }).Session.init(writer.buffered(), .{ .document = pools.storage(), .scratch = scratch.storage() }, dot.diagnostic.discard, .{});
     defer session.deinit();
     while (true) {
         const progress = session.advance(1);

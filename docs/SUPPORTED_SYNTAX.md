@@ -9,9 +9,11 @@ construct, never a generic syntax error (see
 
 ## Terminology
 
-In this library **`graph` always means "either kind"**. The undirected
-kind is called `undigraph`, the directed kind `digraph`. Only at reading
-time does the DOT source keyword `graph` map to the kind `undigraph`.
+In general library prose, **graph** means any graph; concrete kinds are called
+`undigraph`, `digraph`, and `generic`. The written DOT keyword `graph` is retained
+as declared kind `.undigraph`, and `digraph` as `.digraph`. [Policy treatment](POLICIES.md)
+can select a different effective kind without changing the source declaration;
+`generic` is not a new DOT keyword, and `.auto` is behavior rather than a kind.
 
 ## Constructs
 
@@ -24,6 +26,9 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
 | Node statements (`a;`) | **Supported** | |
 | Edge statements (`a -- b;`, `a -> b;`) | **Supported** | Both operators always *parse*; kind×operator legality is a validation rule, not a parse error |
 | Optional semicolons | **Supported** | As in Graphviz: `digraph G { a -> b b -> c }` |
+| Empty statements (`;`, `a;;`) | **Opt-in syntax policy** | `syntax.empty_statement`: reject by default; warn/accept omits the empty statement |
+| Exact long operators (`---`, `-->`) | **Opt-in syntax policy** | `syntax.long_operator`: reject by default; warn/accept normalizes by spelling, retaining the original range |
+| Bare dash as an edge operator (`a - b`) | **Opt-in syntax policy** | `syntax.bare_dash`: reject by default; warn/accept interprets from the written `graph`/`digraph` header |
 | Bare ASCII identifiers | **Supported** | `[A-Za-z_][A-Za-z0-9_]*`; keywords are case-independent and reserved in every position |
 | Non-ASCII bare identifiers (bytes `0x80`–`0xFF`) | **Supported** | High bytes may start or continue an identifier; exact bytes retained without encoding validation or normalization |
 | Numeral identifiers | **Supported** | `-?(.[0-9]+ \| [0-9]+(.[0-9]*)?)`; exact text, no numeric conversion |
@@ -70,8 +75,9 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
   deferred features.
 - **Kind-agnostic parsing**: `digraph { a -- b; }` parses successfully;
   the operator/kind mismatch is reported by validation as
-  `E.Validation.Operator.002`. Consumers with dialect-tolerant needs can
-  skip or ignore validation.
+  `E.Validation.Operator.002` under the strict defaults. [Graph policies](POLICIES.md)
+  provide warning/off severity, generic/auto treatment and conforming interpretation
+  without weakening syntax parsing or mutating the stored operators.
 - **Limits**: positions are 32-bit, so a source is at most 4 GiB; a longer
   one is refused before scanning (`resource_exhausted`, capacity resource
   `source_range`);
@@ -82,6 +88,22 @@ time does the DOT source keyword `graph` map to the kind `undigraph`.
   These limits do not bound lexical work.
 
 ## Identifier lexical rules
+
+The named `dot.presets.standard` policy preserves default acceptance.
+`dot.presets.lenient` is the same policy with the three opt-in syntax rules set
+to `.warn`; `.accept` is an explicit silent choice for each rule. These are
+intentional dialect extensions to the pinned Graphviz grammar, not HTML support
+or a second parser. Graphviz 16.0.0 rejects `graph { ; }`, `graph { a;; }`,
+`graph { a --- b }`, `digraph { a --> b }` and `graph { a - b }`.
+Spaced operators, missing delimiters, keyword names, and trailing extra input
+remain invalid. Raw lexer APIs remain strict: the policy-bound parser adapts
+recognized operator failures only in an edge-operator position.
+
+Accepted empty statements do not consume statement pool slots or the statement
+limit. Their work and deviations are still counted. Operator ranges retain the
+original bytes while the stored operator reflects normalization/interpretation.
+Thus lenient output is not a lossless syntax history; changing acceptance policy
+requires reparsing. See [presets and counters](POLICIES.md#standard-and-lenient-presets).
 
 All supported forms work as document/subgraph names, node IDs, node-reference
 edge endpoints, port components, attribute keys/values and assignment keys/values.
@@ -128,7 +150,8 @@ matching means `1e3` is tokens `1` and `e3`, and `1.2.3` is `1.2` and `.3`;
 in a statement list these can be separate nodes because separators are optional.
 Exactly as Graphviz warns ("syntax ambiguity - badly delimited number"), the
 parser emits `W.Syntax.Numeral.033` on the numeral and continues. Bare `.` and
-`-.` are `E.Syntax.Numeral.001`. A lone `-`, a spaced `- >`, or an over-long
+`-.` are `E.Syntax.Numeral.001`. In the raw lexer and standard parser policy,
+a lone `-`, a spaced `- >`, or an over-long
 `-->` is `E.Syntax.Operator.003`, never an invalid byte: those bytes are legal
 DOT in the wrong shape.
 

@@ -1,8 +1,5 @@
-//! Execution policy vocabulary. No clock, thread or synchronization dependency.
-pub const Features = struct {
-    metering: bool = true,
-    cancellation: bool = false,
-};
+//! Borrowed execution resources. Behavior is configured by Policy.execution.
+//! No clock, thread or synchronization dependency.
 
 /// Borrowed, non-failing request predicate, polled before each microstep.
 /// Hooks must not reenter the session. Cross-thread and signal adapters own

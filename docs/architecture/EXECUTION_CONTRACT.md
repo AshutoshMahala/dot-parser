@@ -2,25 +2,35 @@
 
 Status: implemented for fixed-storage sessions; experimental 0.x API
 
-Date: 2026-09-13
+Date: 2026-09-13; unified-policy extension 2026-09-20
 
 Requirements: R-MOD-009–013, R-MEM-001/003, R-SEC-002/003, R-CON-002
 
 Related decision: [Q27](../internal/OpenQuestions.md)
 
 The existing run-to-completion APIs remain the default. `BoundedSession` now
-provides fixed-storage budgeted parsing; `FixedSession` independently selects
-metering and cancellation at compile time. See the [user guide](../EXECUTION.md)
+provides fixed-storage budgeted parsing. `Profile.Session` selects metering and
+cancellation through `Policy.execution`, at compile time or, when enabled, at
+runtime. See the [user guide](../EXECUTION.md)
 and [runnable example](../../examples/bounded.zig). Public event sinks, allocator-
 backed bounded sessions, streaming input and bounded validation remain deferred.
+
+Runtime sessions resolve and verify their policy once at initialization/reset,
+then retain stage-specific values across yields. They dispatch to a specialized
+scanner/execution variant at call boundaries, not on each byte. An invalid reset
+does not cancel or invalidate the existing session. A successful reset inherits
+the compiled baseline, not the previous override. Runtime `advance` returns
+`error.MeteringDisabled` without work when metering is disabled; fixed unmetered
+profiles reject that call at compile time. Policy-bound validation/interpretation
+of a committed result remains a separate, unbudgeted operation.
 
 ### Implemented groundwork: lexical scanning
 
 `src/lexer/lexer.zig` selects one of two scanner implementations behind one
-interface at compile time (`lexer.backend`: the scalar scanner unless a
-root file's `dot_parser_options.lexer_backend` selects the block scanner).
-`root.zig`
-exposes only Token, Result, ordinary Lexer and the backend selection; the
+interface. `Policy.scanner` selects scalar (the default) or block; fixed profiles
+can exclude the alternative, and runtime profiles retain both. Direct lexical
+callers can use `lexer.For(backend)`; `lexer.Lexer` is the scalar default.
+`root.zig` exposes the lexical vocabulary and ordinary lexical entry points; the
 parser imports internal scan helpers. Returning a lexical token is not a
 syntax-sink event; grammar and event dispatch are separately charged by the
 parser.
@@ -126,14 +136,17 @@ views must be retired. Aborted pool bytes are not erased, only logically discard
 ## 1. Scope and optionality
 
 Use one shared grammar with independently selectable metering and cancellation
-policies. Disabled policies must compile out their counters, hooks, and checks;
-do not add a mandatory per-byte runtime flag test. Measure remaining shared
+policies. In fixed profiles, disabled policies must compile out their counters,
+hooks, and checks; do not add a mandatory per-byte runtime flag test. Runtime
+profiles retain all selectable variants in one tagged union, not concurrent
+copies of every machine, and cannot claim equivalent binary/state exclusion.
+Measure remaining shared
 continuation-state, code-size and throughput costs rather than claiming the
 entire architectural change is free.
 
 The first slice covers borrowed, immutable contiguous input, the current syntax
 subset, and fixed-storage document construction. No OS clock, worker, mandatory
-atomics, chunked input, recovery, semantic lowering, or execution tree is required.
+atomics, chunked input, semantic lowering, or execution tree is required.
 The source, storage, cancellation context and session must remain alive across
 yields. One caller owns a session; it must not be reentered from a callback.
 
@@ -318,18 +331,23 @@ Acceptance gates for the fixed-storage driver (retain when extending it):
    after terminal cleanup. Pausing must not copy retained source or staged pools.
 7. **Optionality:** inspect consumed builds with metering/cancellation enabled
    independently and disabled together. Compare binary size, session size and
-   ordinary-driver throughput against the pre-change baseline. Disabled hooks
-   must be unreachable, not merely unused at runtime.
+   ordinary-driver throughput against the pre-change baseline. Hooks disabled
+   in a fixed profile must be unreachable, not merely unused at runtime. Compare
+   equivalent runtime-baseline and runtime-override paths separately.
 8. **Portability:** compile consumed fixed-storage paths for a freestanding
    target, with no core clock, thread, signal or atomic dependency.
 
 Implemented delivery: resumable scanning → metered grammar/event dispatch →
 fixed-storage session → cancellation/lifecycle handling → public API/examples.
-The public surface is `BoundedSession`, `FixedSession(ExecutionFeatures)`,
+The public surface is `BoundedSession`, `Profile.Session`, `Policy.execution`,
 `SessionProgress`, `ExecutionPhase`, and `Cancellation`. Cancellation hooks
 are borrowed context/predicate pairs, not OS tokens or synchronization primitives.
 All source scans remain resumable; no supported lexical form requires a minimum
 budget greater than one.
+
+The recorded execution/scanner baselines predate unified policy selection.
+`bench-policy` adds fixed/runtime-baseline/runtime-override comparisons; timing
+and binary-size gates for this migration still require the standard machine.
 
 ### Port-suffix continuation
 

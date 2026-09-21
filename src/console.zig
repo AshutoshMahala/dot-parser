@@ -516,7 +516,18 @@ fn writeHint(d: Diagnostic, info: diagnostic.Code.Info, positions: *Positions, w
             .block_comment => try writer.writeAll("close the block comment opened here with '*/'; block comments do not nest"),
             .quoted_identifier => try writer.writeAll("close the quoted identifier opened here with a double quote"),
         },
-        .operator_mismatch => |mismatch| switch (mismatch.expected) {
+        .operator_mismatch => |mismatch| if (d.code == .validation_operator_tolerated) {
+            switch (mismatch.reading) {
+                .as_written => try writer.writeAll("policy preserves the written operator; the graph declaration is unchanged"),
+                .conform_to_kind => try writer.print("policy interprets this edge as {s}; the stored operator and source are unchanged", .{operatorName(mismatch.expected)}),
+            }
+        } else if (mismatch.reading == .conform_to_kind) {
+            try writer.print("policy interprets this edge as {s}, but the written mismatch still fails validation", .{operatorName(mismatch.expected)});
+        } else if (mismatch.kind_overridden) {
+            try writer.writeAll("policy treats 'graph' as a digraph; change '--' to '->', or select a different graph policy");
+        } else if (!mismatch.suggest_header_change) {
+            try writer.print("change {s} to {s} to match the effective graph kind", .{ operatorName(mismatch.found), operatorName(mismatch.expected) });
+        } else switch (mismatch.expected) {
             .directed => try writer.writeAll(
                 "change '--' to '->', or declare the document with 'graph'",
             ),
@@ -1110,6 +1121,10 @@ fn writeUnderline(
 fn writePrimaryLabel(details: Details, writer: anytype) !void {
     switch (details) {
         .none => unreachable,
+        .accepted_operator => |accepted| try writer.print("read as '{s}' by {s}", .{
+            if (accepted.operator == .directed) "->" else "--",
+            if (accepted.reason == .from_keyword) "the written header (from_keyword)" else "the long operator's shape",
+        }),
         .unterminated => |construct| try writer.print("{s} opened here, never closed", .{unterminatedName(construct)}),
         .expected_quote => |found| try writeExpectedQuote(found, writer),
         .invalid_byte => |byte| {
@@ -1174,7 +1189,9 @@ fn writePrimaryLabel(details: Details, writer: anytype) !void {
 /// The role-named label under a secondary span.
 fn writeSecondaryLabel(details: Details, role: diagnostic.Related.Role, writer: anytype) !void {
     switch (details) {
-        .operator_mismatch => |mismatch| switch (mismatch.expected) {
+        .operator_mismatch => |mismatch| if (mismatch.kind_overridden)
+            try writer.writeAll("written as 'graph'; policy treats it as a digraph")
+        else switch (mismatch.expected) {
             .undirected => try writer.writeAll(
                 "the document is undirected because of this keyword",
             ),
@@ -1213,6 +1230,10 @@ fn writeUnsigned(writer: anytype, value: usize, width: usize) !void {
 fn writeDetailValue(details: Details, writer: anytype) !void {
     switch (details) {
         .none => unreachable,
+        .accepted_operator => |accepted| try writer.print("read as '{s}' by {s}", .{
+            if (accepted.operator == .directed) "->" else "--",
+            if (accepted.reason == .from_keyword) "the written header (from_keyword)" else "the long operator's shape",
+        }),
         .unterminated => |construct| try writer.print("unterminated {s}", .{unterminatedName(construct)}),
         .expected_quote => |found| try writeExpectedQuote(found, writer),
         .invalid_byte => |byte| {
@@ -1317,7 +1338,7 @@ fn writeNoteValue(details: Details, positions: *Positions, writer: anytype) !voi
             }
         },
         .operator_mismatch => |mismatch| {
-            try writer.writeAll("graph kind declared at ");
+            try writer.writeAll(if (mismatch.kind_overridden) "written 'graph' treated as digraph by policy; header at " else "graph kind declared at ");
             try positions.writeColonForm(mismatch.declaration.start, writer);
         },
         else => unreachable,

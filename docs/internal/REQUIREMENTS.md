@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-09-19
+Original draft: 2026-07-13 · Last amended: 2026-09-20
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -30,16 +30,34 @@ The parser must not import, reference, or otherwise depend on Zigraph.
 
 ## 2. Terminology
 
-The library-facing graph kinds are:
+The library-facing graph-kind vocabulary is:
 
 - `digraph`: a directed graph.
 - `undigraph`: an undirected graph.
+- `generic`: a graph permitting either edge kind, independent of which operators
+  occur. This is a policy interpretation, not a third DOT source keyword.
 
 In this project's identifiers, documentation, and prose, *graph* is the
-generic term meaning **either** kind; it never means specifically
-undirected. Only at DOT-reading time does the source keyword `graph` map to
-the public model's `undigraph` value (and `digraph` to `digraph`). This is
-an API naming choice and must not change the accepted DOT syntax.
+general term; do not confuse it with the specific `.generic` kind. Only at
+DOT-reading time does the source keyword `graph` record an `undigraph`
+declaration (and `digraph` a `digraph` declaration). Policy interpretation must
+not overwrite that written declaration or change DOT's source keywords.
+
+**Policy terminology decided (2026-09-20; Q35, graph slice implemented):**
+outer `.validation.graph` and `.validation.digraph` keys match the **written
+DOT header** and are independently configurable. `graph.treated_as` selects
+`.undigraph` (the default), `.digraph`, `.generic`, or `.auto`. The `digraph`
+branch has no `treated_as`: it always has effective kind `.digraph`. Reserve
+`.directed`/`.undirected` for edge/operator vocabulary in policy identifiers.
+
+`GraphKind` contains only `undigraph`, `digraph`, `generic`. `GraphTreatment`
+adds `auto` as a behavior, not a fourth kind. Auto initially yields `.undigraph`,
+including for empty graphs, and the first accepted directed syntax
+operator promotes it to `.generic`, never `.digraph` and never back. Explicit
+`.generic` treatment always yields `.generic`, regardless of operator usage.
+Operator `.conform_to_kind` follows the **effective graph kind**; bare-dash
+`.from_keyword` follows the **original written header**. Q35/Q36 define the
+separate validation, interpretation, source-preservation and streaming boundaries.
 
 In this document, *syntax tree* or *AST* means the tree representing the DOT
 document. It does not imply that the graph described by that document is a
@@ -230,6 +248,42 @@ unreachable so the compiler and linker can remove them from the binary.
 A runtime configuration may still disable behavior in a full-feature build, but
 that does not satisfy a binary-size zero-cost claim.
 
+**Policy configuration decision (2026-09-20; Q35/Q36, partially implemented):**
+behavioral settings use one typed policy model, with library defaults and a
+consumer-selectable compile-time baseline. A separate compile-time switch enables
+runtime overrides and defaults to off. When enabled, every supported policy field
+has the same allowed values and semantics at both binding times; per-operation
+partial overrides inherit all unspecified compiled baseline values. The switch
+enabling runtime support is itself a build choice, not a runtime policy field.
+
+Full runtime parity requires retaining the implementations reachable through all
+selectable values. It cannot be advertised alongside compile-time exclusion of
+one of those alternatives in the same profile. Fixed-only profiles retain the
+exclusion opportunity. Source bytes, allocators, actual storage and callback
+contexts remain explicit resources; mandatory safety, truthful completion and
+exhaustion, and diagnostic-delivery guarantees are never optional policies.
+Resolve runtime overrides once per operation/session initialization, keep them
+fixed across yields, and measure the distinct costs in R-PERF-005. No hidden
+allocations, per-node/edge policy copies or repeated hot-path merging are implied
+or permitted by the unified configuration model.
+
+The implemented `Profile` covers graph validation/interpretation, nesting,
+statement and attribute limits, recovery, scanner selection, metering and
+cancellation, with `validatePolicy`, compile-time verification and opt-in runtime
+patches. Parse/measure operations and `Profile.Session` use the same policy
+model. Sessions bind settings at initialization/reset, retain them across yields,
+and reject invalid resets before touching existing work. Completed session
+documents can be validated/interpreted separately using that bound policy.
+Syntax acceptance now uses the same policy model: `presets.standard` preserves
+defaults, and `presets.lenient` changes only empty-statement, exact long-operator
+and bare-dash acceptance to warnings. Per-rule reject/warn/accept semantics and
+bare-dash `.from_keyword` interpretation apply at both binding times. Factual
+u32 deviation/warning counters survive diagnostic suppression and later failure;
+source ranges remain original, while retained structure may normalize operators
+or omit empty statements. No per-record policy/history storage is added.
+Q35 records the provisional handling
+of inapplicable graph fields and the remaining standard-machine performance gate.
+
 ### R-MOD-006: Unsupported input is distinct from invalid input
 
 When valid DOT uses a feature excluded by the selected profile, the parser
@@ -311,9 +365,11 @@ microstep accounting, callback exclusions, cleanup rules, fixed-storage first
 slice, and acceptance tests; the corresponding session API is experimental 0.x.
 The scanner and parser implement separately charged source examinations, grammar
 transitions and syntax-event attempts, with partition and failure-lifecycle
-tests. `BoundedSession` exposes fixed-storage bounded parsing; `FixedSession`
-independently selects metering and cancellation. Pending work/progress and hook
-storage compile out when not needed. One-shot APIs remain unchanged. Public
+tests. `BoundedSession` exposes fixed-storage bounded parsing; `Profile.Session`
+independently selects metering and cancellation through `Policy.execution`.
+Fixed profiles exclude disabled work/progress and hook storage; runtime profiles
+retain all selectable variants. One-shot APIs remain run-to-completion but can
+also opt into cancellation through policy. Public
 pull events, streaming input, total-work limits and bounded validation remain deferred.
 
 ### R-MOD-011: Active sinks have transactional lifecycle signals
@@ -914,7 +970,10 @@ The project must distinguish and document its compatibility surfaces:
 
 During the initial experimental `0.x` phase, backward compatibility is not
 promised, including for WDP identities and diagnostic payloads, and breaking
-changes are expected. Do not retain compatibility-only code for this phase.
+changes are expected. Do not retain compatibility-only code for this phase:
+remove obsolete wrappers, aliases, configuration detection and tests whose only
+purpose is recognizing retired APIs. Migrate internal callers and correctness
+tests to the current implementation instead of preserving a parallel old path.
 Releases must state that status clearly; no stable binary ABI or retained-tree
 serialization is implied. Once a
 stable compatibility boundary is declared, semantic versioning should govern
@@ -1158,7 +1217,7 @@ parser to forward; they are not a second parse/validation reporting API.
 
 Filtering diagnostics changes reporting, not the validity of the document.
 Rule-level policy that changes validity must be explicit and separate from sink
-filtering; the current validator does not yet expose that policy.
+filtering; `Profile` exposes this distinction for graph/operator validation.
 
 ### R-DX-003: Results are data and lose nothing
 
@@ -1245,3 +1304,29 @@ recorded here.
   `extended`, and `graphviz`; standalone, during-DOT and delayed processing
   share one markup engine. Q40 records usage/lifetime/budget boundaries and
   unresolved grammar/API/policy details, separately from implementation status.
+
+- 2026-09-20 — **R-MOD-005 clarified**: unified typed policy configuration,
+  consumer-selected compile-time baselines, default-off runtime overrides and
+  full field/value parity. Runtime-selectable alternatives must remain present;
+  fixed-only profiles retain compile-time exclusion. Q35/Q36 record the graph
+  and lenient-syntax behavior decisions, efficiency constraints and remaining
+  API questions. No policy implementation or new performance claim is implied.
+
+- 2026-09-20 — **§2 clarified**: independent source-keyed `graph`/`digraph`
+  policies, graph-kind versus edge vocabulary, `GraphKind` versus `GraphTreatment`,
+  and auto promotion. Conformance follows the effective kind while bare-dash
+  interpretation follows the written header. Q35/Q36 record the implementation
+  and remaining API boundaries.
+
+- 2026-09-20 — **R-MOD-005 implementation status updated**: graph policies and
+  existing limits/recovery/scanner/execution settings now share `Profile` and
+  policy-bound sessions. The fixed-only specialization and runtime parity tests
+  do not replace the pending standard-machine performance gate; lenient syntax
+  remains unimplemented.
+
+- 2026-09-20 — **R-MOD-005 / R-DX-003 / Q36**: initial syntax-policy slice is
+  implemented. Named `standard` and `lenient` presets compose ordinary policies;
+  defaults, recovery and validation remain independent. Factual u32 counters
+  survive dropped diagnostics and failure, normalized operators keep original
+  ranges, and no per-node/edge history is retained. Optional history and further
+  syntax extensions remain deferred.

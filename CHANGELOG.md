@@ -6,6 +6,47 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add `presets.standard` and `presets.lenient` as ordinary, complete policy values.
+  Lenient changes only syntax acceptance; defaults stay unchanged. Each empty
+  statement, exact long operator (`---`/`-->`), and bare dash has independent
+  reject/warn/accept policy with full compile-time/runtime and session parity.
+  Bare dashes use the written graph keyword; normalization retains source ranges.
+- Add factual u32 `accepted_deviations` and `warnings` to parse, measure and
+  session results/progress; composed checks total syntax and validation warnings.
+  Counts survive suppression and later failures. New syntax warnings carry
+  typed assumptions and machine-applicable fixes, without per-edge history.
+  `invalid_syntax` now explicitly means rejected by the selected syntax policy,
+  rather than claiming rejection by every possible DOT dialect.
+
+- Add experimental graph policy profiles: independent `graph`/`digraph` rules,
+  `graph.treated_as` (`undigraph`, `digraph`, `generic`, `auto`), error/warning/off
+  severity, and source-preserving `.conform_to_kind` interpretation. Runtime
+  overrides are opt-in; fixed profiles validate configuration at compile time.
+- Add `validatePolicy`, typed configuration failures before DOT processing,
+  `W.Validation.Operator.002`, validation warning counts and policy-aware fixes.
+- Unify nesting/statement/attribute limits, recovery, scanner selection, metering
+  and cancellation in the same typed policy, with full compile-time/runtime
+  parity. Fixed profiles specialize the shared engine; runtime profiles resolve
+  once per operation/session initialization without per-token policy merging.
+- Add policy-bound `Profile.Session`: settings stay latched across yields,
+  invalid resets leave existing work intact, and completed results can be
+  validated/interpreted under the bound policy. `BoundedSession` remains a
+  metered fixed-profile convenience. Cancellation-enabled one-shot parsing and
+  measurement may now return `.cancelled`, with no document/capacity publication.
+- **Breaking:** move parse-option limits/recovery into `Policy`; replace
+  `FixedSession(ExecutionFeatures)` with `Profile(...).Session`; replace the
+  root-file `dot_parser_options.lexer_backend` hook with `Policy.scanner`
+  (`lexer.For` for direct lexical use). Storage, allocator hints and cancellation
+  callbacks remain explicit resources. Runtime-profile parse/measure methods
+  now return a policy error union instead of aliasing infallible default methods.
+- Remove retired parser/validator wrappers, duplicated parser options, root-hook
+  detection and compatibility-only tests. Scanner types use `ScannerBackend`;
+  inspect `Profile.baseline.scanner` for the resolved choice. The old
+  `lexer.Backend`, `lexer.backend` and `lexer.default_backend` aliases are removed.
+- **Breaking:** public `GraphKind` now describes effective kinds, including
+  `.generic`. Use `DeclaredGraphKind` for the original two-valued `Document.kind`.
+  Syntax leniency is not yet implemented. See [Parsing and graph policies](docs/POLICIES.md).
+
 ## 0.3.0 — 2026-09-19
 
 Improve diagnostics and tooling, support non-ASCII bare identifiers, and reduce
