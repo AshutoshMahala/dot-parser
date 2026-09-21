@@ -124,6 +124,9 @@ pub const Primary = enum {
     capacity,
     memory,
     feature,
+    encoding,
+    attribute,
+    restriction,
 
     /// PascalCase display form used inside structured codes.
     pub fn name(self: Primary) []const u8 {
@@ -138,6 +141,9 @@ pub const Primary = enum {
             .capacity => "Capacity",
             .memory => "Memory",
             .feature => "Feature",
+            .encoding => "Encoding",
+            .attribute => "Attribute",
+            .restriction => "Restriction",
         };
     }
 };
@@ -166,6 +172,7 @@ pub const Sequence = struct {
     pub const unterminated: SequenceDefinition = .{ .number = 32, .alias = "UNTERMINATED" };
     pub const ambiguous: SequenceDefinition = .{ .number = 33, .alias = "AMBIGUOUS" };
     pub const empty_statement: SequenceDefinition = .{ .number = 34, .alias = "EMPTY_STATEMENT" };
+    pub const repeated_attribute: SequenceDefinition = .{ .number = 35, .alias = "REPEATED_ATTRIBUTE" };
 };
 
 /// The diagnostic registry.
@@ -210,6 +217,17 @@ pub const Code = enum {
     /// exactly as Graphviz does, and Graphviz warns the same way. The parse
     /// continues. Emitted with `Details.ambiguous_numeral`.
     syntax_ambiguous_numeral,
+    /// E.Syntax.Numeral.033 — the lexical ambiguity is rejected by policy.
+    syntax_ambiguous_numeral_rejected,
+    /// E/W.Validation.Encoding.003 — one byte that cannot begin valid UTF-8.
+    validation_invalid_utf8,
+    validation_invalid_utf8_tolerated,
+    /// E/W.Validation.Attribute.035 — logical key repeated within one owner.
+    validation_repeated_attribute,
+    validation_repeated_attribute_tolerated,
+    /// E/W.Validation.Restriction.003 — a consumer restriction, not DOT syntax.
+    validation_restriction,
+    validation_restriction_tolerated,
     /// E.Validation.Operator.002 (MISMATCH) — edge operator does not match
     /// the document's graph kind.
     validation_operator_mismatch,
@@ -335,13 +353,37 @@ pub const Code = enum {
                 .summary = "reserved keyword used as a name",
                 .hint = "DOT keywords are reserved in every position; write the name in double quotes to use it as an identifier",
             },
-            .syntax_ambiguous_numeral => .{
-                .severity = .warning,
+            .syntax_ambiguous_numeral, .syntax_ambiguous_numeral_rejected => .{
+                .severity = if (self == .syntax_ambiguous_numeral) .warning else .err,
                 .component = .syntax,
                 .primary = .numeral,
                 .sequence = Sequence.ambiguous,
                 .summary = "numeral runs directly into the next token",
                 .hint = "Graphviz reads this as two tokens; quote the text, or separate the tokens with whitespace",
+            },
+            .validation_invalid_utf8, .validation_invalid_utf8_tolerated => .{
+                .severity = if (self == .validation_invalid_utf8) .err else .warning,
+                .component = .validation,
+                .primary = .encoding,
+                .sequence = Sequence.invalid,
+                .summary = "source contains invalid UTF-8",
+                .hint = "supply UTF-8 input or disable the optional encoding check when using another byte encoding; no bytes were replaced",
+            },
+            .validation_repeated_attribute, .validation_repeated_attribute_tolerated => .{
+                .severity = if (self == .validation_repeated_attribute) .err else .warning,
+                .component = .validation,
+                .primary = .attribute,
+                .sequence = Sequence.repeated_attribute,
+                .summary = "attribute key occurs more than once in this statement",
+                .hint = "inspect the earlier value and the selected consumer policy; repeated keys are legal DOT and are preserved",
+            },
+            .validation_restriction, .validation_restriction_tolerated => .{
+                .severity = if (self == .validation_restriction) .err else .warning,
+                .component = .validation,
+                .primary = .restriction,
+                .sequence = Sequence.invalid,
+                .summary = "document uses a construct restricted by consumer policy",
+                .hint = "change the consumer restriction or the document; this check does not rewrite graph kinds, ports or subgraphs",
             },
             .validation_operator_mismatch => .{
                 .severity = .err,
@@ -372,7 +414,7 @@ pub const Code = enum {
                 .component = .resource,
                 .primary = .capacity,
                 .sequence = Sequence.exhausted,
-                .summary = "a configured capacity was exhausted before the document finished",
+                .summary = "a configured capacity was exhausted before the operation finished",
                 .hint = "raise the corresponding limit or provide larger caller-owned storage; the input itself may still be valid",
             },
             .resource_memory_exhausted => .{
@@ -493,6 +535,10 @@ pub const Details = union(enum) {
     incomplete_numeral: ?u8,
     /// For `syntax_ambiguous_numeral`: the byte the numeral runs into.
     ambiguous_numeral: u8,
+    invalid_utf8: u8,
+    /// First equal logical key in the same statement's attribute lists.
+    repeated_attribute: location.Span,
+    restriction: enum { undigraph, digraph, generic, port, subgraph },
     /// For `syntax_unexpected_token` and `syntax_unexpected_end`.
     unexpected: Unexpected,
     /// For `syntax_reserved_keyword`.
@@ -707,6 +753,7 @@ pub const Capacity = struct {
         assignment_pool,
         attribute_statement_pool,
         attribute_index,
+        validation_attribute_keys,
 
         pub fn name(self: Resource) []const u8 {
             return switch (self) {
@@ -731,6 +778,7 @@ pub const Capacity = struct {
                 .assignment_pool => "assignment pool",
                 .attribute_statement_pool => "attribute statement pool",
                 .attribute_index => "attribute index",
+                .validation_attribute_keys => "validation attribute-key scratch",
             };
         }
     };

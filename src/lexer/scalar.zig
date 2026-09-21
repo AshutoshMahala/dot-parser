@@ -41,9 +41,9 @@ const keywordTag = types.keywordTag;
 
 /// Ordinary lexing and the internal metered fixture share one scanner.
 /// Metering and audit counters are compile-time choices, not per-byte flags.
-pub const Lexer = Scanner(false, false);
+pub const Lexer = Scanner(false, false, true);
 
-pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
+pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool) type {
     return struct {
         const Self = @This();
         const State = enum {
@@ -88,7 +88,9 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         /// into a letter or dot (`1e3`, `1.2.3`): the byte it runs into.
         /// The token stream is unchanged (Graphviz splits identically);
         /// `takeWarning` turns it into a `syntax_ambiguous_numeral`.
-        ambiguous_numeral: ?u8 = null,
+        ambiguous_numeral: if (numeral_check == false) void else ?u8 = if (numeral_check == false) {} else null,
+        check_numerals: if (numeral_check == null) bool else void = if (numeral_check == null) true else {},
+
         source_frontier: if (metered) usize else void = if (metered) 0 else {},
         examinations: if (audited) usize else void = if (audited) 0 else {},
 
@@ -100,6 +102,14 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             // it, so every later position stays honest.
             if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) self.cursor = 3;
             return self;
+        }
+
+        pub fn setNumeralCheck(self: *Self, enabled: bool) void {
+            if (numeral_check == null) self.check_numerals = enabled;
+        }
+
+        fn checksNumerals(self: *const Self) bool {
+            return numeral_check orelse self.check_numerals;
         }
 
         /// Scan raw token bytes without document-level BOM handling. An
@@ -146,6 +156,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         /// clearing it. Warnings never change the token stream or the
         /// outcome; the parser forwards them to the diagnostic sink.
         pub fn takeWarning(self: *Self) ?diagnostic.Diagnostic {
+            if (comptime numeral_check == false) return null;
             const byte = self.ambiguous_numeral orelse return null;
             self.ambiguous_numeral = null;
             // No fix: the repair would quote the whole run (`"1e3"`), and
@@ -414,7 +425,9 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                         // Maximal munch ends the numeral here, exactly as
                         // Graphviz does — and Graphviz warns when the next
                         // byte could have been meant as part of it.
-                        if (isIdentifierByte(b) or b == '.') self.ambiguous_numeral = b;
+                        if (comptime numeral_check != false) {
+                            if (self.checksNumerals() and (isIdentifierByte(b) or b == '.')) self.ambiguous_numeral = b;
+                        }
                     }
                     return self.finish(.identifier);
                 },
@@ -629,7 +642,7 @@ test "random byte streams preserve bounded partition equivalence" {
     }
 }
 
-const AuditedLexer = Scanner(true, true);
+const AuditedLexer = Scanner(true, true, true);
 
 fn checkPartition(source: []const u8, budgets: []const usize) !usize {
     var reference = Lexer.init(source);
@@ -765,10 +778,10 @@ test "megabyte lexical runs resume in linear work with constant state" {
 test "metering storage and source-examination instrumentation compile out" {
     try expectEqual(void, @FieldType(Lexer, "source_frontier"));
     try expectEqual(void, @FieldType(Lexer, "examinations"));
-    try expectEqual(void, @FieldType(Scanner(true, false), "examinations"));
-    try expectEqual(usize, @FieldType(Scanner(true, false), "source_frontier"));
+    try expectEqual(void, @FieldType(Scanner(true, false, true), "examinations"));
+    try expectEqual(usize, @FieldType(Scanner(true, false, true), "source_frontier"));
     // One usize more, up to alignment padding (32-bit targets pad it to 8).
-    const growth = @sizeOf(Scanner(true, false)) - @sizeOf(Lexer);
+    const growth = @sizeOf(Scanner(true, false, true)) - @sizeOf(Lexer);
     try expect(growth >= @sizeOf(usize) and growth < @sizeOf(usize) + @alignOf(Lexer));
     // Fixed native-state guard, independent of source size; no allocation in
     // either scanner. Test buffers above are caller-owned fixture storage.

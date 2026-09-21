@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const lex = @import("lexer/lexer.zig");
+const Chunks = @import("identifier_value.zig").Chunks;
 
 pub const DecodeError = error{ InvalidIdentifier, NoSpaceLeft, OverlappingBuffers };
 
@@ -64,76 +65,6 @@ fn validate(raw: []const u8) error{InvalidIdentifier}!void {
         result.token.span.start != 0 or result.token.span.len != raw.len)
         return error.InvalidIdentifier;
 }
-
-/// Traverses a validated expression only. Comments between quoted parts are
-/// discarded along with '+' and whitespace; comment-like content inside a
-/// quoted part is emitted unchanged. This is decoding, not a second validator.
-const Chunks = struct {
-    raw: []const u8,
-    offset: usize = 0,
-
-    fn next(self: *Chunks) ?[]const u8 {
-        if (self.offset == self.raw.len) return null;
-        if (self.raw[0] != '"') {
-            self.offset = self.raw.len;
-            return self.raw;
-        }
-        if (self.offset == 0) self.offset = 1;
-        while (self.offset < self.raw.len) {
-            const start = self.offset;
-            switch (self.raw[start]) {
-                '"' => {
-                    self.offset += 1;
-                    self.skipGlue();
-                },
-                '\\' => {
-                    const after = self.raw[start + 1]; // validated escape pair
-                    self.offset += 2;
-                    switch (after) {
-                        '"' => return self.raw[start + 1 .. self.offset],
-                        '\n' => {},
-                        '\r' => {
-                            if (self.offset < self.raw.len and self.raw[self.offset] == '\n') self.offset += 1;
-                        },
-                        else => return self.raw[start..self.offset],
-                    }
-                },
-                else => {
-                    self.offset += 1;
-                    while (self.offset < self.raw.len and self.raw[self.offset] != '"' and self.raw[self.offset] != '\\') self.offset += 1;
-                    return self.raw[start..self.offset];
-                },
-            }
-        }
-        return null;
-    }
-
-    fn skipGlue(self: *Chunks) void {
-        while (self.offset < self.raw.len) {
-            switch (self.raw[self.offset]) {
-                '"' => {
-                    self.offset += 1;
-                    return;
-                },
-                '#' => self.skipLine(),
-                '/' => {
-                    if (self.raw[self.offset + 1] == '/') {
-                        self.skipLine();
-                    } else {
-                        self.offset += 2;
-                        while (!(self.raw[self.offset] == '*' and self.raw[self.offset + 1] == '/')) self.offset += 1;
-                        self.offset += 2;
-                    }
-                },
-                else => self.offset += 1, // validated whitespace or '+'
-            }
-        }
-    }
-
-    fn skipLine(self: *Chunks) void {
-        while (self.offset < self.raw.len and self.raw[self.offset] != '\r' and self.raw[self.offset] != '\n') self.offset += 1;
-    }
-};
 
 test "decode preserves numeral identity and only removes DOT lexical escapes" {
     const cases = .{

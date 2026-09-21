@@ -136,8 +136,9 @@ A UTF-8 byte order mark at the very start of the document is skipped
 identifier content. Explicit identifier decoding preserves all bare bytes,
 including a BOM at the start of an extracted identifier. A partial UTF-8
 sequence is valid identifier content too: truncating a multibyte character
-does not by itself make that identifier malformed. Transcoding and encoding
-validation are not implemented.
+does not by itself make that identifier malformed. Transcoding is not implemented.
+Optional `validation.invalid_utf8` checks the whole source after parsing, with
+error/warning/off severity and no byte replacement; it is off by default.
 
 An unterminated quoted segment reports `E.Syntax.Token.032` with
 `.unterminated = .quoted_identifier` at that segment's opening quote, including
@@ -149,7 +150,10 @@ Numerals have no leading `+`, exponent, or numeric normalization. Maximal
 matching means `1e3` is tokens `1` and `e3`, and `1.2.3` is `1.2` and `.3`;
 in a statement list these can be separate nodes because separators are optional.
 Exactly as Graphviz warns ("syntax ambiguity - badly delimited number"), the
-parser emits `W.Syntax.Numeral.033` on the numeral and continues. Bare `.` and
+default parser emits `W.Syntax.Numeral.033` on the numeral and continues.
+`validation.ambiguous_numeral` can disable the check or reject the ambiguity
+with `E.Syntax.Numeral.033` and `invalid_syntax`; tokenization is unchanged.
+Bare `.` and
 `-.` are `E.Syntax.Numeral.001`. In the raw lexer and standard parser policy,
 a lone `-`, a spaced `- >`, or an over-long
 `-->` is `E.Syntax.Operator.003`, never an invalid byte: those bytes are legal

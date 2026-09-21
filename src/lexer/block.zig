@@ -45,7 +45,7 @@ const Chunk = @Vector(chunk_len, u8);
 const ChunkMask = std.meta.Int(.unsigned, chunk_len);
 const Block = [block_len]u8;
 
-pub const Lexer = Scanner(false, false);
+pub const Lexer = Scanner(false, false, true);
 
 /// Byte-class bit masks of one block: bit i describes byte `block_start + i`.
 const Masks = struct {
@@ -108,7 +108,7 @@ fn findEscaped(backslash_in: u64, prev_escaped: *bool) u64 {
     return (even_bits ^ invert_mask) & follows_escape;
 }
 
-pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
+pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool) type {
     return struct {
         const Self = @This();
         const Mode = enum { trivia, line_comment, block_comment, quoted, ident, numeral, dash_gap };
@@ -141,7 +141,9 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         terminal_len: u32 = 0,
         found: ?u8 = null,
         /// See `takeWarning`.
-        ambiguous_numeral: ?u8 = null,
+        ambiguous_numeral: if (numeral_check == false) void else ?u8 = if (numeral_check == false) {} else null,
+        check_numerals: if (numeral_check == null) bool else void = if (numeral_check == null) true else {},
+
         source_frontier: if (metered) usize else void = if (metered) 0 else {},
         examinations: if (audited) usize else void = if (audited) 0 else {},
 
@@ -152,6 +154,14 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
             // it too); the bytes still occupy columns 1–3 of line 1.
             if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) self.cursor = 3;
             return self;
+        }
+
+        pub fn setNumeralCheck(self: *Self, enabled: bool) void {
+            if (numeral_check == null) self.check_numerals = enabled;
+        }
+
+        fn checksNumerals(self: *const Self) bool {
+            return numeral_check orelse self.check_numerals;
         }
 
         /// Scan raw token bytes without document-level BOM handling; see
@@ -240,6 +250,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
         /// The warning attached to the most recently produced token, if any,
         /// clearing it (a numeral running into a letter or dot).
         pub fn takeWarning(self: *Self) ?diagnostic.Diagnostic {
+            if (comptime numeral_check == false) return null;
             const byte = self.ambiguous_numeral orelse return null;
             self.ambiguous_numeral = null;
             return .{
@@ -590,7 +601,9 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool) type {
                 // Maximal munch ends the numeral here, exactly as Graphviz
                 // does — and Graphviz warns when the next byte could have
                 // been meant as part of it.
-                if (isIdentifierByte(b) or b == '.') self.ambiguous_numeral = b;
+                if (comptime numeral_check != false) {
+                    if (self.checksNumerals() and (isIdentifierByte(b) or b == '.')) self.ambiguous_numeral = b;
+                }
                 return self.emit(.identifier);
             }
         }
@@ -769,5 +782,5 @@ test "block scanner state is a small constant" {
     // 160 B measured (the saved masks are 88 of them); 192 B leaves headroom.
     try expect(@sizeOf(Lexer) <= 192);
     try expectEqual(void, @FieldType(Lexer, "source_frontier"));
-    try expectEqual(usize, @FieldType(Scanner(true, false), "source_frontier"));
+    try expectEqual(usize, @FieldType(Scanner(true, false, true), "source_frontier"));
 }

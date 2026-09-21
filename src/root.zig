@@ -131,6 +131,8 @@ pub const Assignment = syntax_impl.Assignment;
 // Façade option/result types.
 pub const ValidateOptions = DefaultProfile.Options;
 pub const ValidationResult = validate_impl.Result;
+pub const ValidationScratch = validate_impl.Scratch;
+pub const AttributeKeyScratch = validate_impl.AttributeKeyScratch;
 
 pub const DocumentCapacities = syntax_impl.Capacities;
 pub const DocumentStorage = syntax_impl.DocumentStorage;
@@ -279,7 +281,9 @@ pub const CheckResult = struct {
     diagnostic_delivery: diagnostic.Delivery,
     accepted_deviations: u32 = 0,
     /// Total syntax and validation warnings produced, including dropped ones.
-    warnings: u32 = 0,
+    // Independent rules may report the same byte: the aggregate is not bounded
+    // by the u32 source length, unlike the parse-only warning counter.
+    warnings: u64 = 0,
 
     /// The document parsed completely AND validation found no violations.
     pub fn documentValid(self: *const CheckResult) bool {

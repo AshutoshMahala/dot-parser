@@ -85,7 +85,7 @@ test "runtime sessions latch policy through yields and switch all variants on re
     };
     var session = try Runtime.Session.init(source, .{ .document = pools.storage(), .scratch = scratch.storage() }, dot.diagnostic.discard, options);
     defer session.deinit();
-    try expect(session.validate(dot.diagnostic.discard) == null);
+    try expect(session.validate(dot.diagnostic.discard, .{}) == null);
     try expect(session.interpretation() == null);
     try equal(@as(usize, 0), (try session.advance(0)).source_frontier);
     // The caller's input is not retained by reference.
@@ -93,7 +93,7 @@ test "runtime sessions latch policy through yields and switch all variants on re
     options.policy.limits.max_statements = 0;
     options.policy.execution.metering = false;
     while ((try session.advance(1)).outcome == null) {}
-    try expect(session.validate(dot.diagnostic.discard).?.documentValid());
+    try expect(session.validate(dot.diagnostic.discard, .{}).?.documentValid());
     try equal(dot.GraphKind.generic, session.result().?.document.?.effectiveKind(session.interpretation().?));
 
     for ([_]dot.ScannerBackend{ .scalar, .block }) |scanner| {
@@ -124,7 +124,7 @@ test "runtime sessions latch policy through yields and switch all variants on re
                 const terminal = session.result().?;
                 try expect(terminal.outcome == .success);
                 try equal(dot.GraphKind.undigraph, terminal.document.?.effectiveKind(session.interpretation().?));
-                try expect(session.validate(dot.diagnostic.discard).?.documentValid());
+                try expect(session.validate(dot.diagnostic.discard, .{}).?.documentValid());
                 const polls = request.polls;
                 if (cancellation) try expect(polls > 0) else try equal(@as(usize, 0), polls);
                 request.stop = true;
@@ -178,7 +178,7 @@ test "fixed and runtime-baseline sessions have identical bounded progress and di
                         if (progress.outcome != null) break;
                     }
                     try deep(a.result(), b.result());
-                    try deep(a.validate(dot.diagnostic.discard), b.validate(dot.diagnostic.discard));
+                    try deep(a.validate(dot.diagnostic.discard, .{}), b.validate(dot.diagnostic.discard, .{}));
                     try equal(a_request.polls, b_request.polls);
                     try std.testing.expectEqualSlices(dot.Diagnostic, a_bag.items(), b_bag.items());
                 }
@@ -205,7 +205,7 @@ test "runtime session rejection is atomic and cancellation resources are indepen
     try equal(polls, request.polls);
     try equal(@as(usize, 0), bag.items().len);
     try expect(session.run().outcome == .success);
-    try equal(@as(usize, 1), session.validate(dot.diagnostic.discard).?.outcome.completed.warnings);
+    try equal(@as(usize, 1), session.validate(dot.diagnostic.discard, .{}).?.outcome.completed.warnings);
     const old = session.result().?;
     try std.testing.expectError(error.GraphOperatorReadingNotApplicable, session.reset("@", bag.sink(), bad));
     try deep(old, session.result().?);
@@ -271,5 +271,5 @@ test "fixed settings have no runtime storage and disabled controls are absent" {
     }
     try expect(@sizeOf(Runtime.Session) < total);
     // A tag, validation settings and alignment padding; no eightfold state copy.
-    try expect(@sizeOf(Runtime.Session) <= largest + 2 * @alignOf(Runtime.Session));
+    try expect(@sizeOf(Runtime.Session) <= largest + @sizeOf(@FieldType(Runtime.Session, "interpretation_policy")) + 2 * @alignOf(Runtime.Session));
 }

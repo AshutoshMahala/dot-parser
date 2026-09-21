@@ -800,6 +800,7 @@ const SecondaryList = struct {
 fn secondaryAnnotations(details: Details) SecondaryList {
     var list: SecondaryList = .{};
     switch (details) {
+        .repeated_attribute => |first| list.add(.{ .span = first, .primary = false, .role = .declared_here }),
         .operator_mismatch => |mismatch| list.add(.{ .span = mismatch.declaration, .primary = false, .role = .declared_here }),
         .unexpected => |unexpected| {
             if (unexpected.related) |related| list.add(.{ .span = related.span, .primary = false, .role = related.role });
@@ -1120,6 +1121,9 @@ fn writeUnderline(
 /// directly above the carets, so labels never repeat what was found.
 fn writePrimaryLabel(details: Details, writer: anytype) !void {
     switch (details) {
+        .invalid_utf8 => |byte| try writer.print("byte 0x{X:0>2} cannot begin a valid UTF-8 sequence here", .{byte}),
+        .repeated_attribute => try writer.writeAll("same logical key as the earlier attribute"),
+        .restriction => |kind| try writer.print("'{s}' is restricted by the consumer policy", .{@tagName(kind)}),
         .none => unreachable,
         .accepted_operator => |accepted| try writer.print("read as '{s}' by {s}", .{
             if (accepted.operator == .directed) "->" else "--",
@@ -1189,6 +1193,7 @@ fn writePrimaryLabel(details: Details, writer: anytype) !void {
 /// The role-named label under a secondary span.
 fn writeSecondaryLabel(details: Details, role: diagnostic.Related.Role, writer: anytype) !void {
     switch (details) {
+        .repeated_attribute => try writer.writeAll("first equal key in this statement"),
         .operator_mismatch => |mismatch| if (mismatch.kind_overridden)
             try writer.writeAll("written as 'graph'; policy treats it as a digraph")
         else switch (mismatch.expected) {
@@ -1229,6 +1234,9 @@ fn writeUnsigned(writer: anytype, value: usize, width: usize) !void {
 /// renderer, never in the diagnostic data.
 fn writeDetailValue(details: Details, writer: anytype) !void {
     switch (details) {
+        .invalid_utf8 => |byte| try writer.print("invalid UTF-8 at byte 0x{X:0>2}", .{byte}),
+        .repeated_attribute => |first| try writer.print("first equal key at byte offset {d}", .{first.start}),
+        .restriction => |kind| try writer.print("restricted construct: {s}", .{@tagName(kind)}),
         .none => unreachable,
         .accepted_operator => |accepted| try writer.print("read as '{s}' by {s}", .{
             if (accepted.operator == .directed) "->" else "--",

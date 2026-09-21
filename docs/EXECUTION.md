@@ -168,7 +168,7 @@ lengths, not the underlying bytes: it is not a secure-erasure facility.
 Runtime reset verifies configuration first; rejection leaves the old session
 and views intact. Each successful reset inherits the compiled baseline, not
 the previous operation's overrides. Source/scanner/execution/limits remain
-fixed across yields. Session `validate(diagnostics)` and `interpretation()` use
+fixed across yields. Session `validate(diagnostics, scratch)` and `interpretation()` use
 the latched graph policy after success, as explicit unbudgeted operations.
 
 ## Scanner backends

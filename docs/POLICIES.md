@@ -71,7 +71,9 @@ with a discard, full, filtered or failing sink. Lexer numeral warnings count as
 warnings, not accepted deviations. `CheckResult.accepted_deviations` preserves
 the parse count; its `warnings` totals syntax and validation warnings. Staged
 validation's count remains in `ValidationResult.outcome.completed.warnings`.
-The u32 counters are bounded by the u32 source domain; they do not retain history.
+The parse-only u32 counters are bounded by the u32 source domain. Validation
+counts and `CheckResult.warnings` use u64: independent checks can report the same
+byte, so their aggregate is not bounded by source length. No counter retains history.
 
 Empty statements consume neither statement pool capacity nor `max_statements`;
 they still consume lexical/grammar work and count as deviations. Metered sessions
@@ -80,6 +82,102 @@ callout on the accepting grammar step. Diagnostic callbacks remain outside the
 credit guarantee. There is no new warning-volume limit; use a bounded bag/sink
 and execution budgets where needed. Accepted syntax can commit; recovery after a
 rejected construct still aborts and never publishes a partial document.
+
+## Configurable checks
+
+Every field below accepts `RuleSeverity.err`, `.warning`, or `.off`, at compile
+time or runtime. Error severity rejects at the indicated stage; warning reports
+without invalidating; off skips the check, rather than merely hiding its output.
+Filtering a diagnostic sink never changes acceptance or counts.
+
+| Field under `validation` | Default | Stage / scope |
+| --- | --- | --- |
+| `ambiguous_numeral` | `.warning` | Parsing: a numeral touches a following letter or dot, such as `1e3` or `1.2.3` |
+| `invalid_utf8` | `.off` | Validation: every source byte, including comments, quoted expressions and trivia |
+| `repeated_attribute` | `.off` | Validation: repeated logical keys in one statement's combined attribute lists |
+| `restrictions.graph_kinds.undigraph` | `.off` | Validation: report an effective undigraph |
+| `restrictions.graph_kinds.digraph` | `.off` | Validation: report an effective digraph |
+| `restrictions.graph_kinds.generic` | `.off` | Validation: report an effective generic graph |
+| `restrictions.ports` | `.off` | Validation: one finding per written qualified node reference |
+| `restrictions.subgraphs` | `.off` | Validation: one finding per named or anonymous subgraph occurrence, including endpoints |
+
+Numeral ambiguity is an existing **lexical** diagnostic, now configurable through
+the policy model. `.err` produces `invalid_syntax`, follows the selected recovery
+policy and publishes no document. `.warning` preserves the existing token split;
+`.off` disables ambiguity detection without changing tokenization. No exponent or
+floating-point interpretation is introduced. Parse, measure and sessions agree.
+`validate()` does not re-scan lexical checks or repeat their warnings; changing
+this leaf for an already parsed source requires reparsing. The low-level scanner
+continues to expose its default warning independently of profiles.
+
+UTF-8 checking never transcodes, normalizes or replaces bytes. It accepts only
+well-formed UTF-8 (no overlong sequences, surrogates or values above U+10FFFF).
+Recovery advances **one byte** after an invalid sequence start; each byte not
+consumed by a valid sequence produces one finding. A valid following sequence or
+ASCII byte is not swallowed. For example, a truncated multi-byte prefix can
+produce multiple findings. NUL in comments is valid UTF-8; grammar-forbidden NUL
+elsewhere still cannot be enabled by policy.
+
+Repeated keys are legal DOT; this is an optional consumer lint. Keys compare by
+decoded DOT identifier **bytes**, so `x` equals `"x"` and `"a"+"b"` equals `ab`.
+Case, Unicode forms and numeral spellings are not normalized (`1` differs from
+`1.0`). Adjacent lists on one statement share an owner; chains own their list
+once. Separate statements, defaults, scopes and assignments are not merged.
+Every occurrence after the first carries that first key's source span. Neither
+attributes nor values are removed, reordered, selected or repaired.
+
+Restrictions check syntax occurrences and the **effective** graph kind, without
+building a resolved graph. A directed-only consumer can reject `.undigraph` and
+`.generic` while leaving `.digraph = .off`. Auto resolves to undigraph for an
+empty graph, and generic after a directed syntax operator. Restrictions never
+change that interpretation or make operator mismatch errors disappear.
+
+### Explicit validation scratch
+
+Only repeated-key checking needs workspace: one `dot.AttributeKeyScratch` entry
+per `document.attributes` element (16 bytes per entry on the supported targets).
+The caller owns it and may reuse it immediately after validation; it must not
+alias source, document pools, or diagnostic storage. No allocator is consulted.
+The other checks require no caller scratch.
+
+```zig
+const Lint = dot.Profile(.{ .policy = .{ .validation = .{
+    .invalid_utf8 = .err,
+    .repeated_attribute = .warning,
+    .restrictions = .{
+        .graph_kinds = .{ .undigraph = .err, .generic = .err },
+        .ports = .warning,
+        .subgraphs = .err,
+    },
+} } });
+
+// After a successful parse (or size this with measure().capacities.attributes):
+const keys = try allocator.alloc(dot.AttributeKeyScratch, document.attributes.len);
+defer allocator.free(keys);
+const checked = Lint.validate(document, bag.sink(), .{
+    .scratch = .{ .attribute_keys = keys },
+});
+// Fixed arrays work too. parseAndValidate accepts the same scratch through
+// .{ .validation = .{ .attribute_keys = keys } }; sessions use
+// session.validate(bag.sink(), .{ .attribute_keys = keys }).
+```
+
+Insufficient scratch returns `.insufficient_scratch` with required/provided entry
+counts and an `E.Resource.Capacity.026` diagnostic. Preflight occurs before any
+check or scratch write. `documentValid()` is false, but the parsed document stays
+available. Supply enough scratch and rerun, or deliberately select `.off`.
+Disabled duplicate checking neither touches nor requires scratch.
+
+Validation merges findings in source order; ties use kind, operator, encoding,
+repeated key, port, then subgraph order. `parseAndValidate` emits parse diagnostics
+first and validation diagnostics second; it does not buffer both stages to sort
+them together. UTF-8 costs one O(source bytes) pass. Repeated-key checking hashes
+decoded bytes once, heap-sorts each owner's entries by fingerprint/logical key,
+then restores their source order in scratch: O(A log A) comparisons, each exact
+key comparison potentially reading key bytes. Hash collisions never establish
+equality and never degrade into a quadratic hash-bucket scan. No string copies,
+graph expansion, per-record metadata or hidden allocations are added. Optional
+passes are unbudgeted and uncancellable; bounded validation remains deferred.
 
 ## Fixed baseline
 
@@ -239,7 +337,7 @@ var session = try Parser.Session.init(source, memory, diagnostics, .{
 defer session.deinit();
 while ((try session.advance(64)).outcome == null) {}
 const parsed = session.result().?;
-const checked = session.validate(diagnostics); // optional until document exists
+const checked = session.validate(diagnostics, .{}); // optional until document exists
 const view = session.interpretation();          // optional; separate unbudgeted work
 _ = parsed;
 _ = checked;
@@ -277,7 +375,7 @@ facts should use `DeclaredGraphKind` instead.
 ```zig
 // With the runtime-enabled Checks and patch from above:
 const options: Checks.Options = .{ .policy = patch };
-const checked = try Checks.validate(document, bag.sink(), options);
+const checked = try Checks.validate(document, bag.sink(), .{ .policy = patch });
 const view = try Checks.interpretation(document, options);
 const kind = document.effectiveKind(view);
 var edges = document.edgeIterator();
@@ -307,7 +405,7 @@ document needs a new interpretation.
 ## Diagnostics and cost
 
 Validation counts error occurrences in `violations` and warning occurrences in
-`warnings`, regardless of sink retention or delivery failure. Warnings use
+`warnings`, regardless of sink retention or delivery failure. Operator warnings use
 `W.Validation.Operator.002`; errors retain `E.Validation.Operator.002`.
 The payload records expected/found operators, the original header span and the
 selected reading. Renderers distinguish a policy-selected kind from the written
@@ -329,13 +427,15 @@ per source byte. Allocator-backed and fixed-storage adapters share one grammar.
 On the current native 64-bit Zig 0.16.0 build, these views occupy 0/1/2 bytes,
 respectively, and `Diagnostic` remains 80 bytes. The default fixed session is
 1,064 bytes, `BoundedSession` is 1,104 bytes, and a runtime-enabled session is
-1,280 bytes. A fixed lenient session is also 1,064 bytes. Compared with the
-pre-syntax-policy implementation, the factual result/progress counters add
-8 bytes to each result/progress value and 24 bytes to each of these session
-types (including their terminal-result storage and alignment). Standard fixed
+1,288 bytes. A fixed lenient session is also 1,064 bytes. Compared with the
+syntax-policy implementation before optional validation checks, fixed sessions
+and parse-only results are unchanged; runtime sessions add 8 bytes of settings
+and alignment. `Policy` grows from 80 to 96 bytes, and `CheckResult` from 296 to
+304 bytes for the wider aggregate and validation outcome. Standard fixed
 grammar machines exclude the acceptance counter and normalization path; their
 public result fields remain present and report zero deviations. No fields were
-added to `Document` or edge storage. These are layout observations, not a throughput or
+added to `Document` or edge storage. Repeated-key scratch is separate and costs
+16 bytes per attribute only when enabled. These are layout observations, not a throughput or
 binary-size baseline. Performance comparisons still belong on the standard
 benchmark machine; this work does not replace its baseline. Run
 `zig build bench-policy -Doptimize=ReleaseFast` there for equivalent fixed,

@@ -104,7 +104,7 @@ test "optional Policy inherits per leaf and branches never leak between calls" {
     try expect(inherited.documentValid());
     try expectEqual(@as(usize, 1), inherited.outcome.completed.warnings);
     const explicit_default: Runtime.Options = .{ .policy = .{ .validation = .{ .graph = .{ .operator_mismatch = .err } } } };
-    try expect(!(try Runtime.validate(document, dot.diagnostic.discard, explicit_default)).documentValid());
+    try expect(!(try Runtime.validate(document, dot.diagnostic.discard, .{ .policy = explicit_default.policy })).documentValid());
     var edges = document.edgeIterator();
     const edge = edges.next().?;
     try expectEqual(dot.EdgeOperator.undirected, edge.effectiveOperator(document, try Runtime.interpretation(document, explicit_default)));
@@ -116,10 +116,10 @@ test "optional Policy inherits per leaf and branches never leak between calls" {
     const redirected: Runtime.Options = .{ .policy = .{ .validation = .{ .graph = .{ .treated_as = .digraph } } } };
     var undirected = dot.parseBorrowed(std.testing.allocator, "graph { a -- b }", dot.diagnostic.discard, .{});
     defer undirected.deinit(std.testing.allocator);
-    try expectEqual(@as(usize, 1), (try Runtime.validate(&undirected.document.?, dot.diagnostic.discard, redirected)).outcome.completed.warnings);
+    try expectEqual(@as(usize, 1), (try Runtime.validate(&undirected.document.?, dot.diagnostic.discard, .{ .policy = redirected.policy })).outcome.completed.warnings);
     var directed = dot.parseBorrowed(std.testing.allocator, "digraph { a -- b }", dot.diagnostic.discard, .{});
     defer directed.deinit(std.testing.allocator);
-    const checked = try Runtime.validate(&directed.document.?, dot.diagnostic.discard, explicit_default);
+    const checked = try Runtime.validate(&directed.document.?, dot.diagnostic.discard, .{ .policy = explicit_default.policy });
     try expect(checked.documentValid());
     try expectEqual(@as(usize, 0), checked.outcome.completed.warnings);
     var directed_edges = directed.document.?.edgeIterator();
@@ -266,7 +266,7 @@ test "auto override leaves inherited concrete settings dormant and later calls u
     var parsed = dot.parseBorrowed(std.testing.allocator, "graph { a -- b -> c }", dot.diagnostic.discard, .{});
     defer parsed.deinit(std.testing.allocator);
     const doc = &parsed.document.?;
-    const checked = try Runtime.validate(doc, dot.diagnostic.discard, options);
+    const checked = try Runtime.validate(doc, dot.diagnostic.discard, .{ .policy = options.policy });
     try expect(checked.documentValid());
     try expectEqual(@as(usize, 0), checked.outcome.completed.warnings);
     const view = try Runtime.interpretation(doc, options);

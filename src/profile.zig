@@ -19,6 +19,10 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         const no_hook: Hook = if (Hook == void) {} else null;
 
         pub const Options = if (runtime_policy) struct { policy: policy.Policy = .{} } else struct {};
+        pub const ValidationOptions = if (runtime_policy) struct {
+            policy: policy.Policy = .{},
+            scratch: api.ValidationScratch = .{},
+        } else struct { scratch: api.ValidationScratch = .{} };
         pub const FixedParseOptions = if (runtime_policy) struct {
             policy: policy.Policy = .{},
             cancellation: Hook = no_hook,
@@ -36,9 +40,11 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         pub const CheckOptions = if (runtime_policy) struct {
             policy: policy.Policy = .{},
             parse: api.ParseResources = .{},
+            validation: api.ValidationScratch = .{},
             cancellation: Hook = no_hook,
         } else struct {
             parse: api.ParseResources = .{},
+            validation: api.ValidationScratch = .{},
             cancellation: Hook = no_hook,
         };
 
@@ -142,12 +148,12 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             const effective = if (runtime_policy) try settings(options) else settings(options);
             return parseResolved(.measureIn, api.MeasureResult, .{ source, scratch, diagnostics }, effective, options.cancellation);
         }
-        pub fn validate(document: *const api.Document, diagnostics: api.DiagnosticSink, options: Options) Checked(api.ValidationResult) {
+        pub fn validate(document: *const api.Document, diagnostics: api.DiagnosticSink, options: ValidationOptions) Checked(api.ValidationResult) {
             const effective = if (runtime_policy) try settings(options) else settings(options);
-            return validateResolved(document, diagnostics, validationSettings(effective));
+            return validateResolved(document, diagnostics, validationSettings(effective), options.scratch);
         }
-        fn validateResolved(document: *const api.Document, diagnostics: api.DiagnosticSink, effective: ValidationState) api.ValidationResult {
-            return validation.validate(if (runtime_policy) null else baseline.validation, document, diagnostics, effective);
+        fn validateResolved(document: *const api.Document, diagnostics: api.DiagnosticSink, effective: ValidationState, scratch: api.ValidationScratch) api.ValidationResult {
+            return validation.validate(if (runtime_policy) null else baseline.validation, document, diagnostics, effective, scratch);
         }
         pub fn parseAndValidate(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: CheckOptions) Checked(api.CheckResult) {
             const effective = if (runtime_policy) try settings(options) else settings(options);
@@ -158,16 +164,13 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
                 .accepted_deviations = parsed.accepted_deviations,
                 .warnings = parsed.warnings,
             };
-            const checked = validateResolved(&parsed.document.?, diagnostics, validationSettings(effective));
+            const checked = validateResolved(&parsed.document.?, diagnostics, validationSettings(effective), options.validation);
             return .{
                 .document = parsed.document,
                 .outcome = parsed.outcome,
                 .validation = checked,
                 .accepted_deviations = parsed.accepted_deviations,
-                // Parsed source has u32 length. Each syntax warning consumes a
-                // distinct span; a mismatch adds at most one per operator/right
-                // endpoint pair, so their combined count fits the same domain.
-                .warnings = parsed.warnings + @as(u32, @intCast(checked.outcome.completed.warnings)),
+                .warnings = @as(u64, parsed.warnings) + checked.warningCount(),
                 .diagnostic_delivery = if (parsed.diagnostic_delivery == .failed or checked.diagnostic_delivery == .failed) .failed else .complete,
             };
         }
@@ -248,10 +251,10 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
 
             /// Separate, unbudgeted analysis using the latched validation policy.
             /// No result until a document has been committed successfully.
-            pub fn validate(self: *const Self, diagnostics: api.DiagnosticSink) ?api.ValidationResult {
+            pub fn validate(self: *const Self, diagnostics: api.DiagnosticSink, scratch: api.ValidationScratch) ?api.ValidationResult {
                 const parsed = self.result() orelse return null;
                 const doc = &(parsed.document orelse return null);
-                return validateResolved(doc, diagnostics, self.interpretation_policy);
+                return validateResolved(doc, diagnostics, self.interpretation_policy, scratch);
             }
             /// Separate, unbudgeted preparation; never scans during advance().
             pub fn interpretation(self: *const Self) ?Interpretation {
@@ -322,20 +325,6 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             };
         }
 
-        fn kindFor(document: *const api.Document, treatment: policy.GraphTreatment) policy.GraphKind {
-            if (document.kind == .digraph) return .digraph;
-            return switch (treatment) {
-                .undigraph => .undigraph,
-                .digraph => .digraph,
-                .generic => .generic,
-                .auto => blk: {
-                    var edges = document.edgeIterator();
-                    while (edges.next()) |edge| {
-                        if (edge.operator == .directed) break :blk .generic;
-                    }
-                    break :blk .undigraph;
-                },
-            };
-        }
+        const kindFor = @import("validation_checks.zig").kindFor;
     };
 }

@@ -128,7 +128,7 @@ const Progress = struct {
 
 /// Fixed policies capture limits/recovery in code; only scratch is retained as
 /// a resource. Runtime policies retain the resolved parse-stage settings once.
-pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool, comptime ScannerOf: fn (comptime bool, comptime bool) type, comptime fixed: ?policy.ParseSettings) type {
+pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool, comptime ScannerOf: fn (comptime bool, comptime bool, comptime ?bool) type, comptime fixed: ?policy.ParseSettings) type {
     comptime {
         const info = @typeInfo(EventsPtr);
         if (info != .pointer or info.pointer.size != .one) {
@@ -156,7 +156,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             dispatch: usize = 0,
         };
 
-        tokens: ScannerOf(metered, audited),
+        tokens: ScannerOf(metered, audited, if (fixed) |value| value.ambiguous_numeral != .off else null),
         work: if (metered or cancellable) Work else void = if (metered or cancellable) .{} else {},
         cancellation: if (cancellable) ?execution.Cancellation else void = if (cancellable) null else {},
         audit: if (audited) Audit else void = if (audited) .{} else {},
@@ -356,6 +356,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         }
 
         pub fn runToCompletion(self: *Self) Result {
+            self.tokens.setNumeralCheck(self.numeralSeverity() != .off);
             if (metered) {
                 while (true) {
                     if (self.advance(std.math.maxInt(usize)).result) |result| return result;
@@ -382,17 +383,30 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                     break :blk self.operatorCandidate(d) orelse return self.fail(d);
                 },
             };
-            self.forwardWarning();
+            if (self.forwardWarning()) return self.terminal;
             return self.transition(token);
         }
 
-        /// Lexical warnings (`syntax_ambiguous_numeral`) ride along with the
-        /// token that raised them: reported, never fatal, and excluded from
-        /// work credits like every other diagnostic callout.
-        fn forwardWarning(self: *Self) void {
-            if (self.tokens.takeWarning()) |warning| {
-                self.warn(warning);
+        fn numeralSeverity(self: *const Self) policy.RuleSeverity {
+            return if (fixed) |value| value.ambiguous_numeral else self.settings.ambiguous_numeral;
+        }
+
+        /// True when the token was rejected. Error policy participates in the
+        /// ordinary failure/recovery lifecycle, not just presentation severity.
+        fn forwardWarning(self: *Self) bool {
+            if (self.tokens.takeWarning()) |finding| {
+                switch (self.numeralSeverity()) {
+                    .warning => self.warn(finding),
+                    .off => unreachable, // scanner did not run this check
+                    .err => {
+                        var failure = finding;
+                        failure.code = .syntax_ambiguous_numeral_rejected;
+                        _ = self.fail(failure);
+                        return true;
+                    },
+                }
             }
+            return false;
         }
 
         /// Private bounded driver. A credit buys a lexical examination, one
@@ -404,6 +418,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
 
         fn drive(self: *Self, comptime bounded: bool, budget: usize) usize {
             if (self.terminal != null) return 0;
+            self.tokens.setNumeralCheck(self.numeralSeverity() != .off);
             var remaining = if (bounded) budget else {};
             while (true) {
                 // The entry check also covers zero-budget calls. A normal
@@ -425,7 +440,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         if (bounded) remaining -= scanned.work_used;
                         if (scanned.result) |result| switch (result) {
                             .token => |token| {
-                                self.forwardWarning();
+                                if (self.forwardWarning()) {
+                                    if (self.terminal != null) break;
+                                    continue;
+                                }
                                 self.work.token = token;
                                 self.work.phase = .grammar;
                             },
@@ -1571,7 +1589,7 @@ fn lineIndent(source: []const u8, span: location.Span) ?usize {
 pub const testing = if (@import("builtin").is_test) struct {
     pub fn run(source: []const u8, events: anytype, diagnostics: diagnostic.Sink, settings: policy.ParseSettings, scratch: ?*scratch_impl.Stack) Result {
         var machine: Machine(@TypeOf(events), false, false, false, scalar_lex.Scanner, null) = .{
-            .tokens = scalar_lex.Lexer.init(source),
+            .tokens = scalar_lex.Scanner(false, false, null).init(source),
             .events = events,
             .diagnostics = diagnostics,
             .settings = settings,
@@ -1616,7 +1634,7 @@ test "cancellation during successful and failed events preserves terminal preced
         var events: BudgetSink = .{ .cancel_flag = &request.flag, .cancel_at = at, .fail_at = if (fails) at else null };
         var diags: BudgetDiagnostics = .{};
         var machine: Machine(*BudgetSink, true, true, true, scalar_lex.Scanner, null) = .{
-            .tokens = scalar_lex.Scanner(true, true).init(source),
+            .tokens = scalar_lex.Scanner(true, true, null).init(source),
             .events = &events,
             .diagnostics = diags.sink(),
 
@@ -1644,7 +1662,7 @@ test "cancellation during successful and failed events preserves terminal preced
 }
 
 test "cancellation can stop every lexical continuation and execution phase" {
-    const Scanner = scalar_lex.Scanner(true, true);
+    const Scanner = scalar_lex.Scanner(true, true, null);
     const State = @FieldType(Scanner, "state");
     var states = std.EnumSet(State).initEmpty();
     var phases = std.EnumSet(Phase).initEmpty();
@@ -1703,7 +1721,7 @@ test "late cancellation from a rejected syntax diagnostic does not mask failure"
     var reporter: Reporter = .{ .request = &request };
     var events: BudgetSink = .{};
     var machine: Machine(*BudgetSink, true, true, true, scalar_lex.Scanner, null) = .{
-        .tokens = scalar_lex.Scanner(true, true).init("graph {a[x=]}"),
+        .tokens = scalar_lex.Scanner(true, true, null).init("graph {a[x=]}"),
         .events = &events,
         .diagnostics = .{ .context = &reporter, .emit_fn = Reporter.emit },
 
@@ -1817,7 +1835,7 @@ const BudgetDiagnostics = struct {
     }
 };
 
-fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool) type, source: []const u8, budgets: []const usize, settings: policy.ParseSettings, fail_at: ?usize, reject: bool) !usize {
+fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool, comptime ?bool) type, source: []const u8, budgets: []const usize, settings: policy.ParseSettings, fail_at: ?usize, reject: bool) !usize {
     var reference_frames: scratch_impl.Fixed(.{ .nesting = 32 }) = .{};
     var frames: scratch_impl.Fixed(.{ .nesting = 32 }) = .{};
     var reference_stack: scratch_impl.Stack = .{ .frames = reference_frames.storage().frames };
@@ -1828,7 +1846,7 @@ fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool) ty
     var events: BudgetSink = .{ .fail_at = fail_at };
     var diags: BudgetDiagnostics = .{ .reject = reject };
     var machine: Machine(*BudgetSink, true, true, false, ScannerOf, null) = .{
-        .tokens = ScannerOf(true, true).init(source),
+        .tokens = ScannerOf(true, true, null).init(source),
         .events = &events,
         .diagnostics = diags.sink(),
         .settings = settings,
@@ -1895,6 +1913,22 @@ fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool) ty
         try expectEqual(reference_diags.attempts, diags.attempts);
     }
     return total;
+}
+
+test "numeral policy is partition invariant including failure and recovery" {
+    inline for (.{ scalar_lex.Scanner, block_lex.Scanner }) |ScannerOf| {
+        for ([_]policy.RuleSeverity{ .err, .warning, .off }) |severity| {
+            for ([_]policy.Recovery{ .fail_fast, .statements }) |recovery_mode| {
+                const settings: policy.ParseSettings = .{ .ambiguous_numeral = severity, .recovery = recovery_mode };
+                const source = "graph { 1e3; { 1.2.3; a } 2z; }";
+                const total = try checkBudgetPartition(ScannerOf, source, &.{1}, settings, null, false);
+                try expectEqual(total, try checkBudgetPartition(ScannerOf, source, &.{ 0, 3, 17 }, settings, null, false));
+                _ = try checkBudgetPartition(ScannerOf, source, &.{ 0, 1, 5 }, settings, null, true);
+                for (0..source.len + 1) |end| _ = try checkBudgetPartition(ScannerOf, source[0..end], &.{ 0, 1, 3 }, settings, null, false);
+                for (0..4) |at| _ = try checkBudgetPartition(ScannerOf, source, &.{ 0, 1, 5 }, settings, at, false);
+            }
+        }
+    }
 }
 
 test "lenient syntax partitions preserve events counters diagnostics and charged work" {
@@ -1985,7 +2019,7 @@ test "metered parser capacities remain output limits not work budgets" {
 test "metered parser yields before begin pair owner and commit dispatch" {
     var events: BudgetSink = .{};
     var machine: Machine(*BudgetSink, true, true, false, scalar_lex.Scanner, null) = .{
-        .tokens = scalar_lex.Scanner(true, true).init("graph {a[x=1]}"),
+        .tokens = scalar_lex.Scanner(true, true, null).init("graph {a[x=1]}"),
         .events = &events,
         .diagnostics = diagnostic.discard,
     };
@@ -2032,7 +2066,7 @@ test "ordinary parser compiles out pending work and audit storage" {
     const Ordinary = Machine(*BudgetSink, false, false, false, scalar_lex.Scanner, null);
     try expect(@FieldType(Ordinary, "work") == void);
     try expect(@FieldType(Ordinary, "audit") == void);
-    try expect(@FieldType(scalar_lex.Scanner(false, false), "source_frontier") == void);
+    try expect(@FieldType(scalar_lex.Scanner(false, false, null), "source_frontier") == void);
     try expect(@sizeOf(Machine(*BudgetSink, false, false, false, scalar_lex.Scanner, null)) <= 512);
     try expect(@sizeOf(Machine(*BudgetSink, false, false, false, block_lex.Scanner, null)) <= 640);
 }
@@ -2040,7 +2074,7 @@ test "ordinary parser compiles out pending work and audit storage" {
 test "unaudited metered driver charges empty document exactly and runs to completion" {
     var events: BudgetSink = .{};
     var machine: Machine(*BudgetSink, true, false, false, scalar_lex.Scanner, null) = .{
-        .tokens = scalar_lex.Scanner(true, false).init("graph{}"),
+        .tokens = scalar_lex.Scanner(true, false, null).init("graph{}"),
         .events = &events,
         .diagnostics = diagnostic.discard,
     };
@@ -2252,7 +2286,7 @@ test "metered and cancellable drivers recover identically to the immediate one" 
     var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
 
     var machine: Machine(*BudgetSink, true, true, true, scalar_lex.Scanner, null) = .{
-        .tokens = scalar_lex.Scanner(true, true).init(source),
+        .tokens = scalar_lex.Scanner(true, true, null).init(source),
         .events = &events,
         .diagnostics = bag.sink(),
         .settings = recovery_settings,
@@ -2283,7 +2317,7 @@ test "both scanner backends drive the grammar to identical events and diagnostic
             var scalar_events: Recording = .{};
             var scalar_bag: diagnostic.FixedBag(8) = .{};
             var scalar_machine: Machine(*Recording, false, false, false, scalar_lex.Scanner, null) = .{
-                .tokens = scalar_lex.Lexer.init(source),
+                .tokens = scalar_lex.Scanner(false, false, null).init(source),
                 .events = &scalar_events,
                 .diagnostics = scalar_bag.sink(),
                 .settings = .{ .recovery = recovery },
@@ -2291,7 +2325,7 @@ test "both scanner backends drive the grammar to identical events and diagnostic
             var block_events: Recording = .{};
             var block_bag: diagnostic.FixedBag(8) = .{};
             var block_machine: Machine(*Recording, false, false, false, block_lex.Scanner, null) = .{
-                .tokens = block_lex.Lexer.init(source),
+                .tokens = block_lex.Scanner(false, false, null).init(source),
                 .events = &block_events,
                 .diagnostics = block_bag.sink(),
                 .settings = .{ .recovery = recovery },
@@ -2853,7 +2887,7 @@ test "step is terminal-idempotent after success and after failure" {
     var events: Recording = .{};
     var bag: Bag = .{};
     var machine: Machine(*Recording, false, false, false, scalar_lex.Scanner, null) = .{
-        .tokens = lex.Lexer.init("graph { a; }"),
+        .tokens = scalar_lex.Scanner(false, false, null).init("graph { a; }"),
         .events = &events,
         .diagnostics = bag.sink(),
     };
@@ -2869,7 +2903,7 @@ test "step is terminal-idempotent after success and after failure" {
     var failed_events: Recording = .{};
     var failed_bag: Bag = .{};
     var failed_machine: Machine(*Recording, false, false, false, scalar_lex.Scanner, null) = .{
-        .tokens = lex.Lexer.init("graph {"),
+        .tokens = scalar_lex.Scanner(false, false, null).init("graph {"),
         .events = &failed_events,
         .diagnostics = failed_bag.sink(),
     };

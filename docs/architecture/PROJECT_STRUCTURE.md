@@ -246,7 +246,22 @@ and writes them to a caller-supplied diagnostic sink or bag. Parsing is
 kind-agnostic; default validation requires `--` for an undigraph and `->` for a
 digraph. Profile-selected treatment, severity and reading specialize this same
 validator rather than creating a second parser. Warning/error occurrence counts
-are independent of diagnostic delivery.
+are independent of diagnostic delivery. It preflights explicit validation scratch,
+then merges only enabled finding streams in source order. Fixed-off streams and
+their state are excluded; runtime-off streams do not inspect the input.
+
+### `src/validation_checks.zig`
+
+Independent finding streams for operators, whole-source UTF-8, repeated attribute
+keys and consumer restrictions on effective kinds, ports and subgraphs. Shared
+kind resolution also serves interpretation. Only repeated-key analysis needs
+caller workspace: one temporary key index per attribute, sorted by decoded-byte
+identity and back into source order, with no retained graph mutation, decoded
+string allocation or unbounded hash-bucket scans. Lexical numeral severity is
+applied by the parser/scanner, not replayed by document validation.
+Private `identifier_value.zig` shares validated-expression traversal between
+safe public decoding and logical key comparisons; unchecked helpers are not
+exposed on the public identifier API.
 
 ### `src/policy.zig` and `src/profile.zig`
 

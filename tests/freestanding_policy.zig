@@ -8,6 +8,14 @@ const Profile = dot.Profile(.{
 
 export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
     const input: dot.Policy = .{ .scanner = if (choice & 1 == 0) .scalar else .block, .execution = .{ .metering = choice & 2 != 0, .cancellation = choice & 4 != 0 }, .limits = .{ .max_statements = @as(usize, choice) + 1, .max_attributes = choice }, .recovery = if (choice & 8 == 0) .fail_fast else .statements, .validation = .{
+        .ambiguous_numeral = if (choice & 16 == 0) .warning else .err,
+        .invalid_utf8 = if (choice & 32 == 0) .off else .warning,
+        .repeated_attribute = if (choice & 64 == 0) .off else .err,
+        .restrictions = .{
+            .ports = if (choice & 8 == 0) .off else .warning,
+            .subgraphs = if (choice & 4 == 0) .off else .err,
+            .graph_kinds = .{ .generic = if (choice & 128 == 0) .off else .warning },
+        },
         .graph = .{
             .treated_as = switch (choice % 4) {
                 0 => .undigraph,
@@ -32,7 +40,7 @@ export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
         },
     } };
     if (features.runtime_policy and Profile.validatePolicy(input) != .valid) return 100;
-    var storage: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8, .edge_chains = 8, .edge_links = 8 }) = .{};
+    var storage: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8, .edge_chains = 8, .edge_links = 8, .attributes = 8 }) = .{};
     var bag: dot.FixedDiagnosticBag(4) = .{};
     const parsed = if (features.runtime_policy)
         Profile.parseBorrowedIn(source[0..len], .{ .document = storage.storage() }, bag.sink(), .{ .policy = input }) catch return 104
@@ -40,10 +48,11 @@ export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
         Profile.parseBorrowedIn(source[0..len], .{ .document = storage.storage() }, bag.sink(), .{});
     const doc = &(parsed.document orelse return 101);
     const options: Profile.Options = if (features.runtime_policy) .{ .policy = input } else .{};
+    var keys: [8]dot.AttributeKeyScratch = undefined;
     const checked = if (features.runtime_policy)
-        Profile.validate(doc, bag.sink(), options) catch return 102
+        Profile.validate(doc, bag.sink(), .{ .policy = input, .scratch = .{ .attribute_keys = &keys } }) catch return 102
     else
-        Profile.validate(doc, bag.sink(), options);
+        Profile.validate(doc, bag.sink(), .{});
     const view = if (features.runtime_policy)
         Profile.interpretation(doc, options) catch return 103
     else
@@ -51,7 +60,8 @@ export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
     var total: usize = @intFromEnum(doc.effectiveKind(view));
     var edges = doc.edgeIterator();
     while (edges.next()) |edge| total +%= @intFromEnum(edge.effectiveOperator(doc, view));
-    return total +% checked.outcome.completed.violations +% checked.outcome.completed.warnings +% bag.items().len;
+    if (checked.outcome != .completed) return 105;
+    return @truncate(@as(u64, total) +% checked.outcome.completed.violations +% checked.outcome.completed.warnings +% bag.items().len);
 }
 
 fn cancelled(context: ?*anyopaque) bool {

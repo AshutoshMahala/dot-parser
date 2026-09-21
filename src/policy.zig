@@ -50,10 +50,27 @@ pub const Policy = struct {
     };
 
     pub const Validation = struct {
+        /// Lexical check applied while parsing, not replayed by validate().
+        ambiguous_numeral: ?RuleSeverity = null,
+        /// Whole-source encoding check; does not decode or replace bytes.
+        invalid_utf8: ?RuleSeverity = null,
+        /// Logical keys within one statement's combined attribute lists.
+        repeated_attribute: ?RuleSeverity = null,
+        restrictions: Restrictions = .{},
         /// Selected by the written graph keyword, even when treated as digraph.
         graph: Graph = .{},
         /// Selected by the written digraph keyword; its kind cannot change.
         digraph: Operators = .{},
+    };
+    pub const Restrictions = struct {
+        /// Each non-off leaf reports occurrences of that effective graph kind.
+        graph_kinds: struct {
+            undigraph: ?RuleSeverity = null,
+            digraph: ?RuleSeverity = null,
+            generic: ?RuleSeverity = null,
+        } = .{},
+        ports: ?RuleSeverity = null,
+        subgraphs: ?RuleSeverity = null,
     };
     pub const Graph = struct {
         treated_as: ?GraphTreatment = null,
@@ -68,6 +85,17 @@ pub const Policy = struct {
 
 /// Fully resolved settings, never attached to retained syntax.
 pub const ValidationSettings = struct {
+    invalid_utf8: RuleSeverity = .off,
+    repeated_attribute: RuleSeverity = .off,
+    restrictions: struct {
+        graph_kinds: struct {
+            undigraph: RuleSeverity = .off,
+            digraph: RuleSeverity = .off,
+            generic: RuleSeverity = .off,
+        } = .{},
+        ports: RuleSeverity = .off,
+        subgraphs: RuleSeverity = .off,
+    } = .{},
     graph: Graph = .{},
     digraph: Operators = .{},
 
@@ -82,6 +110,7 @@ pub const ValidationSettings = struct {
 };
 
 pub const ParseSettings = struct {
+    ambiguous_numeral: RuleSeverity = .warning,
     syntax: SyntaxSettings = .{},
     limits: struct {
         max_nesting: usize = @import("std").math.maxInt(usize),
@@ -130,6 +159,14 @@ pub const presets = struct {
             .bare_dash = .{ .acceptance = .reject, .interpretation = .from_keyword },
         },
         .validation = .{
+            .ambiguous_numeral = .warning,
+            .invalid_utf8 = .off,
+            .repeated_attribute = .off,
+            .restrictions = .{
+                .graph_kinds = .{ .undigraph = .off, .digraph = .off, .generic = .off },
+                .ports = .off,
+                .subgraphs = .off,
+            },
             .graph = .{ .treated_as = .undigraph, .operator_mismatch = .err, .operator_reading = .as_written },
             .digraph = .{ .operator_mismatch = .err, .operator_reading = .as_written },
         },
@@ -156,6 +193,17 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
     const digraph = input.validation.digraph;
     return .{
         .validation = .{
+            .invalid_utf8 = input.validation.invalid_utf8 orelse baseline.validation.invalid_utf8,
+            .repeated_attribute = input.validation.repeated_attribute orelse baseline.validation.repeated_attribute,
+            .restrictions = .{
+                .graph_kinds = .{
+                    .undigraph = input.validation.restrictions.graph_kinds.undigraph orelse baseline.validation.restrictions.graph_kinds.undigraph,
+                    .digraph = input.validation.restrictions.graph_kinds.digraph orelse baseline.validation.restrictions.graph_kinds.digraph,
+                    .generic = input.validation.restrictions.graph_kinds.generic orelse baseline.validation.restrictions.graph_kinds.generic,
+                },
+                .ports = input.validation.restrictions.ports orelse baseline.validation.restrictions.ports,
+                .subgraphs = input.validation.restrictions.subgraphs orelse baseline.validation.restrictions.subgraphs,
+            },
             .graph = .{
                 .treated_as = graph.treated_as orelse baseline.validation.graph.treated_as,
                 .operators = .{
@@ -169,6 +217,7 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
             },
         },
         .parsing = .{
+            .ambiguous_numeral = input.validation.ambiguous_numeral orelse baseline.parsing.ambiguous_numeral,
             .syntax = .{
                 .empty_statement = input.syntax.empty_statement orelse baseline.parsing.syntax.empty_statement,
                 .long_operator = input.syntax.long_operator orelse baseline.parsing.syntax.long_operator,

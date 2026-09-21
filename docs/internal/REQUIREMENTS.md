@@ -183,8 +183,8 @@ The diagnostic destination is caller policy:
 - Direct diagnostic sink with no retained bag.
 - Caller-provided fixed-capacity bag.
 - Arena-backed bag retained for tooling.
-- Filtering sink that ignores selected warnings or promotes configured warnings
-  to errors.
+- Filtering sink that hides selected messages for presentation. Severity and
+  validity come from policy; sink filtering or restyling cannot change them.
 
 Collection is bounded. The policy must define whether capacity exhaustion stops
 validation, retains the first diagnostics while counting omitted diagnostics,
@@ -281,6 +281,16 @@ bare-dash `.from_keyword` interpretation apply at both binding times. Factual
 u32 deviation/warning counters survive diagnostic suppression and later failure;
 source ranges remain original, while retained structure may normalize operators
 or omit empty statements. No per-record policy/history storage is added.
+Configurable lexical numeral severity and optional UTF-8, repeated-key and
+consumer kind/port/subgraph checks are implemented at both binding times.
+Numeral policy applies during parsing; the other checks inspect a committed
+document without mutation. Repeated keys compare decoded identifier bytes within
+one statement's combined lists, using explicit caller scratch and bounded
+heap-sort comparisons, not an unbounded quadratic scan or hidden allocation.
+Scratch exhaustion is incomplete validation, never valid acceptance. UTF-8
+checks the whole source with bytewise error recovery. Kind restrictions use the
+effective kind. Diagnostics merge in source order within validation; aggregate
+validation counts and composed warning totals are u64 because rules can overlap.
 Q35 records the provisional handling
 of inapplicable graph fields and the remaining standard-machine performance gate.
 

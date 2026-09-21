@@ -1,4 +1,4 @@
-//! Validation over syntax data (milestone 1, step 7).
+//! Policy-selected validation over committed syntax data.
 //!
 //! Validation is an analysis pass, not fail-fast control flow (R-FUNC-008):
 //! it examines the whole document, continues after every independent violation,
@@ -9,7 +9,7 @@
 //! The document is never modified. Profiles select rule severity and graph
 //! interpretation. Sink filtering is presentation only and never changes validity.
 //!
-//! ## Milestone rule
+//! ## Default rule
 //!
 //! An undigraph edge must be written `--`; a digraph edge must be written
 //! `->`. The parser is kind-agnostic by design — this pass is exactly where
@@ -21,29 +21,38 @@
 //! its line and column (R-MEM-008).
 
 const std = @import("std");
-const location = @import("location.zig");
 const diagnostic = @import("diagnostic.zig");
 const syntax = @import("syntax.zig");
 const policy = @import("policy.zig");
+const checks = @import("validation_checks.zig");
+pub const Scratch = checks.Scratch;
+pub const AttributeKeyScratch = checks.AttributeKeyScratch;
 
-/// How the pass ended. Tagged, so meaningless combinations (such as an
-/// incomplete-but-valid pass) are unrepresentable. Only implemented outcomes
-/// are exposed; bounded and cancellable validation remain future work.
+/// How the pass ended. An incomplete-but-valid pass is unrepresentable.
+/// Scratch preflight is implemented; bounded/cancellable validation is not.
 pub const Outcome = union(enum) {
     /// The pass examined every statement (R-FUNC-008). Any number of
     /// violations may have been found — completion is not validity.
     completed: Completed,
+    /// No checks ran and scratch is unchanged. Supply at least the required
+    /// number of entries and rerun; the parsed document remains available.
+    insufficient_scratch: struct {
+        required_attribute_keys: u32,
+        provided_attribute_keys: usize,
+    },
 
     pub const Completed = struct {
         /// No error-severity violations were found.
         document_valid: bool,
-        /// Violations reported. A fixed bag may retain fewer; its `omitted`
+        /// Error findings. Independent rules can overlap on the same source byte,
+        /// so totals need u64 rather than source-width u32, including on 32-bit
+        /// targets. A fixed bag may retain fewer; its `omitted`
         /// counter accounts for the difference (bounded-bag policy: first
         /// diagnostics retained, the rest counted).
-        violations: usize,
-        /// Warning-severity mismatches, independent of sink retention/delivery.
+        violations: u64,
+        /// Warning findings, independent of sink retention/delivery.
         /// `violations` counts errors; warnings do not invalidate a document.
-        warnings: usize = 0,
+        warnings: u64 = 0,
     };
 };
 
@@ -58,102 +67,104 @@ pub const Result = struct {
     pub fn documentValid(self: *const Result) bool {
         return switch (self.outcome) {
             .completed => |completed| completed.document_valid,
+            .insufficient_scratch => false,
+        };
+    }
+
+    pub fn warningCount(self: Result) u64 {
+        return switch (self.outcome) {
+            .completed => |completed| completed.warnings,
+            .insufficient_scratch => 0,
         };
     }
 };
 
 /// One validator, specialized for a fixed policy or supplied one resolved
-/// runtime policy. The fixed instantiation has no runtime settings parameter.
+/// runtime policy. Disabled fixed checks have neither stream state nor code.
 pub fn validate(
     comptime fixed: ?policy.ValidationSettings,
     document: *const syntax.Document,
     diagnostics: diagnostic.Sink,
     runtime: if (fixed == null) policy.ValidationSettings else void,
+    scratch: Scratch,
 ) Result {
     const settings = if (fixed) |value| value else runtime;
-    const operators = if (document.kind == .digraph) settings.digraph else settings.graph.operators;
-    if (operators.operator_mismatch == .off or
-        (document.kind == .undigraph and
-            (settings.graph.treated_as == .generic or settings.graph.treated_as == .auto)))
-    {
-        return .{
-            .outcome = .{ .completed = .{ .document_valid = true, .violations = 0 } },
-            .diagnostic_delivery = .complete,
-        };
-    }
-
-    const code: diagnostic.Code = switch (operators.operator_mismatch) {
-        .err => .validation_operator_mismatch,
-        .warning => .validation_operator_tolerated,
-        .off => unreachable,
-    };
-    const reading: diagnostic.OperatorMismatch.Reading = switch (operators.operator_reading) {
-        .as_written => .as_written,
-        .conform_to_kind => .conform_to_kind,
-    };
-
-    const expected: syntax.EdgeOperator = switch (document.kind) {
-        .undigraph => if (settings.graph.treated_as == .digraph) .directed else .undirected,
-        .digraph => .directed,
-    };
-
-    var declaration: ?location.Span = null;
-    var emitted: usize = 0;
-    var delivery: diagnostic.Delivery = .complete;
-
-    // Ordinary edges and chain links merge in source order; the iterator
-    // allocates nothing.
-    var edges = document.edgeIterator();
-    while (edges.next()) |edge| {
-        if (edge.operator == expected) continue;
-
-        if (declaration == null) declaration = document.keyword;
-        const operator_span = edge.operator_range;
-
-        emitted += 1;
+    // Preflight before running any check or touching scratch. Exhaustion must
+    // never masquerade as a completed, valid pass, even with a discard sink.
+    if (settings.repeated_attribute != .off and scratch.attribute_keys.len < document.attributes.len) {
+        var delivery: diagnostic.Delivery = .complete;
         diagnostics.emit(.{
-            .code = code,
-            .span = operator_span,
-            .details = .{ .operator_mismatch = .{
-                .expected = operatorDetail(expected),
-                .found = operatorDetail(edge.operator),
-                .declaration = declaration.?,
-                .reading = reading,
-                .kind_overridden = document.kind == .undigraph and settings.graph.treated_as == .digraph,
-                .suggest_header_change = settings.graph.treated_as != .digraph,
-            } },
-            // Conformance explicitly selects this operator reading. Otherwise
-            // replacement is only one possible repair. Never apply it here.
-            .fix = .{
-                .span = operator_span,
-                .edit = .{ .replace = switch (expected) {
-                    .directed => .directed_operator,
-                    .undirected => .undirected_operator,
-                } },
-                .applicability = if (operators.operator_reading == .conform_to_kind) .machine_applicable else .maybe,
-            },
+            .code = .resource_capacity_exhausted,
+            .span = document.keyword,
+            .details = .{ .capacity = .{ .resource = .validation_attribute_keys, .limit = scratch.attribute_keys.len } },
         }) catch {
             delivery = .failed;
         };
+        return .{
+            .outcome = .{ .insufficient_scratch = .{
+                .required_attribute_keys = @intCast(document.attributes.len),
+                .provided_attribute_keys = scratch.attribute_keys.len,
+            } },
+            .diagnostic_delivery = delivery,
+        };
     }
 
+    const Cursors = cursorTypes(fixed);
+    const fields = @typeInfo(Cursors).@"struct".fields;
+    var cursors: Cursors = undefined;
+    var pending: [fields.len]?diagnostic.Diagnostic = undefined;
+    inline for (fields, 0..) |field, index| {
+        @field(cursors, field.name) = field.type.init(document, settings, scratch);
+        pending[index] = @field(cursors, field.name).next();
+    }
+    var errors: u64 = 0;
+    var warnings: u64 = 0;
+    var delivery: diagnostic.Delivery = .complete;
+    while (fields.len != 0) {
+        var selected: ?usize = null;
+        for (pending, 0..) |finding, index| {
+            if (finding) |d| {
+                if (selected == null or d.span.start < pending[selected.?].?.span.start) selected = index;
+            }
+        }
+        const index = selected orelse break;
+        const d = pending[index].?;
+        if (d.code.severity() == .err) errors += 1 else warnings += 1;
+        diagnostics.emit(d) catch {
+            delivery = .failed;
+        };
+        inline for (fields, 0..) |field, at| {
+            if (index == at) pending[at] = @field(cursors, field.name).next();
+        }
+    }
     return .{
-        .outcome = .{ .completed = .{
-            .document_valid = operators.operator_mismatch != .err or emitted == 0,
-            .violations = if (operators.operator_mismatch == .err) emitted else 0,
-            .warnings = if (operators.operator_mismatch == .warning) emitted else 0,
-        } },
+        .outcome = .{ .completed = .{ .document_valid = errors == 0, .violations = errors, .warnings = warnings } },
         .diagnostic_delivery = delivery,
     };
 }
 
-/// Map the syntax-layer operator into the diagnostic-layer vocabulary
-/// (diagnostics never import syntax types; dependency direction).
-fn operatorDetail(operator: syntax.EdgeOperator) diagnostic.OperatorMismatch.Operator {
-    return switch (operator) {
-        .undirected => .undirected,
-        .directed => .directed,
-    };
+/// Ties use this fixed rule order: kind, operator, encoding, repeated key,
+/// port, subgraph. Filtering a stream never changes the remaining order.
+fn cursorTypes(comptime fixed: ?policy.ValidationSettings) type {
+    const enabled: [6]bool = if (fixed) |s| .{
+        s.restrictions.graph_kinds.undigraph != .off or s.restrictions.graph_kinds.digraph != .off or s.restrictions.graph_kinds.generic != .off,
+        s.digraph.operator_mismatch != .off or
+            ((s.graph.treated_as != .auto and s.graph.treated_as != .generic) and s.graph.operators.operator_mismatch != .off),
+        s.invalid_utf8 != .off,
+        s.repeated_attribute != .off,
+        s.restrictions.ports != .off,
+        s.restrictions.subgraphs != .off,
+    } else .{true} ** 6;
+    const all = .{ checks.GraphKinds, checks.Operators, checks.Encoding, checks.RepeatedAttributes, checks.Ports, checks.Subgraphs };
+    comptime var types: [all.len]type = undefined;
+    comptime var count: usize = 0;
+    inline for (all, enabled) |T, include| {
+        if (include) {
+            types[count] = T;
+            count += 1;
+        }
+    }
+    return std.meta.Tuple(types[0..count]);
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +193,7 @@ test "the milestone acceptance case: two mismatches, both reported" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(8) = .{};
-    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {}, .{});
 
     try expect(result.outcome == .completed);
     try expect(!result.documentValid());
@@ -216,7 +227,7 @@ test "a valid undigraph completes with an empty bag" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {}, .{});
 
     try expect(result.outcome == .completed);
     try expect(result.documentValid());
@@ -230,7 +241,7 @@ test "an empty document is valid" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {}, .{});
     try expect(result.outcome == .completed);
     try expect(result.documentValid());
 }
@@ -241,7 +252,7 @@ test "validation continues past valid edges between violations" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(8) = .{};
-    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {}, .{});
 
     try expectEqual(@as(usize, 2), result.outcome.completed.violations);
     try expectEqual(@as(usize, 2), bag.items().len);
@@ -256,7 +267,7 @@ test "the rule is kind-agnostic: a digraph flags '--'" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(4) = .{};
-    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {}, .{});
 
     try expect(!result.documentValid());
     try expectEqual(@as(usize, 1), result.outcome.completed.violations);
@@ -275,7 +286,7 @@ test "a full bag bounds retention, not the analysis" {
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     var bag: diagnostic.FixedBag(1) = .{};
-    const result = validate(policy.defaults.validation, &document, bag.sink(), {});
+    const result = validate(policy.defaults.validation, &document, bag.sink(), {}, .{});
 
     // The pass still examined everything and counted every violation …
     try expect(result.outcome == .completed);
@@ -298,7 +309,7 @@ test "a failing sink is reported without stopping the analysis" {
         }
     };
     const sink: diagnostic.Sink = .{ .context = null, .emit_fn = Rejecting.emit };
-    const result = validate(policy.defaults.validation, &document, sink, {});
+    const result = validate(policy.defaults.validation, &document, sink, {}, .{});
 
     try expect(result.outcome == .completed);
     try expect(!result.documentValid());
@@ -321,7 +332,7 @@ test "policy filtering happens at the sink without touching the document" {
     };
     var filter: Filtering = .{};
     const sink: diagnostic.Sink = .{ .context = &filter, .emit_fn = Filtering.emit };
-    const result = validate(policy.defaults.validation, &document, sink, {});
+    const result = validate(policy.defaults.validation, &document, sink, {}, .{});
 
     // The pass still reports the document as invalid under default rules;
     // what the consumer surfaces is their policy. The document is untouched.
@@ -337,8 +348,8 @@ test "repeated validation is deterministic" {
 
     var first_bag: diagnostic.FixedBag(8) = .{};
     var second_bag: diagnostic.FixedBag(8) = .{};
-    const first = validate(policy.defaults.validation, &document, first_bag.sink(), {});
-    const second = validate(policy.defaults.validation, &document, second_bag.sink(), {});
+    const first = validate(policy.defaults.validation, &document, first_bag.sink(), {}, .{});
+    const second = validate(policy.defaults.validation, &document, second_bag.sink(), {}, .{});
 
     try expectEqual(first, second);
     try expectEqual(first_bag.items().len, second_bag.items().len);

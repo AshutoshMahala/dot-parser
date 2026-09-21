@@ -17,6 +17,7 @@ test {
     _ = @import("policies.zig");
     _ = @import("policy_settings.zig");
     _ = @import("lenient.zig");
+    _ = @import("validation_checks.zig");
 }
 
 const Rejecting = struct {

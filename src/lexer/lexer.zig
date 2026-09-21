@@ -35,7 +35,7 @@ pub const Token = types.Token;
 pub const Result = types.Result;
 pub const Advance = types.Advance;
 
-pub fn scannerFor(comptime selected: policy.ScannerBackend) fn (comptime bool, comptime bool) type {
+pub fn scannerFor(comptime selected: policy.ScannerBackend) fn (comptime bool, comptime bool, comptime ?bool) type {
     return switch (selected) {
         .scalar => scalar.Scanner,
         .block => block.Scanner,
@@ -44,7 +44,7 @@ pub fn scannerFor(comptime selected: policy.ScannerBackend) fn (comptime bool, c
 
 /// Low-level fixed-backend scanner; retained parsing selects through Policy.
 pub fn For(comptime selected: policy.ScannerBackend) type {
-    return scannerFor(selected)(false, false);
+    return scannerFor(selected)(false, false, true);
 }
 
 /// Ordinary lexing with the library-default backend.
@@ -330,7 +330,7 @@ test "backslash parity survives a restore inside the block" {
 /// any budget partition, and the same total work.
 fn checkBlockPartition(source: []const u8, budgets: []const usize) !usize {
     var reference = block.Lexer.init(source);
-    var bounded = block.Scanner(true, true).init(source);
+    var bounded = block.Scanner(true, true, true).init(source);
     var calls: usize = 0;
     var total: usize = 0;
     var frontier: usize = 0;

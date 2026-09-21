@@ -87,13 +87,20 @@ var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
 // checked.documentValid() == false   — validation found violations
 ```
 
-`ValidationResult.outcome` is `.completed { document_valid, violations, warnings }`.
-`violations` counts errors, while `warnings` counts warning-severity mismatches;
+`ValidationResult.outcome` is `.completed { document_valid, violations, warnings }`
+or `.insufficient_scratch { required_attribute_keys, provided_attribute_keys }`.
+The latter runs no checks and leaves scratch unchanged; the document remains
+available, but `documentValid()` is false. It emits a capacity diagnostic naming
+`validation_attribute_keys`. Only optional repeated-key checking requires scratch.
+`violations` counts errors, while `warnings` counts warning-severity findings;
 only errors invalidate the document. Both count occurrences independently of sink
 retention/delivery. [Profiles](POLICIES.md) configure severity, graph treatment
 and effective operator reading. Bounded/cancellable validation is future work; outcomes for those
 behaviors will be added when implemented. Validation reports **every** violation, in source order — it never
-stops at the first.
+stops at the first document violation. Resource preflight can prevent the pass
+from starting. Independent checks may report the same byte, so validation counts
+are u64 even on 32-bit targets. `warningCount()` returns the count for a completed
+pass, or zero when scratch preflight failed.
 
 ## The diagnostic bag
 
@@ -103,7 +110,7 @@ acceptances, including silent `.accept`; the second counts produced syntax
 warnings, including numeral warnings. Neither depends on bag retention,
 filtering or successful delivery. Counts remain available when later work fails
 or is cancelled; they are not a complete deviation history.
-`CheckResult.warnings` totals syntax and validation warnings;
+`CheckResult.warnings: u64` totals syntax and validation warnings;
 `CheckResult.accepted_deviations` retains the parse count. Separate validation
 reports only its own warnings. See [syntax policies](POLICIES.md).
 
@@ -152,8 +159,12 @@ payload (`Unexpected.context`, `ReservedKeyword.context`).
 | `E.Syntax.Grammar.031` | Input ended before the document was complete | `.unexpected` |
 | `E.Syntax.Keyword.003` | Reserved keyword where a name was needed, or `node`/`edge`/`graph` without its `[` list | `.reserved_keyword` (keyword, context) |
 | `W.Syntax.Numeral.033` | A numeral runs into a letter or a second dot (`1e3`, `1.2.3`); the parse continues with two tokens, as Graphviz does | `.ambiguous_numeral` (the byte it runs into) |
+| `E.Syntax.Numeral.033` | The same lexical ambiguity rejected by the selected numeral policy | `.ambiguous_numeral`; parse fails or enters selected recovery |
 | `E.Validation.Operator.002` | Edge operator does not match the graph kind | `.operator_mismatch` |
 | `W.Validation.Operator.002` | Mismatch tolerated by the selected policy | `.operator_mismatch` (including reading and original-header relation) |
+| `E/W.Validation.Encoding.003` | Invalid UTF-8 under the optional whole-source check | `.invalid_utf8`: offending byte; one-byte recovery |
+| `E/W.Validation.Attribute.035` | Repeated logical key in one statement's combined attribute lists | `.repeated_attribute`: first equal key's span |
+| `E/W.Validation.Restriction.003` | Consumer restriction on effective kind, ports or subgraphs | `.restriction`: `undigraph`, `digraph`, `generic`, `port` or `subgraph` |
 | `E.Profile.Feature.009` | Recognized-but-deferred DOT construct | `.unsupported_feature` |
 | `E.Resource.Capacity.026` | A configured capacity was exhausted | `.capacity` when available, otherwise `.none` |
 | `E.Resource.Memory.026` | Document memory was exhausted | `.none` |

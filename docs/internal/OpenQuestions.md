@@ -492,6 +492,22 @@ duplicated options, scanner-selection aliases and retired-root-hook detection
 are removed. Direct sink fixtures use a test-only driver over that same machine;
 production adapters do not translate through an old options structure.
 
+**Additional checks implemented (2026-09-20):** `validation.ambiguous_numeral`
+selects error/warning/off during parsing (default warning); validation does not
+retroactively re-run lexical checks. `invalid_utf8`, `repeated_attribute`, and
+consumer restrictions on effective graph kinds, ports and subgraph occurrences
+are independent optional post-parse checks, default off. Every leaf supports
+fixed and runtime binding. Repeated keys compare logical identifier bytes within
+one owner's adjacent attribute lists; separate statements/defaults are not
+resolved or merged. One 16-byte caller scratch entry per attribute enables
+deterministic sorting and exact comparisons without decoded string allocation.
+Insufficient scratch is a separate incomplete outcome, preflighted before any
+check/write. Validation diagnostics merge in source order with deterministic
+rule-order ties. Aggregate counts use u64 because multiple rules may report the
+same byte. See [public policy contract](../POLICIES.md) for names, stages and costs.
+Schema restrictions, required attributes, cycles/connectivity/degree checks and
+port-reference resolution still belong to later optional graph-building passes.
+
 **Still open:** confirmation of the provisional mode-switch/irrelevant-field
 rule; observation and live promotion APIs; standard-machine performance gates.
 Semantic resolution,
@@ -909,10 +925,13 @@ A leading UTF-8 BOM is skipped, matching Graphviz's scanner (decided
 decoding an extracted identifier starting with those bytes. **HTML-like direction
 (2026-09-19):** Q40 records recognition in all DOT ID positions and a separate,
 optional staged markup subsystem. This is not implemented support.
-**Still open:** whether version 1 ships a UTF-8 validator and its
-invalid-sequence policy; the markup-specific byte/encoding and validation
-contract is tracked by Q40. These are not all promised deliverables of the
-next slice. *(Embodied: `src/lexer/`,
+**Optional validator implemented (2026-09-20):** `validation.invalid_utf8` is
+off by default, with error and warning choices. It checks all source bytes,
+including comments and trivia, without mutation. A byte not consumed by a valid
+UTF-8 sequence is one finding, then recovery advances one byte. Overlong forms,
+surrogates and values beyond U+10FFFF are invalid. No policy weakens grammar NUL
+rules. **Still open:** the markup-specific encoding/validation contract (Q40).
+*(Embodied: `src/lexer/`, `src/validation_checks.zig`,
 [supported syntax](../SUPPORTED_SYNTAX.md); R-PORT-006.)*
 
 **Q24 — When will the first stable compatibility boundary be declared?**

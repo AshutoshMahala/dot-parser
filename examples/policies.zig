@@ -3,6 +3,21 @@ const std = @import("std");
 const dot = @import("dot_parser");
 
 pub fn main() !void {
+    // Optional checks do not mutate the syntax. Repeated-key linting alone
+    // needs caller-owned scratch, separate from parser storage or policy.
+    const Lint = dot.Profile(.{ .policy = .{ .validation = .{
+        .invalid_utf8 = .err,
+        .repeated_attribute = .warning,
+        .restrictions = .{ .ports = .warning, .subgraphs = .err },
+    } } });
+    var keys: [2]dot.AttributeKeyScratch = undefined;
+    var linted = Lint.parseAndValidate(std.heap.page_allocator, "graph { a [color=red][\"color\"=blue] }", dot.diagnostic.discard, .{
+        .validation = .{ .attribute_keys = &keys },
+    });
+    defer linted.deinit(std.heap.page_allocator);
+    if (!linted.documentValid() or linted.warnings != 1) return error.LintFailed;
+    std.debug.print("optional checks: {d} warning, {d} retained attributes\n", .{ linted.warnings, linted.document.?.attributes.len });
+
     // Named presets are ordinary Policy values. Select the whole baseline, or
     // copy just .syntax to preserve unrelated custom settings.
     const Lenient = dot.Profile(.{ .policy = dot.presets.lenient });
@@ -41,7 +56,7 @@ pub fn main() !void {
         .invalid => |issue| return issue.asError(),
     }
     const options: Runtime.Options = .{ .policy = patch };
-    const checked = try Runtime.validate(doc, dot.diagnostic.discard, options);
+    const checked = try Runtime.validate(doc, dot.diagnostic.discard, .{ .policy = options.policy });
     if (!checked.documentValid()) return error.InvalidDocument;
     const view = try Runtime.interpretation(doc, options);
     std.debug.print("auto kind: {s}, written header kind: {s}\n", .{
@@ -68,7 +83,7 @@ pub fn main() !void {
     while ((try session.advance(16)).outcome == null) {}
     const parsed = session.result().?;
     if (parsed.outcome != .success) return error.ParseFailed;
-    if (!session.validate(dot.diagnostic.discard).?.documentValid()) return error.InvalidDocument;
+    if (!session.validate(dot.diagnostic.discard, .{}).?.documentValid()) return error.InvalidDocument;
     std.debug.print("policy session: {s}, {d} statement\n", .{
         @tagName(parsed.document.?.effectiveKind(session.interpretation().?)),
         parsed.document.?.statementCount(),
