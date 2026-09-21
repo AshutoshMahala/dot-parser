@@ -579,7 +579,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                             return null;
                         }
                     },
-                    .statement => return self.beginNext(token),
+                    .statement => return if (metered or cancellable or fixed == null)
+                        self.beginNext(token)
+                    else
+                        @call(.always_inline, beginNext, .{ self, token }),
                     .after_identifier => switch (token.tag) {
                         .colon => {
                             if (self.left_port != null) return self.unexpected(nodeEndExpected(false), .statement, token);
@@ -596,7 +599,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                             self.operator_span = token.span;
                             self.state = .edge_right;
                         },
-                        else => return self.finishPending(token, nodeEndExpected(self.left_port == null), .statement),
+                        else => return if (metered or cancellable or fixed == null)
+                            self.finishPending(token, nodeEndExpected(self.left_port == null), .statement)
+                        else
+                            @call(.always_inline, finishPending, .{ self, token, nodeEndExpected(self.left_port == null), .statement }),
                     },
                     .edge_right => switch (token.tag) {
                         .identifier => {
@@ -622,7 +628,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                             self.state = .chain_right;
                         },
                         else => {
-                            return self.finishPending(token, edgeEndExpected(self.pending == .edge and self.right_port == null and self.right_scope == null), .statement_terminator);
+                            return if (metered or cancellable or fixed == null)
+                                self.finishPending(token, edgeEndExpected(self.pending == .edge and self.right_port == null and self.right_scope == null), .statement_terminator)
+                            else
+                                @call(.always_inline, finishPending, .{ self, token, edgeEndExpected(self.pending == .edge and self.right_port == null and self.right_scope == null), .statement_terminator });
                         },
                     },
                     .chain_right => switch (token.tag) {
@@ -672,7 +681,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         if (token.tag != .identifier)
                             return self.unexpected(.{ .identifier = true }, .assignment_value, token);
                         self.state = .completed;
-                        return self.schedule(.assignment, token);
+                        return if (metered or cancellable or fixed == null)
+                            self.schedule(.assignment, token)
+                        else
+                            @call(.always_inline, schedule, .{ self, .assignment, token });
                     },
                     .completed => return self.continueAfterStatement(token),
                     .attribute_open => {
@@ -694,7 +706,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         if (token.tag != .identifier)
                             return self.unexpected(.{ .identifier = true }, .attribute_value, token);
                         self.state = .attribute_after_value;
-                        return self.schedule(.attribute, token);
+                        return if (metered or cancellable or fixed == null)
+                            self.schedule(.attribute, token)
+                        else
+                            @call(.always_inline, schedule, .{ self, .attribute, token });
                     },
                     .attribute_after_value => switch (token.tag) {
                         .right_bracket => self.closeAttributes(),
@@ -710,10 +725,16 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                     .after_attributes => {
                         if (token.tag == .left_bracket) {
                             self.openAttributes(token);
-                        } else return self.finishPending(token, statementEndExpected(true), .statement_terminator);
+                        } else return if (metered or cancellable or fixed == null)
+                            self.finishPending(token, statementEndExpected(true), .statement_terminator)
+                        else
+                            @call(.always_inline, finishPending, .{ self, token, statementEndExpected(true), .statement_terminator });
                     },
                     .epilogue => switch (token.tag) {
-                        .eof => return self.schedule(.commit, token),
+                        .eof => return if (metered or cancellable or fixed == null)
+                            self.schedule(.commit, token)
+                        else
+                            @call(.always_inline, schedule, .{ self, .commit, token }),
                         else => return self.unexpected(.{ .end_of_input = true }, .document_epilogue, token),
                     },
                     .recovering => return self.recover(token),
@@ -760,7 +781,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         fn beginBody(self: *Self, token: lex.Token) ?Result {
             self.open_brace_span = token.span;
             self.state = .statement;
-            return self.schedule(.begin, token);
+            return if (metered or cancellable or fixed == null)
+                self.schedule(.begin, token)
+            else
+                @call(.always_inline, schedule, .{ self, .begin, token });
         }
 
         /// Start a statement at its identifier or attribute keyword: the place the
@@ -786,6 +810,11 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             return null;
         }
 
+        // Inline fixed-policy synchronous boundaries to eliminate intermediate
+        // ?Result traffic (20 bytes on arm64 since factual counters were added).
+        // Runtime-policy and metered/cancellable engines retain ordinary calls:
+        // forced inlining has mixed costs in those larger dispatch loops (even
+        // @call(.auto) changed Zig 0.16's code generation in bounded sessions).
         fn beginNext(self: *Self, token: lex.Token) ?Result {
             if (deviations_enabled and token.tag == .semicolon and self.syntax().empty_statement != .reject) {
                 self.acceptDeviation(self.syntax().empty_statement, .{
@@ -803,7 +832,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         self.state = .epilogue;
                     } else {
                         self.state = .after_subgraph;
-                        return self.schedule(.end_subgraph, token);
+                        return if (metered or cancellable or fixed == null)
+                            self.schedule(.end_subgraph, token)
+                        else
+                            @call(.always_inline, schedule, .{ self, .end_subgraph, token });
                     }
                 },
                 .left_brace, .keyword_subgraph => {
@@ -874,7 +906,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             }) catch |err| return self.scratchFailure(err, token.span);
             self.open_brace_span = token.span;
             self.state = .statement;
-            return self.schedule(.begin_subgraph, token);
+            return if (metered or cancellable or fixed == null)
+                self.schedule(.begin_subgraph, token)
+            else
+                @call(.always_inline, schedule, .{ self, .begin_subgraph, token });
         }
 
         fn scratchFailure(self: *Self, err: scratch_impl.Stack.Error, span: location.Span) Result {
@@ -907,7 +942,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 self.work.replay = true;
                 return self.schedule(action, token);
             }
-            return self.schedule(action, token);
+            return if (fixed == null)
+                self.schedule(action, token)
+            else
+                @call(.always_inline, schedule, .{ self, action, token });
         }
 
         fn finishPending(self: *Self, token: lex.Token, expected: std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false), context: diagnostic.ParseContext) ?Result {
@@ -928,7 +966,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 self.work.replay = true;
                 return self.schedule(action, token);
             }
-            if (self.schedule(action, token)) |result| return result;
+            if (if (fixed == null) self.schedule(action, token) else @call(.always_inline, schedule, .{ self, action, token })) |result| return result;
             return self.continueAfterStatement(token);
         }
 
@@ -937,7 +975,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 self.state = .statement;
                 return null;
             }
-            return self.beginNext(token);
+            return if (metered or cancellable or fixed == null)
+                self.beginNext(token)
+            else
+                @call(.always_inline, beginNext, .{ self, token });
         }
 
         fn openAttributes(self: *Self, token: lex.Token) void {

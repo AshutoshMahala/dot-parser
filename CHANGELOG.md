@@ -6,6 +6,10 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Recover statement-heavy fixed-policy parsing throughput by inlining synchronous
+  grammar boundaries, eliminating intermediate result copies. Runtime policies
+  and metered/cancellable execution retain ordinary calls; checks, factual counters,
+  diagnostics and storage layouts are unchanged.
 - Add `presets.standard` and `presets.lenient` as ordinary, complete policy values.
   Lenient changes only syntax acceptance; defaults stay unchanged. Each empty
   statement, exact long operator (`---`/`-->`), and bare dash has independent

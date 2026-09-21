@@ -486,6 +486,22 @@ consumers. `bench-policy` compares fixed, runtime-baseline and runtime-override
 paths; its standard-machine timing/binary-size gate remains pending. Recorded
 baselines and package version are unchanged.
 
+**Statement-boundary performance fix (2026-09-20).** Factual counters enlarged
+the internal optional parse result from 8 to 20 bytes on native arm64. Even
+continuing/null returns incurred extra stack/return-buffer traffic in hot grammar
+helpers; compile-time removal of acceptance branches did not remove that cost.
+Force inline calls to `beginNext`, `finishPending` and `schedule` only for the
+fixed-policy unmetered, uncancellable engine. Runtime-policy and metered/cancellable
+engines retain ordinary method calls: forcing inlining had mixed costs there,
+and even `@call(.auto)` changed bounded-session code generation in Zig 0.16.
+There is still one grammar implementation;
+no counters, checks, limits or source information are dropped, and no state or
+storage fields are added. Local ReleaseFast checks against `eccc595` improved
+geometric-mean throughput by 4.36% across the original 14 L workloads, with
+identical measured allocation counts and bytes. This is a targeted recovery,
+not a guarantee of improvements for every execution profile or complete parity
+with pre-policy performance; the standard-machine gate above remains open.
+
 The parser has one policy-specialized `Machine`, with `ParseSettings` and
 borrowed scratch kept separate. The previous machine/validation wrappers,
 duplicated options, scanner-selection aliases and retired-root-hook detection
