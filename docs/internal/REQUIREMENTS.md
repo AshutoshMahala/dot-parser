@@ -274,7 +274,14 @@ patches. Parse/measure operations and `Profile.Session` use the same policy
 model. Sessions bind settings at initialization/reset, retain them across yields,
 and reject invalid resets before touching existing work. Completed session
 documents can be validated/interpreted separately using that bound policy.
-Syntax leniency remains the next slice. Q35 records the provisional handling
+Syntax acceptance now uses the same policy model: `presets.standard` preserves
+defaults, and `presets.lenient` changes only empty-statement, exact long-operator
+and bare-dash acceptance to warnings. Per-rule reject/warn/accept semantics and
+bare-dash `.from_keyword` interpretation apply at both binding times. Factual
+u32 deviation/warning counters survive diagnostic suppression and later failure;
+source ranges remain original, while retained structure may normalize operators
+or omit empty statements. No per-record policy/history storage is added.
+Q35 records the provisional handling
 of inapplicable graph fields and the remaining standard-machine performance gate.
 
 ### R-MOD-006: Unsupported input is distinct from invalid input
@@ -1316,3 +1323,10 @@ recorded here.
   policy-bound sessions. The fixed-only specialization and runtime parity tests
   do not replace the pending standard-machine performance gate; lenient syntax
   remains unimplemented.
+
+- 2026-09-20 — **R-MOD-005 / R-DX-003 / Q36**: initial syntax-policy slice is
+  implemented. Named `standard` and `lenient` presets compose ordinary policies;
+  defaults, recovery and validation remain independent. Factual u32 counters
+  survive dropped diagnostics and failure, normalized operators keep original
+  ranges, and no per-node/edge history is retained. Optional history and further
+  syntax extensions remain deferred.

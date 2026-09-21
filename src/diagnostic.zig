@@ -165,6 +165,7 @@ pub const Sequence = struct {
     pub const unexpected_end: SequenceDefinition = .{ .number = 31, .alias = "UNEXPECTED_END" };
     pub const unterminated: SequenceDefinition = .{ .number = 32, .alias = "UNTERMINATED" };
     pub const ambiguous: SequenceDefinition = .{ .number = 33, .alias = "AMBIGUOUS" };
+    pub const empty_statement: SequenceDefinition = .{ .number = 34, .alias = "EMPTY_STATEMENT" };
 };
 
 /// The diagnostic registry.
@@ -182,6 +183,10 @@ pub const Code = enum {
     /// edge operator (`a - b`, `a - > b`), or an over-long one (`-->`, `---`).
     /// Emitted with `Details.invalid_operator`.
     syntax_invalid_operator,
+    /// W.Syntax.Operator.003 — malformed spelling accepted under syntax policy.
+    syntax_operator_accepted,
+    /// W.Syntax.Grammar.034 — an empty statement omitted under syntax policy.
+    syntax_empty_statement,
     /// E.Syntax.Numeral.001 (MISSING) — '.' or '-.' without the digit a DOT
     /// numeral requires. Emitted with `Details.incomplete_numeral`.
     syntax_incomplete_numeral,
@@ -273,6 +278,22 @@ pub const Code = enum {
                 .sequence = Sequence.missing,
                 .summary = "a numeral needs a digit after '.'",
                 .hint = "write a digit after the dot (for example '.5'), or quote the text to use it as a name",
+            },
+            .syntax_operator_accepted => .{
+                .severity = .warning,
+                .component = .syntax,
+                .primary = .operator,
+                .sequence = Sequence.invalid,
+                .summary = "edge operator accepted with a policy-selected interpretation",
+                .hint = "write the selected two-character operator to make the interpretation explicit",
+            },
+            .syntax_empty_statement => .{
+                .severity = .warning,
+                .component = .syntax,
+                .primary = .grammar,
+                .sequence = Sequence.empty_statement,
+                .summary = "empty statement accepted and omitted",
+                .hint = "remove the extra semicolon; no statement is retained for it",
             },
             .syntax_unterminated_construct => .{
                 .severity = .err,
@@ -462,6 +483,11 @@ pub const Details = union(enum) {
     invalid_byte: u8,
     /// For `syntax_invalid_operator`.
     invalid_operator: InvalidOperator,
+    /// Records the actual assumption, not an inference from the warning text.
+    accepted_operator: struct {
+        operator: OperatorMismatch.Operator,
+        reason: enum { long_shape, from_keyword },
+    },
     /// For `syntax_incomplete_numeral`: the byte found where a digit was
     /// required, or null when the input ended there.
     incomplete_numeral: ?u8,

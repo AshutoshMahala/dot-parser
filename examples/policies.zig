@@ -3,6 +3,15 @@ const std = @import("std");
 const dot = @import("dot_parser");
 
 pub fn main() !void {
+    // Named presets are ordinary Policy values. Select the whole baseline, or
+    // copy just .syntax to preserve unrelated custom settings.
+    const Lenient = dot.Profile(.{ .policy = dot.presets.lenient });
+    var accepted = Lenient.parseAndValidate(std.heap.page_allocator, "digraph { ; a --> b - c; ; }", dot.diagnostic.discard, .{});
+    defer accepted.deinit(std.heap.page_allocator);
+    if (!accepted.documentValid() or accepted.accepted_deviations != 4 or accepted.warnings != 4)
+        return error.LenientParseFailed;
+    std.debug.print("lenient preset: {d} deviations, {d} warnings (discarded, still counted)\n", .{ accepted.accepted_deviations, accepted.warnings });
+
     const Fixed = dot.Profile(.{ .policy = .{ .validation = .{
         .graph = .{ .operator_mismatch = .warning, .operator_reading = .conform_to_kind },
         .digraph = .{ .operator_mismatch = .err },
@@ -19,6 +28,12 @@ pub fn main() !void {
     });
 
     const Runtime = dot.Profile(.{ .runtime_policy = true });
+    var dynamic_syntax = try Runtime.parseBorrowed(std.heap.page_allocator, "graph { a --- b }", dot.diagnostic.discard, .{
+        .policy = .{ .syntax = dot.presets.lenient.syntax },
+    });
+    defer dynamic_syntax.deinit(std.heap.page_allocator);
+    if (dynamic_syntax.outcome != .success or dynamic_syntax.accepted_deviations != 1)
+        return error.LenientParseFailed;
     const patch: dot.Policy = .{ .validation = .{ .graph = .{ .treated_as = .auto } } };
     // Optional preflight; every policy-aware operation also checks automatically.
     switch (Runtime.validatePolicy(patch)) {

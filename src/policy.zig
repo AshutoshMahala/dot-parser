@@ -6,6 +6,9 @@ pub const GraphTreatment = enum { undigraph, digraph, generic, auto };
 pub const RuleSeverity = enum { err, warning, off };
 pub const OperatorReading = enum { as_written, conform_to_kind };
 pub const ScannerBackend = enum { scalar, block };
+pub const Acceptance = enum { reject, warn, accept };
+/// The written DOT keyword, never the effective graph kind or nearby edges.
+pub const BareDashInterpretation = enum { from_keyword };
 pub const Recovery = enum {
     /// Stop at the first failure.
     fail_fast,
@@ -17,11 +20,21 @@ pub const Recovery = enum {
 /// One input schema for compiled baselines and per-operation runtime patches.
 /// null inherits the baseline leaf; omitted sibling branches never reset.
 pub const Policy = struct {
+    syntax: Syntax = .{},
     validation: Validation = .{},
     limits: Limits = .{},
     recovery: ?Recovery = null,
     scanner: ?ScannerBackend = null,
     execution: Execution = .{},
+
+    pub const Syntax = struct {
+        empty_statement: ?Acceptance = null,
+        long_operator: ?Acceptance = null,
+        bare_dash: struct {
+            acceptance: ?Acceptance = null,
+            interpretation: ?BareDashInterpretation = null,
+        } = .{},
+    };
 
     pub const Limits = struct {
         /// Active subgraph depth; root is zero. Independent of scratch capacity.
@@ -69,12 +82,29 @@ pub const ValidationSettings = struct {
 };
 
 pub const ParseSettings = struct {
+    syntax: SyntaxSettings = .{},
     limits: struct {
         max_nesting: usize = @import("std").math.maxInt(usize),
         max_statements: usize = @import("std").math.maxInt(usize),
         max_attributes: usize = @import("std").math.maxInt(usize),
     } = .{},
     recovery: Recovery = .fail_fast,
+};
+
+pub const SyntaxSettings = struct {
+    empty_statement: Acceptance = .reject,
+    long_operator: Acceptance = .reject,
+    bare_dash: struct {
+        acceptance: Acceptance = .reject,
+        interpretation: BareDashInterpretation = .from_keyword,
+    } = .{},
+
+    pub fn acceptsOperators(self: SyntaxSettings) bool {
+        return self.long_operator != .reject or self.bare_dash.acceptance != .reject;
+    }
+    pub fn acceptsDeviations(self: SyntaxSettings) bool {
+        return self.empty_statement != .reject or self.acceptsOperators();
+    }
 };
 
 pub const Effective = struct {
@@ -88,6 +118,38 @@ pub const Effective = struct {
 };
 
 pub const defaults: Effective = .{};
+
+/// Ordinary, complete Policy values, not a separate parser mode. Passing a
+/// complete preset as a runtime patch replaces every baseline leaf; use only
+/// its .syntax subtree to change syntax without resetting other choices.
+pub const presets = struct {
+    pub const standard: Policy = .{
+        .syntax = .{
+            .empty_statement = .reject,
+            .long_operator = .reject,
+            .bare_dash = .{ .acceptance = .reject, .interpretation = .from_keyword },
+        },
+        .validation = .{
+            .graph = .{ .treated_as = .undigraph, .operator_mismatch = .err, .operator_reading = .as_written },
+            .digraph = .{ .operator_mismatch = .err, .operator_reading = .as_written },
+        },
+        .limits = .{
+            .max_nesting = defaults.parsing.limits.max_nesting,
+            .max_statements = defaults.parsing.limits.max_statements,
+            .max_attributes = defaults.parsing.limits.max_attributes,
+        },
+        .recovery = .fail_fast,
+        .scanner = .scalar,
+        .execution = .{ .metering = false, .cancellation = false },
+    };
+    pub const lenient: Policy = blk: {
+        var input = standard;
+        input.syntax.empty_statement = .warn;
+        input.syntax.long_operator = .warn;
+        input.syntax.bare_dash.acceptance = .warn;
+        break :blk input;
+    };
+};
 
 pub fn resolve(baseline: Effective, input: Policy) Effective {
     const graph = input.validation.graph;
@@ -107,6 +169,14 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
             },
         },
         .parsing = .{
+            .syntax = .{
+                .empty_statement = input.syntax.empty_statement orelse baseline.parsing.syntax.empty_statement,
+                .long_operator = input.syntax.long_operator orelse baseline.parsing.syntax.long_operator,
+                .bare_dash = .{
+                    .acceptance = input.syntax.bare_dash.acceptance orelse baseline.parsing.syntax.bare_dash.acceptance,
+                    .interpretation = input.syntax.bare_dash.interpretation orelse baseline.parsing.syntax.bare_dash.interpretation,
+                },
+            },
             .limits = .{
                 .max_nesting = input.limits.max_nesting orelse baseline.parsing.limits.max_nesting,
                 .max_statements = input.limits.max_statements orelse baseline.parsing.limits.max_statements,
@@ -159,6 +229,23 @@ pub const Config = struct {
     policy: Policy = .{},
     runtime_policy: bool = false,
 };
+
+test "named standard is the complete default and lenient changes only syntax" {
+    const std = @import("std");
+    try std.testing.expectEqualDeep(defaults, resolve(defaults, presets.standard));
+    const lenient = resolve(defaults, presets.lenient);
+    try std.testing.expectEqualDeep(defaults.validation, lenient.validation);
+    try std.testing.expectEqualDeep(defaults.parsing.limits, lenient.parsing.limits);
+    try std.testing.expectEqual(defaults.parsing.recovery, lenient.parsing.recovery);
+    try std.testing.expectEqual(defaults.scanner, lenient.scanner);
+    try std.testing.expectEqualDeep(defaults.execution, lenient.execution);
+    try std.testing.expectEqualDeep(lenient, resolve(lenient, .{}));
+    const partial = resolve(lenient, .{ .syntax = .{ .bare_dash = .{ .acceptance = .reject } } });
+    try std.testing.expectEqual(Acceptance.warn, partial.parsing.syntax.empty_statement);
+    try std.testing.expectEqual(Acceptance.warn, partial.parsing.syntax.long_operator);
+    try std.testing.expectEqual(Acceptance.reject, partial.parsing.syntax.bare_dash.acceptance);
+    try std.testing.expectEqual(BareDashInterpretation.from_keyword, partial.parsing.syntax.bare_dash.interpretation);
+}
 
 test "omitted leaves inherit without changing the sibling header branch" {
     const std = @import("std");

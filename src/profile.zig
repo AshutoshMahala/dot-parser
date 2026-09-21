@@ -152,12 +152,22 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         pub fn parseAndValidate(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: CheckOptions) Checked(api.CheckResult) {
             const effective = if (runtime_policy) try settings(options) else settings(options);
             var parsed = parseResolved(.parseBorrowed, api.ParseResult, .{ allocator, source, diagnostics, options.parse }, effective, options.cancellation);
-            if (parsed.document == null) return .{ .outcome = parsed.outcome, .diagnostic_delivery = parsed.diagnostic_delivery };
+            if (parsed.document == null) return .{
+                .outcome = parsed.outcome,
+                .diagnostic_delivery = parsed.diagnostic_delivery,
+                .accepted_deviations = parsed.accepted_deviations,
+                .warnings = parsed.warnings,
+            };
             const checked = validateResolved(&parsed.document.?, diagnostics, validationSettings(effective));
             return .{
                 .document = parsed.document,
                 .outcome = parsed.outcome,
                 .validation = checked,
+                .accepted_deviations = parsed.accepted_deviations,
+                // Parsed source has u32 length. Each syntax warning consumes a
+                // distinct span; a mismatch adds at most one per operator/right
+                // endpoint pair, so their combined count fits the same domain.
+                .warnings = parsed.warnings + @as(u32, @intCast(checked.outcome.completed.warnings)),
                 .diagnostic_delivery = if (parsed.diagnostic_delivery == .failed or checked.diagnostic_delivery == .failed) .failed else .complete,
             };
         }

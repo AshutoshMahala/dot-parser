@@ -2,11 +2,84 @@
 
 `dot.Profile(...)` binds a typed policy at compile time. Runtime overrides are
 off by default. Policies configure limits, recovery, scanner selection,
-execution, graph validation and effective interpretation. Syntax leniency is
-the next slice; this work does not broaden the grammar or rewrite source.
+execution, syntax acceptance, graph validation and effective interpretation.
+Policies never rewrite source bytes.
 
 The ordinary `dot.validate` and `dot.parseAndValidate` functions keep their strict
 defaults. [Runnable example](../examples/policies.zig).
+
+## Standard and lenient presets
+
+`dot.presets.standard` names the library defaults; `dot.Profile(.{})` is
+equivalent. `standard` is not called `strict`, which is also a DOT keyword with
+unrelated duplicate-edge semantics. `dot.presets.lenient` changes only the three
+syntax rules below to `.warn`. Both are ordinary, complete `dot.Policy` values,
+not flags, alternate parsers, or validation bypasses. Runtime support remains
+off unless explicitly enabled in `Profile`.
+
+```zig
+const Lenient = dot.Profile(.{ .policy = dot.presets.lenient });
+var parsed = Lenient.parseBorrowed(allocator, "digraph { ; a --> b - c }", bag.sink(), .{});
+defer parsed.deinit(allocator);
+// success; accepted_deviations == 3, warnings == 3
+
+const Runtime = dot.Profile(.{ .runtime_policy = true });
+var dynamic = try Runtime.parseBorrowed(allocator, source, bag.sink(), .{
+    .policy = .{ .syntax = dot.presets.lenient.syntax },
+});
+defer dynamic.deinit(allocator);
+```
+
+Passing a **complete preset** as a runtime patch replaces every baseline field,
+including limits, scanner and execution settings. Copy only `.syntax`, as above,
+to preserve the other baseline choices. To customize a compile-time preset, use
+a comptime block returning a modified copy of its `Policy` value. Individual
+runtime fields remain independently overridable, for example
+`.{ .syntax = .{ .long_operator = .reject } }` against a lenient baseline.
+
+| Policy field | `standard` | `lenient` | Meaning when accepted |
+| --- | --- | --- | --- |
+| `syntax.empty_statement` | `.reject` | `.warn` | Omit a standalone `;` at a statement boundary; an ordinary optional statement terminator is not a deviation |
+| `syntax.long_operator` | `.reject` | `.warn` | Exact `---` becomes `--`; exact `-->` becomes `->`, independent of graph kind |
+| `syntax.bare_dash.acceptance` | `.reject` | `.warn` | Accept `-` only in an edge-operator position |
+| `syntax.bare_dash.interpretation` | `.from_keyword` | `.from_keyword` | Written `graph` supplies `--`; written `digraph` supplies `->` |
+
+`Acceptance` has `.reject`, `.warn`, and `.accept`. `.warn` accepts and emits a
+warning; `.accept` accepts silently but still counts the deviation. Every leaf
+supports the same compile-time/runtime values and nested inheritance. Interpretation
+currently has only `.from_keyword`; it stays dormant when acceptance is rejected.
+
+Bare-dash interpretation uses the **written header**, even for a `graph` treated
+as `.digraph`, `.generic`, or `.auto`. Syntax normalization precedes graph
+validation and any effective conformance view: accepted `-->` can promote auto to
+generic; a bare dash in `graph` cannot. A syntax warning and a mismatch warning
+are separate facts. Lenient does not enable recovery, soften mismatch errors,
+guess missing delimiters/headers, accept spaced operators, or allow keywords as
+names. Negative numeric IDs and dashes in strings/comments are unaffected.
+
+**Information loss:** retained structure drops empty statements and stores
+normalized operators. Original bytes are unchanged, and operator ranges still
+cover `-`, `---`, or `-->`. There is no per-edge duplicate spelling or hidden
+history allocation. Counters are summaries, not an audit trail. Changing syntax
+policy later requires reparsing; validating the normalized document cannot
+reconstruct dropped syntax or reject its former spelling.
+
+`ParseResult`, `FixedParseResult`, `MeasureResult` and `SessionProgress` expose
+`accepted_deviations: u32` and `warnings: u32`. Counts describe actual acceptances
+and produced syntax warnings, even before later failure/cancellation and even
+with a discard, full, filtered or failing sink. Lexer numeral warnings count as
+warnings, not accepted deviations. `CheckResult.accepted_deviations` preserves
+the parse count; its `warnings` totals syntax and validation warnings. Staged
+validation's count remains in `ValidationResult.outcome.completed.warnings`.
+The u32 counters are bounded by the u32 source domain; they do not retain history.
+
+Empty statements consume neither statement pool capacity nor `max_statements`;
+they still consume lexical/grammar work and count as deviations. Metered sessions
+charge their normal scan/grammar steps; each acceptance warning is a diagnostic
+callout on the accepting grammar step. Diagnostic callbacks remain outside the
+credit guarantee. There is no new warning-volume limit; use a bounded bag/sink
+and execution budgets where needed. Accepted syntax can commit; recovery after a
+rejected construct still aborts and never publishes a partial document.
 
 ## Fixed baseline
 
@@ -194,9 +267,10 @@ uncancellable, scalar). There is no separate execution-settings system.
 
 ## Staged validation and interpretation
 
-Syntax remains source truth. `Document.kind` has type `DeclaredGraphKind`
+`Document.kind` has type `DeclaredGraphKind`
 (`.undigraph` or `.digraph`); a policy never changes it. `EdgeView.operator` and
-source ranges likewise remain as parsed. The public `GraphKind` now denotes the
+source ranges likewise remain as parsed: normalization may supply the syntax
+operator, but its range always preserves the original spelling. The public `GraphKind` now denotes the
 three-valued effective kind; code that previously used it to type stored header
 facts should use `DeclaredGraphKind` instead.
 
@@ -209,7 +283,7 @@ const kind = document.effectiveKind(view);
 var edges = document.edgeIterator();
 while (edges.next()) |edge| {
     const operator = edge.effectiveOperator(document, view);
-    // Consume kind/operator without replacing the original syntax.
+    // Consume kind/operator without replacing the parsed syntax or source.
     _ = operator;
 }
 _ = kind;
@@ -254,15 +328,20 @@ per source byte. Allocator-backed and fixed-storage adapters share one grammar.
 
 On the current native 64-bit Zig 0.16.0 build, these views occupy 0/1/2 bytes,
 respectively, and `Diagnostic` remains 80 bytes. The default fixed session is
-1,040 bytes, `BoundedSession` is 1,080 bytes, and a runtime-enabled session is
-1,256 bytes. No fields were added to `Document` or edge storage. These are layout
-observations, not a throughput or
+1,064 bytes, `BoundedSession` is 1,104 bytes, and a runtime-enabled session is
+1,280 bytes. A fixed lenient session is also 1,064 bytes. Compared with the
+pre-syntax-policy implementation, the factual result/progress counters add
+8 bytes to each result/progress value and 24 bytes to each of these session
+types (including their terminal-result storage and alignment). Standard fixed
+grammar machines exclude the acceptance counter and normalization path; their
+public result fields remain present and report zero deviations. No fields were
+added to `Document` or edge storage. These are layout observations, not a throughput or
 binary-size baseline. Performance comparisons still belong on the standard
 benchmark machine; this work does not replace its baseline. Run
 `zig build bench-policy -Doptimize=ReleaseFast` there for equivalent fixed,
 runtime-baseline and runtime-override paths. `zig build check-benches` compiles
 the probes without running or changing baselines.
 
-Still outside this slice: syntax leniency (empty statements, bare/long operators
-and factual counters), HTML, bounded validation, allocator-backed resumable
+Still outside this slice: keyword-as-name acceptance, deviation history, HTML,
+bounded validation, allocator-backed resumable
 sessions, semantic resolution, custom rules, and graph conversion/export.

@@ -21,7 +21,9 @@
 //! which is supported as an identifier).
 //!
 //! The parser is kind-agnostic: both edge operators parse structurally and
-//! the written operator is preserved in the emitted event. Whether an
+//! the syntax operator is preserved in the emitted event. Accepted malformed
+//! spellings are normalized under syntax policy; their original spans remain.
+//! Whether an
 //! operator is legal for the document's kind is validation policy (step 7),
 //! never a parse error.
 //!
@@ -88,7 +90,7 @@ pub const Outcome = union(enum) {
     success,
     /// Explicit cancellation or an observed caller request; no diagnostic.
     cancelled,
-    /// The input is malformed in any DOT dialect.
+    /// The input is not accepted by the selected syntax policy.
     invalid_syntax,
     /// Parsing reached a recognized DOT construct that this profile cannot
     /// process (a deferred feature) and stopped at that boundary. Neither
@@ -109,6 +111,8 @@ pub const DiagnosticDelivery = diagnostic.Delivery;
 pub const Result = struct {
     outcome: Outcome,
     diagnostic_delivery: DiagnosticDelivery = .complete,
+    accepted_deviations: u32 = 0,
+    warnings: u32 = 0,
 };
 
 // Internal execution vocabulary, not re-exported from root.zig.
@@ -133,6 +137,8 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         syntax_event.assertSyntaxSink(info.pointer.child);
     }
     const recovery_enabled = if (fixed) |value| value.recovery == .statements else true;
+    const deviations_enabled = if (fixed) |value| value.syntax.acceptsDeviations() else true;
+    const operators_enabled = if (fixed) |value| value.syntax.acceptsOperators() else true;
     return struct {
         const Self = @This();
 
@@ -166,6 +172,9 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         open_bracket_span: ?location.Span = null,
         pending: enum { node, edge, edge_chain, attributes } = .node,
         delivery: DiagnosticDelivery = .complete,
+        /// At most one acceptance per consumed nonempty span in a u32 source.
+        deviations: if (deviations_enabled) u32 else void = if (deviations_enabled) 0 else {},
+        warnings: u32 = 0,
         /// Span of the innermost scope's `{`, once consumed — the related location
         /// reported when the input ends inside the body.
         open_brace_span: ?location.Span = null,
@@ -275,6 +284,77 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             return if (fixed) |value| value.recovery else self.settings.recovery;
         }
 
+        fn syntax(self: *const Self) policy.SyntaxSettings {
+            return if (fixed) |value| value.syntax else self.settings.syntax;
+        }
+
+        pub fn acceptedDeviations(self: *const Self) u32 {
+            return if (deviations_enabled) self.deviations else 0;
+        }
+
+        fn warn(self: *Self, d: diagnostic.Diagnostic) void {
+            self.warnings += 1;
+            self.diagnostics.emit(d) catch {
+                self.delivery = .failed;
+            };
+        }
+
+        fn acceptDeviation(self: *Self, acceptance: policy.Acceptance, d: diagnostic.Diagnostic) void {
+            if (!deviations_enabled) unreachable;
+            std.debug.assert(acceptance != .reject);
+            self.deviations += 1;
+            if (acceptance == .warn) self.warn(d);
+        }
+
+        /// Reuse scanners' exact malformed-operator recognition on the cold
+        /// failure path. No scanner flags, new token tags, source rescans or
+        /// extra per-byte branches. A candidate is consumed/diagnosed only by
+        /// its grammar transition, including after a port/link lookahead replay.
+        fn operatorCandidate(self: *Self, d: diagnostic.Diagnostic) ?lex.Token {
+            if (!operators_enabled) return null;
+            if (d.details != .invalid_operator) return null;
+            switch (self.state) {
+                .after_identifier, .after_subgraph, .edge_terminate, .chain_after_identifier, .port_after_first, .port_after_second => {},
+                else => return null,
+            }
+            const tag: lex.Token.Tag = switch (d.details.invalid_operator.shape) {
+                .spaced => return null,
+                .long => blk: {
+                    if (self.syntax().long_operator == .reject) return null;
+                    break :blk if (d.details.invalid_operator.found == '>') .edge_directed else .edge_undirected;
+                },
+                .lone => blk: {
+                    if (self.syntax().bare_dash.acceptance == .reject) return null;
+                    break :blk switch (self.syntax().bare_dash.interpretation) {
+                        .from_keyword => if (self.kind == .digraph) .edge_directed else .edge_undirected,
+                    };
+                },
+            };
+            self.tokens.resumeAfterFailure();
+            return .{ .tag = tag, .span = d.span };
+        }
+
+        fn readOperator(self: *Self, token: lex.Token) syntax_event.EdgeOperator {
+            const operator: syntax_event.EdgeOperator = if (token.tag == .edge_undirected) .undirected else .directed;
+            if (operators_enabled and token.span.len != 2) {
+                const bare = token.span.len == 1;
+                self.acceptDeviation(if (bare) self.syntax().bare_dash.acceptance else self.syntax().long_operator, .{
+                    .code = .syntax_operator_accepted,
+                    .span = token.span,
+                    .details = .{ .accepted_operator = .{
+                        .operator = if (operator == .directed) .directed else .undirected,
+                        .reason = if (bare) .from_keyword else .long_shape,
+                    } },
+                    .fix = .{
+                        .span = token.span,
+                        .edit = .{ .replace = if (operator == .directed) .directed_operator else .undirected_operator },
+                        .applicability = .machine_applicable,
+                    },
+                });
+            }
+            return operator;
+        }
+
         pub fn runToCompletion(self: *Self) Result {
             if (metered) {
                 while (true) {
@@ -297,7 +377,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             if (self.terminal) |result| return result;
             const token = switch (self.tokens.next()) {
                 .token => |token| token,
-                .failure => return self.fail(self.tokens.failureDiagnostic()),
+                .failure => blk: {
+                    const d = self.tokens.failureDiagnostic();
+                    break :blk self.operatorCandidate(d) orelse return self.fail(d);
+                },
             };
             self.forwardWarning();
             return self.transition(token);
@@ -308,9 +391,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         /// work credits like every other diagnostic callout.
         fn forwardWarning(self: *Self) void {
             if (self.tokens.takeWarning()) |warning| {
-                self.diagnostics.emit(warning) catch {
-                    self.delivery = .failed;
-                };
+                self.warn(warning);
             }
         }
 
@@ -348,7 +429,13 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                                 self.work.token = token;
                                 self.work.phase = .grammar;
                             },
-                            .failure => _ = self.fail(self.tokens.failureDiagnostic()),
+                            .failure => {
+                                const d = self.tokens.failureDiagnostic();
+                                if (self.operatorCandidate(d)) |token| {
+                                    self.work.token = token;
+                                    self.work.phase = .grammar;
+                                } else _ = self.fail(d);
+                            },
                         };
                     },
                     .grammar => {
@@ -457,7 +544,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                     },
                     .after_subgraph => {
                         if (token.tag == .edge_directed or token.tag == .edge_undirected) {
-                            self.operator = if (token.tag == .edge_undirected) .undirected else .directed;
+                            self.operator = self.readOperator(token);
                             self.operator_span = token.span;
                             self.state = .edge_right;
                         } else if (token.tag == .colon or token.tag == .left_bracket) {
@@ -487,7 +574,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         },
                         .left_bracket => self.openAttributes(token),
                         .edge_undirected, .edge_directed => {
-                            self.operator = if (token.tag == .edge_undirected) .undirected else .directed;
+                            self.operator = self.readOperator(token);
                             self.operator_span = token.span;
                             self.state = .edge_right;
                         },
@@ -512,7 +599,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         },
                         .left_bracket => self.openAttributes(token),
                         .edge_undirected, .edge_directed => {
-                            self.link_operator = if (token.tag == .edge_undirected) .undirected else .directed;
+                            self.link_operator = self.readOperator(token);
                             self.link_operator_span = token.span;
                             self.state = .chain_right;
                         },
@@ -682,6 +769,15 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         }
 
         fn beginNext(self: *Self, token: lex.Token) ?Result {
+            if (deviations_enabled and token.tag == .semicolon and self.syntax().empty_statement != .reject) {
+                self.acceptDeviation(self.syntax().empty_statement, .{
+                    .code = .syntax_empty_statement,
+                    .span = token.span,
+                    .fix = .{ .span = token.span, .edit = .delete, .applicability = .machine_applicable },
+                });
+                self.state = .statement;
+                return null;
+            }
             switch (token.tag) {
                 .identifier => return self.beginStatement(token),
                 .right_brace => {
@@ -1024,7 +1120,12 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
 
         fn finish(self: *Self, outcome: Outcome) Result {
             if (self.scratch) |scratch| scratch.len = 0;
-            const result: Result = .{ .outcome = outcome, .diagnostic_delivery = self.delivery };
+            const result: Result = .{
+                .outcome = outcome,
+                .diagnostic_delivery = self.delivery,
+                .accepted_deviations = self.acceptedDeviations(),
+                .warnings = self.warnings,
+            };
             self.terminal = result;
             if (metered or cancellable) self.work.phase = .terminal;
             return result;
@@ -1794,6 +1895,39 @@ fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool) ty
         try expectEqual(reference_diags.attempts, diags.attempts);
     }
     return total;
+}
+
+test "lenient syntax partitions preserve events counters diagnostics and charged work" {
+    const settings = policy.resolve(policy.defaults, policy.presets.lenient).parsing;
+    const source = "graph { ; { ; a:p:e --- b:q - c:r } - { d } --- e -- f; ; }";
+    inline for (.{ scalar_lex.Scanner, block_lex.Scanner }) |ScannerOf| {
+        const total = try checkBudgetPartition(ScannerOf, source, &.{1}, settings, null, false);
+        try expectEqual(total, try checkBudgetPartition(ScannerOf, source, &.{ 0, 3, 17 }, settings, null, false));
+        _ = try checkBudgetPartition(ScannerOf, source, &.{ 0, 1, 5 }, settings, null, true);
+        // Every prefix terminates identically, including incomplete operators,
+        // ports, subgraphs, and right endpoints after an accepted deviation.
+        for (0..source.len + 1) |end|
+            _ = try checkBudgetPartition(ScannerOf, source[0..end], &.{ 0, 1, 3 }, settings, null, false);
+        var events: BudgetSink = .{};
+        var frames: scratch_impl.Fixed(.{ .nesting = 32 }) = .{};
+        var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+        try expect(testing.run(source, &events, diagnostic.discard, settings, &stack).outcome == .success);
+        for (0..events.attempts) |index|
+            _ = try checkBudgetPartition(ScannerOf, source, &.{ 0, 1, 5 }, settings, index, false);
+        var recovering = settings;
+        recovering.recovery = .statements;
+        _ = try checkBudgetPartition(ScannerOf, "graph { ; a[x=]; ; b --- c; d - > e; ; }", &.{ 0, 1, 5 }, recovering, null, false);
+    }
+}
+
+test "fixed standard syntax excludes acceptance storage and keeps scanner layout" {
+    const Standard = Machine(*BudgetSink, false, false, false, scalar_lex.Scanner, policy.defaults.parsing);
+    const Lenient = Machine(*BudgetSink, false, false, false, scalar_lex.Scanner, policy.resolve(policy.defaults, policy.presets.lenient).parsing);
+    try expect(@FieldType(Standard, "deviations") == void);
+    try expect(@FieldType(Lenient, "deviations") == u32);
+    try expect(@FieldType(Standard, "tokens") == @FieldType(Lenient, "tokens"));
+    try expect(@FieldType(Standard, "settings") == void);
+    try expect(@FieldType(Lenient, "settings") == void);
 }
 
 test "metered parser partitions preserve events diagnostics and independent work accounting" {

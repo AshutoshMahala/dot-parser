@@ -66,6 +66,11 @@ export fn session_policy(source: [*]const u8, len: usize, choice: u8, limit: usi
     const Dynamic = dot.Profile(.{ .runtime_policy = true });
     var storage: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8, .edge_chains = 8, .edge_links = 8 }) = .{};
     const input: dot.Policy = .{
+        .syntax = .{
+            .empty_statement = if (choice & 16 == 0) .reject else .warn,
+            .long_operator = if (choice & 32 == 0) .reject else .accept,
+            .bare_dash = .{ .acceptance = if (choice & 64 == 0) .reject else .warn, .interpretation = .from_keyword },
+        },
         .scanner = if (choice & 1 == 0) .scalar else .block,
         .execution = .{ .metering = choice & 2 != 0, .cancellation = choice & 4 != 0 },
         .limits = .{ .max_statements = limit, .max_attributes = limit, .max_nesting = limit },
@@ -82,5 +87,13 @@ export fn session_policy(source: [*]const u8, len: usize, choice: u8, limit: usi
     // Clear overrides: this must start from the compiled defaults again.
     session.reset("graph {}", dot.diagnostic.discard, .{}) catch return 102;
     if (session.run().outcome != .success) return 103;
-    return count + @intFromEnum(session.result().?.document.?.effectiveKind(session.interpretation().?));
+    return count + result.accepted_deviations + result.warnings + @intFromEnum(session.result().?.document.?.effectiveKind(session.interpretation().?));
+}
+
+// Compile and consume a fixed lenient profile on both freestanding targets too.
+export fn lenient_graph(source: [*]const u8, len: usize) usize {
+    const Lenient = dot.Profile(.{ .policy = dot.presets.lenient });
+    var storage: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8, .edge_chains = 8, .edge_links = 8 }) = .{};
+    const parsed = Lenient.parseBorrowedIn(source[0..len], .{ .document = storage.storage() }, dot.diagnostic.discard, .{});
+    return parsed.accepted_deviations +% parsed.warnings +% (if (parsed.document) |doc| doc.statementCount() else 0);
 }

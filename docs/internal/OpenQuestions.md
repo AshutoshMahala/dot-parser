@@ -282,7 +282,7 @@ that helper separately from the settled ownership boundary.
 **Q35 — Which validation policy does the library expose, and how are mixed
 graphs represented?**
 **Behavior decided (2026-09-20); graph policies and existing-settings migration
-implemented. Lenient syntax remains the next slice.**
+implemented, including the initial syntax-acceptance policies in Q36.**
 
 **Configuration contract.** Use one typed policy model for behavioral settings,
 not an all-boolean feature mask, string-keyed map or a second lenient parser.
@@ -515,7 +515,7 @@ DOT or adequate storage. Delivery status is recorded separately.
 
 **Q36 — Which syntax deviations may be accepted leniently, and how are they
 reported?**
-**Partially decided (2026-09-20); implementation pending.** Syntax acceptance is
+**Initial slice implemented; history and keyword extensions remain open.** Syntax acceptance is
 policy with the same compile-time/runtime semantics as Q35. It runs during
 parsing; validation of a completed document is a separate stage. Default to
 rejection for the deviations below. Opt-in acceptance should warn with the
@@ -529,8 +529,8 @@ a deviation precedes failure; a rejected one can enter existing recovery (Q22).
 | Bare `-` in an edge-operator position | `.from_keyword`, as below | Interpretation decided; acceptance/reporting separate |
 | Reserved keyword as a name | A name only where grammar permits that reading | Deferred until exact name-only contexts are specified |
 
-**Bare-dash decision.** Use a narrow rule (provisional name `bare_dash` or
-`lone_dash`), not a catch-all `malformed_operator` rule. Unlike a long operator,
+**Bare-dash decision.** Use the narrow rule `syntax.bare_dash`,
+not a catch-all `malformed_operator` rule. Unlike a long operator,
 a bare dash does not supply direction. The agreed opt-in action is
 `.from_keyword`, explicitly based on the written header, not an ambiguous
 `.conform` to the interpreted graph kind:
@@ -549,7 +549,7 @@ generic graphs are undirected. Never infer direction from neighboring edges or
 their majority. Only the bare dash in an operator position is affected; negative
 numeric IDs and dashes in strings/comments/other tokens remain unchanged.
 
-Illustrative syntax, not a finalized API:
+Implemented policy input:
 
 ```zig
 .syntax = .{
@@ -577,9 +577,33 @@ syntax policy can require reparsing. A policy states what was allowed, not what
 actually occurred. Counters are not detailed history, and diagnostic suppression
 must not masquerade as absence of deviations.
 
+**Presets and reporting (implemented).** `dot.presets.standard` names the complete
+default `Policy`; `dot.presets.lenient` changes only the three syntax acceptances
+to `.warn`. There is no separate lenient flag or parser. `standard` avoids
+confusion with DOT's unrelated `strict` modifier. A full runtime preset replaces
+all baseline fields; a `.syntax` subtree patch preserves the other settings.
+All leaves have compile-time/runtime parity and ordinary inheritance.
+
+Both scanners retain their strict lexical contract. On the cold failure path,
+the shared parser adapts only recognized operator shapes in eligible grammar
+positions; no new token tags or per-byte policy checks are needed. Normalized
+tokens keep the original range, and warnings/counters occur once at grammar
+acceptance, including across port/chain replay and bounded yields.
+`W.Syntax.Operator.003` records chosen operator and `.long_shape`/`.from_keyword`;
+`W.Syntax.Grammar.034` records an omitted empty statement. Fixes replace with the
+selected operator or delete that semicolon and are machine-applicable under the
+selected interpretation, not a claim about the author's intent.
+
+Parse/measure/session results expose `accepted_deviations: u32` and `warnings: u32`,
+including prefix facts before failure. `CheckResult.warnings` totals syntax and
+validation warnings. Silent acceptance still counts; lexical numeral warnings
+are warnings but not deviations. Empty statements use no statement capacity or
+statement-limit count, but consume work and count as deviations. Standard fixed
+profiles compile out acceptance counters/logic in the grammar machine; public
+result counters remain present. No optional deviation history is retained.
+
 **Still open:** optional typed deviation events or caller-owned history, its
-capacity/overflow/lifetime contract and costs; exact warning/counter payloads and
-fix applicability; keyword contexts; final names/types. Explicit `.directed` or
+capacity/overflow/lifetime contract and costs; keyword contexts. Explicit `.directed` or
 `.undirected` bare-dash interpretations are possible later additions, not an
 agreed initial requirement. Recovery remains separate from successful lenient
 acceptance. No always-on per-node/edge audit metadata or hidden history allocation
@@ -1113,3 +1137,10 @@ field out stays with the profile slice. *(Embodied: `diagnostic.Fix`,
   sessions select one specialized variant and latch it across yields. Removed
   legacy configuration paths, added migration coverage and benchmark harness;
   standard-machine performance approval and lenient syntax remain pending.
+
+- 2026-09-20 — Q36: implemented independent syntax acceptance, `standard` and
+  `lenient` policy presets, source-preserving operator ranges, typed warning/fix
+  payloads, factual u32 counters and fixed/runtime/session parity. The shared
+  grammar reuses cold scanner failure recognition without new token tags.
+  Deviation history, keyword-as-name rules and a warning-volume limit remain
+  separate work; this does not resolve the standard-machine performance gate.

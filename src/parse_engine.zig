@@ -62,49 +62,34 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
             defer scratch.deinit();
 
             const result = drive(source, &builder, diagnostics, &scratch, options);
-            switch (result.outcome) {
-                .scratch_failure => |err| return .{ .outcome = .{ .storage_failure = storageFailure(err) }, .diagnostic_delivery = result.diagnostic_delivery },
-                .success => {},
-                .cancelled => return .{ .outcome = .cancelled, .diagnostic_delivery = result.diagnostic_delivery },
-                .invalid_syntax => return .{
-                    .outcome = .invalid_syntax,
-                    .diagnostic_delivery = result.diagnostic_delivery,
-                },
-                .unsupported_feature => return .{
-                    .outcome = .unsupported_feature,
-                    .diagnostic_delivery = result.diagnostic_delivery,
-                },
-                .resource_exhausted => return .{
-                    .outcome = .resource_exhausted,
-                    .diagnostic_delivery = result.diagnostic_delivery,
-                },
-                // The façade's only event sink is the document builder, so a sink
-                // failure here is by definition a storage failure.
-                .sink_failure => |err| return .{
-                    .outcome = .{ .storage_failure = storageFailure(err) },
-                    .diagnostic_delivery = emitStorageDiagnostic(
-                        diagnostics,
-                        err,
-                        builder.failure_info,
-                        result.diagnostic_delivery,
-                    ),
-                },
+            var output = publicResult(ParseResult, result);
+            if (result.outcome == .sink_failure) {
+                output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, result.outcome.sink_failure, builder.failure_info, result.diagnostic_delivery);
             }
-            const document = builder.toDocument() catch |err| {
-                return .{
-                    .outcome = .{ .storage_failure = storageFailure(err) },
-                    .diagnostic_delivery = emitStorageDiagnostic(
-                        diagnostics,
-                        err,
-                        builder.failure_info,
-                        result.diagnostic_delivery,
-                    ),
-                };
+            if (result.outcome != .success) return output;
+            output.document = builder.toDocument() catch |err| {
+                output.outcome = .{ .storage_failure = storageFailure(err) };
+                output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, err, builder.failure_info, result.diagnostic_delivery);
+                return output;
             };
+            return output;
+        }
+
+        /// Preserve factual counters on every terminal outcome, including storage
+        /// failure after accepted syntax. Builders never own these parse facts.
+        fn publicResult(comptime T: type, result: parser_impl.Result) T {
             return .{
-                .document = document,
-                .outcome = .success,
+                .outcome = switch (result.outcome) {
+                    .success => .success,
+                    .cancelled => .cancelled,
+                    .invalid_syntax => .invalid_syntax,
+                    .unsupported_feature => .unsupported_feature,
+                    .resource_exhausted => .resource_exhausted,
+                    .sink_failure, .scratch_failure => |err| .{ .storage_failure = storageFailure(err) },
+                },
                 .diagnostic_delivery = result.diagnostic_delivery,
+                .accepted_deviations = result.accepted_deviations,
+                .warnings = result.warnings,
             };
         }
 
@@ -193,8 +178,10 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                     .completed_statements = progress.completed_statements,
                     .completed_pairs = progress.completed_pairs,
                     .work_used = progress.work_used,
+                    .accepted_deviations = self.machine.acceptedDeviations(),
+                    .warnings = self.machine.warnings,
                     .outcome = if (self.terminal) |r| r.outcome else null,
-                    .diagnostic_delivery = if (self.terminal) |r| r.diagnostic_delivery else .complete,
+                    .diagnostic_delivery = if (self.terminal) |r| r.diagnostic_delivery else self.machine.delivery,
                 };
             }
 
@@ -238,6 +225,8 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                 self.terminal = .{
                     .document = if (parsed.outcome == .success) self.builder.toDocument() else null,
                     .outcome = outcome,
+                    .accepted_deviations = parsed.accepted_deviations,
+                    .warnings = parsed.warnings,
                     .diagnostic_delivery = if (parsed.outcome == .sink_failure)
                         emitStorageDiagnostic(self.machine.diagnostics, parsed.outcome.sink_failure, self.builder.failure_info, parsed.diagnostic_delivery)
                     else
@@ -255,37 +244,12 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
             var builder = syntax_impl.FixedBuilder.init(source, memory.document);
             var scratch: scratch_impl.Stack = .{ .frames = memory.scratch.frames };
             const result = drive(source, &builder, diagnostics, &scratch, options);
-            switch (result.outcome) {
-                .scratch_failure => |err| return .{ .outcome = .{ .storage_failure = storageFailure(err) }, .diagnostic_delivery = result.diagnostic_delivery },
-                .success => {},
-                .cancelled => return .{ .outcome = .cancelled, .diagnostic_delivery = result.diagnostic_delivery },
-                .invalid_syntax => return .{
-                    .outcome = .invalid_syntax,
-                    .diagnostic_delivery = result.diagnostic_delivery,
-                },
-                .unsupported_feature => return .{
-                    .outcome = .unsupported_feature,
-                    .diagnostic_delivery = result.diagnostic_delivery,
-                },
-                .resource_exhausted => return .{
-                    .outcome = .resource_exhausted,
-                    .diagnostic_delivery = result.diagnostic_delivery,
-                },
-                .sink_failure => |err| return .{
-                    .outcome = .{ .storage_failure = storageFailure(err) },
-                    .diagnostic_delivery = emitStorageDiagnostic(
-                        diagnostics,
-                        err,
-                        builder.failure_info,
-                        result.diagnostic_delivery,
-                    ),
-                },
+            var output = publicResult(FixedParseResult, result);
+            if (result.outcome == .sink_failure) {
+                output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, result.outcome.sink_failure, builder.failure_info, result.diagnostic_delivery);
             }
-            return .{
-                .document = builder.toDocument(),
-                .outcome = .success,
-                .diagnostic_delivery = result.diagnostic_delivery,
-            };
+            if (result.outcome == .success) output.document = builder.toDocument();
+            return output;
         }
 
         pub fn measure(
@@ -320,20 +284,9 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
         ) MeasureResult {
             var counting: syntax_impl.CountingSink = .{};
             const result = drive(source, &counting, diagnostics, scratch, options);
-            return .{
-                .capacities = if (result.outcome == .success) counting.counts else null,
-                .outcome = switch (result.outcome) {
-                    .success => .success,
-                    .invalid_syntax => .invalid_syntax,
-                    .unsupported_feature => .unsupported_feature,
-                    .resource_exhausted => .resource_exhausted,
-                    .scratch_failure => |err| .{ .storage_failure = storageFailure(err) },
-                    // The counting sink cannot fail.
-                    .sink_failure => unreachable,
-                    .cancelled => .cancelled,
-                },
-                .diagnostic_delivery = result.diagnostic_delivery,
-            };
+            var output = publicResult(MeasureResult, result);
+            if (result.outcome == .success) output.capacities = counting.counts;
+            return output;
         }
     };
 }

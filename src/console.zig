@@ -1121,6 +1121,10 @@ fn writeUnderline(
 fn writePrimaryLabel(details: Details, writer: anytype) !void {
     switch (details) {
         .none => unreachable,
+        .accepted_operator => |accepted| try writer.print("read as '{s}' by {s}", .{
+            if (accepted.operator == .directed) "->" else "--",
+            if (accepted.reason == .from_keyword) "the written header (from_keyword)" else "the long operator's shape",
+        }),
         .unterminated => |construct| try writer.print("{s} opened here, never closed", .{unterminatedName(construct)}),
         .expected_quote => |found| try writeExpectedQuote(found, writer),
         .invalid_byte => |byte| {
@@ -1226,6 +1230,10 @@ fn writeUnsigned(writer: anytype, value: usize, width: usize) !void {
 fn writeDetailValue(details: Details, writer: anytype) !void {
     switch (details) {
         .none => unreachable,
+        .accepted_operator => |accepted| try writer.print("read as '{s}' by {s}", .{
+            if (accepted.operator == .directed) "->" else "--",
+            if (accepted.reason == .from_keyword) "the written header (from_keyword)" else "the long operator's shape",
+        }),
         .unterminated => |construct| try writer.print("unterminated {s}", .{unterminatedName(construct)}),
         .expected_quote => |found| try writeExpectedQuote(found, writer),
         .invalid_byte => |byte| {

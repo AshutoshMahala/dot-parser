@@ -16,6 +16,7 @@ test {
     _ = @import("non_ascii.zig");
     _ = @import("policies.zig");
     _ = @import("policy_settings.zig");
+    _ = @import("lenient.zig");
 }
 
 const Rejecting = struct {

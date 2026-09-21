@@ -34,6 +34,9 @@ const scratch_impl = @import("scratch.zig");
 const policy_impl = @import("policy.zig");
 
 pub const Policy = policy_impl.Policy;
+pub const presets = policy_impl.presets;
+pub const Acceptance = policy_impl.Acceptance;
+pub const BareDashInterpretation = policy_impl.BareDashInterpretation;
 pub const PolicyValidation = policy_impl.Check;
 pub const PolicyIssue = policy_impl.Issue;
 pub const PolicyError = policy_impl.Error;
@@ -173,7 +176,7 @@ pub const ParseOutcome = union(enum) {
     success,
     /// A cancellation-enabled operation or a session was cancelled.
     cancelled,
-    /// The input is malformed in any DOT dialect.
+    /// The input is not accepted by the selected syntax policy.
     invalid_syntax,
     /// Parsing stopped at a recognized-but-deferred DOT construct; validity
     /// beyond that boundary is unknown.
@@ -190,6 +193,10 @@ pub const ParseResult = struct {
     document: ?Document = null,
     outcome: ParseOutcome,
     diagnostic_delivery: diagnostic.Delivery,
+    /// Accepted syntax deviations, including silent acceptances before failure.
+    accepted_deviations: u32 = 0,
+    /// Syntax warnings produced, independent of diagnostic retention/delivery.
+    warnings: u32 = 0,
 
     pub fn deinit(self: *ParseResult, allocator: std.mem.Allocator) void {
         if (self.document) |*document| syntax_impl.deinitOwnedDocument(document, allocator);
@@ -217,6 +224,8 @@ pub const FixedParseResult = struct {
     document: ?Document = null,
     outcome: ParseOutcome,
     diagnostic_delivery: diagnostic.Delivery,
+    accepted_deviations: u32 = 0,
+    warnings: u32 = 0,
 };
 
 pub const Cancellation = @import("execution.zig").Cancellation;
@@ -234,6 +243,8 @@ pub const SessionProgress = struct {
     work_used: usize,
     outcome: ?ParseOutcome,
     diagnostic_delivery: diagnostic.Delivery,
+    accepted_deviations: u32 = 0,
+    warnings: u32 = 0,
 };
 
 /// A named policy preset, not a separate execution configuration mechanism.
@@ -249,6 +260,8 @@ pub const MeasureResult = struct {
     capacities: ?DocumentCapacities = null,
     outcome: ParseOutcome,
     diagnostic_delivery: diagnostic.Delivery,
+    accepted_deviations: u32 = 0,
+    warnings: u32 = 0,
 };
 
 /// Count-only parsing with the same policy as retained parsing. Capacities are
@@ -264,6 +277,9 @@ pub const CheckResult = struct {
     outcome: ParseOutcome,
     validation: ?ValidationResult = null,
     diagnostic_delivery: diagnostic.Delivery,
+    accepted_deviations: u32 = 0,
+    /// Total syntax and validation warnings produced, including dropped ones.
+    warnings: u32 = 0,
 
     /// The document parsed completely AND validation found no violations.
     pub fn documentValid(self: *const CheckResult) bool {

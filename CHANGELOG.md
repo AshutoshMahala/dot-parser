@@ -6,6 +6,18 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add `presets.standard` and `presets.lenient` as ordinary, complete policy values.
+  Lenient changes only syntax acceptance; defaults stay unchanged. Each empty
+  statement, exact long operator (`---`/`-->`), and bare dash has independent
+  reject/warn/accept policy with full compile-time/runtime and session parity.
+  Bare dashes use the written graph keyword; normalization retains source ranges.
+- Add factual u32 `accepted_deviations` and `warnings` to parse, measure and
+  session results/progress; composed checks total syntax and validation warnings.
+  Counts survive suppression and later failures. New syntax warnings carry
+  typed assumptions and machine-applicable fixes, without per-edge history.
+  `invalid_syntax` now explicitly means rejected by the selected syntax policy,
+  rather than claiming rejection by every possible DOT dialect.
+
 - Add experimental graph policy profiles: independent `graph`/`digraph` rules,
   `graph.treated_as` (`undigraph`, `digraph`, `generic`, `auto`), error/warning/off
   severity, and source-preserving `.conform_to_kind` interpretation. Runtime
