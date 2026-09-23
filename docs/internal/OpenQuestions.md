@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-20 (separate graph/digraph policies, graph treatment and auto promotion).
+Last reconciled: 2026-09-22 (implemented policy coverage and HTML design clarifications).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -206,6 +206,11 @@ Intentional differences are listed in
 [supported syntax](../SUPPORTED_SYNTAX.md), including standalone-CR comment
 termination and whole-document consumption. Keywords, numeral IDs, quoted
 IDs, non-ASCII bare IDs and basic attributes are implemented.
+**Planned compatibility exception:** Q40 accepts concatenation with HTML-like
+operands to match the pinned Graphviz implementation, beyond the written
+specification's description of double-quoted-string concatenation. This is an
+explicit design exception, not implemented HTML support or a general preference
+for implementation quirks over the specification.
 **Verification pending:** automate the differential harness against the
 pinned reference and record exceptions explicitly; notes first verified by
 running 15.1.0 keep that attribution until the harness re-runs them.
@@ -275,14 +280,69 @@ added until a concrete consumer demonstrates its need and cost; reconsider
 that helper separately from the settled ownership boundary.
 *(Embodied: `src/syntax_event.zig`, builder abort paths; R-MOD-011.)*
 
+**Q37 — How are fix suggestions carried on diagnostics for linters?**
+**Implemented; reconciled 2026-09-22:** `Diagnostic.fix: ?Fix` carries an
+original-source span, typed edit (`delete`, `replace`, `insert_before`,
+`insert_after`, `wrap_in_quotes`), replacement identity and applicability.
+`Replacement.text()` supplies the known replacement bytes; producers do not
+allocate replacement strings or automatically apply edits. Source positions are
+byte ranges; line and column are derived on demand (Q39).
+
+The scanner/parser produce syntax repairs, and accepted lenient deviations
+produce fixes under the selected interpretation (Q36). Operator-mismatch fixes
+are `machine_applicable` under `.conform_to_kind` and `maybe` under
+`.as_written`: a chosen deterministic repair is not proof of author intent.
+Native Zig 0.16.0 measurements record an 80-byte `Diagnostic`, including the
+optional fix; this is a layout observation, not an ABI promise. A future lean
+diagnostics profile that omits fixes is a separate optional-cost decision,
+not unfinished implementation of `Diagnostic.fix`.
+*(Embodied: [diagnostic types](../../src/diagnostic.zig),
+[operator checks](../../src/validation_checks.zig),
+[repair tests](../../tests/diagnostics.zig),
+[policy tests](../../tests/policies.zig), [lenient tests](../../tests/lenient.zig);
+R-DX-007, R-FUNC-005.)*
+
 ---
 
 ## Partially decided
 
 **Q35 — Which validation policy does the library expose, and how are mixed
 graphs represented?**
-**Behavior decided (2026-09-20); graph policies and existing-settings migration
-implemented, including the initial syntax-acceptance policies in Q36.**
+**Initial policy implementation complete; reconciled 2026-09-22.** The typed
+policy core, graph/operator slice, existing-settings migration, Q36's initial
+syntax rules and the additional configurable checks are implemented. Follow-up
+designs and the standard-machine performance gate below remain open; this does
+not mean every future validation or graph-building rule is implemented.
+
+**Coverage at `3e1796b` (checked against source and tests):**
+
+| Area | Implemented contract | Stage / evidence |
+| --- | --- | --- |
+| Typed configuration | `Profile`, one `Policy` schema, per-leaf inheritance, consumer baselines, default-off runtime overrides, `validatePolicy` | Configuration preflight; `src/policy.zig`, `src/profile.zig`, `tests/compile_fail/` |
+| Graph meaning and operators | Separate `validation.graph` / `digraph`, all four graph treatments, mismatch severity, source-preserving effective conformance | Validation / interpretation; `tests/policies.zig` |
+| Existing settings | Nesting/statement/attribute limits, recovery, scanner, independent metering/cancellation | Parse, measure and policy-bound sessions; `tests/policy_settings.zig` |
+| Initial lenient syntax | Empty statements, exact `---`/`-->`, bare `-` from the written header; independent reject/warn/accept choices | Parsing; `tests/lenient.zig` |
+| Numeral ambiguity | `validation.ambiguous_numeral`: error/warning/off, default warning; tokenization is unchanged | Parsing, not a later validation replay; `tests/validation_checks.zig` |
+| Optional checks | Whole-source UTF-8, repeated attribute keys, effective graph-kind restrictions, qualified node references and subgraph occurrences | Post-parse validation; default off; `tests/validation_checks.zig` |
+| Presets and factual results | Complete `standard` / `lenient` policies; deviations and warning counts survive suppression/failure; no hidden history | Q36 and the [public contract](../POLICIES.md) |
+| Diagnostics and fixes | Typed policy-aware findings/fixes; severity affects validity, sink filtering does not; delivery remains separate | Q37; `tests/diagnostics.zig`, `tests/policies.zig`, `tests/validation_checks.zig` |
+
+All implemented policy leaves have compile-time/runtime parity. The runtime
+support switch is a compile-time capability, not an overridable leaf. Limits
+remain `usize` in the current schema; source spans/indices are still u32.
+Parse deviation/warning counters are u32; validation findings and composed
+warning totals are u64 because independent rules can overlap on one source byte.
+Sources, pools, allocators, scratch and callback contexts remain resources, not
+a second settings system. The table identifies existing coverage, not a claim
+that tests or benchmarks were rerun for this documentation reconciliation.
+
+**Not implemented in this scope:** keyword-as-name acceptance, optional deviation
+history, HTML/markup modes, bounded/cancellable validation, live auto-promotion
+events, custom rule/trait adapters, and semantic graph checks/conversion. Required
+attributes, value schemas, cycles, connectivity, degree limits, explicit-node
+requirements and referenced-port resolution need separately designed optional
+passes; the syntax restrictions above do not provide them. Mandatory safety,
+resource enforcement and truthful completion/delivery never become optional.
 
 **Configuration contract.** Use one typed policy model for behavioral settings,
 not an all-boolean feature mask, string-keyed map or a second lenient parser.
@@ -513,13 +573,21 @@ selects error/warning/off during parsing (default warning); validation does not
 retroactively re-run lexical checks. `invalid_utf8`, `repeated_attribute`, and
 consumer restrictions on effective graph kinds, ports and subgraph occurrences
 are independent optional post-parse checks, default off. Every leaf supports
-fixed and runtime binding. Repeated keys compare logical identifier bytes within
+fixed and runtime binding. Each check selects `.err`, `.warning` or `.off`;
+error affects validity, warning reports without invalidating, and off skips the
+check rather than merely suppressing its diagnostic. `restrictions.ports`
+reports each written qualified node reference (including a compass-only suffix),
+not a label's port declaration. `restrictions.subgraphs` reports each named or
+anonymous subgraph occurrence, including edge endpoints. Neither resolves a
+graph or a port. Repeated keys compare logical identifier bytes within
 one owner's adjacent attribute lists; separate statements/defaults are not
 resolved or merged. One 16-byte caller scratch entry per attribute enables
 deterministic sorting and exact comparisons without decoded string allocation.
 Insufficient scratch is a separate incomplete outcome, preflighted before any
-check/write. Validation diagnostics merge in source order with deterministic
-rule-order ties. Aggregate counts use u64 because multiple rules may report the
+check/write; it is not a failed policy check or a valid document. These optional
+validation passes are currently unbudgeted and uncancellable even when parsing
+uses metering/cancellation. Validation diagnostics merge in source order with
+deterministic rule-order ties. Aggregate counts use u64 because multiple rules may report the
 same byte. See [public policy contract](../POLICIES.md) for names, stages and costs.
 Schema restrictions, required attributes, cycles/connectivity/degree checks and
 port-reference resolution still belong to later optional graph-building passes.
@@ -536,13 +604,17 @@ Verify the resolved policy with one pure, allocation-free checker independent of
 DOT source and storage. Fixed profiles verify during compilation; their explicit
 `validatePolicy` calls require comptime arguments and there is no runtime verifier
 or override path. Runtime-enabled profiles support preflight and automatically
-resolve/check once before parsing. Real configuration failures are distinct from
-DOT diagnostics and must precede input consumption/events. Do not invent invalid
+resolve/check once before a source/document operation or session init/reset.
+Real configuration failures are distinct from DOT diagnostics and must precede
+input consumption/events. Do not invent invalid
 combinations: mismatch error plus conforming interpretation is valid for a
 concrete graph kind. The provisional mode-specific constraints above produce two
 typed issues, with mismatch reported first if both fields are inapplicable.
-Runtime operations return `PolicyError!T`; fixed operations return `T` without
-a configuration-error union. Validity of a policy does not guarantee valid
+Runtime source/document operations that accept a policy, and session init/reset,
+return `PolicyError!T`; fixed counterparts return `T` without a configuration-error
+union. Latched session methods do not resolve policy again: `run`, `cancel` and
+`result` have no configuration-error union, while runtime `advance` can return
+`MeteringDisabled` without doing work. Validity of a policy does not guarantee valid
 DOT or adequate storage. Delivery status is recorded separately.
 
 **Q36 — Which syntax deviations may be accepted leniently, and how are they
@@ -556,9 +628,9 @@ a deviation precedes failure; a rejected one can enter existing recovery (Q22).
 
 | Deviation | Accepted interpretation | Scope/status |
 | --- | --- | --- |
-| Empty statement | No retained statement | Initial rule; reject/warn/accept |
-| Exact long operators `---` and `-->` | `--` and `->`, respectively, by spelling | Initial rule; independent of graph kind |
-| Bare `-` in an edge-operator position | `.from_keyword`, as below | Interpretation decided; acceptance/reporting separate |
+| Empty statement | No retained statement | Implemented; reject/warn/accept |
+| Exact long operators `---` and `-->` | `--` and `->`, respectively, by spelling | Implemented; independent of graph kind |
+| Bare `-` in an edge-operator position | `.from_keyword`, as below | Implemented; acceptance/reporting separate |
 | Reserved keyword as a name | A name only where grammar permits that reading | Deferred until exact name-only contexts are specified |
 
 **Bare-dash decision.** Use the narrow rule `syntax.bare_dash`,
@@ -748,7 +820,8 @@ This does not make Graphviz an arbitrary-XML renderer. Label bodies are
 fragments, not necessarily standalone XML documents. Recognition, structural
 checking and label validation must state their separate success guarantees.
 Q10's written-specification-first policy and pinned Graphviz 16.0.0 reference
-continue to apply; scanner boundary cases still require investigation/tests.
+continue to apply, with the explicit HTML-operand concatenation exception below;
+scanner boundary cases still require investigation/tests.
 
 **Existing constraints remain binding:** preserve raw bytes and physical
 source offsets; no implicit normalization, entity expansion or layout
@@ -766,9 +839,13 @@ the contracts they belong to are written:
   `<...>` (one scanner state and a depth counter) is always compiled in;
   `none` rejects the identifier with the unsupported-feature diagnostic but
   still finds its end, so statement-boundary recovery (Q22) can continue
-  past it. A fixed-only `opaque` profile does not require `src/markup/` to be
-  linked. With Q35 runtime mode selection enabled, the binary must retain the
-  stages reachable through overrides even when its baseline is `opaque`.
+  past it. An application using only opaque recognition can exclude the markup
+  engine. An opaque operation does not invoke that engine, even when the same
+  application includes it for standalone or delayed parsing. Code needed by
+  those other entry points must remain available. With Q35 runtime mode
+  selection enabled, the binary must also retain stages reachable through
+  overrides even when its baseline is `opaque`; runtime selection does not
+  determine what was linked.
 - **The delimiter rule is Graphviz's, verified against the 16.0.0 scanner
   (`lib/cgraph/scan.l`, start condition `hstring`):** `<` increments a
   depth counter, `>` decrements it, the identifier ends when the counter
@@ -781,44 +858,60 @@ the contracts they belong to are written:
   DOT diagnostic. Same rule in both scanner backends and under every
   budget partition. A survey of other DOT parsers' boundary rules is a
   separate discussion and does not gate the opaque slice.
-- **XML structure for every parsing mode.** An element is `<x/>` or
-  `<x>…</x>`; a lone `<x>` is an error in `structural`, `extended` and
+- **XML structure for every parsing mode.** In the inner fragment, after
+  removing the outer DOT delimiters, an element is `<x/>` or `<x>…</x>`;
+  a lone opening tag `<x>` is an error in `structural`, `extended` and
   `graphviz` alike. The open-tag versus self-closing distinction lives once
-  in the structural stage; `extended` and `graphviz` add vocabulary checks
-  only.
+  in the structural stage; `extended` and `graphviz` add their vocabulary,
+  attribute and parent/child placement rules. Supported names alone do not
+  establish label validity: `<TABLE><TD>x</TD></TABLE>` is balanced but lacks
+  the row required by the [Graphviz label grammar](https://graphviz.org/doc/info/shapes.html#html).
 - **Stage inclusion follows the policy profile (reconciled 2026-09-20).**
   Q35 supersedes the earlier restricted-runtime-mode proposal: every supported
   mode must have the same compile-time/runtime values and semantics. A fixed-only
-  profile may omit stages unreachable from its policy. A profile allowing runtime
-  mode changes must retain the stages needed by every selectable mode; an
+  profile need not pull in stages unreachable from its policy; this does not
+  exclude stages used by other profiles or entry points in the application.
+  A profile allowing runtime mode changes must retain the stages needed by
+  every selectable mode; an
   `opaque` baseline alone does not remove markup code if a runtime override can
   request structural parsing. Runtime support is separately enabled and off by
   default. The delayed path can select a supported mode per explicit operation
   when that support is enabled, or invoke a separately compiled fixed profile.
-- **Origin mapping is one rule.** The markup stages receive the identifier
-  minus its outer brackets; every markup span is fragment-relative and maps
-  to the DOT source by adding the inner range's start; standalone input has
-  origin zero. No markup diagnostic needs the DOT grammar.
+- **Origin mapping applies to each original operand.** For an HTML-like operand,
+  the markup stages receive its bytes minus the outer DOT brackets. A
+  fragment-relative span maps to DOT by adding that operand's inner-range start;
+  standalone input has origin zero. A combined decoded expression is not one
+  contiguous original fragment: mapping its diagnostics back would require an
+  explicit part/source map, not one added offset. No markup diagnostic needs
+  the DOT grammar.
 - **Decoding stays explicit and lazy by default; eager is an opt-in
   composition.** Nothing inspects a string's content to classify it: the
-  form (`bare`, `numeral`, `quoted`, `html`) is a property of the spelling's
-  first byte, so `"<B>x</B>"` is a quoted string whose value looks like
-  markup and `<<B>x</B>>` is HTML-like. Explicit decoding of an HTML-like
+  form (`bare`, `numeral`, `quoted`, `html`) of an individual operand is a
+  property of its spelling, so `"<B>x</B>"` is a quoted string whose value looks
+  like markup and `<<B>x</B>>` is HTML-like. Explicit decoding of an HTML-like
   ID returns its inner bytes unchanged. Parsing every label during the DOT
   parse is the during-DOT usage path, chosen by the consumer that knows it
   wants all of them.
-- **Concatenations are never collapsed by the library.** Graphviz's own
-  `concat` demotes `<a> + "b"` and `"a" + <b>` to a plain string; we retain
-  the raw expression and expose its parts, each with its own form and
-  inner range, so a consumer that wants Graphviz's behaviour can collapse
-  and one that wants the information does not lose it.
+- **Parsing never collapses the retained concatenation expression.** Preserve
+  the raw expression and expose its operands with their own forms and ranges.
+  Explicit decoding may join their values; the current quoted-string decoder
+  already does so on request. This does not replace the retained expression.
+  Graphviz's `concat` demotes `<a> + "b"` and `"a" + <b>` to a plain string;
+  the exact decoding/form API for such mixed expressions remains open. Accepting
+  HTML-like operands is an intentional compatibility exception: the Graphviz
+  16.0.0 scanner returns them as `T_qatom` and its grammar admits
+  `qatom '+' T_qatom`, while the written DOT specification describes
+  concatenation as a double-quoted-string feature (Q10).
 - **Bounded nesting, no stack compression.** Structural parsing keeps the
   open-element stack in caller-provided fixed frames with a capacity and a
   `max_nesting` limit reported through the existing resource-exhausted
   outcome (an iterative parser, so no recursion to bound; CWE-400/674 are
-  the concern). Frames are small — a name offset and length, about 8 B, so
-  1 KB supports 128 levels — rather than compressed: run-length or
-  cycle-pattern shrinking of the stack only helps repeated patterns an
+  the concern). `max_nesting` bounds element nesting, not the DOT scanner's
+  angle-bracket counter. A name offset/length alone would take about 8 B
+  (128 entries per KiB), but that is an estimate, not the full frame contract
+  or a promised capacity; other continuation state may be needed. Frames are
+  not compressed: run-length or cycle-pattern shrinking of the stack only
+  helps repeated patterns an
   attacker can break by alternating tags, needs periodicity detection
   (linear amortized at best) and complicates matching, and real deep
   markup is nested tables, a three-tag cycle. The limit is the protection;
@@ -830,9 +923,12 @@ the contracts they belong to are written:
   This extends the original compile-time-only choice (2026-09-20). The mask
   helpers (chunked compares, backslash parity) move to a shared file so the
   two block scanners do not duplicate them, and each pair gets its own
-  differential tests. The depth rule is ported to the DOT block scanner
-  (masks for `<` and `>`, a walk over the bits) rather than retiring it:
-  long labels are exactly the long-run case where block wins.
+  differential tests. The delimiter-depth rule is ported to the DOT block
+  scanner (masks for `<` and `>`, a walk over the bits) rather than retiring it.
+  This is a backend direction, not a requirement to ship both new markup
+  implementations in the first slice or a measured speedup claim. The initial
+  markup backend and delivery order remain open; block-scanner benefit and
+  code-size cost must be measured on representative markup.
 - **Parallelism is the caller's, and the design allows it.** After opaque
   recognition every HTML-like identifier is an independent fragment with a
   known range; the delayed path parses one fragment into caller-provided
@@ -842,12 +938,33 @@ the contracts they belong to are written:
 
 **Direction, not yet decided — the retained markup representation.**
 Proposed layering, to be designed with concrete records: a per-identifier
-summary index (an optional pool with one small entry per HTML-like ID: its
-range plus cheap facts such as maximum depth, tag count, presence of
-entities, computable while the boundary is found or on demand) that gives
-O(1) lookup and lets consumers filter labels without parsing bodies; then
-structure on demand per identifier or eagerly for all — elements,
-attributes and text as index-based borrowed records with parent, first
+summary index (an optional pool with one small entry per HTML-like ID) that
+gives O(1) lookup. Boundary recognition can supply the raw/inner ranges and
+explicitly lexical facts; it cannot supply accurate element nesting, element
+counts or entity-reference detection. Those require markup processing that
+understands tags, attributes, comments and the other selected fragment rules.
+Such processing can run during DOT parsing or later, without retaining a tree,
+but its work must be charged to the markup stage. Uncomputed structural facts
+are unknown/absent, not zero or implicitly validated.
+
+**Depth means element nesting depth**, excluding the outer DOT delimiter pair:
+
+| Inner fragment | Maximum element depth | Element count |
+| --- | ---: | ---: |
+| `<a/><b/>` | 1 | 2 |
+| `<a><b/></a>` | 2 | 2 |
+
+Both DOT envelopes `<<a/><b/>>` and `<<a><b/></a>>` reach angle-bracket-counter
+depth 2, so that counter must never be advertised as element depth. An element
+count counts each element once, not both its opening and closing tags. A
+separate `max_elements` resource limit is a possible addition, not a substitute
+for `max_nesting` or an already agreed policy field. Summary field names and
+record layouts remain provisional. A computed summary could let consumers
+filter fragments without retaining or repeatedly parsing their bodies; it is
+not a promise of structural facts from opaque recognition alone.
+
+The next proposed layer is structure on demand per identifier or eagerly for
+all — elements, attributes and text as index-based borrowed records with parent, first
 child and next sibling links, the same shape as the DOT document — and
 validation results as a third layer. Event-only consumers must be able to
 skip every retained layer.
@@ -869,18 +986,35 @@ skip every retained layer.
 - The form and parts API: the exact shape of the per-part view of an
   identifier expression (form, raw range, inner range) and whether decode
   returns bytes plus a separate form query or a tagged result.
-- Concatenation with HTML-like operands: accepted syntactically as in
-  Graphviz 16.0.0 (its scanner returns HTML strings as `T_qatom`, so
-  `qatom '+' T_qatom` admits them); what a mixed expression's form reports
-  and what explicit decoding yields, given that parts are preserved. Also
-  port components: IDs, so `n:<p>` is recognized though no renderer gives it
-  meaning. A separate discussion.
+- Concatenation with HTML-like operands: the compatibility choice is recorded
+  above; what a mixed expression's form reports and what explicit decoding
+  yields remain open, including any mapping for a combined decoded fragment.
 - The `extended` mode's concrete consumer, tag vocabulary, attributes and
   nesting rules, and which stages ship in which slice.
 - Nesting defaults and capacities per profile (`max_nesting`, frame
   contents beyond name offset and length, where the scratch comes from in
   each usage path).
 - A survey of other DOT parsers' HTML boundary rules, for the record.
+
+**Port identifiers are not markup tags (clarified 2026-09-22).** The outer
+`<...>` pair belongs to DOT's identifier spelling; only its inner bytes are
+markup input. [DOT grammar](https://graphviz.org/doc/info/lang.html) permits
+that ID spelling in a port position:
+
+| DOT spelling | Inner bytes | Meaning |
+| --- | --- | --- |
+| `n:<p>` | `p` | Port identifier `p`, not an opening tag |
+| `label=<p>` | `p` | Label text `p`, not a paragraph element |
+| `label=<<p>Hello</p>>` | `<p>Hello</p>` | A `p` element inside the DOT envelope |
+
+The first form can name a label component whose `PORT` attribute is `"p"`;
+it is not meaningless to a renderer. This follows from the documented ID and
+[port semantics](https://graphviz.org/docs/attr-types/portPos/), not a new
+runtime-probe claim. Graphviz's label grammar does not include the paragraph
+element `p`: balanced structure and a supported label vocabulary are separate
+checks. Whether the future `extended` vocabulary includes it remains open.
+Finding or validating an actual referenced port is still a later semantic
+pass, not part of recognizing an ID, and label rules do not apply to every ID.
 
 *(Recorded contract: R-MOD-014; implementation/verification pending.
 `src/markup/` does not yet exist and HTML-like IDs remain deferred in
@@ -963,13 +1097,16 @@ consistency remain required. *(Embodied: `CHANGELOG.md`,
 `build.zig.zon`, `src/root.zig`; R-ARCH-009/R-DIAG-005.)*
 
 **Q26 — Which named profiles are public conveniences?**
-**Updated direction (2026-09-20):** Q35 requires library defaults plus
-consumer-defined typed compile-time baselines and default-off runtime override
-support. This supersedes the 2026-07-17 named-profiles-first/custom-structs-later
-ordering. Named presets remain possible conveniences over the same policy model,
-not separate behavior systems. Which names to publish (`micro`/`core`/`full` were
-earlier candidates) and their contents remain open. `Profile` and the existing
-`BoundedSession` convenience are implemented; no broader named set is promised.
+**Implemented conveniences; reconciled 2026-09-22:** `dot.presets.standard`
+and `dot.presets.lenient` are complete, editable `Policy` values, not separate
+parsers or boolean modes. Standard names the library defaults; lenient changes
+only the three Q36 syntax acceptances to `.warn`, not validation, recovery,
+limits, scanner or execution. A complete runtime preset replaces every baseline
+leaf; a `.syntax`-only patch preserves the other baseline choices. `Profile`
+supports consumer-defined compile-time baselines and default-off runtime
+overrides, and `BoundedSession` is the fixed metered convenience. Earlier
+named-profiles-first/custom-structs-later ordering is superseded. Additional
+footprint-oriented preset names/content remain open; no broader set is promised.
 
 **Q27 — Which progress budgets does the bounded driver support, and what
 work unit is deterministic?**
@@ -1008,8 +1145,10 @@ ordinary throughput did not change. These measurements predate Q35's unified
 policy migration: fixed fail-fast profiles now exclude recovery handling and
 skip-depth storage; runtime profiles support both values. **Still open:** a caller-
 provided diagnostic limit that ends recovery early (R-FUNC-007, R-SEC-002),
-the per-class abort/report/ignore policy, and lenient acceptance of
-unambiguous deviations as warnings. *(Embodied: `Policy.recovery`,
+and a broader per-class abort/report/ignore policy. Q36's three lenient
+acceptances are implemented and can successfully commit; recovery after a
+rejected construct remains separate and cannot publish a partial document.
+*(Embodied: `Policy.recovery`,
 `tests/diagnostics.zig`, `tests/policy_settings.zig`; R-FUNC-007, R-DX-002.)*
 
 ---
@@ -1026,39 +1165,52 @@ an actual board budget remains open.
 
 **Q11 — Which observer events and verbosity levels are stable public API in
 version 1?**
-Gated on slice 9 (execution profiles: observers, cancellation, drivers).
+Policy-bound sessions, progress, metering and cancellation are implemented
+(Q27/Q35). The stable public observer/pull-event interface and verbosity contract
+remain open; implementation of the policy core does not settle them.
 
 **Q14 — Which syntax features are compile-time selectable, and which remain
 in every parser profile?**
-Gated on the profile slice.
+Q35/Q36 implement fixed-policy specialization of supported syntax acceptance,
+checks, recovery, scanner and execution settings. The broader grammar-feature
+exclusion matrix remains open. In particular, port/subgraph restrictions are
+post-parse checks, not switches that compile those grammar features out. HTML
+recognition and markup-stage inclusion remain the planned Q40 contract.
 
 **Q15 — Does the smallest profile retain unsupported-feature detectors, or
 prefer the absolute smallest binary?**
-Gated on the profile slice; the current default keeps the detectors
-(R-MOD-006).
+The current parser retains unsupported-feature detection (R-MOD-006). The
+implemented policy core does not define a smallest embedded grammar profile.
+Q40 separately decides that future `none` still recognizes HTML-like boundaries
+before rejecting them; broader minimal-profile choices remain open.
 
 **Q28 — Does version 1 provide lazy semantic lowering only, or also a lazy
 syntax index over retained source?**
 Open; nothing currently forces the choice.
 
-**Q37 — How are fix suggestions carried on diagnostics for linters?**
-**Implemented (2026-09-18):** `Diagnostic.fix: ?Fix` — a span, a typed edit
-(`delete`, `replace`, `insert_before`, `insert_after`, `wrap_in_quotes`), a
-`Replacement` enum whose `text()` is the only source of replacement bytes,
-and an `Applicability` of `machine_applicable` (the one correct repair) or
-`maybe` (a plausible repair, or a guessed position). Producers: the scanner
-(over-long and spaced operators), the parser (a lone
-`-` coerced to the declared kind, quoting a keyword, stray `;`, `}` or
-operator, separators, missing `=`, `]`, `}` and `{`, header typos, `=>`,
-unterminated constructs) and validation (operator mismatch, `maybe` because
-changing the keyword is equally plausible). `Diagnostic` is 112 B with the
-field (32-bit positions); a 32-slot bag is 3.6 KB. The lean-diagnostics profile that would compile the
-field out stays with the profile slice. *(Embodied: `diagnostic.Fix`,
-`tests/diagnostics.zig` round trip; R-DX-007, R-FUNC-005.)*
-
 ---
 
 ## Reconciliation log
+
+Entries describe the state at the time they were recorded; current delivery
+status is in the question entries above, not an earlier log's pending-work list.
+
+- 2026-09-22 — Reconciled Q35/Q36/Q26/Q22 with the implemented policy core,
+  settings migration, lenient syntax, presets, factual counters and optional
+  validation checks. Added a source/test coverage table and explicit deferred
+  work; distinguished syntax restrictions from semantic graph checks. Moved
+  implemented Q37 into Decided and corrected its layout/applicability wording.
+  Clarified Q11/Q14/Q15 follow-ups now that policy profiles exist. Preserved the
+  standard-machine performance gate and the targeted fixed-policy optimization
+  record; no fresh performance result is claimed.
+
+- 2026-09-22 — Clarified Q40 element depth versus delimiter depth, unknown
+  structural summaries under opaque recognition, and possible element-count
+  limits. Corrected label validation, operation versus module inclusion,
+  source-preserving concatenation versus explicit decoding, per-operand origins,
+  the Q10 compatibility exception and port-ID meaning. Frame size remains an
+  estimate and markup-backend delivery/performance requires measurement. Exact
+  fragment grammar/APIs and markup implementation remain pending.
 
 - 2026-09-20 — Q35 graph-policy refinement: outer `graph`/`digraph` keys match
   the written DOT header and configure independent branches. Settled

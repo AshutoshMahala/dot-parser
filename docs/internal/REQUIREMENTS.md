@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-09-20
+Original draft: 2026-07-13 · Last amended: 2026-09-22
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -154,9 +154,9 @@ data and must be rebuildable from syntax data or parser events.
 
 ### R-FUNC-007: Diagnostic recovery is policy-driven
 
-The default policy is strict: stop at the first fatal or unrecoverable syntax
-diagnostic, while retaining warnings, help, and other non-fatal diagnostics
-encountered before that point.
+The default recovery policy is `.fail_fast`: stop at the first syntax failure,
+while reporting warnings, help, and other non-fatal diagnostics encountered
+before that point through the caller's sink.
 
 An optional recovery policy may record a recoverable syntax diagnostic,
 synchronize at a safe grammar boundary, and continue collecting problems up to
@@ -169,6 +169,13 @@ The caller may configure documented diagnostic classes as abort, report-and-
 continue, or ignore. Critical internal failures, memory-safety conditions, and
 violated parser invariants cannot be ignored. Recovery machinery should be
 compile-time excludable when its code-size cost is material.
+
+**Current implementation:** `Policy.recovery` offers `.fail_fast` and
+`.statements`. The latter continues diagnostics after aborting staged output;
+it never publishes a partial document or turns rejected syntax into success.
+Successful acceptance of Q36's three syntax deviations is a separate policy
+decision. A broader per-class recovery policy and an early-stop diagnostic limit
+remain open (Q22); a bounded diagnostic bag alone limits retention, not work.
 
 ### R-FUNC-008: Validation completes with a diagnostic bag
 
@@ -248,7 +255,7 @@ unreachable so the compiler and linker can remove them from the binary.
 A runtime configuration may still disable behavior in a full-feature build, but
 that does not satisfy a binary-size zero-cost claim.
 
-**Policy configuration decision (2026-09-20; Q35/Q36, partially implemented):**
+**Policy core implemented (reconciled 2026-09-22; Q35/Q36):**
 behavioral settings use one typed policy model, with library defaults and a
 consumer-selectable compile-time baseline. A separate compile-time switch enables
 runtime overrides and defaults to off. When enabled, every supported policy field
@@ -283,16 +290,36 @@ source ranges remain original, while retained structure may normalize operators
 or omit empty statements. No per-record policy/history storage is added.
 Configurable lexical numeral severity and optional UTF-8, repeated-key and
 consumer kind/port/subgraph checks are implemented at both binding times.
+Their severities are `.err`, `.warning` and `.off`: errors affect acceptance,
+warnings do not invalidate, and off means the check is not performed, not that
+its result was merely hidden. Numeral ambiguity defaults to warning; the other
+optional checks default off. Both header branches retain error-severity operator
+mismatch by default. Complete presets replace all baseline leaves; a partial
+subtree patch changes only its supplied leaves.
 Numeral policy applies during parsing; the other checks inspect a committed
 document without mutation. Repeated keys compare decoded identifier bytes within
 one statement's combined lists, using explicit caller scratch and bounded
 heap-sort comparisons, not an unbounded quadratic scan or hidden allocation.
 Scratch exhaustion is incomplete validation, never valid acceptance. UTF-8
 checks the whole source with bytewise error recovery. Kind restrictions use the
-effective kind. Diagnostics merge in source order within validation; aggregate
-validation counts and composed warning totals are u64 because rules can overlap.
-Q35 records the provisional handling
-of inapplicable graph fields and the remaining standard-machine performance gate.
+effective kind; port restrictions count written qualified node references and
+subgraph restrictions count named/anonymous occurrences, including endpoints.
+These restrictions neither resolve ports nor remove grammar support. Diagnostics
+merge in source order within validation; aggregate validation counts and composed
+warning totals are u64 because rules can overlap.
+Validation remains unbudgeted and uncancellable; parse execution settings do not
+make the separate validation pass bounded. Q35 provides the current source/test
+coverage table, provisional handling of inapplicable graph fields, and remaining
+standard-machine performance gate. The targeted fixed-policy throughput recovery
+does not establish complete pre-policy parity or replace that gate.
+
+This completes the initial policy core, settings migration and lenient-syntax
+slices plus the additional checks above. It does not implement keyword-as-name
+acceptance, deviation history, markup policies, bounded validation, custom rules
+or resolved-graph constraints. Schema/value rules, required attributes, cycles,
+connectivity, degree limits, explicit node declarations and referenced-port
+resolution remain separately costed optional-pass designs. Allocators, pools,
+scratch and callback resources are intentionally not moved into `Policy`.
 
 ### R-MOD-006: Unsupported input is distinct from invalid input
 
@@ -430,8 +457,10 @@ without inner-markup parsing is a distinct, opaque-preservation capability.
 Dedicated XML-like markup processing belongs in its own source directory,
 with independently usable parsing, syntax/events and validation stages rather
 than being folded into the DOT grammar engine. Structural parsing must be
-separable from Graphviz-specific label validation. Label vocabulary and
-placement restrictions must not be applied to unrelated DOT identifiers.
+separable from Graphviz-specific label validation. That validation checks
+vocabulary, attributes and parent/child placement, not only allowed tag names.
+Label restrictions must not be applied to unrelated DOT identifiers; an
+HTML-like port ID such as `n:<p>` has inner value `p`, not an opening tag.
 Rendering and consumer-specific interpretation remain outside these stages.
 
 The same markup engine must support three usage paths:
@@ -451,11 +480,26 @@ within it. DOT syntax, markup syntax and label validity must remain separately
 identifiable outcomes, with diagnostics mapped to the corresponding source.
 The exact composed failure/lifecycle and public API contracts remain with Q40.
 
+Structural summary facts require markup processing, even if no tree is retained.
+Maximum depth means element nesting depth, not DOT delimiter depth; element
+counts and entity-reference findings likewise require context-aware processing.
+An opaque operation must not present uncomputed structural facts as zero or
+claim structural validity. Exact summary records and any additional element-count
+limit remain open. Parsing retains concatenation expressions and their parts;
+explicit decoding may join values without replacing that retained source.
+Simple origin-offset mapping applies to each original operand, not a combined
+decoded expression. Q40 records the planned HTML-operand concatenation exception
+to Q10's specification-first baseline and the remaining decoding API decisions.
+
 The subsystem must preserve the existing ownership, raw-source, diagnostic,
 deterministic-execution, fixed-storage, security and optional-feature contracts.
 It must not force a retained markup tree on event-only consumers or force the
 markup parser/validator into callers that only need opaque identifiers.
-Material optional costs must be excludable at compile time (R-MOD-005).
+An opaque operation does not invoke those stages; an application may nevertheless
+include them for standalone/delayed use or another profile. Code inclusion
+follows all reachable entry points and runtime-selectable modes, not the mode
+chosen for one call. Material optional costs must be excludable in opaque-only
+builds at compile time (R-MOD-005).
 
 The planned modes are `none`, `opaque`, `structural`, `extended`, and
 `graphviz`. Q40 in [OpenQuestions.md](OpenQuestions.md) defines their roles in
@@ -1279,7 +1323,8 @@ compatibility surface, because examples are what consumers copy.
 
 Requirement IDs are stable: content may be amended, but IDs are never
 renumbered, deleted, or reused. Superseded text is corrected in place and
-recorded here.
+recorded here. Entries describe their historical point in development; current
+implementation status is recorded with the requirements above.
 
 - 2026-07-17 — **R-PERF-004**: initial baselines recorded
   (`docs/BASELINES.md`, `zig build bench`).
@@ -1340,3 +1385,19 @@ recorded here.
   survive dropped diagnostics and failure, normalized operators keep original
   ranges, and no per-node/edge history is retained. Optional history and further
   syntax extensions remain deferred.
+
+- 2026-09-22 — **R-MOD-005 status reconciled** against the implemented policy
+  schema, profile APIs and tests: the initial three policy slices and additional
+  configurable checks are complete. Clarified check severities, preset patches,
+  port/subgraph restriction scope, unbudgeted validation and separately deferred
+  semantic work. Q35 contains the coverage table; no new benchmark or test run is
+  claimed by this documentation update. R-FUNC-007 now distinguishes implemented
+  statement recovery from deferred per-class and diagnostic-limit controls.
+
+- 2026-09-22 — **R-MOD-014 clarified**: element depth/summary facts require
+  markup processing, opaque execution is separate from application code
+  inclusion, Graphviz rules cover attributes and placement, and source mapping
+  is per original operand. Parsing preserves concatenation expressions while
+  explicit decoding may join values. Q40 records the planned compatibility
+  exception and distinguishes HTML-like port IDs from actual markup tags;
+  markup implementation and detailed fragment contracts remain pending.
