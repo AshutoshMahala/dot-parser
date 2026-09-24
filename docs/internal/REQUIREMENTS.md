@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-09-22
+Original draft: 2026-07-13 · Last amended: 2026-09-23
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -193,11 +193,27 @@ The diagnostic destination is caller policy:
 - Filtering sink that hides selected messages for presentation. Severity and
   validity come from policy; sink filtering or restyling cannot change them.
 
-Collection is bounded. The policy must define whether capacity exhaustion stops
-validation, retains the first diagnostics while counting omitted diagnostics,
-or streams additional diagnostics elsewhere. Validation may terminate early for
-cancellation, exhausted work/memory limits, corrupt intermediate data, or an
-internal invariant failure.
+Collection is bounded. The default fixed-bag contract retains the first
+diagnostics and counts omissions; a full bag alone does not stop analysis or
+change finding counts. Callers may stream findings without retaining them.
+Any separately configured early termination must report incomplete validation,
+not conflate a retention limit with a completed pass. Validation may terminate
+early for cancellation, exhausted work/memory limits, corrupt intermediate data,
+or an internal invariant failure. Delivery failure and retention omissions must
+remain visible independently of validation completion and validity.
+
+**Cross-processor contract decided 2026-09-23; composition pending (Q40).**
+Validation findings in one processor or reliably delimited fragment must not
+stop independent requested checks in another, including DOT validation itself.
+Each processor may report multiple findings. Checks whose prerequisites failed
+must be identified as unavailable, not passed; unsafe continuation after lost
+boundaries or exhausted shared resources is not required. Global cancellation
+stops the composed operation. A completed DOT syntax result can remain available
+when inner validation fails; this does not authorize a partial DOT document or
+claim success for all requested stages. Continuing independent validation does
+not require parallel execution, a bag per component, or retained per-fragment
+results. Existing DOT validation has continuation and bounded bag retention;
+processor composition and bounded/cancellable validation are not implemented.
 
 ## 4. Modularity requirements
 
@@ -320,6 +336,8 @@ or resolved-graph constraints. Schema/value rules, required attributes, cycles,
 connectivity, degree limits, explicit node declarations and referenced-port
 resolution remain separately costed optional-pass designs. Allocators, pools,
 scratch and callback resources are intentionally not moved into `Policy`.
+R-MOD-015 records the planned compile-time content-extension contract; it is
+not implemented by the current typed policy core.
 
 ### R-MOD-006: Unsupported input is distinct from invalid input
 
@@ -454,7 +472,7 @@ does not by itself establish inner-markup well-formedness or Graphviz label
 validity. Excluding HTML-like identifiers follows R-MOD-006; accepting them
 without inner-markup parsing is a distinct, opaque-preservation capability.
 
-Dedicated XML-like markup processing belongs in its own source directory,
+The built-in XML-like markup processor belongs in its own source directory,
 with independently usable parsing, syntax/events and validation stages rather
 than being folded into the DOT grammar engine. Structural parsing must be
 separable from Graphviz-specific label validation. That validation checks
@@ -463,7 +481,8 @@ Label restrictions must not be applied to unrelated DOT identifiers; an
 HTML-like port ID such as `n:<p>` has inner value `p`, not an opening tag.
 Rendering and consumer-specific interpretation remain outside these stages.
 
-The same markup engine must support three usage paths:
+The selected markup implementation, built-in or consumer-supplied under
+R-MOD-015, must support three usage paths:
 
 - Standalone markup parsing/validation without a DOT document or a dependency
   on the DOT grammar engine.
@@ -478,7 +497,17 @@ caller-owned copies; it must not require re-parsing the DOT grammar. Composed
 bounded execution must account for markup work and support yield/cancellation
 within it. DOT syntax, markup syntax and label validity must remain separately
 identifiable outcomes, with diagnostics mapped to the corresponding source.
-The exact composed failure/lifecycle and public API contracts remain with Q40.
+Inner validation does not require DOT validation to succeed. Callers may request
+outer-only validation, validate selected preserved fragments later, or validate
+standalone fragments. The initial retained-document convenience path sequences
+DOT validation before requested inner processing, even when DOT validation found
+violations; this does not replace the during-DOT path. Results distinguish not
+requested, completed-valid, completed-invalid and incomplete-with-reason for each
+stage; diagnostic delivery and retention are separate facts. A composed result
+must not report all requested stages passed when one failed or was incomplete.
+Detailed per-fragment results are optional, not mandatory retained metadata.
+Q40 records independent continuation; exact result types, operational failure
+propagation, lifecycle and cross-component diagnostic ordering remain open.
 
 Structural summary facts require markup processing, even if no tree is retained.
 Maximum depth means element nesting depth, not DOT delimiter depth; element
@@ -501,12 +530,60 @@ follows all reachable entry points and runtime-selectable modes, not the mode
 chosen for one call. Material optional costs must be excludable in opaque-only
 builds at compile time (R-MOD-005).
 
-The planned modes are `none`, `opaque`, `structural`, `extended`, and
-`graphviz`. Q40 in [OpenQuestions.md](OpenQuestions.md) defines their roles in
-a comparison table. The exact fragment grammar, extended label vocabulary,
-public configuration and decoding/form API are not yet settled. General XML
-conformance is not promised. These are intended capabilities, not implemented
-syntax coverage or a commitment to ship all modes in the next slice.
+The combined built-in choices are `none`, `opaque`, `structural`, `extended`,
+and `graphviz`, not five values in a DOT-owned enum. DOT owns recognition and
+rejection/preservation, with opaque recognition the first-slice default; inner
+processing modes belong to the selected implementation's policy. Q40 in
+[OpenQuestions.md](OpenQuestions.md) defines the composition and first-slice
+contract. Exact fragment rules, extended vocabulary, the composed API and parts
+view remain open. General XML conformance is not promised. These are intended
+capabilities, not implemented syntax coverage or a commitment to ship all modes
+in the next slice.
+
+### R-MOD-015: Content processors are replaceable at compile time
+
+**Direction decided 2026-09-22; interface and implementation pending (Q40).**
+DOT owns lexical boundaries and source preservation. Inner parsers/content
+processors own their processing behavior and typed policy schemas. Consumers
+must be able to replace a built-in processor with their own implementation
+through the same integration contract, without editing DOT. Built-in inner
+parsers are ordinary implementations, not privileged special cases.
+
+Implementation identity is selected at compile time and remains fixed for that
+compiled profile. Each processor owns a checked compile-time policy baseline
+and optional runtime overrides, off by default. Overrides configure supported
+settings of the already-compiled implementation; they cannot substitute its
+type, introduce unknown fields or load another implementation. Consumer-facing
+configuration may nest processor policies without making DOT understand their
+schemas. `none` rejects an excluded form, `opaque` preserves without invoking
+an inner parser, and processing invokes the selected implementation with its
+policy. Exact Zig syntax is not prescribed here.
+
+Share diagnostic infrastructure and matching execution/resource primitives
+across implementations without forcing their codes and typed payloads into one
+universal diagnostic type (R-DIAG-007). Validation findings do not abort other
+independent processors (R-FUNC-008); result separation must remain available
+regardless of whether processing runs during DOT or later.
+
+The contract must preserve explicit resource ownership, unchanged source,
+original-source diagnostics, truthful outcomes and sink lifecycle. Integrated
+bounded execution must account for processor work and preserve yield/cancellation
+guarantees. Compile-time selection does not sandbox or prove arbitrary extension
+code safe. There must be no mandatory registry, discovery, virtual dispatch or
+allocation; unused processors must add no mandatory instance state or executed
+work. Enabled processing has explicit costs, verified through throughput,
+state-size and code-size measurements. Establish the interface with a real
+built-in processor and a consumer replacement before generalizing it.
+
+Replacing processing inside existing identifier boundaries does not authorize
+custom lexical or grammar rules. New identifier spellings require a separately
+designed compile-time lexical contract covering boundaries, escaping, collisions,
+recovery and bounded work; new statements/operators require grammar extensions.
+Neither is included in the opaque or first content-processor slice. Numeral
+boundaries remain grammar-defined even without delimiters, and ambiguity remains
+a lexical-stage concern rather than an implicit numeric conversion. Processor
+checks and transformations must remain distinct; transformations use explicit
+caller-owned output rather than rewriting retained source.
 
 ## 5. Memory requirements
 
@@ -701,6 +778,11 @@ emission order for diagnostics at the same position. Exact ordering promises
 for nodes, edges, attributes, and lowered data must be documented with their
 APIs.
 
+Q40's cross-processor diagnostic merge order and tie-breaking remain open.
+Sequential validation stages do not inherently emit a globally source-sorted
+stream. Preserve existing DOT ordering; any composed ordering contract must
+state its guarantees and explicit storage/work costs rather than hide a sort.
+
 ### R-PORT-006: The core is byte-oriented and encoding-extensible
 
 The core recognizes DOT's ASCII structural bytes and preserves identifier and
@@ -812,6 +894,24 @@ its codes follow. Upgrading that baseline requires conformance review and
 regeneration or validation of structured codes, compact IDs, catalogs, and
 tests. Parser users must not need a runtime WDP implementation merely to inspect
 a diagnostic identity.
+
+### R-DIAG-007: Share infrastructure without inflating every diagnostic
+
+**Direction decided 2026-09-23; cross-processor implementation pending (Q40).**
+Source spans and origin mapping, severity/delivery conventions, fix conventions
+and bounded sink/bag machinery should be reusable across processors. Codes and
+typed details may remain processor-owned. Sharing must not force one universal
+payload union, copied message strings or heap allocation onto every DOT
+diagnostic. Concrete type adapters and catalog ownership remain open; existing
+identity and reporting guarantees must remain explicit.
+
+Callers can route diagnostics to a shared destination, separate fixed bags, or
+streaming sinks; no separate bag is mandatory per processor or fragment. A
+processor may report multiple independent findings. Bounded retention, omission
+accounting, delivery failures and validation findings are separate facts, and
+filtering never changes validity (R-FUNC-008). Reuse common execution/resource
+primitives only where their contracts match; shared infrastructure does not
+merge independent stage outcomes or imply global source ordering.
 
 ## 9. Observability requirements
 
@@ -1401,3 +1501,21 @@ implementation status is recorded with the requirements above.
   explicit decoding may join values. Q40 records the planned compatibility
   exception and distinguishes HTML-like port IDs from actual markup tags;
   markup implementation and detailed fragment contracts remain pending.
+
+- 2026-09-22 — **R-MOD-015 added; R-MOD-014 reconciled**: inner parser
+  implementations are replaceable only at compile time; each owns its policy
+  schema and optional runtime overrides. Built-ins and consumer implementations
+  share the integration contract, with explicit execution/resource guarantees
+  and measured costs. Content processing does not implicitly extend DOT token
+  syntax or grammar. Q40 records the vision, composition ownership and pending
+  interface decisions; these are requirements, not newly implemented features.
+
+- 2026-09-23 — **R-FUNC-008 and R-MOD-014/015 clarified; R-DIAG-007 added**:
+  share diagnostic machinery while keeping processor payloads independent;
+  continue independent validation across components and distinguish missing
+  prerequisites from passed checks. Fixed bags bound retention, not analysis.
+  Standalone, delayed and composed inner validation expose separate stage
+  outcomes; the initial retained sequence does not require DOT validation to
+  succeed before checking inner contents. R-PORT-005 keeps aggregate ordering
+  open with explicit costs. Q40 records these decisions; no code or benchmark
+  changes are implied.
