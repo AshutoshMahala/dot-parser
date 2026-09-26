@@ -6,6 +6,13 @@ const Profile = dot.Profile(.{
     .policy = .{ .validation = .{ .graph = .{ .treated_as = .auto } } },
 });
 
+export fn prepare_profiles(choice: u8) usize {
+    const Set = dot.processor.PolicySet(.{ .dot = Profile });
+    const prepared = Set.prepare(if (features.runtime_policy) .{ .dot = .{ .policy = .{ .scanner = if (choice == 0) .scalar else .block } } } else .{}) catch return 9;
+    if (features.runtime_policy) return @intFromEnum(prepared.dot.scanner);
+    return @sizeOf(Set.State);
+}
+
 export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
     const input: dot.Policy = .{ .scanner = if (choice & 1 == 0) .scalar else .block, .execution = .{ .metering = choice & 2 != 0, .cancellation = choice & 4 != 0 }, .limits = .{ .max_statements = @as(usize, choice) + 1, .max_attributes = choice }, .recovery = if (choice & 8 == 0) .fail_fast else .statements, .validation = .{
         .ambiguous_numeral = if (choice & 16 == 0) .warning else .err,

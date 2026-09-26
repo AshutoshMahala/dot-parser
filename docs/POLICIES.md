@@ -67,10 +67,13 @@ reconstruct dropped syntax or reject its former spelling.
 `ParseResult`, `FixedParseResult`, `MeasureResult` and `SessionProgress` expose
 `accepted_deviations: u32` and `warnings: u32`. Counts describe actual acceptances
 and produced syntax warnings, even before later failure/cancellation and even
-with a discard, full, filtered or failing sink. Lexer numeral warnings count as
+with a discard, filtered or failing sink. Explicit stop/failure ends unfinished
+work; the counters then describe only findings already discovered, not the whole
+input. Lexer numeral warnings count as
 warnings, not accepted deviations. `CheckResult.accepted_deviations` preserves
 the parse count; its `warnings` totals syntax and validation warnings. Staged
-validation's count remains in `ValidationResult.outcome.completed.warnings`.
+validation's count remains in `ValidationResult.outcome.completed.warnings`, or
+`outcome.diagnostic_stopped.warnings` if its sink stopped the pass.
 The parse-only u32 counters are bounded by the u32 source domain. Validation
 counts and `CheckResult.warnings` use u64: independent checks can report the same
 byte, so their aggregate is not bounded by source length. No counter retains history.
@@ -405,7 +408,10 @@ document needs a new interpretation.
 ## Diagnostics and cost
 
 Validation counts error occurrences in `violations` and warning occurrences in
-`warnings`, regardless of sink retention or delivery failure. Operator warnings use
+`warnings`, independently of retention. Sink stop/failure terminates unfinished
+validation and preserves discovered prefix counts, including pending findings
+already buffered for source-order merging; these are not complete totals.
+Operator warnings use
 `W.Validation.Operator.002`; errors retain `E.Validation.Operator.002`.
 The payload records expected/found operators, the original header span and the
 selected reading. Renderers distinguish a policy-selected kind from the written

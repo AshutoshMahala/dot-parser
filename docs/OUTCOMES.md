@@ -18,6 +18,7 @@ DOT processing and does not produce a source diagnostic.
 | --- | --- | --- |
 | `.success` | The document parsed completely | Yes |
 | `.cancelled` | A session was cancelled, or an enabled cancellation hook stopped a one-shot operation | No |
+| `.diagnostic_stopped` | A diagnostic destination stopped unfinished work: requested, capacity, failure, or out_of_memory | No |
 | `.invalid_syntax` | The input is not accepted by the selected syntax policy | No |
 | `.unsupported_feature` | The parse stopped at a recognized-but-deferred DOT construct | No |
 | `.resource_exhausted` | A caller-configured limit (e.g. `max_statements` or `max_attributes`) was reached; the input may still be valid | No |
@@ -87,20 +88,23 @@ var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
 // checked.documentValid() == false   — validation found violations
 ```
 
-`ValidationResult.outcome` is `.completed { document_valid, violations, warnings }`
-or `.insufficient_scratch { required_attribute_keys, provided_attribute_keys }`.
-The latter runs no checks and leaves scratch unchanged; the document remains
+`ValidationResult.outcome` is `.completed { document_valid, violations, warnings }`,
+`.diagnostic_stopped { reason, violations, warnings }`, or
+`.insufficient_scratch { required_attribute_keys, provided_attribute_keys }`.
+Scratch failure runs no checks and leaves scratch unchanged; the document remains
 available, but `documentValid()` is false. It emits a capacity diagnostic naming
 `validation_attribute_keys`. Only optional repeated-key checking requires scratch.
 `violations` counts errors, while `warnings` counts warning-severity findings;
 only errors invalidate the document. Both count occurrences independently of sink
 retention/delivery. [Profiles](POLICIES.md) configure severity, graph treatment
 and effective operator reading. Bounded/cancellable validation is future work; outcomes for those
-behaviors will be added when implemented. Validation reports **every** violation, in source order — it never
-stops at the first document violation. Resource preflight can prevent the pass
+behaviors will be added when implemented. Without an operational stop, validation
+reports every violation in source order; a document violation alone never stops
+the pass. Resource preflight can prevent the pass
 from starting. Independent checks may report the same byte, so validation counts
 are u64 even on 32-bit targets. `warningCount()` returns the count for a completed
-pass, or zero when scratch preflight failed.
+pass, the discovered count when diagnostic delivery stopped work, or zero when
+scratch preflight failed. Explicit sink stopping is distinct from document errors.
 
 ## The diagnostic bag
 
@@ -124,12 +128,20 @@ read them in order. Header errors, end of input, trailing tokens, limits,
 deferred features, and unterminated quotes or comments still stop the parse.
 
 Warnings (`W.Syntax.Numeral.033`, `W.Syntax.Operator.003`,
-`W.Syntax.Grammar.034`) can accompany a successful parse; they never
-change the outcome. Retention depends on the sink: a full bag, discard
-sink, or rejected delivery can leave no retained entry, and `.internal`
-emits no diagnostic. Validation attempts one diagnostic per violation. A
-`FixedDiagnosticBag(N)` keeps the first `N` and counts the rest in
-`omitted` — diagnostics are never silently dropped.
+`W.Syntax.Grammar.034`) do not invalidate input. Their destination can still
+stop unfinished work: parsing returns `.diagnostic_stopped`, and validation
+returns `.diagnostic_stopped` with a reason and prefix finding counts. Neither
+claims complete validity. A diagnostic reporting an already-terminal failure
+does not replace its original cause; failed delivery remains visible separately.
+
+`FixedDiagnosticBag(N)` accepts the Nth entry and requests stopping. A zero-sized
+bag rejects the first attempt. Use `reporting.FixedBag(Diagnostic, N, .omit)` to
+explicitly keep a prefix and count omissions while continuing. General examples
+use `GrowableDiagnosticBag.init(allocator, .{})`; growth is explicit, and an optional
+`max_entries` limit or allocation failure stops work. Streaming callbacks return
+`DiagnosticSinkError!DiagnosticAction`: `.proceed` or `.stop` on acceptance.
+Discard/filtering sinks may accept without retaining; that alone never stops work.
+See [diagnostic destinations](REPORTING.md).
 
 Each diagnostic carries a WDP identity, a source span, and **optional
 typed details** (`Details.none` means no additional context). The span is a

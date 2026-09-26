@@ -213,7 +213,7 @@ test "leniency does not rewrite numerals strings comments or accept other malfor
 }
 
 const Rejecting = struct {
-    fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!void {
+    fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!dot.DiagnosticAction {
         return error.DiagnosticSinkFailure;
     }
 };
@@ -224,9 +224,10 @@ test "factual counters survive silent acceptance discarded full or failing diagn
     for ([_]dot.DiagnosticSink{ dot.diagnostic.discard, tiny.sink(), .{ .context = null, .emit_fn = Rejecting.emit } }) |sink| {
         var parsed = Lenient.parseBorrowed(std.testing.allocator, source, sink, .{});
         defer parsed.deinit(std.testing.allocator);
-        try expect(parsed.outcome == .success);
-        try equal(@as(u32, 4), parsed.accepted_deviations);
-        try equal(@as(u32, 4), parsed.warnings);
+        const continuing = sink.emit_fn == dot.diagnostic.discard.emit_fn;
+        try expect(if (continuing) parsed.outcome == .success else parsed.outcome == .diagnostic_stopped);
+        try equal(@as(u32, if (continuing) 4 else 1), parsed.accepted_deviations);
+        try equal(@as(u32, if (continuing) 4 else 1), parsed.warnings);
         if (sink.emit_fn == Rejecting.emit) try equal(dot.diagnostic.Delivery.failed, parsed.diagnostic_delivery);
     }
     try equal(@as(usize, 1), tiny.items().len);
@@ -266,7 +267,8 @@ test "prefix facts survive later syntax capacity recovery and cancellation failu
     while (progress.accepted_deviations == 0) progress = session.advance(1);
     try equal(dot.diagnostic.Delivery.failed, progress.diagnostic_delivery);
     const cancelled = session.cancel();
-    try expect(cancelled.outcome == .cancelled);
+    try expect(cancelled.outcome == .diagnostic_stopped);
+    try equal(dot.diagnostic.StopReason.failure, cancelled.outcome.diagnostic_stopped);
     try equal(@as(u32, 1), cancelled.accepted_deviations);
     try equal(@as(u32, 1), cancelled.warnings);
     try deep(cancelled, session.cancel());

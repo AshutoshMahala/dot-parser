@@ -82,6 +82,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                 .outcome = switch (result.outcome) {
                     .success => .success,
                     .cancelled => .cancelled,
+                    .diagnostic_stopped => |reason| .{ .diagnostic_stopped = reason },
                     .invalid_syntax => .invalid_syntax,
                     .unsupported_feature => .unsupported_feature,
                     .resource_exhausted => .resource_exhausted,
@@ -135,7 +136,9 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                 },
                 .internal => return delivery,
             };
-            diagnostics.emit(d) catch return .failed;
+            // This is terminal reporting after an existing storage failure;
+            // there is no unfinished work to stop or further callback to emit.
+            _ = diagnostics.emit(d) catch return .failed;
             return delivery;
         }
 
@@ -217,6 +220,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                 const outcome: ParseOutcome = switch (parsed.outcome) {
                     .success => .success,
                     .cancelled => .cancelled,
+                    .diagnostic_stopped => |reason| .{ .diagnostic_stopped = reason },
                     .invalid_syntax => .invalid_syntax,
                     .unsupported_feature => .unsupported_feature,
                     .resource_exhausted => .resource_exhausted,

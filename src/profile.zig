@@ -5,13 +5,10 @@ const validation = @import("validate.zig");
 const engine = @import("parse_engine.zig");
 
 pub fn Profile(comptime api: type, comptime config: policy.Config) type {
-    const compiled = policy.resolve(policy.defaults, config.policy);
-    switch (comptime policy.check(compiled, config.policy)) {
-        .valid => {},
-        .invalid => |issue| @compileError("invalid policy: " ++ @tagName(issue)),
-    }
+    const Binding = @import("processor.zig").PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
     return struct {
-        pub const baseline = compiled;
+        pub const Policies = Binding;
+        pub const baseline = Binding.baseline;
         pub const runtime_policy = config.runtime_policy;
         const State = if (runtime_policy) policy.Effective else void;
         const ValidationState = if (runtime_policy) policy.ValidationSettings else void;
@@ -48,24 +45,13 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             cancellation: Hook = no_hook,
         };
 
-        pub const validatePolicy = if (runtime_policy) checkRuntime else checkFixed;
-
-        fn checkFixed(comptime input: policy.Policy) policy.Check {
-            return comptime policy.check(policy.resolve(baseline, input), input);
-        }
-        fn checkRuntime(input: policy.Policy) policy.Check {
-            return policy.check(policy.resolve(baseline, input), input);
-        }
+        pub const validatePolicy = Binding.validatePolicy;
         fn Checked(comptime T: type) type {
             return if (runtime_policy) policy.Error!T else T;
         }
         fn settings(options: anytype) Checked(State) {
             if (!runtime_policy) return {};
-            const effective = policy.resolve(baseline, options.policy);
-            return switch (policy.check(effective, options.policy)) {
-                .valid => effective,
-                .invalid => |issue| issue.asError(),
-            };
+            return Binding.prepare(.{ .policy = options.policy });
         }
         fn validationSettings(effective: State) ValidationState {
             return if (runtime_policy) effective.validation else {};

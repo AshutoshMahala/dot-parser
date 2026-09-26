@@ -271,6 +271,12 @@ A successful commit latches success immediately; later cancellation cannot undo
 it. A failed commit follows the existing failure/abort path. If credits end
 before commit, yield without claiming success.
 
+**Diagnostic stopping (2026-09-26):** accepted-stop and rejected delivery end
+unfinished work promptly, including syntax recovery and warning-producing parses.
+They abort staged output once and latch `.diagnostic_stopped`. Diagnostic delivery
+is a separate fact: accepted-stop delivered its item, rejection did not. Reporting
+an already-terminal syntax/resource failure preserves that original cause.
+
 On a live terminal session, results are idempotent: further calls return the
 cached result without polling, scanning, emitting diagnostics, committing or
 aborting again.

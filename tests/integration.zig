@@ -12,6 +12,7 @@ test {
     _ = @import("subgraphs.zig");
     _ = @import("subgraph_endpoints.zig");
     _ = @import("diagnostics.zig");
+    _ = @import("processors.zig");
     _ = @import("measure.zig");
     _ = @import("non_ascii.zig");
     _ = @import("policies.zig");
@@ -21,7 +22,7 @@ test {
 }
 
 const Rejecting = struct {
-    fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!void {
+    fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!dot.DiagnosticAction {
         return error.DiagnosticSinkFailure;
     }
 };
@@ -68,7 +69,7 @@ test "identifier failures preserve diagnostic delivery and fixed-pool reuse" {
         const rejected = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, .{ .context = null, .emit_fn = Rejecting.emit }, .{});
         try std.testing.expect(rejected.outcome == .invalid_syntax);
         try std.testing.expectEqual(dot.diagnostic.Delivery.failed, rejected.diagnostic_delivery);
-        var empty_bag: dot.FixedDiagnosticBag(0) = .{};
+        var empty_bag: dot.reporting.FixedBag(dot.Diagnostic, 0, .omit) = .{};
         const omitted = dot.parseBorrowedIn(source, .{ .document = pools.storage() }, empty_bag.sink(), .{});
         try std.testing.expect(omitted.outcome == .invalid_syntax);
         try std.testing.expectEqual(@as(usize, 1), empty_bag.omitted);
@@ -173,7 +174,7 @@ test "comment failure reporting honors rejected sinks and zero capacity bags" {
     const rejected = dot.parseBorrowedIn("graph {} /*", .{ .document = storage.storage() }, .{ .context = null, .emit_fn = Rejecting.emit }, .{});
     try std.testing.expect(rejected.outcome == .invalid_syntax);
     try std.testing.expectEqual(dot.diagnostic.Delivery.failed, rejected.diagnostic_delivery);
-    var bag: dot.FixedDiagnosticBag(0) = .{};
+    var bag: dot.reporting.FixedBag(dot.Diagnostic, 0, .omit) = .{};
     const omitted = dot.parseBorrowedIn("/*", .{ .document = storage.storage() }, bag.sink(), .{});
     try std.testing.expect(omitted.outcome == .invalid_syntax);
     try std.testing.expectEqual(@as(usize, 1), bag.omitted);
@@ -189,7 +190,7 @@ test "consumer can collect diagnostics through a fixed bag" {
         .start = 0,
         .len = 5,
     };
-    try sink.emit(.{
+    _ = try sink.emit(.{
         .code = .validation_operator_mismatch,
         .span = .{
             .start = 10,
@@ -201,7 +202,7 @@ test "consumer can collect diagnostics through a fixed bag" {
             .declaration = declaration,
         } },
     });
-    try sink.emit(.{
+    _ = try sink.emit(.{
         .code = .validation_operator_mismatch,
         .span = .{
             .start = 21,
@@ -283,12 +284,13 @@ test "consumer can bring their own reporter through the sink interface" {
     const LineLogger = struct {
         writer: *std.Io.Writer,
         source: []const u8,
-        fn emit(context: ?*anyopaque, d: dot.Diagnostic) dot.DiagnosticSinkError!void {
+        fn emit(context: ?*anyopaque, d: dot.Diagnostic) dot.DiagnosticSinkError!dot.DiagnosticAction {
             const self: *@This() = @ptrCast(@alignCast(context.?));
             const at = d.span.locate(self.source);
             self.writer.print("{s} at {d}:{d}\n", .{
                 d.code.structured(), at.line, at.byte_column,
             }) catch return error.DiagnosticSinkFailure;
+            return .proceed;
         }
     };
 
@@ -297,7 +299,7 @@ test "consumer can bring their own reporter through the sink interface" {
     var logger: LineLogger = .{ .writer = &writer, .source = "a\nbc\nde\nfg" };
     const sink: dot.DiagnosticSink = .{ .context = &logger, .emit_fn = LineLogger.emit };
 
-    try sink.emit(.{
+    _ = try sink.emit(.{
         .code = .syntax_unexpected_end,
         .span = .{ .start = 9, .len = 0 },
     });
@@ -820,7 +822,7 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
     // themselves; success produces a document.
     switch (checked.outcome) {
         .success => try std.testing.expect(checked.document != null),
-        .invalid_syntax, .unsupported_feature, .resource_exhausted => {
+        .invalid_syntax, .unsupported_feature, .resource_exhausted, .diagnostic_stopped => {
             try std.testing.expect(checked.document == null);
             try std.testing.expect(bag.items().len >= 1);
         },

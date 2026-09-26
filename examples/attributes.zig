@@ -12,13 +12,14 @@ pub fn main(init: std.process.Init) !void {
         .attribute_statements = 1,
         .attributes = 5,
     }) = .{};
-    var bag: dot.FixedDiagnosticBag(1) = .{};
+    var bag = dot.GrowableDiagnosticBag.init(init.arena.allocator(), .{});
+    defer bag.deinit();
     const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
     var buffer: [1024]u8 = undefined;
     var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
     const writer = &output.interface;
     if (parsed.outcome != .success) {
-        try dot.console.renderBoxedList(bag.items(), bag.omitted, .{ .source = source }, writer);
+        try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source }, writer);
         try writer.flush();
         return;
     }

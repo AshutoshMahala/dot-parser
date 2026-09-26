@@ -247,7 +247,7 @@ fn renderBoxedWith(
 /// a summary block follows; a single complete diagnostic speaks for itself.
 pub fn renderBoxedList(
     diagnostics: []const Diagnostic,
-    omitted: usize,
+    omitted: u64,
     options: RenderOptions,
     writer: anytype,
 ) !void {

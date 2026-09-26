@@ -19,7 +19,8 @@ const source =
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
 
-    var bag: dot.FixedDiagnosticBag(8) = .{};
+    var bag = dot.GrowableDiagnosticBag.init(allocator, .{});
+    defer bag.deinit();
     var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
     defer checked.deinit(allocator);
 
@@ -38,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
     });
     try dot.console.renderBoxedList(
         bag.items(),
-        bag.omitted,
+        0,
         .{ .source_name = "example.dot", .source = source, .color = color },
         stdout,
     );

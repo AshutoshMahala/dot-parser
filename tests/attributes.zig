@@ -205,7 +205,7 @@ test "capacity hints cover all six pools without allocation during parse or hand
 
 test "attribute errors preserve outcome when diagnostics are rejected or omitted" {
     const Reject = struct {
-        fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!void {
+        fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!dot.DiagnosticAction {
             return error.DiagnosticSinkFailure;
         }
     };
@@ -214,7 +214,7 @@ test "attribute errors preserve outcome when diagnostics are rejected or omitted
     const rejected = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, .{ .context = null, .emit_fn = Reject.emit }, .{});
     try expect(rejected.outcome == .invalid_syntax);
     try equal(dot.diagnostic.Delivery.failed, rejected.diagnostic_delivery);
-    var bag: dot.FixedDiagnosticBag(0) = .{};
+    var bag: dot.reporting.FixedBag(dot.Diagnostic, 0, .omit) = .{};
     const omitted = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, bag.sink(), .{});
     try expect(omitted.outcome == .invalid_syntax);
     try equal(@as(usize, 1), bag.omitted);

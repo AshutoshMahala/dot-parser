@@ -1,7 +1,7 @@
 //! Policy-selected validation over committed syntax data.
 //!
 //! Validation is an analysis pass, not fail-fast control flow (R-FUNC-008):
-//! it examines the whole document, continues after every independent violation,
+//! absent an operational stop it examines the whole document and continues after every independent violation,
 //! and reports each one through the caller's diagnostic sink in
 //! deterministic source order (R-PORT-005). Completing the pass and the
 //! document being valid are separate facts — `Result` reports both.
@@ -31,6 +31,8 @@ pub const AttributeKeyScratch = checks.AttributeKeyScratch;
 /// How the pass ended. An incomplete-but-valid pass is unrepresentable.
 /// Scratch preflight is implemented; bounded/cancellable validation is not.
 pub const Outcome = union(enum) {
+    /// Findings are prefix facts; unvisited checks are not claimed valid.
+    diagnostic_stopped: struct { reason: diagnostic.StopReason, violations: u64, warnings: u64 },
     /// The pass examined every statement (R-FUNC-008). Any number of
     /// violations may have been found — completion is not validity.
     completed: Completed,
@@ -58,9 +60,8 @@ pub const Outcome = union(enum) {
 
 pub const Result = struct {
     outcome: Outcome,
-    /// Whether every emitted diagnostic reached the sink. A failing sink
-    /// does not stop the analysis; the loss is reported here, on its own
-    /// axis.
+    /// Delivery is separate from completion: accepted-stop can have complete
+    /// delivery while validation remains incomplete.
     diagnostic_delivery: diagnostic.Delivery,
 
     /// True only for a completed pass that found no violations.
@@ -68,6 +69,7 @@ pub const Result = struct {
         return switch (self.outcome) {
             .completed => |completed| completed.document_valid,
             .insufficient_scratch => false,
+            .diagnostic_stopped => false,
         };
     }
 
@@ -75,6 +77,7 @@ pub const Result = struct {
         return switch (self.outcome) {
             .completed => |completed| completed.warnings,
             .insufficient_scratch => 0,
+            .diagnostic_stopped => |stopped| stopped.warnings,
         };
     }
 };
@@ -93,7 +96,7 @@ pub fn validate(
     // never masquerade as a completed, valid pass, even with a discard sink.
     if (settings.repeated_attribute != .off and scratch.attribute_keys.len < document.attributes.len) {
         var delivery: diagnostic.Delivery = .complete;
-        diagnostics.emit(.{
+        _ = diagnostics.emit(.{
             .code = .resource_capacity_exhausted,
             .span = document.keyword,
             .details = .{ .capacity = .{ .resource = .validation_attribute_keys, .limit = scratch.attribute_keys.len } },
@@ -119,7 +122,7 @@ pub fn validate(
     }
     var errors: u64 = 0;
     var warnings: u64 = 0;
-    var delivery: diagnostic.Delivery = .complete;
+    const delivery: diagnostic.Delivery = .complete;
     while (fields.len != 0) {
         var selected: ?usize = null;
         for (pending, 0..) |finding, index| {
@@ -130,15 +133,33 @@ pub fn validate(
         const index = selected orelse break;
         const d = pending[index].?;
         if (d.code.severity() == .err) errors += 1 else warnings += 1;
-        diagnostics.emit(d) catch {
-            delivery = .failed;
+        const action = diagnostics.emit(d) catch |err| {
+            return stoppedResult(diagnostic.StopReason.fromError(err), .failed, errors, warnings, &pending, index);
         };
+        if (action == .stop) return stoppedResult(.requested, .complete, errors, warnings, &pending, index);
         inline for (fields, 0..) |field, at| {
             if (index == at) pending[at] = @field(cursors, field.name).next();
         }
     }
     return .{
         .outcome = .{ .completed = .{ .document_valid = errors == 0, .violations = errors, .warnings = warnings } },
+        .diagnostic_delivery = delivery,
+    };
+}
+
+// Source-order merging may already have discovered one pending finding from
+// another rule. Keep those facts without advancing any cursor after a stop.
+fn stoppedResult(reason: diagnostic.StopReason, delivery: diagnostic.Delivery, errors: u64, warnings: u64, pending: []const ?diagnostic.Diagnostic, emitted: usize) Result {
+    var violations = errors;
+    var notices = warnings;
+    for (pending, 0..) |finding, index| {
+        if (index == emitted) continue;
+        if (finding) |d| {
+            if (d.code.severity() == .err) violations += 1 else notices += 1;
+        }
+    }
+    return .{
+        .outcome = .{ .diagnostic_stopped = .{ .reason = reason, .violations = violations, .warnings = notices } },
         .diagnostic_delivery = delivery,
     };
 }
@@ -280,12 +301,12 @@ test "the rule is kind-agnostic: a digraph flags '--'" {
     try expectEqualStrings("digraph", failure.details.operator_mismatch.declaration.slice(source));
 }
 
-test "a full bag bounds retention, not the analysis" {
+test "explicit omission bounds retention, not the analysis" {
     const source = "graph { a -> b; c -> d; e -> f; }";
     var document = try buildDocument(source);
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
-    var bag: diagnostic.FixedBag(1) = .{};
+    var bag: @import("reporting.zig").FixedBag(diagnostic.Diagnostic, 1, .omit) = .{};
     const result = validate(policy.defaults.validation, &document, bag.sink(), {}, .{});
 
     // The pass still examined everything and counted every violation …
@@ -296,13 +317,13 @@ test "a full bag bounds retention, not the analysis" {
     try expectEqual(@as(usize, 2), bag.omitted);
 }
 
-test "a failing sink is reported without stopping the analysis" {
+test "a failing sink stops validation with factual prefix counts" {
     const source = "graph { a -> b; c -> d; }";
     var document = try buildDocument(source);
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
     const Rejecting = struct {
-        fn emit(context: ?*anyopaque, d: diagnostic.Diagnostic) diagnostic.SinkError!void {
+        fn emit(context: ?*anyopaque, d: diagnostic.Diagnostic) diagnostic.SinkError!diagnostic.Action {
             _ = context;
             _ = d;
             return error.DiagnosticSinkFailure;
@@ -311,9 +332,10 @@ test "a failing sink is reported without stopping the analysis" {
     const sink: diagnostic.Sink = .{ .context = null, .emit_fn = Rejecting.emit };
     const result = validate(policy.defaults.validation, &document, sink, {}, .{});
 
-    try expect(result.outcome == .completed);
+    try expect(result.outcome == .diagnostic_stopped);
     try expect(!result.documentValid());
-    try expectEqual(@as(usize, 2), result.outcome.completed.violations);
+    try expectEqual(@as(u64, 1), result.outcome.diagnostic_stopped.violations);
+    try expectEqual(diagnostic.StopReason.failure, result.outcome.diagnostic_stopped.reason);
     try expectEqual(diagnostic.Delivery.failed, result.diagnostic_delivery);
 }
 
@@ -325,9 +347,10 @@ test "policy filtering happens at the sink without touching the document" {
     // A dialect-tolerant consumer: drops operator mismatches, keeps the rest.
     const Filtering = struct {
         kept: usize = 0,
-        fn emit(context: ?*anyopaque, d: diagnostic.Diagnostic) diagnostic.SinkError!void {
+        fn emit(context: ?*anyopaque, d: diagnostic.Diagnostic) diagnostic.SinkError!diagnostic.Action {
             const self: *@This() = @ptrCast(@alignCast(context.?));
             if (d.code != .validation_operator_mismatch) self.kept += 1;
+            return .proceed;
         }
     };
     var filter: Filtering = .{};

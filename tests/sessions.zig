@@ -200,7 +200,7 @@ test "fixed-pool failure after yield emits once and wins over late cancellation"
     const Reject = struct {
         request: *Request,
         count: usize = 0,
-        fn emit(context: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!void {
+        fn emit(context: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!dot.DiagnosticAction {
             const self: *@This() = @ptrCast(@alignCast(context.?));
             self.count += 1;
             self.request.flag = true;

@@ -63,7 +63,8 @@ for direct/recursive scope views and explicit nesting scratch.
 const std = @import("std");
 const dot = @import("dot_parser");
 
-var bag: dot.FixedDiagnosticBag(16) = .{};
+var bag = dot.GrowableDiagnosticBag.init(allocator, .{});
+defer bag.deinit();
 var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
 defer checked.deinit(allocator);
 
@@ -107,7 +108,7 @@ next `;` or `}`:
 const Parser = dot.Profile(.{ .policy = .{ .recovery = .statements } });
 var checked = Parser.parseAndValidate(allocator, source, bag.sink(), .{});
 // checked.outcome == .invalid_syntax; bag holds every syntax error, in order.
-try dot.console.renderBoxedList(bag.items(), bag.omitted, .{ .source = source }, stdout);
+try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source }, stdout);
 ```
 
 Every diagnostic is a typed value — a WDP code such as `E.Syntax.Keyword.003`,
@@ -261,6 +262,7 @@ comments in the recorded benchmarks. Select one for parsing with
   [Bounded execution](docs/EXECUTION.md) · [runnable example](examples/bounded.zig)
 - Handling results, or telling malformed apart from not-yet-supported? →
   [Outcomes and diagnostics](docs/OUTCOMES.md)
+- Choosing fixed, growable or streaming diagnostics? → [Reporting](docs/REPORTING.md)
 - Configuring limits, recovery, execution, graph kinds or runtime overrides? →
   [Policies](docs/POLICIES.md) · [runnable example](examples/policies.zig)
 - Learning by running code? → [examples/](examples/)

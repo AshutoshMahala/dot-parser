@@ -224,7 +224,7 @@ test "separate temporary allocator fails independently and is not retained" {
 test "scratch failure delivery is latched and reset reuses nesting frames" {
     const Reject = struct {
         calls: usize = 0,
-        fn emit(context: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!void {
+        fn emit(context: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!dot.DiagnosticAction {
             const self: *@This() = @ptrCast(@alignCast(context.?));
             self.calls += 1;
             return error.DiagnosticSinkFailure;

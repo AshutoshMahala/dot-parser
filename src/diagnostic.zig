@@ -21,8 +21,8 @@
 //!   terminates (R-FUNC-005). Presentation is entirely the consumer's job —
 //!   implement `Sink` to route diagnostics into any logger or reporter.
 //!   `console.zig` ships one out-of-the-box renderer; the core never calls it.
-//! - No allocation anywhere in this module (R-MEM-001). Summaries and hints
-//!   are static strings; `Details` carries only primitives and static names.
+//! - Payloads/catalogs do not allocate (R-MEM-001). GrowableBag is an explicit
+//!   allocator-backed destination; fixed bags and streaming remain allocation-free.
 //! - No mutable module state (R-ROB-003). Diagnostics flow through
 //!   caller-owned sinks and bags.
 //! - Compact IDs are precomputed at compile time (R-DIAG-001/R-DIAG-004);
@@ -30,6 +30,7 @@
 
 const std = @import("std");
 const location = @import("location.zig");
+const reporting = @import("reporting.zig");
 
 /// WDP part 7 namespace (error boundary) for every diagnostic this library
 /// emits. Codes are unique within this boundary.
@@ -38,53 +39,7 @@ pub const namespace = "dot_parser";
 /// Precomputed WDP part 7 namespace hash for `namespace` ("wdpns-v1" seed).
 pub const namespace_hash: [5]u8 = computeNamespaceHash(namespace);
 
-/// WDP severity alphabet (WDP part 1). The enum value is the WDP priority.
-pub const Severity = enum(u4) {
-    trace = 0,
-    info = 1,
-    completed = 2,
-    success = 3,
-    help = 4,
-    warning = 5,
-    critical = 6,
-    blocked = 7,
-    err = 8,
-
-    /// The single-character WDP severity code.
-    pub fn letter(self: Severity) u8 {
-        return switch (self) {
-            .trace => 'T',
-            .info => 'I',
-            .completed => 'K',
-            .success => 'S',
-            .help => 'H',
-            .warning => 'W',
-            .critical => 'C',
-            .blocked => 'B',
-            .err => 'E',
-        };
-    }
-
-    /// WDP priority, 0 (trace) through 8 (error).
-    pub fn priority(self: Severity) u4 {
-        return @intFromEnum(self);
-    }
-
-    /// Only E and B block the operation that reported them (WDP part 1 §5).
-    pub fn isBlocking(self: Severity) bool {
-        return self == .err or self == .blocked;
-    }
-
-    pub const Tone = enum { negative, positive, neutral };
-
-    pub fn tone(self: Severity) Tone {
-        return switch (self) {
-            .err, .blocked, .critical, .warning => .negative,
-            .success, .completed => .positive,
-            .help, .info, .trace => .neutral,
-        };
-    }
-};
+pub const Severity = reporting.Severity;
 
 /// WDP component: the domain of responsibility a diagnostic belongs to
 /// (WDP part 2 allows logical components; these are not source modules).
@@ -854,89 +809,34 @@ pub const Replacement = enum(u8) {
     }
 };
 
-/// Whether a tool may apply the fix without asking. `machine_applicable`
-/// means the edit is the one correct repair; `maybe` means it is a plausible
-/// repair among others, or its position is a guess — offer it, do not apply
-/// it unattended.
-pub const Applicability = enum(u8) {
-    machine_applicable,
-    maybe,
-};
+pub const Applicability = reporting.Applicability;
 
-pub const SinkError = error{DiagnosticSinkFailure};
+pub const SinkError = reporting.SinkError;
+pub const Action = reporting.Action;
+pub const StopReason = reporting.StopReason;
 
 /// Whether every diagnostic a pass emitted actually reached the caller's
 /// sink. Reported by each phase separately from its outcome, so a failure
 /// of the reporting infrastructure neither masks nor hides behind the
 /// original result.
-pub const Delivery = enum {
-    complete,
-    /// The sink rejected at least one diagnostic; that diagnostic is lost.
-    failed,
-};
+pub const Delivery = reporting.Delivery;
 
 /// A caller-owned destination for diagnostics (R-FUNC-008).
 /// The pointed-to context must outlive every emit call.
-pub const Sink = struct {
-    context: ?*anyopaque,
-    emit_fn: *const fn (context: ?*anyopaque, diagnostic: Diagnostic) SinkError!void,
-
-    pub fn emit(self: Sink, diagnostic: Diagnostic) SinkError!void {
-        return self.emit_fn(self.context, diagnostic);
-    }
-};
+pub const Sink = reporting.Sink(Diagnostic);
 
 /// A sink that explicitly drops every diagnostic, for callers that
 /// genuinely do not want them. Explicit disposal beats a hidden overload:
 /// the choice is visible and greppable at the call site.
-pub const discard: Sink = .{ .context = null, .emit_fn = discardEmit };
+pub const discard = Sink.discard;
 
-fn discardEmit(context: ?*anyopaque, d: Diagnostic) SinkError!void {
-    _ = context;
-    _ = d;
-}
-
-/// A fixed-capacity diagnostic bag with bounded-overflow policy: the first
-/// `capacity` diagnostics are retained and later ones are counted in
-/// `omitted` (R-FUNC-008). Never allocates; never fails.
+/// No allocation. Accepting the last entry asks the operation to stop.
+/// Use reporting.FixedBag(Diagnostic, capacity, .omit) for explicit prefix retention.
 pub fn FixedBag(comptime capacity: usize) type {
-    return struct {
-        const Self = @This();
-
-        entries: [capacity]Diagnostic = undefined,
-        len: usize = 0,
-        /// How many diagnostics arrived after the bag was full.
-        omitted: usize = 0,
-
-        pub fn push(self: *Self, diagnostic: Diagnostic) void {
-            if (self.len < capacity) {
-                self.entries[self.len] = diagnostic;
-                self.len += 1;
-            } else {
-                self.omitted += 1;
-            }
-        }
-
-        /// The retained diagnostics, in emission order.
-        pub fn items(self: *const Self) []const Diagnostic {
-            return self.entries[0..self.len];
-        }
-
-        pub fn reset(self: *Self) void {
-            self.len = 0;
-            self.omitted = 0;
-        }
-
-        pub fn sink(self: *Self) Sink {
-            return .{ .context = self, .emit_fn = emitOpaque };
-        }
-
-        fn emitOpaque(context: ?*anyopaque, diagnostic: Diagnostic) SinkError!void {
-            const self: *Self = @ptrCast(@alignCast(context.?));
-            self.push(diagnostic);
-        }
-    };
+    return reporting.FixedBag(Diagnostic, capacity, .stop);
 }
+
+pub const GrowableBag = reporting.GrowableBag(Diagnostic);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1074,16 +974,16 @@ test "qualified compact ID is namespace_hash-code_hash (part 7 §5.2)" {
 }
 
 test "fixed bag retains the first diagnostics and counts the rest" {
-    var bag: FixedBag(2) = .{};
+    var bag: reporting.FixedBag(Diagnostic, 2, .omit) = .{};
     const sink = bag.sink();
 
     const diagnostic: Diagnostic = .{
         .code = .syntax_unexpected_token,
         .span = .{ .start = 4, .len = 2 },
     };
-    try sink.emit(diagnostic);
-    try sink.emit(diagnostic);
-    try sink.emit(diagnostic);
+    _ = try sink.emit(diagnostic);
+    _ = try sink.emit(diagnostic);
+    _ = try sink.emit(diagnostic);
 
     try expectEqual(@as(usize, 2), bag.items().len);
     try expectEqual(@as(usize, 1), bag.omitted);
@@ -1095,8 +995,8 @@ test "fixed bag retains the first diagnostics and counts the rest" {
 }
 
 test "zero-capacity bag only counts" {
-    var bag: FixedBag(0) = .{};
-    bag.push(.{ .code = .syntax_unexpected_end, .span = .{ .start = 0, .len = 0 } });
+    var bag: reporting.FixedBag(Diagnostic, 0, .omit) = .{};
+    _ = try bag.push(.{ .code = .syntax_unexpected_end, .span = .{ .start = 0, .len = 0 } });
     try expectEqual(@as(usize, 0), bag.items().len);
     try expectEqual(@as(usize, 1), bag.omitted);
 }
@@ -1104,21 +1004,22 @@ test "zero-capacity bag only counts" {
 test "direct sink receives diagnostics without retention" {
     const Counter = struct {
         count: usize = 0,
-        fn emit(context: ?*anyopaque, diagnostic: Diagnostic) SinkError!void {
+        fn emit(context: ?*anyopaque, diagnostic: Diagnostic) SinkError!Action {
             _ = diagnostic;
             const self: *@This() = @ptrCast(@alignCast(context.?));
             self.count += 1;
+            return .proceed;
         }
     };
     var counter: Counter = .{};
     const sink: Sink = .{ .context = &counter, .emit_fn = Counter.emit };
-    try sink.emit(.{ .code = .syntax_invalid_byte, .span = .{ .start = 0, .len = 1 } });
-    try sink.emit(.{ .code = .syntax_invalid_byte, .span = .{ .start = 0, .len = 1 } });
+    _ = try sink.emit(.{ .code = .syntax_invalid_byte, .span = .{ .start = 0, .len = 1 } });
+    _ = try sink.emit(.{ .code = .syntax_invalid_byte, .span = .{ .start = 0, .len = 1 } });
     try expectEqual(@as(usize, 2), counter.count);
 }
 
 test "the discard sink accepts and drops everything" {
-    try discard.emit(.{
+    _ = try discard.emit(.{
         .code = .syntax_unexpected_end,
         .span = .{ .start = 0, .len = 0 },
     });
@@ -1126,7 +1027,7 @@ test "the discard sink accepts and drops everything" {
 
 test "failing sink propagates its error" {
     const Rejecting = struct {
-        fn emit(context: ?*anyopaque, diagnostic: Diagnostic) SinkError!void {
+        fn emit(context: ?*anyopaque, diagnostic: Diagnostic) SinkError!Action {
             _ = context;
             _ = diagnostic;
             return error.DiagnosticSinkFailure;

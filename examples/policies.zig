@@ -32,7 +32,8 @@ pub fn main() !void {
         .digraph = .{ .operator_mismatch = .err },
     } } });
     const source = "graph { a -- b -> c }";
-    var bag: dot.FixedDiagnosticBag(4) = .{};
+    var bag = dot.GrowableDiagnosticBag.init(std.heap.page_allocator, .{});
+    defer bag.deinit();
     var result = Fixed.parseAndValidate(std.heap.page_allocator, source, bag.sink(), .{});
     defer result.deinit(std.heap.page_allocator);
     if (!result.documentValid()) return error.InvalidDocument;

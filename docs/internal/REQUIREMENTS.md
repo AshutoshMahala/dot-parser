@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-09-23
+Original draft: 2026-07-13 · Last amended: 2026-09-26
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -189,14 +189,17 @@ The diagnostic destination is caller policy:
 
 - Direct diagnostic sink with no retained bag.
 - Caller-provided fixed-capacity bag.
-- Arena-backed bag retained for tooling.
+- Growable bag with an explicit caller allocator (including arenas), used in
+  general examples; optional hard entry limit.
 - Filtering sink that hides selected messages for presentation. Severity and
   validity come from policy; sink filtering or restyling cannot change them.
 
-Collection is bounded. The default fixed-bag contract retains the first
-diagnostics and counts omissions; a full bag alone does not stop analysis or
-change finding counts. Callers may stream findings without retaining them.
-Any separately configured early termination must report incomplete validation,
+Collection has explicit resource ownership. A fixed bag accepts its final entry
+and requests stopping; a growable bag grows until allocation failure or its hard
+limit. An explicit prefix-and-count bag can continue after filling. The engine
+obeys the sink acknowledgment, not an inspection of its capacity. Callers may
+stream/filter/discard without retaining; accepted omission alone is not a stop.
+Sink-requested stopping or failure must report incomplete unfinished validation,
 not conflate a retention limit with a completed pass. Validation may terminate
 early for cancellation, exhausted work/memory limits, corrupt intermediate data,
 or an internal invariant failure. Delivery failure and retention omissions must
@@ -214,6 +217,13 @@ claim success for all requested stages. Continuing independent validation does
 not require parallel execution, a bag per component, or retained per-fragment
 results. Existing DOT validation has continuation and bounded bag retention;
 processor composition and bounded/cancellable validation are not implemented.
+
+**Preparation implemented 2026-09-26.** Typed shared sinks, fixed/growable bags,
+diagnostic stop/failure handling and prefix outcomes are implemented. Findings
+already discovered for source-order merging remain counted on stop. Terminal
+syntax/resource failures retain their cause if reporting fails. See the
+[processor contract](PROCESSOR_CONTRACT.md) for stages 1–4,
+ownership/reset and the remaining composition scope.
 
 ## 4. Modularity requirements
 
@@ -897,7 +907,7 @@ a diagnostic identity.
 
 ### R-DIAG-007: Share infrastructure without inflating every diagnostic
 
-**Direction decided 2026-09-23; cross-processor implementation pending (Q40).**
+**Direction decided 2026-09-23; transport preparation implemented 2026-09-26 (Q40).**
 Source spans and origin mapping, severity/delivery conventions, fix conventions
 and bounded sink/bag machinery should be reusable across processors. Codes and
 typed details may remain processor-owned. Sharing must not force one universal
@@ -905,7 +915,12 @@ payload union, copied message strings or heap allocation onto every DOT
 diagnostic. Concrete type adapters and catalog ownership remain open; existing
 identity and reporting guarantees must remain explicit.
 
-Callers can route diagnostics to a shared destination, separate fixed bags, or
+`reporting.Sink(T)`, `FixedBag(T, N, overflow)` and `GrowableBag(T)` are shared;
+DOT exposes concrete conveniences without enlarging its payload. Raw `Fragment`
+mapping checks local spans and u32 origin arithmetic; adapters must map every
+primary/related/fix span. Consumer catalog/fix representation stays processor-owned.
+
+Callers can route diagnostics to a shared destination, separate fixed/growable bags, or
 streaming sinks; no separate bag is mandatory per processor or fragment. A
 processor may report multiple independent findings. Bounded retention, omission
 accounting, delivery failures and validation findings are separate facts, and
@@ -1420,6 +1435,19 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-09-26 — **R-FUNC-008 and R-DIAG-007 revised; Q40 preparation**:
+  shared typed fixed/growable/streaming diagnostic destinations, explicit sink
+  stopping, independent completion/delivery and discovered-prefix counts. General
+  examples use explicit-allocator growable bags; omission is an explicit choice.
+  PolicyBinding/PolicySet prepare compile-time configured profiles without a
+  registry or scheduler. Stages 1–4 and ownership/reset defaults are recorded in
+  the processor contract. Markup, selectors and bounded validation remain pending.
+  Diagnostic-sink failure now stops unfinished work, superseding the earlier
+  continue-after-delivery-failure rule in response to the agreed sink-owned stop
+  contract. Normal findings continue; delivery failure is operational, not a
+  document-validity decision. Processor planning notes belong under `docs/internal/`
+  and durable documentation must not rely on disposable working files.
 
 Requirement IDs are stable: content may be amended, but IDs are never
 renumbered, deleted, or reused. Superseded text is corrected in place and

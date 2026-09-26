@@ -13,7 +13,7 @@ each memory strategy releases it.
 | Document pools (`parseBorrowed`, `parseAndValidate`) | The returned result | Until `result.deinit(allocator)` | `deinit` with the same allocator |
 | Document pools (`parseBorrowedIn`) | Caller (your slices / `FixedDocumentStorage`) | While the document is used | Reuse or discard the storage — there is nothing to free |
 | Nesting scratch | Caller storage, or the explicit scratch/document allocator | During parsing; fixed sessions borrow it across yields and until discarded/reinitialized | Allocator-backed one-shot frees it before return; fixed storage is reused, not freed |
-| Diagnostic bag / sink | Caller | Caller-defined | Depends on the bag's storage (a `FixedDiagnosticBag` is a plain value) |
+| Diagnostic bag / sink | Caller | Context outlives callbacks; referenced payload data outlives retention | Fixed bags are plain values; growable bags use their explicit allocator and `deinit()` |
 | Fixed session and hook contexts | Caller | Throughout active parsing/yields | `session.deinit()` cleans up unfinished work; frees no pools |
 
 Two rules fall out of this:

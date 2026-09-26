@@ -185,24 +185,27 @@ test "scratch preflight is explicit, failure atomic and skipped for off" {
 }
 
 const Rejecting = struct {
-    fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!void {
+    fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!dot.DiagnosticAction {
         return error.DiagnosticSinkFailure;
     }
     const sink: dot.DiagnosticSink = .{ .context = null, .emit_fn = emit };
 };
 
-test "suppression retention and delivery do not change validation counts or validity" {
+test "suppression preserves validity while delivery failure reports incomplete validation" {
     const Errors = dot.Profile(.{ .policy = checks(.err) });
     var parsed = dot.parseBorrowed(std.testing.allocator, mixed, dot.diagnostic.discard, .{});
     defer parsed.deinit(std.testing.allocator);
     var keys: [2]dot.AttributeKeyScratch = undefined;
     const options: Errors.ValidationOptions = .{ .scratch = .{ .attribute_keys = &keys } };
     const discarded = Errors.validate(&parsed.document.?, dot.diagnostic.discard, options);
-    var small: dot.FixedDiagnosticBag(1) = .{};
+    var small: dot.reporting.FixedBag(dot.Diagnostic, 1, .omit) = .{};
     try deep(discarded, Errors.validate(&parsed.document.?, small.sink(), options));
     try equal(@as(usize, 5), small.omitted);
     const rejected = Errors.validate(&parsed.document.?, Rejecting.sink, options);
-    try deep(discarded.outcome, rejected.outcome);
+    try expect(rejected.outcome == .diagnostic_stopped);
+    try expect(!rejected.documentValid());
+    try expect(rejected.outcome.diagnostic_stopped.violations > 0);
+    try expect(rejected.outcome.diagnostic_stopped.violations <= discarded.outcome.completed.violations);
     try equal(.failed, rejected.diagnostic_delivery);
     const exhausted = Errors.validate(&parsed.document.?, Rejecting.sink, .{});
     try expect(exhausted.outcome == .insufficient_scratch and exhausted.diagnostic_delivery == .failed);

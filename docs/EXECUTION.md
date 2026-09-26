@@ -143,6 +143,11 @@ the value.
 
 ## Independent features and lifetime
 
+Diagnostic callbacks can return `.stop` or an error to terminate unfinished work.
+Warnings and recoverable errors then produce `.diagnostic_stopped`; repeated
+terminal calls do not emit again. Already-terminal syntax/storage failures retain
+their cause with delivery status separate. See [reporting](REPORTING.md).
+
 `Profile(.{ .policy = .{ .execution = .{ .metering = false, .cancellation = true } } }).Session`
 supports cancellable run without work counters. With metering disabled in a fixed
 profile, advance is a compile error. With cancellation disabled in a fixed

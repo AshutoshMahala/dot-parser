@@ -5,13 +5,14 @@ const dot = @import("dot_parser");
 pub fn main(init: std.process.Init) !void {
     const source = "digraph { \"sen\" /* join */ + \"sor\" -> -00.50; café -> 東京; }";
     var storage: dot.FixedDocumentStorage(.{ .statements = 2, .edges = 2 }) = .{};
-    var bag: dot.FixedDiagnosticBag(1) = .{};
+    var bag = dot.GrowableDiagnosticBag.init(init.arena.allocator(), .{});
+    defer bag.deinit();
     const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
     var stdout_buffer: [1024]u8 = undefined;
     var output: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
     const writer = &output.interface;
     if (parsed.outcome != .success) {
-        try dot.console.renderBoxedList(bag.items(), bag.omitted, .{ .source = source }, writer);
+        try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source }, writer);
         try writer.flush();
         return;
     }

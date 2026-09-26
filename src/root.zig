@@ -60,6 +60,11 @@ pub const validatePolicy = Profile(.{}).validatePolicy;
 
 pub const location = @import("location.zig");
 pub const diagnostic = @import("diagnostic.zig");
+/// Typed processor-independent diagnostic destinations.
+pub const reporting = @import("reporting.zig");
+/// Compile-time policy preparation and checked raw-fragment coordinates.
+/// Processor scheduling and HTML parsing are not implemented by this module.
+pub const processor = @import("processor.zig");
 const lexer_impl = @import("lexer/lexer.zig");
 pub const lexer = struct {
     pub const Token = lexer_impl.Token;
@@ -90,7 +95,9 @@ pub const Details = diagnostic.Details;
 pub const Diagnostic = diagnostic.Diagnostic;
 pub const DiagnosticSink = diagnostic.Sink;
 pub const DiagnosticSinkError = diagnostic.SinkError;
+pub const DiagnosticAction = diagnostic.Action;
 pub const FixedDiagnosticBag = diagnostic.FixedBag;
+pub const GrowableDiagnosticBag = diagnostic.GrowableBag;
 
 // The borrowed syntax document and its vocabulary.
 /// The original header, never reclassified by a policy.
@@ -178,6 +185,8 @@ pub const ParseOutcome = union(enum) {
     success,
     /// A cancellation-enabled operation or a session was cancelled.
     cancelled,
+    /// Diagnostic destination stopped unfinished work. No partial document.
+    diagnostic_stopped: diagnostic.StopReason,
     /// The input is not accepted by the selected syntax policy.
     invalid_syntax,
     /// Parsing stopped at a recognized-but-deferred DOT construct; validity
@@ -211,7 +220,7 @@ pub const parseBorrowed = DefaultProfile.parseBorrowed;
 
 /// Validate a parsed document against the milestone rules. Positions come from
 /// the source the document itself borrows — there is no separate source
-/// parameter to mismatch. Validation is a complete analysis pass: it
+/// parameter to mismatch. Without an operational stop, validation is a complete analysis pass: it
 /// continues past every violation and reports all of them into
 /// `diagnostics` in source order; the result separates pass completion from
 /// document validity (R-FUNC-008).

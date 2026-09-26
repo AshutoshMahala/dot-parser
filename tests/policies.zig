@@ -126,24 +126,24 @@ test "optional Policy inherits per leaf and branches never leak between calls" {
     try expectEqual(dot.EdgeOperator.undirected, directed_edges.next().?.effectiveOperator(&directed.document.?, try Runtime.interpretation(&directed.document.?, explicit_default)));
 }
 
-test "warnings count occurrences regardless of retention or delivery failure" {
+test "warnings count omissions but delivery failure reports an incomplete prefix" {
     const Profile = dot.Profile(.{ .policy = .{ .validation = .{ .graph = .{ .operator_mismatch = .warning } } } });
     var parsed = dot.parseBorrowed(std.testing.allocator, "graph { a -> b -> c; c -> d }", dot.diagnostic.discard, .{});
     defer parsed.deinit(std.testing.allocator);
-    var bag: dot.FixedDiagnosticBag(1) = .{};
+    var bag: dot.reporting.FixedBag(dot.Diagnostic, 1, .omit) = .{};
     const result = Profile.validate(&parsed.document.?, bag.sink(), .{});
     try expect(result.documentValid());
     try expectEqual(@as(usize, 3), result.outcome.completed.warnings);
     try expectEqual(@as(usize, 0), result.outcome.completed.violations);
     try expectEqual(@as(usize, 2), bag.omitted);
     const Rejecting = struct {
-        fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!void {
+        fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!dot.DiagnosticAction {
             return error.DiagnosticSinkFailure;
         }
     };
     const rejected = Profile.validate(&parsed.document.?, .{ .context = null, .emit_fn = Rejecting.emit }, .{});
-    try expect(rejected.documentValid());
-    try expectEqual(@as(usize, 3), rejected.outcome.completed.warnings);
+    try expect(!rejected.documentValid());
+    try expectEqual(@as(u64, 1), rejected.outcome.diagnostic_stopped.warnings);
     try expectEqual(dot.diagnostic.Delivery.failed, rejected.diagnostic_delivery);
     const Silent = dot.Profile(.{ .policy = .{ .validation = .{ .graph = .{ .operator_mismatch = .off } } } });
     try expectEqual(dot.diagnostic.Delivery.complete, Silent.validate(&parsed.document.?, .{ .context = null, .emit_fn = Rejecting.emit }, .{}).diagnostic_delivery);

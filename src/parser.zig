@@ -30,8 +30,8 @@
 //! ## Reporting surface
 //!
 //! Every phase of this library reports problems the same way: diagnostics
-//! are emitted into a caller-owned `diagnostic.Sink` (usually backed by a
-//! `FixedBag`), and the function returns only a small control-flow result
+//! are emitted into a caller-owned `diagnostic.Sink` (a fixed/growable bag or
+//! streaming destination), and the function returns only a small control-flow result
 //! (R-DIAG-003). The parser's default policy is fail-fast (R-FUNC-007), so
 //! it attempts at most one failure diagnostic unless recovery is selected.
 //! Lexical warnings and recovery use that same reporting surface.
@@ -90,6 +90,7 @@ pub const Outcome = union(enum) {
     success,
     /// Explicit cancellation or an observed caller request; no diagnostic.
     cancelled,
+    diagnostic_stopped: diagnostic.StopReason,
     /// The input is not accepted by the selected syntax policy.
     invalid_syntax,
     /// Parsing reached a recognized DOT construct that this profile cannot
@@ -292,18 +293,33 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             return if (deviations_enabled) self.deviations else 0;
         }
 
-        fn warn(self: *Self, d: diagnostic.Diagnostic) void {
-            self.warnings += 1;
-            self.diagnostics.emit(d) catch {
+        fn deliver(self: *Self, d: diagnostic.Diagnostic) ?diagnostic.StopReason {
+            const action = self.diagnostics.emit(d) catch |err| {
                 self.delivery = .failed;
+                return diagnostic.StopReason.fromError(err);
             };
+            return if (action == .stop) .requested else null;
         }
 
-        fn acceptDeviation(self: *Self, acceptance: policy.Acceptance, d: diagnostic.Diagnostic) void {
+        fn report(self: *Self, d: diagnostic.Diagnostic) ?Result {
+            return if (self.deliver(d)) |reason| self.stopDiagnostics(reason) else null;
+        }
+
+        fn stopDiagnostics(self: *Self, reason: diagnostic.StopReason) Result {
+            self.abortEvents(.diagnostic_stopped);
+            return self.finish(.{ .diagnostic_stopped = reason });
+        }
+
+        fn warn(self: *Self, d: diagnostic.Diagnostic) ?Result {
+            self.warnings += 1;
+            return self.report(d);
+        }
+
+        fn acceptDeviation(self: *Self, acceptance: policy.Acceptance, d: diagnostic.Diagnostic) ?Result {
             if (!deviations_enabled) unreachable;
             std.debug.assert(acceptance != .reject);
             self.deviations += 1;
-            if (acceptance == .warn) self.warn(d);
+            return if (acceptance == .warn) self.warn(d) else null;
         }
 
         /// Reuse scanners' exact malformed-operator recognition on the cold
@@ -334,11 +350,11 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             return .{ .tag = tag, .span = d.span };
         }
 
-        fn readOperator(self: *Self, token: lex.Token) syntax_event.EdgeOperator {
+        fn readOperator(self: *Self, token: lex.Token) ?syntax_event.EdgeOperator {
             const operator: syntax_event.EdgeOperator = if (token.tag == .edge_undirected) .undirected else .directed;
             if (operators_enabled and token.span.len != 2) {
                 const bare = token.span.len == 1;
-                self.acceptDeviation(if (bare) self.syntax().bare_dash.acceptance else self.syntax().long_operator, .{
+                if (self.acceptDeviation(if (bare) self.syntax().bare_dash.acceptance else self.syntax().long_operator, .{
                     .code = .syntax_operator_accepted,
                     .span = token.span,
                     .details = .{ .accepted_operator = .{
@@ -350,7 +366,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         .edit = .{ .replace = if (operator == .directed) .directed_operator else .undirected_operator },
                         .applicability = .machine_applicable,
                     },
-                });
+                }) != null) return null;
             }
             return operator;
         }
@@ -396,7 +412,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         fn forwardWarning(self: *Self) bool {
             if (self.tokens.takeWarning()) |finding| {
                 switch (self.numeralSeverity()) {
-                    .warning => self.warn(finding),
+                    .warning => if (self.warn(finding) != null) return true,
                     .off => unreachable, // scanner did not run this check
                     .err => {
                         var failure = finding;
@@ -562,7 +578,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                     },
                     .after_subgraph => {
                         if (token.tag == .edge_directed or token.tag == .edge_undirected) {
-                            self.operator = self.readOperator(token);
+                            self.operator = self.readOperator(token) orelse return self.terminal;
                             self.operator_span = token.span;
                             self.state = .edge_right;
                         } else if (token.tag == .colon or token.tag == .left_bracket) {
@@ -595,7 +611,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         },
                         .left_bracket => self.openAttributes(token),
                         .edge_undirected, .edge_directed => {
-                            self.operator = self.readOperator(token);
+                            self.operator = self.readOperator(token) orelse return self.terminal;
                             self.operator_span = token.span;
                             self.state = .edge_right;
                         },
@@ -623,7 +639,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         },
                         .left_bracket => self.openAttributes(token),
                         .edge_undirected, .edge_directed => {
-                            self.link_operator = self.readOperator(token);
+                            self.link_operator = self.readOperator(token) orelse return self.terminal;
                             self.link_operator_span = token.span;
                             self.state = .chain_right;
                         },
@@ -817,11 +833,11 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         // @call(.auto) changed Zig 0.16's code generation in bounded sessions).
         fn beginNext(self: *Self, token: lex.Token) ?Result {
             if (deviations_enabled and token.tag == .semicolon and self.syntax().empty_statement != .reject) {
-                self.acceptDeviation(self.syntax().empty_statement, .{
+                if (self.acceptDeviation(self.syntax().empty_statement, .{
                     .code = .syntax_empty_statement,
                     .span = token.span,
                     .fix = .{ .span = token.span, .edit = .delete, .applicability = .machine_applicable },
-                });
+                })) |result| return result;
                 self.state = .statement;
                 return null;
             }
@@ -913,13 +929,12 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         }
 
         fn scratchFailure(self: *Self, err: scratch_impl.Stack.Error, span: location.Span) Result {
-            self.diagnostics.emit(.{
+            // The resource failure is already terminal; preserve its cause.
+            _ = self.deliver(.{
                 .code = if (err == error.OutOfMemory) .resource_memory_exhausted else .resource_capacity_exhausted,
                 .span = span,
                 .details = if (err == error.OutOfMemory) .none else .{ .capacity = .{ .resource = .nesting_frames, .limit = if (self.scratch) |scratch| scratch.frames.len else 0 } },
-            }) catch {
-                self.delivery = .failed;
-            };
+            });
             self.abortEvents(.scratch_failure);
             return self.finish(.{ .scratch_failure = err });
         }
@@ -1197,17 +1212,14 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         fn fail(self: *Self, failure: diagnostic.Diagnostic) ?Result {
             var d = failure;
             if (d.fix == null) d.fix = self.lexicalFix(d);
-            // A failing diagnostic sink must not mask the parse outcome;
-            // the loss is surfaced via `Result.diagnostic_delivery`.
-            self.diagnostics.emit(d) catch {
-                self.delivery = .failed;
-            };
+            const stop = self.deliver(d);
             const reason: syntax_event.AbortReason = switch (failure.code) {
                 .profile_unsupported_feature => .unsupported_feature,
                 .resource_capacity_exhausted => .resource_exhausted,
                 else => .invalid_syntax,
             };
             if (recovery_enabled and reason == .invalid_syntax and self.canRecover(failure)) {
+                if (stop) |requested| return self.stopDiagnostics(requested);
                 self.abortEvents(.invalid_syntax);
                 if (self.tokens.terminal != .none) self.tokens.resumeAfterFailure();
                 self.state = .recovering;
@@ -1222,7 +1234,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .resource_exhausted => .resource_exhausted,
                 // `fail` only handles diagnostic-classified failures; event
                 // sink failures route through `sinkFailure` exclusively.
-                .sink_failure, .scratch_failure, .cancelled => unreachable,
+                .sink_failure, .scratch_failure, .cancelled, .diagnostic_stopped => unreachable,
             };
             self.abortEvents(reason);
             return self.finish(outcome);
@@ -1751,7 +1763,7 @@ test "late cancellation from a rejected syntax diagnostic does not mask failure"
     const Reporter = struct {
         request: *CancellationProbe,
         emits: usize = 0,
-        fn emit(context: ?*anyopaque, _: diagnostic.Diagnostic) diagnostic.SinkError!void {
+        fn emit(context: ?*anyopaque, _: diagnostic.Diagnostic) diagnostic.SinkError!diagnostic.Action {
             const self: *@This() = @ptrCast(@alignCast(context.?));
             self.emits += 1;
             self.request.flag = true;
@@ -1774,6 +1786,31 @@ test "late cancellation from a rejected syntax diagnostic does not mask failure"
     try expectEqual(@as(usize, 1), events.aborts);
     try expectEqual(@as(usize, 1), reporter.emits);
     try expect(machine.cancel().outcome == .invalid_syntax);
+}
+
+test "diagnostic stop aborts output once and does not resume recovery or dispatch" {
+    for ([_][]const u8{ "graph { ; a; }", "graph { a -> ; b -> ; c; }" }) |source| {
+        var events: BudgetSink = .{};
+        var bag: diagnostic.FixedBag(1) = .{};
+        var machine: Machine(*BudgetSink, true, true, false, scalar_lex.Scanner, null) = .{
+            .tokens = scalar_lex.Scanner(true, true, null).init(source),
+            .events = &events,
+            .diagnostics = bag.sink(),
+            .settings = .{ .syntax = policy.resolve(policy.defaults, policy.presets.lenient).parsing.syntax, .recovery = .statements },
+        };
+        while (machine.advance(1).result == null) {}
+        const first = machine.terminal.?;
+        try expect(first.outcome == .diagnostic_stopped);
+        try expectEqual(@as(usize, 1), events.aborts);
+        const attempts = events.attempts;
+        const reads = machine.tokens.examinations;
+        try std.testing.expectEqualDeep(first, machine.runToCompletion());
+        try expectEqual(@as(usize, 0), machine.advance(99).work_used);
+        try std.testing.expectEqualDeep(first, machine.cancel());
+        try expectEqual(attempts, events.attempts);
+        try expectEqual(reads, machine.tokens.examinations);
+        try expectEqual(@as(usize, 1), bag.items().len);
+    }
 }
 
 // Independent probes count attempted callouts, not just accepted records.
@@ -1867,12 +1904,12 @@ const BudgetDiagnostics = struct {
     fn failures(self: *const @This()) usize {
         return self.attempts - self.warnings;
     }
-    fn emit(context: ?*anyopaque, item: diagnostic.Diagnostic) diagnostic.SinkError!void {
+    fn emit(context: ?*anyopaque, item: diagnostic.Diagnostic) diagnostic.SinkError!diagnostic.Action {
         const self: *@This() = @ptrCast(@alignCast(context.?));
         self.attempts += 1;
         if (item.code.severity() == .warning) self.warnings += 1;
         if (self.reject) return error.DiagnosticSinkFailure;
-        try self.bag.sink().emit(item);
+        return self.bag.sink().emit(item);
     }
 };
 
@@ -2308,7 +2345,7 @@ test "statement recovery stops where there is no boundary to return to" {
     try expectEqual(@as(usize, 2), bag.items().len);
     try expectEqual(diagnostic.Code.resource_capacity_exhausted, bag.items()[1].code);
     // A full bag counts what it could not keep.
-    var small: diagnostic.FixedBag(2) = .{};
+    var small: @import("reporting.zig").FixedBag(diagnostic.Diagnostic, 2, .omit) = .{};
     try expect(testing.run("digraph { a -> ; b -> ; c -> ; d -> ; }", &events, small.sink(), recovery_settings, null).outcome == .invalid_syntax);
     try expectEqual(@as(usize, 2), small.items().len);
     try expectEqual(@as(usize, 2), small.omitted);
@@ -2958,7 +2995,7 @@ test "step is terminal-idempotent after success and after failure" {
 
 test "a failing diagnostic sink is surfaced as delivery failure, not masked" {
     const Rejecting = struct {
-        fn emit(context: ?*anyopaque, d: diagnostic.Diagnostic) diagnostic.SinkError!void {
+        fn emit(context: ?*anyopaque, d: diagnostic.Diagnostic) diagnostic.SinkError!diagnostic.Action {
             _ = context;
             _ = d;
             return error.DiagnosticSinkFailure;

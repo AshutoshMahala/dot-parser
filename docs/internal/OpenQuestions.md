@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-23 (shared diagnostics and independent processor validation).
+Last reconciled: 2026-09-26 (processor policy/diagnostic preparation and stages 1–4).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -1185,15 +1185,17 @@ details; sharing infrastructure must not require one universal payload union
 whose largest extension inflates every DOT diagnostic. The concrete diagnostic
 type/adapter and catalog ownership remain to be designed (R-DIAG-007).
 
-Caller-owned routing can feed one destination, separate fixed bags, or a sink
+Caller-owned routing can feed one destination, separate fixed/growable bags, or a sink
 with no retained bag. No processor or fragment requires its own allocated bag.
-A processor may report multiple independent findings. A full fixed bag retains
-its prefix and counts omitted diagnostics without stopping validation; finding
-counts do not depend on retention. Delivery failure remains explicit and does
-not erase findings or make the input valid. The existing DOT validator continues
-analysis after a diagnostic sink failure; preserve that distinction from a
-failure of an output/event sink. No composed result may claim complete delivery
-or complete retention when diagnostics were lost or omitted.
+A processor may report multiple independent findings. As revised 2026-09-26,
+fixed bags request stopping on their last accepted entry; growable bags are the
+default in general examples, with explicit allocator ownership and optional hard
+limits. Prefix-and-count retention remains an explicit continuing destination.
+Sink stop/failure terminates unfinished DOT parsing/validation and future composed
+work; ordinary findings still do not. Counts retain discovered facts, including
+source-order pending findings, without claiming unvisited input was checked.
+Delivery, retention and completion remain separate. Terminal syntax/resource
+failures retain their cause if the reporting attempt itself fails.
 
 Validation findings are not fail-fast control flow. An inner validation error
 must not prevent DOT validation, another independent processor, or another
@@ -1253,8 +1255,20 @@ Choose and document the composed ordering/tie-breaking contract before exposing
 that API; do not silently claim global ordering or introduce hidden buffering,
 sorting or allocations to obtain it (R-PORT-005).
 
-**Shared policy helpers remain provisional.** Extract genuinely common
-inheritance, patching and binding helpers when the second implementation exists.
+**Shared preparation implemented 2026-09-26.** `processor.PolicyBinding` is used
+by DOT and a consumer-owned test schema. `processor.PolicySet` binds named configured
+profiles and prepares enabled runtime settings once before stage initialization;
+fixed-only sets have no runtime settings storage. This is preflight, not a stage
+scheduler or an implemented `.processors` option on DOT's `Profile`.
+`reporting` supplies typed sinks/fixed/growable bags, and `processor.Fragment`
+provides checked raw-span rebasing. The test processor exercises independent
+operations, consumer payloads and source coordinates without an HTML dependency.
+The [processor contract](PROCESSOR_CONTRACT.md) records stages
+1–4 and reset/ownership defaults. HTML grammar, selectors, during-DOT/delayed
+scheduling and bounded validation remain subsequent work.
+
+Only shared binding/preflight has been extracted; inheritance and checks remain
+schema-owned.
 Do not commit to deriving public `Policy` directly from `Effective`: the current
 schemas differ (for example, `validation.ambiguous_numeral` resolves into
 `parsing.ambiguous_numeral`), and checking needs to distinguish explicit fields
@@ -1457,6 +1471,26 @@ Open; nothing currently forces the choice.
 ---
 
 ## Reconciliation log
+
+- 2026-09-26 — Q40 preparation: recorded agreed stages 1–4 and ownership/reset
+  defaults; implemented shared typed reporting and compile-time policy preflight.
+  DOT diagnostic stop/failure ends unfinished work, with original terminal causes
+  and completed outer results preserved. Fixed bags stop by default; general
+  examples use growable bags. This does not implement markup or composed scheduling.
+  This deliberately reverses the 2026-09-23 decision to continue after diagnostic
+  delivery failure: the later agreed sink-owned stop contract treats a rejected
+  delivery as an operational stop, avoiding further work after the destination
+  has signalled that it cannot accept output. Ordinary validation findings still
+  permit independent checks; completed outer output and terminal failure causes
+  remain intact.
+
+- 2026-09-26 — Documentation placement corrected: processor design and preparation
+  notes live under `docs/internal/`, not in the public usage guide. Durable
+  documentation must not depend on disposable working files. Shared reporting
+  remains public documentation because its fixed/growable/streaming destinations
+  are implemented. Review suggestions about muting, bag defaults, stopped counts,
+  schema diagnostics, PolicySet and span types remain proposals, not changes to
+  the agreed behavior.
 
 Entries describe the state at the time they were recorded; current delivery
 status is in the question entries above, not an earlier log's pending-work list.

@@ -46,7 +46,8 @@ pub fn main(init: std.process.Init) !u8 {
     else
         sample;
 
-    var bag: dot.FixedDiagnosticBag(32) = .{};
+    var bag = dot.GrowableDiagnosticBag.init(allocator, .{});
+    defer bag.deinit();
     // Keep going after a syntax error so one run shows every problem
     // (`--fail-fast` stops at the first, the library default).
     const Parser = dot.Profile(.{ .runtime_policy = true });
@@ -67,7 +68,7 @@ pub fn main(init: std.process.Init) !u8 {
     if (compact) {
         for (bag.items()) |d| try dot.console.render(d, .{ .source = source }, stdout);
     } else {
-        try dot.console.renderBoxedList(bag.items(), bag.omitted, .{
+        try dot.console.renderBoxedList(bag.items(), 0, .{
             .source_name = if (path) |p| std.fs.path.basename(p) else "sample.dot",
             .source = source,
             .color = color,

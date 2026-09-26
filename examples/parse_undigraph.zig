@@ -20,14 +20,15 @@ pub fn main(init: std.process.Init) !void {
     var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
     const stdout = &stdout_file_writer.interface;
 
-    var bag: dot.FixedDiagnosticBag(8) = .{};
+    var bag = dot.GrowableDiagnosticBag.init(allocator, .{});
+    defer bag.deinit();
     var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
     defer checked.deinit(allocator);
 
     if (!checked.documentValid()) {
         try dot.console.renderBoxedList(
             bag.items(),
-            bag.omitted,
+            0,
             .{ .source_name = "example.dot" },
             stdout,
         );
