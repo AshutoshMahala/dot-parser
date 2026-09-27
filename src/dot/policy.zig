@@ -38,7 +38,7 @@ pub const Policy = struct {
 
     pub const Limits = struct {
         /// Active subgraph depth; root is zero. Independent of scratch capacity.
-        max_nesting: ?usize = null,
+        max_nesting: ?u32 = null,
         /// Source statements across every scope, not expanded edges or work.
         max_statements: ?usize = null,
         /// Key/value pairs, including assignments; not a lexical-work limit.
@@ -113,7 +113,7 @@ pub const ParseSettings = struct {
     ambiguous_numeral: RuleSeverity = .warning,
     syntax: SyntaxSettings = .{},
     limits: struct {
-        max_nesting: usize = @import("std").math.maxInt(usize),
+        max_nesting: u32 = @import("std").math.maxInt(u32),
         max_statements: usize = @import("std").math.maxInt(usize),
         max_attributes: usize = @import("std").math.maxInt(usize),
     } = .{},

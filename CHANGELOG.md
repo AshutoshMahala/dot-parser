@@ -6,6 +6,9 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- **Breaking:** DOT `Policy.limits.max_nesting` is now `?u32`, with a resolved
+  default of `maxInt(u32)`. Active nesting and recovery brace-depth counters also
+  use u32, matching the source domain; allocation sizes remain usize.
 - Harden markup's trusted-document contract with explicit owner/order preconditions
   and safety-build metadata assertions. Validation resource diagnostics identify
   the relevant element instead of byte zero. Reuse scratch sizing and replace the

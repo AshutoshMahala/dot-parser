@@ -88,8 +88,8 @@ An open-element frame contains its name span and a consumer handle: 12 bytes,
 not the earlier 8-byte estimate. Self-closing elements count toward nesting depth
 but need no persistent frame. Allocator-backed scratch grows independently of
 output; fixed storage never allocates. Pop reuses frames, and release is bulk.
-DOT and markup now instantiate the same `common/stack.zig` mechanism while
-retaining their own frame types and existing counter widths (usize and u32).
+DOT and markup instantiate the same `common/stack.zig` mechanism with their own
+frame types and u32 active-depth counters. Allocation sizes remain usize.
 Owned stack growth uses allocator `realloc`: remapping is attempted before an
 allocate/copy/free fallback. Failure leaves the original frames intact. Doubling,
 fixed-storage behavior and stack layouts are unchanged; successful in-place growth

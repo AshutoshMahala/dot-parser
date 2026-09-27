@@ -19,6 +19,57 @@ const Request = struct {
     }
 };
 
+test "nesting policy and depth counters use u32 with fixed and runtime boundary parity" {
+    const maximum = std.math.maxInt(u32);
+    try expect(@FieldType(dot.Policy.Limits, "max_nesting") == ?u32);
+    try expect(@TypeOf(dot.Profile(.{}).baseline.parsing.limits.max_nesting) == u32);
+    try equal(maximum, dot.Profile(.{}).baseline.parsing.limits.max_nesting);
+    try equal(@as(?u32, maximum), dot.presets.standard.limits.max_nesting);
+
+    inline for (.{ .scalar, .block }) |scanner| {
+        const input: dot.Policy = .{
+            .scanner = scanner,
+            .recovery = .statements,
+            .execution = .{ .metering = true },
+            .limits = .{ .max_nesting = maximum },
+        };
+        const Fixed = dot.Profile(.{ .policy = input });
+        const Dynamic = dot.Profile(.{ .policy = input, .runtime_policy = true });
+        const Driver = @FieldType(@FieldType(Fixed.Session, "driver"), "machine");
+        try expect(@FieldType(Driver, "skip_depth") == u32);
+        const source = "graph {{{a}}}";
+        var pools: Storage = .{};
+        var scratch: dot.FixedParseScratch(.{ .nesting = 2 }) = .{};
+        const memory: dot.ParseMemory = .{ .document = pools.storage(), .scratch = scratch.storage() };
+        try expect(Fixed.parseBorrowedIn(source, memory, dot.diagnostic.discard, .{}).outcome == .success);
+        var owned = Fixed.parseBorrowed(std.testing.allocator, source, dot.diagnostic.discard, .{});
+        defer owned.deinit(std.testing.allocator);
+        try expect(owned.outcome == .success);
+        try expect(Fixed.measureIn(source, scratch.storage(), dot.diagnostic.discard, .{}).outcome == .success);
+
+        var bag: dot.FixedDiagnosticBag(2) = .{};
+        var session = try Dynamic.Session.init(source, memory, bag.sink(), .{});
+        defer session.deinit();
+        while ((try session.advance(1)).outcome == null) {}
+        try expect(session.result().?.outcome == .success);
+        // Lower and raise a runtime limit without narrowing or clamping it.
+        for ([_]u32{ 0, 1, 2, maximum }) |limit| {
+            bag = .{};
+            try session.reset(source, bag.sink(), .{ .policy = .{ .limits = .{ .max_nesting = limit } } });
+            while ((try session.advance(1)).outcome == null) {}
+            if (limit < 2) {
+                try expect(session.result().?.outcome == .resource_exhausted);
+                try equal(@as(usize, 1), bag.items().len);
+                try equal(dot.diagnostic.Capacity.Resource.nesting_depth, bag.items()[0].details.capacity.resource);
+                try equal(@as(usize, limit), bag.items()[0].details.capacity.limit);
+            } else {
+                try expect(session.result().?.outcome == .success);
+                try equal(@as(usize, 0), bag.items().len);
+            }
+        }
+    }
+}
+
 test "all scanner recovery and execution combinations agree at both binding times" {
     inline for (.{ .scalar, .block }) |scanner| {
         inline for (.{ .fail_fast, .statements }) |recovery| {

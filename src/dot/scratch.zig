@@ -29,9 +29,11 @@ pub fn Fixed(comptime capacities: struct { nesting: usize }) type {
 
 /// Owned by the facade. Allocator-backed stacks start empty and grow only when
 /// nesting requires it; fixed stacks never allocate. Pop reuses peak capacity.
-pub const Stack = @import("parser_support").stack.Stack(Frame, usize);
+/// Active depth is bounded by the u32 source domain; allocation sizes stay usize.
+pub const Stack = @import("parser_support").stack.Stack(Frame, u32);
 
 test "fixed nesting frames are reused by siblings" {
+    try std.testing.expect(@FieldType(Stack, "len") == u32);
     var fixed: Fixed(.{ .nesting = 1 }) = .{};
     var stack: Stack = .{ .frames = fixed.storage().frames };
     const span: location.Span = .{ .start = 0, .len = 1 };

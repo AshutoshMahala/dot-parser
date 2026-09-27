@@ -299,7 +299,7 @@ These fields have identical values and semantics at both binding times:
 | --- | --- | --- |
 | `limits.max_statements` | `maxInt(usize)` | Maximum source statements, not an edge or work budget |
 | `limits.max_attributes` | `maxInt(usize)` | Maximum key/value pairs, including assignments |
-| `limits.max_nesting` | `maxInt(usize)` | Maximum active subgraph depth; root depth is zero |
+| `limits.max_nesting` | `maxInt(u32)` | Maximum active subgraph depth; root depth is zero; `u32` at both binding times |
 | `recovery` | `.fail_fast` | `.statements` continues diagnostics after a body syntax failure; never publishes a partial document |
 | `scanner` | `.scalar` | `.block` selects the 64-byte scanner; credit counts differ, language results do not |
 | `execution.metering` | `false` | Enable work-credit accounting and session `advance(budget)` |

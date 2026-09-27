@@ -193,7 +193,8 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         /// further events and an `invalid_syntax` outcome.
         aborted: bool = false,
         /// Braces skipped (and not yet matched) while resynchronizing.
-        skip_depth: if (recovery_enabled) usize else void = if (recovery_enabled) 0 else {},
+        // Each increment consumes a brace byte in the bounded u32 source.
+        skip_depth: if (recovery_enabled) u32 else void = if (recovery_enabled) 0 else {},
         /// Latched once a terminal result is produced. Further driver calls
         /// return it unchanged — no re-emitted events or diagnostics. Metered
         /// calls report zero work used.
@@ -277,7 +278,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             recovering,
         };
 
-        fn limit(self: *const Self, comptime name: []const u8) usize {
+        fn limit(self: *const Self, comptime name: []const u8) @FieldType(@FieldType(policy.ParseSettings, "limits"), name) {
             return if (fixed) |value| @field(value.limits, name) else @field(self.settings.limits, name);
         }
 
@@ -881,7 +882,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             return null;
         }
 
-        fn nestingDepth(self: *const Self) usize {
+        fn nestingDepth(self: *const Self) u32 {
             return if (self.scratch) |scratch| scratch.len else 0;
         }
 
@@ -2307,7 +2308,7 @@ test "statement recovery resumes after lexical errors and through scopes" {
     try expectEqual(@as(usize, 3), countCode(&bag, .syntax_unexpected_token));
     try expectEqual(@as(usize, 5), bag.items().len);
     // Every scope was left again: no frames remain.
-    try expectEqual(@as(usize, 0), stack.len);
+    try expectEqual(@as(u32, 0), stack.len);
     // The unterminated cases cannot resume: the rest of the input is the body.
     for ([_][]const u8{ "digraph { a -> ; b -> \"x; c -> d }", "digraph { a -> ; b /* c -> ; d }" }) |truncated| {
         var truncated_events: Recording = .{};
@@ -3052,5 +3053,5 @@ test "nested scope callbacks and all prefixes preserve budget partitioning" {
     for (0..source.len + 1) |end| _ = try checkBudgetPartition(scalar_lex.Scanner, source[0..end], &.{ 0, 1, 2 }, .{}, null, false);
     // Includes failures in begin/end scope, normal owner callbacks, and commit.
     for (0..16) |at| _ = try checkBudgetPartition(scalar_lex.Scanner, source, &.{ 0, 1, 5 }, .{}, at, false);
-    for (0..3) |depth| _ = try checkBudgetPartition(scalar_lex.Scanner, source, &.{1}, .{ .limits = .{ .max_nesting = depth } }, null, false);
+    for ([_]u32{ 0, 1, 2 }) |depth| _ = try checkBudgetPartition(scalar_lex.Scanner, source, &.{1}, .{ .limits = .{ .max_nesting = depth } }, null, false);
 }

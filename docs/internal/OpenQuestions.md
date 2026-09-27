@@ -328,8 +328,9 @@ not mean every future validation or graph-building rule is implemented.
 | Diagnostics and fixes | Typed policy-aware findings/fixes; severity affects validity, sink filtering does not; delivery remains separate | Q37; `tests/diagnostics.zig`, `tests/policies.zig`, `tests/validation_checks.zig` |
 
 All implemented policy leaves have compile-time/runtime parity. The runtime
-support switch is a compile-time capability, not an overridable leaf. Limits
-remain `usize` in the current schema; source spans/indices are still u32.
+support switch is a compile-time capability, not an overridable leaf. Nesting
+limits and active/recovery depth counters use `u32`, bounded by the source domain.
+Statement/attribute limits remain `usize`; source spans/indices are u32.
 Parse deviation/warning counters are u32; validation findings and composed
 warning totals are u64 because independent rules can overlap on one source byte.
 Sources, pools, allocators, scratch and callback contexts remain resources, not
@@ -523,7 +524,8 @@ RISC-V32. [Consumer API and costs](../POLICIES.md).
 **Existing-settings slice implemented:** `limits.max_nesting`, `max_statements`
 and `max_attributes`, `recovery`, `scanner`, and `execution.metering` /
 `cancellation` now use the same baseline/patch model. The default ordinary parse
-is scalar, fail-fast, unmetered and uncancellable, with limits at `maxInt(usize)`;
+is scalar, fail-fast, unmetered and uncancellable, with nesting at `maxInt(u32)`
+and statement/attribute limits at `maxInt(usize)`;
 `BoundedSession` is the metered fixed-profile convenience. Allocators, pool hints,
 actual memory and cancellation callbacks remain explicit resources.
 

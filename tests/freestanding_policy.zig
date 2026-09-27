@@ -78,7 +78,7 @@ fn cancelled(context: ?*anyopaque) bool {
 
 // Exercise runtime variant selection, persistent storage and reset in emitted
 // freestanding objects, with genuinely external choices and cancellation input.
-export fn session_policy(source: [*]const u8, len: usize, choice: u8, limit: usize, stop: *u8) usize {
+export fn session_policy(source: [*]const u8, len: usize, choice: u8, limit: u32, stop: *u8) usize {
     if (!features.runtime_policy) return 0;
     const Dynamic = dot.Profile(.{ .runtime_policy = true });
     var storage: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8, .edge_chains = 8, .edge_links = 8 }) = .{};
