@@ -35,32 +35,30 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return prepared catch unreachable;
         }
 
-        const Variant = enum {
+        // Same bit layout as DOT: cancellation=1, metering=2, block=4.
+        const Variant = enum(u3) {
             plain,
-            metered,
             cancellable,
+            metered,
             both,
             block_plain,
-            block_metered,
             block_cancellable,
+            block_metered,
             block_both,
             fn metering(v: Variant) bool {
-                return v == .metered or v == .both or v == .block_metered or v == .block_both;
+                return @intFromEnum(v) & 2 != 0;
             }
             fn cancellation(v: Variant) bool {
-                return v == .cancellable or v == .both or v == .block_cancellable or v == .block_both;
+                return @intFromEnum(v) & 1 != 0;
             }
             fn backend(v: Variant) policy.ScannerBackend {
-                return switch (v) {
-                    .plain, .metered, .cancellable, .both => .scalar,
-                    else => .block,
-                };
+                return if (@intFromEnum(v) & 4 != 0) .block else .scalar;
             }
         };
         fn variantOf(effective: policy.Effective) Variant {
-            if (effective.scanner == .block)
-                return if (effective.execution.metering) (if (effective.execution.cancellation) .block_both else .block_metered) else (if (effective.execution.cancellation) .block_cancellable else .block_plain);
-            return if (effective.execution.metering) (if (effective.execution.cancellation) .both else .metered) else (if (effective.execution.cancellation) .cancellable else .plain);
+            return @enumFromInt(@as(u3, if (effective.scanner == .block) 4 else 0) |
+                @as(u3, if (effective.execution.metering) 2 else 0) |
+                @as(u3, if (effective.execution.cancellation) 1 else 0));
         }
         fn Core(comptime variant: Variant) type {
             return engine.Engine(api, variant.backend(), if (runtime_policy) null else baseline.parsing(), variant.metering(), variant.cancellation());
@@ -122,12 +120,12 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
 
         const Inner = if (runtime_policy) union(Variant) {
             plain: Core(.plain).Session,
-            metered: Core(.metered).Session,
             cancellable: Core(.cancellable).Session,
+            metered: Core(.metered).Session,
             both: Core(.both).Session,
             block_plain: Core(.block_plain).Session,
-            block_metered: Core(.block_metered).Session,
             block_cancellable: Core(.block_cancellable).Session,
+            block_metered: Core(.block_metered).Session,
             block_both: Core(.block_both).Session,
         } else Core(variantOf(baseline)).Session;
         pub const Session = struct {
@@ -172,7 +170,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             /// Each reset inherits the compiled baseline, not the last override.
             pub fn reset(self: *@This(), source: []const u8, diagnostics: api.DiagnosticSink, options: Options) void {
                 const memory = if (runtime_policy) switch (self.inner) {
-                    inline else => |s| s.memory,
+                    inline else => |*s| s.memory,
                 } else self.inner.memory;
                 self.deinit();
                 self.* = init(source, memory, diagnostics, options);

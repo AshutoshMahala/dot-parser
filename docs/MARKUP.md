@@ -81,7 +81,8 @@ does not repair an unclosed attribute or permit a literal `<` inside its value.
 const Tolerant = markup.Profile(.{
     .policy = .{ .syntax = .{ .malformed_reference = .warn } },
 });
-// "a & b" is one unchanged text node, one accepted deviation, one warning.
+// With a continuing sink: one unchanged text node is counted, with
+// one accepted deviation and one warning. measureIn does not retain a tree.
 const report = Tolerant.measureIn("a & b", .{}, sink, .{});
 ```
 
@@ -91,6 +92,14 @@ name, digits, semicolon, and an invalid numeric character. A following `&` start
 its own reference; `&&valid;` has one deviation. This is a documented syntax
 assumption, not a claim that tolerated input is XML-conformant. Syntax policy is
 applied during parsing; changing it later requires reparsing, not duplicate validation.
+
+Tolerance does not override a sink's stop request. `FixedDiagnosticBag(N)`
+requests stopping when it accepts its Nth item, even if no diagnostic was lost.
+For example, a one-entry bag stops the example above with
+`diagnostic_stopped.requested`, not success. Use a growable or streaming sink
+that continues when complete parsing is required, or explicitly choose
+`reporting.FixedBag(Diagnostic, N, .omit)` to retain a prefix and count omissions.
+Growable sinks can still stop at a configured limit or fail allocation.
 
 ## Import and parse
 
@@ -298,7 +307,9 @@ a specialized scanner/execution engine once per operation or session reset, not
 per byte. Both scanners share the same token and grammar state machines; no
 source-sized masks, token ring or additional retained records are allocated.
 Plain parsing (both metering and cancellation disabled) scans to the next token
-or finding in tight loops. Enabling either execution option restores bounded steps.
+or finding in tight loops. Its vector runs are not capped at 64 bytes; the
+short-run probe runs once per run, not once per window. Enabling either execution
+option restores bounded steps and the block scanner's 64-byte window limit.
 
 One scalar credit performs at most one source-byte/EOF examination, one bounded
 grammar transition, or one event attempt. A block scanning credit can classify
@@ -311,8 +322,10 @@ probe also remains byte-stepped. Frontier includes vector lookahead, not just
 consumed bytes.
 
 A four-byte short-run probe can overlap the vector classification; all lookahead
-still stays within that 64-byte window. No promise of exactly one physical read
-per byte is made for block scanning.
+still stays within that 64-byte window during bounded execution. In plain mode,
+when no complete vector fits, the scalar tail continues after the successful
+probe instead of rereading it. The bounded probe/tail path is unchanged. No promise
+of exactly one physical read per byte is made for block scanning.
 
 One credit always permits progress, and budget partitioning does not change total
 work within a backend. Credit totals and intermediate frontiers need not agree

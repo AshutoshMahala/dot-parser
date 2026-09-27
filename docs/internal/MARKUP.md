@@ -128,7 +128,7 @@ ordinary builds omit frontier/hook state when disabled. Callout time is excluded
 and allocator-backed operations are run-to-completion, not a bounded allocation
 claim. Completed results are latched; abort occurs at most once after begin.
 Scalar scanning remains byte-stepped when either metering or cancellation is
-enabled. Block scanning uses up-to-64-byte windows and scalar boundary transitions;
+enabled. Bounded block scanning uses up-to-64-byte windows and scalar boundary transitions;
 its credit totals/frontiers differ from scalar. Plain scanning loops to the next
 token/finding. See the follow-up below for backend details and measurements.
 
@@ -492,6 +492,9 @@ Growable peak heap/RSS and a full DOT performance rerun were not measured.
 
 ## Scanner follow-up — 2026-09-27
 
+This subsection records the initial backend implementation at `ca718c8`.
+The review follow-up below removes the window cap from plain scanning only.
+
 Implemented `Policy.scanner = .scalar | .block`, scalar by default, with the
 same compile-time/runtime selection model as DOT. The standalone strict cursor
 also exposes `lexer.For(.block)`; `lexer.Lexer` keeps the scalar default.
@@ -603,3 +606,100 @@ but 208.0 → 177.9 MB/s on flat tags and 197.2 → 169.3 MB/s on short attribut
 Those compare the two new backends, not new versus old cancellable parsing.
 No peak growable-heap/RSS, non-native execution performance, full DOT throughput
 rerun, or small-attribute validation improvement is claimed.
+
+## Scanner review follow-up — 2026-09-27
+
+- Plain block scanning now continues through the full uninterrupted run. Only
+  metered/cancellable block calls retain the 64-byte window cap. This removes
+  periodic scalar state dispatch and repeated short probes on long plain runs.
+  Token/finding boundaries and control-byte/reference checks are unchanged.
+- In plain mode, when less than a native vector remains, the scalar tail starts
+  after the successful short probe rather than checking those bytes twice. Bounded
+  consumption/frontiers and work partitioning stay unchanged. Plain short source
+  tails exit before the vector loop; plain scanning also checks its first vector before
+  entering the long-run loop. These fast exits avoid the short-comment regression
+  measured in the initial unbounded-loop implementation. The block tail and the
+  scalar backend's original loop stay separate to preserve both fast paths.
+  Bounded scanning retains its original probe/tail path, including possible
+  repeated probe bytes. Extending the tail optimization to that path caused a
+  repeatable roughly 9% long-text regression locally, so it is not included.
+- Markup's private execution variants use DOT's three-bit layout (cancellation,
+  metering, backend), with matching union order. Runtime dispatch still occurs
+  only at operation/reset entry; fixed profiles remain specialized.
+- Reset captures its active variant by pointer when retrieving caller memory.
+  This removes the by-value capture; no claim is made that every optimized build
+  previously emitted a physical whole-session copy.
+- The shared BOM/CDATA marker counter is named `marker_index` and documents
+  its mutually exclusive lifetimes and u3 range. No new state field is added.
+
+The trusted-document contract is unchanged: arbitrary invalid leaf encodings,
+spans or delimiters are not accepted via public-field construction. No fallback
+silently changes an unknown kind into text. Lexical token kinds and retained
+node kinds remain distinct concepts; their existing explicit mapping is retained.
+Diagnostic bags also keep stop-at-capacity behavior. The warning example now
+states its continuing-sink precondition, and an exact-one-warning test contrasts
+fixed-stop, growable, discard and explicit omit destinations.
+
+Tests additionally cover all 64 old/new runtime-variant reset pairs, memory reuse,
+polling and metering selection, long runs across grammar contexts, and every
+short-tail boundary for every run classifier in both execution modes.
+
+Verification: 430/430 tests pass in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall.
+Examples, benchmark compilation, all 13 expected compile failures, and the
+RISC-V32/Wasm32 freestanding fixed/runtime probes pass. Formatting and diff checks
+also pass. The default scalar loop remains local: extracting its tail into the
+block helper added native induction instructions in a trial. The final scalar
+`stepReady` instruction sequence matches the baseline apart from relocated
+code/data addresses in the native benchmark binary. The cancellation-enabled
+block scanner's instruction sequence is likewise preserved after excluding the
+bounded-tail optimization.
+
+Native sizes are unchanged: Node/Attribute 20 bytes each, validation key 8 bytes,
+parser frame 12 bytes, Diagnostic 36 bytes; fixed/bounded/runtime sessions
+416/424/480 bytes. No new buffers or allocation paths were added. The complete
+comparison benchmark's `__text` section is 515,752 bytes versus 514,252 bytes
+(+1,500 bytes, about 0.29%); this is not the size of a minimal consumer binary.
+Peak growable allocation and process RSS were not measured by this follow-up.
+
+### Follow-up measurements
+
+Apple M4 Pro, Zig 0.16.0, ReleaseFast; baseline `ca718c8`. The same
+13-fixture benchmark was built against both revisions, with only sampling reduced
+to seven eight-parse batches after two warm-up batches. Each reported value is
+the midpoint of two isolated process medians for that build; compilation did not
+overlap timed runs. Rejected intermediate implementations are excluded.
+
+Plain fixed-profile **block** parsing, cells **milliseconds / decimal MB/s**:
+
+| Fixture | Before | After | Throughput change |
+| --- | ---: | ---: | ---: |
+| flat | 0.623 / 320.9 | 0.596 / 335.6 | +4.5% |
+| mixed | 2.591 / 289.6 | 2.455 / 305.4 | +5.5% |
+| text | 0.098 / 10207.4 | 0.080 / 12460.8 | +22.1% |
+| deep | 0.268 / 262.0 | 0.253 / 276.7 | +5.6% |
+| attributes | 3.500 / 314.3 | 3.369 / 326.6 | +3.9% |
+| duplicates | 3.492 / 315.0 | 3.378 / 325.6 | +3.4% |
+| references | 4.218 / 403.0 | 4.112 / 413.4 | +2.6% |
+| attribute_references | 4.132 / 435.6 | 4.112 / 437.8 | +0.5% |
+| comments | 1.128 / 1240.8 | 1.115 / 1254.8 | +1.1% |
+| cdata | 1.450 / 1069.6 | 1.397 / 1109.8 | +3.8% |
+| prose | 0.370 / 4956.4 | 0.281 / 6528.1 | +31.7% |
+| long_names | 0.116 / 5674.6 | 0.093 / 7043.1 | +24.1% |
+| long_values | 0.400 / 4915.1 | 0.304 / 6473.0 | +31.7% |
+
+The geometric mean throughput gain across these 13 cases is 10.3%; the four
+long-run cases improve 22–32%. Runtime-enabled baseline selection also retains
+those long-run gains (15–35% across those four cases). Small positive changes
+should not be read as universal or statistically established speedups. Bounded
+block timings ranged from about -4.8% to +7.1% across fixtures; no bounded-path
+speedup is claimed.
+
+The broad harness's first scalar/flat case was unstable and reported an 11.1%
+drop in this pair. A separate flat-only, warmed steady-state check used eight
+64-parse warm-up batches followed by seven measured 64-parse batches, in
+before/after/after/before order. Fixed scalar measured 363.3 -> 364.4 MB/s
+(0.551 -> 0.549 ms); fixed block measured 322.0 -> 338.9 MB/s
+(0.622 -> 0.590 ms). That check does not reproduce the apparent scalar regression.
+It is a separate measurement, not a replacement inserted into the broad table.
+These remain local synthetic observations, not a guarantee of end-to-end parity
+on every input or target.

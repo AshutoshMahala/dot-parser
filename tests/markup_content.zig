@@ -212,6 +212,27 @@ test "warnings stop on sink request or delivery failure without publishing a doc
     }
 }
 
+test "one tolerated reference distinguishes full-bag stopping from continuing sinks" {
+    const Warn = markup.Profile(.{ .policy = .{ .syntax = .{ .malformed_reference = .warn } } });
+    var fixed: markup.FixedDiagnosticBag(1) = .{};
+    const stopped = Warn.measureIn("a & b", .{}, fixed.sink(), .{});
+    try equal(markup.Outcome{ .diagnostic_stopped = .requested }, stopped.outcome);
+    try equal(markup.reporting.Delivery.complete, stopped.diagnostic_delivery);
+    try equal(@as(usize, 1), fixed.items().len);
+    try equal(@as(u32, 1), stopped.warnings);
+    var growing = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
+    defer growing.deinit();
+    var omitted: markup.reporting.FixedBag(markup.Diagnostic, 1, .omit) = .{};
+    for ([_]markup.DiagnosticSink{ growing.sink(), omitted.sink(), discard }) |sink| {
+        const complete = Warn.measureIn("a & b", .{}, sink, .{});
+        try equal(markup.Outcome.success, complete.outcome);
+        try equal(@as(u32, 1), complete.counts.nodes);
+        try equal(@as(u32, 1), complete.accepted_deviations);
+        try equal(@as(u32, 1), complete.warnings);
+    }
+    try equal(@as(u64, 0), omitted.omitted);
+}
+
 test "fixed reference policy omits unused settings and counter state" {
     const Strict = @FieldType(@FieldType(markup.Profile(.{}).Session, "inner"), "machine");
     const Silent = @FieldType(@FieldType(markup.Profile(.{ .policy = .{ .syntax = .{ .malformed_reference = .accept } } }).Session, "inner"), "machine");

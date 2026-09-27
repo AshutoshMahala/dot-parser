@@ -6,6 +6,12 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Optimize standalone markup's plain block scanner to scan complete runs without
+  a 64-byte cap and avoid rechecking successful short probes in its scalar tails.
+  Metered/cancellable block steps retain their 64-byte bound. Simplify execution
+  variant selection and avoid by-value session capture during reset; retained
+  layouts and trusted-document/diagnostic-stop contracts are unchanged.
+
 - Add standalone markup references, comments and CDATA. References remain in
   source-backed text/attribute spans without decoding or entity lookup; comments
   and CDATA retain distinct leaf kinds with `NodeView.content()`. Nodes remain 20 bytes.

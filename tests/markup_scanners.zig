@@ -201,3 +201,72 @@ test "block cancellation and diagnostic stop do not scan the remainder" {
     try expect(got.outcome == .diagnostic_stopped);
     try equal(@as(u32, 1), got.accepted_deviations);
 }
+
+test "runtime reset preserves memory and selects all eight execution variants" {
+    const Poll = struct {
+        calls: u32 = 0,
+        stop: bool = false,
+        fn requested(context: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.calls += 1;
+            return self.stop;
+        }
+    };
+    var storage: Storage = .{};
+    var scratch: Scratch = .{};
+    var poll: Poll = .{};
+    const hook: m.Cancellation = .{ .context = &poll, .is_requested = Poll.requested };
+    const source = "<a x='1'>" ++ "text" ** 64 ++ "</a>";
+    var session = Dynamic.Session.init(source, .{ .document = storage.storage(), .scratch = scratch.storage() }, m.diagnostic.discard, .{});
+    defer session.deinit();
+    // Test every old/new pair, including abandoning unfinished work on reset.
+    for (0..8) |from| {
+        for (0..8) |to| {
+            const old: m.Policy = .{ .scanner = if (from & 4 != 0) .block else .scalar, .execution = .{ .metering = from & 2 != 0, .cancellation = from & 1 != 0 } };
+            session.reset(source, m.diagnostic.discard, .{ .policy = old, .cancellation = hook });
+            if (from & 2 != 0) _ = try session.advance(12) else _ = session.run();
+            poll = .{ .stop = true };
+            const next: m.Policy = .{ .scanner = if (to & 4 != 0) .block else .scalar, .execution = .{ .metering = to & 2 != 0, .cancellation = to & 1 != 0 } };
+            const options: Dynamic.Options = .{ .policy = next, .cancellation = hook };
+            session.reset(source, m.diagnostic.discard, options);
+            const expected: m.Outcome = if (to & 1 != 0) .cancelled else .success;
+            try equal(expected, session.run().outcome);
+            try equal(to & 1 != 0, poll.calls != 0);
+            poll = .{};
+            session.reset(source, m.diagnostic.discard, options);
+            if (to & 2 != 0) {
+                var frontier: u32 = 0;
+                var saw_block = false;
+                while (session.result() == null) {
+                    const p = try session.advance(1);
+                    const delta = p.source_frontier - frontier;
+                    try expect(delta <= (if (to & 4 != 0) @as(u32, 64) else 1));
+                    saw_block = saw_block or delta > 1;
+                    frontier = p.source_frontier;
+                }
+                try equal(to & 4 != 0, saw_block);
+            } else {
+                try std.testing.expectError(error.MeteringDisabled, session.advance(1));
+                _ = session.run();
+            }
+            const got = session.result().?;
+            try equal(m.Outcome.success, got.outcome);
+            try equal(m.Counts{ .nodes = 2, .elements = 1, .attributes = 1, .max_depth = 1 }, got.counts);
+            try equal(@intFromPtr(&storage.nodes[0]), @intFromPtr(got.document.?.records.ptr));
+            try equal(@intFromPtr(&storage.attributes[0]), @intFromPtr(got.document.?.attributes.ptr));
+            try equal(to & 1 != 0, poll.calls != 0);
+        }
+    }
+}
+
+test "long runs preserve token boundaries, warnings and bounded progress" {
+    var bytes: [8192]u8 = undefined;
+    @memset(&bytes, 'a');
+    inline for (.{ "{s}&bad<b/>", "<!--{s}-->", "<![CDATA[{s}]]>", "<{s}/>", "<a {s}='v'/>", "<a x='{s}&bad'/>", "&{s};", "<a{s}/>" }) |format| {
+        if (comptime std.mem.eql(u8, format, "<a{s}/>")) @memset(&bytes, ' ');
+        const source = try std.fmt.allocPrint(std.testing.allocator, format, .{bytes[0..]});
+        defer std.testing.allocator.free(source);
+        try lexers(source);
+        try compare(.warn, source);
+    }
+}

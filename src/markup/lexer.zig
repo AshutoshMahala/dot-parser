@@ -1,5 +1,5 @@
 //! One state machine with scalar and vector run scanning. Bounded scalar steps
-//! examine one byte; block steps use <=64-byte windows. Plain parsing loops to a token.
+//! examine one byte; bounded block steps use <=64-byte windows. Plain runs have no cap.
 const runs = @import("lexer_runs.zig");
 const policy = @import("policy.zig");
 const support = @import("parser_support");
@@ -58,7 +58,10 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
         frontier: if (metered) u32 else void = if (metered) 0 else {},
         state: enum { prefix, prefix_done, content, text, after_lt, end_start, name, after_name, slash, bang, attribute_name, before_equal, before_value, value, after_value, attributes, attribute_slash, comment_start, comment, comment_dash, comment_end, cdata_start, cdata, cdata_bracket, cdata_end, reference_start, reference_name, reference_number_start, reference_hex_start, reference_decimal, reference_hex } = .prefix,
         prefix: [4]u8 = .{0} ** 4,
-        prefix_len: u3 = 0,
+        /// Shared progress for mutually exclusive markers: initial BOM probe
+        /// (0..4), then "CDATA[" (0..6), reset when entering .cdata_start.
+        /// Neither value is retained encoding metadata; both fit u3.
+        marker_index: u3 = 0,
         start: u32 = 0,
         name_start: u32 = 0,
         name_end: u32 = 0,
@@ -141,12 +144,12 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
 
         fn skipRun(self: *Self) bool {
             const run = switch (self.state) {
-                .text => runs.prefix(backend, .text, self.source, self.offset),
-                .name, .attribute_name, .reference_name => runs.prefix(backend, .name, self.source, self.offset),
-                .value => if (self.quote == '"') runs.prefix(backend, .double_value, self.source, self.offset) else runs.prefix(backend, .single_value, self.source, self.offset),
-                .after_name, .before_equal, .before_value, .attributes => runs.prefix(backend, .space, self.source, self.offset),
-                .comment => runs.prefix(backend, .comment, self.source, self.offset),
-                .cdata => runs.prefix(backend, .cdata, self.source, self.offset),
+                .text => runs.prefix(backend, bounded, .text, self.source, self.offset),
+                .name, .attribute_name, .reference_name => runs.prefix(backend, bounded, .name, self.source, self.offset),
+                .value => if (self.quote == '"') runs.prefix(backend, bounded, .double_value, self.source, self.offset) else runs.prefix(backend, bounded, .single_value, self.source, self.offset),
+                .after_name, .before_equal, .before_value, .attributes => runs.prefix(backend, bounded, .space, self.source, self.offset),
+                .comment => runs.prefix(backend, bounded, .comment, self.source, self.offset),
+                .cdata => runs.prefix(backend, bounded, .cdata, self.source, self.offset),
                 else => return false,
             };
             if (metered) self.frontier = @max(self.frontier, self.offset + run.examined);
@@ -156,21 +159,21 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
 
         fn stepByte(self: *Self) bool {
             if (self.state == .prefix) {
-                if (self.prefix_len < 4 and self.prefix_len < self.source.len) {
-                    self.prefix[self.prefix_len] = self.source[self.prefix_len];
-                    self.prefix_len += 1;
-                    if (metered) self.frontier = self.prefix_len;
+                if (self.marker_index < 4 and self.marker_index < self.source.len) {
+                    self.prefix[self.marker_index] = self.source[self.marker_index];
+                    self.marker_index += 1;
+                    if (metered) self.frontier = self.marker_index;
                 } else self.state = .prefix_done;
                 return false;
             }
             if (self.state == .prefix_done) {
                 const p = self.prefix;
-                if ((self.prefix_len >= 2 and ((p[0] == 0xff and p[1] == 0xfe) or (p[0] == 0xfe and p[1] == 0xff))) or
-                    (self.prefix_len == 4 and p[0] == 0 and p[1] == 0 and p[2] == 0xfe and p[3] == 0xff))
+                if ((self.marker_index >= 2 and ((p[0] == 0xff and p[1] == 0xfe) or (p[0] == 0xfe and p[1] == 0xff))) or
+                    (self.marker_index == 4 and p[0] == 0 and p[1] == 0 and p[2] == 0xfe and p[3] == 0xff))
                     return self.unsupported(.encoding, 0);
                 // A leading UTF-8 signature is not fragment text. Other occurrences
                 // are ordinary bytes. Borrowed source and physical offsets stay intact.
-                if (self.prefix_len >= 3 and p[0] == 0xef and p[1] == 0xbb and p[2] == 0xbf) self.offset = 3;
+                if (self.marker_index >= 3 and p[0] == 0xef and p[1] == 0xbb and p[2] == 0xbf) self.offset = 3;
                 self.state = .content;
                 return false;
             }
@@ -372,7 +375,7 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
                     },
                     '[' => {
                         self.offset += 1;
-                        self.prefix_len = 0;
+                        self.marker_index = 0;
                         self.state = .cdata_start;
                     },
                     else => return self.unsupported(.declarations, self.start),
@@ -396,10 +399,10 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
                     return self.token(.comment);
                 },
                 .cdata_start => {
-                    if (byte != "CDATA["[self.prefix_len]) return self.problem(.unexpected_byte, at, .{ .expected = .cdata_start });
+                    if (byte != "CDATA["[self.marker_index]) return self.problem(.unexpected_byte, at, .{ .expected = .cdata_start });
                     self.offset += 1;
-                    self.prefix_len += 1;
-                    if (self.prefix_len == 6) self.state = .cdata;
+                    self.marker_index += 1;
+                    if (self.marker_index == 6) self.state = .cdata;
                 },
                 .cdata => {
                     self.offset += 1;
