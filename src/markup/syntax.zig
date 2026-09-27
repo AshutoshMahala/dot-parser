@@ -14,13 +14,22 @@ pub const Node = struct {
         return if (self.name.len == 0) .text else .element;
     }
 };
-pub const Storage = struct { nodes: []Node = &.{} };
-pub fn Fixed(comptime capacity: u32) type {
+/// Sparse source-order pool: no attribute fields are added to every node.
+pub const Attribute = struct {
+    owner: NodeId,
+    name: Span,
+    /// Includes the two original quote delimiters; never decoded/normalized.
+    value: Span,
+};
+pub const Storage = struct { nodes: []Node = &.{}, attributes: []Attribute = &.{} };
+pub const Capacities = struct { nodes: u32 = 0, attributes: u32 = 0 };
+pub fn Fixed(comptime capacity: Capacities) type {
     return struct {
-        nodes: [capacity]Node = undefined,
+        nodes: [capacity.nodes]Node = undefined,
+        attributes: [capacity.attributes]Attribute = undefined,
         pub const byte_size = @sizeOf(@This());
         pub fn storage(self: *@This()) Storage {
-            return .{ .nodes = &self.nodes };
+            return .{ .nodes = &self.nodes, .attributes = &self.attributes };
         }
     };
 }
@@ -30,6 +39,7 @@ pub fn Fixed(comptime capacity: u32) type {
 pub const Document = struct {
     source: []const u8,
     records: []const Node,
+    attributes: []const Attribute,
     pub fn nodeCount(self: Document) u32 {
         return @intCast(self.records.len);
     }
@@ -63,6 +73,53 @@ pub const NodeView = struct {
     pub fn children(self: NodeView) Iterator {
         return .{ .document = self.document, .next_index = @intFromEnum(self.id) + 1, .end = self.record().subtree_end };
     }
+    /// O(log A) lookup into the sparse pool, then O(1) per iterator step.
+    pub fn attributes(self: NodeView) AttributeIterator {
+        const pool = self.document.attributes;
+        var lo: u32 = 0;
+        var hi: u32 = @intCast(pool.len);
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (@intFromEnum(pool[mid].owner) < @intFromEnum(self.id)) lo = mid + 1 else hi = mid;
+        }
+        return .{ .document = self.document, .owner = self.id, .index = lo };
+    }
+};
+pub const AttributeView = struct {
+    document: Document,
+    index: u32,
+    pub fn record(self: AttributeView) Attribute {
+        return self.document.attributes[self.index];
+    }
+    pub fn span(self: AttributeView) Span {
+        const r = self.record();
+        return .{ .start = r.name.start, .len = r.value.start + r.value.len - r.name.start };
+    }
+    pub fn raw(self: AttributeView) []const u8 {
+        return self.span().slice(self.document.source);
+    }
+    pub fn name(self: AttributeView) []const u8 {
+        return self.record().name.slice(self.document.source);
+    }
+    pub fn rawValue(self: AttributeView) []const u8 {
+        return self.record().value.slice(self.document.source);
+    }
+    /// Only removes delimiters. No entity decoding, unescaping or whitespace folding.
+    pub fn value(self: AttributeView) []const u8 {
+        const raw_value = self.rawValue();
+        return raw_value[1 .. raw_value.len - 1];
+    }
+};
+pub const AttributeIterator = struct {
+    document: Document,
+    owner: NodeId,
+    index: u32,
+    pub fn next(self: *AttributeIterator) ?AttributeView {
+        if (self.index == self.document.attributes.len or self.document.attributes[self.index].owner != self.owner) return null;
+        const view: AttributeView = .{ .document = self.document, .index = self.index };
+        self.index += 1;
+        return view;
+    }
 };
 pub const Iterator = struct {
     document: Document,
@@ -80,12 +137,13 @@ pub const Iterator = struct {
 pub const Builder = struct {
     source: []const u8,
     list: std.ArrayList(Node) = .empty,
+    attributes: std.ArrayList(Attribute) = .empty,
     allocator: ?std.mem.Allocator = null,
     committed: bool = false,
-    pub const Error = error{ OutOfMemory, NodeStorageExhausted };
+    pub const Error = error{ OutOfMemory, NodeStorageExhausted, AttributeStorageExhausted };
 
     pub fn fixed(source: []const u8, storage: Storage) Builder {
-        return .{ .source = source, .list = .initBuffer(storage.nodes) };
+        return .{ .source = source, .list = .initBuffer(storage.nodes), .attributes = .initBuffer(storage.attributes) };
     }
     pub fn growing(source: []const u8, allocator: std.mem.Allocator) Builder {
         return .{ .source = source, .allocator = allocator };
@@ -105,6 +163,13 @@ pub const Builder = struct {
     pub fn text(self: *Builder, span: Span) Error!void {
         _ = try self.append(.{ .span = span, .name = .{ .start = 0, .len = 0 }, .subtree_end = @intCast(self.list.items.len + 1) });
     }
+    pub fn attribute(self: *Builder, owner: u32, name: Span, value: Span) Error!void {
+        const record: Attribute = .{ .owner = @enumFromInt(owner), .name = name, .value = value };
+        if (self.allocator) |a| try self.attributes.append(a, record) else {
+            if (self.attributes.items.len == self.attributes.capacity) return error.AttributeStorageExhausted;
+            self.attributes.appendAssumeCapacity(record);
+        }
+    }
     pub fn close(self: *Builder, handle: u32, end: u32) Error!void {
         const node = &self.list.items[handle];
         node.span.len = end - node.span.start;
@@ -117,19 +182,25 @@ pub const Builder = struct {
     /// Never allocate/copy or fail a successful parse just to discard slack.
     pub fn trimCapacity(self: *Builder) void {
         const allocator = self.allocator orelse return;
-        if (self.list.capacity == self.list.items.len) return;
-        if (allocator.resize(self.list.allocatedSlice(), self.list.items.len))
-            self.list.capacity = self.list.items.len;
+        inline for (.{ "list", "attributes" }) |field| {
+            const pool = &@field(self, field);
+            if (pool.capacity != pool.items.len and allocator.resize(pool.allocatedSlice(), pool.items.len))
+                pool.capacity = pool.items.len;
+        }
     }
     pub fn abort(self: *Builder) void {
         self.list.clearRetainingCapacity();
+        self.attributes.clearRetainingCapacity();
         self.committed = false;
     }
     pub fn document(self: *const Builder) ?Document {
-        return if (self.committed) .{ .source = self.source, .records = self.list.items } else null;
+        return if (self.committed) .{ .source = self.source, .records = self.list.items, .attributes = self.attributes.items } else null;
     }
     pub fn deinit(self: *Builder) void {
-        if (self.allocator) |a| self.list.deinit(a);
+        if (self.allocator) |a| {
+            self.list.deinit(a);
+            self.attributes.deinit(a);
+        }
         self.* = .{ .source = &.{} };
     }
 };
@@ -142,6 +213,7 @@ pub const Counter = struct {
         return 0;
     }
     pub fn text(_: *Counter, _: Span) Error!void {}
+    pub fn attribute(_: *Counter, _: u32, _: Span, _: Span) Error!void {}
     pub fn close(_: *Counter, _: u32, _: u32) Error!void {}
     pub fn commit(_: *Counter) Error!void {}
     pub fn abort(_: *Counter) void {}

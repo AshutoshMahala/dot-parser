@@ -5,7 +5,10 @@ const Span = support.location.Span;
 const diagnostic = @import("diagnostic.zig");
 const result = @import("result.zig");
 pub const Token = struct {
-    kind: enum { text, open, close, empty, eof },
+    /// Attribute-free tags remain whole tokens. A tag with attributes yields
+    /// open_head, attribute*, then head_end/empty_end. No header buffering.
+    kind: enum { text, open, close, empty, open_head, attribute, head_end, empty_end, eof },
+    /// Whole token except attribute: there it is the quoted value span.
     span: Span,
     name: Span = .{ .start = 0, .len = 0 },
 };
@@ -33,13 +36,14 @@ pub fn ScannerFor(comptime metered: bool) type {
         source: []const u8,
         offset: u32 = 0,
         frontier: if (metered) u32 else void = if (metered) 0 else {},
-        state: enum { prefix, prefix_done, content, text, after_lt, end_start, name, after_name, slash, bang } = .prefix,
+        state: enum { prefix, prefix_done, content, text, after_lt, end_start, name, after_name, slash, bang, attribute_start, attribute_name, before_equal, before_value, value, after_value, attributes, attribute_slash } = .prefix,
         prefix: [4]u8 = .{0} ** 4,
         prefix_len: u3 = 0,
         start: u32 = 0,
         name_start: u32 = 0,
         name_end: u32 = 0,
         closing: bool = false,
+        quote: u8 = 0,
         terminal: ?Result = null,
 
         pub fn init(source: []const u8) Scanner {
@@ -64,7 +68,7 @@ pub fn ScannerFor(comptime metered: bool) type {
             return self.problem(.unsupported_feature, at, .{ .feature = feature });
         }
         fn token(self: *Scanner, kind: @FieldType(Token, "kind")) Result {
-            const t: Token = .{ .kind = kind, .span = .{ .start = self.start, .len = self.offset - self.start }, .name = if (kind == .text) .{ .start = 0, .len = 0 } else .{ .start = self.name_start, .len = self.name_end - self.name_start } };
+            const t: Token = .{ .kind = kind, .span = .{ .start = self.start, .len = self.offset - self.start }, .name = if (kind == .text or kind == .head_end or kind == .empty_end) .{ .start = 0, .len = 0 } else .{ .start = self.name_start, .len = self.name_end - self.name_start } };
             self.state = .content;
             return .{ .token = t };
         }
@@ -103,6 +107,11 @@ pub fn ScannerFor(comptime metered: bool) type {
                     else => return self.problem(.unexpected_end, at, .{ .expected = switch (self.state) {
                         .after_lt, .end_start => .name,
                         .slash => .closing_angle,
+                        .attribute_slash => .closing_angle,
+                        .attribute_start => .name,
+                        .attribute_name, .before_equal => .equal_sign,
+                        .before_value, .value => .quote,
+                        .after_value => .attribute_separator,
                         else => .tag_end,
                     } }),
                 }
@@ -182,12 +191,87 @@ pub fn ScannerFor(comptime metered: bool) type {
                     if (byte == '/' and !self.closing) {
                         self.offset += 1;
                         self.state = .slash;
-                    } else if (!self.closing and isNameStart(byte)) return self.unsupported(.attributes, at) else return self.problem(.unexpected_byte, at, .{ .expected = .tag_end });
+                    } else if (!self.closing and isNameStart(byte)) {
+                        const head = self.token(.open_head);
+                        self.state = .attribute_start;
+                        return head;
+                    } else return self.problem(.unexpected_byte, at, .{ .expected = .tag_end });
                 },
                 .slash => {
                     if (byte != '>') return self.problem(.unexpected_byte, at, .{ .expected = .closing_angle });
                     self.offset += 1;
                     return self.token(.empty);
+                },
+                .attribute_start => {
+                    // The transition into this state already verified name-start.
+                    self.name_start = at;
+                    self.offset += 1;
+                    self.state = .attribute_name;
+                },
+                .attribute_name => {
+                    if (isNameContinue(byte)) {
+                        self.offset += 1;
+                        return null;
+                    }
+                    self.name_end = at;
+                    if (byte == '=') {
+                        self.offset += 1;
+                        self.state = .before_value;
+                    } else if (whitespace(byte)) {
+                        self.offset += 1;
+                        self.state = .before_equal;
+                    } else return self.problem(.unexpected_byte, at, .{ .expected = .equal_sign });
+                },
+                .before_equal => {
+                    if (whitespace(byte)) {
+                        self.offset += 1;
+                    } else if (byte == '=') {
+                        self.offset += 1;
+                        self.state = .before_value;
+                    } else return self.problem(.unexpected_byte, at, .{ .expected = .equal_sign });
+                },
+                .before_value => {
+                    if (whitespace(byte)) {
+                        self.offset += 1;
+                    } else if (byte == '\'' or byte == '"') {
+                        self.start = at;
+                        self.quote = byte;
+                        self.offset += 1;
+                        self.state = .value;
+                    } else return self.problem(.unexpected_byte, at, .{ .expected = .quote });
+                },
+                .value => {
+                    if (byte == '&') return self.unsupported(.references, at);
+                    if (byte == '<') return self.problem(.unexpected_byte, at, .{ .expected = .attribute_value });
+                    self.offset += 1;
+                    if (byte == self.quote) {
+                        const attribute = self.token(.attribute);
+                        self.state = .after_value;
+                        return attribute;
+                    }
+                },
+                .after_value, .attributes => {
+                    if (whitespace(byte)) {
+                        self.offset += 1;
+                        self.state = .attributes;
+                    } else if (byte == '>') {
+                        self.start = at;
+                        self.offset += 1;
+                        return self.token(.head_end);
+                    } else if (byte == '/') {
+                        self.start = at;
+                        self.offset += 1;
+                        self.state = .attribute_slash;
+                    } else if (self.state == .attributes and isNameStart(byte)) {
+                        self.name_start = at;
+                        self.offset += 1;
+                        self.state = .attribute_name;
+                    } else return self.problem(.unexpected_byte, at, .{ .expected = .attribute_separator });
+                },
+                .attribute_slash => {
+                    if (byte != '>') return self.problem(.unexpected_byte, at, .{ .expected = .closing_angle });
+                    self.offset += 1;
+                    return self.token(.empty_end);
                 },
                 .bang => return self.unsupported(switch (byte) {
                     '-' => .comments,

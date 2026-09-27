@@ -12,11 +12,12 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
     const writer = &output.interface;
-    try writer.print("Node={d} Frame={d} Diagnostic={d} fixed_session={d} bounded_session={d} runtime_session={d}\n", .{
-        @sizeOf(markup.Node),                 markup.FixedParseScratch(1).byte_size, @sizeOf(markup.Diagnostic),
-        @sizeOf(markup.Profile(.{}).Session), @sizeOf(markup.BoundedSession),        @sizeOf(Runtime.Session),
+    try writer.print("Node={d} Attribute={d} KeyScratch={d} Frame={d} Diagnostic={d} fixed_session={d} bounded_session={d} runtime_session={d}\n", .{
+        @sizeOf(markup.Node),                  @sizeOf(markup.Attribute),  @sizeOf(markup.AttributeKeyScratch),
+        markup.FixedParseScratch(1).byte_size, @sizeOf(markup.Diagnostic), @sizeOf(markup.Profile(.{}).Session),
+        @sizeOf(markup.BoundedSession),        @sizeOf(Runtime.Session),
     });
-    inline for (.{ "flat", "mixed", "text", "deep" }) |name| {
+    inline for (.{ "flat", "mixed", "text", "deep", "attributes", "duplicates" }) |name| {
         var source: std.ArrayList(u8) = .empty;
         if (comptime std.mem.eql(u8, name, "deep")) {
             for (0..10_000) |_| try source.appendSlice(allocator, "<a>");
@@ -25,17 +26,17 @@ pub fn main(init: std.process.Init) !void {
             try source.resize(allocator, 1_000_000);
             @memset(source.items, 'x');
         } else {
-            const item = if (comptime std.mem.eql(u8, name, "flat")) "<a/>" else "<a><b/>text</a>";
+            const item = if (comptime std.mem.eql(u8, name, "flat")) "<a/>" else if (comptime std.mem.eql(u8, name, "attributes")) "<a x='1' y=\"2\" z='3'/>" else if (comptime std.mem.eql(u8, name, "duplicates")) "<a x='1' y=\"2\" x='3'/>" else "<a><b/>text</a>";
             for (0..50_000) |_| try source.appendSlice(allocator, item);
         }
         const measured = markup.measure(allocator, source.items, markup.diagnostic.discard, .{});
         if (measured.outcome != .success) return error.MeasureFailed;
         const memory: markup.ParseMemory = .{
-            .document = .{ .nodes = try allocator.alloc(markup.Node, measured.counts.nodes) },
+            .document = .{ .nodes = try allocator.alloc(markup.Node, measured.counts.nodes), .attributes = try allocator.alloc(markup.Attribute, measured.counts.attributes) },
             .scratch = .{ .frames = try allocator.alloc(std.meta.Elem(@FieldType(markup.ParseScratch, "frames")), measured.counts.max_depth) },
         };
-        try writer.print("{s}: source={d} nodes={d} retained={d} scratch_reserved={d}\n", .{
-            name, source.items.len, measured.counts.nodes, memory.document.nodes.len * @sizeOf(markup.Node), memory.scratch.frames.len * markup.FixedParseScratch(1).byte_size,
+        try writer.print("{s}: source={d} nodes={d} attributes={d} retained={d} scratch_reserved={d}\n", .{
+            name, source.items.len, measured.counts.nodes, measured.counts.attributes, memory.document.nodes.len * @sizeOf(markup.Node) + memory.document.attributes.len * @sizeOf(markup.Attribute), memory.scratch.frames.len * markup.FixedParseScratch(1).byte_size,
         });
         inline for (.{ "fixed", "runtime_baseline", "runtime_override", "count_only" }) |mode| {
             var times: [9]u64 = undefined;
@@ -57,8 +58,30 @@ pub fn main(init: std.process.Init) !void {
             const ns: f64 = @floatFromInt(times[4]);
             try writer.print("  {s}: {d:.3} ms, {d:.1} MB/s\n", .{ mode, ns / 1e6, @as(f64, @floatFromInt(source.items.len)) * 1000 / ns });
         }
+        if (comptime std.mem.eql(u8, name, "attributes") or std.mem.eql(u8, name, "duplicates")) {
+            const parsed = markup.parseBorrowedIn(source.items, memory, markup.diagnostic.discard, .{});
+            const document = parsed.document orelse return error.ParseFailed;
+            const capacity = markup.requiredValidationScratch(&document);
+            const scratch: markup.ValidationScratch = .{ .attribute_keys = try allocator.alloc(markup.AttributeKeyScratch, capacity) };
+            var times: [9]u64 = undefined;
+            for (0..warmups + times.len) |round| {
+                const start = std.Io.Clock.Timestamp.now(init.io, .awake);
+                var errors: u64 = 0;
+                for (0..batch) |_| errors += validateFixed(&document, scratch);
+                const end = std.Io.Clock.Timestamp.now(init.io, .awake);
+                if (errors != (if (comptime std.mem.eql(u8, name, "duplicates")) @as(u64, 50_000 * batch) else 0)) return error.ValidationFailed;
+                if (round >= warmups) times[round - warmups] = @intCast(@divTrunc(start.durationTo(end).raw.nanoseconds, batch));
+            }
+            std.mem.sort(u64, &times, {}, std.sort.asc(u64));
+            const ns: f64 = @floatFromInt(times[4]);
+            try writer.print("  validation_only: {d:.3} ms, {d:.1} MB/s, scratch={d}\n", .{ ns / 1e6, @as(f64, @floatFromInt(source.items.len)) * 1000 / ns, capacity * @sizeOf(markup.AttributeKeyScratch) });
+        }
     }
     try writer.flush();
+}
+noinline fn validateFixed(document: *const markup.Document, scratch: markup.ValidationScratch) u32 {
+    const r = markup.validateIn(document, scratch, markup.diagnostic.discard, .{});
+    return if (r.completion == .complete) r.errors else std.math.maxInt(u32);
 }
 noinline fn parseFixed(source: []const u8, memory: markup.ParseMemory) markup.Counts {
     const r = markup.parseBorrowedIn(source, memory, markup.diagnostic.discard, .{});

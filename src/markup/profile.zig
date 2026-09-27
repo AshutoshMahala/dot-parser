@@ -3,6 +3,7 @@
 const std = @import("std");
 const policy = @import("policy.zig");
 const engine = @import("engine.zig");
+const validation = @import("validate.zig");
 
 pub fn Profile(comptime api: type, comptime config: policy.Config) type {
     const Binding = @import("parser_support").processor.PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
@@ -62,17 +63,38 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             const opts: Options = if (runtime_policy) .{ .policy = options.policy, .cancellation = options.cancellation } else .{ .cancellation = options.cancellation };
             return call("parseBorrowed", api.ParseResult, .{ allocator, source, diagnostics, api.ParseResources{ .scratch_allocator = options.scratch_allocator } }, opts);
         }
-        /// No allocations. The source and both storage regions outlive the view.
+        /// No allocations. The source and output pools outlive the view.
         pub fn parseBorrowedIn(source: []const u8, memory: api.ParseMemory, diagnostics: api.DiagnosticSink, options: Options) api.FixedParseResult {
             return call("parseBorrowedIn", api.FixedParseResult, .{ source, memory, diagnostics }, options);
         }
         /// Count-only execution; output records are not materialized. On success,
-        /// counts.nodes sizes fixed output, max_depth is safe scratch capacity.
+        /// counts.nodes/attributes size output, max_depth is safe scratch capacity.
         pub fn measureIn(source: []const u8, scratch: api.ParseScratch, diagnostics: api.DiagnosticSink, options: Options) api.Report {
             return call("measureIn", api.Report, .{ source, scratch, diagnostics }, options);
         }
         pub fn measure(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: Options) api.Report {
             return call("measure", api.Report, .{ allocator, source, diagnostics }, options);
+        }
+
+        fn Validator(comptime v: Variant) type {
+            return validation.Validator(if (runtime_policy) null else baseline.validation.duplicate_attribute, v == .cancellable or v == .both);
+        }
+        fn validateCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
+            const effective = resolve(options);
+            if (runtime_policy) switch (variantOf(effective)) {
+                inline else => |v| return @call(.auto, @field(Validator(v), method), args ++ .{ effective.validation.duplicate_attribute, hook(v, options.cancellation) }),
+            };
+            const v = comptime variantOf(baseline);
+            return @call(.auto, @field(Validator(v), method), args ++ .{ {}, hook(v, options.cancellation) });
+        }
+        /// Independent, run-to-completion validation; never changes syntax.
+        /// Parse metering does not bound this pass or its sorting/callbacks.
+        pub fn validateIn(document: *const api.Document, scratch: api.ValidationScratch, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+            return validateCall("run", .{ document, scratch, diagnostics }, options);
+        }
+        /// Allocates temporary duplicate-key scratch, freed before returning.
+        pub fn validate(allocator: std.mem.Allocator, document: *const api.Document, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+            return validateCall("allocated", .{ allocator, document, diagnostics }, options);
         }
 
         const Inner = if (runtime_policy) union(Variant) {

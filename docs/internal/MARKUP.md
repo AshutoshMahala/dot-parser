@@ -1,6 +1,6 @@
 # Standalone markup — structural slices
 
-Decisions: 2026-09-26; slice 1 implemented 2026-09-27. Later slices below are plans, not
+Decisions: 2026-09-26; slices 1–2 implemented 2026-09-27. Later slices below are plans, not
 current public capabilities. R-MOD-014/015 and Q40 remain the architectural contract.
 
 ## Delivery order
@@ -14,7 +14,7 @@ this parser. Independent parsing must not import DOT grammar or retained records
 | Slice | Scope | Status |
 | --- | --- | --- |
 | 1 | Text, arbitrary matching/self-closing elements; standalone module, source-backed output, explicit memory, policy limits, bounded/cancellable execution | Implemented |
-| 2 | Quoted attributes, retained order/duplicates, independent duplicate checking | Planned |
+| 2 | Quoted attributes, retained order/duplicates, independent duplicate checking | Implemented |
 | 3 | References, comments and CDATA, including malformed-reference acceptance policy | Planned |
 | 4 | Further optional checks and explicitly defined recovery | Planned |
 | Integration | DOT opaque recognition followed by delayed integration; during-DOT composition later | Planned |
@@ -91,13 +91,13 @@ output; fixed storage never allocates. Pop reuses frames, and release is bulk.
 DOT and markup now instantiate the same `common/stack.zig` mechanism while
 retaining their own frame types and existing counter widths (usize and u32).
 
-Owned successful output tries one in-place capacity reduction; refusal retains
+Owned successful output tries an in-place capacity reduction per pool; refusal retains
 the original allocation with no allocation/copy fallback. `ParseResult.retainedBytes()`
-reports reserved node capacity, not just occupied records, and excludes allocator
+reports reserved node/attribute capacity, not just occupied records, and excludes allocator
 overhead/RSS. Fixed parsing is unchanged; allocator callbacks are not budgeted work.
 
-The policy contains only implemented limits (source bytes, nodes, nesting) and
-execution choices (metering, cancellation). Limits/counts/ranges are u32; lengths
+The policy contains implemented limits (source bytes, nodes, attributes, nesting),
+duplicate-attribute validation severity, and execution choices (metering, cancellation). Limits/counts/ranges are u32; lengths
 at the allocator/slice boundary use native sizes. Defaults preserve the existing
 unlimited-within-representation convention. All typed combinations are meaningful,
 including zero limits, so `validatePolicy` currently returns `valid`; no invalid
@@ -123,9 +123,42 @@ ordinary builds omit frontier/hook state when disabled. Callout time is excluded
 and allocator-backed operations are run-to-completion, not a bounded allocation
 claim. Completed results are latched; abort occurs at most once after begin.
 
-No Graphviz/extended validation, attribute/reference policy, UTF-8 validation,
+No Graphviz/extended validation, reference policy, UTF-8 validation,
 markup fixes, additional scanner backend or processor scheduling is implemented
 by this slice. See the [consumer guide](../MARKUP.md) for the actual API.
+
+## Slice 2 implementation
+
+Quoted attribute parsing uses the same resumable scanner and event machine.
+Attribute-free tags retain their whole-token path. Attribute-bearing headers
+stream `open_head`, each `attribute`, then `head_end`/`empty_end`; there is no
+header-sized buffer, rescanning pass or unmetered value/name loop. Each attribute
+event is charged and cancellable. A pending header uses one constant-size frame
+in the session; only a non-self-closing header enters the nesting stack.
+
+The separate 20-byte attribute record contains an owner u32 and two source spans
+(name, quoted value). This keeps all nodes at 20 bytes, including attribute-free
+elements/text. Owner-sorted storage gives O(log A) attribute lookup and O(1)
+iteration; no attribute range is added to every node. Fixed document capacities
+are now `{ .nodes, .attributes }`, with no legacy scalar-capacity wrapper. Counts,
+limits, fixed/growing/count-only parsing, allocation failures and bounded sessions
+all include attributes. Quoting, whitespace and every duplicate remain intact.
+
+`validate`/`validateIn` are independent passes over completed syntax. Exact
+case-sensitive duplicates are checked per owner; every later occurrence points
+to the first, and all findings are emitted in source order. Severity defaults to
+error, with warning/off policies and fixed/runtime parity. Off does no check or
+allocation and explicitly reports `not_run`. Parse success is not validation
+success; no implicit pass or deduplication is added.
+
+Duplicate checking uses 8-byte scratch entries, reused for the largest attribute
+list (zero for lists smaller than two). In-place heapsorts by name then by source
+index avoid quadratic pairwise checking and leave retained pools unchanged.
+Comparison cost includes name bytes; scratch sizing scans attribute records.
+Completion, validity, check status, finding counters and delivery are distinct.
+Sink stop/failure cancels further validation; an ordinary error finding does not.
+This pass is not metered: cancellation checks surround groups/findings, not each
+sorting comparison. Bounded validation remains later work, as with DOT.
 
 ## Initial local measurements — 2026-09-27
 
@@ -205,3 +238,58 @@ shrinking succeeds, and exposes its original slack when resizing is refused.
 Finalization makes no additional allocation in either case and never changes a
 successful parse into OOM. These are requested node-allocation bytes, not RSS or
 allocator-internal reservations; growable peak live heap remains unmeasured.
+
+## Slice 2 verification and costs — 2026-09-27
+
+398 tests pass in Debug, ReleaseFast, ReleaseSafe and ReleaseSmall, plus the 12
+compile-fail fixtures. Standalone tests, examples, benchmark builds and consumed
+RISC-V32/Wasm32 profiles pass. New coverage includes quoted-value boundaries,
+every truncation, exact source/owner spans, duplicate-order comparison against a
+simple randomized reference, fixed/runtime policy parity, sink backpressure,
+allocation failure, attribute storage exhaustion, cancellation within long values
+and one-credit partition equivalence.
+
+Same Apple M4 Pro and Zig 0.16.0, ReleaseFast. Three alternating before/after
+process pairs compare `1aa2c3f` against slice 2 using the **unchanged original
+benchmark source** for both builds. Each value below is the median of the three
+process medians; each process takes nine 16-operation batches after five warmups.
+These small local samples show variation, not a guarantee of no regression.
+
+| Existing fixed-policy fixture | Before ms | After ms | Before MB/s | After MB/s |
+| --- | ---: | ---: | ---: | ---: |
+| 50,000 empty elements | 0.904 | 0.859 | 221.2 | 232.7 |
+| 50,000 mixed fragments | 3.573 | 3.617 | 209.9 | 207.4 |
+| One text run | 2.906 | 2.890 | 344.2 | 346.0 |
+| 10,000 nested elements | 0.307 | 0.319 | 228.3 | 219.3 |
+
+Across all 16 fixed/runtime/count-only comparisons, measured throughput ranges
+from −5.4% to +5.2%. The largest decrease is mixed count-only (229.7 → 217.3 MB/s,
+3.265 → 3.451 ms). No claim of recovered or universally unchanged throughput is
+made. The attribute-header path is separated from ordinary tag event handling;
+no second scanner, source-sized buffering or extra attribute-free retained records
+were introduced. DOT/common source and DOT retained layouts are untouched.
+
+The expanded benchmark separately adds two 1,100,000-byte fixtures: 50,000 empty
+elements with three attributes each, either distinct keys or one duplicate per
+element. A single local run of that expanded harness (not the matched comparison
+above) measured:
+
+| New fixture | Fixed parse ms / MB/s | Runtime baseline ms / MB/s | Count-only ms / MB/s | Validation-only ms / MB/s |
+| --- | ---: | ---: | ---: | ---: |
+| Distinct attributes | 4.716 / 233.2 | 4.538 / 242.4 | 4.198 / 262.0 | 1.328 / 828.2 |
+| Duplicate attributes | 4.486 / 245.2 | 4.520 / 243.4 | 4.062 / 270.8 | 1.081 / 1017.2 |
+
+Validation timings include duplicate discovery, sorting and discarded diagnostic
+delivery, but exclude parsing and scratch allocation. Throughput is normalized
+to full source bytes; validation reads retained name ranges, not all value bytes.
+The ordinary error policy still discovers all 50,000 duplicates with the discard
+sink. These fixture measurements are starting points, not profile speed rankings.
+
+Native node/frame/diagnostic sizes remain 20/12/36 B. Each attribute is 20 B;
+fixed/bounded/runtime sessions grow from 336/344/392 B to 400/408/456 B (+64 B).
+Both new fixtures retain 4,000,000 B in output pools and reserve 12 B of safe
+nesting scratch; self-closing-only input actually needs no persistent frame.
+Duplicate-validation scratch is only 24 B for either fixture, reused across all
+elements. Attribute-free output capacities are unchanged. Owned-result accounting
+tests include both pools and refused-shrink slack. These are explicit storage
+figures, not process RSS, allocator overhead or peak live-heap measurements.

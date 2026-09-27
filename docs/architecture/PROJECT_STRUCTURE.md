@@ -64,6 +64,7 @@ dot-parser/
 │       ├── engine.zig
 │       ├── scratch.zig
 │       ├── syntax.zig
+│       ├── validate.zig       (independent duplicate-attribute checks)
 │       ├── diagnostic.zig
 │       └── result.zig
 ├── tests/
@@ -137,9 +138,11 @@ README for the governance rules).
 `markup_parser` is an independent build module rooted at `src/markup.zig`, with
 its implementation under `src/markup/`.
 Its scanner, iterative event grammar, storage consumers, diagnostics and policy
-are markup-owned, not adapters around DOT. Slice 1 covers text/elements; the
+are markup-owned, not adapters around DOT. Slices 1–2 cover text, elements, quoted
+attributes and independent duplicate validation; the
 [consumer guide](../MARKUP.md) lists exact coverage. Retained nodes form preorder
-subtree intervals; fixed/growing/count-only consumers share one parser. Public
+subtree intervals with a sparse owner-indexed attribute pool; fixed/growing/count-only
+consumers share one parser. Validation uses explicit temporary per-element scratch. Public
 events and DOT composition remain deferred. The
 [internal slice record](../internal/MARKUP.md) separates future grammar from code.
 

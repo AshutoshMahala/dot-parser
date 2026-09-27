@@ -10,7 +10,7 @@ pub const Outcome = union(enum) {
     cancelled,
     sink_failure,
 };
-pub const Counts = struct { nodes: u32 = 0, elements: u32 = 0, max_depth: u32 = 0 };
+pub const Counts = struct { nodes: u32 = 0, elements: u32 = 0, attributes: u32 = 0, max_depth: u32 = 0 };
 pub const Report = struct {
     outcome: Outcome,
     diagnostic_delivery: diagnostic.reporting.Delivery = .complete,

@@ -7,9 +7,9 @@ pub const reporting = support.reporting;
 pub const namespace = "markup_parser";
 pub const namespace_hash = support.wdp.computeNamespaceHash(namespace);
 
-pub const Feature = enum { attributes, references, comments, cdata, processing_instructions, declarations, encoding };
-pub const Resource = enum { source_bytes, nesting_depth, nodes, nesting_frames, node_pool };
-pub const Expected = enum { name, tag_end, closing_angle };
+pub const Feature = enum { references, comments, cdata, processing_instructions, declarations, encoding };
+pub const Resource = enum { source_bytes, nesting_depth, nodes, attributes, nesting_frames, node_pool, attribute_pool, attribute_keys };
+pub const Expected = enum { name, tag_end, closing_angle, equal_sign, quote, attribute_separator, attribute_value };
 pub const Code = enum {
     invalid_byte,
     unexpected_byte,
@@ -20,6 +20,8 @@ pub const Code = enum {
     unsupported_feature,
     capacity_exhausted,
     out_of_memory,
+    duplicate_attribute,
+    duplicate_attribute_tolerated,
 
     pub fn structured(self: Code) []const u8 {
         return switch (self) {
@@ -32,10 +34,12 @@ pub const Code = enum {
             .unsupported_feature => "E.Profile.Feature.009",
             .capacity_exhausted => "E.Resource.Capacity.026",
             .out_of_memory => "E.Resource.Memory.026",
+            .duplicate_attribute => "E.Validation.Attribute.006",
+            .duplicate_attribute_tolerated => "W.Validation.Attribute.006",
         };
     }
-    pub fn severity(_: Code) reporting.Severity {
-        return .err;
+    pub fn severity(self: Code) reporting.Severity {
+        return if (self == .duplicate_attribute_tolerated) .warning else .err;
     }
     pub fn compactId(self: Code) [5]u8 {
         return switch (self) {
@@ -72,7 +76,7 @@ pub const GrowableBag = reporting.GrowableBag(Diagnostic);
 test "markup registry has unique structured and compact identities" {
     const codes = std.enums.values(Code);
     for (codes, 0..) |a, i| {
-        try std.testing.expectEqual(reporting.Severity.err, a.severity());
+        try std.testing.expectEqual(a.severity().letter(), a.structured()[0]);
         try std.testing.expectEqual(@as(usize, 11), a.qualifiedCompactId().len);
         for (codes[i + 1 ..]) |b| {
             try std.testing.expect(!std.mem.eql(u8, a.structured(), b.structured()));

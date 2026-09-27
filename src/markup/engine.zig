@@ -66,6 +66,7 @@ pub fn Engine(comptime api: type, comptime limits: ?policy.Limits, comptime mete
                 .document = builder.document(),
                 ._allocator = allocator,
                 ._nodes = builder.list,
+                ._attributes = builder.attributes,
             };
         }
         pub fn measureIn(source: []const u8, storage: scratch.Storage, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) results.Report {

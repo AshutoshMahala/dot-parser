@@ -493,11 +493,12 @@ Rendering and consumer-specific interpretation remain outside these stages.
 
 **Standalone-first implementation (2026-09-27; decisions 2026-09-26):** build structural markup in
 vertical slices before expanding composition. `markup_parser` now independently
-parses text and matching/self-closing elements, using shared language-independent
+parses text, matching/self-closing elements and quoted attributes, using shared language-independent
 primitives but no DOT grammar/document. It provides source-backed retained and
 count-only paths, explicit fixed/growing storage, policy limits and bounded/
-cancellable fixed sessions. Attributes, references, comments, CDATA, additional
-validation and DOT recognition/integration remain subsequent slices. Current
+cancellable fixed sessions. Attributes preserve order and all duplicates; independent
+duplicate checks support error/warning/off with explicit scratch and results.
+References, comments, CDATA, additional validation and DOT recognition/integration remain subsequent slices. Current
 coverage is documented in [the markup guide](../MARKUP.md); settled grammar and
 delivery order are recorded in [the internal slice contract](MARKUP.md).
 
@@ -1444,6 +1445,12 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-09-27 — **R-MOD-014 standalone slice 2:** quoted attributes, raw ordered
+  duplicate retention, independent policy-controlled checking and explicit
+  validation scratch/completion/delivery. Attribute-free nodes remain 20 bytes;
+  attributes cost 20 bytes each. Validation is run-to-completion, not bounded by
+  parse credits. References and DOT integration remain future slices.
 
 - 2026-09-27 — **R-MOD-014 standalone slice 1:** standalone-first implementation
   sequence, dedicated independently importable markup module, raw byte/case

@@ -17,8 +17,11 @@ pub fn Machine(comptime fixed_limits: ?policy.Limits, comptime metered: bool, co
         diagnostics: diagnostic.Sink,
         settings: Settings,
         hook: Hook,
-        phase: enum { preflight, begin, scan, grammar, compare_open, compare_close, open, text, close, commit } = .preflight,
+        phase: enum { preflight, begin, scan, grammar, compare_open, compare_close, open, text, close, open_head, attribute, empty_close, commit } = .preflight,
         token: lexer.Token = undefined,
+        /// Only live while reading an attribute-bearing opening header. Not a
+        /// nesting frame: self-closing tags still need no persistent scratch.
+        head: scratch.Frame = undefined,
         compare_index: u32 = 0,
         compare_byte: u8 = 0,
         began: bool = false,
@@ -54,6 +57,7 @@ pub fn Machine(comptime fixed_limits: ?policy.Limits, comptime metered: bool, co
         fn failure(self: *Self, stack: *scratch.Stack, sink: anytype, err: anyerror) void {
             switch (err) {
                 error.NodeStorageExhausted => self.capacity(stack, sink, .node_pool, self.counts.nodes, true),
+                error.AttributeStorageExhausted => self.capacity(stack, sink, .attribute_pool, self.counts.attributes, true),
                 error.NestingStorageExhausted => self.capacity(stack, sink, .nesting_frames, stack.len, true),
                 error.OutOfMemory => self.finish(stack, sink, .out_of_memory, .{ .code = .out_of_memory, .span = .{ .start = self.scanner.offset, .len = 0 } }),
                 else => self.finish(stack, sink, .sink_failure, null),
@@ -101,6 +105,20 @@ pub fn Machine(comptime fixed_limits: ?policy.Limits, comptime metered: bool, co
                             self.phase = .open;
                         } else self.phase = .text;
                     },
+                    .open_head => {
+                        if (self.counts.nodes == self.limits().max_nodes) return self.capacity(stack, sink, .nodes, self.limits().max_nodes, false);
+                        if (stack.len == self.limits().max_nesting) return self.capacity(stack, sink, .nesting_depth, self.limits().max_nesting, false);
+                        self.phase = .open_head;
+                    },
+                    .attribute => {
+                        if (self.counts.attributes == self.limits().max_attributes) return self.capacity(stack, sink, .attributes, self.limits().max_attributes, false);
+                        self.phase = .attribute;
+                    },
+                    .head_end => {
+                        stack.push(self.head) catch |err| return self.failure(stack, sink, err);
+                        self.phase = .scan;
+                    },
+                    .empty_end => self.phase = .empty_close,
                 },
                 .compare_open => {
                     self.compare_byte = self.scanner.source[stack.top().name.start + self.compare_index];
@@ -123,6 +141,23 @@ pub fn Machine(comptime fixed_limits: ?policy.Limits, comptime metered: bool, co
                 .text => {
                     sink.text(self.token.span) catch |err| return self.failure(stack, sink, err);
                     self.counts.nodes += 1;
+                    self.phase = .scan;
+                },
+                .attribute => {
+                    sink.attribute(self.head.handle, self.token.name, self.token.span) catch |err| return self.failure(stack, sink, err);
+                    self.counts.attributes += 1;
+                    self.phase = .scan;
+                },
+                .open_head => {
+                    const handle = sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err);
+                    self.head = .{ .name = self.token.name, .handle = handle };
+                    self.counts.nodes += 1;
+                    self.counts.elements += 1;
+                    self.counts.max_depth = @max(self.counts.max_depth, stack.len + 1);
+                    self.phase = .scan;
+                },
+                .empty_close => {
+                    sink.close(self.head.handle, @as(u32, @intCast(self.token.span.endOffset()))) catch |err| return self.failure(stack, sink, err);
                     self.phase = .scan;
                 },
                 .close => {
@@ -192,6 +227,9 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
         pub fn text(self: *@This(), _: support.location.Span) !void {
             try self.attempt();
         }
+        pub fn attribute(self: *@This(), _: u32, _: support.location.Span, _: support.location.Span) !void {
+            try self.attempt();
+        }
         pub fn close(self: *@This(), _: u32, _: u32) !void {
             try self.attempt();
         }
@@ -202,11 +240,11 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
             self.aborts += 1;
         }
     };
-    for (0..7) |attempt| {
-        var probe: Probe = .{ .fail_at = if (attempt == 6) null else @intCast(attempt) };
+    for (0..10) |attempt| {
+        var probe: Probe = .{ .fail_at = if (attempt == 9) null else @intCast(attempt) };
         var storage: scratch.Fixed(1) = .{};
         var stack: scratch.Stack = .{ .frames = storage.storage().frames };
-        var m = Machine(.{}, true, false).init("<a>x<b/></a>", diagnostic.discard, {}, {});
+        var m = Machine(.{}, true, false).init("<a x='1'>x<b y='2'/></a>", diagnostic.discard, {}, {});
         while (m.terminal == null) {
             const calls = probe.calls;
             const p = m.advance(&stack, &probe, 1);

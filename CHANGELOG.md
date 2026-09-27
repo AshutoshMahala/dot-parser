@@ -6,6 +6,15 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add quoted attributes to standalone markup, preserving raw values, order and
+  every duplicate. Sparse 20-byte attribute records keep nodes at 20 bytes;
+  `max_attributes`, measurement and bounded/cancellable parsing cover the new pool.
+  **Breaking:** markup `FixedDocumentStorage` takes `{ .nodes, .attributes }` capacities.
+- Add independent markup `validate`/`validateIn` passes with duplicate-attribute
+  error/warning/off policy, fixed/runtime parity, source-ordered findings and
+  explicit completion/validity/delivery. Scratch is 8 bytes per attribute in the
+  largest element, reused across elements; validation is not metered. References,
+  comments, CDATA, Graphviz rules and DOT integration remain unsupported.
 - Correct markup EOF diagnostics for `<a/` and unsupported recognition of `<!`;
   check the scanner's source-size domain once, before reading any bytes.
 - Share policy binding and nesting-stack mechanics between DOT and markup without
@@ -23,8 +32,7 @@ are called out here; compatibility shims are not retained.
 - Add an independent `markup_parser` module: structural fragments with text,
   arbitrary case-sensitive elements, borrowed compact output, fixed/growable
   storage, count-only measurement, typed limits and opt-in runtime policies.
-  Fixed-storage sessions support bounded work and cancellation. Attributes,
-  references, comments, CDATA and DOT integration remain unsupported.
+  Fixed-storage sessions support bounded work and cancellation.
 - Share language-independent location, reporting, cancellation and WDP hashing
   through one build module; DOT and markup can coexist without shared grammars
   or enlarged DOT diagnostic/record payloads. Add standalone tests, freestanding

@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-27 (standalone structural markup slice 1).
+Last reconciled: 2026-09-27 (standalone structural markup slices 1–2).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -719,7 +719,7 @@ is authorized by these decisions.
 **Q40 — How are HTML-like identifiers recognized, parsed and validated, and
 which markup policies are offered?**
 **Architecture, mode names and usage paths decided (2026-09-19); standalone
-structural slice 1 implemented (2026-09-27), DOT integration pending.** HTML-like identifiers must work
+structural slices 1–2 implemented (2026-09-27), DOT integration pending.** HTML-like identifiers must work
 wherever the DOT grammar permits an ID, not only as label values. DOT parsing
 recognizes and preserves the complete raw identifier; recognition alone makes
 no claim that its inner markup is well-formed or is a valid Graphviz label.
@@ -740,9 +740,9 @@ task, not the `none`/`opaque` contract. No further `PolicySet`/scheduler work is
 required for standalone parsing. [Markup decisions and slice record](MARKUP.md)
 define the agreed grammar, byte/encoding boundary and the implemented layout/API.
 
-The first module supports empty/text/multiple-root fragments and arbitrary
-case-sensitive, byte-matched elements. It shares only language-independent
-primitives with DOT. Attributes, references, comments and CDATA are recognized
+The module supports empty/text/multiple-root fragments, arbitrary case-sensitive,
+byte-matched elements and quoted attributes. It shares only language-independent
+primitives with DOT. References, comments and CDATA are recognized
 as unsupported until their slices. No Graphviz vocabulary, implicit decoding,
 Unicode normalization, namespace resolution, partial successful tree or guessed
 tag repair is introduced. Raw high bytes are preserved; optional UTF-8/name
@@ -750,12 +750,17 @@ checks are future work. UTF-16/32 require explicit conversion; recognized leadin
 BOMs are unsupported. Spans refer to the supplied buffer, not a pre-conversion
 source. The standalone [consumer guide](../MARKUP.md) describes delivered behavior.
 
-Duplicate attributes will remain retained and independently checked (error by
-default, warning/off selectable). Well-spelled named references need not be
+Duplicate attributes are retained and independently checked (error by
+default, warning/off selectable). Off reports `not_run`; parsing does not invoke
+validation implicitly. The separate pool costs 20 bytes per attribute without
+enlarging nodes; temporary duplicate-key scratch is 8 bytes per entry in the
+largest attribute list. Validation is run-to-completion with separate validity,
+completion, finding counts and delivery, not bounded by parse credits.
+For the next slice, well-spelled named references need not be
 defined for structural recognition. Malformed-reference policy will reject by
 default or explicitly accept with warning/silently by treating the offending `&`
 as literal text, preserving bytes and normal tag/quote boundaries. These are
-decided directions for later slices, not current policy fields.
+decided reference directions for a later slice, not current reference policy fields.
 
 Markup has its own dedicated source directory, `src/markup/`, and independently
 usable stages, like the DOT subsystem. The intended integration remains:
@@ -997,11 +1002,12 @@ record layouts remain provisional. A computed summary could let consumers
 filter fragments without retaining or repeatedly parsing their bodies; it is
 not a promise of structural facts from opaque recognition alone.
 
-The next proposed layer is structure on demand per identifier or eagerly for
-all — elements, attributes and text as index-based borrowed records with parent, first
-child and next sibling links, the same shape as the DOT document — and
-validation results as a third layer. Event-only consumers must be able to
-skip every retained layer.
+Structure on demand per identifier or eagerly for all remains the integration
+direction. The standalone implementation has settled its layout: preorder subtree
+intervals for elements/text and a separate owner-indexed attribute pool, replacing
+the earlier provisional parent/child/sibling links. Independent validation produces
+separate results. Event-only consumers must be able to skip retained layers;
+the currently public alternative is count-only measurement, not public events.
 
 **Still open before the relevant implementation:**
 
@@ -1327,7 +1333,7 @@ checks. Whether the future `extended` vocabulary includes it remains open.
 Finding or validating an actual referenced port is still a later semantic
 pass, not part of recognizing an ID, and label rules do not apply to every ID.
 
-*(Recorded contracts: R-MOD-014 and R-MOD-015. Standalone structural slice 1 now
+*(Recorded contracts: R-MOD-014 and R-MOD-015. Standalone structural slices 1–2 now
 exists in `src/markup/`; later grammar and integration remain pending. HTML-like
 DOT IDs are still deferred in [supported syntax](../SUPPORTED_SYNTAX.md).)*
 
@@ -1502,6 +1508,12 @@ Open; nothing currently forces the choice.
 ---
 
 ## Reconciliation log
+
+- 2026-09-27 — Structural slice 2 implements quoted attributes, ordered duplicate
+  retention, explicit attribute capacity/limits and independent duplicate checks
+  with fixed/runtime error/warning/off parity. Retained node layout stays 20 bytes;
+  sparse attributes and per-element validation scratch are separate costs.
+  Reference processing, bounded validation and DOT integration are still pending.
 
 - 2026-09-27 — Standalone markup first (decided 2026-09-26): implement structural parsing in vertical
   slices before more processor composition. Recorded case-sensitive raw-byte
