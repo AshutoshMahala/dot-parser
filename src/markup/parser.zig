@@ -1,5 +1,5 @@
 //! Private event-level grammar, shared by fixed/growing/count-only consumers.
-//! No AST dependency. No source-sized loop inside a step, including tag-name
+//! No AST dependency. Bounded variants have no source-sized step, including tag-name
 //! comparison. Consumer pointers are supplied when driving, never self-stored.
 const support = @import("parser_support");
 const lexer = @import("lexer.zig");
@@ -9,14 +9,14 @@ const scratch = @import("scratch.zig");
 const result = @import("result.zig");
 const Kind = @import("kind.zig").Kind;
 
-pub fn Machine(comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool) type {
+pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool) type {
     const deviations_enabled = fixed == null or fixed.?.syntax.malformed_reference != .reject;
     const warnings_enabled = fixed == null or fixed.?.syntax.malformed_reference == .warn;
     return struct {
         const Self = @This();
         pub const Settings = if (fixed == null) policy.ParseSettings else void;
         pub const Hook = if (cancellable) ?support.execution.Cancellation else void;
-        scanner: lexer.ScannerFor(metered),
+        scanner: lexer.Scanner(backend, metered, metered or cancellable),
         diagnostics: diagnostic.Sink,
         settings: Settings,
         hook: Hook,
@@ -102,8 +102,8 @@ pub fn Machine(comptime fixed: ?policy.ParseSettings, comptime metered: bool, co
                     sink.begin() catch |err| return self.failure(stack, sink, err);
                     self.phase = .scan;
                 },
-                .scan => if (self.scanner.step()) |item| {
-                    switch (item) {
+                .scan => if (self.scanner.stepReady()) {
+                    switch (self.scanner.ready) {
                         .problem => |p| self.finish(stack, sink, p.outcome, p.diagnostic),
                         .malformed_reference => |d| self.malformedReference(stack, sink, d),
                         .token => |t| {
@@ -236,10 +236,10 @@ pub fn Machine(comptime fixed: ?policy.ParseSettings, comptime metered: bool, co
 
 test "each event attempt is charged and every rejecting sink aborts exactly once" {
     const std = @import("std");
-    try std.testing.expect(Machine(.{}, false, false).Settings == void);
-    try std.testing.expect(Machine(.{}, false, false).Hook == void);
-    try std.testing.expect(@FieldType(lexer.ScannerFor(false), "frontier") == void);
-    try std.testing.expect(@FieldType(lexer.ScannerFor(true), "frontier") == u32);
+    try std.testing.expect(Machine(.scalar, .{}, false, false).Settings == void);
+    try std.testing.expect(Machine(.scalar, .{}, false, false).Hook == void);
+    try std.testing.expect(@FieldType(lexer.Scanner(.scalar, false, false), "frontier") == void);
+    try std.testing.expect(@FieldType(lexer.Scanner(.scalar, true, true), "frontier") == u32);
     const Probe = struct {
         calls: u32 = 0,
         aborts: u32 = 0,
@@ -276,7 +276,7 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
         var probe: Probe = .{ .fail_at = if (attempt == 9) null else @intCast(attempt) };
         var storage: scratch.Fixed(1) = .{};
         var stack: scratch.Stack = .{ .frames = storage.storage().frames };
-        var m = Machine(.{}, true, false).init("<a x='1'>x<b y='2'/></a>", diagnostic.discard, {}, {});
+        var m = Machine(.scalar, .{}, true, false).init("<a x='1'>x<b y='2'/></a>", diagnostic.discard, {}, {});
         while (m.terminal == null) {
             const calls = probe.calls;
             const p = m.advance(&stack, &probe, 1);

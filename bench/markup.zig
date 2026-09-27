@@ -3,11 +3,15 @@
 //! measured separately; reserved bytes are not process RSS or allocator overhead.
 const std = @import("std");
 const markup = @import("markup_parser");
-const Runtime = markup.Profile(.{ .runtime_policy = true });
+fn RuntimeFor(comptime backend: markup.ScannerBackend) type {
+    return markup.Profile(.{ .runtime_policy = true, .policy = .{ .scanner = backend } });
+}
+const Runtime = RuntimeFor(.scalar);
 const batch = 16;
 const warmups = 5;
 
 pub fn main(init: std.process.Init) !void {
+    @setEvalBranchQuota(50_000);
     const allocator = init.arena.allocator();
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
@@ -17,7 +21,7 @@ pub fn main(init: std.process.Init) !void {
         markup.FixedParseScratch(1).byte_size, @sizeOf(markup.Diagnostic), @sizeOf(markup.Profile(.{}).Session),
         @sizeOf(markup.BoundedSession),        @sizeOf(Runtime.Session),
     });
-    inline for (.{ "flat", "mixed", "text", "deep", "attributes", "duplicates", "references", "attribute_references", "comments", "cdata" }) |name| {
+    inline for (.{ "flat", "mixed", "text", "deep", "attributes", "duplicates", "references", "attribute_references", "comments", "cdata", "prose", "long_names", "long_values" }) |name| {
         var source: std.ArrayList(u8) = .empty;
         if (comptime std.mem.eql(u8, name, "deep")) {
             for (0..10_000) |_| try source.appendSlice(allocator, "<a>");
@@ -27,6 +31,9 @@ pub fn main(init: std.process.Init) !void {
             @memset(source.items, 'x');
         } else {
             const item = comptime blk: {
+                if (std.mem.eql(u8, name, "prose")) break :blk "<p>" ++ "The quick brown fox jumps over the lazy dog. " ** 8 ++ "</p>";
+                if (std.mem.eql(u8, name, "long_names")) break :blk "<" ++ "name" ** 32 ++ "/>";
+                if (std.mem.eql(u8, name, "long_values")) break :blk "<a x='" ++ "value " ** 64 ++ "'/>";
                 if (std.mem.eql(u8, name, "flat")) break :blk "<a/>";
                 if (std.mem.eql(u8, name, "attributes")) break :blk "<a x='1' y=\"2\" z='3'/>";
                 if (std.mem.eql(u8, name, "duplicates")) break :blk "<a x='1' y=\"2\" x='3'/>";
@@ -36,7 +43,8 @@ pub fn main(init: std.process.Init) !void {
                 if (std.mem.eql(u8, name, "cdata")) break :blk "<![CDATA[<a>&literal; ] text]]>";
                 break :blk "<a><b/>text</a>";
             };
-            for (0..50_000) |_| try source.appendSlice(allocator, item);
+            const repetitions = if (comptime std.mem.eql(u8, name, "prose") or std.mem.startsWith(u8, name, "long_")) 5_000 else 50_000;
+            for (0..repetitions) |_| try source.appendSlice(allocator, item);
         }
         const measured = markup.measure(allocator, source.items, markup.diagnostic.discard, .{});
         if (measured.outcome != .success) return error.MeasureFailed;
@@ -47,25 +55,29 @@ pub fn main(init: std.process.Init) !void {
         try writer.print("{s}: source={d} nodes={d} attributes={d} retained={d} scratch_reserved={d}\n", .{
             name, source.items.len, measured.counts.nodes, measured.counts.attributes, memory.document.nodes.len * @sizeOf(markup.Node) + memory.document.attributes.len * @sizeOf(markup.Attribute), memory.scratch.frames.len * markup.FixedParseScratch(1).byte_size,
         });
-        inline for (.{ "fixed", "runtime_baseline", "runtime_override", "count_only" }) |mode| {
-            var times: [9]u64 = undefined;
-            var patch: markup.Policy = if (comptime std.mem.eql(u8, mode, "runtime_override")) markup.presets.standard else .{};
-            const opaque_patch: *volatile markup.Policy = &patch;
-            for (0..warmups + times.len) |round| {
-                const input = opaque_patch.*;
-                const start = std.Io.Clock.Timestamp.now(init.io, .awake);
-                var node_sum: u64 = 0;
-                for (0..batch) |_| {
-                    const counts = if (comptime std.mem.eql(u8, mode, "count_only")) countOnly(source.items, memory.scratch) else if (comptime std.mem.eql(u8, mode, "fixed")) parseFixed(source.items, memory) else parseRuntime(source.items, memory, input);
-                    node_sum += counts.nodes;
+        inline for (.{ .scalar, .block }) |backend| {
+            inline for (.{ "fixed", "runtime_baseline", "runtime_override", "count_only", "cancellable" }) |mode| {
+                var times: [9]u64 = undefined;
+                var patch: markup.Policy = if (comptime std.mem.eql(u8, mode, "runtime_override")) markup.presets.standard else .{};
+                if (comptime std.mem.eql(u8, mode, "runtime_override")) patch.scanner = backend;
+                const opaque_patch: *volatile markup.Policy = &patch;
+                var stop: u8 = 0;
+                for (0..warmups + times.len) |round| {
+                    const input = opaque_patch.*;
+                    const start = std.Io.Clock.Timestamp.now(init.io, .awake);
+                    var node_sum: u64 = 0;
+                    for (0..batch) |_| {
+                        const counts = if (comptime std.mem.eql(u8, mode, "count_only")) countOnly(backend, source.items, memory.scratch) else if (comptime std.mem.eql(u8, mode, "fixed")) parseFixed(backend, source.items, memory) else if (comptime std.mem.eql(u8, mode, "cancellable")) parseCancellable(backend, source.items, memory, &stop) else parseRuntime(backend, source.items, memory, input);
+                        node_sum += counts.nodes;
+                    }
+                    const end = std.Io.Clock.Timestamp.now(init.io, .awake);
+                    if (node_sum != @as(u64, measured.counts.nodes) * batch) return error.ParseFailed;
+                    if (round >= warmups) times[round - warmups] = @intCast(@divTrunc(start.durationTo(end).raw.nanoseconds, batch));
                 }
-                const end = std.Io.Clock.Timestamp.now(init.io, .awake);
-                if (node_sum != @as(u64, measured.counts.nodes) * batch) return error.ParseFailed;
-                if (round >= warmups) times[round - warmups] = @intCast(@divTrunc(start.durationTo(end).raw.nanoseconds, batch));
+                std.mem.sort(u64, &times, {}, std.sort.asc(u64));
+                const ns: f64 = @floatFromInt(times[4]);
+                try writer.print("  {s}/{s}: {d:.3} ms, {d:.1} MB/s\n", .{ @tagName(backend), mode, ns / 1e6, @as(f64, @floatFromInt(source.items.len)) * 1000 / ns });
             }
-            std.mem.sort(u64, &times, {}, std.sort.asc(u64));
-            const ns: f64 = @floatFromInt(times[4]);
-            try writer.print("  {s}: {d:.3} ms, {d:.1} MB/s\n", .{ mode, ns / 1e6, @as(f64, @floatFromInt(source.items.len)) * 1000 / ns });
         }
         if (comptime std.mem.eql(u8, name, "attributes") or std.mem.eql(u8, name, "duplicates")) {
             const parsed = markup.parseBorrowedIn(source.items, memory, markup.diagnostic.discard, .{});
@@ -92,15 +104,25 @@ noinline fn validateFixed(document: *const markup.Document, scratch: markup.Vali
     const r = markup.validateIn(document, scratch, markup.diagnostic.discard, .{});
     return if (r.completion == .complete) r.errors else std.math.maxInt(u32);
 }
-noinline fn parseFixed(source: []const u8, memory: markup.ParseMemory) markup.Counts {
-    const r = markup.parseBorrowedIn(source, memory, markup.diagnostic.discard, .{});
+noinline fn parseFixed(comptime backend: markup.ScannerBackend, source: []const u8, memory: markup.ParseMemory) markup.Counts {
+    const r = markup.Profile(.{ .policy = .{ .scanner = backend } }).parseBorrowedIn(source, memory, markup.diagnostic.discard, .{});
     return if (r.outcome == .success) r.counts else .{};
 }
-noinline fn countOnly(source: []const u8, frames: markup.ParseScratch) markup.Counts {
-    const r = markup.measureIn(source, frames, markup.diagnostic.discard, .{});
+noinline fn countOnly(comptime backend: markup.ScannerBackend, source: []const u8, frames: markup.ParseScratch) markup.Counts {
+    const r = markup.Profile(.{ .policy = .{ .scanner = backend } }).measureIn(source, frames, markup.diagnostic.discard, .{});
     return if (r.outcome == .success) r.counts else .{};
 }
-noinline fn parseRuntime(source: []const u8, memory: markup.ParseMemory, patch: markup.Policy) markup.Counts {
-    const r = Runtime.parseBorrowedIn(source, memory, markup.diagnostic.discard, .{ .policy = patch });
+noinline fn parseRuntime(comptime backend: markup.ScannerBackend, source: []const u8, memory: markup.ParseMemory, patch: markup.Policy) markup.Counts {
+    const r = RuntimeFor(backend).parseBorrowedIn(source, memory, markup.diagnostic.discard, .{ .policy = patch });
+    return if (r.outcome == .success) r.counts else .{};
+}
+
+noinline fn requested(context: ?*anyopaque) bool {
+    const flag: *volatile u8 = @ptrCast(context.?);
+    return flag.* != 0;
+}
+noinline fn parseCancellable(comptime backend: markup.ScannerBackend, source: []const u8, memory: markup.ParseMemory, stop: *u8) markup.Counts {
+    const P = markup.Profile(.{ .policy = .{ .scanner = backend, .execution = .{ .cancellation = true } } });
+    const r = P.parseBorrowedIn(source, memory, markup.diagnostic.discard, .{ .cancellation = .{ .context = stop, .is_requested = requested } });
     return if (r.outcome == .success) r.counts else .{};
 }

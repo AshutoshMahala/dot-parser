@@ -76,7 +76,7 @@ use both without duplicating shared type identities. Shared location, reporting,
 cancellation and WDP hashing do not depend on either grammar. Payloads/registries
 remain processor-owned; the markup namespace is `markup_parser`.
 
-The scalar scanner feeds one iterative event-level parser. Growable, fixed and
+Scalar and opt-in block run scanning feed one iterative event-level parser. Growable, fixed and
 count-only consumers share that grammar. Events stay private/provisional, following
 DOT's initial layering. Public retained data is a compact preorder forest: each
 20-byte node holds a raw span, a name span (zero length with a kind discriminator for leaves), and a subtree-end
@@ -101,7 +101,8 @@ reports reserved node/attribute capacity, not just occupied records, and exclude
 overhead/RSS. Fixed parsing is unchanged; allocator callbacks are not budgeted work.
 
 The policy contains implemented limits (source bytes, nodes, attributes, nesting),
-malformed-reference acceptance, duplicate-attribute validation severity, and execution choices (metering, cancellation). Limits/counts/ranges are u32; lengths
+malformed-reference acceptance, duplicate-attribute validation severity, scanner
+selection (`scalar` default / `block`), and execution choices (metering, cancellation). Limits/counts/ranges are u32; lengths
 at the allocator/slice boundary use native sizes. Defaults preserve the existing
 unlimited-within-representation convention. All typed combinations are meaningful,
 including zero limits, so `validatePolicy` currently returns `valid`; no invalid
@@ -126,9 +127,13 @@ does no normal work. Cancellation is checked before each next microstep. Fixed
 ordinary builds omit frontier/hook state when disabled. Callout time is excluded,
 and allocator-backed operations are run-to-completion, not a bounded allocation
 claim. Completed results are latched; abort occurs at most once after begin.
+Scalar scanning remains byte-stepped when either metering or cancellation is
+enabled. Block scanning uses up-to-64-byte windows and scalar boundary transitions;
+its credit totals/frontiers differ from scalar. Plain scanning loops to the next
+token/finding. See the follow-up below for backend details and measurements.
 
 No Graphviz/extended validation, UTF-8 validation,
-markup fixes, additional scanner backend or processor scheduling is implemented
+markup fixes or processor scheduling is implemented
 by this slice. See the [consumer guide](../MARKUP.md) for the actual API.
 
 ## Slice 3 implementation
@@ -484,3 +489,117 @@ present. The unchanged-harness executable's `__text` grows from 335,212 to 338,9
 (+3,784 B); this includes benchmark/host code, not isolated library size. Source,
 bags, allocator overhead and process RSS are excluded from retained-storage figures.
 Growable peak heap/RSS and a full DOT performance rerun were not measured.
+
+## Scanner follow-up — 2026-09-27
+
+Implemented `Policy.scanner = .scalar | .block`, scalar by default, with the
+same compile-time/runtime selection model as DOT. The standalone strict cursor
+also exposes `lexer.For(.block)`; `lexer.Lexer` keeps the scalar default.
+This is not DOT HTML-token integration.
+
+Both choices share one lexical state machine and the existing event-level grammar.
+The block path vectorizes text, names (including named references), quoted values,
+whitespace, comments and CDATA runs in windows of at most 64 bytes. A four-byte
+scalar probe avoids vector overhead for short runs; longer runs reexamine that
+fixed prefix. Vectors are target-width chunks with scalar tails, never padded
+out-of-bounds loads. Numeric-reference accumulation and syntax boundaries use the
+shared scalar transitions. No mask cache, token ring, source-sized index or extra
+per-node metadata is introduced. This is deliberately smaller than copying DOT's
+complete mask/state architecture into markup.
+
+The scanner reports boolean readiness and keeps its result in scanner-owned
+storage. Plain execution loops to the next token/finding, with tight scalar or
+vector runs. Either metering or cancellation selects the bounded implementation:
+scalar remains one-byte stepped; a block scan step covers at most a 64-byte
+window, yielding after a nonempty run before handling its boundary. An immediate
+boundary uses the scalar transition and may reread the first byte. Grammar events
+and closing-name comparisons retain their existing charging. Frontiers account
+for actual lookahead; partition invariance is guaranteed within each backend,
+not equal credit counts between backends. Runtime selection happens at operation/
+reset entry, never per byte.
+
+Verification: 425 tests pass in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall,
+plus all 13 compile-fail fixtures, examples, benchmark builds and consumed
+RISC-V32/Wasm32 fixed/runtime profiles. Differential tests exercise every prefix,
+raw random bytes, all byte predicates/vector lanes, shifted boundaries and tails,
+all reference policies, fixed/runtime/plain/bounded/cancellable paths, reset,
+cancellation, sink stopping, retained output and budget partitions.
+
+Native retained/scratch layouts remain node 20 B, attribute 20 B, frame 12 B and
+duplicate-key scratch 8 B. Scalar and block scanners have identical state sizes;
+fixed plain sessions shrink 424 → 416 B, fixed metered remain 424 B, and runtime
+sessions remain 480 B. Runtime-enabled code now includes the block specializations:
+the unchanged original benchmark harness's executable `__text` increases
+368,356 → 406,632 B (+38,276 B). These are whole-harness/host code sizes, not an
+isolated fixed-profile library measurement.
+
+The growth-memory observation is a separate concern. Zig 0.16's `ArrayList`
+already attempts allocator remapping before allocating/copying/freeing a larger
+pool. When remapping fails, old and new allocations temporarily coexist; capacity
+slack and final in-place trimming also affect peak/final ratios. The supplied
+21–47% figure was not independently reproduced here and is not a general bound.
+This change does not alter growth or reduce its peak. Callers needing predictable
+output allocation can already measure then supply exact fixed pools, paying for
+two passes. An arena can retain abandoned growth allocations until arena teardown.
+The suggested small-attribute duplicate-check fast path remains separate work;
+validation behavior and its scratch contract are unchanged.
+
+### Local performance measurements
+
+Apple M4 Pro, Zig 0.16.0, ReleaseFast, decimal MB/s; baseline `30e8da7`.
+Sources and output/scratch storage are prepared outside the timed region.
+Each process reports the median of nine 16-parse batches after five warm-up
+batches. Baseline below is the median of two isolated process results; the final
+updated build is one process result. Both use the unchanged baseline benchmark
+source. Preliminary runs and the initial block implementation are excluded.
+These are local synthetic measurements, not platform-independent guarantees or
+a reproduction of the externally supplied speedup ratios.
+
+Plain fixed-profile scalar parsing, cells **milliseconds / MB/s**:
+
+| Fixture | Before | After |
+| --- | ---: | ---: |
+| flat | 0.894 / 223.7 | 0.581 / 344.5 |
+| mixed | 3.901 / 192.3 | 2.357 / 318.1 |
+| text | 3.226 / 310.1 | 0.494 / 2023.1 |
+| deep | 0.333 / 210.3 | 0.238 / 293.5 |
+| attributes | 5.229 / 210.4 | 3.247 / 338.8 |
+| duplicates | 5.255 / 209.4 | 3.244 / 339.1 |
+| references | 8.028 / 211.8 | 3.801 / 447.2 |
+| attribute_references | 7.954 / 226.3 | 4.029 / 446.8 |
+| comments | 5.046 / 277.4 | 1.210 / 1157.2 |
+| cdata | 5.807 / 266.9 | 1.532 / 1011.6 |
+
+All 40 original parse measurements (10 fixtures × fixed/runtime-baseline/
+runtime-override/count-only) improve in this run, with a 2.28× geometric
+mean throughput ratio. This does not establish a before/after cancellable speedup:
+the original harness did not time cancellation-enabled parsing.
+
+The expanded current benchmark separately compares scalar and block in the same
+executable (one process, same nine-batch method). Plain fixed-policy cells are
+**milliseconds / MB/s**:
+
+| Fixture | Scalar | Block | Throughput ratio |
+| --- | ---: | ---: | ---: |
+| flat | 0.576 / 347.3 | 0.660 / 303.1 | 0.87× |
+| mixed | 2.298 / 326.4 | 2.658 / 282.1 | 0.86× |
+| text | 0.467 / 2143.5 | 0.106 / 9456.5 | 4.41× |
+| deep | 0.241 / 290.8 | 0.281 / 249.4 | 0.86× |
+| attributes | 3.127 / 351.8 | 3.548 / 310.1 | 0.88× |
+| duplicates | 3.098 / 355.0 | 3.482 / 315.9 | 0.89× |
+| references | 3.761 / 452.0 | 4.166 / 408.1 | 0.90× |
+| attribute_references | 3.907 / 460.7 | 4.194 / 429.2 | 0.93× |
+| comments | 1.203 / 1163.4 | 1.113 / 1257.6 | 1.08× |
+| cdata | 1.486 / 1042.8 | 1.433 / 1081.7 | 1.04× |
+| prose | 1.106 / 1658.8 | 0.374 / 4911.8 | 2.96× |
+| long_names | 0.236 / 2771.5 | 0.113 / 5800.9 | 2.09× |
+| long_values | 1.096 / 1793.0 | 0.390 / 5041.4 | 2.81× |
+
+The block backend gains most on long uninterrupted runs and remains slower on
+dense short-tag/attribute inputs. That is why it is opt-in, not the new default.
+For cancellation-enabled execution with a real polled hook, scalar → block
+throughput was 318.3 → 8,074.2 MB/s on long text and 309.9 → 3,588.4 MB/s on prose,
+but 208.0 → 177.9 MB/s on flat tags and 197.2 → 169.3 MB/s on short attributes.
+Those compare the two new backends, not new versus old cancellable parsing.
+No peak growable-heap/RSS, non-native execution performance, full DOT throughput
+rerun, or small-attribute validation improvement is claimed.

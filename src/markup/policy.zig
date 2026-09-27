@@ -1,11 +1,13 @@
 //! Markup-owned behavioral settings. Resources are passed separately.
 const std = @import("std");
 pub const RuleSeverity = enum { err, warning, off };
+pub const ScannerBackend = enum { scalar, block };
 pub const Acceptance = enum { reject, warn, accept };
 pub const SyntaxSettings = struct { malformed_reference: Acceptance = .reject };
 pub const ValidationSettings = struct { duplicate_attribute: RuleSeverity = .err };
 
 pub const Policy = struct {
+    scanner: ?ScannerBackend = null,
     syntax: struct { malformed_reference: ?Acceptance = null } = .{},
     limits: struct {
         max_source_bytes: ?u32 = null,
@@ -27,6 +29,7 @@ pub const Limits = struct {
     max_attributes: u32 = std.math.maxInt(u32),
 };
 pub const Effective = struct {
+    scanner: ScannerBackend = .scalar,
     limits: Limits = .{},
     syntax: SyntaxSettings = .{},
     validation: ValidationSettings = .{},
@@ -50,6 +53,7 @@ pub fn check(_: Effective, _: Policy) Check {
 
 pub fn resolve(base: Effective, patch: Policy) Effective {
     var result = base;
+    if (patch.scanner) |value| result.scanner = value;
     if (patch.syntax.malformed_reference) |value| result.syntax.malformed_reference = value;
     inline for (std.meta.fields(@TypeOf(patch.limits))) |field| {
         if (@field(patch.limits, field.name)) |value| @field(result.limits, field.name) = value;
@@ -63,6 +67,7 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
 
 pub const presets = struct {
     pub const standard: Policy = .{
+        .scanner = .scalar,
         .syntax = .{ .malformed_reference = .reject },
         .limits = .{
             .max_source_bytes = defaults.limits.max_source_bytes,

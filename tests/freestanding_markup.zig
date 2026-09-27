@@ -7,7 +7,7 @@ comptime {
 }
 const P = markup.Profile(.{
     .runtime_policy = features.runtime_policy,
-    .policy = .{ .syntax = .{ .malformed_reference = .warn }, .execution = .{ .metering = true, .cancellation = true } },
+    .policy = .{ .scanner = .block, .syntax = .{ .malformed_reference = .warn }, .execution = .{ .metering = true, .cancellation = true } },
 });
 fn stopped(context: ?*anyopaque) bool {
     const flag: *volatile u8 = @ptrCast(context.?);

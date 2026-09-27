@@ -35,18 +35,41 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return prepared catch unreachable;
         }
 
-        const Variant = enum { plain, metered, cancellable, both };
+        const Variant = enum {
+            plain,
+            metered,
+            cancellable,
+            both,
+            block_plain,
+            block_metered,
+            block_cancellable,
+            block_both,
+            fn metering(v: Variant) bool {
+                return v == .metered or v == .both or v == .block_metered or v == .block_both;
+            }
+            fn cancellation(v: Variant) bool {
+                return v == .cancellable or v == .both or v == .block_cancellable or v == .block_both;
+            }
+            fn backend(v: Variant) policy.ScannerBackend {
+                return switch (v) {
+                    .plain, .metered, .cancellable, .both => .scalar,
+                    else => .block,
+                };
+            }
+        };
         fn variantOf(effective: policy.Effective) Variant {
+            if (effective.scanner == .block)
+                return if (effective.execution.metering) (if (effective.execution.cancellation) .block_both else .block_metered) else (if (effective.execution.cancellation) .block_cancellable else .block_plain);
             return if (effective.execution.metering) (if (effective.execution.cancellation) .both else .metered) else (if (effective.execution.cancellation) .cancellable else .plain);
         }
         fn Core(comptime variant: Variant) type {
-            return engine.Engine(api, if (runtime_policy) null else baseline.parsing(), variant == .metered or variant == .both, variant == .cancellable or variant == .both);
+            return engine.Engine(api, variant.backend(), if (runtime_policy) null else baseline.parsing(), variant.metering(), variant.cancellation());
         }
         fn settings(comptime variant: Variant, effective: State) Core(variant).Settings {
             return if (runtime_policy) effective.parsing() else {};
         }
         fn hook(comptime variant: Variant, value: Hook) Core(variant).Hook {
-            return if (variant == .cancellable or variant == .both) value else {};
+            return if (comptime variant.cancellation()) value else {};
         }
         fn call(comptime method: []const u8, comptime T: type, args: anytype, options: Options) T {
             const effective = resolve(options);
@@ -77,7 +100,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         }
 
         fn Validator(comptime v: Variant) type {
-            return validation.Validator(if (runtime_policy) null else baseline.validation.duplicate_attribute, v == .cancellable or v == .both);
+            return validation.Validator(if (runtime_policy) null else baseline.validation.duplicate_attribute, v.cancellation());
         }
         fn validateCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
             const effective = resolve(options);
@@ -102,6 +125,10 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             metered: Core(.metered).Session,
             cancellable: Core(.cancellable).Session,
             both: Core(.both).Session,
+            block_plain: Core(.block_plain).Session,
+            block_metered: Core(.block_metered).Session,
+            block_cancellable: Core(.block_cancellable).Session,
+            block_both: Core(.block_both).Session,
         } else Core(variantOf(baseline)).Session;
         pub const Session = struct {
             inner: Inner,
@@ -121,8 +148,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             }
             pub fn advance(self: *@This(), budget: u32) (if (runtime_policy) error{MeteringDisabled}!api.Progress else api.Progress) {
                 if (runtime_policy) return switch (self.inner) {
-                    .plain, .cancellable => error.MeteringDisabled,
-                    inline .metered, .both => |*s| s.advance(budget),
+                    .plain, .cancellable, .block_plain, .block_cancellable => error.MeteringDisabled,
+                    inline .metered, .both, .block_metered, .block_both => |*s| s.advance(budget),
                 };
                 return self.inner.advance(budget);
             }

@@ -1,5 +1,7 @@
-//! One resumable scalar scanner. Each step examines at most one source byte
-//! (or EOF); completing cached state may examine none. No AST or DOT dependency.
+//! One state machine with scalar and vector run scanning. Bounded scalar steps
+//! examine one byte; block steps use <=64-byte windows. Plain parsing loops to a token.
+const runs = @import("lexer_runs.zig");
+const policy = @import("policy.zig");
 const support = @import("parser_support");
 const Span = support.location.Span;
 const diagnostic = @import("diagnostic.zig");
@@ -48,9 +50,9 @@ fn referenceCharacter(value: u32) bool {
         (value >= 0x10000 and value <= 0x10ffff);
 }
 
-pub fn ScannerFor(comptime metered: bool) type {
+pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, comptime bounded: bool) type {
     return struct {
-        const Scanner = @This();
+        const Self = @This();
         source: []const u8,
         offset: u32 = 0,
         frontier: if (metered) u32 else void = if (metered) 0 else {},
@@ -65,67 +67,101 @@ pub fn ScannerFor(comptime metered: bool) type {
         reference_start: u32 = 0,
         reference_value: u32 = 0,
         reference_context: enum { text, value } = .text,
-        terminal: ?ScanResult = null,
+        ready: ScanResult = undefined,
+        done: bool = false,
 
-        pub fn init(source: []const u8) Scanner {
-            var scanner: Scanner = .{ .source = source };
+        pub fn init(source: []const u8) Self {
+            var scanner: Self = .{ .source = source };
             // Source is immutable. Guard the descriptor once, before any byte
             // examination, including when the standalone lexer is used.
-            if (source.len > support.location.max_source_len) scanner.terminal = .{ .problem = .{
-                .outcome = .{ .resource_limit = .{ .resource = .source_bytes, .limit = @intCast(support.location.max_source_len) } },
-                .diagnostic = .{ .code = .capacity_exhausted, .span = .{ .start = 0, .len = 0 }, .details = .{ .capacity = .{ .resource = .source_bytes, .limit = @intCast(support.location.max_source_len) } } },
-            } };
+            if (source.len > support.location.max_source_len) {
+                scanner.done = true;
+                scanner.ready = .{ .problem = .{
+                    .outcome = .{ .resource_limit = .{ .resource = .source_bytes, .limit = @intCast(support.location.max_source_len) } },
+                    .diagnostic = .{ .code = .capacity_exhausted, .span = .{ .start = 0, .len = 0 }, .details = .{ .capacity = .{ .resource = .source_bytes, .limit = @intCast(support.location.max_source_len) } } },
+                } };
+            }
             return scanner;
         }
-        fn problem(self: *Scanner, code: diagnostic.Code, at: u32, details: diagnostic.Details) ScanResult {
+        fn problem(self: *Self, code: diagnostic.Code, at: u32, details: diagnostic.Details) bool {
             const r: ScanResult = .{ .problem = .{
                 .outcome = if (details == .feature) .{ .unsupported_feature = details.feature } else .invalid_syntax,
                 .diagnostic = .{ .code = code, .span = .{ .start = at, .len = if (at < self.source.len) 1 else 0 }, .details = details },
             } };
-            self.terminal = r;
-            return r;
+            self.done = true;
+            self.ready = r;
+            return true;
         }
-        fn unsupported(self: *Scanner, feature: diagnostic.Feature, at: u32) ScanResult {
+        fn unsupported(self: *Self, feature: diagnostic.Feature, at: u32) bool {
             return self.problem(.unsupported_feature, at, .{ .feature = feature });
         }
-        fn token(self: *Scanner, kind: @FieldType(Token, "kind")) ScanResult {
+        fn token(self: *Self, kind: @FieldType(Token, "kind")) bool {
             const t: Token = .{ .kind = kind, .span = .{ .start = self.start, .len = self.offset - self.start }, .name = if (kind == .text or kind == .comment or kind == .cdata or kind == .head_end or kind == .empty_end) .{ .start = 0, .len = 0 } else .{ .start = self.name_start, .len = self.name_end - self.name_start } };
             self.state = .content;
-            return .{ .token = t };
+            self.ready = .{ .token = t };
+            return true;
         }
 
-        fn beginReference(self: *Scanner, context: @FieldType(Scanner, "reference_context")) void {
+        fn beginReference(self: *Self, context: @FieldType(Self, "reference_context")) void {
             self.reference_start = self.offset;
             self.reference_context = context;
             self.offset += 1; // '&'
             self.state = .reference_start;
         }
-        fn endReference(self: *Scanner) void {
+        fn endReference(self: *Self) void {
             self.state = switch (self.reference_context) {
                 .text => .text,
                 .value => .value,
             };
         }
-        fn malformedReference(self: *Scanner, reason: diagnostic.ReferenceProblem) ScanResult {
+        fn malformedReference(self: *Self, reason: diagnostic.ReferenceProblem) bool {
             self.endReference();
             // Consumed candidate bytes are already literal-safe in this context.
             // Do not rewind/rescan them or consume the byte that stopped recognition.
-            return .{ .malformed_reference = .{
+            self.ready = .{ .malformed_reference = .{
                 .code = .malformed_reference,
                 .span = .{ .start = self.reference_start, .len = self.offset - self.reference_start },
                 .details = .{ .reference = reason },
             } };
+            return true;
         }
 
-        pub fn step(self: *Scanner) ?ScanResult {
-            if (self.terminal) |r| return r;
+        /// Readiness only: the token/finding stays in scanner-owned storage.
+        pub fn stepReady(self: *Self) bool {
+            if (self.done) return true;
+            if (bounded) {
+                if (backend == .block and self.skipRun()) return false;
+                return self.stepByte();
+            }
+            while (true) {
+                _ = self.skipRun();
+                if (self.stepByte()) return true;
+            }
+        }
+
+        fn skipRun(self: *Self) bool {
+            const run = switch (self.state) {
+                .text => runs.prefix(backend, .text, self.source, self.offset),
+                .name, .attribute_name, .reference_name => runs.prefix(backend, .name, self.source, self.offset),
+                .value => if (self.quote == '"') runs.prefix(backend, .double_value, self.source, self.offset) else runs.prefix(backend, .single_value, self.source, self.offset),
+                .after_name, .before_equal, .before_value, .attributes => runs.prefix(backend, .space, self.source, self.offset),
+                .comment => runs.prefix(backend, .comment, self.source, self.offset),
+                .cdata => runs.prefix(backend, .cdata, self.source, self.offset),
+                else => return false,
+            };
+            if (metered) self.frontier = @max(self.frontier, self.offset + run.examined);
+            self.offset += run.consumed;
+            return run.consumed != 0;
+        }
+
+        fn stepByte(self: *Self) bool {
             if (self.state == .prefix) {
                 if (self.prefix_len < 4 and self.prefix_len < self.source.len) {
                     self.prefix[self.prefix_len] = self.source[self.prefix_len];
                     self.prefix_len += 1;
                     if (metered) self.frontier = self.prefix_len;
                 } else self.state = .prefix_done;
-                return null;
+                return false;
             }
             if (self.state == .prefix_done) {
                 const p = self.prefix;
@@ -136,7 +172,7 @@ pub fn ScannerFor(comptime metered: bool) type {
                 // are ordinary bytes. Borrowed source and physical offsets stay intact.
                 if (self.prefix_len >= 3 and p[0] == 0xef and p[1] == 0xbb and p[2] == 0xbf) self.offset = 3;
                 self.state = .content;
-                return null;
+                return false;
             }
             const at = self.offset;
             if (at == self.source.len) {
@@ -147,8 +183,9 @@ pub fn ScannerFor(comptime metered: bool) type {
                     .text => return self.token(.text),
                     .content => {
                         const r: ScanResult = .{ .token = .{ .kind = .eof, .span = .{ .start = at, .len = 0 } } };
-                        self.terminal = r;
-                        return r;
+                        self.done = true;
+                        self.ready = r;
+                        return true;
                     },
                     else => return self.problem(.unexpected_end, at, .{ .expected = switch (self.state) {
                         .after_lt, .end_start => .name,
@@ -174,7 +211,7 @@ pub fn ScannerFor(comptime metered: bool) type {
             if (self.state == .text) {
                 if (byte == '<') return self.token(.text);
                 if (byte == '&') self.beginReference(.text) else self.offset += 1;
-                return null;
+                return false;
             }
             switch (self.state) {
                 .content => {
@@ -218,7 +255,7 @@ pub fn ScannerFor(comptime metered: bool) type {
                 .name => {
                     if (isNameContinue(byte)) {
                         self.offset += 1;
-                        return null;
+                        return false;
                     }
                     self.name_end = at;
                     if (byte == '>') {
@@ -236,7 +273,7 @@ pub fn ScannerFor(comptime metered: bool) type {
                 .after_name => {
                     if (whitespace(byte)) {
                         self.offset += 1;
-                        return null;
+                        return false;
                     }
                     if (byte == '>') {
                         self.offset += 1;
@@ -263,7 +300,7 @@ pub fn ScannerFor(comptime metered: bool) type {
                 .attribute_name => {
                     if (isNameContinue(byte)) {
                         self.offset += 1;
-                        return null;
+                        return false;
                     }
                     self.name_end = at;
                     if (byte == '=') {
@@ -295,7 +332,7 @@ pub fn ScannerFor(comptime metered: bool) type {
                 .value => {
                     if (byte == '&') {
                         self.beginReference(.value);
-                        return null;
+                        return false;
                     }
                     if (byte == '<') return self.problem(.unexpected_byte, at, .{ .expected = .attribute_value });
                     self.offset += 1;
@@ -420,40 +457,44 @@ pub fn ScannerFor(comptime metered: bool) type {
                 },
                 .prefix, .prefix_done => unreachable,
             }
-            return null;
+            return false;
         }
     };
 }
 
-/// Strict lexical cursor over the same scanner. No tree or allocation.
-pub const Lexer = struct {
-    scanner: ScannerFor(false),
-    pub fn init(source: []const u8) Lexer {
-        return .{ .scanner = .init(source) };
-    }
-    pub fn next(self: *Lexer) Result {
-        while (true) {
-            if (self.scanner.step()) |r| return switch (r) {
+/// Strict lexical cursor without a tree or allocation.
+pub fn For(comptime backend: policy.ScannerBackend) type {
+    return struct {
+        const Self = @This();
+        scanner: Scanner(backend, false, false),
+        pub fn init(source: []const u8) Self {
+            return .{ .scanner = .init(source) };
+        }
+        pub fn next(self: *Self) Result {
+            _ = self.scanner.stepReady();
+            return switch (self.scanner.ready) {
                 .token => |t| .{ .token = t },
                 .problem => |p| .{ .problem = p },
                 .malformed_reference => |d| blk: {
                     const p: result.Problem = .{ .outcome = .invalid_syntax, .diagnostic = d };
-                    self.scanner.terminal = .{ .problem = p };
+                    self.scanner.ready = .{ .problem = p };
+                    self.scanner.done = true;
                     break :blk .{ .problem = p };
                 },
             };
         }
-    }
-};
+    };
+}
+pub const Lexer = For(policy.defaults.scanner);
 
 test "opening header preserves its spans while consuming the first attribute byte once" {
     const std = @import("std");
     const source = "<long-name x='1'/>";
-    var scanner = ScannerFor(true).init(source);
+    var scanner = Scanner(.scalar, true, true).init(source);
     var head: ScanResult = undefined;
     while (true) {
-        if (scanner.step()) |r| {
-            head = r;
+        if (scanner.stepReady()) {
+            head = scanner.ready;
             break;
         }
     }
@@ -464,7 +505,14 @@ test "opening header preserves its spans while consuming the first attribute byt
     try std.testing.expectEqual(name_start + 1, scanner.offset);
     try std.testing.expectEqual(scanner.offset, scanner.frontier);
     try std.testing.expectEqual(name_start, scanner.name_start);
-    try std.testing.expect(scanner.step() == null); // reads '=', not 'x' again
+    try std.testing.expect(!scanner.stepReady()); // reads '=', not 'x' again
     try std.testing.expectEqual(name_start + 2, scanner.offset);
     try std.testing.expectEqual(.before_value, scanner.state);
+}
+
+test "block runs add no scanner state or source-sized storage" {
+    const std = @import("std");
+    inline for (.{ false, true }) |metered| {
+        try std.testing.expectEqual(@sizeOf(Scanner(.scalar, metered, true)), @sizeOf(Scanner(.block, metered, true)));
+    }
 }

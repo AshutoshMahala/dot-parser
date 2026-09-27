@@ -497,7 +497,9 @@ parses text, matching/self-closing elements, quoted attributes, references, comm
 and CDATA, using shared language-independent
 primitives but no DOT grammar/document. It provides source-backed retained and
 count-only paths, explicit fixed/growing storage, policy limits and bounded/
-cancellable fixed sessions. Attributes preserve order and all duplicates; independent
+cancellable fixed sessions. Scalar and opt-in vector/block scanning share syntax
+and results; policy selection works at compile time and, when enabled, runtime.
+Bounded work units are documented per backend. Attributes preserve order and all duplicates; independent
 duplicate checks support error/warning/off with explicit scratch and results.
 References are preserved without decoding/lookup; malformed-reference acceptance
 is an explicit reject/warn/accept syntax policy with factual counters and sink-stop
@@ -1449,6 +1451,10 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-09-27 — **R-MOD-014 standalone scanning:** opt-in vector run scanning,
+  default scalar token-at-a-time plain fast path, scanner-owned result delivery,
+  and backend-specific bounded work. No new source-sized storage or DOT changes.
 
 - 2026-09-27 — **R-MOD-014 standalone slice 3:** source-preserving references,
   comment/CDATA leaf kinds, malformed-reference syntax policy, factual counters

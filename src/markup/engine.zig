@@ -7,8 +7,8 @@ const scratch = @import("scratch.zig");
 const diagnostic = @import("diagnostic.zig");
 const results = @import("result.zig");
 
-pub fn Engine(comptime api: type, comptime fixed_settings: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool) type {
-    const Machine = parser.Machine(fixed_settings, metered, cancellable);
+pub fn Engine(comptime api: type, comptime backend: policy.ScannerBackend, comptime fixed_settings: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool) type {
+    const Machine = parser.Machine(backend, fixed_settings, metered, cancellable);
     return struct {
         pub const Settings = Machine.Settings;
         pub const Hook = Machine.Hook;

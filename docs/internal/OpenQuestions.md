@@ -971,8 +971,14 @@ the contracts they belong to are written:
   scanner (masks for `<` and `>`, a walk over the bits) rather than retiring it.
   This is a backend direction, not a requirement to ship both new markup
   implementations in the first slice or a measured speedup claim. The initial
-  markup backend and delivery order remain open; block-scanner benefit and
-  code-size cost must be measured on representative markup.
+  markup implementation shipped scalar first. **Standalone follow-up (2026-09-27):**
+  markup now has opt-in `Policy.scanner = .block` alongside the scalar default,
+  with compile-time/runtime parity. It vectorizes context-specific runs in windows
+  of at most 64 bytes within the shared lexical state machine, rather than
+  duplicating the grammar or DOT's backslash machinery. Those predicates remain
+  markup-owned; no speculative common scanner framework was extracted.
+  Tests and measurements are recorded in [the slice contract](MARKUP.md).
+  This does not implement DOT HTML boundaries or processor integration.
 - **Parallelism is the caller's, and the design allows it.** After opaque
   recognition every HTML-like identifier is an independent fragment with a
   known range; the delayed path parses one fragment into caller-provided

@@ -44,7 +44,8 @@ parsing does not validate UTF-8 or normalize Unicode.
 HTML-like identifiers and standalone markup are not part of the published
 0.3.0 release. The development tree now has an independently importable
 [`markup_parser`](docs/MARKUP.md) for text, matching/self-closing elements, quoted
-attributes, references, comments and CDATA, with independent duplicate-attribute validation;
+attributes, references, comments and CDATA, with independent duplicate-attribute validation
+and policy-selected scalar/vector scanning;
 DOT HTML-like identifiers and integration remain deferred. Other features, including
 semantic edge-product expansion, remain deferred. The authoritative
 construct-by-construct table is [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
@@ -240,7 +241,7 @@ Newer Zig versions are not yet verified.
 zig build test        # unit + public integration tests
 zig build examples    # build and run the examples
 zig build check-freestanding # consumed session profiles for RISC-V32/Wasm32
-zig build bench -Doptimize=ReleaseFast -Dlexer=block  # every bench takes scalar|block
+zig build bench -Doptimize=ReleaseFast -Dlexer=block  # DOT benches take scalar|block
 ```
 
 The library target has no OS, network, or filesystem dependency: it parses

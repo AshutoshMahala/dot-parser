@@ -40,6 +40,7 @@ Closing tags cannot have attributes. No boolean/unquoted attributes, whitespace
 normalization, namespace resolution or attribute decoding is implied.
 
 The standalone `lexer.Lexer` uses the same scanner without a tree or allocation.
+It defaults to scalar; `lexer.For(.block)` selects vector run scanning explicitly.
 Attribute-free tags are whole `open`/`close`/`empty` tokens. Attribute-bearing tags
 yield `open_head`, `attribute` tokens, then `head_end` or `empty_end`. On an attribute
 token, `name` is the name span and `span` is the quoted value span. Header-end tokens
@@ -249,7 +250,10 @@ Source and document pools must stay alive and unchanged, as with parsing views.
 
 ```zig
 const Reader = markup.Profile(.{
-    .policy = .{ .limits = .{ .max_nesting = 64, .max_nodes = 10_000 } },
+    .policy = .{
+        .scanner = .block, // opt-in; scalar is the library default
+        .limits = .{ .max_nesting = 64, .max_nodes = 10_000 },
+    },
     .runtime_policy = true, // optional; defaults to false
 });
 const parsed = Reader.parseBorrowedIn(source, memory, sink, .{
@@ -259,6 +263,7 @@ const parsed = Reader.parseBorrowedIn(source, memory, sink, .{
 
 | Policy leaf | Values/default |
 | --- | --- |
+| `scanner` | `scalar` (default), `block`; same syntax and output, different work granularity |
 | `limits.max_source_bytes` | u32; default `2^32 - 1` |
 | `limits.max_nodes` | u32; default `2^32 - 1`; elements, nonempty text runs, comments and CDATA sections |
 | `limits.max_attributes` | u32; default `2^32 - 1`; every occurrence counts |
@@ -288,11 +293,31 @@ fixed metered convenience. Runtime `advance` returns `error.MeteringDisabled`
 without work when disabled; calling it in a fixed unmetered build is a compile
 error. Settings are latched until `reset(source, sink, options)`.
 
-One credit performs at most one source-byte/EOF examination, one bounded grammar
-transition, or one event attempt. Closing-name comparison reads one byte per
-step, including rereads. A constant-size prefix probe can examine up to the first
-four bytes across separate steps; the frontier includes lookahead. Zero budget
-does no normal work, though it can observe cancellation. Credits exclude callback
+Fixed profiles compile in their selected scanner. Runtime-enabled profiles select
+a specialized scanner/execution engine once per operation or session reset, not
+per byte. Both scanners share the same token and grammar state machines; no
+source-sized masks, token ring or additional retained records are allocated.
+Plain parsing (both metering and cancellation disabled) scans to the next token
+or finding in tight loops. Enabling either execution option restores bounded steps.
+
+One scalar credit performs at most one source-byte/EOF examination, one bounded
+grammar transition, or one event attempt. A block scanning credit can classify
+a run in a window of up to 64 source bytes using native-width vectors, or handle
+a scalar boundary transition. The first byte may be reexamined when a run stops
+immediately; a nonempty run yields before its boundary is processed. Short tails
+are read scalarly, never beyond the source. Closing-name comparison remains
+byte-stepped for both backends, including rereads. The initial four-byte encoding
+probe also remains byte-stepped. Frontier includes vector lookahead, not just
+consumed bytes.
+
+A four-byte short-run probe can overlap the vector classification; all lookahead
+still stays within that 64-byte window. No promise of exactly one physical read
+per byte is made for block scanning.
+
+One credit always permits progress, and budget partitioning does not change total
+work within a backend. Credit totals and intermediate frontiers need not agree
+between backends. Zero budget does no normal work, though it can observe
+cancellation. Hooks are checked before each bounded step. Credits exclude callback
 time and are not wall-clock, instruction or byte-progress units.
 
 Cancellation hooks are borrowed `Cancellation` values in options; enabling the
@@ -352,7 +377,7 @@ the same [shared reporting contracts](REPORTING.md) as DOT without sharing paylo
 - `zig build check-freestanding`: consumed RISC-V32/Wasm32 fixed/runtime profiles.
 - `zig build examples`: includes the standalone example.
 - `zig build bench-markup -Doptimize=ReleaseFast`: flat, mixed, text, deep, attribute,
-  reference, comment and CDATA
-  fixtures; fixed/runtime/count-only latency and decimal MB/s, record/scratch and
-  session sizes. Duplicate validation is timed separately with a discard sink and
+  reference, comment, CDATA, prose, long-name and long-value fixtures; both backends
+  with fixed/runtime/count-only/cancellable latency and decimal MB/s, record/scratch
+  and session sizes. Duplicate validation is timed separately with a discard sink and
   preallocated scratch. Storage figures are not allocator overhead or process RSS.
