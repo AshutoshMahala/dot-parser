@@ -5,7 +5,7 @@ const validation = @import("validate.zig");
 const engine = @import("parse_engine.zig");
 
 pub fn Profile(comptime api: type, comptime config: policy.Config) type {
-    const Binding = @import("processor.zig").PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
+    const Binding = @import("parser_support").processor.PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
     return struct {
         pub const Policies = Binding;
         pub const baseline = Binding.baseline;

@@ -4,13 +4,13 @@
 //! No dependency on DOT grammar, retained documents, or processor composition.
 const std = @import("std");
 const support = @import("parser_support");
-const syntax = @import("syntax.zig");
-const scratch = @import("scratch.zig");
-const policy = @import("policy.zig");
-const results = @import("result.zig");
+const syntax = @import("markup/syntax.zig");
+const scratch = @import("markup/scratch.zig");
+const policy = @import("markup/policy.zig");
+const results = @import("markup/result.zig");
 pub const location = support.location;
 pub const reporting = support.reporting;
-pub const diagnostic = @import("diagnostic.zig");
+pub const diagnostic = @import("markup/diagnostic.zig");
 pub const Diagnostic = diagnostic.Diagnostic;
 pub const DiagnosticSink = diagnostic.Sink;
 pub const FixedDiagnosticBag = diagnostic.FixedBag;
@@ -34,9 +34,9 @@ pub const Counts = results.Counts;
 pub const Report = results.Report;
 pub const Progress = results.Progress;
 pub const lexer = struct {
-    pub const Lexer = @import("lexer.zig").Lexer;
-    pub const Token = @import("lexer.zig").Token;
-    pub const Result = @import("lexer.zig").Result;
+    pub const Lexer = @import("markup/lexer.zig").Lexer;
+    pub const Token = @import("markup/lexer.zig").Token;
+    pub const Result = @import("markup/lexer.zig").Result;
 };
 pub const ParseMemory = struct { document: DocumentStorage = .{}, scratch: ParseScratch = .{} };
 pub const ParseResources = struct { scratch_allocator: ?std.mem.Allocator = null };
@@ -62,7 +62,7 @@ pub const ParseResult = struct {
     }
 };
 pub fn Profile(comptime config: PolicyConfig) type {
-    return @import("profile.zig").Profile(@This(), config);
+    return @import("markup/profile.zig").Profile(@This(), config);
 }
 const Default = Profile(.{});
 pub const parseBorrowed = Default.parseBorrowed;

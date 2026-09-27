@@ -70,7 +70,7 @@ Slice 1's concrete lexical choices are:
 
 ## Implemented architecture
 
-`markup_parser` is a separate build module rooted at `src/markup/root.zig`.
+`markup_parser` is a separate build module rooted at `src/markup.zig`.
 Both parsers import one language-independent support module so applications can
 use both without duplicating shared type identities. Shared location, reporting,
 cancellation and WDP hashing do not depend on either grammar. Payloads/registries

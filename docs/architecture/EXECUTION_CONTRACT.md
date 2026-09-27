@@ -26,7 +26,7 @@ of a committed result remains a separate, unbudgeted operation.
 
 ### Implemented groundwork: lexical scanning
 
-`src/lexer/lexer.zig` selects one of two scanner implementations behind one
+`src/dot/lexer/lexer.zig` selects one of two scanner implementations behind one
 interface. `Policy.scanner` selects scalar (the default) or block; fixed profiles
 can exclude the alternative, and runtime profiles retain both. Direct lexical
 callers can use `lexer.For(backend)`; `lexer.Lexer` is the scalar default.

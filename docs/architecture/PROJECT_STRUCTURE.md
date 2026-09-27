@@ -1,10 +1,11 @@
 # Project Structure
 
 Status: living document — updated as slices land  
-Last updated: 2026-09-27 (independent structural markup slice 1)
+Last updated: 2026-09-27 (common/DOT/markup source separation)
 
-The package is a standalone Zig DOT-language library and must not depend on
-Zigraph.
+The package provides independent Zig DOT and markup modules and must not depend
+on Zigraph. Source directories separate language-owned implementation from shared
+mechanisms; the public module names remain `dot_parser` and `markup_parser`.
 
 ## Design rule
 
@@ -26,46 +27,53 @@ dot-parser/
 ├── LICENSE-MIT
 ├── README.md
 ├── src/
-│   ├── root.zig
-│   ├── support.zig            (shared build-module root; no grammar dependency)
-│   ├── reporting.zig          (typed fixed/growing/streaming diagnostic sinks)
-│   ├── wdp.zig                (shared identity hashing; separate registries)
-│   ├── processor.zig          (policy/fragment preparation, not scheduling)
-│   ├── markup/               (independent markup_parser module)
-│   │   ├── root.zig
-│   │   ├── policy.zig
-│   │   ├── profile.zig
-│   │   ├── lexer.zig
-│   │   ├── parser.zig
-│   │   ├── engine.zig
-│   │   ├── scratch.zig
-│   │   ├── syntax.zig
+│   ├── root.zig               (dot_parser public facade)
+│   ├── markup.zig             (markup_parser public facade)
+│   ├── support.zig            (shared parser_support build-module root)
+│   ├── common/                (no grammar or retained-document dependencies)
+│   │   ├── location.zig
+│   │   ├── reporting.zig      (typed fixed/growing/streaming diagnostic sinks)
+│   │   ├── execution.zig      (borrowed cancellation hook)
+│   │   ├── processor.zig      (generic policy/fragment preparation, not scheduling)
+│   │   └── wdp.zig            (identity hashing, not language-specific registries)
+│   ├── dot/
+│   │   ├── policy.zig         (typed inputs, resolution, pure verification)
+│   │   ├── profile.zig        (compile-time/runtime policy-bound facade)
+│   │   ├── parse_engine.zig   (DOT storage adapters and specialized drivers)
 │   │   ├── diagnostic.zig
-│   │   └── result.zig
-│   ├── policy.zig             (typed inputs, resolution, pure verification)
-│   ├── profile.zig            (compile-time/runtime policy-bound facade)
-│   ├── parse_engine.zig       (shared storage adapters and specialized drivers)
-│   ├── location.zig
-│   ├── diagnostic.zig
-│   ├── console.zig
-│   ├── lexer/
-│   │   ├── lexer.zig          (scanner backend selection + equivalence tests)
-│   │   ├── token.zig          (Token, Result, keyword folding shared by both)
-│   │   ├── scalar.zig         (one byte per credit; the default)
-│   │   └── block.zig          (64-byte block masks; opt-in)
-│   ├── execution.zig          (borrowed cancellation hook; behavior lives in policy)
-│   ├── identifier.zig
-│   ├── syntax_event.zig
-│   ├── parser.zig
-│   ├── scratch.zig            (explicit reusable nesting frames)
-│   ├── syntax.zig
-│   └── validate.zig
+│   │   ├── console.zig
+│   │   ├── lexer/
+│   │   │   ├── lexer.zig      (backend selection and equivalence tests)
+│   │   │   ├── token.zig      (vocabulary shared by the DOT scanner backends)
+│   │   │   ├── scalar.zig     (one byte per credit; the default)
+│   │   │   └── block.zig      (64-byte block masks; opt-in)
+│   │   ├── identifier.zig
+│   │   ├── identifier_value.zig
+│   │   ├── syntax_event.zig
+│   │   ├── parser.zig
+│   │   ├── scratch.zig        (explicit reusable nesting frames)
+│   │   ├── syntax.zig
+│   │   ├── validate.zig
+│   │   └── validation_checks.zig
+│   └── markup/
+│       ├── policy.zig
+│       ├── profile.zig
+│       ├── lexer.zig
+│       ├── parser.zig
+│       ├── engine.zig
+│       ├── scratch.zig
+│       ├── syntax.zig
+│       ├── diagnostic.zig
+│       └── result.zig
 ├── tests/
 │   ├── integration.zig
+│   ├── markup.zig             (standalone markup consumer tests)
+│   ├── parser_modules.zig     (coexistence and shared type identity)
 │   ├── policies.zig
 │   ├── policy_settings.zig
 │   ├── compile_fail/          (public compile-time policy constraints)
 │   ├── freestanding_policy.zig
+│   ├── freestanding_markup.zig
 │   ├── attributes.zig
 │   ├── edge_chains.zig
 │   ├── ports.zig
@@ -81,6 +89,7 @@ dot-parser/
 │       ├── invalid/
 │       └── unsupported/       (recognized-but-deferred constructs)
 ├── examples/
+│   ├── markup.zig
 │   ├── parse_undigraph.zig
 │   ├── policies.zig
 │   ├── fixed_buffer.zig
@@ -94,12 +103,14 @@ dot-parser/
 │   ├── subgraph_endpoints.zig
 │   └── check_file.zig         (command-line checker: recovery + renderer)
 ├── bench/
+│   ├── markup.zig             (standalone fixed/runtime/count-only parsing)
 │   ├── throughput.zig         (parse + validate, retained memory)
 │   ├── policies.zig           (fixed/runtime policy costs; no recorded baseline yet)
 │   ├── lexer.zig              (lexical fixtures, no timed allocation)
 │   ├── session.zig            (independent execution-policy costs)
 │   └── subgraphs.zig          (sibling/deep scope costs)
 └── docs/
+    ├── MARKUP.md
     ├── SUPPORTED_SYNTAX.md
     ├── SUBGRAPHS.md
     ├── OWNERSHIP.md
@@ -120,9 +131,10 @@ README for the governance rules).
 
 ## File responsibilities
 
-### `src/markup/` and shared primitives
+### Module roots, `src/common/` and `src/markup/`
 
-`markup_parser` is an independent build module rooted at `markup/root.zig`.
+`markup_parser` is an independent build module rooted at `src/markup.zig`, with
+its implementation under `src/markup/`.
 Its scanner, iterative event grammar, storage consumers, diagnostics and policy
 are markup-owned, not adapters around DOT. Slice 1 covers text/elements; the
 [consumer guide](../MARKUP.md) lists exact coverage. Retained nodes form preorder
@@ -130,19 +142,24 @@ subtree intervals; fixed/growing/count-only consumers share one parser. Public
 events and DOT composition remain deferred. The
 [internal slice record](../internal/MARKUP.md) separates future grammar from code.
 
-Both build modules depend on one `support.zig` module exposing location,
-reporting, cancellation and WDP hashing. This preserves shared Zig type identity
-when both parsers are imported without a grammar dependency in either direction.
+Both build modules depend on one `src/support.zig` module exposing `common/`
+location, reporting, cancellation, generic processor preparation and WDP hashing.
+This preserves shared Zig type identity when both parsers are imported without a
+grammar dependency in either direction. `common/` owns mechanisms, not DOT or
+markup policies, diagnostic payloads, grammars, output models or renderers.
+Existing `dot.processor` access stays unchanged; moving its generic implementation
+does not add processor composition to markup or create a new public module.
 Direct CLI compilation wires `--dep parser_support` for each parser and supplies
 `-Mparser_support=src/support.zig`; package consumers receive this automatically.
 
 ### `src/root.zig`
 
-The public package surface. It re-exports intentionally public types and
-convenience entry points. It must not expose internal storage layouts merely
-because they are convenient during development.
+The DOT public surface over `src/dot/`. Like `src/markup.zig`, it owns public
+facade types and re-exports intentionally public building blocks and convenience
+entry points. Root files do not implement scanning or grammar, and must not expose
+internal storage layouts merely because they are convenient during development.
 
-### `src/location.zig`
+### `src/common/location.zig`
 
 Small source primitives:
 
@@ -156,7 +173,7 @@ Small source primitives:
 This module performs no allocation and does not interpret Unicode display
 width.
 
-### `src/diagnostic.zig`
+### `src/dot/diagnostic.zig`
 
 WDP diagnostic identities and typed diagnostic fields:
 
@@ -172,7 +189,7 @@ Human-readable catalogs, localization, JSON, and runtime hashing do not belong
 in the initial core; `console.zig` is the optional renderer that turns the
 payloads into wording and is dropped by the linker when unused.
 
-### `src/lexer/`
+### `src/dot/lexer/`
 
 The raw-byte scanner: one interface, two implementations. It is the first
 subsystem to get its own directory, as its responsibilities grew to four files.
@@ -218,7 +235,7 @@ is 160 B against 56 B. The [execution contract](EXECUTION_CONTRACT.md) gives
 each backend's credit accounting, and the benches take `-Dlexer=scalar|block`
 to compare them.
 
-### `src/identifier.zig`
+### `src/dot/identifier.zig`
 
 Explicit logical-value decoding over one raw identifier expression. Uses the
 lexer to validate spelling, then emits decoded chunks into caller memory or a
@@ -226,7 +243,7 @@ writer. It performs no allocation, caching, Unicode normalization, layout
 escape interpretation, or numeric conversion. The document offers convenience
 methods over this module without adding fields to retained records.
 
-### `src/parser.zig`
+### `src/dot/parser.zig`
 
 The parser state machine and a private, provisional syntax-event contract. It
 parses one document and emits source-shaped events. It does not allocate AST
@@ -244,7 +261,7 @@ Cancellation adds a borrowed hook and polls before each microstep. It can be
 selected independently of metering; disabled features compile out. `root.zig`
 owns the fixed-session API, lifetime rules, and public storage-failure mapping.
 
-### `src/syntax.zig`
+### `src/dot/syntax.zig`
 
 The borrowed, index-based syntax document (`Document`) and its two builders
 (allocator-backed and fixed-storage). The builders are the first consumers
@@ -270,7 +287,7 @@ Document data includes:
 The document preserves written statements. It does not synthesize implicit
 nodes from an edge statement.
 
-### `src/validate.zig`
+### `src/dot/validate.zig`
 
 Validation over syntax data. It completes after independent validation errors
 and writes them to a caller-supplied diagnostic sink or bag. Parsing is
@@ -281,7 +298,7 @@ are independent of diagnostic delivery. It preflights explicit validation scratc
 then merges only enabled finding streams in source order. Fixed-off streams and
 their state are excluded; runtime-off streams do not inspect the input.
 
-### `src/validation_checks.zig`
+### `src/dot/validation_checks.zig`
 
 Independent finding streams for operators, whole-source UTF-8, repeated attribute
 keys and consumer restrictions on effective kinds, ports and subgraphs. Shared
@@ -294,7 +311,7 @@ Private `identifier_value.zig` shares validated-expression traversal between
 safe public decoding and logical key comparisons; unchecked helpers are not
 exposed on the public identifier API.
 
-### `src/policy.zig` and `src/profile.zig`
+### `src/dot/policy.zig` and `src/dot/profile.zig`
 
 `policy.zig` owns source-independent typed inputs, per-leaf resolution and pure
 verification. `profile.zig` binds a compile-time baseline, conditionally exposes
@@ -304,7 +321,7 @@ through a module cycle. Interpretation derives auto facts once per immutable
 document without adding retained syntax fields. The [policy guide](../POLICIES.md)
 records all migrated settings and session ownership/cost contracts.
 
-### `src/parse_engine.zig`
+### `src/dot/parse_engine.zig`
 
 Allocator-backed, fixed-storage and count-only adapters share the grammar in
 `parser.Machine`. Fixed policies capture limits/recovery at compile
@@ -320,55 +337,18 @@ There is no second parser-options schema or compatibility machine wrapper.
 scratch; direct event-sink fixtures live in its test-only namespace. Default
 facade functions delegate to the default `Profile`, including validation.
 
-## Target layout after responsibilities grow
+## Further splits only when needed
 
-The initial flat files may evolve into this structure. These directories should
-be created only when their modules are implemented:
+The language boundary is now explicit: keep DOT-specific refinements under
+`dot/` and markup-specific refinements under `markup/`. Split lexer, parser,
+syntax storage or validation files further only when implemented responsibilities
+justify it. Future DOT IR, lowering, semantic checks and graph adapters remain
+DOT-owned; they do not belong in `common/`.
 
-```text
-src/
-├── root.zig
-├── core/
-│   ├── location.zig
-│   ├── limits.zig
-│   ├── outcome.zig
-│   └── diagnostic.zig
-├── source/
-│   ├── bytes.zig
-│   ├── chunks.zig
-│   └── decoding_adapter.zig
-├── lexer/                     (realized: lexer, token, scalar, block)
-│   ├── token.zig
-│   ├── lexer.zig
-│   ├── scalar.zig
-│   └── block.zig
-├── parser/
-│   ├── parser.zig
-│   ├── syntax_sink.zig
-│   └── drivers.zig
-├── syntax/
-│   ├── tree.zig
-│   ├── storage.zig
-│   └── builder.zig
-├── validation/
-│   ├── validator.zig
-│   └── rules/
-├── ir/
-│   ├── dot_ir.zig
-│   ├── storage.zig
-│   └── lower.zig
-├── diagnostics/
-│   ├── codes.zig
-│   ├── fixed_bag.zig
-│   └── catalog.zig
-├── observability/
-│   └── observer.zig
-├── encoding/
-│   └── utf8.zig
-└── tooling/
-    ├── serialize.zig
-    └── source_index.zig
-```
+Promote source/encoding adapters, observability or tooling helpers into `common/`
+only when they have a genuinely language-independent contract. Do not create
+placeholder directories, universal policy/outcome types, or a shared grammar
+engine merely to make the two parsers look alike.
 
 Engine-specific adapters should normally live in their own packages or
 repositories. This repository may contain generic adapter contracts and example
@@ -376,12 +356,15 @@ targets, but not a Zigraph dependency.
 
 ## Dependency direction
 
-Dependencies flow inward to outward:
+Each language depends on shared mechanisms, never the reverse. DOT and markup
+internals do not import each other; a future composition adapter must not make
+either standalone parser depend on the other's grammar. Within each language,
+the layers below apply (DotIR, lowering and engine adapters remain future work):
 
 ```text
-core
+common primitives
   ↑
-source and lexer
+language-owned source scanning and lexer
   ↑
 parser and private syntax-event contract
   ├──→ syntax builder and syntax tree
@@ -401,7 +384,8 @@ DotIR
 
 Forbidden dependencies:
 
-- Core must not depend on lexer, parser, AST, IR, logging, or an engine.
+- Common primitives must not depend on either language's lexer, parser, AST,
+  policies, diagnostic payloads, IR, logging, or an engine.
 - Lexer must not depend on parser, AST, or IR.
 - Parser must not depend on an AST builder or engine.
 - Syntax-tree storage must not depend on validation or `DotIR`.
@@ -426,7 +410,7 @@ must be requested explicitly and supplied with explicit memory.
 
 During the experimental `0.x` phase:
 
-- `root.zig` convenience functions are public but unstable.
+- `root.zig` and `markup.zig` convenience functions are public but unstable.
 - The syntax-event sink remains private/provisional.
 - Syntax-tree types may change while the first slices teach us their real shape.
 - `GraphTarget` is deferred until `DotIR` exists.
@@ -438,7 +422,8 @@ Use four complementary levels:
 
 1. **Unit tests:** colocated with location, lexer, parser, storage, and validation
    code.
-2. **Public integration tests:** exercise only imports from `root.zig`.
+2. **Public integration tests:** import `dot_parser` or `markup_parser`, just as
+   consumers do; coexistence tests also verify shared primitive type identity.
 3. **Corpus tests:** DOT files grouped by outcome class (valid, invalid,
    unsupported) with expected statements, diagnostics, or features.
 4. **Property/fuzz tests:** `std.testing.fuzz` harness with determinism

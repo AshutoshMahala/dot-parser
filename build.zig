@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
 
     // Independently importable: markup depends only on shared primitives, not DOT.
     const markup = b.addModule("markup_parser", .{
-        .root_source_file = b.path("src/markup/root.zig"),
+        .root_source_file = b.path("src/markup.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{.{ .name = "parser_support", .module = support }},
@@ -111,7 +111,7 @@ pub fn build(b: *std.Build) void {
     for ([_]struct { name: []const u8, message: []const u8 }{
         .{ .name = "fixed_policy_override", .message = "tests/compile_fail/fixed_policy_override.zig:3:36: error: no field named 'policy' in struct /?/" },
         .{ .name = "runtime_check_on_fixed_profile", .message = "error: unable to evaluate comptime expression" },
-        .{ .name = "digraph_treatment", .message = "error: no field named 'treated_as' in struct 'policy.Policy.Operators'" },
+        .{ .name = "digraph_treatment", .message = "error: no field named 'treated_as' in struct 'dot.policy.Policy.Operators'" },
         .{ .name = "invalid_policy_mismatch", .message = "error: invalid policy: graph_operator_mismatch_not_applicable" },
         .{ .name = "invalid_policy_reading", .message = "error: invalid policy: graph_operator_reading_not_applicable" },
         .{ .name = "fixed_parse_override", .message = "tests/compile_fail/fixed_parse_override.zig:3:41: error: no field named 'policy' in struct /?/" },
@@ -289,7 +289,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "parser_support", .module = portable_support }},
         });
         const portable_markup = b.createModule(.{
-            .root_source_file = b.path("src/markup/root.zig"),
+            .root_source_file = b.path("src/markup.zig"),
             .target = portable_target,
             .optimize = .ReleaseSmall,
             .imports = &.{.{ .name = "parser_support", .module = portable_support }},

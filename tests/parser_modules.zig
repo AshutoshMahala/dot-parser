@@ -5,6 +5,8 @@ const markup = @import("markup_parser");
 test "independent parsers coexist and share primitives, not grammars or payloads" {
     try std.testing.expect(dot.location.Span == markup.location.Span);
     try std.testing.expect(dot.reporting.Severity == markup.reporting.Severity);
+    try std.testing.expect(dot.reporting.Delivery == markup.reporting.Delivery);
+    try std.testing.expect(dot.Cancellation == markup.Cancellation);
     try std.testing.expect(dot.Diagnostic != markup.Diagnostic);
     var graph = dot.parseBorrowed(std.testing.allocator, "graph { a; }", dot.diagnostic.discard, .{});
     defer graph.deinit(std.testing.allocator);

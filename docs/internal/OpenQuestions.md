@@ -39,8 +39,8 @@ state 544 → 368 B (scalar) and 648 → 472 B (block), fixed session 1264 →
 hinted with the scalar scanner (the per-byte tracker was a fifth of its
 lexing time), the corpus files 3–33% faster, the empty-subgraph fixtures
 21–26% faster; the block scanner gains 2–20%.
-No numeric accounting changes. *(Embodied: `src/location.zig`,
-`src/lexer/`, `src/console.zig` `Positions`; R-MEM-008 and R-DIAG-001
+No numeric accounting changes. *(Embodied: `src/common/location.zig`,
+`src/dot/lexer/`, `src/dot/console.zig` `Positions`; R-MEM-008 and R-DIAG-001
 amended.)*
 
 **Q38 — Which scanner backend is the default, and how is a backend chosen?**
@@ -63,12 +63,12 @@ slower than scalar on wasm32 under V8 and 27 KB (wasm32) to 52 KB
 (riscv32) larger. An earlier measurement, before Q39 removed the per-byte
 tracker, had block ahead on comment-heavy and nested inputs and on every
 bounded session; the tracker was most of that gap. The scalar scanner is
-also the differential oracle: the equivalence tests in `src/lexer/lexer.zig`
+also the differential oracle: the equivalence tests in `src/dot/lexer/lexer.zig`
 (fixtures, truncations, block shifts, random streams with 64- and 32-bit
 draws, budget partitions) found two block-scanner bugs before release, and
 the whole suite runs on wasm32 with and without simd128 under Node's WASI.
 The execution contract accounts credits per backend. *(Embodied:
-`src/lexer/`; R-MOD-010, Q16, Q27.)*
+`src/dot/lexer/`; R-MOD-010, Q16, Q27.)*
 
 **Configuration extension implemented (2026-09-20):** Q35 puts scanner selection
 in `Policy.scanner` with compile-time/runtime parity. Fixed-only profiles can
@@ -95,7 +95,7 @@ nesting/pool capacity, not an extra `max_statements` item. No separate total-sco
 policy is introduced: fixed pool capacity bounds retained occurrences, and work
 budgets/cancellation bound execution. Allocator hints are not hard limits.
 Semantic membership, repeated-name resolution and expansion remain deferred.
-*(Embodied: `src/parser.zig`, `src/syntax.zig`, `src/scratch.zig`,
+*(Embodied: `src/dot/parser.zig`, `src/dot/syntax.zig`, `src/dot/scratch.zig`,
 `tests/subgraph_endpoints.zig`, `docs/SUBGRAPHS.md`.)*
 
 **Q33 — How are standalone subgraphs represented, traversed and bounded?**
@@ -113,7 +113,7 @@ retained output through `ParseMemory`; allocator callers may separate scratch
 allocator lifetime. `max_nesting` counts depth below root; no separate max-subgraphs
 policy is introduced; endpoint occurrences now rely on scope-pool capacity (Q34). Cycle detection is not a
 syntax-parser responsibility. Endpoint syntax is implemented by Q34; resolved
-membership remains deferred. *(Embodied: `src/syntax.zig`, `src/scratch.zig`, `src/parser.zig`,
+membership remains deferred. *(Embodied: `src/dot/syntax.zig`, `src/dot/scratch.zig`, `src/dot/parser.zig`,
 `tests/subgraphs.zig`, `docs/SUBGRAPHS.md`.)*
 
 **Q32 — How are ports retained without inflating every node reference?**
@@ -131,7 +131,7 @@ private callback returning its pool handle; fixed/hinted capacities include the
 new pool, with normal abort/reset ownership. The 50% qualification break-even
 versus 12-byte references plus 20-byte suffix records concerns payloads only;
 fixed metadata and reserved capacities still cost memory. *(Embodied:
-`src/syntax.zig`, `src/parser.zig`, `tests/ports.zig`, `examples/ports.zig`.)*
+`src/dot/syntax.zig`, `src/dot/parser.zig`, `tests/ports.zig`, `examples/ports.zig`.)*
 
 **Q31 — How are identifier-only edge chains retained and budgeted?**
 Keep ordinary edge records unchanged. A separate chain owner contains the first
@@ -142,8 +142,8 @@ callback is a separately charged event; one accepted owner increments completed
 statements once. The public allocation-free edge iterator offers a pairwise view
 without changing retained syntax. Fixed capacities bound chain owners and
 continuations independently; statement limits do not bound chain length.
-Subgraph endpoints are covered by Q34; ports are covered by Q32. *(Embodied: `src/syntax.zig`,
-`src/parser.zig`, `tests/edge_chains.zig`, `tests/sessions.zig`.)*
+Subgraph endpoints are covered by Q34; ports are covered by Q32. *(Embodied: `src/dot/syntax.zig`,
+`src/dot/parser.zig`, `tests/edge_chains.zig`, `tests/sessions.zig`.)*
 
 **Q30 — How does the first attribute slice retain groups and deliver pairs?**
 Adjacent bracket groups are flattened into one ordered pair sequence, preserving
@@ -155,14 +155,14 @@ have explicit capacities for all attribute-slice pools (six at that slice;
 eight after Q31's chain support; nine with Q32; ten with Q33). `max_attributes` counts all pairs,
 including assignments, but does not bound lexical work. Defaults, effective-value
 resolution and compile-time feature removal remain future work. *(Embodied:
-`src/parser.zig`, `src/syntax_event.zig`, `src/syntax.zig`, `tests/attributes.zig`.)*
+`src/dot/parser.zig`, `src/dot/syntax_event.zig`, `src/dot/syntax.zig`, `tests/attributes.zig`.)*
 
 **Q2 — Is the primary public result a syntax AST, an event stream, or equal
 support for both?**
 Both, layered: the borrowed `Document` is the public result; the syntax-event
 stream is the internal seam between parser and builders, kept private until at
 least two vertical slices exercise it. *(Embodied: `src/root.zig` façade,
-`src/syntax_event.zig`.)*
+`src/dot/syntax_event.zig`.)*
 
 **Q3 — Must the AST preserve comments, exact quoting, whitespace, and
 separators for lossless source reproduction?**
@@ -177,8 +177,8 @@ the written operator is preserved), and the kind×operator legality rule lives
 solely in validation, which reports every independent mismatch in source
 order. Sink filtering changes reporting, not `document_valid`. Consumers may
 parse without validation or select independent graph/operator validation and
-interpretation policies through `Profile` (Q35). *(Embodied: `src/parser.zig`,
-`src/validate.zig`, `src/policy.zig`, corpus.)*
+interpretation policies through `Profile` (Q35). *(Embodied: `src/dot/parser.zig`,
+`src/dot/validate.zig`, `src/dot/policy.zig`, corpus.)*
 
 **Q5 — Is semantic resolution part of this package or a sibling package?**
 This package, as a separate optional layer (`DotIR` + explicit lowering
@@ -214,7 +214,7 @@ for implementation quirks over the specification.
 **Verification pending:** automate the differential harness against the
 pinned reference and record exceptions explicitly; notes first verified by
 running 15.1.0 keep that attribution until the harness re-runs them.
-*(Embodied: `src/lexer/`, compatibility notes, corpus; R-ROB-004.)*
+*(Embodied: `src/dot/lexer/`, compatibility notes, corpus; R-ROB-004.)*
 
 **Q13 — What language-specific policy governs raw pointers, unchecked
 blocks, integer casts, and dependency review?**
@@ -248,7 +248,7 @@ identities to the file layout; primaries name the failure domain (`Byte`,
 `diagnostic.Sequence`; numbers may recur across diagnostic domains. Registry
 uniqueness, format validity, and compact-ID collisions are test-enforced;
 compact-ID generation is also checked against the official WDP test vectors.
-*(Embodied: `src/diagnostic.zig`; R-DIAG-001 as amended.)*
+*(Embodied: `src/dot/diagnostic.zig`; R-DIAG-001 as amended.)*
 
 **Q21 — Are any analysis passes worth an optional parallel implementation?**
 Not now. Concurrency stays external to the core (R-ARCH-008/R-CON-004);
@@ -265,7 +265,7 @@ pools including borrowed ranges, and diagnostic codes, positions, and feature
 payloads. New public payloads must extend that coverage as they arrive.
 Future merged-fragment, `DotIR`, and serialized-output APIs must define their
 own ordering before publication; their absence does not leave the current
-contract undecided. *(Embodied: `src/syntax.zig`, `src/validate.zig`,
+contract undecided. *(Embodied: `src/dot/syntax.zig`, `src/dot/validate.zig`,
 validation/corpus/fuzz determinism tests; R-PORT-005/R-CON-005.)*
 
 **Q29 — Which sinks require transactional staging, and is a standard staging
@@ -278,7 +278,7 @@ complete syntax parsing, not semantic validity: consumers requiring validated
 output must also stage through validation. No reusable staging helper will be
 added until a concrete consumer demonstrates its need and cost; reconsider
 that helper separately from the settled ownership boundary.
-*(Embodied: `src/syntax_event.zig`, builder abort paths; R-MOD-011.)*
+*(Embodied: `src/dot/syntax_event.zig`, builder abort paths; R-MOD-011.)*
 
 **Q37 — How are fix suggestions carried on diagnostics for linters?**
 **Implemented; reconciled 2026-09-22:** `Diagnostic.fix: ?Fix` carries an
@@ -296,8 +296,8 @@ Native Zig 0.16.0 measurements record an 80-byte `Diagnostic`, including the
 optional fix; this is a layout observation, not an ABI promise. A future lean
 diagnostics profile that omits fixes is a separate optional-cost decision,
 not unfinished implementation of `Diagnostic.fix`.
-*(Embodied: [diagnostic types](../../src/diagnostic.zig),
-[operator checks](../../src/validation_checks.zig),
+*(Embodied: [diagnostic types](../../src/dot/diagnostic.zig),
+[operator checks](../../src/dot/validation_checks.zig),
 [repair tests](../../tests/diagnostics.zig),
 [policy tests](../../tests/policies.zig), [lenient tests](../../tests/lenient.zig);
 R-DX-007, R-FUNC-005.)*
@@ -318,7 +318,7 @@ not mean every future validation or graph-building rule is implemented.
 
 | Area | Implemented contract | Stage / evidence |
 | --- | --- | --- |
-| Typed configuration | `Profile`, one `Policy` schema, per-leaf inheritance, consumer baselines, default-off runtime overrides, `validatePolicy` | Configuration preflight; `src/policy.zig`, `src/profile.zig`, `tests/compile_fail/` |
+| Typed configuration | `Profile`, one `Policy` schema, per-leaf inheritance, consumer baselines, default-off runtime overrides, `validatePolicy` | Configuration preflight; `src/dot/policy.zig`, `src/dot/profile.zig`, `tests/compile_fail/` |
 | Graph meaning and operators | Separate `validation.graph` / `digraph`, all four graph treatments, mismatch severity, source-preserving effective conformance | Validation / interpretation; `tests/policies.zig` |
 | Existing settings | Nesting/statement/attribute limits, recovery, scanner, independent metering/cancellation | Parse, measure and policy-bound sessions; `tests/policy_settings.zig` |
 | Initial lenient syntax | Empty statements, exact `---`/`-->`, bare `-` from the written header; independent reject/warn/accept choices | Parsing; `tests/lenient.zig` |
@@ -502,7 +502,7 @@ the graph. There is no new DOT source keyword, and no inferred `.auto` kind in
 results. These treatments are library dialect behavior, not a claim of standard
 Graphviz compatibility. Source fidelity and kind-agnostic parsing remain binding.
 
-**Implementation status:** `src/policy.zig` and `src/profile.zig` implement the
+**Implementation status:** `src/dot/policy.zig` and `src/dot/profile.zig` implement the
 optional typed inputs, per-leaf inheritance, default-off runtime gate, checker,
 separate header branches, all four graph treatments, severity and interpretation.
 Validation adds `warnings`, a warning diagnostic twin, policy-aware payloads and
@@ -1243,8 +1243,8 @@ not unlimited work, unlimited retained diagnostics or guaranteed discovery of
 errors behind failed prerequisites. Sequential execution is sufficient and can
 reuse scratch once earlier users have released it; no parallel runtime or hidden
 per-fragment state is required. The existing
-[DOT validator](../../src/validate.zig) and
-[fixed diagnostic bag](../../src/diagnostic.zig) already implement continuation
+[DOT validator](../../src/dot/validate.zig) and
+[fixed diagnostic bag](../../src/dot/diagnostic.zig) already implement continuation
 and bounded retention within DOT. Bounded/cancellable validation and composition
 with inner processors are still future work.
 
@@ -1348,7 +1348,7 @@ per-profile binary-size thresholds await the profile work. *(Embodied:
 which lowering passes are in version 1?**
 The document side is now concrete: source-shaped, source-ordered, no
 deduplication, no implicit nodes, no attribute semantics. The `DotIR` side
-(passes, storage) is open until slice 7. *(Embodied: `src/syntax.zig`.)*
+(passes, storage) is open until slice 7. *(Embodied: `src/dot/syntax.zig`.)*
 
 **Q18 — Which index widths and pool sizes define the first embedded retained
 representation?**
@@ -1388,7 +1388,7 @@ including comments and trivia, without mutation. A byte not consumed by a valid
 UTF-8 sequence is one finding, then recovery advances one byte. Overlong forms,
 surrogates and values beyond U+10FFFF are invalid. No policy weakens grammar NUL
 rules. **Still open:** the markup-specific encoding/validation contract (Q40).
-*(Embodied: `src/lexer/`, `src/validation_checks.zig`,
+*(Embodied: `src/dot/lexer/`, `src/dot/validation_checks.zig`,
 [supported syntax](../SUPPORTED_SYNTAX.md); R-PORT-006.)*
 
 **Q24 — When will the first stable compatibility boundary be declared?**

@@ -6,6 +6,11 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Organize parser internals under `src/dot/` and `src/markup/`, with
+  language-independent primitives in `src/common/`. Keep public module names
+  and APIs unchanged; root façades are `src/root.zig`, `src/markup.zig` and
+  `src/support.zig`. This is a layout-only refactor, with no parser behavior or
+  storage-layout changes.
 - Add an independent `markup_parser` module: structural fragments with text,
   arbitrary case-sensitive elements, borrowed compact output, fixed/growable
   storage, count-only measurement, typed limits and opt-in runtime policies.

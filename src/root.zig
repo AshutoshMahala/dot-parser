@@ -27,11 +27,11 @@
 
 const std = @import("std");
 
-const parser_impl = @import("parser.zig");
-const syntax_impl = @import("syntax.zig");
-const validate_impl = @import("validate.zig");
-const scratch_impl = @import("scratch.zig");
-const policy_impl = @import("policy.zig");
+const parser_impl = @import("dot/parser.zig");
+const syntax_impl = @import("dot/syntax.zig");
+const validate_impl = @import("dot/validate.zig");
+const scratch_impl = @import("dot/scratch.zig");
+const policy_impl = @import("dot/policy.zig");
 
 pub const Policy = policy_impl.Policy;
 pub const presets = policy_impl.presets;
@@ -52,20 +52,20 @@ const DefaultProfile = Profile(.{});
 /// Policy-bound parsing, execution, validation and interpretation. Runtime
 /// overrides are off by default; every supported setting has full parity.
 pub fn Profile(comptime config: PolicyConfig) type {
-    return @import("profile.zig").Profile(@This(), config);
+    return @import("dot/profile.zig").Profile(@This(), config);
 }
 
 /// Library-default policy verification is compile-time-only.
 pub const validatePolicy = Profile(.{}).validatePolicy;
 
 pub const location = @import("parser_support").location;
-pub const diagnostic = @import("diagnostic.zig");
+pub const diagnostic = @import("dot/diagnostic.zig");
 /// Typed processor-independent diagnostic destinations.
 pub const reporting = @import("parser_support").reporting;
 /// Compile-time policy preparation and checked raw-fragment coordinates.
 /// Processor scheduling and HTML parsing are not implemented by this module.
-pub const processor = @import("processor.zig");
-const lexer_impl = @import("lexer/lexer.zig");
+pub const processor = @import("parser_support").processor;
+const lexer_impl = @import("dot/lexer/lexer.zig");
 pub const lexer = struct {
     pub const Token = lexer_impl.Token;
     pub const Result = lexer_impl.Result;
@@ -75,12 +75,12 @@ pub const lexer = struct {
     pub const For = lexer_impl.For;
 };
 /// Explicit raw-identifier decoding into caller storage or a writer.
-pub const identifier = @import("identifier.zig");
+pub const identifier = @import("dot/identifier.zig");
 
 /// Default console presentation for diagnostics — one way to render, shipped
 /// out of the box. Consumers bring their own reporting by implementing
 /// `DiagnosticSink`; the core never renders anything itself.
-pub const console = @import("console.zig");
+pub const console = @import("dot/console.zig");
 
 // Source positions.
 pub const Location = location.Location;
@@ -314,10 +314,10 @@ test {
     // Private, provisional modules are not exported but their unit tests
     // still run (the syntax-event sink, parser driver, and document builder stay
     // private per PROJECT_STRUCTURE until the contract stabilizes).
-    _ = @import("syntax_event.zig");
-    _ = @import("parser.zig");
-    _ = @import("syntax.zig");
-    _ = @import("validate.zig");
-    _ = @import("lexer/lexer.zig");
-    _ = @import("policy.zig");
+    _ = @import("dot/syntax_event.zig");
+    _ = @import("dot/parser.zig");
+    _ = @import("dot/syntax.zig");
+    _ = @import("dot/validate.zig");
+    _ = @import("dot/lexer/lexer.zig");
+    _ = @import("dot/policy.zig");
 }

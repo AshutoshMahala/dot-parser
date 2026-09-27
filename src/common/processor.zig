@@ -1,7 +1,7 @@
 //! Compile-time policy preparation for configured processors. No registry,
 //! scheduler, DOT grammar dependency or processor instance is introduced here.
 const std = @import("std");
-const location = @import("parser_support").location;
+const location = @import("location.zig");
 
 /// Schema owns Policy, Effective, defaults, Error, resolve and check. A failed
 /// check carries an issue with asError(); layouts need not match. The original
