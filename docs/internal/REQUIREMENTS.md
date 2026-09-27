@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-09-26
+Original draft: 2026-07-13 · Last amended: 2026-09-27
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -491,6 +491,16 @@ Label restrictions must not be applied to unrelated DOT identifiers; an
 HTML-like port ID such as `n:<p>` has inner value `p`, not an opening tag.
 Rendering and consumer-specific interpretation remain outside these stages.
 
+**Standalone-first implementation (2026-09-27; decisions 2026-09-26):** build structural markup in
+vertical slices before expanding composition. `markup_parser` now independently
+parses text and matching/self-closing elements, using shared language-independent
+primitives but no DOT grammar/document. It provides source-backed retained and
+count-only paths, explicit fixed/growing storage, policy limits and bounded/
+cancellable fixed sessions. Attributes, references, comments, CDATA, additional
+validation and DOT recognition/integration remain subsequent slices. Current
+coverage is documented in [the markup guide](../MARKUP.md); settled grammar and
+delivery order are recorded in [the internal slice contract](MARKUP.md).
+
 The selected markup implementation, built-in or consumer-supplied under
 R-MOD-015, must support three usage paths:
 
@@ -545,10 +555,9 @@ and `graphviz`, not five values in a DOT-owned enum. DOT owns recognition and
 rejection/preservation, with opaque recognition the first-slice default; inner
 processing modes belong to the selected implementation's policy. Q40 in
 [OpenQuestions.md](OpenQuestions.md) defines the composition and first-slice
-contract. Exact fragment rules, extended vocabulary, the composed API and parts
-view remain open. General XML conformance is not promised. These are intended
-capabilities, not implemented syntax coverage or a commitment to ship all modes
-in the next slice.
+contract. Remaining fragment details, extended vocabulary, the composed API and
+parts view remain open. General XML conformance is not promised. Only the
+standalone subset identified above is delivered, not all modes or usage paths.
 
 ### R-MOD-015: Content processors are replaceable at compile time
 
@@ -1435,6 +1444,12 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-09-27 — **R-MOD-014 standalone slice 1:** standalone-first implementation
+  sequence, dedicated independently importable markup module, raw byte/case
+  behavior and explicit memory/execution contracts. Later constructs remain
+  recognized-but-unsupported. Q40 and the internal markup slice contract record
+  future attribute/reference decisions separately from delivered coverage.
 
 - 2026-09-26 — **R-FUNC-008 and R-DIAG-007 revised; Q40 preparation**:
   shared typed fixed/growable/streaming diagnostic destinations, explicit sink

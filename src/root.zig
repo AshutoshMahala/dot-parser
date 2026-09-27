@@ -58,10 +58,10 @@ pub fn Profile(comptime config: PolicyConfig) type {
 /// Library-default policy verification is compile-time-only.
 pub const validatePolicy = Profile(.{}).validatePolicy;
 
-pub const location = @import("location.zig");
+pub const location = @import("parser_support").location;
 pub const diagnostic = @import("diagnostic.zig");
 /// Typed processor-independent diagnostic destinations.
-pub const reporting = @import("reporting.zig");
+pub const reporting = @import("parser_support").reporting;
 /// Compile-time policy preparation and checked raw-fragment coordinates.
 /// Processor scheduling and HTML parsing are not implemented by this module.
 pub const processor = @import("processor.zig");
@@ -239,7 +239,7 @@ pub const FixedParseResult = struct {
     warnings: u32 = 0,
 };
 
-pub const Cancellation = @import("execution.zig").Cancellation;
+pub const Cancellation = @import("parser_support").execution.Cancellation;
 pub const ExecutionPhase = parser_impl.Phase;
 
 /// By-value progress, never a partial document. Accepted counts can describe

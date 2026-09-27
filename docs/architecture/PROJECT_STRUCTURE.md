@@ -1,7 +1,7 @@
 # Project Structure
 
 Status: living document — updated as slices land  
-Last updated: 2026-09-20 (unified settings and policy-bound sessions)
+Last updated: 2026-09-27 (independent structural markup slice 1)
 
 The package is a standalone Zig DOT-language library and must not depend on
 Zigraph.
@@ -27,6 +27,21 @@ dot-parser/
 ├── README.md
 ├── src/
 │   ├── root.zig
+│   ├── support.zig            (shared build-module root; no grammar dependency)
+│   ├── reporting.zig          (typed fixed/growing/streaming diagnostic sinks)
+│   ├── wdp.zig                (shared identity hashing; separate registries)
+│   ├── processor.zig          (policy/fragment preparation, not scheduling)
+│   ├── markup/               (independent markup_parser module)
+│   │   ├── root.zig
+│   │   ├── policy.zig
+│   │   ├── profile.zig
+│   │   ├── lexer.zig
+│   │   ├── parser.zig
+│   │   ├── engine.zig
+│   │   ├── scratch.zig
+│   │   ├── syntax.zig
+│   │   ├── diagnostic.zig
+│   │   └── result.zig
 │   ├── policy.zig             (typed inputs, resolution, pure verification)
 │   ├── profile.zig            (compile-time/runtime policy-bound facade)
 │   ├── parse_engine.zig       (shared storage adapters and specialized drivers)
@@ -104,6 +119,22 @@ holds reusable DOT inputs grouped by expected outcome class (see its
 README for the governance rules).
 
 ## File responsibilities
+
+### `src/markup/` and shared primitives
+
+`markup_parser` is an independent build module rooted at `markup/root.zig`.
+Its scanner, iterative event grammar, storage consumers, diagnostics and policy
+are markup-owned, not adapters around DOT. Slice 1 covers text/elements; the
+[consumer guide](../MARKUP.md) lists exact coverage. Retained nodes form preorder
+subtree intervals; fixed/growing/count-only consumers share one parser. Public
+events and DOT composition remain deferred. The
+[internal slice record](../internal/MARKUP.md) separates future grammar from code.
+
+Both build modules depend on one `support.zig` module exposing location,
+reporting, cancellation and WDP hashing. This preserves shared Zig type identity
+when both parsers are imported without a grammar dependency in either direction.
+Direct CLI compilation wires `--dep parser_support` for each parser and supplies
+`-Mparser_support=src/support.zig`; package consumers receive this automatically.
 
 ### `src/root.zig`
 

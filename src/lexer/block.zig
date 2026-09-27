@@ -23,7 +23,7 @@
 //! chooses the scalar scanner there by default.
 
 const std = @import("std");
-const location = @import("../location.zig");
+const location = @import("parser_support").location;
 const diagnostic = @import("../diagnostic.zig");
 const types = @import("token.zig");
 

@@ -7,7 +7,7 @@ const scratch_impl = @import("scratch.zig");
 const lexer_impl = @import("lexer/lexer.zig");
 const policy = @import("policy.zig");
 const diagnostic = @import("diagnostic.zig");
-const location = @import("location.zig");
+const location = @import("parser_support").location;
 
 pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptime metering: bool, comptime cancellable: bool, comptime backend: policy.ScannerBackend) type {
     return struct {

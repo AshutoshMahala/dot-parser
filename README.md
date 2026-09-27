@@ -41,8 +41,10 @@ strict digraph Routes {
 Bare identifiers such as `café` and `東京` preserve their bytes exactly;
 parsing does not validate UTF-8 or normalize Unicode.
 
-HTML-like identifiers and the planned standalone markup subsystem are not part
-of 0.3.0; implementation follows this release. Other features, including
+HTML-like identifiers and standalone markup are not part of the published
+0.3.0 release. The development tree now has an independently importable
+[`markup_parser`](docs/MARKUP.md) for text and matching/self-closing elements;
+DOT HTML-like identifiers and integration remain deferred. Other features, including
 semantic edge-product expansion, remain deferred. The authoritative
 construct-by-construct table is [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
 

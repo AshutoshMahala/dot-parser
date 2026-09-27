@@ -24,7 +24,7 @@
 
 const std = @import("std");
 const policy = @import("../policy.zig");
-const location = @import("../location.zig");
+const location = @import("parser_support").location;
 const diagnostic = @import("../diagnostic.zig");
 const types = @import("token.zig");
 

@@ -4,12 +4,27 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const support = b.createModule(.{
+        .root_source_file = b.path("src/support.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // The public library module. It must stay free of OS, filesystem, thread,
     // and network dependencies (R-PORT-001).
     const mod = b.addModule("dot_parser", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "parser_support", .module = support }},
+    });
+
+    // Independently importable: markup depends only on shared primitives, not DOT.
+    const markup = b.addModule("markup_parser", .{
+        .root_source_file = b.path("src/markup/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "parser_support", .module = support }},
     });
 
     // The default step builds (and installs) the portable static library
@@ -46,6 +61,50 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit and public integration tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_integration_tests.step);
+    const markup_tests = b.addTest(.{ .root_module = markup });
+    const run_markup_tests = b.addRunArtifact(markup_tests);
+    test_step.dependOn(&run_markup_tests.step);
+    const support_tests = b.addTest(.{ .root_module = support });
+    test_step.dependOn(&b.addRunArtifact(support_tests).step);
+    const markup_integration = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/markup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "markup_parser", .module = markup }},
+        }),
+    });
+    const markup_step = b.step("test-markup", "Test standalone markup without building DOT");
+    const run_markup_integration = b.addRunArtifact(markup_integration);
+    markup_step.dependOn(&run_markup_tests.step);
+    markup_step.dependOn(&run_markup_integration.step);
+    test_step.dependOn(&run_markup_integration.step);
+    const both_parsers = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/parser_modules.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(both_parsers).step);
+    for ([_]struct { name: []const u8, message: []const u8 }{
+        .{ .name = "markup_fixed_override", .message = "tests/compile_fail/markup_fixed_override.zig:3:72: error: no field named 'policy' in struct /?/" },
+        .{ .name = "markup_unmetered", .message = "error: metering is disabled; use run()" },
+    }) |fixture| {
+        const rejected = b.addObject(.{
+            .name = fixture.name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("tests/compile_fail/{s}.zig", .{fixture.name})),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "markup_parser", .module = markup }},
+            }),
+        });
+        rejected.expect_errors = .{ .contains = fixture.message };
+        test_step.dependOn(&rejected.step);
+        markup_step.dependOn(&rejected.step);
+    }
 
     // Public policy constraints must fail for actual consumers, not just pass
     // reflection checks in unit tests. Expected-error builds run with test.
@@ -75,6 +134,17 @@ pub fn build(b: *std.Build) void {
 
     // Example targets. `zig build examples` builds and runs them.
     const examples_step = b.step("examples", "Build and run the examples");
+    const markup_example = b.addExecutable(.{
+        .name = "markup",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/markup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "markup_parser", .module = markup }},
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(markup_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(markup_example, .{}).step);
     const example_names = [_][]const u8{
         "parse_undigraph",
         "fixed_buffer",
@@ -188,6 +258,17 @@ pub fn build(b: *std.Build) void {
     b.step("bench-policy", "Compare fixed/runtime policy costs on the standard benchmark machine")
         .dependOn(&b.addRunArtifact(policy_bench).step);
     const check_benches = b.step("check-benches", "Compile benchmarks without updating or running baselines");
+    const markup_bench = b.addExecutable(.{
+        .name = "markup_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/markup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "markup_parser", .module = markup }},
+        }),
+    });
+    b.step("bench-markup", "Benchmark standalone structural markup (decimal MB/s)").dependOn(&b.addRunArtifact(markup_bench).step);
+    check_benches.dependOn(&markup_bench.step);
     for ([_]*std.Build.Step.Compile{ bench_exe, lexer_bench, session_bench, subgraph_bench, policy_bench }) |bench| {
         _ = bench.getEmittedBin();
         check_benches.dependOn(&bench.step);
@@ -196,10 +277,22 @@ pub fn build(b: *std.Build) void {
     const freestanding = b.step("check-freestanding", "Compile consumed session and policy profiles for RISC-V32 and Wasm32");
     for ([_]std.Target.Cpu.Arch{ .riscv32, .wasm32 }) |arch| {
         const portable_target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .freestanding });
+        const portable_support = b.createModule(.{
+            .root_source_file = b.path("src/support.zig"),
+            .target = portable_target,
+            .optimize = .ReleaseSmall,
+        });
         const portable = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = portable_target,
             .optimize = .ReleaseSmall,
+            .imports = &.{.{ .name = "parser_support", .module = portable_support }},
+        });
+        const portable_markup = b.createModule(.{
+            .root_source_file = b.path("src/markup/root.zig"),
+            .target = portable_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{.{ .name = "parser_support", .module = portable_support }},
         });
         for ([_]bool{ false, true }) |runtime_policy| {
             const options = b.addOptions();
@@ -218,6 +311,20 @@ pub fn build(b: *std.Build) void {
             });
             _ = probe.getEmittedBin();
             freestanding.dependOn(&probe.step);
+            const markup_probe = b.addObject(.{
+                .name = b.fmt("markup_{s}_r{d}", .{ @tagName(arch), @intFromBool(runtime_policy) }),
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("tests/freestanding_markup.zig"),
+                    .target = portable_target,
+                    .optimize = .ReleaseSmall,
+                    .imports = &.{
+                        .{ .name = "markup_parser", .module = portable_markup },
+                        .{ .name = "policy_features", .module = options.createModule() },
+                    },
+                }),
+            });
+            _ = markup_probe.getEmittedBin();
+            freestanding.dependOn(&markup_probe.step);
         }
         for ([_]bool{ false, true }) |metering| {
             for ([_]bool{ false, true }) |cancellation| {

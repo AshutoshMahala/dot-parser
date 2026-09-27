@@ -306,7 +306,7 @@ test "explicit omission bounds retention, not the analysis" {
     var document = try buildDocument(source);
     defer syntax.deinitOwnedDocument(&document, std.testing.allocator);
 
-    var bag: @import("reporting.zig").FixedBag(diagnostic.Diagnostic, 1, .omit) = .{};
+    var bag: @import("parser_support").reporting.FixedBag(diagnostic.Diagnostic, 1, .omit) = .{};
     const result = validate(policy.defaults.validation, &document, bag.sink(), {}, .{});
 
     // The pass still examined everything and counted every violation …

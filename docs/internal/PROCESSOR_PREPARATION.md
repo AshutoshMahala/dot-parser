@@ -1,7 +1,9 @@
 # Processor preparation — internal implementation notes
 
-The preparation APIs below are implemented. HTML parsing, inner-stage scheduling,
-and a `.processors` option on DOT's `Profile` are not implemented yet. The intended
+The preparation APIs below are implemented. Standalone markup now has its own
+[structural slice](MARKUP.md); it does not use a composed `PolicySet` or scheduler.
+DOT HTML recognition, inner-stage scheduling, and a `.processors` option on DOT's
+`Profile` are not implemented yet. The intended
 execution/result contract is in [the processor contract](PROCESSOR_CONTRACT.md).
 These are implementation/design notes, not a public processor integration guide.
 

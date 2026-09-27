@@ -92,7 +92,7 @@
 //! source bytes alive and unchanged.
 
 const std = @import("std");
-const location = @import("location.zig");
+const location = @import("parser_support").location;
 
 /// The kind of graph a document declares. `graph` in identifiers and prose
 /// means "either kind"; the DOT source keyword `graph` maps to `.undigraph`

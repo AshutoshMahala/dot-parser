@@ -29,8 +29,8 @@
 //!   there is no runtime hashing, catalog, or message template machinery.
 
 const std = @import("std");
-const location = @import("location.zig");
-const reporting = @import("reporting.zig");
+const location = @import("parser_support").location;
+const reporting = @import("parser_support").reporting;
 
 /// WDP part 7 namespace (error boundary) for every diagnostic this library
 /// emits. Codes are unique within this boundary.
@@ -428,41 +428,8 @@ pub const Code = enum {
     }
 };
 
-const base62_alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-
-fn base62Encode(hash: u64) [5]u8 {
-    var value: u64 = hash & 0xFF_FFFF_FFFF; // low 40 bits (bytes 0-4)
-    var out: [5]u8 = undefined;
-    var i: usize = 5;
-    while (i > 0) {
-        i -= 1;
-        out[i] = base62_alphabet[@intCast(value % 62)];
-        value /= 62;
-    }
-    return out;
-}
-
-/// Compute a WDP part 5 compact ID from a structured code (parts 1–4).
-///
-/// Input is normalized to uppercase; caller passes the display form. Usable
-/// at compile time and runtime; the registry only uses it at compile time.
-pub fn computeCompactId(code_text: []const u8) [5]u8 {
-    // "wdp-v1" zero-padded to 8 bytes, little-endian (WDP part 5 §4.5).
-    const wdp_seed: u64 = 0x000031762D706477;
-
-    var upper_buf: [64]u8 = undefined;
-    std.debug.assert(code_text.len <= upper_buf.len);
-    for (code_text, 0..) |byte, i| upper_buf[i] = std.ascii.toUpper(byte);
-
-    return base62Encode(std.hash.XxHash3.hash(wdp_seed, upper_buf[0..code_text.len]));
-}
-
-/// Compute a WDP part 7 namespace hash. Unlike code hashes, namespaces are
-/// hashed as-is (no uppercase normalization) with the "wdpns-v1" seed.
-pub fn computeNamespaceHash(namespace_text: []const u8) [5]u8 {
-    const wdpns_seed: u64 = 0x31762D736E706477;
-    return base62Encode(std.hash.XxHash3.hash(wdpns_seed, namespace_text));
-}
+pub const computeCompactId = @import("parser_support").wdp.computeCompactId;
+pub const computeNamespaceHash = @import("parser_support").wdp.computeNamespaceHash;
 
 /// Typed, allocation-free context accompanying a diagnostic
 /// (R-FUNC-005: structured data, no preformatted messages).

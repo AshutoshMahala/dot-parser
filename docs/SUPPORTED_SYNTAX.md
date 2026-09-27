@@ -7,6 +7,9 @@ introducer with a typed `unsupported_feature` diagnostic naming the
 construct, never a generic syntax error (see
 [OUTCOMES.md](OUTCOMES.md) for that distinction).
 
+The independently importable [markup parser](MARKUP.md) does not change this DOT
+coverage table. DOT HTML-like identifiers and their integration remain deferred.
+
 ## Terminology
 
 In general library prose, **graph** means any graph; concrete kinds are called

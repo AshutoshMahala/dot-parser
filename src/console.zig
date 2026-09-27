@@ -45,7 +45,7 @@
 
 const std = @import("std");
 const diagnostic = @import("diagnostic.zig");
-const location = @import("location.zig");
+const location = @import("parser_support").location;
 
 const Diagnostic = diagnostic.Diagnostic;
 const Details = diagnostic.Details;

@@ -1,6 +1,6 @@
 //! Explicit temporary nesting storage. No recursive call-stack frames.
 const std = @import("std");
-const location = @import("location.zig");
+const location = @import("parser_support").location;
 
 const event = @import("syntax_event.zig");
 

@@ -6,6 +6,17 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add an independent `markup_parser` module: structural fragments with text,
+  arbitrary case-sensitive elements, borrowed compact output, fixed/growable
+  storage, count-only measurement, typed limits and opt-in runtime policies.
+  Fixed-storage sessions support bounded work and cancellation. Attributes,
+  references, comments, CDATA and DOT integration remain unsupported.
+- Share language-independent location, reporting, cancellation and WDP hashing
+  through one build module; DOT and markup can coexist without shared grammars
+  or enlarged DOT diagnostic/record payloads. Add standalone tests, freestanding
+  probes, example and `bench-markup`. Package-based imports remain unchanged;
+  direct CLI builds of DOT now also wire `parser_support` to `src/support.zig`.
+
 - Recover statement-heavy fixed-policy parsing throughput by inlining synchronous
   grammar boundaries, eliminating intermediate result copies. Runtime policies
   and metered/cancellable execution retain ordinary calls; checks, factual counters,

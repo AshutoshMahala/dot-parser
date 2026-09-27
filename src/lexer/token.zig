@@ -4,7 +4,7 @@
 //! `lexer.zig` selects the implementation and re-exports the public types.
 
 const std = @import("std");
-const location = @import("../location.zig");
+const location = @import("parser_support").location;
 
 pub const Token = struct {
     tag: Tag,

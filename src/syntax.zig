@@ -41,7 +41,7 @@
 //! allocator cannot grow interleaved allocations in place.
 
 const std = @import("std");
-const location = @import("location.zig");
+const location = @import("parser_support").location;
 const syntax_event = @import("syntax_event.zig");
 const identifier = @import("identifier.zig");
 

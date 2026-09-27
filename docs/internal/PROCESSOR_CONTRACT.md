@@ -4,7 +4,10 @@ Decisions reconciled 2026-09-26. This contract guides the preparation slice;
 it does not claim that HTML recognition, markup parsing, processor scheduling,
 or bounded validation is implemented. This document is the durable design record;
 it must not depend on disposable working files. Current preparation code is
-described in [the implementation notes](PROCESSOR_PREPARATION.md).
+described in [the implementation notes](PROCESSOR_PREPARATION.md). The later
+[standalone structural slice](MARKUP.md) is now implemented independently; DOT
+recognition and stage scheduling still do not exist. This preparation contract
+does not make standalone use depend on the composition APIs below.
 
 ## Binding and initialization
 

@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-26 (processor policy/diagnostic preparation and stages 1–4).
+Last reconciled: 2026-09-27 (standalone structural markup slice 1).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -718,8 +718,8 @@ is authorized by these decisions.
 
 **Q40 — How are HTML-like identifiers recognized, parsed and validated, and
 which markup policies are offered?**
-**Architecture, mode names and usage paths decided (2026-09-19); detailed
-contracts and implementation pending.** HTML-like identifiers must work
+**Architecture, mode names and usage paths decided (2026-09-19); standalone
+structural slice 1 implemented (2026-09-27), DOT integration pending.** HTML-like identifiers must work
 wherever the DOT grammar permits an ID, not only as label values. DOT parsing
 recognizes and preserves the complete raw identifier; recognition alone makes
 no claim that its inner markup is well-formed or is a valid Graphviz label.
@@ -731,8 +731,34 @@ Whether markup eventually has its own package/version and how DOT would depend
 on it remain open; a dedicated source directory does not settle packaging or
 release versioning. No particular later release number is assigned yet.
 
-Markup gets its own dedicated source directory (proposed name:
-`src/markup/`) and independently usable stages, like the DOT subsystem:
+**Standalone-first sequencing (2026-09-26).** Build the real independent markup
+engine in vertical slices before expanding processor composition: text/elements,
+then attributes, then references/comments/CDATA, followed by further checks and
+defined recovery. DOT recognition and delayed integration follow; during-DOT
+composition comes later. This supersedes opaque-first as the next implementation
+task, not the `none`/`opaque` contract. No further `PolicySet`/scheduler work is
+required for standalone parsing. [Markup decisions and slice record](MARKUP.md)
+define the agreed grammar, byte/encoding boundary and the implemented layout/API.
+
+The first module supports empty/text/multiple-root fragments and arbitrary
+case-sensitive, byte-matched elements. It shares only language-independent
+primitives with DOT. Attributes, references, comments and CDATA are recognized
+as unsupported until their slices. No Graphviz vocabulary, implicit decoding,
+Unicode normalization, namespace resolution, partial successful tree or guessed
+tag repair is introduced. Raw high bytes are preserved; optional UTF-8/name
+checks are future work. UTF-16/32 require explicit conversion; recognized leading
+BOMs are unsupported. Spans refer to the supplied buffer, not a pre-conversion
+source. The standalone [consumer guide](../MARKUP.md) describes delivered behavior.
+
+Duplicate attributes will remain retained and independently checked (error by
+default, warning/off selectable). Well-spelled named references need not be
+defined for structural recognition. Malformed-reference policy will reject by
+default or explicitly accept with warning/silently by treating the offending `&`
+as literal text, preserving bytes and normal tag/quote boundaries. These are
+decided directions for later slices, not current policy fields.
+
+Markup has its own dedicated source directory, `src/markup/`, and independently
+usable stages, like the DOT subsystem. The intended integration remains:
 
 ```text
 DOT parsing -> raw HTML-like identifier range
@@ -979,10 +1005,11 @@ skip every retained layer.
 
 **Still open before the relevant implementation:**
 
-- Exact XML-like fragment grammar: names and case rules, attributes and
-  duplicates, references/entities, comments, CDATA, processing instructions,
-  declarations and byte/encoding policy. Structural checking does not imply
-  full XML conformance.
+- Remaining XML-like grammar details for later slices: reference extents,
+  comment/CDATA rules and optional encoding/name checks. The standalone-first
+  record above settles case matching, raw-byte preservation, quoted attributes,
+  duplicate checking and malformed-reference interpretation. Structural checking
+  does not imply full XML conformance.
 - Public stage APIs, syntax/events and optional retained representation
   (the layering above), diagnostics, scratch capacities and work
   accounting; default behavior and how configuration composes the stages.
@@ -1006,10 +1033,10 @@ skip every retained layer.
   each usage path).
 - A survey of other DOT parsers' HTML boundary rules, for the record.
 
-**Opaque slice contract (decided 2026-09-22 with the policy core in
-place; owner's choices resolved the same day).** The first HTML-like slice
-delivers `none` and `opaque` only, in the DOT subsystem, with no
-`src/markup/` code:
+**DOT opaque slice contract (decided 2026-09-22; still pending).** The first
+DOT-recognition slice delivers `none` and `opaque` only. With the 2026-09-26
+standalone-first sequence, it follows standalone markup work; opaque DOT parsing
+still does not invoke or require the markup engine:
 
 1. **Policy leaf.** `Policy.markup: ?MarkupMode` with `MarkupMode = enum {
    none, opaque }`, resolved into
@@ -1070,9 +1097,9 @@ delivers `none` and `opaque` only, in the DOT subsystem, with no
    backends with the existing benches, and a new lexer fixture of long
    HTML-like labels to measure the block scanner's claimed advantage.
 
-Out of the slice: the summary index, structural parsing, validation, the
-parts view, entity handling and `max_nesting` for elements, all of which
-begin with the markup subsystem.
+Out of the DOT opaque slice: the summary index, inner structural parsing and
+validation, the parts view, entity handling and markup nesting policy. The
+independent markup subsystem implements those in its own vertical slices.
 
 **Content processor vision and policy ownership (decided 2026-09-22;
 interface and implementation pending).** DOT owns lexical boundaries and
@@ -1296,9 +1323,9 @@ checks. Whether the future `extended` vocabulary includes it remains open.
 Finding or validating an actual referenced port is still a later semantic
 pass, not part of recognizing an ID, and label rules do not apply to every ID.
 
-*(Recorded contracts: R-MOD-014 and R-MOD-015; implementation/verification pending.
-`src/markup/` does not yet exist and HTML-like IDs remain deferred in
-[supported syntax](../SUPPORTED_SYNTAX.md).)*
+*(Recorded contracts: R-MOD-014 and R-MOD-015. Standalone structural slice 1 now
+exists in `src/markup/`; later grammar and integration remain pending. HTML-like
+DOT IDs are still deferred in [supported syntax](../SUPPORTED_SYNTAX.md).)*
 
 **Q1 — Is version 1 the complete documented DOT grammar or a named subset?**
 Direction: the complete documented grammar, reached through vertical slices;
@@ -1471,6 +1498,14 @@ Open; nothing currently forces the choice.
 ---
 
 ## Reconciliation log
+
+- 2026-09-27 — Standalone markup first (decided 2026-09-26): implement structural parsing in vertical
+  slices before more processor composition. Recorded case-sensitive raw-byte
+  grammar, explicit encoding boundary, duplicate retention/checking and the
+  malformed-reference literal-ampersand policy. Slice 1 implements the independent
+  module, elements/text, compact retained/count-only paths, policy limits and
+  bounded/cancellable fixed sessions. Later constructs and DOT integration remain
+  unsupported. The old opaque-first delivery order is superseded, not its rules.
 
 - 2026-09-26 — Q40 preparation: recorded agreed stages 1–4 and ownership/reset
   defaults; implemented shared typed reporting and compile-time policy preflight.

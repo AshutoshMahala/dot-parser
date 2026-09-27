@@ -71,13 +71,13 @@
 //! optional cancellation are exposed through root.zig.
 
 const std = @import("std");
-const location = @import("location.zig");
+const location = @import("parser_support").location;
 const diagnostic = @import("diagnostic.zig");
 const lex = @import("lexer/lexer.zig");
 // Tests pin each backend explicitly; production selects through Policy.scanner.
 const scalar_lex = @import("lexer/scalar.zig");
 const block_lex = @import("lexer/block.zig");
-const execution = @import("execution.zig");
+const execution = @import("parser_support").execution;
 const syntax_event = @import("syntax_event.zig");
 const scratch_impl = @import("scratch.zig");
 const policy = @import("policy.zig");
@@ -2345,7 +2345,7 @@ test "statement recovery stops where there is no boundary to return to" {
     try expectEqual(@as(usize, 2), bag.items().len);
     try expectEqual(diagnostic.Code.resource_capacity_exhausted, bag.items()[1].code);
     // A full bag counts what it could not keep.
-    var small: @import("reporting.zig").FixedBag(diagnostic.Diagnostic, 2, .omit) = .{};
+    var small: @import("parser_support").reporting.FixedBag(diagnostic.Diagnostic, 2, .omit) = .{};
     try expect(testing.run("digraph { a -> ; b -> ; c -> ; d -> ; }", &events, small.sink(), recovery_settings, null).outcome == .invalid_syntax);
     try expectEqual(@as(usize, 2), small.items().len);
     try expectEqual(@as(usize, 2), small.omitted);
