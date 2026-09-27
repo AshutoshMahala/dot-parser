@@ -90,6 +90,10 @@ but need no persistent frame. Allocator-backed scratch grows independently of
 output; fixed storage never allocates. Pop reuses frames, and release is bulk.
 DOT and markup now instantiate the same `common/stack.zig` mechanism while
 retaining their own frame types and existing counter widths (usize and u32).
+Owned stack growth uses allocator `realloc`: remapping is attempted before an
+allocate/copy/free fallback. Failure leaves the original frames intact. Doubling,
+fixed-storage behavior and stack layouts are unchanged; successful in-place growth
+avoids an obligatory second live allocation.
 
 Owned successful output tries an in-place capacity reduction per pool; refusal retains
 the original allocation with no allocation/copy fallback. `ParseResult.retainedBytes()`
@@ -135,6 +139,9 @@ stream `open_head`, each `attribute`, then `head_end`/`empty_end`; there is no
 header-sized buffer, rescanning pass or unmetered value/name loop. Each attribute
 event is charged and cancellable. A pending header uses one constant-size frame
 in the session; only a non-self-closing header enters the nesting stack.
+The first attribute-name byte is consumed when the cached `open_head` token is
+returned; there is no separate `attribute_start` reread/credit. The token retains
+the opener's original name/span and excludes that consumed lookahead byte.
 
 The separate 20-byte attribute record contains an owner u32 and two source spans
 (name, quoted value). This keeps all nodes at 20 bytes, including attribute-free
@@ -144,6 +151,14 @@ are now `{ .nodes, .attributes }`, with no legacy scalar-capacity wrapper. Count
 limits, fixed/growing/count-only parsing, allocation failures and bounded sessions
 all include attributes. Quoting, whitespace and every duplicate remain intact.
 
+The retained view is a trusted representation with explicit preconditions, not a
+builder accepting arbitrary public-field layouts. Spans and preorder intervals
+must be valid; attributes must be source-ordered, owner-grouped and refer to live
+elements. Safety builds assert attribute metadata/order within the existing sizing
+pass. These are programming-contract checks, not new input policies or a general
+document validator. ReleaseFast/ReleaseSmall add no invariant-audit pass, and
+attribute lookup keeps its O(log A) cost without per-lookup whole-pool scans.
+
 `validate`/`validateIn` are independent passes over completed syntax. Exact
 case-sensitive duplicates are checked per owner; every later occurrence points
 to the first, and all findings are emitted in source order. Severity defaults to
@@ -152,9 +167,13 @@ allocation and explicitly reports `not_run`. Parse success is not validation
 success; no implicit pass or deduplication is added.
 
 Duplicate checking uses 8-byte scratch entries, reused for the largest attribute
-list (zero for lists smaller than two). In-place heapsorts by name then by source
-index avoid quadratic pairwise checking and leave retained pools unchanged.
-Comparison cost includes name bytes; scratch sizing scans attribute records.
+list (zero for lists smaller than two). One in-place heapsort by name/index is
+followed by linear scattering into the existing `first` column, indexed by source
+position. The sorted-index column stays intact during scattering; there is no
+second sort or larger scratch record. Retained pools remain unchanged. Comparison
+cost includes name bytes; allocator-backed validation computes its scratch
+requirement only once and passes it to the internal checker. Resource diagnostics
+anchor to the first largest-list owner's name (allocation context, not syntax blame).
 Completion, validity, check status, finding counters and delivery are distinct.
 Sink stop/failure cancels further validation; an ordinary error finding does not.
 This pass is not metered: cancellation checks surround groups/findings, not each
@@ -293,3 +312,61 @@ Duplicate-validation scratch is only 24 B for either fixture, reused across all
 elements. Attribute-free output capacities are unchanged. Owned-result accounting
 tests include both pools and refused-shrink slack. These are explicit storage
 figures, not process RSS, allocator overhead or peak live-heap measurements.
+
+## Slice 2 review fixes — 2026-09-27
+
+All seven review items are addressed: explicit trusted-document invariants with
+safety-build attribute metadata assertions; useful resource-diagnostic locations;
+one sizing pass on allocator-backed validation; linear source-order mapping after
+the name sort; a specific infallible-schema contract error; remapping-first shared
+stack growth; and removal of the first-attribute reread state. The invalid-layout
+case is a caller-precondition violation, not a new policy or support for arbitrary
+hand-built document pools. Parser-produced documents and delayed validation retain
+their existing behavior. Attribute lookup does not add a whole-pool audit.
+
+404 tests pass in Debug, ReleaseFast, ReleaseSafe and ReleaseSmall, plus 13
+compile-fail fixtures. Examples, benchmark builds, standalone tests and consumed
+RISC-V32/Wasm32 profiles pass. Regressions exercise owner order, span metadata,
+largest-owner diagnostic context and ties, source-ordered findings after scattering,
+in-place stack growth, failed remap/allocation with a preserved stack and copying
+retry, and precise header-token spans after consuming its first attribute byte.
+Enum and tagged-union schemas with valid baselines but invalid-capable checks are
+both rejected by the specific compile-time contract error.
+
+ReleaseFast comparison against `f1760f9`, same Apple M4 Pro/Zig 0.16.0 and unchanged
+`bench/markup.zig` on both builds. Three alternating before/after process pairs;
+values are medians of the process medians. Validation uses preallocated scratch
+and a discard sink, so these timings do not measure the separate allocated-path
+sizing-pass improvement. Decimal MB/s is normalized to whole source bytes.
+
+| Validation fixture (1,100,000 bytes) | Before ms | After ms | Before MB/s | After MB/s |
+| --- | ---: | ---: | ---: | ---: |
+| Distinct attribute keys | 1.421 | 1.323 | 774.1 | 831.4 |
+| One duplicate per element | 1.123 | 0.915 | 979.7 | 1201.7 |
+
+| Parse fixture | Fixed MB/s before → after | Runtime baseline MB/s before → after | Count-only MB/s before → after |
+| --- | ---: | ---: | ---: |
+| Empty elements | 229.9 → 239.2 | 228.1 → 240.3 | 251.2 → 261.9 |
+| Mixed fragments | 208.6 → 213.1 | 209.2 → 215.3 | 234.2 → 229.8 |
+| Text | 342.7 → 340.8 | 343.9 → 341.2 | 340.4 → 340.8 |
+| Deep nesting | 220.7 → 222.0 | 217.9 → 223.7 | 236.1 → 233.9 |
+| Distinct attributes | 227.0 → 229.4 | 233.8 → 227.5 | 253.2 → 248.8 |
+| Duplicate attributes | 233.6 → 232.5 | 234.1 → 229.0 | 254.6 → 250.0 |
+
+Validation throughput rises about 7.4%/22.7% in these samples. Across all 24 parse
+comparisons (including runtime override), changes range from −2.7% to +5.4%; this
+is not a universal parsing-speedup or no-regression claim. Three alternating DOT
+policy-benchmark pairs show median latency changes within about 2.4%: scalar fixed
+0.868 → 0.882 ms, scalar runtime baseline 0.972 → 0.973 ms, scalar override
+0.991 → 0.976 ms, block fixed 0.971 → 0.965 ms, block runtime baseline
+1.284 → 1.301 ms, and block override 1.259 → 1.289 ms. This remains a targeted
+local guard, not the full DOT benchmark suite.
+
+All retained/scratch/session layouts are unchanged: markup node/attribute 20 B,
+frame 12 B, duplicate-key scratch 8 B, diagnostic 36 B; fixed/bounded/runtime
+sessions 400/408/456 B. DOT document/diagnostic/session layouts are also unchanged.
+The in-place growth test reaches 32 frames with one allocation and five remaps;
+copying is still permitted when an allocator cannot remap. This establishes the
+mechanism, not general heap/RSS savings. Consumed benchmark `__text` decreases from
+338,216 to 335,212 B for markup and 485,468 to 483,504 B for DOT; these figures
+include host/benchmark code, not just library code.

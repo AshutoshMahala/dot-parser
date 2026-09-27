@@ -4,18 +4,17 @@ const Schema = struct {
     pub const Policy = struct {};
     pub const Effective = struct {};
     pub const Error = error{};
-    pub const Check = enum { valid, invalid };
+    pub const Check = union(enum) { valid, invalid: u8 };
     pub const defaults: Effective = .{};
     pub fn resolve(_: Effective, _: Policy) Effective {
         return .{};
     }
     pub fn check(_: Effective, _: Policy) Check {
-        // A valid baseline must not conceal the contradictory schema contract.
         return .valid;
     }
 };
 
 export fn entry() void {
-    const Binding = dot.processor.PolicyBinding(Schema, .{});
+    const Binding = dot.processor.PolicyBinding(Schema, .{ .runtime_policy = true });
     _ = Binding.prepare(.{});
 }

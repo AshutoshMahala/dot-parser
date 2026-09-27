@@ -6,6 +6,15 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Harden markup's trusted-document contract with explicit owner/order preconditions
+  and safety-build metadata assertions. Validation resource diagnostics identify
+  the relevant element instead of byte zero. Reuse scratch sizing and replace the
+  second duplicate-check sort with linear source-order mapping, keeping 8-byte entries.
+- Remove the redundant first-attribute scanner reread while preserving token spans
+  and bounded execution. Shared stack growth tries allocator remapping before
+  copying, without changing layouts or counter widths. Infallible policy schemas
+  now produce a specific contract error, covered by enum/tagged-union compile-fail tests.
+
 - Add quoted attributes to standalone markup, preserving raw values, order and
   every duplicate. Sparse 20-byte attribute records keep nodes at 20 bytes;
   `max_attributes`, measurement and bounded/cancellable parsing cover the new pool.

@@ -86,6 +86,20 @@ owner's range in O(log A), then iterates in O(1) per entry; it never merges dupl
 names. `AttributeView.raw()` preserves the whole pair, including whitespace around
 `=`. Text nodes return an empty attribute iterator.
 
+`Document` is a trusted completed-parser representation, not an arbitrary document
+builder. Public fields do not remove its preconditions: spans must refer to the
+live source, nodes must have valid preorder/subtree intervals, and attributes must
+be in source order with nondecreasing owner IDs that refer to elements. Each
+owner's attributes form one contiguous range; names and quoted values lie inside
+that element's source span. Hand-built views must uphold the same invariants.
+For example, owners `[0, 1, 0]` are an invalid representation, not a supported
+alternate arrangement. Validation checks policy findings on valid syntax records;
+it does not repair or certify arbitrary pools. Debug/ReleaseSafe scratch sizing
+and enabled validation assert attribute metadata/order during their existing sizing
+pass. Fast/small builds rely on the contract; attribute lookup does not add a
+whole-pool audit to every O(log A) lookup. Delayed validation of unchanged
+parser-produced documents is unaffected.
+
 The source must stay alive and unchanged while any view uses it. An owning
 `ParseResult` frees its records with `deinit()`, never its source or diagnostic
 bag; do not independently dispose copies of an owning result. `Document` is a
@@ -161,12 +175,17 @@ rejection ends it with failed delivery. Neither implies all findings were discov
 Insufficient scratch reports `storage_exhausted` with the required entry count;
 allocator failure reports `out_of_memory`. Resource diagnostics do not replace
 those causes, even if the diagnostic destination fails.
+Both resource diagnostics use the name span of the first element with the largest
+attribute list. For allocation failure this identifies the allocation's context,
+not malformed syntax or proof that this element alone caused memory exhaustion.
 
 This is a separate run-to-completion pass. Parsing's `execution.metering` does not
 bound validation, sorting, scratch sizing or allocations. Enabled cancellation is
 polled at entry, between elements and before findings, not within a sort or a name
 comparison. Heap sorting uses O(A log A) comparisons per attribute group with
-bytewise name comparisons; temporary memory is O(max attributes on one element).
+bytewise name comparisons, followed by linear mapping/emission in source order;
+there is no second sort. Allocator-backed validation sizes scratch only once and
+reuses that requirement during checking. Temporary memory is O(max attributes on one element).
 Source and document pools must stay alive and unchanged, as with parsing views.
 
 ## Policies and sessions

@@ -118,7 +118,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "unmetered_advance", .message = "error: metering is disabled; use run()" },
         .{ .name = "processor_fixed_override", .message = "tests/compile_fail/processor_fixed_override.zig:4:35: error: no field named 'policy' in struct /?/" },
         .{ .name = "processor_invalid_binding", .message = "error: configured processor profile must expose Policies" },
-        .{ .name = "processor_invalid_infallible_schema", .message = "error: switch must handle all possibilities" },
+        .{ .name = "processor_invalid_infallible_schema", .message = "error: infallible policy schema must declare a valid-only Check" },
+        .{ .name = "processor_infallible_union_schema", .message = "error: infallible policy schema must declare a valid-only Check" },
     }) |fixture| {
         const rejected = b.addObject(.{
             .name = fixture.name,

@@ -16,10 +16,9 @@ pub fn Stack(comptime Frame: type, comptime Index: type) type {
             if (self.len == self.frames.len) {
                 const allocator = self.allocator orelse return error.NestingStorageExhausted;
                 const capacity = std.math.add(usize, self.frames.len, @max(self.frames.len, 1)) catch return error.OutOfMemory;
-                const grown = try allocator.alloc(Frame, capacity);
-                @memcpy(grown[0..self.len], self.frames[0..self.len]);
-                allocator.free(self.frames);
-                self.frames = grown;
+                // Try allocator remapping before a copying fallback. On failure
+                // realloc preserves the old allocation and all active frames.
+                self.frames = try allocator.realloc(self.frames, capacity);
             }
             self.frames[self.len] = frame;
             self.len += 1;
@@ -73,4 +72,45 @@ fn allocationCase(allocator: std.mem.Allocator) !void {
 
 test "growing stack preserves frames and releases every failed allocation" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{});
+}
+
+test "stack growth remaps in place without a second allocation" {
+    inline for (.{ u32, usize }) |Index| {
+        var buffer: [512]u8 = undefined;
+        var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+        var tracked = std.testing.FailingAllocator.init(fixed.allocator(), .{ .fail_index = 1 });
+        var stack: Stack(u64, Index) = .{ .allocator = tracked.allocator() };
+        try stack.push(0);
+        const address = stack.frames.ptr;
+        for (1..17) |i| try stack.push(i);
+        try std.testing.expectEqual(address, stack.frames.ptr);
+        try std.testing.expectEqual(@as(usize, 32), stack.frames.len);
+        try std.testing.expectEqual(@as(usize, 1), tracked.allocations);
+        try std.testing.expectEqual(@as(usize, 5), tracked.resize_index);
+        try std.testing.expect(!tracked.has_induced_failure);
+        for (0..17) |i| try std.testing.expectEqual(@as(u64, 16 - i), stack.pop());
+        stack.deinit();
+        try std.testing.expectEqual(tracked.allocated_bytes, tracked.freed_bytes);
+    }
+}
+
+test "stack failed remap and allocation retain frames before a copying retry" {
+    inline for (.{ u32, usize }) |Index| {
+        var tracked = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1, .resize_fail_index = 0 });
+        var stack: Stack(u64, Index) = .{ .allocator = tracked.allocator() };
+        try stack.push(41);
+        const address = stack.frames.ptr;
+        try std.testing.expectError(error.OutOfMemory, stack.push(42));
+        try std.testing.expectEqual(address, stack.frames.ptr);
+        try std.testing.expectEqual(@as(Index, 1), stack.len);
+        try std.testing.expectEqual(@as(u64, 41), stack.top().*);
+        tracked.fail_index = 2;
+        try stack.push(42);
+        try std.testing.expect(stack.frames.ptr != address);
+        try std.testing.expectEqual(@as(usize, 2), stack.frames.len);
+        try std.testing.expectEqual(@as(u64, 42), stack.pop());
+        try std.testing.expectEqual(@as(u64, 41), stack.pop());
+        stack.deinit();
+        try std.testing.expectEqual(tracked.allocated_bytes, tracked.freed_bytes);
+    }
 }

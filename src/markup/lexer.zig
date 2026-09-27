@@ -36,7 +36,7 @@ pub fn ScannerFor(comptime metered: bool) type {
         source: []const u8,
         offset: u32 = 0,
         frontier: if (metered) u32 else void = if (metered) 0 else {},
-        state: enum { prefix, prefix_done, content, text, after_lt, end_start, name, after_name, slash, bang, attribute_start, attribute_name, before_equal, before_value, value, after_value, attributes, attribute_slash } = .prefix,
+        state: enum { prefix, prefix_done, content, text, after_lt, end_start, name, after_name, slash, bang, attribute_name, before_equal, before_value, value, after_value, attributes, attribute_slash } = .prefix,
         prefix: [4]u8 = .{0} ** 4,
         prefix_len: u3 = 0,
         start: u32 = 0,
@@ -108,7 +108,6 @@ pub fn ScannerFor(comptime metered: bool) type {
                         .after_lt, .end_start => .name,
                         .slash => .closing_angle,
                         .attribute_slash => .closing_angle,
-                        .attribute_start => .name,
                         .attribute_name, .before_equal => .equal_sign,
                         .before_value, .value => .quote,
                         .after_value => .attribute_separator,
@@ -193,7 +192,11 @@ pub fn ScannerFor(comptime metered: bool) type {
                         self.state = .slash;
                     } else if (!self.closing and isNameStart(byte)) {
                         const head = self.token(.open_head);
-                        self.state = .attribute_start;
+                        // Save the header's original span/name before consuming
+                        // the attribute byte already examined by this step.
+                        self.name_start = at;
+                        self.offset += 1;
+                        self.state = .attribute_name;
                         return head;
                     } else return self.problem(.unexpected_byte, at, .{ .expected = .tag_end });
                 },
@@ -201,12 +204,6 @@ pub fn ScannerFor(comptime metered: bool) type {
                     if (byte != '>') return self.problem(.unexpected_byte, at, .{ .expected = .closing_angle });
                     self.offset += 1;
                     return self.token(.empty);
-                },
-                .attribute_start => {
-                    // The transition into this state already verified name-start.
-                    self.name_start = at;
-                    self.offset += 1;
-                    self.state = .attribute_name;
                 },
                 .attribute_name => {
                     if (isNameContinue(byte)) {
@@ -297,3 +294,26 @@ pub const Lexer = struct {
         }
     }
 };
+
+test "opening header preserves its spans while consuming the first attribute byte once" {
+    const std = @import("std");
+    const source = "<long-name x='1'/>";
+    var scanner = ScannerFor(true).init(source);
+    var head: Result = undefined;
+    while (true) {
+        if (scanner.step()) |r| {
+            head = r;
+            break;
+        }
+    }
+    try std.testing.expectEqual(.open_head, head.token.kind);
+    try std.testing.expectEqualStrings("<long-name ", head.token.span.slice(source));
+    try std.testing.expectEqualStrings("long-name", head.token.name.slice(source));
+    const name_start: u32 = @intCast(std.mem.indexOfScalar(u8, source, 'x').?);
+    try std.testing.expectEqual(name_start + 1, scanner.offset);
+    try std.testing.expectEqual(scanner.offset, scanner.frontier);
+    try std.testing.expectEqual(name_start, scanner.name_start);
+    try std.testing.expect(scanner.step() == null); // reads '=', not 'x' again
+    try std.testing.expectEqual(name_start + 2, scanner.offset);
+    try std.testing.expectEqual(.before_value, scanner.state);
+}

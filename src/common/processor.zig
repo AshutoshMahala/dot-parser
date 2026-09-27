@@ -14,6 +14,13 @@ pub fn PolicyBinding(comptime Schema: type, comptime config: struct {
     const compiled = Schema.resolve(Schema.defaults, config.policy);
     comptime {
         const checked = Schema.check(compiled, config.policy);
+        // Reject the contract, not merely this particular baseline value. Even
+        // a currently-valid baseline cannot make an invalid-capable Check infallible.
+        if (Schema.Error == error{}) {
+            const Check = @TypeOf(checked);
+            if (std.meta.fields(Check).len != 1 or !@hasField(Check, "valid"))
+                @compileError("infallible policy schema must declare a valid-only Check");
+        }
         if (Schema.Error == error{}) switch (checked) {
             .valid => {},
         } else switch (checked) {

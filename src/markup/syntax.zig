@@ -36,6 +36,12 @@ pub fn Fixed(comptime capacity: Capacities) type {
 
 /// Non-owning completed view. Source and backing records must remain alive and
 /// unchanged. No deinit: disposal belongs to the owning result or caller storage.
+/// This is a trusted parser representation, not an unchecked document builder.
+/// Manually constructed views must uphold the same invariants: bounded source
+/// spans, valid preorder subtree intervals, and attributes in source order with
+/// nondecreasing owners referring to elements. Each owner's attributes occupy
+/// one contiguous range; names/quoted values refer into that owner's source span.
+/// Validation checks policy findings, not general correctness of these pools.
 pub const Document = struct {
     source: []const u8,
     records: []const Node,
@@ -74,6 +80,8 @@ pub const NodeView = struct {
         return .{ .document = self.document, .next_index = @intFromEnum(self.id) + 1, .end = self.record().subtree_end };
     }
     /// O(log A) lookup into the sparse pool, then O(1) per iterator step.
+    /// Requires Document's globally owner-sorted attribute pool. This lookup
+    /// deliberately does not rescan the pool to audit caller-built documents.
     pub fn attributes(self: NodeView) AttributeIterator {
         const pool = self.document.attributes;
         var lo: u32 = 0;
@@ -85,6 +93,26 @@ pub const NodeView = struct {
         return .{ .document = self.document, .owner = self.id, .index = lo };
     }
 };
+
+/// Internal metadata precondition, checked during validation/scratch sizing in
+/// safety builds. O(1) per entry; no source-byte scanning or scratch allocation.
+/// This is not a general syntax verifier or a public document-building API.
+pub fn attributeInvariant(document: *const Document, index: u32) bool {
+    const attribute = document.attributes[index];
+    const owner = @intFromEnum(attribute.owner);
+    if (owner >= document.records.len) return false;
+    const node = document.records[owner];
+    if (node.kind() != .element or node.span.endOffset() > document.source.len or
+        node.name.start < node.span.start or node.name.endOffset() > node.span.endOffset() or
+        attribute.name.len == 0 or attribute.name.start < node.name.endOffset() or
+        attribute.name.endOffset() > attribute.value.start or attribute.value.len < 2 or
+        attribute.value.endOffset() > node.span.endOffset()) return false;
+    if (index > 0) {
+        const previous = document.attributes[index - 1];
+        if (@intFromEnum(previous.owner) > owner or previous.value.endOffset() > attribute.name.start) return false;
+    }
+    return true;
+}
 pub const AttributeView = struct {
     document: Document,
     index: u32,
@@ -218,3 +246,40 @@ pub const Counter = struct {
     pub fn commit(_: *Counter) Error!void {}
     pub fn abort(_: *Counter) void {}
 };
+
+test "attribute metadata precondition rejects interleaved owners and invalid spans" {
+    const source = "<a x='1'><b y='2' z='3'/></a>";
+    const S = struct {
+        fn span(bytes: []const u8) Span {
+            return .{ .start = @intCast(std.mem.indexOf(u8, source, bytes).?), .len = @intCast(bytes.len) };
+        }
+    };
+    var nodes = [_]Node{
+        .{ .span = S.span(source), .name = S.span("a"), .subtree_end = 2 },
+        .{ .span = S.span("<b y='2' z='3'/>"), .name = S.span("b"), .subtree_end = 2 },
+    };
+    const original = [_]Attribute{
+        .{ .owner = @enumFromInt(0), .name = S.span("x"), .value = S.span("'1'") },
+        .{ .owner = @enumFromInt(1), .name = S.span("y"), .value = S.span("'2'") },
+        .{ .owner = @enumFromInt(1), .name = S.span("z"), .value = S.span("'3'") },
+    };
+    var attributes = original;
+    const doc: Document = .{ .source = source, .records = &nodes, .attributes = &attributes };
+    for (0..3) |i| try std.testing.expect(attributeInvariant(&doc, @intCast(i)));
+    // Source spans remain ordered and lie within a's raw span, but ownership
+    // 0,1,0 violates the contiguous-owner contract the validator depends on.
+    attributes[2].owner = @enumFromInt(0);
+    try std.testing.expect(!attributeInvariant(&doc, 2));
+    attributes = original;
+    attributes[2].owner = @enumFromInt(99);
+    try std.testing.expect(!attributeInvariant(&doc, 2));
+    attributes = original;
+    attributes[2].value.len = std.math.maxInt(u32);
+    try std.testing.expect(!attributeInvariant(&doc, 2));
+    attributes = original;
+    attributes[2] = original[1];
+    try std.testing.expect(!attributeInvariant(&doc, 2));
+    attributes = original;
+    nodes[1].name.len = 0;
+    try std.testing.expect(!attributeInvariant(&doc, 1));
+}

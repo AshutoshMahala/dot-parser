@@ -750,3 +750,66 @@ test "duplicate validator agrees with a simple reference across random lists and
         try equal(duplicates, bag.items().len);
     }
 }
+
+test "validation resource diagnostics identify the first largest attribute owner" {
+    const source = "prefix<small x='1'/><large z='1' z='2' y='3'/><tie x='1' x='2' x='3'/>";
+    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    defer parsed.deinit();
+    try equal(markup.Outcome.success, parsed.outcome);
+    const doc = parsed.document.?;
+    try equal(@as(u32, 3), markup.requiredValidationScratch(&doc));
+    const expected: markup.location.Span = .{ .start = @intCast(std.mem.indexOf(u8, source, "large").?), .len = 5 };
+    var keys: markup.FixedValidationScratch(2) = .{};
+    var bag: markup.FixedDiagnosticBag(1) = .{};
+    const fixed = markup.validateIn(&doc, keys.storage(), bag.sink(), .{});
+    try equal(@as(u32, 3), fixed.completion.storage_exhausted);
+    try equal(.unknown, fixed.validity);
+    try equal(.incomplete, fixed.checks.duplicate_attribute);
+    try equal(.complete, fixed.diagnostic_delivery); // accepted-stop preserves cause
+    try equal(expected, bag.items()[0].span);
+    try equal(@as(u32, 2), bag.items()[0].details.capacity.limit);
+    try equal(.attribute_keys, bag.items()[0].details.capacity.resource);
+    bag.reset();
+    const allocated = markup.validate(std.testing.failing_allocator, &doc, bag.sink(), .{});
+    try expect(allocated.completion == .out_of_memory);
+    try equal(.unknown, allocated.validity);
+    try equal(expected, bag.items()[0].span);
+    var zero: markup.FixedDiagnosticBag(0) = .{};
+    const rejected = markup.validate(std.testing.failing_allocator, &doc, zero.sink(), .{});
+    try expect(rejected.completion == .out_of_memory);
+    try equal(.failed, rejected.diagnostic_delivery);
+    for ([_][]const u8{ "", "text", "<a/>", "<a x='1'/><b x='2'/>" }) |small| {
+        var r = markup.parseBorrowed(std.testing.allocator, small, discard, .{});
+        defer r.deinit();
+        const document = r.document.?;
+        try equal(@as(u32, 0), markup.requiredValidationScratch(&document));
+        const checked = markup.validate(std.testing.failing_allocator, &document, discard, .{});
+        try expect(checked.completion == .complete);
+        try equal(.valid, checked.validity);
+    }
+}
+
+test "linear duplicate scattering preserves source order across large scrambled lists" {
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(std.testing.allocator);
+    try source.appendSlice(std.testing.allocator, "<a");
+    for (0..128) |_| try source.appendSlice(std.testing.allocator, " z='1' a='2' m='3'");
+    try source.appendSlice(std.testing.allocator, "/><b z='4' a='5' z='6'/>");
+    var parsed = markup.parseBorrowed(std.testing.allocator, source.items, discard, .{});
+    defer parsed.deinit();
+    const doc = parsed.document.?;
+    var scratch: markup.FixedValidationScratch(384) = .{};
+    var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
+    defer bag.deinit();
+    const checked = markup.validateIn(&doc, scratch.storage(), bag.sink(), .{});
+    try equal(.invalid, checked.validity);
+    try equal(@as(u32, 382), checked.errors);
+    try equal(@as(usize, 382), bag.items().len);
+    for (bag.items()[0..381], 3..) |finding, index| {
+        try equal(doc.attributes[index].name, finding.span);
+        try equal(doc.attributes[index % 3].name, finding.related.?);
+    }
+    try equal(doc.attributes[386].name, bag.items()[381].span);
+    try equal(doc.attributes[384].name, bag.items()[381].related.?);
+    try equal(@as(usize, 8), @sizeOf(markup.AttributeKeyScratch));
+}
