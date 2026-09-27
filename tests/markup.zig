@@ -22,6 +22,57 @@ test "standalone public lexer yields borrowed tokens and latches EOF/errors" {
     try std.testing.expectEqualDeep(first, invalid.next());
 }
 
+test "truncated tag endings and declaration prefixes have precise stable diagnostics" {
+    for ([_][]const u8{ "<a/", "<a/x" }) |source| {
+        var lexer = markup.lexer.Lexer.init(source);
+        const first = lexer.next();
+        try expect(first == .problem);
+        try equal(markup.Outcome.invalid_syntax, first.problem.outcome);
+        try equal(markup.diagnostic.Expected.closing_angle, first.problem.diagnostic.details.expected);
+        try equal(if (source.len == 3) markup.diagnostic.Code.unexpected_end else .unexpected_byte, first.problem.diagnostic.code);
+        try equal(@as(u32, 3), first.problem.diagnostic.span.start);
+        try equal(@as(u32, if (source.len == 3) 0 else 1), first.problem.diagnostic.span.len);
+        try std.testing.expectEqualDeep(first, lexer.next());
+        try comparePartition(source);
+    }
+    for ([_]struct { source: []const u8, feature: markup.diagnostic.Feature }{
+        .{ .source = "<!", .feature = .declarations },
+        .{ .source = "<!x", .feature = .declarations },
+        .{ .source = "<!-", .feature = .comments },
+        .{ .source = "<![", .feature = .cdata },
+    }) |case| {
+        var lexer = markup.lexer.Lexer.init(case.source);
+        const first = lexer.next();
+        try equal(markup.Outcome{ .unsupported_feature = case.feature }, first.problem.outcome);
+        try equal(markup.diagnostic.Code.unsupported_feature, first.problem.diagnostic.code);
+        try equal(case.feature, first.problem.diagnostic.details.feature);
+        try equal(markup.location.Span{ .start = 0, .len = 1 }, first.problem.diagnostic.span);
+        try std.testing.expectEqualDeep(first, lexer.next());
+        try comparePartition(case.source);
+    }
+}
+
+test "oversized descriptors are rejected before any byte access and remain latched" {
+    if (@sizeOf(usize) <= 4) return error.SkipZigTest;
+    // Deliberately unreadable descriptor: length preflight must never dereference
+    // it. This avoids allocating more than 4 GiB just to test the domain guard.
+    const length: usize = @as(u64, std.math.maxInt(u32)) + 1;
+    const source = @as([*]const u8, @ptrFromInt(1))[0..length];
+    var lexer = markup.lexer.Lexer.init(source);
+    const first = lexer.next();
+    const expected: markup.Outcome = .{ .resource_limit = .{ .resource = .source_bytes, .limit = std.math.maxInt(u32) } };
+    try equal(expected, first.problem.outcome);
+    try equal(markup.location.Span{ .start = 0, .len = 0 }, first.problem.diagnostic.span);
+    try std.testing.expectEqualDeep(first, lexer.next());
+    var session = markup.BoundedSession.init(source, .{}, discard, .{});
+    try equal(@as(u32, 0), session.advance(0).work_used);
+    const stopped = session.advance(1);
+    try equal(expected, stopped.outcome.?);
+    try equal(@as(u32, 0), stopped.source_frontier);
+    try equal(@as(u32, 0), session.advance(1).work_used);
+    try equal(expected, markup.measureIn(source, .{}, discard, .{}).outcome);
+}
+
 test "source-shaped forest, borrowed text, arbitrary names and child traversal" {
     const source = "before<widget> hi <b/> after </widget><x></x>tail";
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
@@ -98,6 +149,7 @@ test "later slices are recognized as unsupported, not silently accepted" {
         .{ .source = "<!--hi-->", .feature = .comments },
         .{ .source = "<![CDATA[x]]>", .feature = .cdata },
         .{ .source = "<!DOCTYPE a>", .feature = .declarations },
+        .{ .source = "<!", .feature = .declarations },
         .{ .source = "<?xml version='1.0'?>", .feature = .processing_instructions },
     };
     for (cases) |case| {
@@ -229,6 +281,55 @@ const Stop = struct {
     }
 };
 
+test "runtime cancellation policy controls supplied hooks across operations and reset" {
+    inline for (.{ false, true }) |baseline| inline for (.{ false, true }) |metered| {
+        const P = markup.Profile(.{ .runtime_policy = true, .policy = .{ .execution = .{ .cancellation = baseline, .metering = metered } } });
+        var nodes: markup.FixedDocumentStorage(1) = .{};
+        const memory: markup.ParseMemory = .{ .document = nodes.storage() };
+        var stop: Stop = .{ .after = 0 };
+        // Both inherited and explicitly overridden cancellation settings apply.
+        for ([_]?bool{ null, !baseline }) |patch| {
+            const enabled = patch orelse baseline;
+            const expected: markup.Outcome = if (enabled) .cancelled else .success;
+            const options: P.Options = .{ .policy = .{ .execution = .{ .cancellation = patch } }, .cancellation = stop.hook() };
+            stop.polls = 0;
+            try equal(expected, P.measureIn("<a/>", .{}, discard, options).outcome);
+            try equal(@as(u32, if (enabled) 1 else 0), stop.polls);
+            stop.polls = 0;
+            try equal(expected, P.measure(std.testing.allocator, "<a/>", discard, options).outcome);
+            try equal(@as(u32, if (enabled) 1 else 0), stop.polls);
+            stop.polls = 0;
+            try equal(expected, P.parseBorrowedIn("<a/>", memory, discard, options).outcome);
+            try equal(@as(u32, if (enabled) 1 else 0), stop.polls);
+            stop.polls = 0;
+            var owned = P.parseBorrowed(std.testing.allocator, "<a/>", discard, .{ .policy = options.policy, .cancellation = options.cancellation });
+            defer owned.deinit();
+            try equal(expected, owned.outcome);
+            try equal(@as(u32, if (enabled) 1 else 0), stop.polls);
+            stop.polls = 0;
+            var session = P.Session.init("<a/>", memory, discard, options);
+            try equal(@as(u32, 0), stop.polls);
+            if (metered) {
+                const first = try session.advance(0);
+                try equal(@as(u32, 0), first.work_used);
+                if (enabled) try equal(markup.Outcome.cancelled, first.outcome.?) else try expect(first.outcome == null);
+            }
+            try equal(expected, session.run().outcome);
+            try equal(@as(u32, if (enabled) 1 else 0), stop.polls);
+            stop.polls = 0;
+            session.reset("<a/>", discard, .{ .policy = .{ .execution = .{ .cancellation = !enabled } }, .cancellation = stop.hook() });
+            const reset_expected: markup.Outcome = if (enabled) .success else .cancelled;
+            try equal(reset_expected, session.run().outcome);
+            try equal(@as(u32, if (enabled) 0 else 1), stop.polls);
+            session.reset("<a/>", discard, options);
+            try equal(markup.Outcome.cancelled, session.cancel().outcome);
+            session.deinit();
+        }
+    };
+    const Active = markup.Profile(.{ .policy = .{ .execution = .{ .cancellation = true } } });
+    try equal(markup.Outcome.success, Active.measureIn("<a/>", .{}, discard, .{}).outcome);
+}
+
 test "cancellation before each step, zero budget, relocation and terminal idempotence" {
     const P = markup.Profile(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
     for (0..120) |after| {
@@ -287,6 +388,39 @@ fn allocationCase(allocator: std.mem.Allocator, source: []const u8) !void {
 test "all allocation failures release grown output and nesting, including later syntax failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{"<a><b><c><d/><e/><f/><g/><h/><i/><j/><k/><l/></c></b></a>"});
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{"<a><b><c><d/><e/><f/><g/><h/><i/><j/><k/><l/></wrong>"});
+}
+
+test "owned results trim in place or retain visible slack without allocation or failure" {
+    inline for (.{ false, true }) |refuse_resize| {
+        var buffer: [1024]u8 = undefined;
+        var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+        // Exactly one allocation can succeed; finalization must never attempt
+        // another allocation, even when every resize is refused.
+        var tracked = std.testing.FailingAllocator.init(fixed.allocator(), .{
+            .fail_index = 1,
+            .resize_fail_index = if (refuse_resize) 0 else std.math.maxInt(usize),
+        });
+        var parsed = markup.parseBorrowed(tracked.allocator(), "<a/>", discard, .{});
+        try equal(markup.Outcome.success, parsed.outcome);
+        try equal(@as(usize, 1), tracked.allocations);
+        try expect(!tracked.has_induced_failure);
+        try strings("<a/>", parsed.document.?.node(@enumFromInt(0)).?.raw());
+        try equal(tracked.allocated_bytes - tracked.freed_bytes, parsed.retainedBytes());
+        if (refuse_resize) {
+            try expect(parsed.retainedBytes() > @sizeOf(markup.Node));
+        } else {
+            try equal(@sizeOf(markup.Node), parsed.retainedBytes());
+            try equal(@as(usize, 1), tracked.resize_index);
+        }
+        parsed.deinit();
+        try equal(@as(usize, 0), parsed.retainedBytes());
+        try equal(tracked.allocated_bytes, tracked.freed_bytes);
+    }
+    for ([_][]const u8{ "", "<a>" }) |source| {
+        var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+        defer parsed.deinit();
+        try equal(@as(usize, 0), parsed.retainedBytes());
+    }
 }
 
 fn comparePartition(source: []const u8) !void {

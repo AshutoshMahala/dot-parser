@@ -88,15 +88,33 @@ An open-element frame contains its name span and a consumer handle: 12 bytes,
 not the earlier 8-byte estimate. Self-closing elements count toward nesting depth
 but need no persistent frame. Allocator-backed scratch grows independently of
 output; fixed storage never allocates. Pop reuses frames, and release is bulk.
+DOT and markup now instantiate the same `common/stack.zig` mechanism while
+retaining their own frame types and existing counter widths (usize and u32).
+
+Owned successful output tries one in-place capacity reduction; refusal retains
+the original allocation with no allocation/copy fallback. `ParseResult.retainedBytes()`
+reports reserved node capacity, not just occupied records, and excludes allocator
+overhead/RSS. Fixed parsing is unchanged; allocator callbacks are not budgeted work.
 
 The policy contains only implemented limits (source bytes, nodes, nesting) and
 execution choices (metering, cancellation). Limits/counts/ranges are u32; lengths
 at the allocator/slice boundary use native sizes. Defaults preserve the existing
 unlimited-within-representation convention. All typed combinations are meaningful,
-including zero limits, so `validatePolicy` currently returns `valid`; no invented
-invalid combination or configuration error set is exposed. Fixed verification is
+including zero limits, so `validatePolicy` currently returns `valid`; no invalid
+combination is invented and parsing has no policy-error union. Fixed verification is
 comptime-only. Runtime overrides are opt-in, resolve once, and inherit the compiled
 baseline; no settings copies on nodes or per-byte override merging.
+Both parsers use `common/processor.zig`'s `PolicyBinding`. Markup exposes `Policies`
+for preparation, not scheduling. Infallible schemas use `Error = error{}` and a
+valid-only check, handled exhaustively; no check result is discarded. If markup
+later introduces policy errors, its current infallible API must be updated to
+propagate them rather than silently treating them as unreachable.
+
+The standalone scanner checks the source-size domain at initialization, before
+reading bytes, rather than at each scan step. At EOF after a self-closing slash,
+the expected token is precisely `>`; `<!` already identifies an unsupported
+declaration family, even without the next byte that distinguishes its subtype.
+Neither recognition case validates the contents of an unsupported construct.
 
 Metered fixed sessions charge source examinations, grammar transitions, each byte
 of tag-name comparison, and individual event attempts. One credit suffices; zero
@@ -154,3 +172,36 @@ Changes are within about 0.7% in this targeted run. DOT layouts remain document
 options 120 B. The consumed benchmark's native `__text` is 485,428 B both before
 and after. This is not the full historical 14-workload regression suite and does
 not establish RSS, live-heap or allocation-count equivalence.
+
+## Review hardening verification — 2026-09-27
+
+390 tests pass in Debug, ReleaseFast, ReleaseSafe and ReleaseSmall, plus 12
+compile-fail fixtures. Examples, standalone markup tests, benchmark builds and
+consumed RISC-V32/Wasm32 profiles also pass. New regressions cover EOF diagnostic
+details, unsupported prefixes, oversized descriptors without byte access,
+infallible shared policy binding, runtime hook gating across operations/reset,
+shared stack allocation failures, and successful/refused in-place trimming.
+
+Local ReleaseFast comparison against `edc1eab`, same machine/toolchain as above:
+nine alternating process pairs for DOT policies and three for markup, aggregating
+each executable's existing median. The markup benchmark source is unchanged.
+
+| Markup fixed fixture | Before ms | After ms |
+| --- | ---: | ---: |
+| 50,000 empty elements | 0.947 | 0.882 |
+| 50,000 mixed fragments | 4.011 | 3.566 |
+| One text run | 3.469 | 2.988 |
+| 10,000 nested elements | 0.348 | 0.308 |
+
+Across fixed/runtime/count-only markup paths, observed latency decreased roughly
+5–14%; DOT policy timings stayed within about 2%. This is a targeted local check,
+not a full performance-suite result or an isolated attribution to one change.
+Measured node/frame/diagnostic/session sizes and fixed reserved capacities are
+unchanged. Consumed benchmark `__text` grows from 485,428 to 485,468 B for DOT and
+303,852 to 304,788 B for markup; these include benchmark/host code, not just parsers.
+
+Allocator tests separately verify that a one-node owned result retains 20 B when
+shrinking succeeds, and exposes its original slack when resizing is refused.
+Finalization makes no additional allocation in either case and never changes a
+successful parse into OOM. These are requested node-allocation bytes, not RSS or
+allocator-internal reservations; growable peak live heap remains unmeasured.

@@ -113,6 +113,14 @@ pub const Builder = struct {
     pub fn commit(self: *Builder) Error!void {
         self.committed = true;
     }
+    /// Best-effort finalization of owned output, outside bounded execution.
+    /// Never allocate/copy or fail a successful parse just to discard slack.
+    pub fn trimCapacity(self: *Builder) void {
+        const allocator = self.allocator orelse return;
+        if (self.list.capacity == self.list.items.len) return;
+        if (allocator.resize(self.list.allocatedSlice(), self.list.items.len))
+            self.list.capacity = self.list.items.len;
+    }
     pub fn abort(self: *Builder) void {
         self.list.clearRetainingCapacity();
         self.committed = false;

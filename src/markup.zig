@@ -53,6 +53,11 @@ pub const ParseResult = struct {
     document: ?Document,
     _allocator: std.mem.Allocator,
     _nodes: std.ArrayList(Node),
+    /// Reserved node capacity in bytes, including any untrimmed growth slack.
+    /// Excludes source, scratch, diagnostics and allocator-internal overhead/RSS.
+    pub fn retainedBytes(self: *const @This()) usize {
+        return self._nodes.capacity * @sizeOf(Node);
+    }
     /// Frees retained records, never the source or caller diagnostic destination.
     /// Owning results must not be independently disposed through copied values.
     pub fn deinit(self: *@This()) void {

@@ -1283,7 +1283,10 @@ that API; do not silently claim global ordering or introduce hidden buffering,
 sorting or allocations to obtain it (R-PORT-005).
 
 **Shared preparation implemented 2026-09-26.** `processor.PolicyBinding` is used
-by DOT and a consumer-owned test schema. `processor.PolicySet` binds named configured
+by DOT and a consumer-owned test schema, and now by standalone markup following
+the 2026-09-27 review hardening. Valid-only schemas use an empty error set with
+exhaustive checks; markup exposes `Policies` without changing its infallible parse
+API. `processor.PolicySet` binds named configured
 profiles and prepares enabled runtime settings once before stage initialization;
 fixed-only sets have no runtime settings storage. This is preflight, not a stage
 scheduler or an implemented `.processors` option on DOT's `Profile`.
@@ -1291,7 +1294,8 @@ scheduler or an implemented `.processors` option on DOT's `Profile`.
 provides checked raw-span rebasing. The test processor exercises independent
 operations, consumer payloads and source coordinates without an HTML dependency.
 The [processor contract](PROCESSOR_CONTRACT.md) records stages
-1–4 and reset/ownership defaults. HTML grammar, selectors, during-DOT/delayed
+1–4 and reset/ownership defaults. The standalone markup subset is described in
+[its slice record](MARKUP.md); later grammar, selectors, during-DOT/delayed
 scheduling and bounded validation remain subsequent work.
 
 Only shared binding/preflight has been extracted; inheritance and checks remain

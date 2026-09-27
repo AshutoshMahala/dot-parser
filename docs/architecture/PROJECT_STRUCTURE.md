@@ -35,6 +35,7 @@ dot-parser/
 │   │   ├── reporting.zig      (typed fixed/growing/streaming diagnostic sinks)
 │   │   ├── execution.zig      (borrowed cancellation hook)
 │   │   ├── processor.zig      (generic policy/fragment preparation, not scheduling)
+│   │   ├── stack.zig          (frame- and index-typed nesting storage)
 │   │   └── wdp.zig            (identity hashing, not language-specific registries)
 │   ├── dot/
 │   │   ├── policy.zig         (typed inputs, resolution, pure verification)
@@ -144,6 +145,8 @@ events and DOT composition remain deferred. The
 
 Both build modules depend on one `src/support.zig` module exposing `common/`
 location, reporting, cancellation, generic processor preparation and WDP hashing.
+DOT and markup also instantiate the shared nesting-stack mechanism with their
+own frame types and unchanged index widths.
 This preserves shared Zig type identity when both parsers are imported without a
 grammar dependency in either direction. `common/` owns mechanisms, not DOT or
 markup policies, diagnostic payloads, grammars, output models or renderers.

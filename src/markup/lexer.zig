@@ -43,7 +43,14 @@ pub fn ScannerFor(comptime metered: bool) type {
         terminal: ?Result = null,
 
         pub fn init(source: []const u8) Scanner {
-            return .{ .source = source };
+            var scanner: Scanner = .{ .source = source };
+            // Source is immutable. Guard the descriptor once, before any byte
+            // examination, including when the standalone lexer is used.
+            if (source.len > support.location.max_source_len) scanner.terminal = .{ .problem = .{
+                .outcome = .{ .resource_limit = .{ .resource = .source_bytes, .limit = @intCast(support.location.max_source_len) } },
+                .diagnostic = .{ .code = .capacity_exhausted, .span = .{ .start = 0, .len = 0 }, .details = .{ .capacity = .{ .resource = .source_bytes, .limit = @intCast(support.location.max_source_len) } } },
+            } };
+            return scanner;
         }
         fn problem(self: *Scanner, code: diagnostic.Code, at: u32, details: diagnostic.Details) Result {
             const r: Result = .{ .problem = .{
@@ -64,14 +71,6 @@ pub fn ScannerFor(comptime metered: bool) type {
 
         pub fn step(self: *Scanner) ?Result {
             if (self.terminal) |r| return r;
-            if (self.source.len > support.location.max_source_len) {
-                const r: Result = .{ .problem = .{
-                    .outcome = .{ .resource_limit = .{ .resource = .source_bytes, .limit = @intCast(support.location.max_source_len) } },
-                    .diagnostic = .{ .code = .capacity_exhausted, .span = .{ .start = 0, .len = 0 }, .details = .{ .capacity = .{ .resource = .source_bytes, .limit = @intCast(support.location.max_source_len) } } },
-                } };
-                self.terminal = r;
-                return r;
-            }
             if (self.state == .prefix) {
                 if (self.prefix_len < 4 and self.prefix_len < self.source.len) {
                     self.prefix[self.prefix_len] = self.source[self.prefix_len];
@@ -94,6 +93,7 @@ pub fn ScannerFor(comptime metered: bool) type {
             const at = self.offset;
             if (at == self.source.len) {
                 switch (self.state) {
+                    .bang => return self.unsupported(.declarations, self.start),
                     .text => return self.token(.text),
                     .content => {
                         const r: Result = .{ .token = .{ .kind = .eof, .span = .{ .start = at, .len = 0 } } };
@@ -102,6 +102,7 @@ pub fn ScannerFor(comptime metered: bool) type {
                     },
                     else => return self.problem(.unexpected_end, at, .{ .expected = switch (self.state) {
                         .after_lt, .end_start => .name,
+                        .slash => .closing_angle,
                         else => .tag_end,
                     } }),
                 }

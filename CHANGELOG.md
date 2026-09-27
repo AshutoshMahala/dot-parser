@@ -6,6 +6,15 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Correct markup EOF diagnostics for `<a/` and unsupported recognition of `<!`;
+  check the scanner's source-size domain once, before reading any bytes.
+- Share policy binding and nesting-stack mechanics between DOT and markup without
+  changing frame/counter layouts. Infallible policy checks are handled exhaustively;
+  markup profiles expose `Policies` for preparation, not processor scheduling.
+- Trim growable markup output in place when the allocator permits it, with no
+  copying allocation fallback. Add `ParseResult.retainedBytes()` for reserved node
+  capacity, including any remaining slack. Clarify disabled cancellation polling
+  and restore WDP seed provenance comments.
 - Organize parser internals under `src/dot/` and `src/markup/`, with
   language-independent primitives in `src/common/`. Keep public module names
   and APIs unchanged; root façades are `src/root.zig`, `src/markup.zig` and

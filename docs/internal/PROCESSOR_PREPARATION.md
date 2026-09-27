@@ -1,7 +1,8 @@
 # Processor preparation — internal implementation notes
 
 The preparation APIs below are implemented. Standalone markup now has its own
-[structural slice](MARKUP.md); it does not use a composed `PolicySet` or scheduler.
+[structural slice](MARKUP.md). DOT and markup share policy binding and can join a
+`PolicySet` for preparation; neither this nor standalone markup adds a scheduler.
 DOT HTML recognition, inner-stage scheduling, and a `.processors` option on DOT's
 `Profile` are not implemented yet. The intended
 execution/result contract is in [the processor contract](PROCESSOR_CONTRACT.md).
@@ -20,19 +21,22 @@ A schema supplies:
 | `Policy` | Typed partial input with an empty-struct default patch |
 | `Effective`, `defaults` | Resolved representation and default values |
 | `resolve(baseline, patch)` | Pure, allocation-free resolution into Effective |
-| `check(effective, patch)` | Pure check returning `.valid` or `.invalid: Issue` |
-| `Issue`, `Error` | Issue is an enum with `asError()` returning the schema's error set |
+| `check(effective, patch)` | Pure check returning `.valid` or `.invalid: Issue`; infallible schemas return a valid-only check |
+| `Error` | Schema error set; `error{}` when every typed combination is valid |
+| `Issue` | For fallible schemas, an enum with `asError()` returning the schema's error set |
 
 The original partial patch reaches `check`, preserving explicit versus inherited
 fields. Public and effective layouts need not match. Fixed bindings have `State =
 void`, empty options and compile-time-only policy verification. Runtime-enabled
 bindings resolve/check once per `prepare`; they cannot replace an implementation.
-DOT itself uses this binding machinery; it is not reserved for inner processors.
+DOT and markup both use this binding machinery from `common/processor.zig`.
+Checks are handled exhaustively even for valid-only schemas; adding a new result
+cannot silently discard it. Infallible schemas need no invented invalid case.
 
 ## Preparing named configured profiles
 
-A configured profile exposes `Policies`, its policy binding. DOT profiles already
-do so. `PolicySet` takes named profile **types at compile time** and generates typed
+A configured profile exposes `Policies`, its policy binding. DOT and markup
+profiles both do so. `PolicySet` takes named profile **types at compile time** and generates typed
 Options/State fields for precisely those profiles:
 
 ```zig

@@ -5,14 +5,12 @@ const policy = @import("policy.zig");
 const engine = @import("engine.zig");
 
 pub fn Profile(comptime api: type, comptime config: policy.Config) type {
+    const Binding = @import("parser_support").processor.PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
     return struct {
-        const Self = @This();
-        pub const baseline = policy.resolve(policy.defaults, config.policy);
+        pub const Policies = Binding;
+        pub const baseline = Binding.baseline;
         pub const runtime_policy = config.runtime_policy;
-        comptime {
-            _ = policy.check(baseline);
-        }
-        const State = if (runtime_policy) policy.Effective else void;
+        const State = Binding.State;
         const Hook = if (runtime_policy or baseline.execution.cancellation) ?api.Cancellation else void;
         pub const Options = if (runtime_policy) struct {
             policy: policy.Policy = .{},
@@ -26,18 +24,14 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             cancellation: Hook = if (Hook == void) {} else null,
             scratch_allocator: ?std.mem.Allocator = null,
         };
-        pub const validatePolicy = if (runtime_policy) checkRuntime else checkFixed;
-        fn checkFixed(comptime input: policy.Policy) policy.Check {
-            return comptime policy.check(policy.resolve(baseline, input));
-        }
-        fn checkRuntime(input: policy.Policy) policy.Check {
-            return policy.check(policy.resolve(baseline, input));
-        }
+        pub const validatePolicy = Binding.validatePolicy;
         fn resolve(options: Options) State {
             if (!runtime_policy) return {};
-            const effective = policy.resolve(baseline, options.policy);
-            _ = policy.check(effective);
-            return effective;
+            // Enforce today's infallible API at compile time. If the schema
+            // gains invalid combinations, propagate its errors instead of
+            // silently discarding them or treating them as unreachable.
+            const prepared: error{}!State = Binding.prepare(.{ .policy = options.policy });
+            return prepared catch unreachable;
         }
 
         const Variant = enum { plain, metered, cancellable, both };

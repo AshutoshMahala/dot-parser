@@ -65,6 +65,15 @@ bag; do not independently dispose copies of an owning result. `Document` is a
 non-owning view and has no disposal operation. Optional `scratch_allocator` in
 parse options separates temporary nesting storage from retained output.
 
+Successful growable parsing attempts to trim unused node capacity in place.
+If the allocator refuses, the result keeps that capacity; finalization never
+allocates/copies merely to shrink or turns success into an allocation failure.
+`parsed.retainedBytes()` reports reserved node bytes in the allocator's native
+`usize` domain, including remaining growth slack. It excludes source, temporary
+scratch, diagnostics, allocator-internal overhead and process RSS. A 20-byte node
+does not imply an exactly packed growing
+allocation. Use measurement and fixed storage when exact node capacity is needed.
+
 ## Fixed memory and measurement
 
 ```zig
@@ -116,6 +125,10 @@ it returns `.valid`; parsing therefore has no policy-error union. This does not
 guarantee valid input or sufficient storage. No mode/backend/check is exposed
 before its implementation exists.
 
+`Profile.Policies` exposes the shared policy binding, with an empty error set for
+this currently infallible schema. Policy preparation does not compose parsing or
+schedule another processor; standalone use needs neither DOT nor a `PolicySet`.
+
 `Profile.Session.init(source, memory, sink, options)` borrows fixed resources and
 does not scan, allocate or call consumers. `run()` completes; when metering is
 enabled, `advance(budget: u32)` returns `Progress` with optional terminal outcome,
@@ -132,7 +145,11 @@ does no normal work, though it can observe cancellation. Credits exclude callbac
 time and are not wall-clock, instruction or byte-progress units.
 
 Cancellation hooks are borrowed `Cancellation` values in options; enabling the
-policy does not supply a hook. `cancel()`/`deinit()` terminate unfinished work.
+policy does not supply a hook. A runtime policy with cancellation disabled never
+polls a supplied hook, just as in DOT. Supplying a hook does not implicitly enable
+the policy; enable `execution.cancellation` in the baseline or runtime patch.
+An enabled policy without a hook is valid. Explicit `cancel()`/`deinit()` terminate
+unfinished work regardless of whether polling is enabled.
 Terminal calls do not repeat scanning, polling, diagnostics or output. Reset
 invalidates earlier views and reuses the caller storage, but does not clear bags.
 Only one active owner may drive a session; callbacks must not reenter it. Sessions

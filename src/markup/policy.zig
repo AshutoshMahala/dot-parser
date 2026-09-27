@@ -25,10 +25,11 @@ pub const Effective = struct {
 pub const Config = struct { policy: Policy = .{}, runtime_policy: bool = false };
 pub const defaults: Effective = .{};
 pub const Check = enum { valid };
+pub const Error = error{};
 
 /// Every typed combination in this slice is meaningful, including zero limits.
 /// Do not invent invalid combinations merely to add a configuration error set.
-pub fn check(_: Effective) Check {
+pub fn check(_: Effective, _: Policy) Check {
     return .valid;
 }
 

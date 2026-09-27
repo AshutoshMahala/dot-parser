@@ -58,7 +58,7 @@ pub fn Engine(comptime api: type, comptime limits: ?policy.Limits, comptime mete
             defer stack.deinit();
             var machine = Machine.init(source, diagnostics, settings, hook);
             const report = machine.run(&stack, &builder);
-            if (report.outcome != .success) builder.deinit();
+            if (report.outcome == .success) builder.trimCapacity() else builder.deinit();
             return .{
                 .outcome = report.outcome,
                 .diagnostic_delivery = report.diagnostic_delivery,

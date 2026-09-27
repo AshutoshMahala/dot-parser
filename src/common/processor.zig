@@ -4,16 +4,22 @@ const std = @import("std");
 const location = @import("location.zig");
 
 /// Schema owns Policy, Effective, defaults, Error, resolve and check. A failed
-/// check carries an issue with asError(); layouts need not match. The original
+/// check carries an issue with asError(); an infallible schema uses Error =
+/// error{} and a valid-only Check. Layouts need not match. The original
 /// partial input is passed to check so explicit fields remain distinguishable.
 pub fn PolicyBinding(comptime Schema: type, comptime config: struct {
     policy: Schema.Policy = .{},
     runtime_policy: bool = false,
 }) type {
     const compiled = Schema.resolve(Schema.defaults, config.policy);
-    switch (comptime Schema.check(compiled, config.policy)) {
-        .valid => {},
-        .invalid => |issue| @compileError("invalid policy: " ++ @tagName(issue)),
+    comptime {
+        const checked = Schema.check(compiled, config.policy);
+        if (Schema.Error == error{}) switch (checked) {
+            .valid => {},
+        } else switch (checked) {
+            .valid => {},
+            .invalid => |issue| @compileError("invalid policy: " ++ @tagName(issue)),
+        }
     }
     return struct {
         pub const baseline = compiled;
@@ -33,6 +39,9 @@ pub fn PolicyBinding(comptime Schema: type, comptime config: struct {
         pub fn prepare(options: Options) (if (runtime_policy) Error!State else State) {
             if (!runtime_policy) return {};
             const effective = Schema.resolve(baseline, options.policy);
+            if (Schema.Error == error{}) return switch (Schema.check(effective, options.policy)) {
+                .valid => effective,
+            };
             return switch (Schema.check(effective, options.policy)) {
                 .valid => effective,
                 .invalid => |issue| issue.asError(),
