@@ -6,6 +6,17 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add standalone markup `validation.invalid_utf8` (`off` by default, `warning`,
+  `err`) with compile-time/runtime parity. Independently checks all raw source
+  bytes without mutation or allocation, merging diagnostics with duplicate checks
+  in source order. Encoding-only validation needs no scratch; enabled duplicate
+  scratch is preflighted before checks. Cancellation and sink stops preserve
+  per-check completion. DOT and markup share the UTF-8 sequence primitive only.
+  **Breaking:** markup validation error/warning totals are now u64 (as in DOT),
+  and check status/diagnostic enums gain encoding cases. Parsing counts, retained
+  record layouts and parser sessions are unchanged. This is not XML conformance,
+  structural recovery or DOT integration.
+
 - Optimize standalone markup's plain block scanner to scan complete runs without
   a 64-byte cap and avoid rechecking successful short probes in its scalar tails.
   Metered/cancellable block steps retain their 64-byte bound. Simplify execution

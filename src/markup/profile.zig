@@ -98,12 +98,12 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         }
 
         fn Validator(comptime v: Variant) type {
-            return validation.Validator(if (runtime_policy) null else baseline.validation.duplicate_attribute, v.cancellation());
+            return validation.Validator(if (runtime_policy) null else baseline.validation, v.cancellation());
         }
         fn validateCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
             const effective = resolve(options);
             if (runtime_policy) switch (variantOf(effective)) {
-                inline else => |v| return @call(.auto, @field(Validator(v), method), args ++ .{ effective.validation.duplicate_attribute, hook(v, options.cancellation) }),
+                inline else => |v| return @call(.auto, @field(Validator(v), method), args ++ .{ effective.validation, hook(v, options.cancellation) }),
             };
             const v = comptime variantOf(baseline);
             return @call(.auto, @field(Validator(v), method), args ++ .{ {}, hook(v, options.cancellation) });
@@ -113,7 +113,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         pub fn validateIn(document: *const api.Document, scratch: api.ValidationScratch, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
             return validateCall("run", .{ document, scratch, diagnostics }, options);
         }
-        /// Allocates temporary duplicate-key scratch, freed before returning.
+        /// Allocates temporary duplicate-key scratch when needed, freed before
+        /// returning. Encoding-only validation requires no allocation.
         pub fn validate(allocator: std.mem.Allocator, document: *const api.Document, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
             return validateCall("allocated", .{ allocator, document, diagnostics }, options);
         }

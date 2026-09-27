@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-27 (standalone structural markup slices 1–3).
+Last reconciled: 2026-09-27 (standalone structural markup slices 1–3 and 4a).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -721,7 +721,7 @@ is authorized by these decisions.
 **Q40 — How are HTML-like identifiers recognized, parsed and validated, and
 which markup policies are offered?**
 **Architecture, mode names and usage paths decided (2026-09-19); standalone
-structural slices 1–3 implemented (2026-09-27), DOT integration pending.** HTML-like identifiers must work
+structural slices 1–3 and 4a implemented (2026-09-27), DOT integration pending.** HTML-like identifiers must work
 wherever the DOT grammar permits an ID, not only as label values. DOT parsing
 recognizes and preserves the complete raw identifier; recognition alone makes
 no claim that its inner markup is well-formed or is a valid Graphviz label.
@@ -748,8 +748,9 @@ only language-independent primitives with DOT. References stay in text/value spa
 comments/CDATA have distinct leaf kinds without increasing the 20-byte node layout.
 No Graphviz vocabulary, implicit decoding,
 Unicode normalization, namespace resolution, partial successful tree or guessed
-tag repair is introduced. Raw high bytes are preserved; optional UTF-8/name
-checks are future work. UTF-16/32 require explicit conversion; recognized leading
+tag repair is introduced. Raw high bytes are preserved; optional UTF-8 checks are
+implemented independently of parsing; stricter name checks remain future work.
+UTF-16/32 require explicit conversion; recognized leading
 BOMs are unsupported. Spans refer to the supplied buffer, not a pre-conversion
 source. The standalone [consumer guide](../MARKUP.md) describes delivered behavior.
 
@@ -1022,7 +1023,7 @@ the currently public alternative is count-only measurement, not public events.
 
 **Still open before the relevant implementation:**
 
-- Remaining optional encoding/name/known-reference checks and explicitly defined
+- Remaining optional name/known-reference checks and explicitly defined
   recovery. Standalone slices settle case matching, raw-byte preservation, quoted
   attributes, duplicate checking, reference extents/interpretation and comment/CDATA
   rules. Structural checking does not imply full XML conformance.
@@ -1343,7 +1344,7 @@ checks. Whether the future `extended` vocabulary includes it remains open.
 Finding or validating an actual referenced port is still a later semantic
 pass, not part of recognizing an ID, and label rules do not apply to every ID.
 
-*(Recorded contracts: R-MOD-014 and R-MOD-015. Standalone structural slices 1–3 now
+*(Recorded contracts: R-MOD-014 and R-MOD-015. Standalone structural slices 1–3 and 4a now
 exist in `src/markup/`; later checks/recovery and integration remain pending. HTML-like
 DOT IDs are still deferred in [supported syntax](../SUPPORTED_SYNTAX.md).)*
 
@@ -1407,7 +1408,12 @@ off by default, with error and warning choices. It checks all source bytes,
 including comments and trivia, without mutation. A byte not consumed by a valid
 UTF-8 sequence is one finding, then recovery advances one byte. Overlong forms,
 surrogates and values beyond U+10FFFF are invalid. No policy weakens grammar NUL
-rules. **Still open:** the markup-specific encoding/validation contract (Q40).
+rules. **Standalone markup implemented (2026-09-27, slice 4a):** the same optional
+whole-source encoding check is available independently of parsing, including
+comments/CDATA and with compile-time/runtime parity. Its findings merge with
+duplicates in source order, UTF-8 first on equal starts. Shared sequence checking
+does not share processor-owned policies/diagnostics or imply XML name/character
+conformance. Stricter markup names and known-reference checks remain open (Q40).
 *(Embodied: `src/dot/lexer/`, `src/dot/validation_checks.zig`,
 [supported syntax](../SUPPORTED_SYNTAX.md); R-PORT-006.)*
 
@@ -1519,6 +1525,10 @@ Open; nothing currently forces the choice.
 
 ## Reconciliation log
 
+- 2026-09-27 — Structural slice 4a adds optional whole-source UTF-8 checking with
+  default-off error/warning policies and independent validation. Encoding and
+  duplicate findings are source-ordered without a queue; names, known-reference
+  checks, structural recovery and DOT integration remain subsequent work.
 - 2026-09-27 — Structural slice 3 implements raw-preserving references, comments
   and CDATA, malformed-reference syntax policy, deviation/warning counters and
   diagnostic-stop handling. Node/attribute/frame sizes remain unchanged; reference

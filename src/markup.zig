@@ -1,5 +1,5 @@
-//! Standalone, byte-oriented markup fragments, structural slices 1–3.
-//! Elements, attributes, references, comments and CDATA. This is not a browser
+//! Standalone, byte-oriented markup fragments, structural slices through 4a.
+//! Elements, attributes, references, comments, CDATA and optional UTF-8 checks. Not a browser
 //! HTML parser, a complete XML processor, or Graphviz label validation.
 //! No dependency on DOT grammar, retained documents, or processor composition.
 const std = @import("std");

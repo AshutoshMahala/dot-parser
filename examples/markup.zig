@@ -20,7 +20,9 @@ pub fn main(init: std.process.Init) !void {
             while (attributes.next()) |attribute| try writer.print("  {s} = {s}\n", .{ attribute.name(), attribute.rawValue() });
         }
         // Parsing retains every occurrence; later validation leaves that tree intact.
-        const checked = markup.validate(init.arena.allocator(), &doc, bag.sink(), .{});
+        // UTF-8 is opt-in and checks the entire source, including comments/CDATA.
+        const Checked = markup.Profile(.{ .policy = .{ .validation = .{ .invalid_utf8 = .err } } });
+        const checked = Checked.validate(init.arena.allocator(), &doc, bag.sink(), .{});
         try writer.print("validation {s}: {d} errors, {d} warnings\n", .{ @tagName(checked.validity), checked.errors, checked.warnings });
         if (checked.completion != .complete) return error.ValidationIncomplete;
         for (bag.items()) |finding| try writer.print("{s}:{s} at byte {d}\n", .{ markup.diagnostic.namespace, finding.code.structured(), finding.span.start });

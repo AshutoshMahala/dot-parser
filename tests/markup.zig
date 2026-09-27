@@ -9,6 +9,7 @@ const discard = markup.diagnostic.discard;
 test {
     _ = @import("markup_content.zig");
     _ = @import("markup_scanners.zig");
+    _ = @import("markup_validation.zig");
 }
 
 test "standalone public lexer yields borrowed tokens and latches EOF/errors" {

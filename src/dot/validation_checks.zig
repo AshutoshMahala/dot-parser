@@ -87,9 +87,7 @@ pub const Encoding = struct {
                 self.offset += 1;
                 continue;
             }
-            const len = std.unicode.utf8ByteSequenceLength(byte) catch return self.invalid();
-            if (len > self.source.len - start) return self.invalid();
-            _ = std.unicode.utf8Decode(self.source[start..][0..len]) catch return self.invalid();
+            const len = @import("parser_support").utf8.sequenceLength(self.source[start..]) orelse return self.invalid();
             self.offset += len;
         }
         return null;

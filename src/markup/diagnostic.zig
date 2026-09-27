@@ -25,6 +25,8 @@ pub const Code = enum {
     duplicate_attribute_tolerated,
     malformed_reference,
     malformed_reference_tolerated,
+    invalid_utf8,
+    invalid_utf8_tolerated,
 
     pub fn structured(self: Code) []const u8 {
         return switch (self) {
@@ -41,10 +43,12 @@ pub const Code = enum {
             .duplicate_attribute_tolerated => "W.Validation.Attribute.006",
             .malformed_reference => "E.Syntax.Reference.003",
             .malformed_reference_tolerated => "W.Syntax.Reference.003",
+            .invalid_utf8 => "E.Validation.Encoding.003",
+            .invalid_utf8_tolerated => "W.Validation.Encoding.003",
         };
     }
     pub fn severity(self: Code) reporting.Severity {
-        return if (self == .duplicate_attribute_tolerated or self == .malformed_reference_tolerated) .warning else .err;
+        return if (self == .duplicate_attribute_tolerated or self == .malformed_reference_tolerated or self == .invalid_utf8_tolerated) .warning else .err;
     }
     pub fn compactId(self: Code) [5]u8 {
         @setEvalBranchQuota(5000);

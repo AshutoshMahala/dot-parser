@@ -1,6 +1,6 @@
 # Standalone markup — structural slices
 
-Decisions: 2026-09-26; slices 1–3 implemented 2026-09-27. Later slices below are plans, not
+Decisions: 2026-09-26; slices 1–3 and 4a implemented 2026-09-27. Later slices below are plans, not
 current public capabilities. R-MOD-014/015 and Q40 remain the architectural contract.
 
 ## Delivery order
@@ -16,7 +16,8 @@ this parser. Independent parsing must not import DOT grammar or retained records
 | 1 | Text, arbitrary matching/self-closing elements; standalone module, source-backed output, explicit memory, policy limits, bounded/cancellable execution | Implemented |
 | 2 | Quoted attributes, retained order/duplicates, independent duplicate checking | Implemented |
 | 3 | References, comments and CDATA, including malformed-reference acceptance policy | Implemented |
-| 4 | Further optional checks and explicitly defined recovery | Planned |
+| 4a | Optional independent UTF-8 validation, source-ordered with duplicate findings | Implemented |
+| 4b | Stricter names, known-reference checks and explicitly defined structural recovery | Planned; semantics still need decisions |
 | Integration | DOT opaque recognition followed by delayed integration; during-DOT composition later | Planned |
 
 Each slice needs tests, truthful supported-syntax documentation and measurements.
@@ -29,7 +30,7 @@ No reserved public fields or pretend implementation of later checks are needed.
 - Names are arbitrary vocabulary, matched byte-for-byte and case-sensitively.
   No implicit Unicode normalization, namespace resolution or HTML tag closing.
 - Byte-oriented syntax with raw non-ASCII preservation, not full XML conformance.
-  Optional encoding and stricter name checks are separate work.
+  Optional UTF-8 validation is independent of parsing; stricter name checks remain future work.
 - Attributes require quoted values (`'` or `"`); preserve spelling and order.
   Duplicate checking defaults to error, with warning/off choices; retain every
   occurrence. Off means uniqueness was not checked, not that it passed.
@@ -101,7 +102,7 @@ reports reserved node/attribute capacity, not just occupied records, and exclude
 overhead/RSS. Fixed parsing is unchanged; allocator callbacks are not budgeted work.
 
 The policy contains implemented limits (source bytes, nodes, attributes, nesting),
-malformed-reference acceptance, duplicate-attribute validation severity, scanner
+malformed-reference acceptance, duplicate-attribute and UTF-8 validation severity, scanner
 selection (`scalar` default / `block`), and execution choices (metering, cancellation). Limits/counts/ranges are u32; lengths
 at the allocator/slice boundary use native sizes. Defaults preserve the existing
 unlimited-within-representation convention. All typed combinations are meaningful,
@@ -132,9 +133,84 @@ enabled. Bounded block scanning uses up-to-64-byte windows and scalar boundary t
 its credit totals/frontiers differ from scalar. Plain scanning loops to the next
 token/finding. See the follow-up below for backend details and measurements.
 
-No Graphviz/extended validation, UTF-8 validation,
+No Graphviz/extended validation, stricter Unicode name checking,
 markup fixes or processor scheduling is implemented
 by this slice. See the [consumer guide](../MARKUP.md) for the actual API.
+
+## Slice 4a implementation
+
+`validation.invalid_utf8` is off by default, with error/warning choices and full
+compile-time/runtime parity. It checks the entire borrowed source independently
+of structural parsing, including comments and CDATA. Valid sequences consume
+1–4 bytes; a byte not beginning a valid sequence gets one one-byte finding, then
+scanning advances one byte. There is no mutation, normalization, decoding or XML
+character/name conformance claim. DOT and markup share only a sequence-validation
+primitive in `common/utf8.zig`; diagnostic identities and policies stay local.
+
+One monotonic u32 cursor merges encoding findings with duplicate checks by primary
+source offset, UTF-8 first on ties. No queued findings, second sort or source-sized
+temporary storage is added. A fixed disabled check omits its scan/cursor; runtime
+off skips its scan. Encoding-only validation does not inspect attribute pools,
+allocate or need scratch. Enabled duplicate scratch is preflighted before either
+check; resource failure leaves enabled checks incomplete without running UTF-8.
+Ordinary errors continue both checks. Sink stop/failure and enabled cancellation
+stop the operation, preserving known invalidity and per-check completion. UTF-8
+polls cancellation before each sequence; existing unmetered sizing/sorting/name
+comparisons remain unchanged. This does not add bounded validation.
+
+Validation totals are u64, matching DOT's independent-check aggregation; source
+offsets, capacities and parsing counters stay u32. The parse engine, retained
+records, diagnostic payload and nesting frames are unchanged. Stricter names,
+known-reference rules and structural recovery are not implicitly selected by this
+check and need their own contracts before implementation.
+
+### Slice 4a verification and costs
+
+438/438 tests pass in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall, including
+64 standalone markup tests. Examples, benchmark compilation, expected compile
+failures, and consumed RISC-V32/Wasm32 fixed/runtime probes pass. New coverage
+includes invalid scalar encodings/truncation, all raw source contexts, fixed/runtime
+severity combinations, inherited/reset policies, source-order ties, random-byte
+oracles, scanner/budget parity, cancellation, sink backpressure and scratch failures.
+
+Native record and session sizes remain unchanged: Node/Attribute 20 bytes each,
+Diagnostic 36, duplicate key 8, nesting frame 12, and fixed/bounded/runtime sessions
+416/424/480 bytes. The validation result is now 32 bytes, including u64 totals and
+two check statuses. UTF-8-only validation has no allocation or scratch buffer;
+its source cursor is u32. Diagnostic retention is a separate caller-selected cost.
+No process-RSS or allocator peak-memory measurement is claimed here.
+
+Local ReleaseFast checks on Apple M4 Pro, Zig 0.16.0, compared `e600dab` with this
+slice. The original 13-fixture harness was used for default-off comparisons (only
+its validation return type was adapted), with nine measured 16-operation batches
+after five warm-up batches. Two isolated runs per build used before/after then
+after/before order, without concurrent compilation. Midpoints of process medians
+give geometric-mean throughput changes of +0.4% for fixed scalar and +1.3% for
+fixed block parsing; duplicate validation is -0.4% on unique attributes and +0.8%
+on duplicates. These small aggregate differences are not claimed as speedups.
+
+The broad harness's scalar text case reported -9.1%, so text/prose were also
+checked separately with eight warm-up and nine measured batches of 64 parses,
+in before/after/after/before order. Scalar text measured 2150.9 -> 2200.9 MB/s
+(0.465 -> 0.454 ms); scalar prose measured 1891.6 -> 1945.2 MB/s
+(0.971 -> 0.944 ms). Block text/prose differed by -0.2%/-0.8%. The broad text drop
+was not reproduced in this focused check. This is separate evidence, not a
+replacement for the broad result or a guarantee of parity on every workload.
+
+The opt-in pass was timed separately using the encoding benchmark's same fixtures
+and sampling, excluding parsing/allocation and using a discard sink. Cells are
+**milliseconds / decimal MB/s**. Malformed input still counts every finding.
+
+| Validation fixture | Source bytes | Fixed policy | Runtime policy | Scratch bytes |
+| --- | ---: | ---: | ---: | ---: |
+| ASCII | 500,000 | 0.283 / 1769.5 | 0.232 / 2152.6 | 0 |
+| Valid multilingual UTF-8 | 600,000 | 1.250 / 480.2 | 1.258 / 477.0 | 0 |
+| Malformed bytes, 300,000 findings | 350,000 | 1.052 / 332.7 | 1.076 / 325.2 | 0 |
+| Encoding + duplicates, 100,000 findings | 1,050,000 | 1.457 / 720.8 | 1.443 / 727.4 | 16 |
+
+Fixed/runtime differences here include code-generation and timing variability;
+they do not establish that runtime selection is intrinsically faster. Standard-
+machine baseline artifacts were not changed.
 
 ## Slice 3 implementation
 

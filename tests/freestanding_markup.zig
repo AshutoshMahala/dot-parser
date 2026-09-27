@@ -7,7 +7,7 @@ comptime {
 }
 const P = markup.Profile(.{
     .runtime_policy = features.runtime_policy,
-    .policy = .{ .scanner = .block, .syntax = .{ .malformed_reference = .warn }, .execution = .{ .metering = true, .cancellation = true } },
+    .policy = .{ .scanner = .block, .syntax = .{ .malformed_reference = .warn }, .validation = .{ .invalid_utf8 = .err }, .execution = .{ .metering = true, .cancellation = true } },
 });
 fn stopped(context: ?*anyopaque) bool {
     const flag: *volatile u8 = @ptrCast(context.?);
@@ -35,9 +35,9 @@ export fn parse_markup(source: [*]const u8, len: usize, limit: u32, stop: *u8) u
         while (attributes.next()) |attribute| total +%= @intCast(attribute.value().len);
     }
     const doc = r.document.?;
-    const checked = P.validateIn(&doc, keys.storage(), markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .duplicate_attribute = .warning } }, .cancellation = hook } else .{ .cancellation = hook });
+    const checked = P.validateIn(&doc, keys.storage(), markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .duplicate_attribute = .warning, .invalid_utf8 = @enumFromInt(limit % 3) } }, .cancellation = hook } else .{ .cancellation = hook });
     if (checked.completion != .complete) return 0;
-    total +%= checked.errors +% checked.warnings;
+    total +%= @truncate(checked.errors +% checked.warnings);
     session.reset("<x/>", markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .execution = .{ .metering = false } } } else .{});
     return total +% session.run().counts.nodes;
 }

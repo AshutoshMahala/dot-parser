@@ -5,6 +5,7 @@ pub const reporting = @import("common/reporting.zig");
 pub const execution = @import("common/execution.zig");
 pub const processor = @import("common/processor.zig");
 pub const stack = @import("common/stack.zig");
+pub const utf8 = @import("common/utf8.zig");
 pub const wdp = @import("common/wdp.zig");
 
 test {
@@ -14,4 +15,5 @@ test {
     _ = wdp;
     _ = processor;
     _ = stack;
+    _ = utf8;
 }

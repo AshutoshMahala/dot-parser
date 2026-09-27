@@ -16,10 +16,10 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
     const writer = &output.interface;
-    try writer.print("Node={d} Attribute={d} KeyScratch={d} Frame={d} Diagnostic={d} fixed_session={d} bounded_session={d} runtime_session={d}\n", .{
+    try writer.print("Node={d} Attribute={d} KeyScratch={d} Frame={d} Diagnostic={d} fixed_session={d} bounded_session={d} runtime_session={d} ValidationResult={d}\n", .{
         @sizeOf(markup.Node),                  @sizeOf(markup.Attribute),  @sizeOf(markup.AttributeKeyScratch),
         markup.FixedParseScratch(1).byte_size, @sizeOf(markup.Diagnostic), @sizeOf(markup.Profile(.{}).Session),
-        @sizeOf(markup.BoundedSession),        @sizeOf(Runtime.Session),
+        @sizeOf(markup.BoundedSession),        @sizeOf(Runtime.Session),   @sizeOf(markup.ValidationResult),
     });
     inline for (.{ "flat", "mixed", "text", "deep", "attributes", "duplicates", "references", "attribute_references", "comments", "cdata", "prose", "long_names", "long_values" }) |name| {
         var source: std.ArrayList(u8) = .empty;
@@ -98,11 +98,62 @@ pub fn main(init: std.process.Init) !void {
             try writer.print("  validation_only: {d:.3} ms, {d:.1} MB/s, scratch={d}\n", .{ ns / 1e6, @as(f64, @floatFromInt(source.items.len)) * 1000 / ns, capacity * @sizeOf(markup.AttributeKeyScratch) });
         }
     }
+    try benchEncoding(init, writer);
     try writer.flush();
 }
-noinline fn validateFixed(document: *const markup.Document, scratch: markup.ValidationScratch) u32 {
+
+/// Separate post-parse costs; parsing, source/pool construction and sink storage
+/// are outside the timer. A discard sink still counts every factual finding.
+fn benchEncoding(init: std.process.Init, writer: *std.Io.Writer) !void {
+    const allocator = init.arena.allocator();
+    inline for (.{ "ascii", "unicode", "invalid", "combined" }) |fixture| {
+        const item = comptime blk: {
+            if (std.mem.eql(u8, fixture, "ascii")) break :blk "plain text";
+            if (std.mem.eql(u8, fixture, "unicode")) break :blk "é東京😀";
+            if (std.mem.eql(u8, fixture, "invalid")) break :blk "x\xff\xc0\xaf\xed\xa0\x80";
+            break :blk "<a x='東京' x='\xff'/>";
+        };
+        const repetitions = 50_000;
+        const source = try allocator.alloc(u8, item.len * repetitions);
+        for (0..repetitions) |index| @memcpy(source[index * item.len ..][0..item.len], item);
+        var parsed = markup.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
+        defer parsed.deinit();
+        const document = parsed.document orelse return error.ParseFailed;
+        const combined = comptime std.mem.eql(u8, fixture, "combined");
+        const keys = try allocator.alloc(markup.AttributeKeyScratch, if (combined) markup.requiredValidationScratch(&document) else 0);
+        const scratch: markup.ValidationScratch = .{ .attribute_keys = keys };
+        inline for (.{ false, true }) |runtime| {
+            var times: [9]u64 = undefined;
+            const expected: u64 = repetitions * (if (comptime std.mem.eql(u8, fixture, "invalid")) @as(u64, 6) else if (combined) @as(u64, 2) else 0);
+            for (0..warmups + times.len) |round| {
+                const start = std.Io.Clock.Timestamp.now(init.io, .awake);
+                var findings: u64 = 0;
+                for (0..batch) |_| findings += validateEncoding(runtime, combined, &document, scratch);
+                const end = std.Io.Clock.Timestamp.now(init.io, .awake);
+                if (findings != expected * batch) return error.EncodingValidationFailed;
+                if (round >= warmups) times[round - warmups] = @intCast(@divTrunc(start.durationTo(end).raw.nanoseconds, batch));
+            }
+            std.mem.sort(u64, &times, {}, std.sort.asc(u64));
+            const ns: f64 = @floatFromInt(times[4]);
+            try writer.print("utf8/{s}/{s}: source={d}, {d:.3} ms, {d:.1} MB/s, scratch={d}, findings={d}\n", .{
+                fixture, if (runtime) "runtime" else "fixed", source.len, ns / 1e6, @as(f64, @floatFromInt(source.len)) * 1000 / ns, keys.len * @sizeOf(markup.AttributeKeyScratch), expected,
+            });
+        }
+    }
+}
+
+noinline fn validateEncoding(comptime runtime: bool, comptime combined: bool, document: *const markup.Document, scratch: markup.ValidationScratch) u64 {
+    const policy: markup.Policy = .{ .validation = .{ .invalid_utf8 = .warning, .duplicate_attribute = if (combined) .warning else .off } };
+    var patch = policy;
+    const opaque_patch: *volatile markup.Policy = &patch;
+    const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else policy });
+    const result = P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.* } else .{});
+    return if (result.completion == .complete and result.checks.invalid_utf8 == .complete) result.warnings else std.math.maxInt(u64);
+}
+
+noinline fn validateFixed(document: *const markup.Document, scratch: markup.ValidationScratch) u64 {
     const r = markup.validateIn(document, scratch, markup.diagnostic.discard, .{});
-    return if (r.completion == .complete) r.errors else std.math.maxInt(u32);
+    return if (r.completion == .complete) r.errors else std.math.maxInt(u64);
 }
 noinline fn parseFixed(comptime backend: markup.ScannerBackend, source: []const u8, memory: markup.ParseMemory) markup.Counts {
     const r = markup.Profile(.{ .policy = .{ .scanner = backend } }).parseBorrowedIn(source, memory, markup.diagnostic.discard, .{});

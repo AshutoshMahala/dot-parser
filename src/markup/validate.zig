@@ -1,4 +1,4 @@
-//! Independent duplicate checking over completed syntax, never rewriting it.
+//! Independent policy checks over completed syntax, never rewriting it.
 //! Scratch is reused per element. Heap sorting has deterministic O(A log A)
 //! comparisons, with bytewise name comparisons; no hash-collision worst case.
 //! This pass is run-to-completion, not a metered parsing session.
@@ -40,9 +40,14 @@ pub const Result = struct {
         diagnostic_stopped: support.reporting.StopReason,
     } = .complete,
     validity: enum { valid, invalid, unknown } = .unknown,
-    checks: struct { duplicate_attribute: CheckStatus = .not_run } = .{},
-    errors: u32 = 0,
-    warnings: u32 = 0,
+    checks: struct {
+        duplicate_attribute: CheckStatus = .not_run,
+        invalid_utf8: CheckStatus = .not_run,
+    } = .{},
+    /// Aggregate findings from independent checks, which may overlap source
+    /// spans. Offsets/capacities remain u32; totals use u64, as in DOT validation.
+    errors: u64 = 0,
+    warnings: u64 = 0,
     diagnostic_delivery: support.reporting.Delivery = .complete,
 };
 
@@ -85,38 +90,55 @@ fn requirement(document: *const syntax.Document) Requirement {
     return if (maximum < 2) .{} else .{ .count = maximum, .span = document.records[@intFromEnum(largest_owner)].name };
 }
 
-pub fn Validator(comptime fixed: ?policy.RuleSeverity, comptime cancellable: bool) type {
+pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellable: bool) type {
     return struct {
-        pub const Settings = if (fixed == null) policy.RuleSeverity else void;
+        pub const Settings = if (fixed == null) policy.ValidationSettings else void;
         pub const Hook = if (cancellable) ?support.execution.Cancellation else void;
-        fn rule(settings: Settings) policy.RuleSeverity {
+        const has_encoding = if (fixed) |s| s.invalid_utf8 != .off else true;
+        const Offset = if (has_encoding) u32 else void;
+        fn rules(settings: Settings) policy.ValidationSettings {
             return if (fixed) |value| value else settings;
+        }
+        fn initial(settings: Settings) Result {
+            const s = rules(settings);
+            return .{ .checks = .{
+                .duplicate_attribute = if (s.duplicate_attribute == .off) .not_run else .incomplete,
+                .invalid_utf8 = if (s.invalid_utf8 == .off) .not_run else .incomplete,
+            } };
+        }
+        fn enabled(settings: Settings) bool {
+            const s = rules(settings);
+            return s.duplicate_attribute != .off or s.invalid_utf8 != .off;
         }
         fn requested(hook: Hook) bool {
             return if (cancellable) (if (hook) |h| h.requested() else false) else false;
         }
-        fn unavailable(completion: @FieldType(Result, "completion"), sink: diagnostic.Sink, capacity: u32, span: support.location.Span) Result {
+        fn unavailable(completion: @FieldType(Result, "completion"), sink: diagnostic.Sink, capacity: u32, span: support.location.Span, settings: Settings) Result {
             const finding: diagnostic.Diagnostic = switch (completion) {
                 .storage_exhausted => .{ .code = .capacity_exhausted, .span = span, .details = .{ .capacity = .{ .resource = .attribute_keys, .limit = capacity } } },
                 .out_of_memory => .{ .code = .out_of_memory, .span = span },
                 else => unreachable,
             };
-            var result: Result = .{ .completion = completion, .checks = .{ .duplicate_attribute = .incomplete } };
+            var result = initial(settings);
+            result.completion = completion;
             _ = sink.emit(finding) catch {
                 result.diagnostic_delivery = .failed;
             };
             return result;
         }
         pub fn run(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
-            if (rule(settings) == .off) return .{ .validity = .valid };
-            if (requested(hook)) return .{ .completion = .cancelled, .checks = .{ .duplicate_attribute = .incomplete } };
-            return runSized(document, scratch, sink, settings, hook, requirement(document));
+            if (!enabled(settings)) return .{ .validity = .valid };
+            var result = initial(settings);
+            if (cancelled(&result, hook)) return result;
+            const required = if (rules(settings).duplicate_attribute != .off) requirement(document) else Requirement{};
+            return runSized(document, scratch, sink, settings, hook, required);
         }
         fn runSized(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook, required: Requirement) Result {
-            var result: Result = .{ .checks = .{ .duplicate_attribute = .incomplete } };
-            if (scratch.attribute_keys.len < required.count) return unavailable(.{ .storage_exhausted = required.count }, sink, @intCast(scratch.attribute_keys.len), required.span);
+            var result = initial(settings);
+            if (scratch.attribute_keys.len < required.count) return unavailable(.{ .storage_exhausted = required.count }, sink, @intCast(scratch.attribute_keys.len), required.span, settings);
+            var offset: Offset = if (has_encoding) 0 else {};
             var start: u32 = 0;
-            while (start < document.attributes.len) {
+            while (rules(settings).duplicate_attribute != .off and start < document.attributes.len) {
                 if (requested(hook)) {
                     result.completion = .cancelled;
                     return result;
@@ -142,36 +164,75 @@ pub fn Validator(comptime fixed: ?policy.RuleSeverity, comptime cancellable: boo
                             return result;
                         }
                         if (key.first == index) continue;
-                        const code: diagnostic.Code = if (rule(settings) == .err) .duplicate_attribute else .duplicate_attribute_tolerated;
-                        if (rule(settings) == .err) {
-                            result.errors += 1;
-                            result.validity = .invalid;
-                        } else result.warnings += 1;
-                        const action = sink.emit(.{ .code = code, .span = document.attributes[index].name, .related = document.attributes[key.first].name }) catch |err| {
-                            result.completion = .{ .diagnostic_stopped = .fromError(err) };
-                            result.diagnostic_delivery = .failed;
-                            return result;
-                        };
-                        if (action == .stop) {
-                            result.completion = .{ .diagnostic_stopped = .requested };
-                            return result;
-                        }
+                        // Visit encoding before this finding, including ties.
+                        // No finding queue/sort or source-sized temporary pool.
+                        if (!encodingThrough(document.source, document.attributes[index].name.start, &offset, &result, sink, settings, hook)) return result;
+                        const code: diagnostic.Code = if (rules(settings).duplicate_attribute == .err) .duplicate_attribute else .duplicate_attribute_tolerated;
+                        if (!emit(&result, sink, .{ .code = code, .span = document.attributes[index].name, .related = document.attributes[key.first].name })) return result;
                     }
                 }
                 start = end;
             }
-            result.checks.duplicate_attribute = .complete;
+            if (rules(settings).duplicate_attribute != .off) result.checks.duplicate_attribute = .complete;
+            if (!encodingThrough(document.source, @intCast(document.source.len), &offset, &result, sink, settings, hook)) return result;
             if (result.errors == 0) result.validity = .valid;
             return result;
         }
         pub fn allocated(allocator: std.mem.Allocator, document: *const syntax.Document, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
-            if (rule(settings) == .off) return .{ .validity = .valid };
-            if (requested(hook)) return .{ .completion = .cancelled, .checks = .{ .duplicate_attribute = .incomplete } };
+            if (!enabled(settings)) return .{ .validity = .valid };
+            var result = initial(settings);
+            if (cancelled(&result, hook)) return result;
+            if (rules(settings).duplicate_attribute == .off) return runSized(document, .{}, sink, settings, hook, .{});
             const required = requirement(document);
-            const keys = allocator.alloc(AttributeKeyScratch, required.count) catch return unavailable(.out_of_memory, sink, 0, required.span);
+            const keys = allocator.alloc(AttributeKeyScratch, required.count) catch return unavailable(.out_of_memory, sink, 0, required.span, settings);
             defer allocator.free(keys);
-            if (requested(hook)) return .{ .completion = .cancelled, .checks = .{ .duplicate_attribute = .incomplete } };
+            if (cancelled(&result, hook)) return result;
             return runSized(document, .{ .attribute_keys = keys }, sink, settings, hook, required);
+        }
+        fn cancelled(result: *Result, hook: Hook) bool {
+            if (!requested(hook)) return false;
+            result.completion = .cancelled;
+            return true;
+        }
+        fn emit(result: *Result, sink: diagnostic.Sink, finding: diagnostic.Diagnostic) bool {
+            if (finding.code.severity() == .err) {
+                result.errors += 1;
+                result.validity = .invalid;
+            } else result.warnings += 1;
+            const action = sink.emit(finding) catch |err| {
+                result.completion = .{ .diagnostic_stopped = .fromError(err) };
+                result.diagnostic_delivery = .failed;
+                return false;
+            };
+            if (action == .stop) {
+                result.completion = .{ .diagnostic_stopped = .requested };
+                return false;
+            }
+            return true;
+        }
+        /// One monotonically advancing source cursor. Each invalid leading byte
+        /// is reported separately; valid sequences consume 1..4 bytes. This is
+        /// encoding validation, not XML character/name validation or decoding.
+        fn encodingThrough(source: []const u8, through: u32, offset: *Offset, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+            if (comptime !has_encoding) return true;
+            if (rules(settings).invalid_utf8 == .off) return true;
+            while (offset.* < source.len and offset.* <= through) {
+                if (cancelled(result, hook)) return false;
+                const at = offset.*;
+                if (source[at] < 0x80) {
+                    offset.* += 1;
+                    continue;
+                }
+                if (support.utf8.sequenceLength(source[at..])) |len| {
+                    offset.* += len;
+                } else {
+                    offset.* += 1;
+                    const code: diagnostic.Code = if (rules(settings).invalid_utf8 == .err) .invalid_utf8 else .invalid_utf8_tolerated;
+                    if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .byte = source[at] } })) return false;
+                }
+            }
+            if (offset.* == source.len) result.checks.invalid_utf8 = .complete;
+            return true;
         }
         fn nameLessThan(document: *const syntax.Document, a: AttributeKeyScratch, b: AttributeKeyScratch) bool {
             const order = std.mem.order(u8, document.attributes[a.index].name.slice(document.source), document.attributes[b.index].name.slice(document.source));

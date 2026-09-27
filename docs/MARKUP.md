@@ -12,7 +12,7 @@ identifiers are still unsupported by the DOT parser.
 | Empty input, plain text, multiple root elements | Supported |
 | `<a>text<b/></a>` | Supported; exact case-sensitive closing names |
 | `<a></a>` and `<a/>` | Both supported; raw spelling preserved |
-| Non-ASCII names/text, including invalid UTF-8 bytes | Preserved without encoding validation |
+| Non-ASCII names/text, including invalid UTF-8 bytes | Preserved; optional independent UTF-8 check, off by default |
 | Quoted attributes: `<a x='1' y="2"/>` | Preserved in source order, including duplicates |
 | Duplicate attribute names on one element | Parsing retains all; independent validation defaults to error |
 | Named, decimal and hexadecimal references | Checked and preserved inside text/attribute spans; no expansion or name lookup |
@@ -207,7 +207,7 @@ Measurement followed by parsing is two explicit passes, not caching.
 
 ## Independent validation
 
-Parsing checks structure; it does **not** run the duplicate-attribute check.
+Parsing checks structure; it does **not** run duplicate-attribute or UTF-8 checks.
 Validate a completed document immediately or later, under the same or a different
 profile. Validation never changes the retained records or discards occurrences.
 
@@ -215,6 +215,12 @@ profile. Validation never changes the retained records or discards occurrences.
 const document = parsed.document.?;
 const checked = markup.validate(allocator, &document, bag.sink(), .{});
 // Accept only if checked.completion == .complete and checked.validity == .valid.
+
+// Optional encoding check, in addition to the default duplicate check:
+const Checked = markup.Profile(.{
+    .policy = .{ .validation = .{ .invalid_utf8 = .err } },
+});
+const encoded = Checked.validate(allocator, &document, bag.sink(), .{});
 ```
 
 For allocation-free validation, use
@@ -224,32 +230,56 @@ supplies scratch, or allocate `AttributeKeyScratch` entries explicitly.
 one element, or zero if all have fewer than two. Each scratch entry is 8 bytes.
 Scratch cannot alias source, document pools or diagnostic storage; it is reusable
 after the call. The allocator-backed `validate` frees its temporary scratch before
-returning. With the check off, neither entry point inspects attributes or needs scratch.
+returning. With duplicate checking off, neither entry point inspects attribute
+pools or needs scratch. UTF-8-only validation needs no allocation or scratch;
+pass `.{}` as scratch to `validateIn`. The sink may allocate independently.
+With both checks off, source and pools are not inspected.
 
 Names match byte-for-byte and case-sensitively, scoped to a single element. Each
 occurrence after the first produces one finding whose related span identifies the
-first. Findings are in document order. Error findings make validity invalid but
-do not stop further checks; warning findings do not invalidate. A discarded
-diagnostic still affects counters and validity.
+first. Findings from both checks are merged in document order by primary span
+start; UTF-8 precedes a duplicate finding at the same byte. Error findings make
+validity invalid but do not stop further checks; warning findings do not invalidate.
+A discarded diagnostic still affects counters and validity.
 
-`ValidationResult` separates `completion`, `validity`, `checks.duplicate_attribute`,
-`errors`/`warnings` and `diagnostic_delivery`. Check status is `not_run` when off,
-`incomplete` on interruption, or `complete`. A complete off-policy result is valid
-under the selected policy, **not** proof of uniqueness. Interrupted results are
-`invalid` if an error was already found, otherwise `unknown`. A sink's accepted
+`validation.invalid_utf8` checks the entire source, including names, quoted values,
+comments, CDATA and BOM bytes. A valid sequence consumes 1–4 bytes. At a byte that
+cannot start a valid sequence, it emits a one-byte finding and advances one byte;
+remaining invalid continuation bytes may produce further findings. Overlong,
+truncated, surrogate and out-of-range encodings are invalid. The error/warning
+codes are `E.Validation.Encoding.003` / `W.Validation.Encoding.003`, with the raw
+byte in `details.byte`. No replacement, transcoding, normalization, entity
+expansion, XML character/name validation or source mutation occurs. Valid UTF-8
+does not imply XML or Graphviz conformance, and cannot weaken parsing's control-byte
+or unsupported-encoding rules.
+
+`ValidationResult` separates `completion`, `validity`, per-check statuses
+(`checks.duplicate_attribute`, `checks.invalid_utf8`), u64 `errors`/`warnings` and
+`diagnostic_delivery`. Offsets, capacities and parsing counters remain u32;
+validation totals use u64 for independently counted checks, as in DOT.
+Check status is `not_run` when off, `incomplete` until finished, or `complete`.
+A completed check stays complete if a later check is interrupted. A complete
+off-policy result is valid under the selected policy, **not** proof of uniqueness
+or encoding validity. Interrupted results are `invalid` if an error was already
+found, otherwise `unknown`. A sink's accepted
 stop ends the pass immediately with complete delivery of the discovered prefix;
 rejection ends it with failed delivery. Neither implies all findings were discovered.
 Insufficient scratch reports `storage_exhausted` with the required entry count;
-allocator failure reports `out_of_memory`. Resource diagnostics do not replace
-those causes, even if the diagnostic destination fails.
+allocator failure reports `out_of_memory`. Duplicate scratch is preflighted before
+either check runs; a resource failure leaves enabled checks incomplete and counts
+zero. Resource diagnostics do not replace those causes, even if the diagnostic
+destination fails.
 Both resource diagnostics use the name span of the first element with the largest
 attribute list. For allocation failure this identifies the allocation's context,
 not malformed syntax or proof that this element alone caused memory exhaustion.
 
 This is a separate run-to-completion pass. Parsing's `execution.metering` does not
 bound validation, sorting, scratch sizing or allocations. Enabled cancellation is
-polled at entry, between elements and before findings, not within a sort or a name
-comparison. Heap sorting uses O(A log A) comparisons per attribute group with
+polled at entry, between elements, before duplicate findings and before each
+UTF-8 sequence (at most four bytes), not within a sort or a name comparison.
+UTF-8 checking is O(source bytes), using one u32 cursor with no finding buffer.
+Fixed profiles with encoding off omit this cursor and the scan; runtime off skips
+the scan. Heap sorting uses O(A log A) comparisons per attribute group with
 bytewise name comparisons, followed by linear mapping/emission in source order;
 there is no second sort. Allocator-backed validation sizes scratch only once and
 reuses that requirement during checking. Temporary memory is O(max attributes on one element).
@@ -278,6 +308,7 @@ const parsed = Reader.parseBorrowedIn(source, memory, sink, .{
 | `limits.max_attributes` | u32; default `2^32 - 1`; every occurrence counts |
 | `limits.max_nesting` | u32; default `2^32 - 1`; top-level elements have depth 1 |
 | `validation.duplicate_attribute` | `err` (default), `warning`, `off`; affects validation, not parsing |
+| `validation.invalid_utf8` | `off` (default), `warning`, `err`; checks raw source encoding during validation only |
 | `syntax.malformed_reference` | `reject` (default), `warn`, `accept`; tolerant cases keep the `&` literal |
 | `execution.metering` | boolean; default false |
 | `execution.cancellation` | boolean; default false |
@@ -392,5 +423,7 @@ the same [shared reporting contracts](REPORTING.md) as DOT without sharing paylo
 - `zig build bench-markup -Doptimize=ReleaseFast`: flat, mixed, text, deep, attribute,
   reference, comment, CDATA, prose, long-name and long-value fixtures; both backends
   with fixed/runtime/count-only/cancellable latency and decimal MB/s, record/scratch
-  and session sizes. Duplicate validation is timed separately with a discard sink and
-  preallocated scratch. Storage figures are not allocator overhead or process RSS.
+  and session sizes. Duplicate validation and opt-in UTF-8 checks (ASCII, Unicode,
+  malformed bytes, combined checks) are timed separately with a discard sink and
+  preallocated scratch, if needed. Storage figures are not allocator overhead or
+  process RSS.

@@ -503,7 +503,9 @@ Bounded work units are documented per backend. Attributes preserve order and all
 duplicate checks support error/warning/off with explicit scratch and results.
 References are preserved without decoding/lookup; malformed-reference acceptance
 is an explicit reject/warn/accept syntax policy with factual counters and sink-stop
-handling. Comments and CDATA remain distinct source-backed leaves. Additional
+handling. Comments and CDATA remain distinct source-backed leaves. Slice 4a adds
+optional whole-source UTF-8 validation, off by default with error/warning choices;
+its source-ordered findings do not stop independent duplicate checks. Additional
 validation and DOT recognition/integration remain subsequent slices. Current
 coverage is documented in [the markup guide](../MARKUP.md); settled grammar and
 delivery order are recorded in [the internal slice contract](MARKUP.md).
@@ -1451,6 +1453,12 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-09-27 — **R-MOD-014 standalone slice 4a:** optional UTF-8 checking over the
+  original source, independent of parsing and default off. Ordinary encoding
+  errors do not suppress duplicate findings; diagnostic order, scratch preflight,
+  cancellation and per-check completion are explicit. No retained-layout growth,
+  decoding, stricter XML names or structural recovery is added.
 
 - 2026-09-27 — **R-MOD-014 standalone scanning:** opt-in vector run scanning,
   default scalar token-at-a-time plain fast path, scanner-owned result delivery,

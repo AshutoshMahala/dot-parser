@@ -4,7 +4,10 @@ pub const RuleSeverity = enum { err, warning, off };
 pub const ScannerBackend = enum { scalar, block };
 pub const Acceptance = enum { reject, warn, accept };
 pub const SyntaxSettings = struct { malformed_reference: Acceptance = .reject };
-pub const ValidationSettings = struct { duplicate_attribute: RuleSeverity = .err };
+pub const ValidationSettings = struct {
+    duplicate_attribute: RuleSeverity = .err,
+    invalid_utf8: RuleSeverity = .off,
+};
 
 pub const Policy = struct {
     scanner: ?ScannerBackend = null,
@@ -16,7 +19,10 @@ pub const Policy = struct {
         max_nodes: ?u32 = null,
         max_attributes: ?u32 = null,
     } = .{},
-    validation: struct { duplicate_attribute: ?RuleSeverity = null } = .{},
+    validation: struct {
+        duplicate_attribute: ?RuleSeverity = null,
+        invalid_utf8: ?RuleSeverity = null,
+    } = .{},
     execution: struct {
         metering: ?bool = null,
         cancellation: ?bool = null,
@@ -61,7 +67,9 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
     inline for (std.meta.fields(@TypeOf(patch.execution))) |field| {
         if (@field(patch.execution, field.name)) |value| @field(result.execution, field.name) = value;
     }
-    if (patch.validation.duplicate_attribute) |value| result.validation.duplicate_attribute = value;
+    inline for (std.meta.fields(@TypeOf(patch.validation))) |field| {
+        if (@field(patch.validation, field.name)) |value| @field(result.validation, field.name) = value;
+    }
     return result;
 }
 
@@ -75,7 +83,10 @@ pub const presets = struct {
             .max_nodes = defaults.limits.max_nodes,
             .max_attributes = defaults.limits.max_attributes,
         },
-        .validation = .{ .duplicate_attribute = defaults.validation.duplicate_attribute },
+        .validation = .{
+            .duplicate_attribute = defaults.validation.duplicate_attribute,
+            .invalid_utf8 = defaults.validation.invalid_utf8,
+        },
         .execution = .{ .metering = false, .cancellation = false },
     };
 };
