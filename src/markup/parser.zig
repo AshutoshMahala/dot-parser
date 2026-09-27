@@ -7,17 +7,20 @@ const diagnostic = @import("diagnostic.zig");
 const policy = @import("policy.zig");
 const scratch = @import("scratch.zig");
 const result = @import("result.zig");
+const Kind = @import("kind.zig").Kind;
 
-pub fn Machine(comptime fixed_limits: ?policy.Limits, comptime metered: bool, comptime cancellable: bool) type {
+pub fn Machine(comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool) type {
+    const deviations_enabled = fixed == null or fixed.?.syntax.malformed_reference != .reject;
+    const warnings_enabled = fixed == null or fixed.?.syntax.malformed_reference == .warn;
     return struct {
         const Self = @This();
-        pub const Settings = if (fixed_limits == null) policy.Limits else void;
+        pub const Settings = if (fixed == null) policy.ParseSettings else void;
         pub const Hook = if (cancellable) ?support.execution.Cancellation else void;
         scanner: lexer.ScannerFor(metered),
         diagnostics: diagnostic.Sink,
         settings: Settings,
         hook: Hook,
-        phase: enum { preflight, begin, scan, grammar, compare_open, compare_close, open, text, close, open_head, attribute, empty_close, commit } = .preflight,
+        phase: enum { preflight, begin, scan, grammar, compare_open, compare_close, open, leaf, close, open_head, attribute, empty_close, commit } = .preflight,
         token: lexer.Token = undefined,
         /// Only live while reading an attribute-bearing opening header. Not a
         /// nesting frame: self-closing tags still need no persistent scratch.
@@ -26,13 +29,35 @@ pub fn Machine(comptime fixed_limits: ?policy.Limits, comptime metered: bool, co
         compare_byte: u8 = 0,
         began: bool = false,
         counts: result.Counts = .{},
+        deviations: if (deviations_enabled) u32 else void = if (deviations_enabled) 0 else {},
+        warnings: if (warnings_enabled) u32 else void = if (warnings_enabled) 0 else {},
         terminal: ?result.Report = null,
 
         pub fn init(source: []const u8, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) Self {
             return .{ .scanner = .init(source), .diagnostics = diagnostics, .settings = settings, .hook = hook };
         }
         fn limits(self: *const Self) policy.Limits {
-            return if (fixed_limits) |v| v else self.settings;
+            return if (fixed) |v| v.limits else self.settings.limits;
+        }
+        fn acceptance(self: *const Self) policy.Acceptance {
+            return if (fixed) |v| v.syntax.malformed_reference else self.settings.syntax.malformed_reference;
+        }
+        fn malformedReference(self: *Self, stack: *scratch.Stack, sink: anytype, finding: diagnostic.Diagnostic) void {
+            if (!deviations_enabled or self.acceptance() == .reject)
+                return self.finish(stack, sink, .invalid_syntax, finding);
+            // Each event owns one distinct ampersand: bounded by source length.
+            self.deviations += 1;
+            if (warnings_enabled and self.acceptance() == .warn) {
+                self.warnings += 1;
+                var warning = finding;
+                warning.code = .malformed_reference_tolerated;
+                const action = self.diagnostics.emit(warning) catch |err| {
+                    self.finish(stack, sink, .{ .diagnostic_stopped = .fromError(err) }, null);
+                    self.terminal.?.diagnostic_delivery = .failed;
+                    return;
+                };
+                if (action == .stop) self.finish(stack, sink, .{ .diagnostic_stopped = .requested }, null);
+            }
         }
         fn finish(self: *Self, stack: *scratch.Stack, sink: anytype, outcome: result.Outcome, finding: ?diagnostic.Diagnostic) void {
             var delivery: diagnostic.reporting.Delivery = .complete;
@@ -45,7 +70,7 @@ pub fn Machine(comptime fixed_limits: ?policy.Limits, comptime metered: bool, co
             }
             if (self.began and outcome != .success) sink.abort();
             stack.len = 0;
-            self.terminal = .{ .outcome = outcome, .diagnostic_delivery = delivery, .counts = self.counts };
+            self.terminal = .{ .outcome = outcome, .diagnostic_delivery = delivery, .counts = self.counts, .accepted_deviations = if (deviations_enabled) self.deviations else 0, .warnings = if (warnings_enabled) self.warnings else 0 };
         }
         fn capacity(self: *Self, stack: *scratch.Stack, sink: anytype, resource: diagnostic.Resource, limit: u32, storage: bool) void {
             self.finish(stack, sink, if (storage) .{ .storage_exhausted = resource } else .{ .resource_limit = .{ .resource = resource, .limit = limit } }, .{
@@ -80,6 +105,7 @@ pub fn Machine(comptime fixed_limits: ?policy.Limits, comptime metered: bool, co
                 .scan => if (self.scanner.step()) |item| {
                     switch (item) {
                         .problem => |p| self.finish(stack, sink, p.outcome, p.diagnostic),
+                        .malformed_reference => |d| self.malformedReference(stack, sink, d),
                         .token => |t| {
                             self.token = t;
                             self.phase = .grammar;
@@ -97,13 +123,13 @@ pub fn Machine(comptime fixed_limits: ?policy.Limits, comptime metered: bool, co
                         self.compare_index = 0;
                         self.phase = .compare_open;
                     },
-                    .open, .empty, .text => {
+                    .open, .empty, .text, .comment, .cdata => {
                         if (self.counts.nodes == self.limits().max_nodes) return self.capacity(stack, sink, .nodes, self.limits().max_nodes, false);
-                        if (self.token.kind != .text) {
+                        if (self.token.kind == .open or self.token.kind == .empty) {
                             if (stack.len == self.limits().max_nesting) return self.capacity(stack, sink, .nesting_depth, self.limits().max_nesting, false);
                             if (self.token.kind == .open) stack.push(.{ .name = self.token.name }) catch |err| return self.failure(stack, sink, err);
                             self.phase = .open;
-                        } else self.phase = .text;
+                        } else self.phase = .leaf;
                     },
                     .open_head => {
                         if (self.counts.nodes == self.limits().max_nodes) return self.capacity(stack, sink, .nodes, self.limits().max_nodes, false);
@@ -138,8 +164,14 @@ pub fn Machine(comptime fixed_limits: ?policy.Limits, comptime metered: bool, co
                     self.counts.max_depth = @max(self.counts.max_depth, if (self.token.kind == .open) stack.len else stack.len + 1);
                     self.phase = .scan;
                 },
-                .text => {
-                    sink.text(self.token.span) catch |err| return self.failure(stack, sink, err);
+                .leaf => {
+                    const kind: Kind = switch (self.token.kind) {
+                        .text => .text,
+                        .comment => .comment,
+                        .cdata => .cdata,
+                        else => unreachable,
+                    };
+                    sink.leaf(kind, self.token.span) catch |err| return self.failure(stack, sink, err);
                     self.counts.nodes += 1;
                     self.phase = .scan;
                 },
@@ -197,7 +229,7 @@ pub fn Machine(comptime fixed_limits: ?policy.Limits, comptime metered: bool, co
                 used += 1;
                 self.step(stack, sink);
             }
-            return .{ .outcome = if (self.terminal) |r| r.outcome else null, .work_used = used, .source_frontier = self.scanner.frontier, .counts = self.counts };
+            return .{ .outcome = if (self.terminal) |r| r.outcome else null, .work_used = used, .source_frontier = self.scanner.frontier, .counts = self.counts, .accepted_deviations = if (deviations_enabled) self.deviations else 0, .warnings = if (warnings_enabled) self.warnings else 0 };
         }
     };
 }
@@ -224,7 +256,7 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
             try self.attempt();
             return 0;
         }
-        pub fn text(self: *@This(), _: support.location.Span) !void {
+        pub fn leaf(self: *@This(), _: Kind, _: support.location.Span) !void {
             try self.attempt();
         }
         pub fn attribute(self: *@This(), _: u32, _: support.location.Span, _: support.location.Span) !void {

@@ -7,9 +7,10 @@ pub const reporting = support.reporting;
 pub const namespace = "markup_parser";
 pub const namespace_hash = support.wdp.computeNamespaceHash(namespace);
 
-pub const Feature = enum { references, comments, cdata, processing_instructions, declarations, encoding };
+pub const Feature = enum { processing_instructions, declarations, encoding };
 pub const Resource = enum { source_bytes, nesting_depth, nodes, attributes, nesting_frames, node_pool, attribute_pool, attribute_keys };
-pub const Expected = enum { name, tag_end, closing_angle, equal_sign, quote, attribute_separator, attribute_value };
+pub const Expected = enum { name, tag_end, closing_angle, equal_sign, quote, attribute_separator, attribute_value, declaration_start, comment_start, comment_end, cdata_start, cdata_end };
+pub const ReferenceProblem = enum { missing_name, missing_digits, missing_semicolon, invalid_character };
 pub const Code = enum {
     invalid_byte,
     unexpected_byte,
@@ -22,6 +23,8 @@ pub const Code = enum {
     out_of_memory,
     duplicate_attribute,
     duplicate_attribute_tolerated,
+    malformed_reference,
+    malformed_reference_tolerated,
 
     pub fn structured(self: Code) []const u8 {
         return switch (self) {
@@ -36,17 +39,21 @@ pub const Code = enum {
             .out_of_memory => "E.Resource.Memory.026",
             .duplicate_attribute => "E.Validation.Attribute.006",
             .duplicate_attribute_tolerated => "W.Validation.Attribute.006",
+            .malformed_reference => "E.Syntax.Reference.003",
+            .malformed_reference_tolerated => "W.Syntax.Reference.003",
         };
     }
     pub fn severity(self: Code) reporting.Severity {
-        return if (self == .duplicate_attribute_tolerated) .warning else .err;
+        return if (self == .duplicate_attribute_tolerated or self == .malformed_reference_tolerated) .warning else .err;
     }
     pub fn compactId(self: Code) [5]u8 {
+        @setEvalBranchQuota(5000);
         return switch (self) {
             inline else => |code| comptime support.wdp.computeCompactId(code.structured()),
         };
     }
     pub fn qualifiedCompactId(self: Code) [11]u8 {
+        @setEvalBranchQuota(5000);
         return switch (self) {
             inline else => |code| comptime namespace_hash ++ "-".* ++ code.compactId(),
         };
@@ -58,6 +65,7 @@ pub const Details = union(enum) {
     expected: Expected,
     feature: Feature,
     capacity: struct { resource: Resource, limit: u32 },
+    reference: ReferenceProblem,
 };
 pub const Diagnostic = struct {
     code: Code,

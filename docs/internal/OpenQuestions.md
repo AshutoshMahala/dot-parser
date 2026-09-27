@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-27 (standalone structural markup slices 1–2).
+Last reconciled: 2026-09-27 (standalone structural markup slices 1–3).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -721,7 +721,7 @@ is authorized by these decisions.
 **Q40 — How are HTML-like identifiers recognized, parsed and validated, and
 which markup policies are offered?**
 **Architecture, mode names and usage paths decided (2026-09-19); standalone
-structural slices 1–2 implemented (2026-09-27), DOT integration pending.** HTML-like identifiers must work
+structural slices 1–3 implemented (2026-09-27), DOT integration pending.** HTML-like identifiers must work
 wherever the DOT grammar permits an ID, not only as label values. DOT parsing
 recognizes and preserves the complete raw identifier; recognition alone makes
 no claim that its inner markup is well-formed or is a valid Graphviz label.
@@ -743,9 +743,10 @@ required for standalone parsing. [Markup decisions and slice record](MARKUP.md)
 define the agreed grammar, byte/encoding boundary and the implemented layout/API.
 
 The module supports empty/text/multiple-root fragments, arbitrary case-sensitive,
-byte-matched elements and quoted attributes. It shares only language-independent
-primitives with DOT. References, comments and CDATA are recognized
-as unsupported until their slices. No Graphviz vocabulary, implicit decoding,
+byte-matched elements, quoted attributes, references, comments and CDATA. It shares
+only language-independent primitives with DOT. References stay in text/value spans;
+comments/CDATA have distinct leaf kinds without increasing the 20-byte node layout.
+No Graphviz vocabulary, implicit decoding,
 Unicode normalization, namespace resolution, partial successful tree or guessed
 tag repair is introduced. Raw high bytes are preserved; optional UTF-8/name
 checks are future work. UTF-16/32 require explicit conversion; recognized leading
@@ -758,11 +759,13 @@ validation implicitly. The separate pool costs 20 bytes per attribute without
 enlarging nodes; temporary duplicate-key scratch is 8 bytes per entry in the
 largest attribute list. Validation is run-to-completion with separate validity,
 completion, finding counts and delivery, not bounded by parse credits.
-For the next slice, well-spelled named references need not be
-defined for structural recognition. Malformed-reference policy will reject by
+Well-spelled named references need not be defined for structural recognition.
+Numeric references are range-checked without expansion. Malformed-reference policy rejects by
 default or explicitly accept with warning/silently by treating the offending `&`
-as literal text, preserving bytes and normal tag/quote boundaries. These are
-decided reference directions for a later slice, not current reference policy fields.
+as literal text, preserving bytes and normal tag/quote boundaries. The implemented
+`syntax.malformed_reference` field has fixed/runtime parity, u32 factual counters,
+and sink-stop handling. Exact spellings, ranges and diagnostic extents are in
+the [consumer contract](../MARKUP.md#references-comments-and-cdata).
 
 Markup has its own dedicated source directory, `src/markup/`, and independently
 usable stages, like the DOT subsystem. The intended integration remains:
@@ -1006,18 +1009,17 @@ not a promise of structural facts from opaque recognition alone.
 
 Structure on demand per identifier or eagerly for all remains the integration
 direction. The standalone implementation has settled its layout: preorder subtree
-intervals for elements/text and a separate owner-indexed attribute pool, replacing
+intervals for elements/text/comment/CDATA and a separate owner-indexed attribute pool, replacing
 the earlier provisional parent/child/sibling links. Independent validation produces
 separate results. Event-only consumers must be able to skip retained layers;
 the currently public alternative is count-only measurement, not public events.
 
 **Still open before the relevant implementation:**
 
-- Remaining XML-like grammar details for later slices: reference extents,
-  comment/CDATA rules and optional encoding/name checks. The standalone-first
-  record above settles case matching, raw-byte preservation, quoted attributes,
-  duplicate checking and malformed-reference interpretation. Structural checking
-  does not imply full XML conformance.
+- Remaining optional encoding/name/known-reference checks and explicitly defined
+  recovery. Standalone slices settle case matching, raw-byte preservation, quoted
+  attributes, duplicate checking, reference extents/interpretation and comment/CDATA
+  rules. Structural checking does not imply full XML conformance.
 - Public stage APIs, syntax/events and optional retained representation
   (the layering above), diagnostics, scratch capacities and work
   accounting; default behavior and how configuration composes the stages.
@@ -1335,8 +1337,8 @@ checks. Whether the future `extended` vocabulary includes it remains open.
 Finding or validating an actual referenced port is still a later semantic
 pass, not part of recognizing an ID, and label rules do not apply to every ID.
 
-*(Recorded contracts: R-MOD-014 and R-MOD-015. Standalone structural slices 1–2 now
-exists in `src/markup/`; later grammar and integration remain pending. HTML-like
+*(Recorded contracts: R-MOD-014 and R-MOD-015. Standalone structural slices 1–3 now
+exist in `src/markup/`; later checks/recovery and integration remain pending. HTML-like
 DOT IDs are still deferred in [supported syntax](../SUPPORTED_SYNTAX.md).)*
 
 **Q1 — Is version 1 the complete documented DOT grammar or a named subset?**
@@ -1510,6 +1512,12 @@ Open; nothing currently forces the choice.
 ---
 
 ## Reconciliation log
+
+- 2026-09-27 — Structural slice 3 implements raw-preserving references, comments
+  and CDATA, malformed-reference syntax policy, deviation/warning counters and
+  diagnostic-stop handling. Node/attribute/frame sizes remain unchanged; reference
+  continuation and public result state have explicit measured costs. DOT integration,
+  further optional checks and defined recovery remain pending.
 
 - 2026-09-27 — Structural slice 2 implements quoted attributes, ordered duplicate
   retention, explicit attribute capacity/limits and independent duplicate checks

@@ -40,10 +40,10 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return if (effective.execution.metering) (if (effective.execution.cancellation) .both else .metered) else (if (effective.execution.cancellation) .cancellable else .plain);
         }
         fn Core(comptime variant: Variant) type {
-            return engine.Engine(api, if (runtime_policy) null else baseline.limits, variant == .metered or variant == .both, variant == .cancellable or variant == .both);
+            return engine.Engine(api, if (runtime_policy) null else baseline.parsing(), variant == .metered or variant == .both, variant == .cancellable or variant == .both);
         }
         fn settings(comptime variant: Variant, effective: State) Core(variant).Settings {
-            return if (runtime_policy) effective.limits else {};
+            return if (runtime_policy) effective.parsing() else {};
         }
         fn hook(comptime variant: Variant, value: Hook) Core(variant).Hook {
             return if (variant == .cancellable or variant == .both) value else {};

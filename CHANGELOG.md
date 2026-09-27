@@ -6,6 +6,15 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add standalone markup references, comments and CDATA. References remain in
+  source-backed text/attribute spans without decoding or entity lookup; comments
+  and CDATA retain distinct leaf kinds with `NodeView.content()`. Nodes remain 20 bytes.
+- Add markup `syntax.malformed_reference` (`reject`/`warn`/`accept`), factual u32
+  deviation/warning counts, and explicit diagnostic-stop outcomes with fixed/runtime,
+  bounded, cancellable and count-only parity. Tolerance preserves bytes and boundaries.
+  **Breaking:** `NodeKind` adds comment/CDATA cases, `Node.name` encodes the kind
+  when length is zero, and implemented constructs no longer have unsupported-feature
+  enum cases. Public lexer remains strict. DOT integration is not included.
 - **Breaking:** DOT `Policy.limits.max_nesting` is now `?u32`, with a resolved
   default of `maxInt(u32)`. Active nesting and recovery brace-depth counters also
   use u32, matching the source domain; allocation sizes remain usize.

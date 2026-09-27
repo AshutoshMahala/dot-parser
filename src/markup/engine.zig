@@ -7,8 +7,8 @@ const scratch = @import("scratch.zig");
 const diagnostic = @import("diagnostic.zig");
 const results = @import("result.zig");
 
-pub fn Engine(comptime api: type, comptime limits: ?policy.Limits, comptime metered: bool, comptime cancellable: bool) type {
-    const Machine = parser.Machine(limits, metered, cancellable);
+pub fn Engine(comptime api: type, comptime fixed_settings: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool) type {
+    const Machine = parser.Machine(fixed_settings, metered, cancellable);
     return struct {
         pub const Settings = Machine.Settings;
         pub const Hook = Machine.Hook;
@@ -46,7 +46,7 @@ pub fn Engine(comptime api: type, comptime limits: ?policy.Limits, comptime mete
         };
 
         fn fixedResult(report: results.Report, builder: *const syntax.Builder) api.FixedParseResult {
-            return .{ .outcome = report.outcome, .diagnostic_delivery = report.diagnostic_delivery, .counts = report.counts, .document = builder.document() };
+            return .{ .outcome = report.outcome, .diagnostic_delivery = report.diagnostic_delivery, .counts = report.counts, .accepted_deviations = report.accepted_deviations, .warnings = report.warnings, .document = builder.document() };
         }
         pub fn parseBorrowedIn(source: []const u8, memory: api.ParseMemory, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) api.FixedParseResult {
             var session = Session.init(source, memory, diagnostics, settings, hook);
@@ -63,6 +63,8 @@ pub fn Engine(comptime api: type, comptime limits: ?policy.Limits, comptime mete
                 .outcome = report.outcome,
                 .diagnostic_delivery = report.diagnostic_delivery,
                 .counts = report.counts,
+                .accepted_deviations = report.accepted_deviations,
+                .warnings = report.warnings,
                 .document = builder.document(),
                 ._allocator = allocator,
                 ._nodes = builder.list,

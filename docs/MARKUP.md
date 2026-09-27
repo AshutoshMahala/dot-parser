@@ -15,7 +15,8 @@ identifiers are still unsupported by the DOT parser.
 | Non-ASCII names/text, including invalid UTF-8 bytes | Preserved without encoding validation |
 | Quoted attributes: `<a x='1' y="2"/>` | Preserved in source order, including duplicates |
 | Duplicate attribute names on one element | Parsing retains all; independent validation defaults to error |
-| `&` references, comments, CDATA | Recognized as unsupported in this slice |
+| Named, decimal and hexadecimal references | Checked and preserved inside text/attribute spans; no expansion or name lookup |
+| `<!--comment-->`, `<![CDATA[text]]>` | Retained as distinct leaf nodes, including empty bodies |
 | Processing instructions, declarations | Unsupported |
 | Unclosed, mismatched or unexpected closing tags | Invalid syntax; no partial document |
 | Leading UTF-16/32 byte-order markers | Unsupported encoding; no automatic conversion |
@@ -24,7 +25,7 @@ Names start with `[A-Za-z_:]` or a byte `0x80..0xFF`; subsequent bytes may also
 include digits, `-`, and `.`. There is no namespace interpretation. Whitespace in
 text stays intact. Space/tab/CR/LF are allowed around tag endings, but not between
 `/` and `>` in a self-closing tag. Control bytes below `0x20` other than tab/CR/LF
-are invalid. Ordinary text ends at `<` or `&`; no XML-conformance claim is made
+are invalid. Ordinary text ends at `<`; references remain in the same text run. No XML-conformance claim is made
 for its other character-data restrictions. A leading UTF-8 BOM is skipped as
 content without changing physical offsets. UTF-16/32 must be converted explicitly;
 offsets then refer to the converted buffer. BOM detection does not identify every
@@ -34,7 +35,7 @@ Attribute names use the same byte grammar as element names. Values require singl
 or double quotes; whitespace around `=` is allowed and attributes must be separated
 by whitespace. Empty values, `>`, opposite quotes and backslashes are ordinary
 content; backslashes do not escape quotes. Raw `<` and forbidden control bytes are
-invalid in values. `&` remains unsupported there too, pending the references slice.
+invalid in values. References use the same grammar in text and quoted values.
 Closing tags cannot have attributes. No boolean/unquoted attributes, whitespace
 normalization, namespace resolution or attribute decoding is implied.
 
@@ -43,6 +44,52 @@ Attribute-free tags are whole `open`/`close`/`empty` tokens. Attribute-bearing t
 yield `open_head`, `attribute` tokens, then `head_end` or `empty_end`. On an attribute
 token, `name` is the name span and `span` is the quoted value span. Header-end tokens
 cover only `>` or `/>`; retained element spans still cover the entire element.
+Comments and CDATA produce whole `comment`/`cdata` tokens with raw delimiters.
+The public lexer is strict: a malformed reference returns a latched syntax problem;
+tolerance is available through policy-bound parsing, not a second lexical dialect.
+
+### References, comments and CDATA
+
+References require a semicolon: `&name;`, `&#decimal;`, or `&#xhex;` (lowercase `x`,
+either-case hex digits). Named references use this parser's byte-oriented name
+grammar; their definitions are not required or looked up. Numeric values must be
+tab/LF/CR or in `U+0020–D7FF`, `U+E000–FFFD`, or `U+10000–10FFFF`. Arbitrarily long
+digit sequences are handled without integer overflow, allocation or decoding.
+These spellings and numeric ranges follow [XML 1.0 references](https://www.w3.org/TR/xml/#sec-references),
+but the broader fragment/name/encoding contract is deliberately not full XML.
+
+Comments close at `-->`; `--` cannot occur in their bodies, including a final
+body hyphen immediately before the terminator. CDATA starts with the exact
+case-sensitive `<![CDATA[` and ends at the first `]]>`. Neither construct nests
+or interprets tags/references inside its body. They work at top level or within
+element content, not inside tag headers/attribute values. All original bytes,
+including whitespace, remain unchanged; the ordinary forbidden-control-byte
+rule still applies. An incomplete supported opener such as `<!`, `<!-` or `<![C`
+is invalid syntax, not unsupported. Other declaration families and processing
+instructions remain unsupported; no DTD/external-entity processing is performed.
+
+`syntax.malformed_reference` is `reject` by default. `warn` or `accept` treats
+the offending `&` as literal and resumes ordinary scanning. There is no inserted
+semicolon, replacement character or expanded value. The candidate prefix already
+examined is literal-safe and is not rescanned; the stopping `<`, another `&`, or
+matching attribute quote remains unconsumed. For a complete numeric reference
+with an invalid value, its semicolon is included in the candidate. Tolerance
+does not repair an unclosed attribute or permit a literal `<` inside its value.
+
+```zig
+const Tolerant = markup.Profile(.{
+    .policy = .{ .syntax = .{ .malformed_reference = .warn } },
+});
+// "a & b" is one unchanged text node, one accepted deviation, one warning.
+const report = Tolerant.measureIn("a & b", .{}, sink, .{});
+```
+
+Malformed-reference diagnostics cover the consumed candidate beginning at `&`,
+excluding the byte that stopped recognition. Typed reasons distinguish missing
+name, digits, semicolon, and an invalid numeric character. A following `&` starts
+its own reference; `&&valid;` has one deviation. This is a documented syntax
+assumption, not a claim that tolerated input is XML-conformant. Syntax policy is
+applied during parsing; changing it later requires reparsing, not duplicate validation.
 
 ## Import and parse
 
@@ -64,7 +111,8 @@ if (parsed.document) |document| {
     var roots = document.roots();
     while (roots.next()) |node| {
         _ = node.raw();      // borrowed full spelling, including element contents
-        _ = node.name();     // null for text; borrowed bytes for an element
+        _ = node.name();     // null for leaves; borrowed bytes for an element
+        _ = node.content();  // leaf body without comment/CDATA delimiters; null for elements
         _ = node.children();// allocation-free direct-child iterator
         var attributes = node.attributes();
         while (attributes.next()) |attribute| {
@@ -84,11 +132,20 @@ from source; no implicit text/name copying or normalization occurs.
 owner `NodeId`, name span and quoted value span. `NodeView.attributes()` finds the
 owner's range in O(log A), then iterates in O(1) per entry; it never merges duplicate
 names. `AttributeView.raw()` preserves the whole pair, including whitespace around
-`=`. Text nodes return an empty attribute iterator.
+`=`. Text/comment/CDATA leaves return empty child and attribute iterators.
+References do not create extra nodes or a per-reference side table. Comments and
+CDATA each count as one node, even with an empty body; they do not increase element
+depth. `NodeKind` distinguishes `element`, `text`, `comment`, and `cdata`.
+
+The compact `Node.name` field is an element-name span only when `name.len != 0`.
+For leaves, `name.len == 0` and `name.start` stores the leaf `NodeKind` discriminator,
+not a source offset. Prefer `kind()`, `raw()`, `name()` and `content()` over interpreting
+the storage encoding. This keeps all nodes at 20 bytes without a new side pool.
 
 `Document` is a trusted completed-parser representation, not an arbitrary document
 builder. Public fields do not remove its preconditions: spans must refer to the
-live source, nodes must have valid preorder/subtree intervals, and attributes must
+live source, leaves must have valid kind encodings and matching raw delimiters,
+nodes must have valid preorder/subtree intervals, and attributes must
 be in source order with nondecreasing owner IDs that refer to elements. Each
 owner's attributes form one contiguous range; names and quoted values lie inside
 that element's source span. Hand-built views must uphold the same invariants.
@@ -203,10 +260,11 @@ const parsed = Reader.parseBorrowedIn(source, memory, sink, .{
 | Policy leaf | Values/default |
 | --- | --- |
 | `limits.max_source_bytes` | u32; default `2^32 - 1` |
-| `limits.max_nodes` | u32; default `2^32 - 1`; elements plus nonempty text runs |
+| `limits.max_nodes` | u32; default `2^32 - 1`; elements, nonempty text runs, comments and CDATA sections |
 | `limits.max_attributes` | u32; default `2^32 - 1`; every occurrence counts |
 | `limits.max_nesting` | u32; default `2^32 - 1`; top-level elements have depth 1 |
 | `validation.duplicate_attribute` | `err` (default), `warning`, `off`; affects validation, not parsing |
+| `syntax.malformed_reference` | `reject` (default), `warn`, `accept`; tolerant cases keep the `&` literal |
 | `execution.metering` | boolean; default false |
 | `execution.cancellation` | boolean; default false |
 
@@ -253,10 +311,16 @@ can move between calls without retaining pointers into their former location.
 Results keep `outcome`, `diagnostic_delivery`, and factual `counts` separate.
 Only `.success` publishes a document. Counts on failure describe accepted prefix
 events, not a usable partial tree or completed validation.
+Parse results, measurement reports and session progress also expose u32
+`accepted_deviations` and `warnings`. Each tolerated ampersand increments the former;
+`warn` also increments the latter before delivery. Discarding/filtering diagnostics
+does not alter counts; `accept` produces no warning or diagnostic call. Counts
+survive later failure, cancellation and sink stopping. They are source-bounded
+summaries, not a retained per-reference history or validation's separate totals.
 
 | Outcome | Meaning |
 | --- | --- |
-| `success` | Whole fragment parsed under the implemented grammar |
+| `success` | Whole fragment parsed under the selected syntax policy |
 | `invalid_syntax` | Rejected structural syntax |
 | `unsupported_feature` | Recognized construct is not processed; contents unvalidated |
 | `resource_limit` | Source/node/attribute/nesting policy reached |
@@ -264,10 +328,15 @@ events, not a usable partial tree or completed validation.
 | `out_of_memory` | Explicit allocator failed |
 | `cancelled` | Caller stopped unfinished work |
 | `sink_failure` | Private syntax consumer failed |
+| `diagnostic_stopped` | Warning sink requested stopping or rejected delivery; contains the stop reason |
 
-Current parsing is fail-fast and emits at most one terminal failure diagnostic.
+Parsing can emit multiple accepted-reference warnings before at most one terminal failure diagnostic.
 Its original cause survives a diagnostic destination that stops or rejects it;
 rejection sets `diagnostic_delivery = .failed`. Cancellation emits no diagnostic.
+An accepted warning followed by sink `.stop` aborts unfinished parsing with
+`diagnostic_stopped.requested` and complete delivery of the emitted prefix. Sink
+errors produce the corresponding reason and failed delivery. Neither case publishes
+a document, sends another diagnostic into the stopped sink, or continues scanning.
 No markup fix suggestions or syntax recovery are implemented in this slice.
 
 Diagnostics use the `markup_parser` WDP namespace, with processor-owned typed
@@ -282,7 +351,8 @@ the same [shared reporting contracts](REPORTING.md) as DOT without sharing paylo
 - `zig build test`: includes coexistence with DOT and shared primitive tests.
 - `zig build check-freestanding`: consumed RISC-V32/Wasm32 fixed/runtime profiles.
 - `zig build examples`: includes the standalone example.
-- `zig build bench-markup -Doptimize=ReleaseFast`: flat, mixed, text, deep and attribute
+- `zig build bench-markup -Doptimize=ReleaseFast`: flat, mixed, text, deep, attribute,
+  reference, comment and CDATA
   fixtures; fixed/runtime/count-only latency and decimal MB/s, record/scratch and
   session sizes. Duplicate validation is timed separately with a discard sink and
   preallocated scratch. Storage figures are not allocator overhead or process RSS.

@@ -3,7 +3,7 @@ const std = @import("std");
 const markup = @import("markup_parser");
 
 pub fn main(init: std.process.Init) !void {
-    const source = "Hello <widget name='demo' name=\"retained too\"><B>world</B><br/></widget>!";
+    const source = "Hello &amp; <widget name='demo' name=\"retained too\"><B>world</B><br/></widget><!-- retained --><![CDATA[<raw>&text]]>!";
     var bag = markup.GrowableDiagnosticBag.init(init.arena.allocator(), .{});
     defer bag.deinit();
     var parsed = markup.parseBorrowed(init.arena.allocator(), source, bag.sink(), .{});

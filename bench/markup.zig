@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
         markup.FixedParseScratch(1).byte_size, @sizeOf(markup.Diagnostic), @sizeOf(markup.Profile(.{}).Session),
         @sizeOf(markup.BoundedSession),        @sizeOf(Runtime.Session),
     });
-    inline for (.{ "flat", "mixed", "text", "deep", "attributes", "duplicates" }) |name| {
+    inline for (.{ "flat", "mixed", "text", "deep", "attributes", "duplicates", "references", "attribute_references", "comments", "cdata" }) |name| {
         var source: std.ArrayList(u8) = .empty;
         if (comptime std.mem.eql(u8, name, "deep")) {
             for (0..10_000) |_| try source.appendSlice(allocator, "<a>");
@@ -26,7 +26,16 @@ pub fn main(init: std.process.Init) !void {
             try source.resize(allocator, 1_000_000);
             @memset(source.items, 'x');
         } else {
-            const item = if (comptime std.mem.eql(u8, name, "flat")) "<a/>" else if (comptime std.mem.eql(u8, name, "attributes")) "<a x='1' y=\"2\" z='3'/>" else if (comptime std.mem.eql(u8, name, "duplicates")) "<a x='1' y=\"2\" x='3'/>" else "<a><b/>text</a>";
+            const item = comptime blk: {
+                if (std.mem.eql(u8, name, "flat")) break :blk "<a/>";
+                if (std.mem.eql(u8, name, "attributes")) break :blk "<a x='1' y=\"2\" z='3'/>";
+                if (std.mem.eql(u8, name, "duplicates")) break :blk "<a x='1' y=\"2\" x='3'/>";
+                if (std.mem.eql(u8, name, "references")) break :blk "<a>&amp;&#65;&#x1F600;&custom;</a>";
+                if (std.mem.eql(u8, name, "attribute_references")) break :blk "<a x='&amp;&#65;&#x1F600;&custom;'/>";
+                if (std.mem.eql(u8, name, "comments")) break :blk "<!-- <a>&literal; - text -->";
+                if (std.mem.eql(u8, name, "cdata")) break :blk "<![CDATA[<a>&literal; ] text]]>";
+                break :blk "<a><b/>text</a>";
+            };
             for (0..50_000) |_| try source.appendSlice(allocator, item);
         }
         const measured = markup.measure(allocator, source.items, markup.diagnostic.discard, .{});

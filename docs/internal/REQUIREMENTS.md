@@ -493,12 +493,16 @@ Rendering and consumer-specific interpretation remain outside these stages.
 
 **Standalone-first implementation (2026-09-27; decisions 2026-09-26):** build structural markup in
 vertical slices before expanding composition. `markup_parser` now independently
-parses text, matching/self-closing elements and quoted attributes, using shared language-independent
+parses text, matching/self-closing elements, quoted attributes, references, comments
+and CDATA, using shared language-independent
 primitives but no DOT grammar/document. It provides source-backed retained and
 count-only paths, explicit fixed/growing storage, policy limits and bounded/
 cancellable fixed sessions. Attributes preserve order and all duplicates; independent
 duplicate checks support error/warning/off with explicit scratch and results.
-References, comments, CDATA, additional validation and DOT recognition/integration remain subsequent slices. Current
+References are preserved without decoding/lookup; malformed-reference acceptance
+is an explicit reject/warn/accept syntax policy with factual counters and sink-stop
+handling. Comments and CDATA remain distinct source-backed leaves. Additional
+validation and DOT recognition/integration remain subsequent slices. Current
 coverage is documented in [the markup guide](../MARKUP.md); settled grammar and
 delivery order are recorded in [the internal slice contract](MARKUP.md).
 
@@ -1445,6 +1449,11 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-09-27 — **R-MOD-014 standalone slice 3:** source-preserving references,
+  comment/CDATA leaf kinds, malformed-reference syntax policy, factual counters
+  and sink-stop behavior with fixed/runtime/bounded parity. No decoding, entity
+  lookup, full XML-conformance claim or DOT integration is added.
 
 - 2026-09-27 — **R-MOD-014 standalone slice 2:** quoted attributes, raw ordered
   duplicate retention, independent policy-controlled checking and explicit

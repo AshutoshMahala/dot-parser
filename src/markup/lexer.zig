@@ -7,12 +7,14 @@ const result = @import("result.zig");
 pub const Token = struct {
     /// Attribute-free tags remain whole tokens. A tag with attributes yields
     /// open_head, attribute*, then head_end/empty_end. No header buffering.
-    kind: enum { text, open, close, empty, open_head, attribute, head_end, empty_end, eof },
+    kind: enum { text, comment, cdata, open, close, empty, open_head, attribute, head_end, empty_end, eof },
     /// Whole token except attribute: there it is the quoted value span.
     span: Span,
     name: Span = .{ .start = 0, .len = 0 },
 };
 pub const Result = union(enum) { token: Token, problem: result.Problem };
+/// Recoverable lexical finding, interpreted only by the policy-bound parser.
+const ScanResult = union(enum) { token: Token, problem: result.Problem, malformed_reference: diagnostic.Diagnostic };
 
 pub fn isNameStart(byte: u8) bool {
     return switch (byte) {
@@ -29,6 +31,22 @@ pub fn isNameContinue(byte: u8) bool {
 fn whitespace(byte: u8) bool {
     return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n';
 }
+fn digit(byte: u8, radix: u8) ?u32 {
+    const value: u32 = switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'f' => byte - 'a' + 10,
+        'A'...'F' => byte - 'A' + 10,
+        else => return null,
+    };
+    return if (value < radix) value else null;
+}
+fn referenceCharacter(value: u32) bool {
+    // XML 1.0 Char range, without decoding or emitting replacement bytes.
+    return value == 9 or value == 10 or value == 13 or
+        (value >= 0x20 and value <= 0xd7ff) or
+        (value >= 0xe000 and value <= 0xfffd) or
+        (value >= 0x10000 and value <= 0x10ffff);
+}
 
 pub fn ScannerFor(comptime metered: bool) type {
     return struct {
@@ -36,7 +54,7 @@ pub fn ScannerFor(comptime metered: bool) type {
         source: []const u8,
         offset: u32 = 0,
         frontier: if (metered) u32 else void = if (metered) 0 else {},
-        state: enum { prefix, prefix_done, content, text, after_lt, end_start, name, after_name, slash, bang, attribute_name, before_equal, before_value, value, after_value, attributes, attribute_slash } = .prefix,
+        state: enum { prefix, prefix_done, content, text, after_lt, end_start, name, after_name, slash, bang, attribute_name, before_equal, before_value, value, after_value, attributes, attribute_slash, comment_start, comment, comment_dash, comment_end, cdata_start, cdata, cdata_bracket, cdata_end, reference_start, reference_name, reference_number_start, reference_hex_start, reference_decimal, reference_hex } = .prefix,
         prefix: [4]u8 = .{0} ** 4,
         prefix_len: u3 = 0,
         start: u32 = 0,
@@ -44,7 +62,10 @@ pub fn ScannerFor(comptime metered: bool) type {
         name_end: u32 = 0,
         closing: bool = false,
         quote: u8 = 0,
-        terminal: ?Result = null,
+        reference_start: u32 = 0,
+        reference_value: u32 = 0,
+        reference_context: enum { text, value } = .text,
+        terminal: ?ScanResult = null,
 
         pub fn init(source: []const u8) Scanner {
             var scanner: Scanner = .{ .source = source };
@@ -56,24 +77,47 @@ pub fn ScannerFor(comptime metered: bool) type {
             } };
             return scanner;
         }
-        fn problem(self: *Scanner, code: diagnostic.Code, at: u32, details: diagnostic.Details) Result {
-            const r: Result = .{ .problem = .{
+        fn problem(self: *Scanner, code: diagnostic.Code, at: u32, details: diagnostic.Details) ScanResult {
+            const r: ScanResult = .{ .problem = .{
                 .outcome = if (details == .feature) .{ .unsupported_feature = details.feature } else .invalid_syntax,
                 .diagnostic = .{ .code = code, .span = .{ .start = at, .len = if (at < self.source.len) 1 else 0 }, .details = details },
             } };
             self.terminal = r;
             return r;
         }
-        fn unsupported(self: *Scanner, feature: diagnostic.Feature, at: u32) Result {
+        fn unsupported(self: *Scanner, feature: diagnostic.Feature, at: u32) ScanResult {
             return self.problem(.unsupported_feature, at, .{ .feature = feature });
         }
-        fn token(self: *Scanner, kind: @FieldType(Token, "kind")) Result {
-            const t: Token = .{ .kind = kind, .span = .{ .start = self.start, .len = self.offset - self.start }, .name = if (kind == .text or kind == .head_end or kind == .empty_end) .{ .start = 0, .len = 0 } else .{ .start = self.name_start, .len = self.name_end - self.name_start } };
+        fn token(self: *Scanner, kind: @FieldType(Token, "kind")) ScanResult {
+            const t: Token = .{ .kind = kind, .span = .{ .start = self.start, .len = self.offset - self.start }, .name = if (kind == .text or kind == .comment or kind == .cdata or kind == .head_end or kind == .empty_end) .{ .start = 0, .len = 0 } else .{ .start = self.name_start, .len = self.name_end - self.name_start } };
             self.state = .content;
             return .{ .token = t };
         }
 
-        pub fn step(self: *Scanner) ?Result {
+        fn beginReference(self: *Scanner, context: @FieldType(Scanner, "reference_context")) void {
+            self.reference_start = self.offset;
+            self.reference_context = context;
+            self.offset += 1; // '&'
+            self.state = .reference_start;
+        }
+        fn endReference(self: *Scanner) void {
+            self.state = switch (self.reference_context) {
+                .text => .text,
+                .value => .value,
+            };
+        }
+        fn malformedReference(self: *Scanner, reason: diagnostic.ReferenceProblem) ScanResult {
+            self.endReference();
+            // Consumed candidate bytes are already literal-safe in this context.
+            // Do not rewind/rescan them or consume the byte that stopped recognition.
+            return .{ .malformed_reference = .{
+                .code = .malformed_reference,
+                .span = .{ .start = self.reference_start, .len = self.offset - self.reference_start },
+                .details = .{ .reference = reason },
+            } };
+        }
+
+        pub fn step(self: *Scanner) ?ScanResult {
             if (self.terminal) |r| return r;
             if (self.state == .prefix) {
                 if (self.prefix_len < 4 and self.prefix_len < self.source.len) {
@@ -97,10 +141,12 @@ pub fn ScannerFor(comptime metered: bool) type {
             const at = self.offset;
             if (at == self.source.len) {
                 switch (self.state) {
-                    .bang => return self.unsupported(.declarations, self.start),
+                    .reference_start => return self.malformedReference(.missing_name),
+                    .reference_number_start, .reference_hex_start => return self.malformedReference(.missing_digits),
+                    .reference_name, .reference_decimal, .reference_hex => return self.malformedReference(.missing_semicolon),
                     .text => return self.token(.text),
                     .content => {
-                        const r: Result = .{ .token = .{ .kind = .eof, .span = .{ .start = at, .len = 0 } } };
+                        const r: ScanResult = .{ .token = .{ .kind = .eof, .span = .{ .start = at, .len = 0 } } };
                         self.terminal = r;
                         return r;
                     },
@@ -111,6 +157,11 @@ pub fn ScannerFor(comptime metered: bool) type {
                         .attribute_name, .before_equal => .equal_sign,
                         .before_value, .value => .quote,
                         .after_value => .attribute_separator,
+                        .bang => .declaration_start,
+                        .comment_start => .comment_start,
+                        .comment, .comment_dash, .comment_end => .comment_end,
+                        .cdata_start => .cdata_start,
+                        .cdata, .cdata_bracket, .cdata_end => .cdata_end,
                         else => .tag_end,
                     } }),
                 }
@@ -118,6 +169,13 @@ pub fn ScannerFor(comptime metered: bool) type {
             const byte = self.source[at];
             if (metered) self.frontier = @max(self.frontier, at + 1);
             if (byte < 0x20 and !whitespace(byte)) return self.problem(.invalid_byte, at, .{ .byte = byte });
+            // Text runs need no dispatch through tag/reference continuation
+            // states. Keep one-byte stepping, including boundary lookahead.
+            if (self.state == .text) {
+                if (byte == '<') return self.token(.text);
+                if (byte == '&') self.beginReference(.text) else self.offset += 1;
+                return null;
+            }
             switch (self.state) {
                 .content => {
                     self.start = at;
@@ -125,15 +183,12 @@ pub fn ScannerFor(comptime metered: bool) type {
                         self.offset += 1;
                         self.state = .after_lt;
                         self.closing = false;
-                    } else if (byte == '&') return self.unsupported(.references, at) else {
+                    } else if (byte == '&') self.beginReference(.text) else {
                         self.offset += 1;
                         self.state = .text;
                     }
                 },
-                .text => {
-                    if (byte == '<' or byte == '&') return self.token(.text);
-                    self.offset += 1;
-                },
+                .text => unreachable,
                 .after_lt => {
                     switch (byte) {
                         '/' => {
@@ -238,7 +293,10 @@ pub fn ScannerFor(comptime metered: bool) type {
                     } else return self.problem(.unexpected_byte, at, .{ .expected = .quote });
                 },
                 .value => {
-                    if (byte == '&') return self.unsupported(.references, at);
+                    if (byte == '&') {
+                        self.beginReference(.value);
+                        return null;
+                    }
                     if (byte == '<') return self.problem(.unexpected_byte, at, .{ .expected = .attribute_value });
                     self.offset += 1;
                     if (byte == self.quote) {
@@ -270,11 +328,96 @@ pub fn ScannerFor(comptime metered: bool) type {
                     self.offset += 1;
                     return self.token(.empty_end);
                 },
-                .bang => return self.unsupported(switch (byte) {
-                    '-' => .comments,
-                    '[' => .cdata,
-                    else => .declarations,
-                }, self.start),
+                .bang => switch (byte) {
+                    '-' => {
+                        self.offset += 1;
+                        self.state = .comment_start;
+                    },
+                    '[' => {
+                        self.offset += 1;
+                        self.prefix_len = 0;
+                        self.state = .cdata_start;
+                    },
+                    else => return self.unsupported(.declarations, self.start),
+                },
+                .comment_start => {
+                    if (byte != '-') return self.problem(.unexpected_byte, at, .{ .expected = .comment_start });
+                    self.offset += 1;
+                    self.state = .comment;
+                },
+                .comment => {
+                    self.offset += 1;
+                    if (byte == '-') self.state = .comment_dash;
+                },
+                .comment_dash => {
+                    self.offset += 1;
+                    self.state = if (byte == '-') .comment_end else .comment;
+                },
+                .comment_end => {
+                    if (byte != '>') return self.problem(.unexpected_byte, at, .{ .expected = .comment_end });
+                    self.offset += 1;
+                    return self.token(.comment);
+                },
+                .cdata_start => {
+                    if (byte != "CDATA["[self.prefix_len]) return self.problem(.unexpected_byte, at, .{ .expected = .cdata_start });
+                    self.offset += 1;
+                    self.prefix_len += 1;
+                    if (self.prefix_len == 6) self.state = .cdata;
+                },
+                .cdata => {
+                    self.offset += 1;
+                    if (byte == ']') self.state = .cdata_bracket;
+                },
+                .cdata_bracket => {
+                    self.offset += 1;
+                    self.state = if (byte == ']') .cdata_end else .cdata;
+                },
+                .cdata_end => {
+                    self.offset += 1;
+                    if (byte == '>') return self.token(.cdata);
+                    if (byte != ']') self.state = .cdata;
+                },
+                .reference_start => {
+                    if (byte == '#') {
+                        self.reference_value = 0;
+                        self.offset += 1;
+                        self.state = .reference_number_start;
+                    } else if (isNameStart(byte)) {
+                        self.offset += 1;
+                        self.state = .reference_name;
+                    } else return self.malformedReference(.missing_name);
+                },
+                .reference_name => {
+                    if (byte == ';') {
+                        self.offset += 1;
+                        self.endReference();
+                    } else if (isNameContinue(byte)) {
+                        self.offset += 1;
+                    } else return self.malformedReference(.missing_semicolon);
+                },
+                .reference_number_start, .reference_hex_start => {
+                    if (self.state == .reference_number_start and byte == 'x') {
+                        self.offset += 1;
+                        self.state = .reference_hex_start;
+                    } else if (digit(byte, if (self.state == .reference_hex_start) 16 else 10)) |value| {
+                        self.reference_value = value;
+                        self.offset += 1;
+                        self.state = if (self.state == .reference_hex_start) .reference_hex else .reference_decimal;
+                    } else return self.malformedReference(.missing_digits);
+                },
+                .reference_decimal, .reference_hex => {
+                    if (byte == ';') {
+                        self.offset += 1;
+                        if (!referenceCharacter(self.reference_value)) return self.malformedReference(.invalid_character);
+                        self.endReference();
+                    } else if (digit(byte, if (self.state == .reference_hex) 16 else 10)) |value| {
+                        // Saturation avoids overflow for arbitrarily many digits,
+                        // while consuming the full candidate in linear time.
+                        const radix: u32 = if (self.state == .reference_hex) 16 else 10;
+                        self.reference_value = @min(0x110000, self.reference_value * radix + value);
+                        self.offset += 1;
+                    } else return self.malformedReference(.missing_semicolon);
+                },
                 .prefix, .prefix_done => unreachable,
             }
             return null;
@@ -282,7 +425,7 @@ pub fn ScannerFor(comptime metered: bool) type {
     };
 }
 
-/// Ordinary lexical cursor over the same scanner. No policy, tree or allocation.
+/// Strict lexical cursor over the same scanner. No tree or allocation.
 pub const Lexer = struct {
     scanner: ScannerFor(false),
     pub fn init(source: []const u8) Lexer {
@@ -290,7 +433,15 @@ pub const Lexer = struct {
     }
     pub fn next(self: *Lexer) Result {
         while (true) {
-            if (self.scanner.step()) |r| return r;
+            if (self.scanner.step()) |r| return switch (r) {
+                .token => |t| .{ .token = t },
+                .problem => |p| .{ .problem = p },
+                .malformed_reference => |d| blk: {
+                    const p: result.Problem = .{ .outcome = .invalid_syntax, .diagnostic = d };
+                    self.scanner.terminal = .{ .problem = p };
+                    break :blk .{ .problem = p };
+                },
+            };
         }
     }
 };
@@ -299,7 +450,7 @@ test "opening header preserves its spans while consuming the first attribute byt
     const std = @import("std");
     const source = "<long-name x='1'/>";
     var scanner = ScannerFor(true).init(source);
-    var head: Result = undefined;
+    var head: ScanResult = undefined;
     while (true) {
         if (scanner.step()) |r| {
             head = r;

@@ -1,5 +1,5 @@
-//! Standalone, byte-oriented markup fragments, structural slices 1–2.
-//! Text, elements and quoted attributes. This is not a browser
+//! Standalone, byte-oriented markup fragments, structural slices 1–3.
+//! Elements, attributes, references, comments and CDATA. This is not a browser
 //! HTML parser, a complete XML processor, or Graphviz label validation.
 //! No dependency on DOT grammar, retained documents, or processor composition.
 const std = @import("std");
@@ -20,6 +20,7 @@ pub const Cancellation = support.execution.Cancellation;
 pub const Policy = policy.Policy;
 pub const PolicyConfig = policy.Config;
 pub const RuleSeverity = policy.RuleSeverity;
+pub const Acceptance = policy.Acceptance;
 pub const presets = policy.presets;
 pub const PolicyValidation = policy.Check;
 pub const Document = syntax.Document;
@@ -53,12 +54,16 @@ pub const FixedParseResult = struct {
     outcome: Outcome,
     diagnostic_delivery: reporting.Delivery,
     counts: Counts,
+    accepted_deviations: u32 = 0,
+    warnings: u32 = 0,
     document: ?Document,
 };
 pub const ParseResult = struct {
     outcome: Outcome,
     diagnostic_delivery: reporting.Delivery,
     counts: Counts,
+    accepted_deviations: u32 = 0,
+    warnings: u32 = 0,
     document: ?Document,
     _allocator: std.mem.Allocator,
     _nodes: std.ArrayList(Node),

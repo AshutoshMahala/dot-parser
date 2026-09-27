@@ -7,7 +7,7 @@ comptime {
 }
 const P = markup.Profile(.{
     .runtime_policy = features.runtime_policy,
-    .policy = .{ .execution = .{ .metering = true, .cancellation = true } },
+    .policy = .{ .syntax = .{ .malformed_reference = .warn }, .execution = .{ .metering = true, .cancellation = true } },
 });
 fn stopped(context: ?*anyopaque) bool {
     const flag: *volatile u8 = @ptrCast(context.?);
@@ -18,7 +18,7 @@ export fn parse_markup(source: [*]const u8, len: usize, limit: u32, stop: *u8) u
     var frames: markup.FixedParseScratch(8) = .{};
     var keys: markup.FixedValidationScratch(32) = .{};
     const hook: markup.Cancellation = .{ .context = stop, .is_requested = stopped };
-    var session = P.Session.init(source[0..len], .{ .document = storage.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .limits = .{ .max_nodes = limit } }, .cancellation = hook } else .{ .cancellation = hook });
+    var session = P.Session.init(source[0..len], .{ .document = storage.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .limits = .{ .max_nodes = limit }, .syntax = .{ .malformed_reference = @enumFromInt(limit % 3) } }, .cancellation = hook } else .{ .cancellation = hook });
     defer session.deinit();
     while (true) {
         const p = if (features.runtime_policy) session.advance(1) catch return 0 else session.advance(1);
@@ -26,10 +26,11 @@ export fn parse_markup(source: [*]const u8, len: usize, limit: u32, stop: *u8) u
     }
     const r = session.result().?;
     if (r.outcome != .success) return 0;
-    var total = r.counts.nodes;
+    var total = r.counts.nodes +% r.accepted_deviations +% r.warnings;
     var roots = r.document.?.roots();
     while (roots.next()) |node| {
         total +%= node.span().len;
+        if (node.content()) |body| total +%= @intCast(body.len);
         var attributes = node.attributes();
         while (attributes.next()) |attribute| total +%= @intCast(attribute.value().len);
     }

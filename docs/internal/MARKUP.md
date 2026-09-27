@@ -1,6 +1,6 @@
 # Standalone markup — structural slices
 
-Decisions: 2026-09-26; slices 1–2 implemented 2026-09-27. Later slices below are plans, not
+Decisions: 2026-09-26; slices 1–3 implemented 2026-09-27. Later slices below are plans, not
 current public capabilities. R-MOD-014/015 and Q40 remain the architectural contract.
 
 ## Delivery order
@@ -15,7 +15,7 @@ this parser. Independent parsing must not import DOT grammar or retained records
 | --- | --- | --- |
 | 1 | Text, arbitrary matching/self-closing elements; standalone module, source-backed output, explicit memory, policy limits, bounded/cancellable execution | Implemented |
 | 2 | Quoted attributes, retained order/duplicates, independent duplicate checking | Implemented |
-| 3 | References, comments and CDATA, including malformed-reference acceptance policy | Planned |
+| 3 | References, comments and CDATA, including malformed-reference acceptance policy | Implemented |
 | 4 | Further optional checks and explicitly defined recovery | Planned |
 | Integration | DOT opaque recognition followed by delayed integration; during-DOT composition later | Planned |
 
@@ -39,8 +39,8 @@ No reserved public fields or pretend implementation of later checks are needed.
   silently accept by treating the offending `&` as literal text and resuming normal
   scanning. Never consume a subsequent `<` or closing attribute quote as reference
   content, invent a replacement value, or present tolerated input as XML-conformant.
-  Exact recognition/diagnostic extents will be tested in slice 3.
-- Comments and CDATA are planned. Processing instructions/declarations are
+  Exact recognition/diagnostic extents are documented and tested in slice 3.
+- Comments and CDATA are preserved as distinct leaves. Processing instructions/declarations are
   deferred; no DTD processing, external entities, file/URL access or rendering.
 - Preserve whitespace. Label-specific interpretation belongs to a later pass.
 - Stop the fragment at an unrecoverable structural error; no guessed closing tags
@@ -64,7 +64,7 @@ Slice 1's concrete lexical choices are:
   fail in the implemented grammar. Non-ASCII name/text bytes remain unchanged.
 - A leading UTF-8 BOM is recognized and excluded from text, as in DOT; source
   offsets still include it. Elsewhere those bytes are ordinary content.
-- Ordinary text is a nonempty run until `<` or `&`; it is not entity-decoded or
+- Ordinary text is a nonempty run until `<`; references stay inside that span. It is not entity-decoded or
   subject to full XML character-data restrictions. In particular, this slice
   makes no claim to reject every XML-forbidden character-data sequence.
 
@@ -79,7 +79,7 @@ remain processor-owned; the markup namespace is `markup_parser`.
 The scalar scanner feeds one iterative event-level parser. Growable, fixed and
 count-only consumers share that grammar. Events stay private/provisional, following
 DOT's initial layering. Public retained data is a compact preorder forest: each
-20-byte node holds a raw span, a name span (empty for text), and a subtree-end
+20-byte node holds a raw span, a name span (zero length with a kind discriminator for leaves), and a subtree-end
 index. Direct-child iterators skip whole subtree intervals without allocations.
 This chooses intervals instead of the earlier provisional parent/child/sibling
 links. No parent lookup table, per-ID summary table or graph data is added.
@@ -101,7 +101,7 @@ reports reserved node/attribute capacity, not just occupied records, and exclude
 overhead/RSS. Fixed parsing is unchanged; allocator callbacks are not budgeted work.
 
 The policy contains implemented limits (source bytes, nodes, attributes, nesting),
-duplicate-attribute validation severity, and execution choices (metering, cancellation). Limits/counts/ranges are u32; lengths
+malformed-reference acceptance, duplicate-attribute validation severity, and execution choices (metering, cancellation). Limits/counts/ranges are u32; lengths
 at the allocator/slice boundary use native sizes. Defaults preserve the existing
 unlimited-within-representation convention. All typed combinations are meaningful,
 including zero limits, so `validatePolicy` currently returns `valid`; no invalid
@@ -116,9 +116,9 @@ propagate them rather than silently treating them as unreachable.
 
 The standalone scanner checks the source-size domain at initialization, before
 reading bytes, rather than at each scan step. At EOF after a self-closing slash,
-the expected token is precisely `>`; `<!` already identifies an unsupported
-declaration family, even without the next byte that distinguishes its subtype.
-Neither recognition case validates the contents of an unsupported construct.
+the expected token is precisely `>`. With comments/CDATA implemented, `<!` alone
+is an incomplete possible supported opener. Only a distinguishing byte identifies
+an unsupported declaration family, whose body is not validated.
 
 Metered fixed sessions charge source examinations, grammar transitions, each byte
 of tag-name comparison, and individual event attempts. One credit suffices; zero
@@ -127,9 +127,49 @@ ordinary builds omit frontier/hook state when disabled. Callout time is excluded
 and allocator-backed operations are run-to-completion, not a bounded allocation
 claim. Completed results are latched; abort occurs at most once after begin.
 
-No Graphviz/extended validation, reference policy, UTF-8 validation,
+No Graphviz/extended validation, UTF-8 validation,
 markup fixes, additional scanner backend or processor scheduling is implemented
 by this slice. See the [consumer guide](../MARKUP.md) for the actual API.
+
+## Slice 3 implementation
+
+The scalar scanner recognizes named, decimal and hexadecimal references inside
+existing text/quoted-value spans. Named references use the byte-name grammar and
+need no definition. Numeric references use XML 1.0's `Char` range, not HTML's
+replacement/legacy rules. Saturating accumulation checks range without overflow
+or expansion, including arbitrarily long or zero-padded digit sequences. No
+entity table, per-reference pool, external lookup, decoding or normalization is added.
+
+`syntax.malformed_reference` has compile-time/runtime `reject`/`warn`/`accept`
+parity. The scanner returns a recoverable finding to the grammar; the public
+low-level lexer maps it to a latched strict failure. Tolerance treats the first
+ampersand literally; already-examined candidate bytes are safe literal content
+and are not rescanned. The terminating tag/quote/ampersand is left for ordinary
+scanning. This is constant continuation state and linear work, not backtracking.
+Candidate diagnostic spans and typed reasons are part of the public contract.
+
+Comments enforce `<!--...-->` without interior `--`; CDATA enforces exact
+`<![CDATA[...]]>`. Bodies ignore reference/tag syntax but still reject prohibited
+raw control bytes. Both are distinct retained leaves. Their kind occupies the
+otherwise-unused start of a zero-length name span; node/attribute/frame layouts
+remain 20/20/12 bytes. `NodeView.content()` strips leaf delimiters on request.
+Empty comment/CDATA bodies count as nodes, not elements/depth. References create
+neither extra nodes nor attributes. The node-kind enum also serves private leaf
+events; the parser remains independent of retained syntax.
+
+Reports/results/progress expose u32 accepted-deviation and warning counts,
+including the discovered prefix on stop/failure. A fixed rejecting profile omits
+active counters and runtime policy storage; a fixed silent profile omits its
+active warning counter. Public result fields still exist. Diagnostic warning
+delivery follows sink acknowledgment and aborts exactly once on stop/failure;
+terminal syntax/resource failures keep their cause. Independent duplicate
+validation and its findings/costs are unchanged.
+
+Tests cover boundary spellings/ranges, raw preservation, capacities, every prefix,
+arbitrary bytes, long candidates/bodies, fixed/runtime/growing/count-only parity,
+budget partition invariance, cancellation/relocation, policy reset, diagnostic
+stop/error reasons and allocation failures. Freestanding probes consume the new
+leaves, runtime policy and counters. Measurements are recorded below.
 
 ## Slice 2 implementation
 
@@ -370,3 +410,77 @@ copying is still permitted when an allocator cannot remap. This establishes the
 mechanism, not general heap/RSS savings. Consumed benchmark `__text` decreases from
 338,216 to 335,212 B for markup and 485,468 to 483,504 B for DOT; these figures
 include host/benchmark code, not just library code.
+
+
+## Slice 3 verification and costs — 2026-09-27
+
+Implemented references, comments/CDATA and malformed-reference acceptance.
+The full suite passes **419 tests in Debug, ReleaseSafe, ReleaseFast and
+ReleaseSmall**, plus 13 compile-fail fixtures, examples, benchmark builds and
+consumed fixed/runtime RISC-V32/Wasm32 probes. Formatting and diff checks pass.
+The DOT implementation and shared primitives are unchanged by this slice.
+
+Apple M4 Pro, Zig 0.16.0, ReleaseFast. The common comparison uses the unchanged
+six-fixture benchmark source from `f887de8`, compiled against that commit and
+this slice. Three alternating process pairs (before/after, after/before,
+before/after) ran serially after compilation finished. Each executable reports
+its median of nine 16-operation batches after five warm-up batches; the table
+uses the median of three process medians. Decimal MB/s. These local development
+samples do not replace standard-machine baselines or establish confidence bounds.
+
+| Fixture | Fixed ms, before → after | Fixed MB/s | Runtime baseline MB/s | Runtime override MB/s | Count-only MB/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Empty elements | 0.854 → 0.872 | 234.1 → 229.3 | 233.8 → 229.0 | 235.2 → 235.5 | 253.7 → 249.3 |
+| Mixed fragments | 3.641 → 3.748 | 206.0 → 200.1 | 209.1 → 202.1 | 207.9 → 200.9 | 222.6 → 217.5 |
+| Text | 3.017 → 3.086 | 331.4 → 324.0 | 331.4 → 332.5 | 331.9 → 332.5 | 332.5 → 310.1 |
+| Deep nesting | 0.324 → 0.314 | 215.8 → 223.3 | 216.4 → 217.0 | 222.6 → 218.2 | 231.2 → 223.0 |
+| Distinct attributes | 4.947 → 5.183 | 222.4 → 212.3 | 217.8 → 212.5 | 217.8 → 211.5 | 238.3 → 219.2 |
+| Duplicate attributes | 4.976 → 5.185 | 221.1 → 212.1 | 218.0 → 213.1 | 216.7 → 212.3 | 237.7 → 219.4 |
+
+The geometric mean over the 24 parse comparisons is **2.6% lower throughput**.
+Individual changes range from −8.0% to +3.5%. In particular, count-only text is
+6.7% slower, and count-only distinct/duplicate attributes are 8.0%/7.7% slower.
+These are remaining regressions, not a no-cost feature claim. The ordinary-text
+path avoids dispatch through tag/reference continuation states while retaining
+one-byte metering; no block scanner or unbudgeted scanning loop was introduced.
+Further count-only/hot-path work remains a performance follow-up. Timing varied
+between runs, so the small changes are not strong evidence of universal ordering.
+
+Independent validation (preallocated scratch, discard sink, source-byte-normalized
+throughput) is 814.9 → 812.1 MB/s for distinct keys and 1,186.7 → 1,165.2 MB/s for
+duplicates. Its algorithm did not change; it does not validate references or
+reinterpret comments/CDATA as attributes.
+
+The expanded `bench-markup` adds four supported-content fixtures. These are one
+process's nine-batch medians, not before/after comparisons (the old parser rejected
+them). All use valid input and a discard diagnostic sink; warning-volume costs
+are not established by these measurements.
+
+| Fixture | Source B | Fixed ms / MB/s | Runtime baseline ms / MB/s | Runtime override ms / MB/s | Count-only ms / MB/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| References in text | 1,700,000 | 8.246 / 206.2 | 7.800 / 217.9 | 8.322 / 204.3 | 7.646 / 222.3 |
+| References in attributes | 1,800,000 | 8.103 / 222.1 | 7.757 / 232.0 | 7.660 / 235.0 | 7.607 / 236.6 |
+| Comments | 1,400,000 | 5.243 / 267.0 | 5.076 / 275.8 | 4.995 / 280.3 | 4.913 / 285.0 |
+| CDATA | 1,550,000 | 5.411 / 286.5 | 5.440 / 284.9 | 5.561 / 278.7 | 5.354 / 289.5 |
+
+Node/attribute/frame/validation-scratch/diagnostic sizes stay **20/20/12/8/36 B**
+on the tested native layout; retained and scratch widths are also checked by the
+32-bit consumed probes. No per-reference retained storage was added. The two
+reference fixtures reserve 2,000,000 B of output and 12 B of fixed scratch each;
+the comment and CDATA fixtures reserve 1,000,000 B of output and no nesting scratch.
+The attribute-reference fixture is self-closing; its measured-depth scratch
+reservation is conservative, not a claim that it needs an active frame.
+
+| Native session | Before B | After B | Increase B |
+| --- | ---: | ---: | ---: |
+| Fixed ordinary | 400 | 424 | 24 |
+| Fixed metered | 408 | 424 | 16 |
+| Runtime policy | 456 | 480 | 24 |
+
+Continuation, policy and factual-result state have costs even though record sizes
+are unchanged. Fixed rejecting profiles omit active deviation/warning counters;
+fixed silent profiles omit the active warning counter. Public result fields remain
+present. The unchanged-harness executable's `__text` grows from 335,212 to 338,996 B
+(+3,784 B); this includes benchmark/host code, not isolated library size. Source,
+bags, allocator overhead and process RSS are excluded from retained-storage figures.
+Growable peak heap/RSS and a full DOT performance rerun were not measured.

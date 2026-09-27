@@ -6,6 +6,10 @@ const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
 const discard = markup.diagnostic.discard;
 
+test {
+    _ = @import("markup_content.zig");
+}
+
 test "standalone public lexer yields borrowed tokens and latches EOF/errors" {
     const source = "text<a>body<b/></a>";
     var lexer = markup.lexer.Lexer.init(source);
@@ -36,10 +40,7 @@ test "truncated tag endings and declaration prefixes have precise stable diagnos
         try comparePartition(source);
     }
     for ([_]struct { source: []const u8, feature: markup.diagnostic.Feature }{
-        .{ .source = "<!", .feature = .declarations },
         .{ .source = "<!x", .feature = .declarations },
-        .{ .source = "<!-", .feature = .comments },
-        .{ .source = "<![", .feature = .cdata },
     }) |case| {
         var lexer = markup.lexer.Lexer.init(case.source);
         const first = lexer.next();
@@ -142,14 +143,7 @@ test "empty/text fragments, raw high bytes, exact case, names and encoding signa
 
 test "later slices are recognized as unsupported, not silently accepted" {
     const cases = [_]struct { source: []const u8, feature: markup.diagnostic.Feature }{
-        .{ .source = "<a x='&amp;'/>", .feature = .references },
-        .{ .source = "a &amp; b", .feature = .references },
-        .{ .source = "&;", .feature = .references },
-        .{ .source = "&unfinished", .feature = .references },
-        .{ .source = "<!--hi-->", .feature = .comments },
-        .{ .source = "<![CDATA[x]]>", .feature = .cdata },
         .{ .source = "<!DOCTYPE a>", .feature = .declarations },
-        .{ .source = "<!", .feature = .declarations },
         .{ .source = "<?xml version='1.0'?>", .feature = .processing_instructions },
     };
     for (cases) |case| {
@@ -391,6 +385,7 @@ fn allocationCase(allocator: std.mem.Allocator, source: []const u8) !void {
 test "all allocation failures release grown output and nesting, including later syntax failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{"<a><b><c><d/><e/><f/><g/><h/><i/><j/><k/><l/></c></b></a>"});
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{"<a><b><c><d/><e/><f/><g/><h/><i/><j/><k/><l/></wrong>"});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{"<!--start--><a x='&custom;'><b><![CDATA[<raw>]]>&amp;<c/></b></a><!--end-->"});
 }
 
 test "owned results trim in place or retain visible slack without allocation or failure" {
@@ -455,11 +450,11 @@ fn comparePartition(source: []const u8) !void {
     }
 }
 test "every truncation and deterministic arbitrary bytes are safe and partition invariant" {
-    const source = "\xef\xbb\xbftext<namespace:long-name x = 'v>\"' y=\"\" x='2'><é A='é'/>\r\nother</namespace:long-name>end";
+    const source = "\xef\xbb\xbftext&amp;<namespace:long-name x = 'v>\"&custom;' y=\"&#x41;\" x='2'><!-- & <hi/> --><é A='é'/><![CDATA[&<raw>]]>\r\nother</namespace:long-name>end";
     for (0..source.len + 1) |end| try comparePartition(source[0..end]);
     var random = std.Random.DefaultPrng.init(0x4d41524b5550);
     var bytes: [128]u8 = undefined;
-    const alphabet = "<>/aAb: _.19-\r\n\t&!?=\"'\xff\x00";
+    const alphabet = "<>/aAb: _.19-\r\n\t&!?=\"'[]#;xCDAT\xff\x00";
     for (0..1000) |_| {
         const len = random.random().uintLessThan(usize, bytes.len + 1);
         for (bytes[0..len]) |*byte| byte.* = alphabet[random.random().uintLessThan(usize, alphabet.len)];

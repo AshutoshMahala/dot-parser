@@ -3,15 +3,22 @@
 const std = @import("std");
 const Span = @import("parser_support").location.Span;
 pub const NodeId = enum(u32) { _ };
-pub const Kind = enum { element, text };
+pub const Kind = @import("kind.zig").Kind;
 pub const Node = struct {
     span: Span,
-    /// Zero length identifies text; element names cannot be empty.
+    /// Element name span. For leaves, len is zero and start encodes Kind;
+    /// it is then a discriminator, not a source span. Use kind()/NodeView.content().
     name: Span,
     /// First index after this node and all its descendants.
     subtree_end: u32,
     pub fn kind(self: Node) Kind {
-        return if (self.name.len == 0) .text else .element;
+        if (self.name.len != 0) return .element;
+        return switch (self.name.start) {
+            @intFromEnum(Kind.text) => .text,
+            @intFromEnum(Kind.comment) => .comment,
+            @intFromEnum(Kind.cdata) => .cdata,
+            else => unreachable, // Invalid trusted representation, not input syntax.
+        };
     }
 };
 /// Sparse source-order pool: no attribute fields are added to every node.
@@ -38,7 +45,8 @@ pub fn Fixed(comptime capacity: Capacities) type {
 /// unchanged. No deinit: disposal belongs to the owning result or caller storage.
 /// This is a trusted parser representation, not an unchecked document builder.
 /// Manually constructed views must uphold the same invariants: bounded source
-/// spans, valid preorder subtree intervals, and attributes in source order with
+/// spans, valid leaf kind encodings/delimiters and preorder subtree intervals,
+/// and attributes in source order with
 /// nondecreasing owners referring to elements. Each owner's attributes occupy
 /// one contiguous range; names/quoted values refer into that owner's source span.
 /// Validation checks policy findings, not general correctness of these pools.
@@ -72,6 +80,17 @@ pub const NodeView = struct {
     pub fn raw(self: NodeView) []const u8 {
         return self.span().slice(self.document.source);
     }
+    /// Borrowed leaf body: text unchanged, comment/CDATA delimiters removed.
+    /// Never decodes references; elements have no single leaf body.
+    pub fn content(self: NodeView) ?[]const u8 {
+        const bytes = self.raw();
+        return switch (self.kind()) {
+            .element => null,
+            .text => bytes,
+            .comment => bytes[4 .. bytes.len - 3],
+            .cdata => bytes[9 .. bytes.len - 3],
+        };
+    }
     pub fn name(self: NodeView) ?[]const u8 {
         const r = self.record();
         return if (r.kind() == .element) r.name.slice(self.document.source) else null;
@@ -102,7 +121,7 @@ pub fn attributeInvariant(document: *const Document, index: u32) bool {
     const owner = @intFromEnum(attribute.owner);
     if (owner >= document.records.len) return false;
     const node = document.records[owner];
-    if (node.kind() != .element or node.span.endOffset() > document.source.len or
+    if (node.name.len == 0 or node.span.endOffset() > document.source.len or
         node.name.start < node.span.start or node.name.endOffset() > node.span.endOffset() or
         attribute.name.len == 0 or attribute.name.start < node.name.endOffset() or
         attribute.name.endOffset() > attribute.value.start or attribute.value.len < 2 or
@@ -188,8 +207,9 @@ pub const Builder = struct {
     pub fn open(self: *Builder, span: Span, name: Span) Error!u32 {
         return self.append(.{ .span = span, .name = name, .subtree_end = @intCast(self.list.items.len + 1) });
     }
-    pub fn text(self: *Builder, span: Span) Error!void {
-        _ = try self.append(.{ .span = span, .name = .{ .start = 0, .len = 0 }, .subtree_end = @intCast(self.list.items.len + 1) });
+    pub fn leaf(self: *Builder, kind: Kind, span: Span) Error!void {
+        std.debug.assert(kind != .element);
+        _ = try self.append(.{ .span = span, .name = .{ .start = @intFromEnum(kind), .len = 0 }, .subtree_end = @intCast(self.list.items.len + 1) });
     }
     pub fn attribute(self: *Builder, owner: u32, name: Span, value: Span) Error!void {
         const record: Attribute = .{ .owner = @enumFromInt(owner), .name = name, .value = value };
@@ -240,7 +260,7 @@ pub const Counter = struct {
     pub fn open(_: *Counter, _: Span, _: Span) Error!u32 {
         return 0;
     }
-    pub fn text(_: *Counter, _: Span) Error!void {}
+    pub fn leaf(_: *Counter, _: Kind, _: Span) Error!void {}
     pub fn attribute(_: *Counter, _: u32, _: Span, _: Span) Error!void {}
     pub fn close(_: *Counter, _: u32, _: u32) Error!void {}
     pub fn commit(_: *Counter) Error!void {}
