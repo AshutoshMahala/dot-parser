@@ -114,7 +114,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return validateCall("run", .{ document, scratch, diagnostics }, options);
         }
         /// Allocates temporary duplicate-key scratch when needed, freed before
-        /// returning. Encoding-only validation requires no allocation.
+        /// returning. Encoding/name/reference-only validation needs no allocation.
         pub fn validate(allocator: std.mem.Allocator, document: *const api.Document, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
             return validateCall("allocated", .{ allocator, document, diagnostics }, options);
         }

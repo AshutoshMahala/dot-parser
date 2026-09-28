@@ -24,7 +24,12 @@ pub fn main(init: std.process.Init) !void {
         }
         // Parsing retains every occurrence; later validation leaves that tree intact.
         // UTF-8 is opt-in and checks the entire source, including comments/CDATA.
-        const Checked = markup.Profile(.{ .policy = .{ .validation = .{ .invalid_utf8 = .err } } });
+        // Name rules and reference catalogs are independent of structural syntax.
+        const Checked = markup.Profile(.{ .policy = .{ .validation = .{
+            .invalid_utf8 = .err,
+            .names = .{ .rule = .xml_1_0, .severity = .err },
+            .references = .{ .catalog = .xml_predefined, .severity = .warning },
+        } } });
         const checked = Checked.validate(init.arena.allocator(), &doc, bag.sink(), .{});
         try writer.print("validation {s}: {d} errors, {d} warnings\n", .{ @tagName(checked.validity), checked.errors, checked.warnings });
         if (checked.completion != .complete) return error.ValidationIncomplete;

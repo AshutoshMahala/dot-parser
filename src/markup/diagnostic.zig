@@ -11,6 +11,8 @@ pub const Feature = enum { processing_instructions, declarations, encoding };
 pub const Resource = enum { source_bytes, nesting_depth, nodes, attributes, nesting_frames, node_pool, attribute_pool, attribute_keys };
 pub const Expected = enum { name, tag_end, closing_angle, equal_sign, quote, attribute_separator, attribute_value, declaration_start, comment_start, comment_end, cdata_start, cdata_end };
 pub const ReferenceProblem = enum { missing_name, missing_digits, missing_semicolon, invalid_character };
+pub const NameContext = enum { element, attribute, reference };
+pub const NameProblem = enum { invalid_start, invalid_character, invalid_utf8 };
 pub const Code = enum {
     invalid_byte,
     unexpected_byte,
@@ -27,6 +29,10 @@ pub const Code = enum {
     malformed_reference_tolerated,
     invalid_utf8,
     invalid_utf8_tolerated,
+    invalid_name,
+    invalid_name_tolerated,
+    unknown_reference,
+    unknown_reference_tolerated,
 
     pub fn structured(self: Code) []const u8 {
         return switch (self) {
@@ -45,10 +51,17 @@ pub const Code = enum {
             .malformed_reference_tolerated => "W.Syntax.Reference.003",
             .invalid_utf8 => "E.Validation.Encoding.003",
             .invalid_utf8_tolerated => "W.Validation.Encoding.003",
+            .invalid_name => "E.Validation.Name.003",
+            .invalid_name_tolerated => "W.Validation.Name.003",
+            .unknown_reference => "E.Validation.Reference.003",
+            .unknown_reference_tolerated => "W.Validation.Reference.003",
         };
     }
     pub fn severity(self: Code) reporting.Severity {
-        return if (self == .duplicate_attribute_tolerated or self == .malformed_reference_tolerated or self == .invalid_utf8_tolerated) .warning else .err;
+        return switch (self) {
+            .duplicate_attribute_tolerated, .malformed_reference_tolerated, .invalid_utf8_tolerated, .invalid_name_tolerated, .unknown_reference_tolerated => .warning,
+            else => .err,
+        };
     }
     pub fn compactId(self: Code) [5]u8 {
         @setEvalBranchQuota(5000);
@@ -70,6 +83,7 @@ pub const Details = union(enum) {
     feature: Feature,
     capacity: struct { resource: Resource, limit: u32 },
     reference: ReferenceProblem,
+    name: struct { context: NameContext, problem: NameProblem },
 };
 pub const Diagnostic = struct {
     code: Code,

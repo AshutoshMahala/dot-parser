@@ -1,6 +1,6 @@
 # Standalone markup — structural slices
 
-Decisions: 2026-09-26; slices 1–3 and 4a implemented 2026-09-27. Later slices below are plans, not
+Decisions: 2026-09-26; slices 1–3, 4a and 4b implemented 2026-09-27. Later slices below are plans, not
 current public capabilities. R-MOD-014/015 and Q40 remain the architectural contract.
 
 ## Delivery order
@@ -18,7 +18,8 @@ this parser. Independent parsing must not import DOT grammar or retained records
 | 3 | References, comments and CDATA, including malformed-reference acceptance policy | Implemented |
 | 4a | Optional independent UTF-8 validation, source-ordered with duplicate findings | Implemented |
 | Resource hardening | Default-capped shared diagnostic retention and an untrusted-input resource preset | Implemented |
-| 4b | Stricter names, known-reference checks and explicitly defined structural recovery | Planned; semantics still need decisions |
+| 4b | Optional XML 1.0 name checks and known-reference checks, without imposing either on other dialects | Implemented |
+| Recovery | Explicit structural-error recovery for additional diagnostics | Deferred to a separate design discussion; not part of 4b |
 | Integration | DOT opaque recognition followed by delayed integration; during-DOT composition later | Planned |
 
 Each slice needs tests, truthful supported-syntax documentation and measurements.
@@ -31,7 +32,7 @@ No reserved public fields or pretend implementation of later checks are needed.
 - Names are arbitrary vocabulary, matched byte-for-byte and case-sensitively.
   No implicit Unicode normalization, namespace resolution or HTML tag closing.
 - Byte-oriented syntax with raw non-ASCII preservation, not full XML conformance.
-  Optional UTF-8 validation is independent of parsing; stricter name checks remain future work.
+  Optional UTF-8 and XML 1.0 name validation are independent of parsing.
 - Attributes require quoted values (`'` or `"`); preserve spelling and order.
   Duplicate checking defaults to error, with warning/off choices; retain every
   occurrence. Off means uniqueness was not checked, not that it passed.
@@ -49,7 +50,123 @@ No reserved public fields or pretend implementation of later checks are needed.
   or published partial document. Independent fragments can still run. Validation
   findings continue where their own prerequisites remain available.
 
+## Slice 4b — optional validation
+
+The processor stays generic and extensible, with Graphviz as its priority
+consumer; browser implementation is not the goal. Optional XML rules are supplied
+definitions, not a mandatory base dialect or a substitute for future Graphviz rules.
+
+Decided 2026-09-27: name rules and reference catalogs are independently selected
+validation behavior, not universal rules added to the scanner. HTML, SVG,
+Graphviz and custom consumers such as XAML must not inherit unrelated restrictions
+merely because they reuse this processor or share an executable. A profile may
+explicitly reuse a rule, but enabling name validation must not implicitly select
+an entity catalog, namespace processing, vocabulary checks or whole-source UTF-8
+validation. The structural defaults remain unchanged; these new checks default
+to off, with warning/error choices and compile-time/runtime policy parity.
+
+This is separation of optional validation, not a claim of grammar neutrality.
+The current parser still requires its documented XML-like fragment syntax. A
+dialect needing different tokenization or tree construction needs an explicitly
+designed grammar change or a separately bound processor; disabling a check cannot
+make previously rejected syntax parse. Full browser HTML, SVG/XAML semantics and
+Graphviz labels are not delivered by this slice. Consumer implementations remain
+compile-time bindings, not runtime-loaded parsers or registry callbacks.
+
+**Dialect construction clarification; extension proposal, not implemented.**
+Shared markup spelling does not require identical stack behavior. In XML-like
+syntax `<br>` opens an element until `</br>`; `<br/>` is empty. In HTML syntax,
+`br` is a void element and needs no end tag. See [XML elements](https://www.w3.org/TR/xml/#sec-starttags)
+and [HTML void elements](https://html.spec.whatwg.org/multipage/syntax.html#void-elements).
+A compile-time-bound dialect rule could classify selected names as void when
+their opening header ends, before pushing an open-element frame. This can reuse
+the existing engine; it does not inherently require a separate full HTML parser.
+It is a parsing/interpretation rule, not a validation severity or recovery from
+an error. Preserve the written tag spelling; do not insert a synthetic closing tag.
+
+The existing structural behavior and agreed XML-like built-in mode baseline
+remain unchanged for now. Exact void-name selection, matching/case/context,
+explicit closing-tag handling and policy surface need their own discussion.
+Implementing selected HTML-like conveniences must be described as a defined
+subset/custom dialect, not full browser HTML conformance. Standards apply to
+the compatibility being promised; a custom dialect can deliberately differ.
+The new optional name/reference checks neither implement nor prohibit this
+future parsing capability. More extensive HTML parsing rules are not implied.
+
+The first optional name rule follows [XML 1.0 Fifth Edition names](https://www.w3.org/TR/xml/#sec-common-syn)
+for element, attribute and named-reference names. It does not normalize, fold case,
+resolve namespaces or restrict tag vocabulary. The first known-reference catalog
+contains XML's [five predefined entities](https://www.w3.org/TR/xml/#sec-predefined-ent):
+`amp`, `lt`, `gt`, `quot`, `apos`. A finding means absent from the selected catalog,
+not invalid in every dialect. Other catalogs and custom catalog binding APIs are
+later work, not mandatory dependencies of structural parsing. Check references
+only in their existing text/attribute contexts, not comments/CDATA; accepted
+malformed-reference candidates remain literal text. No expansion, decoding into
+stored values, DTD processing or external lookups are added.
+
+### Name-local UTF-8 implications
+
+Checking Unicode name rules requires decoding each examined name into temporary
+code points even with the independent whole-source UTF-8 check off. This does not
+transcode the source, replace bytes, change byte-based spans or retain a Unicode
+copy. Malformed bytes in a name cannot pass that name rule; malformed bytes in
+unrelated text/comments/values are not newly rejected by enabling name checking.
+Valid UTF-8 also does not automatically mean a valid name.
+
+Independent checks keep independent severities and completion. If both checks
+are enabled, malformed bytes in a name can produce both a name-rule finding and
+an encoding finding; their counts are findings, not distinct bad byte positions.
+For example, a name error must not be downgraded because the encoding policy is
+only warning. Both delivered findings consume sink capacity, so the same retained
+entry budget can stop sooner. The completed tree is unchanged and remains usable;
+validation error, warning and incomplete work retain their existing meanings.
+The implemented policy shape is `validation.names.{rule,severity}` and
+`validation.references.{catalog,severity}`, with `xml_1_0` and `xml_predefined`
+as the initial supported selections and both severities default off. Partial
+nested patches inherit leaf-by-leaf; both complete presets reset these checks.
+All typed combinations remain meaningful and infallible to prepare.
+
+Each retained element name is checked once at its opening span; matched closing
+spelling is byte-identical. Attributes and syntactically complete named references
+are checked individually. One name finding identifies the first bad code point
+(one byte for malformed UTF-8), with the full name as related context and typed
+context/reason. Unknown-reference findings cover `&name;`. Source-order ties are
+encoding, duplicate, name, catalog. Encoding can still report every bad source
+byte, including closing tags. No deduplication changes either check's severity.
+
+Implementation targets are a fast ASCII path, name decoding proportional to
+examined name bytes, and no per-node/name/reference pool growth. Locating reference
+names also requires context-aware rescanning of existing text/value spans because
+references have no retained index. That cost can be proportional to those spans'
+full length even when they contain few references; it is not just name-decoding
+work. A whole-source encoding pass may inspect those bytes again; shared decoding
+helpers do not imply zero repeated work. Fixed-disabled checks and tables must
+be excludable when no other reachable entry point needs them. Runtime-off skips
+execution, but selectable code/tables can remain linked. A single preorder node
+walk and monotonic attribute cursor process enabled name/reference checks. Reference
+rescanning reuses the lexer's byte-name predicates and skips malformed literal
+candidates without revisiting their consumed prefix. Numeric values are not decoded
+again. Comments/CDATA do not participate. Without the new checks, the existing
+attribute-only/encoding traversal remains selected; encoding-only still needs no
+document-pool access. Duplicate scratch remains the sole validation allocation,
+preflighted before checks. Precise API and cost semantics are in the
+[consumer guide](../MARKUP.md#optional-name-rules-and-reference-catalogs).
+
+### Structural recovery — deferred, not implicit acceptance
+
+Slice 4b adds independent validation only. Keep current fail-fast handling of
+unrecoverable structural syntax and do not publish a partial successful document.
+Before adding recovery, discuss recoverable error classes, safe synchronization
+through quoted values/comments/CDATA, mismatched-tag stack handling, progress and
+work limits, diagnostic order/cascades, output validity and termination reasons.
+Recovery for collecting more errors is distinct from syntax acceptance or repair.
+No guessed closing tags, repaired successful tree or broad recovery switch is
+authorized by this deferral. Its implementation and placement relative to later
+integration will be discussed separately; no placeholder public setting is needed.
+
 ## Encoding boundary
+
+### Current implementation
 
 The byte scanner expects ASCII-compatible syntax, naturally compatible with
 UTF-8. UTF-8 validation is not implied by structural success. UTF-16/32 require
@@ -57,6 +174,38 @@ explicit caller-side conversion, and spans then index that converted buffer;
 original-encoding mappings need a separate source map. No automatic transcoding.
 Leading UTF-16/32 BOMs are detected as unsupported encoding, without promising
 reliable identification of all incorrectly encoded or mixed-encoding bytes.
+
+### Future transcoding and source provenance — requirement, not implemented
+
+When UTF-16/32 input adapters are added, UTF-8 will be the working representation,
+not a replacement for the identity of the original source. Preserve original
+encoding, byte order and BOM presence/absence once per input/source context, not
+on every node. Keep caller-supplied or detected provenance explicit; a naked
+converted UTF-8 buffer cannot reveal its previous encoding. Unknown origin must
+remain unknown, not be guessed or mislabeled as originally UTF-8. Exact metadata
+types, source ownership and adapter APIs are still to be designed.
+
+Retaining an encoding label alone does not preserve original bytes or map offsets.
+For exact source reproduction, keep the original caller-owned bytes or an explicit
+source handle with a sufficient lifetime; do not imply that a reconstructed
+encoding is byte-for-byte identical. Lossy replacement, normalization, or discarded
+source/BOM information must never be silent or advertised as lossless. The initial
+conversion error policy needs an explicit contract before implementation.
+
+Parser spans continue to index the supplied working byte buffer. Original-source
+diagnostics/fixes need an explicit mapping; transcoding is not a constant origin
+offset. If mapping is unavailable, identify coordinates as working-buffer offsets,
+not original-file positions. Mapping representation and eager versus on-demand
+translation remain open, with explicit caller-owned storage/work budgets.
+
+Document conversion CPU, UTF-8 output-buffer size, original-buffer lifetime and
+mapping costs separately. Holding original and working buffers can increase peak
+memory; mapping may use storage or require rescanning. Bound both input and
+converted-output sizes. None of these costs should be imposed on unchanged raw-byte
+input paths. Current raw-byte acceptance with optional UTF-8 validation is not
+silently changed into mandatory valid-UTF-8 parsing by this future adapter direction.
+
+### Current lexical choices
 
 Slice 1's concrete lexical choices are:
 
@@ -103,7 +252,8 @@ reports reserved node/attribute capacity, not just occupied records, and exclude
 overhead/RSS. Fixed parsing is unchanged; allocator callbacks are not budgeted work.
 
 The policy contains implemented limits (source bytes, nodes, attributes, nesting),
-malformed-reference acceptance, duplicate-attribute and UTF-8 validation severity, scanner
+malformed-reference acceptance, duplicate/encoding validation severity, optional
+name rules/reference catalogs and their independent severities, scanner
 selection (`scalar` default / `block`), and execution choices (metering, cancellation). Limits/counts/ranges are u32; lengths
 at the allocator/slice boundary use native sizes. Defaults preserve the existing
 unlimited-within-representation convention for the standard policy. The optional
@@ -136,7 +286,7 @@ enabled. Bounded block scanning uses up-to-64-byte windows and scalar boundary t
 its credit totals/frontiers differ from scalar. Plain scanning loops to the next
 token/finding. See the follow-up below for backend details and measurements.
 
-No Graphviz/extended validation, stricter Unicode name checking,
+No Graphviz/extended vocabulary validation, namespace resolution,
 markup fixes or processor scheduling is implemented
 by this slice. See the [consumer guide](../MARKUP.md) for the actual API.
 
@@ -827,3 +977,109 @@ before/after/after/before order. Fixed scalar measured 363.3 -> 364.4 MB/s
 It is a separate measurement, not a replacement inserted into the broad table.
 These remain local synthetic observations, not a guarantee of end-to-end parity
 on every input or target.
+
+## Slice 4b verification and costs — 2026-09-27
+
+Verification: **464/464 tests pass in Debug, ReleaseSafe, ReleaseFast and
+ReleaseSmall**, including 75 standalone consumer tests. Examples, benchmark
+compilation, 14 expected compile failures and consumed RISC-V32/Wasm32 fixed and
+runtime probes pass. Coverage includes XML character-range boundaries, Unicode
+names and invalid encodings, catalog case/context, literal malformed candidates,
+all nine name/catalog severity combinations with encoding/duplicate findings,
+source-order ties, fixed/runtime parity, scalar/block and bounded parse output,
+allocation failure, capped/omitting/stopping sinks, and cancellation inside long
+names/reference candidates. Seeded mixed-context tests exercise counts and order.
+
+Native Node/Attribute/Diagnostic sizes remain 20/20/36 bytes. The nesting frame
+stays 12 bytes, duplicate-key scratch 8 bytes per entry, ValidationResult 32 bytes,
+and fixed/bounded/runtime sessions 416/424/480 bytes. New checks add no retained
+pool, reference index or required scratch. Name/catalog-only validation succeeds
+with a failing allocator. Optional diagnostic retention still has its own cost;
+independent findings can overlap and consume the configured bag limit sooner.
+Peak process RSS and growable allocator overhead were not measured in this slice.
+
+Fixed policy selection is explicitly inlined so disabled passes are eliminated
+during semantic analysis, not dependent on optimizer inlining heuristics. Binary
+inspection confirms that fixed-disabled name/reference helpers are absent from
+the comparison executable; runtime-selectable helpers remain. The same consumed
+benchmark's native `__text` grows from 593,260 to 601,672 bytes (+8,412 bytes,
+1.42%); this includes runtime validators and host/benchmark code, not the size
+of a minimal fixed-profile consumer. Parser/scanner source is unchanged.
+
+### Enabled-check measurements
+
+Apple M4 Pro, Zig 0.16.0, ReleaseFast. `zig build bench-markup
+-Doptimize=ReleaseFast -- --rules-only` times validation separately: parsing,
+source/pool construction and scratch allocation are outside the timer. Five
+warm-up batches precede nine measured batches of 16 validations; values are one
+process's median. The discard sink counts findings without retaining them; these
+are not full parse-plus-bag timings. Cells are **milliseconds / decimal MB/s**.
+
+| Fixture / enabled checks | Source bytes | Fixed policy | Runtime policy | Scratch bytes / findings |
+| --- | ---: | ---: | ---: | ---: |
+| ASCII element/attribute names | 1,400,000 | 1.987 / 704.5 | 2.065 / 677.8 | 0 / 0 |
+| Unicode element/attribute names | 1,100,000 | 1.395 / 788.3 | 1.554 / 708.0 | 0 / 0 |
+| XML reference catalog | 1,250,000 | 1.382 / 904.8 | 1.456 / 858.3 | 0 / 100,000 |
+| Names, catalog, UTF-8 and duplicates | 1,200,000 | 3.438 / 349.0 | 3.556 / 337.5 | 16 / 250,000 |
+| Names enabled; plain text with no references | 1,750,000 | 0.028 / 62,922.5 | 0.025 / 69,216.5 | 0 / 0 |
+| Names enabled; tolerated malformed candidates | 900,000 | 1.000 / 899.9 | 1.014 / 888.0 | 0 / 0 |
+
+The prose case measures a warmed delimiter search with no names to decode, not
+general Unicode validation throughput. Name checking still must search text/value
+spans for reference names; disabling the catalog does not remove that scan. These
+fixtures differ in shape and findings, so their throughput is not a direct
+ASCII-versus-Unicode or fixed-versus-runtime universal cost ratio.
+
+### Default-path comparison
+
+Baseline `a897745` versus final 4b code, using the **same unchanged 13-fixture
+benchmark source from the baseline** for both executables. Two isolated process
+medians per build were collected in before/after/after/before order, with no
+compilation overlapping timings. Each process uses five warm-up batches and nine
+measured batches of 16 operations. Percentages below are geometric means of
+per-fixture throughput ratios, using the midpoint of each build's two medians.
+These local measurements are not an update to the standard-machine baseline.
+
+| Parsing mode | Scalar throughput change | Block throughput change |
+| --- | ---: | ---: |
+| Fixed profile | +0.98% | -0.33% |
+| Runtime enabled, compiled baseline selected | +1.43% | -0.78% |
+| Runtime enabled, explicit standard-policy override | -0.39% | -0.68% |
+| Count-only | -1.46% | -0.73% |
+| Cancellable | +0.40% | +0.61% |
+
+Representative cases and the larger losses are retained below rather than hidden
+by the means. Cells are **milliseconds / decimal MB/s**, each the midpoint of the
+two independently reported process medians (rounded latency is not used to
+reconstruct throughput).
+
+| Fixture / mode | Before | After | Throughput change |
+| --- | ---: | ---: | ---: |
+| flat / scalar fixed | 0.564 / 354.9 | 0.563 / 355.4 | +0.1% |
+| mixed / scalar fixed | 2.327 / 322.4 | 2.296 / 326.7 | +1.3% |
+| text / scalar fixed | 0.575 / 1773.2 | 0.477 / 2097.9 | +18.3% |
+| attribute references / scalar fixed | 4.049 / 444.6 | 4.213 / 427.4 | -3.9% |
+| flat / block fixed | 0.609 / 328.2 | 0.598 / 334.8 | +2.0% |
+| text / block fixed | 0.080 / 12518.1 | 0.083 / 12126.3 | -3.1% |
+| references / block runtime override | 4.117 / 413.0 | 4.324 / 393.2 | -4.8% |
+| CDATA / scalar count-only | 1.463 / 1059.9 | 1.600 / 973.3 | -8.2% |
+| prose / block count-only | 0.254 / 7238.8 | 0.282 / 6565.3 | -9.3% |
+
+Default duplicate-only validation is near the baseline: unique-attribute input
+829.4 -> 827.9 MB/s (1.326 -> 1.329 ms), duplicate input 1197.1 -> 1190.0 MB/s
+(0.919 -> 0.924 ms), each with unchanged 24-byte scratch. Existing fixed UTF-8
+checks became faster in these executables after exposing fixed settings during
+semantic analysis: ASCII 2083.0 -> 4110.5 MB/s, Unicode 468.1 -> 876.6 MB/s and
+invalid bytes 340.8 -> 790.3 MB/s. This is not a new UTF-8 algorithm or a universal
+speedup guarantee; the same diagnostic counts and semantics are exercised.
+
+An earlier development build, before explicit policy inlining, showed about 5%
+scalar-runtime geometric-mean loss and a roughly 21% long-text loss in the broad
+harness. A separate warmed parse-only consumer did not reproduce that large
+loss (fixed long text about unchanged, runtime -2.6%); those trial measurements
+are not substituted into the final table. The final scalar scanner has the same
+1,233 instructions as the baseline after accounting for relocated code/data
+addresses. The parser source was not changed to tune one executable's layout.
+The variation of even the unchanged baseline and these fixture-level differences
+preclude a universal zero-regression or parsing-speedup claim. Recheck actual
+consumer binaries and representative inputs before drawing such a conclusion.

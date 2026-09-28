@@ -98,6 +98,13 @@ Raw fragments use checked u32 ranges and one local-to-original rebase for every
 primary, related and fix span. Decoded/concatenated input requires a separate
 source map. Source origin is per active fragment, not per DOT identifier.
 
+Future UTF-16/32 adapters may supply UTF-8 working bytes, but must preserve original
+encoding/byte-order/BOM provenance at the source level. The existing raw-fragment
+rebase is not a transcoding map. Distinguish original-file and working-buffer
+coordinates; exact original rendering needs live original bytes or a source handle.
+Adapter metadata, conversion-error behavior and mapping APIs remain unimplemented;
+their allocation and rescan costs must be explicit, not added to every raw fragment.
+
 Keep existing DOT source ordering. Composed ordering and selector/concatenation
 rules need their own final API tests; no global source-sorted guarantee is implied
 by phase order. Markup grammar and full session composition are subsequent slices.

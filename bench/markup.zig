@@ -16,11 +16,18 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
     const writer = &output.interface;
+    const args = try init.minimal.args.toSlice(allocator);
+    if (args.len > 2 or (args.len == 2 and !std.mem.eql(u8, args[1], "--rules-only"))) return error.InvalidArguments;
     try writer.print("Node={d} Attribute={d} KeyScratch={d} Frame={d} Diagnostic={d} fixed_session={d} bounded_session={d} runtime_session={d} ValidationResult={d}\n", .{
         @sizeOf(markup.Node),                  @sizeOf(markup.Attribute),  @sizeOf(markup.AttributeKeyScratch),
         markup.FixedParseScratch(1).byte_size, @sizeOf(markup.Diagnostic), @sizeOf(markup.Profile(.{}).Session),
         @sizeOf(markup.BoundedSession),        @sizeOf(Runtime.Session),   @sizeOf(markup.ValidationResult),
     });
+    if (args.len == 2) {
+        try benchRules(init, writer);
+        try writer.flush();
+        return;
+    }
     inline for (.{ "flat", "mixed", "text", "deep", "attributes", "duplicates", "references", "attribute_references", "comments", "cdata", "prose", "long_names", "long_values" }) |name| {
         var source: std.ArrayList(u8) = .empty;
         if (comptime std.mem.eql(u8, name, "deep")) {
@@ -99,7 +106,66 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     try benchEncoding(init, writer);
+    try benchRules(init, writer);
     try writer.flush();
+}
+
+/// New optional validation costs. Includes reference rescanning, but excludes
+/// parsing, diagnostic retention, source construction and scratch allocation.
+fn benchRules(init: std.process.Init, writer: *std.Io.Writer) !void {
+    const allocator = init.arena.allocator();
+    inline for (.{ "ascii_names", "unicode_names", "references", "combined", "prose", "literal_candidates" }) |fixture| {
+        const item = comptime blk: {
+            if (std.mem.eql(u8, fixture, "ascii_names")) break :blk "<element long_name='value'/>";
+            if (std.mem.eql(u8, fixture, "unicode_names")) break :blk "<東京 café='text'/>";
+            if (std.mem.eql(u8, fixture, "references")) break :blk "&amp;&nbsp;&#160;&custom;";
+            if (std.mem.eql(u8, fixture, "combined")) break :blk "<\xff a='\xff' a='&unknown;'/>";
+            if (std.mem.eql(u8, fixture, "prose")) break :blk "some plain text without references ";
+            break :blk "&\xff &missing &#x0; ";
+        };
+        const repetitions = 50_000;
+        const source = try allocator.alloc(u8, item.len * repetitions);
+        for (0..repetitions) |index| @memcpy(source[index * item.len ..][0..item.len], item);
+        const Reader = markup.Profile(.{ .policy = .{ .syntax = .{ .malformed_reference = .accept } } });
+        var parsed = Reader.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
+        defer parsed.deinit();
+        const document = parsed.document orelse return error.ParseFailed;
+        const combined = comptime std.mem.eql(u8, fixture, "combined");
+        const references = comptime std.mem.eql(u8, fixture, "references");
+        const keys = try allocator.alloc(markup.AttributeKeyScratch, if (combined) markup.requiredValidationScratch(&document) else 0);
+        const scratch: markup.ValidationScratch = .{ .attribute_keys = keys };
+        const patch: markup.Policy = .{ .validation = .{
+            .names = .{ .severity = if (references) .off else .warning },
+            .references = .{ .severity = if (combined or references) .warning else .off },
+            .invalid_utf8 = if (combined) .warning else .off,
+            .duplicate_attribute = if (combined) .warning else .off,
+        } };
+        inline for (.{ false, true }) |runtime| {
+            var times: [9]u64 = undefined;
+            const expected: u64 = repetitions * (if (combined) @as(u64, 5) else if (references) @as(u64, 2) else 0);
+            for (0..warmups + times.len) |round| {
+                const start = std.Io.Clock.Timestamp.now(init.io, .awake);
+                var findings: u64 = 0;
+                for (0..batch) |_| findings += validateRules(runtime, patch, &document, scratch);
+                const end = std.Io.Clock.Timestamp.now(init.io, .awake);
+                if (findings != expected * batch) return error.RuleValidationFailed;
+                if (round >= warmups) times[round - warmups] = @intCast(@divTrunc(start.durationTo(end).raw.nanoseconds, batch));
+            }
+            std.mem.sort(u64, &times, {}, std.sort.asc(u64));
+            const ns: f64 = @floatFromInt(times[4]);
+            try writer.print("rules/{s}/{s}: source={d}, {d:.3} ms, {d:.1} MB/s, scratch={d}, findings={d}\n", .{
+                fixture, if (runtime) "runtime" else "fixed", source.len, ns / 1e6, @as(f64, @floatFromInt(source.len)) * 1000 / ns, keys.len * @sizeOf(markup.AttributeKeyScratch), expected,
+            });
+        }
+    }
+}
+
+noinline fn validateRules(comptime runtime: bool, comptime patch: markup.Policy, document: *const markup.Document, scratch: markup.ValidationScratch) u64 {
+    var input = patch;
+    const opaque_patch: *volatile markup.Policy = &input;
+    const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else patch });
+    const result = P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.* } else .{});
+    return if (result.completion == .complete) result.warnings else std.math.maxInt(u64);
 }
 
 /// Separate post-parse costs; parsing, source/pool construction and sink storage

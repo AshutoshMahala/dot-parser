@@ -270,7 +270,9 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "markup_parser", .module = markup }},
         }),
     });
-    b.step("bench-markup", "Benchmark standalone structural markup (decimal MB/s)").dependOn(&b.addRunArtifact(markup_bench).step);
+    const run_markup_bench = b.addRunArtifact(markup_bench);
+    if (b.args) |args| run_markup_bench.addArgs(args);
+    b.step("bench-markup", "Benchmark standalone structural markup (decimal MB/s)").dependOn(&run_markup_bench.step);
     check_benches.dependOn(&markup_bench.step);
     for ([_]*std.Build.Step.Compile{ bench_exe, lexer_bench, session_bench, subgraph_bench, policy_bench }) |bench| {
         _ = bench.getEmittedBin();

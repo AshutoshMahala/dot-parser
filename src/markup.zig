@@ -1,5 +1,5 @@
-//! Standalone, byte-oriented markup fragments, structural slices through 4a.
-//! Elements, attributes, references, comments, CDATA and optional UTF-8 checks. Not a browser
+//! Standalone, byte-oriented markup fragments, structural slices through 4b.
+//! Elements, attributes, references, comments, CDATA and optional validation. Not a browser
 //! HTML parser, a complete XML processor, or Graphviz label validation.
 //! No dependency on DOT grammar, retained documents, or processor composition.
 const std = @import("std");
@@ -20,6 +20,8 @@ pub const Cancellation = support.execution.Cancellation;
 pub const Policy = policy.Policy;
 pub const PolicyConfig = policy.Config;
 pub const RuleSeverity = policy.RuleSeverity;
+pub const NameRule = policy.NameRule;
+pub const ReferenceCatalog = policy.ReferenceCatalog;
 pub const Acceptance = policy.Acceptance;
 pub const ScannerBackend = policy.ScannerBackend;
 pub const presets = policy.presets;
@@ -102,4 +104,7 @@ pub const BoundedSession = Profile(.{ .policy = .{ .execution = .{ .metering = t
 
 test {
     std.testing.refAllDecls(@This());
+    // Default-off validation should not instantiate these definitions in normal
+    // builds, but their boundary tests must still be discovered by the root suite.
+    _ = @import("markup/validation_rules.zig");
 }

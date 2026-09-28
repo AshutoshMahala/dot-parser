@@ -4,9 +4,16 @@ pub const RuleSeverity = enum { err, warning, off };
 pub const ScannerBackend = enum { scalar, block };
 pub const Acceptance = enum { reject, warn, accept };
 pub const SyntaxSettings = struct { malformed_reference: Acceptance = .reject };
+/// Optional validation rules, not parser dialects or namespace processing.
+pub const NameRule = enum { xml_1_0 };
+pub const ReferenceCatalog = enum { xml_predefined };
+pub const NameSettings = struct { rule: NameRule = .xml_1_0, severity: RuleSeverity = .off };
+pub const ReferenceSettings = struct { catalog: ReferenceCatalog = .xml_predefined, severity: RuleSeverity = .off };
 pub const ValidationSettings = struct {
     duplicate_attribute: RuleSeverity = .err,
     invalid_utf8: RuleSeverity = .off,
+    names: NameSettings = .{},
+    references: ReferenceSettings = .{},
 };
 
 pub const Policy = struct {
@@ -22,6 +29,8 @@ pub const Policy = struct {
     validation: struct {
         duplicate_attribute: ?RuleSeverity = null,
         invalid_utf8: ?RuleSeverity = null,
+        names: struct { rule: ?NameRule = null, severity: ?RuleSeverity = null } = .{},
+        references: struct { catalog: ?ReferenceCatalog = null, severity: ?RuleSeverity = null } = .{},
     } = .{},
     execution: struct {
         metering: ?bool = null,
@@ -67,8 +76,13 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
     inline for (std.meta.fields(@TypeOf(patch.execution))) |field| {
         if (@field(patch.execution, field.name)) |value| @field(result.execution, field.name) = value;
     }
-    inline for (std.meta.fields(@TypeOf(patch.validation))) |field| {
-        if (@field(patch.validation, field.name)) |value| @field(result.validation, field.name) = value;
+    if (patch.validation.duplicate_attribute) |v| result.validation.duplicate_attribute = v;
+    if (patch.validation.invalid_utf8) |v| result.validation.invalid_utf8 = v;
+    inline for (.{ "names", "references" }) |group| {
+        inline for (std.meta.fields(@TypeOf(@field(patch.validation, group)))) |field| {
+            if (@field(@field(patch.validation, group), field.name)) |value|
+                @field(@field(result.validation, group), field.name) = value;
+        }
     }
     return result;
 }
@@ -86,6 +100,8 @@ pub const presets = struct {
         .validation = .{
             .duplicate_attribute = defaults.validation.duplicate_attribute,
             .invalid_utf8 = defaults.validation.invalid_utf8,
+            .names = .{ .rule = defaults.validation.names.rule, .severity = defaults.validation.names.severity },
+            .references = .{ .catalog = defaults.validation.references.catalog, .severity = defaults.validation.references.severity },
         },
         .execution = .{ .metering = false, .cancellation = false },
     };

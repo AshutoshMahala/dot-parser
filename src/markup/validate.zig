@@ -7,6 +7,9 @@ const support = @import("parser_support");
 const syntax = @import("syntax.zig");
 const policy = @import("policy.zig");
 const diagnostic = @import("diagnostic.zig");
+const definitions = @import("validation_rules.zig");
+const lexical = @import("lexer.zig");
+const Span = support.location.Span;
 const safety_checks = switch (@import("builtin").mode) {
     .Debug, .ReleaseSafe => true,
     .ReleaseFast, .ReleaseSmall => false,
@@ -43,6 +46,8 @@ pub const Result = struct {
     checks: struct {
         duplicate_attribute: CheckStatus = .not_run,
         invalid_utf8: CheckStatus = .not_run,
+        names: CheckStatus = .not_run,
+        references: CheckStatus = .not_run,
     } = .{},
     /// Aggregate findings from independent checks, which may overlap source
     /// spans. Offsets/capacities remain u32; totals use u64, as in DOT validation.
@@ -96,7 +101,9 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         pub const Hook = if (cancellable) ?support.execution.Cancellation else void;
         const has_encoding = if (fixed) |s| s.invalid_utf8 != .off else true;
         const Offset = if (has_encoding) u32 else void;
-        fn rules(settings: Settings) policy.ValidationSettings {
+        // Expose fixed selections during semantic analysis, not just as an
+        // optimizer inlining opportunity. Disabled passes must not instantiate.
+        inline fn rules(settings: Settings) policy.ValidationSettings {
             return if (fixed) |value| value else settings;
         }
         fn initial(settings: Settings) Result {
@@ -104,11 +111,13 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             return .{ .checks = .{
                 .duplicate_attribute = if (s.duplicate_attribute == .off) .not_run else .incomplete,
                 .invalid_utf8 = if (s.invalid_utf8 == .off) .not_run else .incomplete,
+                .names = if (s.names.severity == .off) .not_run else .incomplete,
+                .references = if (s.references.severity == .off) .not_run else .incomplete,
             } };
         }
         fn enabled(settings: Settings) bool {
             const s = rules(settings);
-            return s.duplicate_attribute != .off or s.invalid_utf8 != .off;
+            return s.duplicate_attribute != .off or s.invalid_utf8 != .off or s.names.severity != .off or s.references.severity != .off;
         }
         fn requested(hook: Hook) bool {
             return if (cancellable) (if (hook) |h| h.requested() else false) else false;
@@ -136,6 +145,10 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         fn runSized(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook, required: Requirement) Result {
             var result = initial(settings);
             if (scratch.attribute_keys.len < required.count) return unavailable(.{ .storage_exhausted = required.count }, sink, @intCast(scratch.attribute_keys.len), required.span, settings);
+            // Only name/reference checks need the forest. The default and
+            // encoding-only paths retain their attribute-only/no-pool traversal.
+            if (rules(settings).names.severity != .off or rules(settings).references.severity != .off)
+                return runContent(document, scratch, sink, settings, hook);
             var offset: Offset = if (has_encoding) 0 else {};
             var start: u32 = 0;
             while (rules(settings).duplicate_attribute != .off and start < document.attributes.len) {
@@ -148,14 +161,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                 const count = end - start;
                 if (count >= 2) {
                     const keys = scratch.attribute_keys[0..count];
-                    for (keys, start..) |*key, index| key.* = .{ .index = @intCast(index), .first = 0 };
-                    std.sort.heap(AttributeKeyScratch, keys, document, nameLessThan);
-                    var first = keys[0].index;
-                    keys[first - start].first = first;
-                    for (keys[1..]) |key| {
-                        if (!std.mem.eql(u8, document.attributes[first].name.slice(document.source), document.attributes[key.index].name.slice(document.source))) first = key.index;
-                        keys[key.index - start].first = first;
-                    }
+                    prepareKeys(document, keys, start);
                     // Linear source-order emission through the scattered column;
                     // the name-sorted index column is no longer consulted.
                     for (keys, start..) |key, index| {
@@ -177,6 +183,141 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             if (!encodingThrough(document.source, @intCast(document.source.len), &offset, &result, sink, settings, hook)) return result;
             if (result.errors == 0) result.validity = .valid;
             return result;
+        }
+
+        /// Monotonic forest/attribute walks; no per-reference index, node state,
+        /// diagnostic queue, or closing-tag rescan. Matched closing names are
+        /// byte-identical to their opening name and are checked once per element.
+        fn runContent(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
+            var result = initial(settings);
+            var offset: Offset = if (has_encoding) 0 else {};
+            var attribute: u32 = 0;
+            const source = document.source;
+            for (document.records, 0..) |node, id| {
+                if (cancelled(&result, hook)) return result;
+                switch (node.kind()) {
+                    .element => {
+                        if (!checkName(source, node.name, .element, &offset, &result, sink, settings, hook)) return result;
+                        const start = attribute;
+                        while (attribute < document.attributes.len and @intFromEnum(document.attributes[attribute].owner) == id) : (attribute += 1) {}
+                        const count = attribute - start;
+                        const duplicates = rules(settings).duplicate_attribute != .off and count >= 2;
+                        const keys = if (duplicates) scratch.attribute_keys[0..count] else scratch.attribute_keys[0..0];
+                        if (duplicates) prepareKeys(document, keys, start);
+                        for (document.attributes[start..attribute], start..) |attr, index| {
+                            if (cancelled(&result, hook)) return result;
+                            if (duplicates and keys[index - start].first != index) {
+                                if (!encodingThrough(source, attr.name.start, &offset, &result, sink, settings, hook)) return result;
+                                const first = keys[index - start].first;
+                                const code: diagnostic.Code = if (rules(settings).duplicate_attribute == .err) .duplicate_attribute else .duplicate_attribute_tolerated;
+                                if (!emit(&result, sink, .{ .code = code, .span = attr.name, .related = document.attributes[first].name })) return result;
+                            }
+                            if (!checkName(source, attr.name, .attribute, &offset, &result, sink, settings, hook)) return result;
+                            // The retained value includes its original quotes.
+                            if (!checkReferences(source, .{ .start = attr.value.start + 1, .len = attr.value.len - 2 }, &offset, &result, sink, settings, hook)) return result;
+                        }
+                    },
+                    .text => if (!checkReferences(source, node.span, &offset, &result, sink, settings, hook)) return result,
+                    .comment, .cdata => {},
+                }
+            }
+            if (rules(settings).duplicate_attribute != .off) result.checks.duplicate_attribute = .complete;
+            if (rules(settings).names.severity != .off) result.checks.names = .complete;
+            if (rules(settings).references.severity != .off) result.checks.references = .complete;
+            if (!encodingThrough(source, @intCast(source.len), &offset, &result, sink, settings, hook)) return result;
+            if (result.errors == 0) result.validity = .valid;
+            return result;
+        }
+
+        /// One finding per retained name/reference name, at its first bad code
+        /// point (one byte for malformed UTF-8); related identifies the full name.
+        fn checkName(source: []const u8, name: Span, context: diagnostic.NameContext, offset: *Offset, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+            const selected = rules(settings).names;
+            if (selected.severity == .off) return true;
+            const bytes = name.slice(source);
+            var index: u32 = 0;
+            while (index < bytes.len) {
+                if (cancelled(result, hook)) return false;
+                const byte = bytes[index];
+                var width: u3 = 1;
+                var point: u21 = byte;
+                var problem: ?diagnostic.NameProblem = null;
+                if (byte >= 0x80) {
+                    width = std.unicode.utf8ByteSequenceLength(byte) catch 0;
+                    if (width == 0 or width > bytes.len - index) {
+                        problem = .invalid_utf8;
+                    } else {
+                        point = std.unicode.utf8Decode(bytes[index..][0..width]) catch blk: {
+                            problem = .invalid_utf8;
+                            break :blk 0;
+                        };
+                    }
+                }
+                if (problem == null and !definitions.nameCharacter(selected.rule, point, index == 0))
+                    problem = if (index == 0) .invalid_start else .invalid_character;
+                if (problem) |reason| {
+                    const at = name.start + index;
+                    if (!encodingThrough(source, at, offset, result, sink, settings, hook)) return false;
+                    const code: diagnostic.Code = if (selected.severity == .err) .invalid_name else .invalid_name_tolerated;
+                    return emit(result, sink, .{
+                        .code = code,
+                        .span = .{ .start = at, .len = if (reason == .invalid_utf8) 1 else width },
+                        .related = name,
+                        .details = .{ .name = .{ .context = context, .problem = reason } },
+                    });
+                }
+                index += width;
+            }
+            return true;
+        }
+
+        /// Named references only. Reuse the scanner's byte-name predicates so
+        /// malformed candidates accepted as literal text cannot become findings.
+        /// Numeric candidates contain no '&'; scanning past them needs no decoding.
+        fn checkReferences(source: []const u8, span: Span, offset: *Offset, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+            const bytes = span.slice(source);
+            var index: u32 = 0;
+            while (index < bytes.len) {
+                if (cancelled(result, hook)) return false;
+                if (!cancellable) {
+                    index += @intCast(std.mem.indexOfScalar(u8, bytes[index..], '&') orelse return true);
+                } else if (bytes[index] != '&') {
+                    index += 1;
+                    continue;
+                }
+                const amp = index;
+                index += 1;
+                if (index == bytes.len or !lexical.isNameStart(bytes[index])) continue;
+                const begin = index;
+                index += 1;
+                while (index < bytes.len and lexical.isNameContinue(bytes[index])) : (index += 1) {
+                    if (cancelled(result, hook)) return false;
+                }
+                if (index == bytes.len or bytes[index] != ';') continue;
+                const name: Span = .{ .start = span.start + begin, .len = index - begin };
+                index += 1; // ';'
+                const selected = rules(settings).references;
+                if (selected.severity != .off and !definitions.knownReference(selected.catalog, name.slice(source))) {
+                    // Catalog finding starts at '&', before any name finding.
+                    const at = span.start + amp;
+                    if (!encodingThrough(source, at, offset, result, sink, settings, hook)) return false;
+                    const code: diagnostic.Code = if (selected.severity == .err) .unknown_reference else .unknown_reference_tolerated;
+                    if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = index - amp } })) return false;
+                }
+                if (!checkName(source, name, .reference, offset, result, sink, settings, hook)) return false;
+            }
+            return true;
+        }
+
+        inline fn prepareKeys(document: *const syntax.Document, keys: []AttributeKeyScratch, start: u32) void {
+            for (keys, start..) |*key, index| key.* = .{ .index = @intCast(index), .first = 0 };
+            std.sort.heap(AttributeKeyScratch, keys, document, nameLessThan);
+            var first = keys[0].index;
+            keys[first - start].first = first;
+            for (keys[1..]) |key| {
+                if (!std.mem.eql(u8, document.attributes[first].name.slice(document.source), document.attributes[key.index].name.slice(document.source))) first = key.index;
+                keys[key.index - start].first = first;
+            }
         }
         pub fn allocated(allocator: std.mem.Allocator, document: *const syntax.Document, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
             if (!enabled(settings)) return .{ .validity = .valid };

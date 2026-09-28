@@ -15,7 +15,7 @@ identifiers are still unsupported by the DOT parser.
 | Non-ASCII names/text, including invalid UTF-8 bytes | Preserved; optional independent UTF-8 check, off by default |
 | Quoted attributes: `<a x='1' y="2"/>` | Preserved in source order, including duplicates |
 | Duplicate attribute names on one element | Parsing retains all; independent validation defaults to error |
-| Named, decimal and hexadecimal references | Checked and preserved inside text/attribute spans; no expansion or name lookup |
+| Named, decimal and hexadecimal references | Syntax checked and spelling preserved; optional independent named-reference catalog check, no expansion |
 | `<!--comment-->`, `<![CDATA[text]]>` | Retained as distinct leaf nodes, including empty bodies |
 | Processing instructions, declarations | Unsupported |
 | Unclosed, mismatched or unexpected closing tags | Invalid syntax; no partial document |
@@ -53,7 +53,7 @@ tolerance is available through policy-bound parsing, not a second lexical dialec
 
 References require a semicolon: `&name;`, `&#decimal;`, or `&#xhex;` (lowercase `x`,
 either-case hex digits). Named references use this parser's byte-oriented name
-grammar; their definitions are not required or looked up. Numeric values must be
+grammar; parsing does not require or look up their definitions. Numeric values must be
 tab/LF/CR or in `U+0020–D7FF`, `U+E000–FFFD`, or `U+10000–10FFFF`. Arbitrarily long
 digit sequences are handled without integer overflow, allocation or decoding.
 These spellings and numeric ranges follow [XML 1.0 references](https://www.w3.org/TR/xml/#sec-references),
@@ -208,7 +208,8 @@ Measurement followed by parsing is two explicit passes, not caching.
 
 ## Independent validation
 
-Parsing checks structure; it does **not** run duplicate-attribute or UTF-8 checks.
+Parsing checks structure; it does **not** run duplicate, encoding, name-rule or
+reference-catalog validation.
 Validate a completed document immediately or later, under the same or a different
 profile. Validation never changes the retained records or discards occurrences.
 
@@ -231,15 +232,17 @@ supplies scratch, or allocate `AttributeKeyScratch` entries explicitly.
 one element, or zero if all have fewer than two. Each scratch entry is 8 bytes.
 Scratch cannot alias source, document pools or diagnostic storage; it is reusable
 after the call. The allocator-backed `validate` frees its temporary scratch before
-returning. With duplicate checking off, neither entry point inspects attribute
-pools or needs scratch. UTF-8-only validation needs no allocation or scratch;
+returning. With duplicate checking off, validation needs no scratch allocation.
+Name/reference checks still traverse nodes and attributes. UTF-8-only validation
+does not inspect either pool and needs no allocation or scratch;
 pass `.{}` as scratch to `validateIn`. The sink may allocate independently.
-With both checks off, source and pools are not inspected.
+With all checks off, source and pools are not inspected.
 
-Names match byte-for-byte and case-sensitively, scoped to a single element. Each
-occurrence after the first produces one finding whose related span identifies the
-first. Findings from both checks are merged in document order by primary span
-start; UTF-8 precedes a duplicate finding at the same byte. Error findings make
+Duplicate checking compares attribute names byte-for-byte and case-sensitively,
+scoped to a single element. Each occurrence after the first produces one finding
+whose related span identifies the first. Findings from all enabled checks are merged in document order by primary
+span start. At equal starts the order is encoding, duplicate attribute, name rule,
+then reference catalog. Error findings make
 validity invalid but do not stop further checks; warning findings do not invalidate.
 A discarded diagnostic still affects counters and validity.
 
@@ -254,20 +257,68 @@ expansion, XML character/name validation or source mutation occurs. Valid UTF-8
 does not imply XML or Graphviz conformance, and cannot weaken parsing's control-byte
 or unsupported-encoding rules.
 
+### Optional name rules and reference catalogs
+
+These are independently selected checks, not restrictions on the structural
+grammar or a promise of a complete XML/HTML/Graphviz dialect. Both default to off:
+
+```zig
+const CheckedNames = markup.Profile(.{ .policy = .{ .validation = .{
+    .names = .{ .rule = .xml_1_0, .severity = .err },
+    .references = .{ .catalog = .xml_predefined, .severity = .warning },
+} } });
+const checked_names = CheckedNames.validate(allocator, &document, bag.sink(), .{});
+```
+
+`names.rule = .xml_1_0` follows [XML 1.0 Fifth Edition NameStartChar/NameChar](https://www.w3.org/TR/xml/#sec-common-syn).
+It checks each element name once at its opening occurrence, every attribute name,
+and every syntactically complete named-reference name. Matching closing names are
+already byte-identical; they do not produce a second name finding. It does not
+resolve namespaces, fold case, normalize Unicode, restrict tag vocabulary or
+enable whole-source UTF-8 validation. Colons remain ordinary allowed name characters.
+
+Name checking decodes only examined names. One finding per invalid name identifies
+its first disallowed code point; malformed UTF-8 uses a one-byte primary span.
+`related` covers the full name. `details.name.context` is `element`, `attribute`
+or `reference`; `.problem` is `invalid_start`, `invalid_character` or `invalid_utf8`.
+Codes are `E.Validation.Name.003` / `W.Validation.Name.003`. Other content is not
+encoding-checked by this rule. When whole-source UTF-8 checking is also enabled,
+the same name may produce independent encoding and name findings, each with its
+own severity and retained entry. Counts are findings, not unique bad positions.
+
+`references.catalog = .xml_predefined` recognizes exactly `amp`, `lt`, `gt`, `quot`
+and `apos`, case-sensitively. Unknown means absent from this selected catalog, not
+invalid in every dialect. Each unknown reference produces one whole-reference
+span (`&name;`) with `E.Validation.Reference.003` / `W.Validation.Reference.003`.
+Only references in text and quoted attribute values are checked, not comments or
+CDATA. Numeric references need no name lookup. `&amp;unknown;` is a known `amp`
+reference followed by literal text, not recursive expansion. Malformed candidates
+accepted as literal text stay literal during validation. Neither check changes
+source bytes, invents values, reads external resources or performs DTD processing.
+
+Rules and catalogs have separate typed selections and severity; enabling either
+does not enable the other. Only the above rule/catalog is currently supplied;
+there is no runtime extension registry. In a runtime-enabled profile, nested
+patches inherit unspecified leaves. Complete `standard`/`untrusted` presets reset
+both checks to off. Other catalogs and dialect semantics are not yet implemented.
+
+### Outcomes and costs
+
 `ValidationResult` separates `completion`, `validity`, per-check statuses
-(`checks.duplicate_attribute`, `checks.invalid_utf8`), u64 `errors`/`warnings` and
+(`checks.duplicate_attribute`, `checks.invalid_utf8`, `checks.names`,
+`checks.references`), u64 `errors`/`warnings` and
 `diagnostic_delivery`. Offsets, capacities and parsing counters remain u32;
 validation totals use u64 for independently counted checks, as in DOT.
 Check status is `not_run` when off, `incomplete` until finished, or `complete`.
 A completed check stays complete if a later check is interrupted. A complete
 off-policy result is valid under the selected policy, **not** proof of uniqueness
-or encoding validity. Interrupted results are `invalid` if an error was already
+or validity under any disabled name, encoding or reference rule. Interrupted results are `invalid` if an error was already
 found, otherwise `unknown`. A sink's accepted
 stop ends the pass immediately with complete delivery of the discovered prefix;
 rejection ends it with failed delivery. Neither implies all findings were discovered.
 Insufficient scratch reports `storage_exhausted` with the required entry count;
 allocator failure reports `out_of_memory`. Duplicate scratch is preflighted before
-either check runs; a resource failure leaves enabled checks incomplete and counts
+any enabled check runs; a resource failure leaves enabled checks incomplete and counts
 zero. Resource diagnostics do not replace those causes, even if the diagnostic
 destination fails.
 Both resource diagnostics use the name span of the first element with the largest
@@ -277,7 +328,9 @@ not malformed syntax or proof that this element alone caused memory exhaustion.
 This is a separate run-to-completion pass. Parsing's `execution.metering` does not
 bound validation, sorting, scratch sizing or allocations. Enabled cancellation is
 polled at entry, between elements, before duplicate findings and before each
-UTF-8 sequence (at most four bytes), not within a sort or a name comparison.
+UTF-8 sequence (at most four bytes), and inside name decoding/reference scans.
+Scratch sizing/grouping, duplicate sorting and duplicate-name comparisons are not
+internally cancellable. This is not bounded validation.
 UTF-8 checking is O(source bytes), using one u32 cursor with no finding buffer.
 Fixed profiles with encoding off omit this cursor and the scan; runtime off skips
 the scan. Heap sorting uses O(A log A) comparisons per attribute group with
@@ -285,6 +338,17 @@ bytewise name comparisons, followed by linear mapping/emission in source order;
 there is no second sort. Allocator-backed validation sizes scratch only once and
 reuses that requirement during checking. Temporary memory is O(max attributes on one element).
 Source and document pools must stay alive and unchanged, as with parsing views.
+
+Name/reference checking adds a linear forest/attribute walk, name decoding and
+context-aware rescanning of text/value spans to locate references. Even names-only
+checking scans those spans because reference names are in scope; their positions
+are not retained separately. No decoded strings, node metadata, reference pool or
+finding queue is allocated. New checks without duplicate checking can use a failing
+allocator successfully. Combined UTF-8 validation may examine the same bytes again.
+When both new checks are off, validation uses the original attribute-only/encoding
+path and does not walk the forest. Fixed-disabled code can be excluded; runtime-off
+skips work but runtime-selectable code can remain linked. Enabled latency and
+decimal MB/s are reported separately by the benchmark below.
 
 ## Untrusted input
 
@@ -366,6 +430,10 @@ const parsed = Reader.parseBorrowedIn(source, memory, sink, .{
 | `limits.max_nesting` | u32; default `2^32 - 1`; top-level elements have depth 1 |
 | `validation.duplicate_attribute` | `err` (default), `warning`, `off`; affects validation, not parsing |
 | `validation.invalid_utf8` | `off` (default), `warning`, `err`; checks raw source encoding during validation only |
+| `validation.names.rule` | `xml_1_0`; optional XML 1.0 Fifth Edition name-character rule |
+| `validation.names.severity` | `off` (default), `warning`, `err`; independent of whole-source encoding and vocabulary |
+| `validation.references.catalog` | `xml_predefined`; five predefined XML reference names |
+| `validation.references.severity` | `off` (default), `warning`, `err`; no expansion or external lookup |
 | `syntax.malformed_reference` | `reject` (default), `warn`, `accept`; tolerant cases keep the `&` literal |
 | `execution.metering` | boolean; default false |
 | `execution.cancellation` | boolean; default false |
@@ -481,6 +549,9 @@ the same [shared reporting contracts](REPORTING.md) as DOT without sharing paylo
   reference, comment, CDATA, prose, long-name and long-value fixtures; both backends
   with fixed/runtime/count-only/cancellable latency and decimal MB/s, record/scratch
   and session sizes. Duplicate validation and opt-in UTF-8 checks (ASCII, Unicode,
-  malformed bytes, combined checks) are timed separately with a discard sink and
+  malformed bytes, combined checks), name rules (ASCII/Unicode), reference catalogs,
+  plain text and tolerated reference candidates are timed separately with a discard sink and
   preallocated scratch, if needed. Storage figures are not allocator overhead or
   process RSS.
+- `zig build bench-markup -Doptimize=ReleaseFast -- --rules-only`: just the new
+  optional name/reference validation costs, without the parsing benchmark matrix.

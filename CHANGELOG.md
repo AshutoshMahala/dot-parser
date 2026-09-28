@@ -6,6 +6,18 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add independent markup `validation.names` (`xml_1_0`) and
+  `validation.references` (`xml_predefined`) checks, each with default-off
+  error/warning severity and fixed/runtime parity. Report precise name problems
+  and unknown-catalog references in source order alongside encoding/duplicate
+  findings. Accepted malformed-reference text is not reinterpreted. No source
+  mutation, decoding into stored values, new retained pools or scratch requirement;
+  the new checks are optional and do not impose XML rules on structural parsing.
+  Validation status and diagnostic enums gain the corresponding cases. Add
+  adversarial/Unicode/policy/cancellation tests and separate enabled-cost benchmarks.
+  Graphviz vocabulary validation, void-element dialects, recovery and UTF-16/32
+  conversion remain separate work.
+
 - **Breaking:** shared growable diagnostic bags (including DOT and markup) now
   stop at 1,024 entries by default. `Options.max_entries` is an `EntryLimit`:
   `.{ .limited = N }` has a u16 payload (0–65,535); `.unlimited` explicitly opts

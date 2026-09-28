@@ -492,6 +492,20 @@ Label restrictions must not be applied to unrelated DOT identifiers; an
 HTML-like port ID such as `n:<p>` has inner value `p`, not an opening tag.
 Rendering and consumer-specific interpretation remain outside these stages.
 
+**Slice 4b implemented 2026-09-27:** name rules,
+reference catalogs and encoding checks must be independently selectable. Optional
+XML-specific checks must not become mandatory restrictions or costs for HTML,
+SVG, Graphviz or custom consumers. Sharing a processor does not promise support
+for every dialect's grammar; different parsing semantics require an explicit
+grammar contract or compile-time-bound processor. The generic/extensible processor
+prioritizes Graphviz as a consumer, not browser implementation. Slice 4b supplies optional
+XML 1.0 names and a first five-name predefined-reference catalog, not full XML
+conformance or value expansion. Name-local UTF-8 decoding does not enable a
+whole-source check. Independent findings keep their severities and may overlap.
+Structural recovery is deferred to a separate design discussion; the current
+no-guessed-repair/no-partial-success contract remains unchanged. Details and
+remaining choices are in [the internal slice contract](MARKUP.md#slice-4b--optional-validation).
+
 **Standalone-first implementation (2026-09-27; decisions 2026-09-26):** build structural markup in
 vertical slices before expanding composition. `markup_parser` now independently
 parses text, matching/self-closing elements, quoted attributes, references, comments
@@ -502,12 +516,14 @@ cancellable fixed sessions. Scalar and opt-in vector/block scanning share syntax
 and results; policy selection works at compile time and, when enabled, runtime.
 Bounded work units are documented per backend. Attributes preserve order and all duplicates; independent
 duplicate checks support error/warning/off with explicit scratch and results.
-References are preserved without decoding/lookup; malformed-reference acceptance
+Parsing preserves references without decoding/lookup; malformed-reference acceptance
 is an explicit reject/warn/accept syntax policy with factual counters and sink-stop
 handling. Comments and CDATA remain distinct source-backed leaves. Slice 4a adds
 optional whole-source UTF-8 validation, off by default with error/warning choices;
-its source-ordered findings do not stop independent duplicate checks. Additional
-validation and DOT recognition/integration remain subsequent slices. Current
+its source-ordered findings do not stop independent duplicate checks. Slice 4b
+adds independent default-off name and catalog checks with source-ordered typed
+findings, no new retained pool or required scratch, and fixed/runtime parity.
+Graphviz validation, recovery and DOT recognition/integration remain subsequent slices. Current
 coverage is documented in [the markup guide](../MARKUP.md); settled grammar and
 delivery order are recorded in [the internal slice contract](MARKUP.md).
 
@@ -822,9 +838,22 @@ policy or pass so users who do not request it do not link its tables or code.
 UTF-8 and Latin-1 are ASCII-compatible and can share the byte-oriented lexer.
 An optional UTF-8 validator may reject or report invalid sequences without
 changing stored lexemes. Latin-1 interpretation or transcoding may be added
-later over the same raw bytes. UTF-16 is not an input encoding of the byte lexer;
+later over the same raw bytes. UTF-16/32 are not input encodings of the byte lexer;
 support would require an explicit decoding source adapter, with clearly defined
 mapping between original and decoded source offsets.
+
+**Future-adapter provenance requirement (2026-09-27; not implemented):** UTF-8
+working bytes must not erase original encoding, byte order or BOM information.
+Keep that metadata once per source/input context, with explicit caller-supplied
+or detected provenance; do not infer an original encoding from converted bytes.
+Original bytes or a live source handle are needed for exact reproduction;
+metadata alone is not a lossless source copy. Conversion failures, replacement
+or other information loss must be explicit. Original-file diagnostics/fixes
+require an explicit mapping from working byte offsets; a constant base offset
+is insufficient. Without a mapping, expose working-buffer coordinates honestly.
+Conversion buffers, mapping storage/rescans and dual-buffer peak memory have
+documented, caller-controlled costs. This does not change current raw-byte parsing
+or mandate transcoding/storage on callers who do not select the future adapter.
 
 Physical line derivation treats LF, CRLF, and standalone CR according to one
 documented policy; byte offsets are what is stored. Canonical byte column counts
@@ -1472,6 +1501,22 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-09-27 — **R-MOD-014 slice 4b implemented:** optional typed name-rule and
+  reference-catalog selection, independent severities/completion, first-bad-name
+  and unknown-reference diagnostics, and literal-preserving reference rescanning.
+  Parsing is unchanged; Graphviz remains the priority consumer of the generic
+  processor. No recovery, void dialect, transcoder or extension registry is added.
+
+- 2026-09-27 — **R-PORT-006 future encoding provenance:** UTF-16/32 adapters may
+  use UTF-8 internally but must retain original encoding/byte-order/BOM identity,
+  explicit ownership and honest source-coordinate mapping. Document conversion
+  and mapping costs; no transcoder or metadata API is implemented by this decision.
+
+- 2026-09-27 — **R-MOD-014 next-slice direction:** keep optional name rules,
+  reference catalogs and encoding checks independent across dialects. Document
+  name-local UTF-8 implications and defer structural recovery to its own design
+  discussion. These decisions do not add implemented capabilities.
 
 - 2026-09-27 — **R-FUNC-008 and R-SEC-002 retention hardening:** shared growable
   bags default to 1,024 retained diagnostics with finite `u16` limits and explicit
