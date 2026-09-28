@@ -78,7 +78,7 @@ fn expectEquivalent(source: []const u8) !void {
             try expectEqualDeep(a.failureDiagnostic(), b.failureDiagnostic());
             try expectEqual(a.terminal, b.terminal);
             switch (a.terminal) {
-                .html, .oversize, .none, .eof => return,
+                .oversize, .none, .eof => return,
                 else => {
                     a.resumeAfterFailure();
                     b.resumeAfterFailure();
@@ -92,6 +92,11 @@ fn expectEquivalent(source: []const u8) !void {
 }
 
 const fixtures = [_][]const u8{
+    "<> <abc> <<b>text</b>> <<a/><b/>> <<a><b/></a>>",
+    "<\"<\">> <'>' <\\> <\x00\xff> <#\n//\n> <&lt;> <graph>",
+    "<!--<x>--> <![CDATA[<x>]]> <a>/*tail*/ x",
+    "<x>+\"y\" \"x\"/**/+<y> <>+<> <x>+ <x>+b <<unclosed>",
+    "<a>+\"b\\\"c\" <a> /*unterminated <a>+/*",
     "",
     " \t\r\n\r\n",
     "graph { a -- b; x [label=\"hi\"]; }",
@@ -158,6 +163,50 @@ const fixtures = [_][]const u8{
     "\"a\" //c\n+ \"b\" ; \"c\" #x\r\n + \"d\" /*x*/ + \"e\"",
     "a;b;c;d;e;f;g;h;i;j;k;l;m;n;o;p;q;r;s;t;u;v;w;x;y;z;aa;bb;cc;dd;ee;ff;gg;hh;ii;jj;kk;ll;mm",
 };
+
+test "HTML depth and contents are lexical and token metadata stays compact" {
+    try expectEqual(@as(usize, 12), @sizeOf(Token));
+    inline for (.{ scalar.Lexer, block.Lexer }) |L| {
+        for (0..256) |value| {
+            const byte: u8 = @intCast(value);
+            if (byte == '<' or byte == '>') continue;
+            const raw = [_]u8{ '<', byte, '>', ';' };
+            var scanner = L.init(&raw);
+            const token = scanner.next().token;
+            try expectEqual(@as(u32, 3), token.span.len);
+            try expect(token.flags.has_html);
+            try expectEqual(Token.Tag.semicolon, scanner.next().token.tag);
+        }
+        inline for (.{ "<>", "<\x00\xff>", "<<a>\n</a>>", "<\"<\">>", "<!--<x>-->", "<a>+\"b\"", "\"a\"+<b>" }) |raw| {
+            var scanner = L.init(raw ++ " ;");
+            const token = scanner.next().token;
+            try expectEqual(Token.Tag.identifier, token.tag);
+            try expect(token.flags.has_html);
+            try std.testing.expectEqualStrings(raw, token.span.slice(scanner.source));
+            try expectEqual(Token.Tag.semicolon, scanner.next().token.tag);
+        }
+        // A quote/comment marker never shields the first unmatched closer.
+        inline for (.{ "<\">", "<'/>", "</*>", "<\\>" }) |raw| {
+            var scanner = L.init(raw ++ ">");
+            try std.testing.expectEqualStrings(raw, scanner.next().token.span.slice(scanner.source));
+            try expectEqual(Result.failure, scanner.next());
+            try expectEqual(@as(u8, '>'), scanner.failureDiagnostic().details.invalid_byte);
+        }
+    }
+}
+
+test "HTML block boundaries and bounded partitions preserve the same stream" {
+    var buffer: [512]u8 = undefined;
+    const body = "<<a>" ++ "x" ** 130 ++ "</a>>+\"b\\\"c\" ; <z>";
+    for (0..64) |shift| {
+        @memset(buffer[0..shift], ' ');
+        @memcpy(buffer[shift..][0..body.len], body);
+        const source = buffer[0 .. shift + body.len];
+        try expectEquivalent(source);
+        const work = try checkBlockPartition(source, &.{1});
+        try expectEqual(work, try checkBlockPartition(source, &.{ 0, 7, 0, 19, 2 }));
+    }
+}
 
 test "every high byte can start and continue a bare identifier in both scanners" {
     inline for (.{ scalar.Lexer, block.Lexer }) |ScannerType| {

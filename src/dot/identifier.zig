@@ -10,10 +10,24 @@ const lex = @import("lexer/lexer.zig");
 const Chunks = @import("identifier_value.zig").Chunks;
 
 pub const DecodeError = error{ InvalidIdentifier, NoSpaceLeft, OverlappingBuffers };
+pub const Form = enum { bare, numeral, quoted, html, concatenation };
+
+/// Validate one complete spelling and classify it. Concatenations are not
+/// classified by their first operand. No decoding or allocation is performed.
+pub fn form(raw: []const u8) error{InvalidIdentifier}!Form {
+    const token = try validate(raw);
+    if (token.flags.concatenated) return .concatenation;
+    return switch (raw[0]) {
+        '<' => .html,
+        '"' => .quoted,
+        '-', '.', '0'...'9' => .numeral,
+        else => .bare,
+    };
+}
 
 /// Required bytes for the logical identifier value. No allocation or output.
 pub fn decodedLen(raw: []const u8) error{InvalidIdentifier}!usize {
-    try validate(raw);
+    _ = try validate(raw);
     var chunks: Chunks = .{ .raw = raw };
     var len: usize = 0;
     while (chunks.next()) |chunk| len += chunk.len;
@@ -53,17 +67,18 @@ pub fn decodeInto(raw: []const u8, output: []u8) DecodeError![]const u8 {
 /// rejected before any writes. Writer failures propagate unchanged and may
 /// leave partial output; atomic destinations must stage on the caller side.
 pub fn writeDecoded(raw: []const u8, writer: anytype) !void {
-    try validate(raw);
+    _ = try validate(raw);
     var chunks: Chunks = .{ .raw = raw };
     while (chunks.next()) |chunk| try writer.writeAll(chunk);
 }
 
-fn validate(raw: []const u8) error{InvalidIdentifier}!void {
+fn validate(raw: []const u8) error{InvalidIdentifier}!lex.Token {
     var lexer = lex.Lexer.initRaw(raw);
     const result = lexer.next();
     if (result != .token or result.token.tag != .identifier or
         result.token.span.start != 0 or result.token.span.len != raw.len)
         return error.InvalidIdentifier;
+    return result.token;
 }
 
 test "decode preserves numeral identity and only removes DOT lexical escapes" {

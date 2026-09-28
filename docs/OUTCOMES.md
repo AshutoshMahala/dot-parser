@@ -20,7 +20,7 @@ DOT processing and does not produce a source diagnostic.
 | `.cancelled` | A session was cancelled, or an enabled cancellation hook stopped a one-shot operation | No |
 | `.diagnostic_stopped` | A diagnostic destination stopped unfinished work: requested, capacity, failure, or out_of_memory | No |
 | `.invalid_syntax` | The input is not accepted by the selected syntax policy | No |
-| `.unsupported_feature` | The parse stopped at a recognized-but-deferred DOT construct | No |
+| `.unsupported_feature` | The parse stopped at a policy-disabled DOT construct | No |
 | `.resource_exhausted` | A caller-configured limit (e.g. `max_statements` or `max_attributes`) was reached; the input may still be valid | No |
 | `.storage_failure` | Document storage could not hold the document | No |
 
@@ -57,20 +57,20 @@ successful commit is never replaced by later cancellation. See
 The distinction the taxonomy is built around:
 
 - **`invalid_syntax`** means *the selected syntax policy does not accept this input*.
-- **`unsupported_feature`** means *this is recognized DOT syntax that this
-  library does not process yet*. The parse stopped at the construct's
-  introducer, and the diagnostic names the exact feature as a typed enum
-  (`Feature.html_identifier`) that tooling can
-  aggregate or test against.
+- **`unsupported_feature`** means *the selected policy disables this recognized
+  construct*. With `markup = .none`, the diagnostic spans the complete HTML-like
+  identifier expression (including mixed concatenations) and names
+  `Feature.html_identifier`. The default passthrough policy accepts that envelope
+  without checking inner markup.
 
-An unsupported outcome is a **boundary, not a validity claim**: nothing at
-or beyond the stopping point has been checked. And the classification is
+An unsupported outcome is a **boundary, not a validity claim**: the envelope
+was scanned, but its contents and later DOT syntax have not been validated. And the classification is
 grammar-aware — a deferred keyword in a position where it is not legal DOT
 (`subgraph` as the document root) is plain `invalid_syntax`.
 
 Basic attributes produce syntax errors for malformed supported forms.
-`Feature` contains only currently deferred constructs; implemented features
-have no unsupported-feature entry. Attribute failures reuse
+`Feature.html_identifier` remains for the explicit `.none` policy; accepted
+passthrough identifiers produce no unsupported finding. Attribute failures reuse
 `E.Syntax.Grammar.003` / `031` with typed key/value/list contexts, expected
 `=` / `]` vocabulary and a related opener whenever the list was left open. Capacity diagnostics identify
 the attribute, assignment or attribute-statement pool, or the total
@@ -125,7 +125,9 @@ same brace depth, and every further syntax error is reported too. The
 outcome is still `invalid_syntax`, no document is published, and validation
 never runs — later diagnostics can be consequences of an earlier one, so
 read them in order. Header errors, end of input, trailing tokens, limits,
-deferred features, and unterminated quotes or comments still stop the parse.
+and unterminated quoted/HTML-like identifiers or comments still stop the parse.
+A policy-disabled HTML identifier in the body can recover like a syntax failure;
+the resulting aborted parse still returns `invalid_syntax`.
 
 Warnings (`W.Syntax.Numeral.033`, `W.Syntax.Operator.003`,
 `W.Syntax.Grammar.034`) do not invalidate input. Their destination can still
@@ -167,8 +169,8 @@ payload (`Unexpected.context`, `ReservedKeyword.context`).
 | `W.Syntax.Operator.003` | Exact long operator or bare dash accepted with `.warn` | `.accepted_operator`: chosen operator and `.long_shape` or `.from_keyword` reason |
 | `W.Syntax.Grammar.034` | Empty statement accepted with `.warn` | `.none`; the span marks the omitted `;` |
 | `E.Syntax.Numeral.001` | `.` or `-.` without the required digit | `.incomplete_numeral` (the byte found, or null at EOF) |
-| `E.Syntax.Token.032` | Input ended inside an unclosed quote or block comment; span marks its opener | `.unterminated` (`.block_comment` or `.quoted_identifier`) |
-| `E.Syntax.Concatenation.003` | `+` is not followed by a quoted identifier | `.expected_quote` (next byte, or null at EOF) |
+| `E.Syntax.Token.032` | Input ended inside an unclosed quote, HTML envelope or block comment; span marks its opener | `.unterminated` (`.block_comment`, `.quoted_identifier`, `.html_identifier`) |
+| `E.Syntax.Concatenation.003` | `+` is not followed by a quoted/HTML-like identifier part | `.expected_string_part` (next byte, or null at EOF) |
 | `E.Syntax.Grammar.003` | Unexpected token | `.unexpected` (expected set, found, context, related opener, suspect brace) |
 | `E.Syntax.Grammar.031` | Input ended before the document was complete | `.unexpected` |
 | `E.Syntax.Keyword.003` | Reserved keyword where a name was needed, or `node`/`edge`/`graph` without its `[` list | `.reserved_keyword` (keyword, context) |
@@ -179,7 +181,7 @@ payload (`Unexpected.context`, `ReservedKeyword.context`).
 | `E/W.Validation.Encoding.003` | Invalid UTF-8 under the optional whole-source check | `.invalid_utf8`: offending byte; one-byte recovery |
 | `E/W.Validation.Attribute.035` | Repeated logical key in one statement's combined attribute lists | `.repeated_attribute`: first equal key's span |
 | `E/W.Validation.Restriction.003` | Consumer restriction on effective kind, ports or subgraphs | `.restriction`: `undigraph`, `digraph`, `generic`, `port` or `subgraph` |
-| `E.Profile.Feature.009` | Recognized-but-deferred DOT construct | `.unsupported_feature` |
+| `E.Profile.Feature.009` | Policy-disabled DOT construct | `.unsupported_feature` |
 | `E.Resource.Capacity.026` | A configured capacity was exhausted | `.capacity` when available, otherwise `.none` |
 | `E.Resource.Memory.026` | Document memory was exhausted | `.none` |
 

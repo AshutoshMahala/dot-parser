@@ -2,8 +2,9 @@
 
 Current development implementation, after 0.3.0: import `markup_parser` without
 importing `dot_parser`. This is an experimental XML-like **fragment** parser,
-not browser HTML, complete XML, or Graphviz label validation. DOT HTML-like
-identifiers are still unsupported by the DOT parser.
+not browser HTML, complete XML, or Graphviz label validation. DOT independently
+supports [passthrough HTML-like identifiers](SUPPORTED_SYNTAX.md#passthrough-html-like-identifiers),
+but does not yet invoke this parser automatically.
 
 ## Supported input
 

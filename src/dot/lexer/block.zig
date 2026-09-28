@@ -111,8 +111,8 @@ fn findEscaped(backslash_in: u64, prev_escaped: *bool) u64 {
 pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool) type {
     return struct {
         const Self = @This();
-        const Mode = enum { trivia, line_comment, block_comment, quoted, ident, numeral, dash_gap };
-        const TriviaMode = enum { ordinary, after_quote, after_plus };
+        const Mode = enum { trivia, line_comment, block_comment, quoted, html, ident, numeral, dash_gap };
+        const TriviaMode = enum { ordinary, after_part, after_plus };
         const NumeralPart = enum { integral, fraction };
 
         source: []const u8,
@@ -132,9 +132,10 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
         /// Failure span start: a quote or comment opener, or the bad byte.
         opener: u32 = 0,
         /// One past the last closing quote of the current quoted token.
-        quote_end: u32 = 0,
+        part_end: u32 = 0,
         /// First byte of a block comment's body (after `/*`).
-        body_start: u32 = 0,
+        content: union { body_start: u32, html_depth: u32 } = .{ .body_start = 0 },
+        flags: Token.Flags = .{},
         /// The most recently completed token.
         ready: Token = undefined,
         terminal: Terminal = .none,
@@ -218,9 +219,8 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     .invalid => .syntax_invalid_byte,
                     .operator, .operator_long, .operator_spaced => .syntax_invalid_operator,
                     .numeral => .syntax_incomplete_numeral,
-                    .block, .quote => .syntax_unterminated_construct,
+                    .block, .quote, .html_unterminated => .syntax_unterminated_construct,
                     .concat => .syntax_invalid_concatenation,
-                    .html => .profile_unsupported_feature,
                     .none, .eof, .oversize => unreachable,
                 },
                 .span = span,
@@ -232,11 +232,16 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     .numeral => .{ .incomplete_numeral = self.found },
                     .block => .{ .unterminated = .block_comment },
                     .quote => .{ .unterminated = .quoted_identifier },
-                    .concat => .{ .expected_quote = self.found },
-                    .html => .{ .unsupported_feature = .html_identifier },
+                    .concat => .{ .expected_string_part = self.found },
+                    .html_unterminated => .{ .unterminated = .html_identifier },
                     .none, .eof, .oversize => unreachable,
                 },
                 .fix = switch (self.terminal) {
+                    .html_unterminated => if (self.content.html_depth == 1) .{
+                        .span = .{ .start = @intCast(self.source.len), .len = 0 },
+                        .edit = .{ .insert_before = .html_close },
+                        .applicability = .maybe,
+                    } else null,
                     .operator_long, .operator_spaced => .{
                         .span = span,
                         .edit = .{ .replace = if (self.found == '>') .directed_operator else .undirected_operator },
@@ -265,10 +270,10 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
             const anchor = self.anchor;
             const start = self.opener;
             const target: u32 = switch (self.terminal) {
-                .block, .quote => @intCast(self.source.len),
+                .block, .quote, .html_unterminated => @intCast(self.source.len),
                 .concat => start,
                 .invalid, .operator, .operator_long, .operator_spaced, .numeral => if (start == anchor) start + self.terminal_len else @intCast(self.source.len),
-                .none, .eof, .html, .oversize => unreachable,
+                .none, .eof, .oversize => unreachable,
             };
             std.debug.assert(self.cursor == anchor and target >= anchor);
             self.skipTo(target);
@@ -390,6 +395,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
         inline fn microstep(self: *Self) ?Result {
             if (self.cursor == self.source.len) return self.atEnd();
             if (!self.classified or self.cursor >= self.block_start + block_len) {
+                if (self.mode == .html) return self.stepHtml();
                 self.classify(self.cursor - self.cursor % block_len);
                 return null;
             }
@@ -398,6 +404,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                 .line_comment => self.stepLineComment(),
                 .block_comment => self.stepBlockComment(),
                 .quoted => self.stepQuoted(),
+                .html => self.stepHtml(),
                 .ident => self.stepIdent(),
                 .numeral => self.stepNumeral(),
                 .dash_gap => self.stepDashGap(),
@@ -407,7 +414,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
         fn atEnd(self: *Self) ?Result {
             switch (self.mode) {
                 .trivia, .line_comment => switch (self.trivia) {
-                    .after_quote => return self.finishQuoted(),
+                    .after_part => return self.finishString(),
                     .after_plus => return self.fail(.concat, self.here(), 0, null),
                     .ordinary => {
                         self.terminal = .eof;
@@ -417,10 +424,11 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                 .block_comment => {
                     // Malformed trailing trivia belongs to the next token
                     // unless '+' has committed us to another quoted part.
-                    if (self.trivia == .after_quote) return self.finishQuoted();
+                    if (self.trivia == .after_part) return self.finishString();
                     return self.fail(.block, self.opener, 2, null);
                 },
                 .quoted => return self.fail(.quote, self.opener, 1, null),
+                .html => return self.fail(.html_unterminated, self.opener, 1, null),
                 .ident => return self.finishIdent(),
                 .numeral => return self.emit(.identifier),
                 .dash_gap => return self.fail(.operator, self.anchor, 1, self.found),
@@ -446,7 +454,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     self.opener = self.here();
                     if (self.trivia == .ordinary) self.anchor = self.here();
                     if (n1 == '*') {
-                        self.body_start = self.cursor + 2;
+                        self.content = .{ .body_start = self.cursor + 2 };
                         self.mode = .block_comment;
                     } else {
                         self.mode = .line_comment;
@@ -456,14 +464,16 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                 }
             }
             switch (self.trivia) {
-                .after_quote => {
-                    if (b != '+') return self.finishQuoted();
+                .after_part => {
+                    if (b != '+') return self.finishString();
                     self.advanceTo(self.cursor + 1);
                     self.trivia = .after_plus;
+                    self.flags.concatenated = true;
                     return null;
                 },
                 .after_plus => {
-                    if (b != '"') return self.fail(.concat, self.here(), 1, b);
+                    if (b != '"' and b != '<') return self.fail(.concat, self.here(), 1, b);
+                    if (b == '<') return self.startHtml();
                     self.opener = self.here();
                     self.advanceTo(self.cursor + 1);
                     self.mode = .quoted;
@@ -472,6 +482,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                 .ordinary => {},
             }
             self.anchor = self.here();
+            self.flags = .{};
             switch (b) {
                 '{', '}', ';', ':', '[', ']', '=', ',' => {
                     self.advanceTo(self.cursor + 1);
@@ -514,7 +525,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     }
                     return self.fail(.numeral, self.anchor, 1, n1);
                 },
-                '<' => return self.fail(.html, self.anchor, 1, null),
+                '<' => return self.startHtml(),
                 else => return self.fail(.invalid, self.anchor, 1, b),
             }
         }
@@ -624,7 +635,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
             // A '*' in the previous block's last cell closes with a '/' in
             // this block's first cell, unless that '*' is the opener's own.
             if (self.cursor == self.block_start and self.block_start > 0 and (self.masks.slash & 1) != 0 and
-                self.source[self.block_start - 1] == '*' and self.block_start - 1 >= self.body_start)
+                self.source[self.block_start - 1] == '*' and self.block_start - 1 >= self.content.body_start)
             {
                 self.advanceTo(self.cursor + 1);
                 self.mode = .trivia;
@@ -634,8 +645,8 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
             // The opener's '*' can never close the comment (`/*/`); when the
             // body starts at or past this block's end (the `*` sits in the
             // last cell) nothing in this block can close it.
-            if (self.body_start > self.block_start) {
-                const below = self.body_start - self.block_start;
+            if (self.content.body_start > self.block_start) {
+                const below = self.content.body_start - self.block_start;
                 close = if (below >= block_len) 0 else close & ~((@as(u64, 1) << @intCast(below)) - 1);
             }
             if (self.findFirst(close)) |p| {
@@ -647,14 +658,58 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
             return null;
         }
 
+        fn startHtml(self: *Self) ?Result {
+            self.opener = self.cursor;
+            self.cursor += 1;
+            self.content = .{ .html_depth = 1 };
+            self.flags.has_html = true;
+            self.mode = .html;
+            return null;
+        }
+
+        /// Only HTML bodies pay for angle masks. Each credit reads at most
+        /// 64 bytes and walks at most 64 set bits; no quote/comment shielding.
+        // Keep the angle walk out of the aggressively inlined DOT driver:
+        // inlining it regressed ordinary parse throughput in the slice bench.
+        noinline fn stepHtml(self: *Self) ?Result {
+            const start = self.cursor;
+            const n: u32 = @intCast(@min(self.source.len - start, block_len));
+            var bytes: Block = @splat(0);
+            @memcpy(bytes[0..n], self.source[start..][0..n]);
+            if (metered) self.source_frontier = @max(self.source_frontier, @as(usize, start) + n);
+            const opens = eq(&bytes, '<');
+            var angles = opens | eq(&bytes, '>');
+            self.classified = false;
+            self.prev_escaped = false;
+            while (angles != 0) {
+                const bit: u6 = @intCast(@ctz(angles));
+                const mask = @as(u64, 1) << bit;
+                angles &= angles - 1;
+                if (opens & mask != 0) {
+                    self.content.html_depth += 1;
+                } else {
+                    self.content.html_depth -= 1;
+                    if (self.content.html_depth == 0) {
+                        self.cursor = start + @as(u32, bit) + 1;
+                        self.part_end = self.cursor;
+                        self.trivia = .after_part;
+                        self.mode = .trivia;
+                        return null;
+                    }
+                }
+            }
+            self.cursor = start + n;
+            return null;
+        }
+
         fn stepQuoted(self: *Self) ?Result {
             const candidates = (self.masks.quote & ~self.masks.escaped) | self.masks.nul;
             if (self.findFirst(candidates)) |p| {
                 self.advanceTo(p);
                 if (self.source[p] == 0) return self.fail(.invalid, self.here(), 1, 0);
                 self.advanceTo(p + 1);
-                self.quote_end = self.here();
-                self.trivia = .after_quote;
+                self.part_end = self.here();
+                self.trivia = .after_part;
                 self.mode = .trivia;
                 return null;
             }
@@ -665,17 +720,17 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
         /// The quoted token, including every `+`-joined part; trailing trivia
         /// is examined speculatively but excluded, and revisited once by the
         /// next call.
-        fn finishQuoted(self: *Self) ?Result {
-            const end = self.quote_end;
+        fn finishString(self: *Self) ?Result {
+            const end = self.part_end;
             self.restore(end);
             self.trivia = .ordinary;
             self.mode = .trivia;
-            self.ready = .{ .tag = .identifier, .span = .{ .start = self.anchor, .len = end - self.anchor } };
+            self.ready = .{ .tag = .identifier, .span = .{ .start = self.anchor, .len = end - self.anchor }, .flags = self.flags };
             return .{ .token = self.ready };
         }
 
         fn emit(self: *Self, tag: Token.Tag) ?Result {
-            self.ready = .{ .tag = tag, .span = .{ .start = self.anchor, .len = self.cursor - self.anchor } };
+            self.ready = .{ .tag = tag, .span = .{ .start = self.anchor, .len = self.cursor - self.anchor }, .flags = self.flags };
             self.mode = .trivia;
             self.trivia = .ordinary;
             return .{ .token = self.ready };

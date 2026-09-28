@@ -21,12 +21,8 @@
 //! - Every keyword tokenizes:
 //!   whether `subgraph` legally introduces a subgraph or sits in an illegal
 //!   grammar position is the parser's decision, which the lexer cannot
-//!   make. The remaining lexical deferred construct — HTML identifiers — is
-//!   reported here as structured `profile_unsupported_feature` failures,
-//!   distinct from invalid syntax (R-MOD-006).
-//!   Detection stops at the introducer: neither the construct's body nor
-//!   the remaining input is checked, so an unsupported result makes no
-//!   whole-input validity claim.
+//!   make. HTML-like envelopes tokenize by angle depth; the parser owns the
+//!   none/passthrough policy. Passthrough makes no inner-markup validity claim.
 
 const std = @import("std");
 const location = @import("parser_support").location;
@@ -64,19 +60,22 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
             integral,
             fraction,
             quoted,
+            html,
             escape,
             // Transient microstep result, never persisted in self.state.
             ready,
         };
-        const Trivia = enum { ordinary, after_quote, after_plus };
+        const Trivia = enum { ordinary, after_part, after_plus };
         const Terminal = types.Terminal;
 
         source: []const u8,
         cursor: u32 = 0,
         anchor: u32 = 0,
         opener: u32 = 0,
-        quote_end: u32 = 0,
-        keyword: u64 = 0,
+        part_end: u32 = 0,
+        // Mutually exclusive lexical states share one word.
+        content: union { keyword: u64, html_depth: u32 } = .{ .keyword = 0 },
+        flags: Token.Flags = .{},
         terminal_len: u32 = 0,
         state: State = .trivia,
         trivia: Trivia = .ordinary,
@@ -132,15 +131,15 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
         /// - an unterminated quote or comment, or a failure inside a quoted
         ///   identifier, jumps to end of input — the rest of the source is
         ///   the construct's body, and re-scanning it would only cascade.
-        /// Never valid for deferred-feature boundaries, which are not errors.
+        /// Never valid for source-range exhaustion.
         pub fn resumeAfterFailure(self: *Self) void {
             const anchor = self.anchor;
             const start = self.opener;
             const target: u32 = switch (self.terminal) {
-                .block, .quote => @intCast(self.source.len),
+                .block, .quote, .html_unterminated => @intCast(self.source.len),
                 .concat => start,
                 .invalid, .operator, .operator_long, .operator_spaced, .numeral => if (start == anchor) start + self.terminal_len else @intCast(self.source.len),
-                .none, .eof, .html, .oversize => unreachable,
+                .none, .eof, .oversize => unreachable,
             };
             // `fail` left the cursor at the token anchor.
             std.debug.assert(self.cursor == anchor and target >= anchor);
@@ -188,9 +187,8 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     .invalid => .syntax_invalid_byte,
                     .operator, .operator_long, .operator_spaced => .syntax_invalid_operator,
                     .numeral => .syntax_incomplete_numeral,
-                    .block, .quote => .syntax_unterminated_construct,
+                    .block, .quote, .html_unterminated => .syntax_unterminated_construct,
                     .concat => .syntax_invalid_concatenation,
-                    .html => .profile_unsupported_feature,
                     .none, .eof, .oversize => unreachable,
                 },
                 .span = span,
@@ -202,14 +200,19 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     .numeral => .{ .incomplete_numeral = self.found },
                     .block => .{ .unterminated = .block_comment },
                     .quote => .{ .unterminated = .quoted_identifier },
-                    .concat => .{ .expected_quote = self.found },
-                    .html => .{ .unsupported_feature = .html_identifier },
+                    .concat => .{ .expected_string_part = self.found },
+                    .html_unterminated => .{ .unterminated = .html_identifier },
                     .none, .eof, .oversize => unreachable,
                 },
                 // An over-long or spaced operator has exactly one repair:
                 // the operator its last byte names. A lone '-' needs the
                 // document kind, which the parser supplies.
                 .fix = switch (self.terminal) {
+                    .html_unterminated => if (self.content.html_depth == 1) .{
+                        .span = .{ .start = @intCast(self.source.len), .len = 0 },
+                        .edit = .{ .insert_before = .html_close },
+                        .applicability = .maybe,
+                    } else null,
                     .operator_long, .operator_spaced => .{
                         .span = span,
                         .edit = .{ .replace = if (self.found == '>') .directed_operator else .undirected_operator },
@@ -321,7 +324,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     const b = byte orelse {
                         // Malformed trailing trivia belongs to the next token
                         // unless '+' has committed us to another quoted part.
-                        if (self.trivia == .after_quote) return self.finishQuoted();
+                        if (self.trivia == .after_part) return self.finishString();
                         return self.fail(.block, self.opener, 2, null);
                     };
                     const closed = state == .block_star and b == '/';
@@ -336,7 +339,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                             return continuation;
                         }
                     }
-                    return self.finish(keywordTag(self.keyword, self.cursor - self.anchor));
+                    return self.finish(keywordTag(self.content.keyword, self.cursor - self.anchor));
                 },
                 .dash => {
                     if (byte) |b| switch (b) {
@@ -431,6 +434,22 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     }
                     return self.finish(.identifier);
                 },
+                .html => {
+                    const b = byte orelse return self.fail(.html_unterminated, self.opener, 1, null);
+                    self.consume();
+                    switch (b) {
+                        '<' => self.content.html_depth += 1,
+                        '>' => {
+                            self.content.html_depth -= 1;
+                            if (self.content.html_depth == 0) {
+                                self.part_end = self.cursor;
+                                self.trivia = .after_part;
+                                return .trivia;
+                            }
+                        },
+                        else => {},
+                    }
+                },
                 .quoted, .escape => {
                     const b = byte orelse return self.fail(.quote, self.opener, 1, null);
                     if (b == 0) return self.fail(.invalid, self.here(), 1, b);
@@ -440,8 +459,8 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     } else switch (b) {
                         '\\' => continuation = .escape,
                         '"' => {
-                            self.quote_end = self.cursor;
-                            self.trivia = .after_quote;
+                            self.part_end = self.cursor;
+                            self.trivia = .after_part;
                             continuation = .trivia;
                         },
                         else => {},
@@ -454,23 +473,30 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
         inline fn afterTrivia(self: *Self, byte: ?u8) State {
             var continuation: State = .trivia;
             switch (self.trivia) {
-                .after_quote => {
-                    if (byte != '+') return self.finishQuoted();
+                .after_part => {
+                    if (byte != '+') return self.finishString();
                     self.consume();
                     self.trivia = .after_plus;
+                    self.flags.concatenated = true;
                     continuation = .trivia;
                     return continuation;
                 },
                 .after_plus => {
-                    if (byte != '"') return self.fail(.concat, self.here(), if (byte == null) 0 else 1, byte);
+                    if (byte != '"' and byte != '<') return self.fail(.concat, self.here(), if (byte == null) 0 else 1, byte);
                     self.opener = self.cursor;
                     self.consume();
+                    if (byte == '<') {
+                        self.flags.has_html = true;
+                        self.content = .{ .html_depth = 1 };
+                        return .html;
+                    }
                     continuation = .quoted;
                     return continuation;
                 },
                 .ordinary => {},
             }
             self.anchor = self.cursor;
+            self.flags = .{};
             const b = byte orelse {
                 self.terminal = .eof;
                 return .ready;
@@ -492,7 +518,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     });
                 },
                 'A'...'Z', 'a'...'z', '_', 0x80...0xff => {
-                    self.keyword = 0;
+                    self.content = .{ .keyword = 0 };
                     self.cacheKeyword(b);
                     continuation = .bare;
                 },
@@ -503,7 +529,12 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     self.opener = self.cursor;
                     continuation = .quoted;
                 },
-                '<' => return self.fail(.html, self.here(), 1, null),
+                '<' => {
+                    self.opener = self.cursor;
+                    self.flags.has_html = true;
+                    self.content = .{ .html_depth = 1 };
+                    continuation = .html;
+                },
                 else => return self.fail(.invalid, self.here(), 1, b),
             }
             self.consume();
@@ -514,13 +545,13 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
             // Keywords contain only ASCII letters. Folding bit 5 also changes
             // '_', but it cannot turn a non-letter into a keyword letter.
             // Keep the last eight bytes; length independently rejects long IDs.
-            self.keyword = types.foldKeywordByte(self.keyword, byte);
+            self.content.keyword = types.foldKeywordByte(self.content.keyword, byte);
         }
 
-        fn finishQuoted(self: *Self) State {
+        fn finishString(self: *Self) State {
             // Trivia is examined speculatively but excluded from the raw span.
             // Revisit it once on the next token, never once per resumed call.
-            self.cursor = self.quote_end;
+            self.cursor = self.part_end;
             return self.finish(.identifier);
         }
 
@@ -536,6 +567,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
             return .{ .token = .{
                 .tag = self.ready_tag,
                 .span = .{ .start = self.anchor, .len = self.cursor - self.anchor },
+                .flags = self.flags,
             } };
         }
 
@@ -611,7 +643,11 @@ test "one-credit calls expose every lexical continuation and trivia mode" {
     var states = std.EnumSet(AuditedLexer.State).initEmpty();
     var trivia_modes = std.EnumSet(AuditedLexer.Trivia).initEmpty();
     for ([_][]const u8{
-        " \r\n#x\r//y\n/*z**/a;",        "a\xff;", "-1.2 -.5 .1 1->2 3--4 5-->6", "7 - > 8",
+        "<x>+<<y>>;",
+        " \r\n#x\r//y\n/*z**/a;",
+        "a\xff;",
+        "-1.2 -.5 .1 1->2 3--4 5-->6",
+        "7 - > 8",
         "\"a\\\"b\" /*glue*/ + \"c\" x",
     }) |source| {
         var lexer = AuditedLexer.init(source);
@@ -686,19 +722,46 @@ fn checkPartition(source: []const u8, budgets: []const usize) !usize {
 
 test "metered scanner partitions preserve tokens diagnostics positions and total work" {
     const cases = [_][]const u8{
-        "",                                            " \t\r\n\r\n",                                                  "graph { a -- b; x [label=\"hi\"]; }",
-        "DiGraph STRICT SubGraph Node EDGE Graphical", "0 -0 123 -12 .5 -.5 12. -12.30 000.00 1->-2 3--4 1e3 1.2.3",   "-",
-        "-->",                                         "---",                                                          "\xEF\xBB\xBFgraph {",
-        "- >",                                         "-  -",                                                         "- x",
-        "-\t",                                         "a - b; c - > d",                                               "-",
-        "-.",                                          "-.x",                                                          ".",
-        ".x",                                          "+1",                                                           "/x",
-        "/",                                           "// comment\r\n# inline\ra /* ** / * */ -- b",                  "/* unterminated **",
-        "a\xff_more",                                  "\xff\x80tail",                                                 "<",
-        ":",                                           "\"a\\\"b\\\\c\\\r\nz\" /*glue*/ + // line\r\n\"d\" /*end*/ x", "\"a\"\"b\"",
-        "\"a\"+}",                                     "\"a\"+",                                                       "\"a\"+/*",
-        "\"a\" /*",                                    "\"a\"+ /",                                                     "\"a\" /x",
-        "\"a\"+\"b\\",                                 "\"a\x00b\"",                                                   "\"a\\\x00b\"",
+        "<x>+\"y\" <> <<a>text</a>> <\x00\xff> <unterminated",
+        "",
+        " \t\r\n\r\n",
+        "graph { a -- b; x [label=\"hi\"]; }",
+        "DiGraph STRICT SubGraph Node EDGE Graphical",
+        "0 -0 123 -12 .5 -.5 12. -12.30 000.00 1->-2 3--4 1e3 1.2.3",
+        "-",
+        "-->",
+        "---",
+        "\xEF\xBB\xBFgraph {",
+        "- >",
+        "-  -",
+        "- x",
+        "-\t",
+        "a - b; c - > d",
+        "-",
+        "-.",
+        "-.x",
+        ".",
+        ".x",
+        "+1",
+        "/x",
+        "/",
+        "// comment\r\n# inline\ra /* ** / * */ -- b",
+        "/* unterminated **",
+        "a\xff_more",
+        "\xff\x80tail",
+        "<",
+        ":",
+        "\"a\\\"b\\\\c\\\r\nz\" /*glue*/ + // line\r\n\"d\" /*end*/ x",
+        "\"a\"\"b\"",
+        "\"a\"+}",
+        "\"a\"+",
+        "\"a\"+/*",
+        "\"a\" /*",
+        "\"a\"+ /",
+        "\"a\" /x",
+        "\"a\"+\"b\\",
+        "\"a\x00b\"",
+        "\"a\\\x00b\"",
     };
     for (cases) |source| {
         // Truncate at every byte, including delimiters and CR/LF pairs.
@@ -719,7 +782,11 @@ test "zero credits leave every nonterminal continuation unchanged" {
         const zero = lexer.nextBounded(0);
         try expectEqual(@as(?Result, null), zero.result);
         try expectEqual(@as(usize, 0), zero.work_used);
-        try expectEqual(before, lexer);
+        inline for (std.meta.fields(@TypeOf(lexer))) |field| {
+            if (comptime std.mem.eql(u8, field.name, "content")) {
+                try expectEqual(before.content.keyword, lexer.content.keyword);
+            } else try expectEqual(@field(before, field.name), @field(lexer, field.name));
+        }
         const one = lexer.nextBounded(1);
         try expectEqual(@as(usize, 1), one.work_used);
         if (one.result) |result| {
@@ -758,6 +825,8 @@ test "megabyte lexical runs resume in linear work with constant state" {
         .{ "#", 'x', "\rx" },
         .{ "/*", '*', "/x" },
         .{ "/*", 'x', "" },
+        .{ "<", 'x', ">;" },
+        .{ "<", 'x', "" },
         .{ "\"", 'x', "\";" },
         .{ "\"", '\\', "\";" },
         .{ "\"", 'x', "" },
@@ -800,12 +869,6 @@ fn expectToken(lexer: *Lexer, tag: Token.Tag, text: []const u8) !void {
 fn expectFailure(lexer: anytype) !diagnostic.Diagnostic {
     try expect(lexer.next() == .failure);
     return lexer.failureDiagnostic();
-}
-
-fn expectUnsupported(lexer: *Lexer, feature: diagnostic.Feature) !void {
-    const failure = try expectFailure(lexer);
-    try expectEqual(diagnostic.Code.profile_unsupported_feature, failure.code);
-    try expectEqual(feature, failure.details.unsupported_feature);
 }
 
 fn expectInvalidByte(lexer: *Lexer, byte: u8) !void {
@@ -1171,14 +1234,10 @@ test "bare identifiers preserve UTF-8 Latin-1 and arbitrary high bytes" {
     }
 }
 
-test "recognized lexical deferred features are unsupported, not invalid" {
-    // Keyword-introduced subgraphs are the parser's call; keywords tokenize.
-    inline for (.{
-        .{ "<html>", diagnostic.Feature.html_identifier },
-    }) |case| {
-        var lexer = Lexer.init(case[0]);
-        try expectUnsupported(&lexer, case[1]);
-    }
+test "HTML-like identifiers are ordinary identifiers" {
+    var lexer = Lexer.init("<html>");
+    try expectToken(&lexer, .identifier, "<html>");
+    try expectToken(&lexer, .eof, "");
 }
 
 test "numerals are maximal textual IDs and preserve adjacent operators" {
@@ -1254,12 +1313,12 @@ test "unterminated strings report their own opener including later concatenated 
 }
 
 test "malformed concatenation distinguishes expected quote from unclosed comment" {
-    inline for (.{ "\"a\"+", "\"a\"+b", "\"a\"+1", "\"a\"+}", "\"a\"++\"b\"", "\"a\"+<html>" }) |raw| {
+    inline for (.{ "\"a\"+", "\"a\"+b", "\"a\"+1", "\"a\"+}", "\"a\"++\"b\"" }) |raw| {
         var lexer = Lexer.init(raw);
         const first = try expectFailure(&lexer);
         try expectEqual(diagnostic.Code.syntax_invalid_concatenation, first.code);
         try expectEqual(@as(usize, 4), first.span.start);
-        try expectEqual(if (raw.len == 4) @as(?u8, null) else raw[4], first.details.expected_quote);
+        try expectEqual(if (raw.len == 4) @as(?u8, null) else raw[4], first.details.expected_string_part);
         try expectEqual(first, try expectFailure(&lexer));
     }
     var after_plus = Lexer.init("\"a\"+/*");

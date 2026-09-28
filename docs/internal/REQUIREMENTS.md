@@ -481,7 +481,7 @@ HTML-like identifiers must be recognized and preserved in every position where
 the DOT grammar permits an ID. DOT recognition retains the raw spelling and
 does not by itself establish inner-markup well-formedness or Graphviz label
 validity. Excluding HTML-like identifiers follows R-MOD-006; accepting them
-without inner-markup parsing is a distinct, opaque-preservation capability.
+without inner-markup parsing is a distinct, passthrough-preservation capability.
 
 The built-in XML-like markup processor belongs in its own source directory,
 with independently usable parsing, syntax/events and validation stages rather
@@ -558,7 +558,7 @@ propagation, lifecycle and cross-component diagnostic ordering remain open.
 Structural summary facts require markup processing, even if no tree is retained.
 Maximum depth means element nesting depth, not DOT delimiter depth; element
 counts and entity-reference findings likewise require context-aware processing.
-An opaque operation must not present uncomputed structural facts as zero or
+A passthrough operation must not present uncomputed structural facts as zero or
 claim structural validity. Exact summary records and any additional element-count
 limit remain open. Parsing retains concatenation expressions and their parts;
 explicit decoding may join values without replacing that retained source.
@@ -569,16 +569,16 @@ to Q10's specification-first baseline and the remaining decoding API decisions.
 The subsystem must preserve the existing ownership, raw-source, diagnostic,
 deterministic-execution, fixed-storage, security and optional-feature contracts.
 It must not force a retained markup tree on event-only consumers or force the
-markup parser/validator into callers that only need opaque identifiers.
-An opaque operation does not invoke those stages; an application may nevertheless
+markup parser/validator into callers that only need passthrough identifiers.
+A passthrough operation does not invoke those stages; an application may nevertheless
 include them for standalone/delayed use or another profile. Code inclusion
 follows all reachable entry points and runtime-selectable modes, not the mode
-chosen for one call. Material optional costs must be excludable in opaque-only
+chosen for one call. Material optional costs must be excludable in passthrough-only
 builds at compile time (R-MOD-005).
 
-The combined built-in choices are `none`, `opaque`, `structural`, `extended`,
+The combined built-in choices are `none`, `passthrough`, `structural`, `extended`,
 and `graphviz`, not five values in a DOT-owned enum. DOT owns recognition and
-rejection/preservation, with opaque recognition the first-slice default; inner
+rejection/preservation, with passthrough recognition the first-slice default; inner
 processing modes belong to the selected implementation's policy. Q40 in
 [OpenQuestions.md](OpenQuestions.md) defines the composition and first-slice
 contract. Remaining fragment details, extended vocabulary, the composed API and
@@ -600,7 +600,7 @@ and optional runtime overrides, off by default. Overrides configure supported
 settings of the already-compiled implementation; they cannot substitute its
 type, introduce unknown fields or load another implementation. Consumer-facing
 configuration may nest processor policies without making DOT understand their
-schemas. `none` rejects an excluded form, `opaque` preserves without invoking
+schemas. `none` rejects an excluded form, `passthrough` preserves without invoking
 an inner parser, and processing invokes the selected implementation with its
 policy. Exact Zig syntax is not prescribed here.
 
@@ -624,7 +624,7 @@ Replacing processing inside existing identifier boundaries does not authorize
 custom lexical or grammar rules. New identifier spellings require a separately
 designed compile-time lexical contract covering boundaries, escaping, collisions,
 recovery and bounded work; new statements/operators require grammar extensions.
-Neither is included in the opaque or first content-processor slice. Numeral
+Neither is included in the passthrough or first content-processor slice. Numeral
 boundaries remain grammar-defined even without delimiters, and ambiguity remains
 a lexical-stage concern rather than an implicit numeric conversion. Processor
 checks and transformations must remain distinct; transformations use explicit
@@ -1598,7 +1598,7 @@ implementation status is recorded with the requirements above.
 
 - 2026-09-19 — **R-MOD-014 added; R-MOD-004 clarified**: dedicated optional
   markup subsystem with separate DOT recognition, XML-like structural parsing
-  and Graphviz label validation. The modes are `none`, `opaque`, `structural`,
+  and Graphviz label validation. The modes are `none`, `passthrough`, `structural`,
   `extended`, and `graphviz`; standalone, during-DOT and delayed processing
   share one markup engine. Q40 records usage/lifetime/budget boundaries and
   unresolved grammar/API/policy details, separately from implementation status.
@@ -1638,7 +1638,7 @@ implementation status is recorded with the requirements above.
   statement recovery from deferred per-class and diagnostic-limit controls.
 
 - 2026-09-22 — **R-MOD-014 clarified**: element depth/summary facts require
-  markup processing, opaque execution is separate from application code
+  markup processing, passthrough execution is separate from application code
   inclusion, Graphviz rules cover attributes and placement, and source mapping
   is per original operand. Parsing preserves concatenation expressions while
   explicit decoding may join values. Q40 records the planned compatibility

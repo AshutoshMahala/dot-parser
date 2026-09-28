@@ -102,7 +102,7 @@ test "every probe reports the expected identity, location, and wording" {
     for (cases) |case| {
         errdefer std.debug.print("probe source: {s}\n", .{case.source});
         var bag: dot.FixedDiagnosticBag(8) = .{};
-        var checked = dot.parseAndValidate(std.testing.allocator, case.source, bag.sink(), .{});
+        var checked = dot.Profile(.{ .policy = .{ .markup = .none } }).parseAndValidate(std.testing.allocator, case.source, bag.sink(), .{});
         defer checked.deinit(std.testing.allocator);
         try std.testing.expectEqual(case.parses, checked.outcome == .success);
         try std.testing.expect(bag.items().len >= 1);
@@ -209,7 +209,7 @@ test "applying every machine-applicable fix yields a document that parses" {
 
 test "a byte order mark is not a diagnostic" {
     var bag: dot.FixedDiagnosticBag(4) = .{};
-    var checked = dot.parseAndValidate(std.testing.allocator, "\xEF\xBB\xBFdigraph { a -> b; }", bag.sink(), .{});
+    var checked = dot.Profile(.{ .policy = .{ .markup = .none } }).parseAndValidate(std.testing.allocator, "\xEF\xBB\xBFdigraph { a -> b; }", bag.sink(), .{});
     defer checked.deinit(std.testing.allocator);
     try std.testing.expect(checked.documentValid());
     try std.testing.expectEqual(@as(usize, 0), bag.items().len);

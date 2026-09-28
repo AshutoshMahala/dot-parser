@@ -152,12 +152,12 @@ pub const Code = enum {
     /// E.Syntax.Numeral.001 (MISSING) — '.' or '-.' without the digit a DOT
     /// numeral requires. Emitted with `Details.incomplete_numeral`.
     syntax_incomplete_numeral,
-    /// E.Syntax.Token.032 (UNTERMINATED) — a quoted identifier or block
+    /// E.Syntax.Token.032 (UNTERMINATED) — a quoted/HTML-like identifier or block
     /// comment is never closed. Always emitted with `Details.unterminated`
     /// naming the construct; the span marks its opener.
     syntax_unterminated_construct,
-    /// E.Syntax.Concatenation.003 (INVALID) — '+' must join two quoted
-    /// identifiers. Emitted with `Details.expected_quote`.
+    /// E.Syntax.Concatenation.003 (INVALID) — '+' must join quoted or HTML-like
+    /// identifier parts. Emitted with `Details.expected_string_part`.
     syntax_invalid_concatenation,
     /// E.Syntax.Grammar.003 (INVALID) — the token found violates the grammar.
     syntax_unexpected_token,
@@ -188,8 +188,8 @@ pub const Code = enum {
     validation_operator_mismatch,
     /// W.Validation.Operator.002 — an operator-kind mismatch tolerated by policy.
     validation_operator_tolerated,
-    /// E.Profile.Feature.009 (UNSUPPORTED) — valid DOT was recognized but is
-    /// not supported by this milestone/build profile (R-MOD-006).
+    /// E.Profile.Feature.009 (UNSUPPORTED) — a recognized construct is
+    /// disabled by the selected policy (R-MOD-006); not an inner-validity claim.
     profile_unsupported_feature,
     /// E.Resource.Capacity.026 (EXHAUSTED) — a caller-configured capacity was
     /// reached; distinct from invalid syntax (R-ROB-002).
@@ -281,8 +281,8 @@ pub const Code = enum {
                 .component = .syntax,
                 .primary = .concatenation,
                 .sequence = Sequence.invalid,
-                .summary = "expected a quoted identifier after '+'",
-                .hint = "'+' joins quoted identifiers only; put the next identifier in double quotes",
+                .summary = "expected a quoted or HTML-like identifier after '+'",
+                .hint = "'+' joins quoted and HTML-like identifier parts; use double quotes or angle brackets",
             },
             .syntax_unexpected_token => .{
                 .severity = .err,
@@ -362,7 +362,7 @@ pub const Code = enum {
                 .primary = .feature,
                 .sequence = Sequence.unsupported,
                 .summary = "recognized DOT construct is not supported by this profile",
-                .hint = "this construct is recognized DOT syntax that this milestone or build does not process; parsing stopped at this boundary, so the rest of the input has not been checked",
+                .hint = "this recognized construct is disabled by policy; select passthrough markup recognition to preserve it without inner validation; later input has not been checked",
             },
             .resource_capacity_exhausted => .{
                 .severity = .err,
@@ -474,7 +474,7 @@ pub const Details = union(enum) {
     /// For `syntax_unterminated_construct`; the primary span is the opener.
     unterminated: UnterminatedConstruct,
     /// For `syntax_invalid_concatenation`: next raw byte, or null at EOF.
-    expected_quote: ?u8,
+    expected_string_part: ?u8,
 };
 
 /// A `-` that did not become an edge operator.
@@ -530,6 +530,7 @@ pub const ReservedKeyword = struct {
 pub const UnterminatedConstruct = enum(u8) {
     block_comment,
     quoted_identifier,
+    html_identifier,
 };
 
 /// Diagnostic-layer vocabulary for grammar-level constructs.
@@ -631,8 +632,8 @@ pub const OperatorMismatch = struct {
     pub const Reading = enum(u8) { as_written, conform_to_kind };
 };
 
-/// DOT features recognized but not implemented in the current parser.
-/// Remove a variant when its feature ships. Consumers use these typed values
+/// Recognized DOT features that a policy can disable.
+/// Consumers use these typed values
 /// instead of parsing diagnostic text; this is not a cross-version wire enum.
 pub const Feature = enum {
     html_identifier,
@@ -716,6 +717,20 @@ pub const Diagnostic = struct {
     /// a known replacement, never a string. Null when no single edit is
     /// known to be right.
     fix: ?Fix = null,
+
+    /// One policy boundary for every producer, before delivery. Fixed
+    /// profiles specialize this away; filtering never suppresses a finding.
+    pub inline fn withFixes(self: Diagnostic, mode: @import("policy.zig").Fixes) Diagnostic {
+        var result = self;
+        switch (mode) {
+            .all => {},
+            .off => result.fix = null,
+            .machine_applicable => if (result.fix) |fix| {
+                if (fix.applicability != .machine_applicable) result.fix = null;
+            },
+        }
+        return result;
+    }
 };
 
 /// A source edit that repairs the reported problem.
@@ -754,6 +769,7 @@ pub const Replacement = enum(u8) {
     left_brace,
     double_quote,
     comment_close,
+    html_close,
     graph_keyword,
     digraph_keyword,
     strict_keyword,
@@ -769,6 +785,7 @@ pub const Replacement = enum(u8) {
             .left_brace => "{",
             .double_quote => "\"",
             .comment_close => "*/",
+            .html_close => ">",
             .graph_keyword => "graph",
             .digraph_keyword => "digraph",
             .strict_keyword => "strict",

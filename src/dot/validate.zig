@@ -133,7 +133,7 @@ pub fn validate(
         const index = selected orelse break;
         const d = pending[index].?;
         if (d.code.severity() == .err) errors += 1 else warnings += 1;
-        const action = diagnostics.emit(d) catch |err| {
+        const action = diagnostics.emit(d.withFixes(settings.fixes)) catch |err| {
             return stoppedResult(diagnostic.StopReason.fromError(err), .failed, errors, warnings, &pending, index);
         };
         if (action == .stop) return stoppedResult(.requested, .complete, errors, warnings, &pending, index);

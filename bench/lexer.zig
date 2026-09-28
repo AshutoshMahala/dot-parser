@@ -21,11 +21,15 @@ pub fn main(init: std.process.Init) !void {
     var file: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
     const out = &file.interface;
     try out.print("scanner backend: {s}\n", .{@tagName(Parser.baseline.scanner)});
+    try out.print("scanner state: {d} bytes; token: {d} bytes\n", .{
+        @sizeOf(dot.lexer.For(Parser.baseline.scanner)), @sizeOf(dot.lexer.Token),
+    });
     const cases = .{
         .{ "short IDs/punctuation", "a;b;c;d;x=y;[k=v]" },
         .{ "short IDs/trivia", "a b\tc\r\nd -- e;\n" },
         .{ "keywords/numerals", "graph digraph strict subgraph node edge 1 -2 .3 -.4 5.6 " },
         .{ "quotes/comments", "\"a\"+\"b\" /*comment*/ \"c\\\"d\" //line\n" },
+        .{ "long HTML label", "<<" ++ "text &amp; \\ bytes " ** 64 ++ "<b>nested</b>>>" },
         .{ "long identifier", "abcdefghijklmnopqrstuvwxyz_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ;" },
     };
     inline for (cases) |entry| {

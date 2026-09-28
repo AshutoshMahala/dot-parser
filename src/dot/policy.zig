@@ -6,6 +6,9 @@ pub const GraphTreatment = enum { undigraph, digraph, generic, auto };
 pub const RuleSeverity = enum { err, warning, off };
 pub const OperatorReading = enum { as_written, conform_to_kind };
 pub const ScannerBackend = enum { scalar, block };
+pub const MarkupMode = enum { none, passthrough };
+/// Controls repair offers only, never validity or automatic rewriting.
+pub const Fixes = enum { all, machine_applicable, off };
 pub const Acceptance = enum { reject, warn, accept };
 /// The written DOT keyword, never the effective graph kind or nearby edges.
 pub const BareDashInterpretation = enum { from_keyword };
@@ -26,6 +29,8 @@ pub const Policy = struct {
     recovery: ?Recovery = null,
     scanner: ?ScannerBackend = null,
     execution: Execution = .{},
+    markup: ?MarkupMode = null,
+    diagnostics: struct { fixes: ?Fixes = null } = .{},
 
     pub const Syntax = struct {
         empty_statement: ?Acceptance = null,
@@ -85,6 +90,7 @@ pub const Policy = struct {
 
 /// Fully resolved settings, never attached to retained syntax.
 pub const ValidationSettings = struct {
+    fixes: Fixes = .all,
     invalid_utf8: RuleSeverity = .off,
     repeated_attribute: RuleSeverity = .off,
     restrictions: struct {
@@ -110,6 +116,8 @@ pub const ValidationSettings = struct {
 };
 
 pub const ParseSettings = struct {
+    markup: MarkupMode = .passthrough,
+    fixes: Fixes = .all,
     ambiguous_numeral: RuleSeverity = .warning,
     syntax: SyntaxSettings = .{},
     limits: struct {
@@ -153,6 +161,8 @@ pub const defaults: Effective = .{};
 /// its .syntax subtree to change syntax without resetting other choices.
 pub const presets = struct {
     pub const standard: Policy = .{
+        .markup = .passthrough,
+        .diagnostics = .{ .fixes = .all },
         .syntax = .{
             .empty_statement = .reject,
             .long_operator = .reject,
@@ -193,6 +203,7 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
     const digraph = input.validation.digraph;
     return .{
         .validation = .{
+            .fixes = input.diagnostics.fixes orelse baseline.validation.fixes,
             .invalid_utf8 = input.validation.invalid_utf8 orelse baseline.validation.invalid_utf8,
             .repeated_attribute = input.validation.repeated_attribute orelse baseline.validation.repeated_attribute,
             .restrictions = .{
@@ -217,6 +228,8 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
             },
         },
         .parsing = .{
+            .markup = input.markup orelse baseline.parsing.markup,
+            .fixes = input.diagnostics.fixes orelse baseline.parsing.fixes,
             .ambiguous_numeral = input.validation.ambiguous_numeral orelse baseline.parsing.ambiguous_numeral,
             .syntax = .{
                 .empty_statement = input.syntax.empty_statement orelse baseline.parsing.syntax.empty_statement,
@@ -286,6 +299,8 @@ test "named standard is the complete default and lenient changes only syntax" {
     try std.testing.expectEqualDeep(defaults.validation, lenient.validation);
     try std.testing.expectEqualDeep(defaults.parsing.limits, lenient.parsing.limits);
     try std.testing.expectEqual(defaults.parsing.recovery, lenient.parsing.recovery);
+    try std.testing.expectEqual(defaults.parsing.markup, lenient.parsing.markup);
+    try std.testing.expectEqual(defaults.parsing.fixes, lenient.parsing.fixes);
     try std.testing.expectEqual(defaults.scanner, lenient.scanner);
     try std.testing.expectEqualDeep(defaults.execution, lenient.execution);
     try std.testing.expectEqualDeep(lenient, resolve(lenient, .{}));

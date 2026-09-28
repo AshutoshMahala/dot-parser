@@ -6,6 +6,20 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add passthrough HTML-like DOT identifiers in every ID position, both scalar/block
+  scanners, and mixed quoted/HTML `+` concatenations. Retain exact ranges; no inner
+  parser calls or retained-record growth. Block scanning classifies angle masks
+  only inside envelopes; metering and cancellation stay bounded.
+- Add fixed/runtime `markup` policy (`.passthrough` by default, `.none` rejects with
+  recoverable body diagnostics) and `diagnostics.fixes` (`all`,
+  `machine_applicable`, `off`). Unterminated envelopes use the existing token code
+  with a typed HTML case and offer `>` at EOF only for depth one.
+- Add `identifier.form` and extend explicit decoding to HTML operands, preserving
+  their interior bytes unchanged. **Breaking:** scanner HTML unsupported terminal
+  becomes an unterminated-envelope terminal; tokens gain compact form flags;
+  concatenation payload is now `expected_string_part`. Inner markup validation,
+  the per-part view and DOT/markup composition remain separate work.
+
 - Harden standalone markup name/reference validation's safety-build metadata
   checks even when duplicate checking is disabled, including leaf discriminators,
   quoted-value bounds and complete attribute-cursor coverage. The trusted-document

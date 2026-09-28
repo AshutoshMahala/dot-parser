@@ -201,6 +201,30 @@ equality and never degrade into a quadratic hash-bucket scan. No string copies,
 graph expansion, per-record metadata or hidden allocations are added. Optional
 passes are unbudgeted and uncancellable; bounded validation remains deferred.
 
+## Markup recognition and fix offers
+
+These are ordinary typed policy leaves, available both in compiled baselines and
+runtime patches (when runtime policy support is enabled). Omission inherits;
+both complete presets include the defaults.
+
+| Leaf | Choices | Default | Behavior |
+| --- | --- | --- | --- |
+| `markup` | `.none`, `.passthrough` | `.passthrough` | Recognize/preserve HTML-like IDs in every ID position, or reject the full expression with `E.Profile.Feature.009` |
+| `diagnostics.fixes` | `.all`, `.machine_applicable`, `.off` | `.all` | Keep all fix offers, only machine-applicable offers, or none; findings and validity are unchanged |
+
+Neither mode invokes the standalone markup module. The scanner always recognizes
+the complete envelope and any mixed concatenation, without a second policy scan.
+`.none` also catches HTML operands after quoted operands. With statement recovery,
+body occurrences can be skipped to collect later errors; no partial document is
+published and the recovered parse ends as `invalid_syntax`. Header/trailing
+failures remain fail-fast. Changing this parse policy requires reparsing.
+
+Fix filtering applies before diagnostic delivery in both DOT parsing and validation,
+including warnings. A fix is never automatically applied; suppression does not
+change sink stops, finding counts or outcomes. A `maybe` offer can be an assumption
+rather than the author's intent. Standalone markup currently produces no fix
+offers; its own fix-policy leaf is deferred until it has offers to control.
+
 ## Fixed baseline
 
 ```zig

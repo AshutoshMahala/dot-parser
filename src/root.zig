@@ -46,6 +46,8 @@ pub const GraphTreatment = policy_impl.GraphTreatment;
 pub const RuleSeverity = policy_impl.RuleSeverity;
 pub const OperatorReading = policy_impl.OperatorReading;
 pub const ScannerBackend = policy_impl.ScannerBackend;
+pub const MarkupMode = policy_impl.MarkupMode;
+pub const Fixes = policy_impl.Fixes;
 pub const Recovery = policy_impl.Recovery;
 const DefaultProfile = Profile(.{});
 
@@ -189,7 +191,7 @@ pub const ParseOutcome = union(enum) {
     diagnostic_stopped: diagnostic.StopReason,
     /// The input is not accepted by the selected syntax policy.
     invalid_syntax,
-    /// Parsing stopped at a recognized-but-deferred DOT construct; validity
+    /// Parsing stopped at a policy-disabled DOT construct; validity
     /// beyond that boundary is unknown.
     unsupported_feature,
     /// A caller-configured limit was reached; the input may still be valid.

@@ -7,8 +7,8 @@ current public capabilities. R-MOD-014/015 and Q40 remain the architectural cont
 
 Build and measure the real standalone processor before expanding the composition
 framework. The same engine will later serve standalone, delayed and during-DOT
-use. This changes the earlier opaque-first implementation sequence, not the agreed
-DOT `none`/`opaque` semantics. Do not extend `PolicySet` or a scheduler to justify
+use. This changes the earlier passthrough-first implementation sequence, not the agreed
+DOT `none`/`passthrough` semantics. Do not extend `PolicySet` or a scheduler to justify
 this parser. Independent parsing must not import DOT grammar or retained records.
 
 | Slice | Scope | Status |
@@ -20,11 +20,83 @@ this parser. Independent parsing must not import DOT grammar or retained records
 | Resource hardening | Default-capped shared diagnostic retention and an untrusted-input resource preset | Implemented |
 | 4b | Optional XML 1.0 name checks and known-reference checks, without imposing either on other dialects | Implemented |
 | Recovery | Explicit structural-error recovery for additional diagnostics | Deferred to a separate design discussion; not part of 4b |
-| Integration | DOT opaque recognition followed by delayed integration; during-DOT composition later | Planned |
+| DOT passthrough recognition | `none`/`passthrough`, both scanners, concatenation, decoding and DOT fix policy; no markup dependency | Implemented 2026-09-27 |
+| Integration | Delayed integration first; during-DOT composition later | Planned |
 
 Each slice needs tests, truthful supported-syntax documentation and measurements.
 Recognition of an excluded feature reports unsupported without validating its body.
 No reserved public fields or pretend implementation of later checks are needed.
+
+## DOT passthrough recognition — 2026-09-27
+
+Implemented the Q40 recognition contract after standalone slice 4b. DOT owns a
+two-valued `markup` leaf (`none`, `passthrough`),
+not the inner processor's parsing/validation policies. Both scanners retain a
+single raw identifier expression, including mixed concatenations. Public form
+classification and explicit decoding work without importing the markup module.
+No per-part view, structural summary, tree, vocabulary check or scheduler is added.
+DOT fix offers now have fixed/runtime `all`/`machine_applicable`/`off` filtering.
+Markup has no fix producers/payload yet; its equivalent leaf waits for those.
+
+Verification covers every ID position, arbitrary interior bytes, unsheltered
+angle-depth boundaries, mixed/empty operands, EOF fixes, body recovery, fixed
+storage, runtime reset, diagnostic stops, decoded duplicate keys, every truncation,
+all 64 block shifts, budget partitions and cancellation continuations.
+
+Native verification: 480/480 tests in Debug, ReleaseSafe and ReleaseFast; all
+examples and RISC-V32/Wasm32 consumed freestanding builds pass. Under Node WASI,
+the full DOT unit suite passes both without SIMD and with `simd128` (198 passed,
+one >u32-source test skipped on the 32-bit target); all nine new public HTML tests
+also pass with SIMD enabled. Fuzz entry points here are smoke tests, not a claim
+of a new sustained fuzz campaign.
+
+### Measurements
+
+Local Apple M4 Pro, Zig 0.16.0, ReleaseFast; parent `62b9aa7` versus this slice.
+Existing `bench` and `bench-lexer`, explicit scalar/block selections, alternating
+before/after/after/before processes with no overlapping builds during timed runs.
+Each process reports nine timed rounds after two warmups. Tables average the two
+process medians (timings rounded by the benchmark); MB/s below is decimal.
+These are local targeted measurements, not the separate standard-machine gate.
+
+The end-to-end source is 2,733,345 bytes / 200,000 statements:
+
+| Backend / storage | Before ms | After ms | Before MB/s | After MB/s |
+| --- | ---: | ---: | ---: | ---: |
+| Scalar / growing | 8.045 | 8.040 | 339.8 | 340.0 |
+| Scalar / hinted | 7.025 | 6.945 | 389.1 | 393.6 |
+| Block / growing | 8.540 | 8.425 | 320.1 | 324.4 |
+| Block / hinted | 7.460 | 7.290 | 366.4 | 374.9 |
+
+Retained pools remain **6,800,000 bytes** for this source. Arena backing capacity
+is unchanged: 37,620,470 bytes growing, 8,400,148 bytes hinted (not RSS). Native
+ordinary scanner state remains 56 bytes scalar / 152 bytes block; tokens remain
+12 bytes. HTML presence/concatenation flags fit token padding; keyword/comment
+state shares storage with the u32 envelope depth. Retained syntax layouts do not
+change. The first block implementation regressed ordinary throughput by roughly
+10%; moving the HTML branch off the ordinary classified-token path and keeping
+its mask walk out of the aggressively inlined driver recovered that loss.
+
+Existing lexer fixtures, milliseconds (microbenchmarks show code-layout/noise
+sensitivity; do not infer a universal speedup from the short-token cells):
+
+| Fixture | Scalar before → after | Block before → after |
+| --- | ---: | ---: |
+| Short IDs / punctuation | 7.530 → 5.505 | 5.970 → 5.400 |
+| Short IDs / trivia | 3.285 → 3.235 | 3.375 → 2.535 |
+| Keywords / numerals | 5.750 → 5.760 | 5.850 → 5.725 |
+| Quotes / comments | 2.840 → 2.995 | 4.480 → 4.450 |
+| Long identifier | 3.310 → 3.425 | 1.975 → 2.020 |
+
+The new 80,805,888-byte long-HTML lexer fixture measures **40.395 ms scalar**
+versus **8.295 ms block** (about **4.87×**). There is no before value because the
+parent rejects HTML tokens. This measures passthrough envelope scanning, not structural
+markup parsing. Scalar quotes/comments and long-ID microbenchmarks have small
+slowdowns in this sample; the ordinary end-to-end benchmark has no measured loss.
+
+Next integration work is the explicitly designed per-part/origin contract and
+delayed processing. Structural recovery and specialized vocabularies still need
+their own decisions; passthrough DOT support does not imply either one.
 
 ## Settled grammar direction
 

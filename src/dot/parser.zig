@@ -56,7 +56,8 @@
 //!   cannot exhaust the call stack (R-PERF-002).
 //! - Work is a single linear scan of the input (R-PERF-001, R-SEC-003);
 //!   `Policy.limits.max_statements` additionally bounds statements processed.
-//! - HTML identifiers remain deferred. Attributes are parsed and retained
+//! - HTML identifiers use passthrough by default; an explicit none policy rejects
+//!   the complete expression. Attributes are parsed and retained
 //!   without default resolution, key deduplication or value interpretation.
 //!   Malformed supported attribute syntax is invalid, not unsupported.
 //!   Unsupported boundaries still make no claim about validity beyond the
@@ -295,7 +296,8 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         }
 
         fn deliver(self: *Self, d: diagnostic.Diagnostic) ?diagnostic.StopReason {
-            const action = self.diagnostics.emit(d) catch |err| {
+            const fixes = if (fixed) |value| value.fixes else self.settings.fixes;
+            const action = self.diagnostics.emit(d.withFixes(fixes)) catch |err| {
                 self.delivery = .failed;
                 return diagnostic.StopReason.fromError(err);
             };
@@ -522,6 +524,16 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
 
         fn transition(self: *Self, token: lex.Token) ?Result {
             if (audited) self.audit.grammar += 1;
+            const markup = if (fixed) |value| value.markup else self.settings.markup;
+            if (markup == .none and token.flags.has_html and self.state != .recovering) {
+                // Scanning already consumed the entire expression. Recovery
+                // can skip it without reading its bytes again.
+                return self.fail(.{
+                    .code = .profile_unsupported_feature,
+                    .span = token.span,
+                    .details = .{ .unsupported_feature = .html_identifier },
+                });
+            }
             // Ordinary parsing replays only a finished suffix/link lookahead.
             // Controlled parsing returns after one transition and charges the
             // replay separately through Work; no recursion or hot-path flag.
@@ -1219,9 +1231,9 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .resource_capacity_exhausted => .resource_exhausted,
                 else => .invalid_syntax,
             };
-            if (recovery_enabled and reason == .invalid_syntax and self.canRecover(failure)) {
+            if (recovery_enabled and (reason == .invalid_syntax or reason == .unsupported_feature) and self.canRecover(failure)) {
                 if (stop) |requested| return self.stopDiagnostics(requested);
-                self.abortEvents(.invalid_syntax);
+                self.abortEvents(reason);
                 if (self.tokens.terminal != .none) self.tokens.resumeAfterFailure();
                 self.state = .recovering;
                 self.skip_depth = 0;
@@ -1268,10 +1280,14 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                     const end: location.Span = .{ .start = @intCast(self.tokens.source.len), .len = 0 };
                     return .{
                         .span = end,
-                        .edit = .{ .insert_before = switch (construct) {
-                            .quoted_identifier => .double_quote,
-                            .block_comment => .comment_close,
-                        } },
+                        .edit = .{
+                            .insert_before = switch (construct) {
+                                .quoted_identifier => .double_quote,
+                                .block_comment => .comment_close,
+                                // The scanner offers this only at depth one.
+                                .html_identifier => return null,
+                            },
+                        },
                         .applicability = .maybe,
                     };
                 },
@@ -1302,7 +1318,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             if (self.state == .epilogue) return false;
             if (failure.details == .unexpected and failure.details.unexpected.found == .end_of_input) return false;
             if (self.tokens.terminal != .none) return switch (self.tokens.terminal) {
-                .html, .oversize, .none, .eof => false,
+                .oversize, .none, .eof => false,
                 else => true,
             };
             return true;
@@ -1723,6 +1739,7 @@ test "cancellation can stop every lexical continuation and execution phase" {
     const sources = [_][]const u8{
         " \r\n#x\r//y\n/*z**/graph {a;}",
         "graph {a\xff;}",
+        "graph {<<a>text</a>> + \"x\";}",
         "graph {-1.2 -.5 .1 1->2 3--4 5-->6}",
         "graph {7 - > 8}",
         "graph {\"a\\\"b\" /*glue*/ + \"c\" [x=y] }",
@@ -2052,7 +2069,7 @@ test "metered parser partitions preserve events diagnostics and independent work
         "graph {a[x=1] @}",                                                "graph {a--b--c}",
         "graph {subgraph {}}",                                             "graph { a:port }",
         "digraph {a:p:e->b:q->c:0[x=1]}",                                  "graph {a:p:}",
-        "graph {a:p:q:r}",                                                 "graph {<html>}",
+        "graph {a:p:q:r}",                                                 "graph {<html}",
         "graph {/*",                                                       "graph {\"unterminated",
         "graph{} /*",                                                      "digraph { a-> }",
     };
@@ -2814,12 +2831,11 @@ test "failures before a supported header emit no events but do fill the bag" {
 }
 
 test "unsupported outcome is a boundary, not a whole-input validity claim" {
-    // The remainder after the unsupported introducer is malformed (`@`),
-    // but the parse stopped at `<`: validity beyond the boundary is
-    // unknown by design, and the outcome must not promise otherwise.
+    // The whole envelope is recognized, but the trailing '@' is not parsed
+    // under the none policy. Unsupported is not a whole-input validity claim.
     var events: Recording = .{};
     var bag: Bag = .{};
-    const result = testing.run("graph { a -- < @", &events, bag.sink(), .{}, null);
+    const result = testing.run("graph { a -- < @> @", &events, bag.sink(), .{ .markup = .none }, null);
     try expect(result.outcome == .unsupported_feature);
     try expectEqual(diagnostic.Feature.html_identifier, bag.items()[0].details.unsupported_feature);
 }
@@ -2859,16 +2875,16 @@ test "deferred keywords in illegal positions are syntax errors, not unsupported"
     }
 }
 
-test "recognized-but-deferred constructs mid-document abort as unsupported" {
+test "disabled HTML identifiers mid-document abort as unsupported" {
     inline for (.{
         .{ "graph { a -- <b>; }", diagnostic.Feature.html_identifier },
         .{ "graph { <b> -- a; }", diagnostic.Feature.html_identifier },
     }) |case| {
         var events: Recording = .{};
         var bag: Bag = .{};
-        try expect(testing.run(case[0], &events, bag.sink(), .{}, null).outcome == .unsupported_feature);
+        try expect(testing.run(case[0], &events, bag.sink(), .{ .markup = .none }, null).outcome == .unsupported_feature);
         try expectEqual(case[1], bag.items()[0].details.unsupported_feature);
-        try expectAborted(case[0], .unsupported_feature);
+        try expectEqual(syntax_event.AbortReason.unsupported_feature, events.recorded()[events.recorded().len - 1].abort_document);
     }
 }
 

@@ -9,6 +9,15 @@ const location = @import("parser_support").location;
 pub const Token = struct {
     tag: Tag,
     span: location.Span,
+    /// Accumulated during scanning, including mixed concatenations. These
+    /// bits fit the token's padding; policy enforcement never rescans an ID.
+    flags: Flags = .{},
+
+    pub const Flags = packed struct(u8) {
+        has_html: bool = false,
+        concatenated: bool = false,
+        reserved: u6 = 0,
+    };
 
     pub const Tag = enum {
         keyword_graph,
@@ -66,10 +75,10 @@ pub const Terminal = enum {
     block,
     /// Unterminated quoted identifier.
     quote,
-    /// '+' not followed by a quoted identifier.
+    /// '+' not followed by a quoted or HTML-like identifier part.
     concat,
-    /// An HTML-like identifier introducer (deferred feature).
-    html,
+    /// Unclosed HTML-like envelope.
+    html_unterminated,
     /// The source exceeds the 32-bit position domain.
     oversize,
 };

@@ -46,7 +46,8 @@ HTML-like identifiers and standalone markup are not part of the published
 [`markup_parser`](docs/MARKUP.md) for text, matching/self-closing elements, quoted
 attributes, references, comments and CDATA, with independent duplicate-attribute
 validation, opt-in encoding/name/reference checks, and policy-selected scalar/vector scanning;
-DOT HTML-like identifiers and integration remain deferred. Other features, including
+DOT now preserves passthrough HTML-like identifiers and mixed quoted/HTML concatenations;
+automatic DOT/markup composition remains deferred. Other features, including
 semantic edge-product expansion, remain deferred. The authoritative
 construct-by-construct table is [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
 

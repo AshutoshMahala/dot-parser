@@ -314,7 +314,7 @@ syntax rules and the additional configurable checks are implemented. Follow-up
 designs and the standard-machine performance gate below remain open; this does
 not mean every future validation or graph-building rule is implemented.
 
-**Coverage at `3e1796b` (checked against source and tests):**
+**Coverage reconciled 2026-09-27 (initial core at `3e1796b`, plus passthrough DOT slice):**
 
 | Area | Implemented contract | Stage / evidence |
 | --- | --- | --- |
@@ -325,7 +325,8 @@ not mean every future validation or graph-building rule is implemented.
 | Numeral ambiguity | `validation.ambiguous_numeral`: error/warning/off, default warning; tokenization is unchanged | Parsing, not a later validation replay; `tests/validation_checks.zig` |
 | Optional checks | Whole-source UTF-8, repeated attribute keys, effective graph-kind restrictions, qualified node references and subgraph occurrences | Post-parse validation; default off; `tests/validation_checks.zig` |
 | Presets and factual results | Complete `standard` / `lenient` policies; deviations and warning counts survive suppression/failure; no hidden history | Q36 and the [public contract](../POLICIES.md) |
-| Diagnostics and fixes | Typed policy-aware findings/fixes; severity affects validity, sink filtering does not; delivery remains separate | Q37; `tests/diagnostics.zig`, `tests/policies.zig`, `tests/validation_checks.zig` |
+| Diagnostics and fixes | Typed policy-aware findings; `diagnostics.fixes = all / machine_applicable / off` filters all DOT offers at either binding time without changing validity or delivery | Q37; `tests/diagnostics.zig`, `tests/html_identifiers.zig` |
+| Passthrough identifiers | `markup = none / passthrough`, default passthrough; mixed HTML/quoted concatenation, raw spans and explicit decoding | Parsing; `tests/html_identifiers.zig` |
 
 All implemented policy leaves have compile-time/runtime parity. The runtime
 support switch is a compile-time capability, not an overridable leaf. Nesting
@@ -738,8 +739,8 @@ engine in vertical slices before expanding processor composition: text/elements,
 then attributes, then references/comments/CDATA, followed by further checks.
 Structural recovery is a separate deferred discussion, not part of the next
 validation slice. DOT recognition and delayed integration follow standalone work; during-DOT
-composition comes later. This supersedes opaque-first as the next implementation
-task, not the `none`/`opaque` contract. No further `PolicySet`/scheduler work is
+composition comes later. This supersedes passthrough-first as the next implementation
+task, not the `none`/`passthrough` contract. No further `PolicySet`/scheduler work is
 required for standalone parsing. [Markup decisions and slice record](MARKUP.md)
 define the agreed grammar, byte/encoding boundary and the implemented layout/API.
 
@@ -813,24 +814,24 @@ primitives should be reused without introducing graph-engine dependencies.
 Markup-fragment input is distinct from partial DOT-document parsing and does
 not change Q19.
 
-**Modes (ownership clarified 2026-09-22):** the names are `none`, `opaque`,
+**Modes (ownership clarified 2026-09-22):** the names are `none`, `passthrough`,
 `structural`, `extended`, and `graphviz`. They describe the combined processing
 choices, not five members of one DOT-owned enum or an increasing ladder of
 compatible dialects. DOT owns rejection/preservation; the selected inner parser
 owns its processing modes and policy. The table describes the built-in markup
 implementation, not a vocabulary every consumer implementation must adopt.
-Opaque recognition is the first-slice default; the composed API, exact markup
+Passthrough recognition is the first-slice default; the composed API, exact markup
 rules and delivery remain pending.
 
 | Mode | DOT HTML-like identifier | Inner structure | Validation policy |
 | --- | --- | --- | --- |
 | `none` | Unsupported feature (R-MOD-006); never silently skipped | Not parsed | Not run |
-| `opaque` | Recognized and preserved | Not parsed | No inner-markup validity claim |
+| `passthrough` | Recognized and preserved | Not parsed | No inner-markup validity claim |
 | `structural` | Recognized and preserved | Parsed | Structural correctness under the defined fragment grammar; arbitrary element names |
 | `extended` | Recognized and preserved | Parsed | Extended label vocabulary and rules, including additional basic tags; exact rules pending |
 | `graphviz` | Recognized and preserved | Parsed | Graphviz label vocabulary, attributes and placement rules |
 
-`opaque` stops before markup parsing. `structural` checks matching tags,
+`passthrough` stops before markup parsing. `structural` checks matching tags,
 nesting and the defined attribute syntax without assigning meaning to element
 names. `extended` and `graphviz` additionally apply their selected label
 rules where label interpretation is requested; they must not impose those
@@ -849,7 +850,7 @@ require running label validation or retaining a markup tree.
 | During DOT parsing | As HTML-like identifiers are encountered, before the DOT parse operation completes | Opt-in composition of the DOT and markup stages; no completed DOT document is required before markup processing can start. |
 | Delayed | After DOT parsing, on an explicit request for selected preserved identifiers | Keep their source bytes available; parse any subset later or never invoke the markup parser. |
 
-For delayed use, a caller can first parse DOT with `opaque` preservation and
+For delayed use, a caller can first parse DOT with `passthrough` preservation and
 later explicitly request `structural`, `extended`, or `graphviz` processing
 for a selected identifier. This does not require re-parsing the DOT grammar
 or automatically processing every label. `none` cannot supply this path:
@@ -876,7 +877,7 @@ The paths share the existing contracts:
   input and mode must produce equivalent markup outcomes across the paths,
   with offsets mapped to the corresponding source origin.
 
-For example, opaque recognition can preserve `<<B>x</I>>`, while structural
+For example, passthrough recognition can preserve `<<B>x</I>>`, while structural
 checking must reject its mismatched tags. `<<widget>x</widget>>` can pass
 structural checking but fails Graphviz label validation. `<<B>x</B>>` can
 pass all three stages. These are intended-contract examples, not claims of
@@ -908,8 +909,8 @@ the contracts they belong to are written:
   `<...>` (one scanner state and a depth counter) is always compiled in;
   `none` rejects the identifier with the unsupported-feature diagnostic but
   still finds its end, so statement-boundary recovery (Q22) can continue
-  past it. An application using only opaque recognition can exclude the markup
-  engine. An opaque operation does not invoke that engine, even when the same
+  past it. An application using only passthrough recognition can exclude the markup
+  engine. A passthrough operation does not invoke that engine, even when the same
   application includes it for standalone or delayed parsing. Code needed by
   those other entry points must remain available. Runtime policy support in
   DOT alone does not pull in an inner parser. A compiled processor with runtime
@@ -926,7 +927,7 @@ the contracts they belong to are written:
   `>` outside markup stays an invalid byte; nothing inside `<...>` raises a
   DOT diagnostic. Same rule in both scanner backends and under every
   budget partition. A survey of other DOT parsers' boundary rules is a
-  separate discussion and does not gate the opaque slice.
+  separate discussion and does not gate the passthrough slice.
 - **XML structure for every built-in parsing mode (current agreed baseline).** In the inner fragment, after
   removing the outer DOT delimiters, an element is `<x/>` or `<x>…</x>`;
   a lone opening tag `<x>` is an error in `structural`, `extended` and
@@ -946,7 +947,7 @@ the contracts they belong to are written:
   profiles and entry points may still need them. A processor profile allowing
   runtime mode changes retains every selectable stage of that implementation.
   Runtime overrides are separately enabled and off by default. DOT's runtime
-  `none | opaque` gate cannot request structural parsing by itself. The delayed
+  `none | passthrough` gate cannot request structural parsing by itself. The delayed
   path invokes a separately compiled processor profile, with its own fixed
   settings or opt-in runtime overrides.
 - **Origin mapping applies to each original operand.** For an HTML-like operand,
@@ -1007,7 +1008,7 @@ the contracts they belong to are written:
   markup-owned; no speculative common scanner framework was extracted.
   Tests and measurements are recorded in [the slice contract](MARKUP.md).
   This does not implement DOT HTML boundaries or processor integration.
-- **Parallelism is the caller's, and the design allows it.** After opaque
+- **Parallelism is the caller's, and the design allows it.** After passthrough
   recognition every HTML-like identifier is an independent fragment with a
   known range; the delayed path parses one fragment into caller-provided
   storage with no shared mutable state in the engine, so a caller can hand
@@ -1039,7 +1040,7 @@ separate `max_elements` resource limit is a possible addition, not a substitute
 for `max_nesting` or an already agreed policy field. Summary field names and
 record layouts remain provisional. A computed summary could let consumers
 filter fragments without retaining or repeatedly parsing their bodies; it is
-not a promise of structural facts from opaque recognition alone.
+not a promise of structural facts from passthrough recognition alone.
 
 Structure on demand per identifier or eagerly for all remains the integration
 direction. The standalone implementation has settled its layout: preorder subtree
@@ -1078,16 +1079,16 @@ the currently public alternative is count-only measurement, not public events.
   each usage path).
 - A survey of other DOT parsers' HTML boundary rules, for the record.
 
-**DOT opaque slice contract (decided 2026-09-22; still pending).** The first
-DOT-recognition slice delivers `none` and `opaque` only. With the 2026-09-26
-standalone-first sequence, it follows standalone markup work; opaque DOT parsing
+**DOT passthrough slice contract (decided 2026-09-22; implemented 2026-09-27).** The first
+DOT-recognition slice delivers `none` and `passthrough` only. With the 2026-09-26
+standalone-first sequence, it follows standalone markup work; passthrough DOT parsing
 still does not invoke or require the markup engine:
 
 1. **Policy leaf.** `Policy.markup: ?MarkupMode` with `MarkupMode = enum {
-   none, opaque }`, resolved into
+   none, passthrough }`, resolved into
    `Effective.parsing.markup` like the other parse-time leaves, with the
    same compile-time and runtime binding, preset and patch semantics as
-   every other field. **Default: `.opaque`** (decided): Graphviz accepts
+   every other field. **Default: `.passthrough`** (decided): Graphviz accepts
    these identifiers, so the standard preset does too; `none` is the strict
    rejection policy. This DOT recognition gate stays two-valued; inner parsing
    modes belong to the selected processor's policy. The later composed API may
@@ -1113,7 +1114,8 @@ still does not invoke or require the markup engine:
    values `all` (default), `machine_applicable` (drop guessed `maybe`
    offers) and `off`, applied by every fix producer in parsing and
    validation, at both binding times like every other leaf. The markup
-   subsystem's own policy carries the same leaf for its fixes. A `>`
+   subsystem will carry the same leaf when it introduces fixes (it currently
+   has no fix payload or producers; do not add unused policy/layout baggage). A `>`
    outside markup stays the invalid byte it is today.
 4. **Concatenation** is in the slice, because it is scanner behaviour:
    after an HTML-like part, `+` continues the expression, and after `+` a
@@ -1142,7 +1144,16 @@ still does not invoke or require the markup engine:
    backends with the existing benches, and a new lexer fixture of long
    HTML-like labels to measure the block scanner's claimed advantage.
 
-Out of the DOT opaque slice: the summary index, inner structural parsing and
+Implementation notes: the preservation mode is named `passthrough` so consumers
+can use `.passthrough` without escaped-identifier syntax (renamed 2026-09-28).
+Token flags carry HTML presence and concatenation status during bounded scanning;
+there is no policy rescan or retained-layout growth. The scalar scanner shares
+its keyword word with u32 HTML depth; the block scanner shares comment-body
+state with depth and computes temporary angle masks only inside envelopes.
+All DOT fix producers pass through the stage's policy filter before delivery.
+A recovered body rejection aborts output and ends as `invalid_syntax`.
+
+Out of the DOT passthrough slice: the summary index, inner structural parsing and
 validation, the parts view, entity handling and markup nesting policy. The
 independent markup subsystem implements those in its own vertical slices.
 
@@ -1156,16 +1167,16 @@ implementation supplies behavior; its policy configures that behavior.
 | Composed selection | DOT responsibility | Inner parser responsibility |
 | --- | --- | --- |
 | `none` | Recognize the boundary and reject the excluded form as unsupported | Not invoked |
-| `opaque` | Recognize and preserve raw spelling without a content-validity claim | Not invoked |
+| `passthrough` | Recognize and preserve raw spelling without a content-validity claim | Not invoked |
 | Processing enabled | Preserve the spelling and provide the selected content input | Run the compile-time-selected implementation with its own policy |
 
 This table describes processing choices, not finalized Zig syntax or a new
 per-token settings table. Conceptual paths such as `.markup.structural` or
 `.string.non_ascii` expose settings owned by the selected processor; they are
 not additional members of DOT's `MarkupMode`. For markup, DOT's low-level
-`opaque` gate permits preservation; attaching and invoking a processor is a
+`passthrough` gate permits preservation; attaching and invoking a processor is a
 separate, explicit composition. With no processor invocation the composed
-operation is opaque. The built-in markup processor owns `structural`,
+operation is passthrough. The built-in markup processor owns `structural`,
 `extended`, `graphviz` and its own entity/attribute rules, nesting limits,
 scanner, execution and fix settings. DOT does not interpret those leaves.
 Standalone and delayed callers invoke the same selected processor directly.
@@ -1173,8 +1184,8 @@ Separate packaging remains possible; no package/version split is decided.
 
 **Processing choice is not diagnostic severity (clarified 2026-09-23).**
 `none` rejects an excluded form as unsupported; suppressing its diagnostic does
-not turn rejection into acceptance. `opaque` deliberately preserves without
-inner processing and therefore emits no warning merely for being opaque. It
+not turn rejection into acceptance. `passthrough` deliberately preserves without
+inner processing and therefore emits no warning merely for being passthrough. It
 does not suppress independent lexical, resource or enabled validation findings,
 and preserved contents are unexamined, not structurally valid. Processor rules
 control their findings separately; reporting and retention never decide validity.
@@ -1218,7 +1229,7 @@ inner parser.**
 | Extension | Required integration | Status |
 | --- | --- | --- |
 | Custom processing within existing quoted or HTML-like boundaries | Implement the content processor contract | Decided direction; API and implementation pending |
-| A new identifier spelling, for example `@{...}` | A compile-time lexical extension with explicit boundary, escaping, collision/precedence, recovery and work-accounting rules; feed an ID to the existing grammar | Separate future design; not included in the opaque or first content-processor slice |
+| A new identifier spelling, for example `@{...}` | A compile-time lexical extension with explicit boundary, escaping, collision/precedence, recovery and work-accounting rules; feed an ID to the existing grammar | Separate future design; not included in the passthrough or first content-processor slice |
 | New statements or operators | A grammar extension, not just an inner parser | Outside this content-extension contract |
 
 Compile-time selection supports specialization and a fixed integration shape;
@@ -1245,7 +1256,7 @@ identifier uses without applying label rules to unrelated IDs. Exact methods,
 selection context, concatenation handling, operational failure propagation and
 handling of incompatible execution profiles remain open; a bounded parent must
 never silently invoke an unbounded child. The validation continuation and result
-contract below is decided. These integration details do not block the opaque-only
+contract below is decided. These integration details do not block the passthrough-only
 slice.
 
 **Shared infrastructure, independent validation (decided 2026-09-23;
@@ -1377,7 +1388,8 @@ pass, not part of recognizing an ID, and label rules do not apply to every ID.
 
 *(Recorded contracts: R-MOD-014 and R-MOD-015. Standalone structural slices 1–3, 4a and 4b now
 exist in `src/markup/`; later checks/recovery and integration remain pending. HTML-like
-DOT IDs are still deferred in [supported syntax](../SUPPORTED_SYNTAX.md).)*
+DOT IDs now have passthrough recognition as documented in
+[supported syntax](../SUPPORTED_SYNTAX.md); automatic inner processing is pending.)*
 
 **Q1 — Is version 1 the complete documented DOT grammar or a named subset?**
 Direction: the complete documented grammar, reached through vertical slices;
@@ -1607,7 +1619,7 @@ Open; nothing currently forces the choice.
   malformed-reference literal-ampersand policy. Slice 1 implements the independent
   module, elements/text, compact retained/count-only paths, policy limits and
   bounded/cancellable fixed sessions. Later constructs and DOT integration remain
-  unsupported. The old opaque-first delivery order is superseded, not its rules.
+  unsupported. The old passthrough-first delivery order is superseded, not its rules.
 
 - 2026-09-26 — Q40 preparation: recorded agreed stages 1–4 and ownership/reset
   defaults; implemented shared typed reporting and compile-time policy preflight.
@@ -1638,25 +1650,25 @@ status is in the question entries above, not an earlier log's pending-work list.
   The initial retained-document sequence is DOT validation followed by requested
   inner processing, without requiring outer validity. Dependent checks and
   operational failures remain explicit; aggregate ordering and concrete APIs
-  remain open. Clarified that `none`/`opaque` select behavior, not diagnostic
+  remain open. Clarified that `none`/`passthrough` select behavior, not diagnostic
   severity. R-FUNC-008, R-MOD-014/015 and R-DIAG-007 record the contract; this
   does not implement processor composition or bounded validation.
 - 2026-09-22 — Q40 content-processor vision decided: implementation identity
   is compile-time-only, each processor owns its typed policy and optional
   runtime overrides, and built-in inner parsers use the same contract as
-  consumer replacements. Clarified `none`/`opaque` versus processor invocation,
+  consumer replacements. Clarified `none`/`passthrough` versus processor invocation,
   ownership of nested configuration, numeral boundaries and illustrative string
   checks. Custom lexical forms remain a separate future design, not an automatic
   consequence of replacing an inner parser. Reconciled the earlier single-enum
   and exactly-two-schemas wording; shared policy generation and the concrete
   adapter remain provisional. R-MOD-015 records the intended contract. No new
   implementation or performance result is claimed.
-- 2026-09-22 — Q40: the opaque slice contract is decided (default
-  `opaque`; unterminated fix offered at depth one with a new
+- 2026-09-22 — Q40: the passthrough slice contract is decided (default
+  `passthrough`; unterminated fix offered at depth one with a new
   policy-controlled `diagnostics.fixes` leaf; minimal `identifier.form`
   now; policy-free scanners with the mode applied by the parser;
   concatenation in scope; all ID positions; both backends). The owner
-  proposed a policy ownership split — DOT knows `none | opaque`, the markup
+  proposed a policy ownership split — DOT knows `none | passthrough`, the markup
   subsystem owns its own policy and modes, the engine attaches as a
   resource — recorded with the reviewer's analysis, to confirm. Nothing
   implemented.
@@ -1670,7 +1682,7 @@ status is in the question entries above, not an earlier log's pending-work list.
   record; no fresh performance result is claimed.
 
 - 2026-09-22 — Clarified Q40 element depth versus delimiter depth, unknown
-  structural summaries under opaque recognition, and possible element-count
+  structural summaries under passthrough recognition, and possible element-count
   limits. Corrected label validation, operation versus module inclusion,
   source-preserving concatenation versus explicit decoding, per-operand origins,
   the Q10 compatibility exception and port-ID meaning. Frame size remains an
@@ -1709,9 +1721,9 @@ status is in the question entries above, not an earlier log's pending-work list.
   no policy implementation or measured cost improvement is claimed.
 
 - 2026-09-19 — Added Q40 for the dedicated, optional staged markup subsystem
-  and recognition in every DOT ID position. Distinguished opaque preservation,
+  and recognition in every DOT ID position. Distinguished passthrough preservation,
   XML-like structural checking and Graphviz label validation. Settled the mode
-  names `none`, `opaque`, `structural`, `extended`, and `graphviz`, with a
+  names `none`, `passthrough`, `structural`, `extended`, and `graphviz`, with a
   comparison table of their processing stages and validation policies.
   Recorded standalone, during-DOT and delayed use of one markup engine, with
   a usage-path table and explicit source-lifetime, work-budget and validity

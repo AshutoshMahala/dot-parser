@@ -2,13 +2,13 @@
 
 The authoritative compatibility page. The grammar grows one vertical slice
 at a time; a construct is listed as supported only when it parses end to
-end today. Deferred constructs are *recognized*: the parse stops at their
-introducer with a typed `unsupported_feature` diagnostic naming the
-construct, never a generic syntax error (see
-[OUTCOMES.md](OUTCOMES.md) for that distinction).
+end today. Policy-disabled HTML-like identifiers report a typed
+`unsupported_feature` diagnostic naming the construct; recognition alone does
+not establish inner validity (see [OUTCOMES.md](OUTCOMES.md)).
 
 The independently importable [markup parser](MARKUP.md) does not change this DOT
-coverage table. DOT HTML-like identifiers and their integration remain deferred.
+coverage table: DOT recognizes passthrough HTML-like identifiers independently.
+Automatic inner parsing and DOT/markup composition remain deferred.
 
 ## Terminology
 
@@ -25,7 +25,7 @@ can select a different effective kind without changing the source declaration;
 | `graph { … }` documents | **Supported** | Exposed as kind `.undigraph` |
 | `digraph { … }` documents | **Supported** | Exposed as kind `.digraph` |
 | `strict` modifier | **Supported** | Parsed and retained (`Document.strict`); strictness semantics (duplicate-edge rules) are not enforced |
-| Graph names | **Supported** | Bare (including non-ASCII), numeral, or quoted identifier expressions (`Document.name`); HTML names remain deferred |
+| Graph names | **Supported** | Bare (including non-ASCII), numeral, quoted or HTML-like identifier expressions (`Document.name`) |
 | Node statements (`a;`) | **Supported** | |
 | Edge statements (`a -- b;`, `a -> b;`) | **Supported** | Both operators always *parse*; kind×operator legality is a validation rule, not a parse error |
 | Optional semicolons | **Supported** | As in Graphviz: `digraph G { a -> b b -> c }` |
@@ -44,7 +44,7 @@ can select a different effective kind without changing the source declaration;
 | Attribute lists (`[color=red]`) | **Supported** | Attached to nodes, edges or whole chains; adjacent groups flattened, duplicates retained |
 | Attribute statements (`graph`/`node`/`edge` + `[…]`) | **Supported** | Target and ordered pairs retained; defaults are not applied |
 | ID assignments (`rankdir = LR`) | **Supported** | Separate assignment statements, retained as written |
-| HTML identifiers (`<…>`) | Deferred | Feature `html_identifier` |
+| HTML identifiers (`<…>`) | **Supported, passthrough** | Default `markup = .passthrough`; `.none` rejects with feature `html_identifier`; no inner markup validation |
 | Port suffixes (`a:n`, `a:out:e`) | **Supported** | Raw first/optional second identifier; no attachment resolution |
 | Leading UTF-8 byte order mark | **Supported** | Skipped at the start of the input, as Graphviz does; byte columns on line 1 still count its three bytes |
 
@@ -64,8 +64,9 @@ can select a different effective kind without changing the source declaration;
   `invalid_syntax`, diagnosed at its opening `/*` as `E.Syntax.Token.032`
   with `.unterminated = .block_comment`.
   Comments separate tokens; they cannot splice a keyword or edge operator.
-  Comment markers inside quoted identifiers are content. HTML-like identifiers
-  remain deferred and their bodies are not scanned.
+  Comment markers inside quoted identifiers are content. Inside HTML-like
+  identifiers every `<` and `>` affects envelope depth, including in apparent
+  comments or quotes; other bytes are preserved.
 - **Whole-document consumption**: after the root closing `}`, only whitespace,
   complete comments, and end of input are accepted. Malformed trailing comments
   and additional tokens are errors. Graphviz accepts the specific inputs
@@ -90,6 +91,34 @@ can select a different effective kind without changing the source declaration;
   Statements inside either kind of body still count; the root does not. `max_nesting` bounds active subgraph depth (root 0).
   These limits do not bound lexical work.
 
+## Passthrough HTML-like identifiers
+
+Both scanners recognize an envelope by a u32 angle-depth counter: `<` increments,
+`>` decrements, and depth zero closes it. Quotes, backslashes, comments, CDATA
+spellings and entities do **not** shield brackets. Interior bytes, including
+newlines, NUL and invalid UTF-8, are retained unchanged. A stray `>` outside an
+envelope is still invalid. This lexical rule is not structural markup parsing.
+
+Every DOT ID position supports this spelling, including graph/subgraph names,
+endpoints, both port components, attribute keys/values and assignment keys/values.
+`<graph>` is an identifier, never the `graph` keyword.
+
+An unclosed envelope reports `E.Syntax.Token.032` with
+`.unterminated = .html_identifier` at its opening `<`. Only remaining depth one
+offers a `maybe` insertion of `>` at EOF; deeper imbalance has no single fix.
+[Fix policy](POLICIES.md#markup-recognition-and-fix-offers) can suppress offers.
+
+`identifier.form(raw)` validates and returns `bare`, `numeral`, `quoted`, `html`
+or `concatenation`. `decodedLen`, `decodeInto` and `writeDecoded` explicitly remove
+HTML envelope brackets, leave inner bytes unchanged (no entity or escape decoding),
+and join mixed parts on request. They allocate nothing; repeated calls repeat
+linear work. The retained document always keeps the original expression.
+
+HTML operands in concatenations are a deliberate compatibility exception: the
+written DOT manual describes double-quoted concatenation, while the pinned
+Graphviz 16.0.0 scanner admits HTML operands too. This follows the verified
+`hstring` angle-depth behavior; it does not promise valid Graphviz labels.
+
 ## Identifier lexical rules
 
 The named `dot.presets.standard` policy preserves default acceptance.
@@ -112,8 +141,9 @@ All supported forms work as document/subgraph names, node IDs, node-reference
 edge endpoints, port components, attribute keys/values and assignment keys/values.
 Quoted keywords such as `"graph"` are identifiers, never keyword tokens. An
 empty quoted identifier is accepted. Adjacent quoted strings without `+` are
-separate tokens; only quoted strings may be joined by `+`. Whitespace and
-comments may occur on either side of it.
+separate tokens. Quoted and HTML-like parts may be joined by `+` in either
+order, with whitespace and comments on either side. Parsing retains the entire
+expression, excluding trailing trivia; it never collapses operands.
 
 Bare identifiers follow `[A-Za-z_\x80-\xFF][A-Za-z0-9_\x80-\xFF]*`, measured
 in bytes. `café`, `東京`, Latin-1 bytes and byte sequences that are invalid UTF-8
@@ -132,7 +162,7 @@ not a C/JSON unescaper or Graphviz label/attribute interpretation.
 
 Non-ASCII bytes and non-NUL control bytes inside quotes are preserved without
 UTF-8 validation. NUL inside quotes is rejected as `E.Syntax.Byte.003` at the
-offending byte, not silently truncated. Outside comments and quotes, NUL and
+offending byte, not silently truncated. Outside comments, quotes and HTML envelopes, NUL and
 other ASCII control bytes except supported whitespace are invalid.
 A UTF-8 byte order mark at the very start of the document is skipped
 (Graphviz's scanner ignores it too); elsewhere those bytes are ordinary
@@ -145,8 +175,8 @@ error/warning/off severity and no byte replacement; it is off by default.
 
 An unterminated quoted segment reports `E.Syntax.Token.032` with
 `.unterminated = .quoted_identifier` at that segment's opening quote, including
-when it is a later part of a concatenation. A missing quoted operand after `+`
-reports `E.Syntax.Concatenation.003` with `.expected_quote` containing the next
+when it is a later part of a concatenation. A missing quoted/HTML-like operand after `+`
+reports `E.Syntax.Concatenation.003` with `.expected_string_part` containing the next
 raw byte, or null at EOF. Neither failure returns a partial document.
 
 Numerals have no leading `+`, exponent, or numeric normalization. Maximal
@@ -199,7 +229,7 @@ No default propagation, last-value selection, layout-attribute validation,
 external resource loading or engine-specific interpretation occurs. Subgraph-local
 assignments and graph/node/edge attribute statements are retained in their scope;
 there is no bracket-list attachment after a standalone closing subgraph brace.
-HTML-like values retain their deferred boundary.
+HTML-like values are preserved opaquely; parsing does not validate their contents.
 
 Incomplete lists use the existing parser syntax diagnostics. EOF inside a list
 carries the current group's opening `[` as its related location; after that

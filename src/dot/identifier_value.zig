@@ -3,7 +3,7 @@
 const std = @import("std");
 
 /// Internal analysis helpers for identifier spans from a committed Document.
-/// No rescanning, decoded strings or normalization; callers guarantee validity.
+/// No revalidation, decoded allocations or normalization; callers guarantee validity.
 pub fn hashAssumeValid(raw: []const u8) u64 {
     var chunks: Chunks = .{ .raw = raw };
     var hash = std.hash.Wyhash.init(0);
@@ -28,26 +28,49 @@ pub fn orderAssumeValid(a: []const u8, b: []const u8) std.math.Order {
     }
 }
 
-/// Traverses a validated expression only. Comments between quoted parts are
+/// Traverses a validated expression only. Comments between string parts are
 /// discarded along with '+' and whitespace; comment-like content inside a
 /// quoted part is emitted unchanged. This is decoding, not a second validator.
 pub const Chunks = struct {
     raw: []const u8,
     offset: usize = 0,
+    quoted: bool = false,
 
     pub fn next(self: *Chunks) ?[]const u8 {
         if (self.offset == self.raw.len) return null;
-        if (self.raw[0] != '"') {
+        if (self.raw[0] != '"' and self.raw[0] != '<') {
             self.offset = self.raw.len;
             return self.raw;
         }
-        if (self.offset == 0) self.offset = 1;
         while (self.offset < self.raw.len) {
+            if (!self.quoted) {
+                self.skipGlue();
+                if (self.offset == self.raw.len) return null;
+                const open = self.raw[self.offset];
+                self.offset += 1;
+                if (open == '<') {
+                    const body = self.offset;
+                    var depth: u32 = 1;
+                    while (depth != 0) : (self.offset += 1) {
+                        switch (self.raw[self.offset]) {
+                            '<' => depth += 1,
+                            '>' => depth -= 1,
+                            else => {},
+                        }
+                    }
+                    const inner = self.raw[body .. self.offset - 1];
+                    // Empty operands must not end logical key comparison.
+                    if (inner.len != 0) return inner;
+                    continue;
+                }
+                self.quoted = true;
+                continue;
+            }
             const start = self.offset;
             switch (self.raw[start]) {
                 '"' => {
                     self.offset += 1;
-                    self.skipGlue();
+                    self.quoted = false;
                 },
                 '\\' => {
                     const after = self.raw[start + 1]; // validated escape pair
@@ -74,10 +97,7 @@ pub const Chunks = struct {
     fn skipGlue(self: *Chunks) void {
         while (self.offset < self.raw.len) {
             switch (self.raw[self.offset]) {
-                '"' => {
-                    self.offset += 1;
-                    return;
-                },
+                '"', '<' => return,
                 '#' => self.skipLine(),
                 '/' => {
                     if (self.raw[self.offset + 1] == '/') {

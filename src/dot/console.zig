@@ -515,6 +515,7 @@ fn writeHint(d: Diagnostic, info: diagnostic.Code.Info, positions: *Positions, w
         .unterminated => |construct| switch (construct) {
             .block_comment => try writer.writeAll("close the block comment opened here with '*/'; block comments do not nest"),
             .quoted_identifier => try writer.writeAll("close the quoted identifier opened here with a double quote"),
+            .html_identifier => try writer.writeAll("balance the angle brackets of the HTML-like identifier opened here"),
         },
         .operator_mismatch => |mismatch| if (d.code == .validation_operator_tolerated) {
             switch (mismatch.reading) {
@@ -1130,7 +1131,7 @@ fn writePrimaryLabel(details: Details, writer: anytype) !void {
             if (accepted.reason == .from_keyword) "the written header (from_keyword)" else "the long operator's shape",
         }),
         .unterminated => |construct| try writer.print("{s} opened here, never closed", .{unterminatedName(construct)}),
-        .expected_quote => |found| try writeExpectedQuote(found, writer),
+        .expected_string_part => |found| try writeExpectedStringPart(found, writer),
         .invalid_byte => |byte| {
             if (byte == 0) {
                 try writer.writeAll("NUL bytes are not allowed in DOT input");
@@ -1180,7 +1181,7 @@ fn writePrimaryLabel(details: Details, writer: anytype) !void {
             });
         },
         .unsupported_feature => {
-            try writer.writeAll("the parse stopped at this deferred construct");
+            try writer.writeAll("this construct is disabled by the selected policy");
         },
         .capacity => |capacity| {
             try writer.print("{s} limit of {d} reached here", .{
@@ -1243,7 +1244,7 @@ fn writeDetailValue(details: Details, writer: anytype) !void {
             if (accepted.reason == .from_keyword) "the written header (from_keyword)" else "the long operator's shape",
         }),
         .unterminated => |construct| try writer.print("unterminated {s}", .{unterminatedName(construct)}),
-        .expected_quote => |found| try writeExpectedQuote(found, writer),
+        .expected_string_part => |found| try writeExpectedStringPart(found, writer),
         .invalid_byte => |byte| {
             if (std.ascii.isPrint(byte)) {
                 try writer.print("offending byte 0x{X:0>2} ('{c}')", .{ byte, byte });
@@ -1297,18 +1298,19 @@ fn unterminatedName(construct: diagnostic.UnterminatedConstruct) []const u8 {
     return switch (construct) {
         .block_comment => "block comment",
         .quoted_identifier => "quoted identifier",
+        .html_identifier => "HTML-like identifier",
     };
 }
 
-fn writeExpectedQuote(found: ?u8, writer: anytype) !void {
+fn writeExpectedStringPart(found: ?u8, writer: anytype) !void {
     if (found) |byte| {
         if (std.ascii.isPrint(byte)) {
-            try writer.print("expected a double quote, found byte 0x{X:0>2} ('{c}')", .{ byte, byte });
+            try writer.print("expected a double quote or '<', found byte 0x{X:0>2} ('{c}')", .{ byte, byte });
         } else {
-            try writer.print("expected a double quote, found byte 0x{X:0>2}", .{byte});
+            try writer.print("expected a double quote or '<', found byte 0x{X:0>2}", .{byte});
         }
     } else {
-        try writer.writeAll("expected a double quote, found end of input");
+        try writer.writeAll("expected a double quote or '<', found end of input");
     }
 }
 
@@ -1543,7 +1545,7 @@ test "identifier diagnostics render typed quote and concatenation context" {
     try expect(std.mem.indexOf(u8, writer.buffered(), "close the quoted identifier") != null);
     d.code = .syntax_invalid_concatenation;
     inline for (.{ @as(?u8, 'b'), @as(?u8, 0x1b), @as(?u8, null) }) |found| {
-        d.details = .{ .expected_quote = found };
+        d.details = .{ .expected_string_part = found };
         writer = std.Io.Writer.fixed(&buffer);
         try render(d, .{}, &writer);
         try expect(std.mem.indexOf(u8, writer.buffered(), "E.Syntax.Concatenation.003") != null);
@@ -1889,7 +1891,7 @@ test "unsupported constructs put the feature name in the headline" {
 
     const text = writer.buffered();
     try expect(std.mem.startsWith(u8, text, "┌─ Error 1: unsupported DOT construct: HTML-like identifier\n"));
-    try expect(std.mem.indexOf(u8, text, "^^^^^^^^ the parse stopped at this deferred construct\n") != null);
+    try expect(std.mem.indexOf(u8, text, "^^^^^^^^ this construct is disabled by the selected policy\n") != null);
 }
 
 test "verbose adds the alias and qualified compact ID to the closing line" {

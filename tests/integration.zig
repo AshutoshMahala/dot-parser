@@ -15,6 +15,7 @@ test {
     _ = @import("processors.zig");
     _ = @import("measure.zig");
     _ = @import("non_ascii.zig");
+    _ = @import("html_identifiers.zig");
     _ = @import("policies.zig");
     _ = @import("policy_settings.zig");
     _ = @import("lenient.zig");
@@ -335,12 +336,12 @@ test "consumer can lex the milestone document from caller-supplied bytes" {
     }
 }
 
-test "consumer sees a structured failure for deferred DOT features" {
+test "consumer sees a preserved HTML-like identifier token" {
     var lexer = dot.lexer.Lexer.init("<html>");
-    try std.testing.expect(lexer.next() == .failure);
-    const failure = lexer.failureDiagnostic();
-    try std.testing.expectEqual(dot.Code.profile_unsupported_feature, failure.code);
-    try std.testing.expectEqual(dot.diagnostic.Feature.html_identifier, failure.details.unsupported_feature);
+    const token = lexer.next().token;
+    try std.testing.expectEqual(dot.lexer.Token.Tag.identifier, token.tag);
+    try std.testing.expect(token.flags.has_html);
+    try std.testing.expectEqualStrings("<html>", token.span.slice(lexer.source));
 }
 
 test "milestone acceptance through the public façade" {
@@ -389,7 +390,7 @@ test "parseBorrowed returns a caller-owned document over borrowed source" {
 
 test "façade surfaces parse failures with a null document and a filled bag" {
     var bag: dot.FixedDiagnosticBag(4) = .{};
-    var parsed = dot.parseBorrowed(std.testing.allocator, "graph { a -- <b> }", bag.sink(), .{});
+    var parsed = dot.Profile(.{ .policy = .{ .markup = .none } }).parseBorrowed(std.testing.allocator, "graph { a -- <b> }", bag.sink(), .{});
     defer parsed.deinit(std.testing.allocator);
 
     try std.testing.expect(parsed.outcome == .unsupported_feature);
@@ -401,7 +402,7 @@ test "façade surfaces parse failures with a null document and a filled bag" {
 
     // The one-shot reports the same failure with no validation attempted.
     var check_bag: dot.FixedDiagnosticBag(4) = .{};
-    var checked = dot.parseAndValidate(std.testing.allocator, "graph { a -- <b>; }", check_bag.sink(), .{});
+    var checked = dot.Profile(.{ .policy = .{ .markup = .none } }).parseAndValidate(std.testing.allocator, "graph { a -- <b>; }", check_bag.sink(), .{});
     defer checked.deinit(std.testing.allocator);
     try std.testing.expect(checked.outcome == .unsupported_feature);
     try std.testing.expect(checked.validation == null);
@@ -770,12 +771,12 @@ test "invalid corpus fails with the expected diagnostic and terminates" {
     }
 }
 
-test "unsupported corpus names the exact deferred feature" {
+test "markup-disabled corpus names the exact unsupported feature" {
     for (unsupported_corpus) |entry| {
         errdefer std.debug.print("corpus fixture: unsupported/{s}\n", .{entry.name});
 
         var bag: dot.FixedDiagnosticBag(4) = .{};
-        var checked = dot.parseAndValidate(std.testing.allocator, entry.source, bag.sink(), .{});
+        var checked = dot.Profile(.{ .policy = .{ .markup = .none } }).parseAndValidate(std.testing.allocator, entry.source, bag.sink(), .{});
         defer checked.deinit(std.testing.allocator);
         try std.testing.expect(checked.outcome == .unsupported_feature);
         try std.testing.expectEqual(@as(usize, 1), bag.items().len);
