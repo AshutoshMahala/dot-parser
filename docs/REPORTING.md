@@ -10,12 +10,41 @@ defer result.deinit(allocator);
 // bag.items() is retained in emission order; inspect result for completeness.
 ```
 
-`init` does not allocate. Growth occurs on demand; `.max_entries = N` places an
-entry limit on retention and reserved capacity, not allocator overhead or RSS.
+`init` does not allocate. Growth occurs on demand, **bounded to 1,024 entries by
+default**, for DOT, markup and shared typed bags. Choose a different limit explicitly:
+
+```zig
+var bounded = dot.GrowableDiagnosticBag.init(allocator, .{
+    .max_entries = .{ .limited = 4096 }, // u16: 0 through 65,535
+});
+defer bounded.deinit();
+var unlimited = dot.GrowableDiagnosticBag.init(allocator, .{
+    .max_entries = .unlimited, // deliberately opt out of the retention budget
+});
+defer unlimited.deinit();
+```
+
+`reporting.EntryLimit` uses a `u16` payload for `.limited`; neither zero nor 65,535
+is a sentinel. Zero rejects the first finding without allocation. Unlimited remains
+subject to allocator and representation limits; slice lengths/capacities stay
+`usize`, and factual finding/omission counters are not narrowed to u16.
+
+The limit bounds retained entries and reserved array capacity, not total heap or
+RSS. A 1,024-entry markup bag reserves at most 36 KiB of entries; DOT or custom
+payload sizes differ. During copying growth, old and new buffers may coexist.
+An arena may retain abandoned buffers until teardown. A narrower limit field
+does not guarantee a smaller bag struct because of alignment/padding.
 Accepting the last permitted item requests stopping. Allocation failure rejects
 the current item. `reset()` clears entries but retains capacity; `deinit()` frees
 the backing allocation. Views returned by `items()` expire on growth/reset/deinit.
-The processor never resets or frees the caller's bag.
+The processor never resets or frees the caller's bag. The limit is fixed at init;
+do not mutate the bag's configuration/storage fields to reconfigure it.
+
+Sharing a bag across stages shares its remaining budget. Accepting entry 1,024
+requests stopping even when it happens to be the final possible finding; callers
+must inspect operation completeness, not infer it from diagnostic count. Unlimited
+retention is not needed just to finish checking: a streaming or explicit omission
+destination can continue without keeping every finding, but still needs a work budget.
 
 For allocation-free use, `dot.FixedDiagnosticBag(N)` retains N entries. Its last
 accepted item returns `.stop`; the zero-capacity case rejects the first item.
@@ -59,3 +88,8 @@ attempt to diagnose a broken sink. Terminal calls do not emit again.
 
 Growable bags are the default in general examples, not an implicit core allocator.
 Fixed-memory and streaming operation remain first-class choices.
+
+For hostile input, also bound input acquisition, parser output/scratch and total
+work. A capped bag cannot prevent a large diagnostic-free tree or work done before
+the first finding. See the [markup untrusted-input recipe](MARKUP.md#untrusted-input)
+and the [DOT policy guide](POLICIES.md#untrusted-input).

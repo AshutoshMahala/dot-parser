@@ -61,6 +61,10 @@ for direct/recursive scope views and explicit nesting scratch.
 
 ## Usage
 
+For untrusted input, use explicit [DOT resource budgets](docs/POLICIES.md#untrusted-input)
+or the [markup untrusted preset and recipe](docs/MARKUP.md#untrusted-input).
+Growable diagnostic bags default to 1,024 entries; completion must still be checked.
+
 ### Just parse and check
 
 ```zig

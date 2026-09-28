@@ -99,7 +99,8 @@ For example, a one-entry bag stops the example above with
 `diagnostic_stopped.requested`, not success. Use a growable or streaming sink
 that continues when complete parsing is required, or explicitly choose
 `reporting.FixedBag(Diagnostic, N, .omit)` to retain a prefix and count omissions.
-Growable sinks can still stop at a configured limit or fail allocation.
+Growable sinks default to 1,024 entries, stop at that limit, and can fail allocation.
+An explicit u16 limit or `.unlimited` is available; see [diagnostic destinations](REPORTING.md).
 
 ## Import and parse
 
@@ -284,6 +285,62 @@ bytewise name comparisons, followed by linear mapping/emission in source order;
 there is no second sort. Allocator-backed validation sizes scratch only once and
 reuses that requirement during checking. Temporary memory is O(max attributes on one element).
 Source and document pools must stay alive and unchanged, as with parsing views.
+
+## Untrusted input
+
+For untrusted fragments, start with `presets.untrusted` and a bounded diagnostic
+destination, then tailor the budgets to your application:
+
+```zig
+const Reader = markup.Profile(.{ .policy = markup.presets.untrusted });
+var bag = markup.GrowableDiagnosticBag.init(allocator, .{}); // 1024 entries
+defer bag.deinit();
+// Bound acquisition BEFORE allocating/reading source, not only after it arrives.
+var parsed = Reader.parseBorrowed(allocator, source, bag.sink(), .{});
+defer parsed.deinit();
+if (parsed.document) |document| {
+    const checked = Reader.validate(allocator, &document, bag.sink(), .{});
+    // Accept only with checked.completion == .complete and validity == .valid.
+}
+```
+
+| Parsing budget | `presets.untrusted` |
+| --- | ---: |
+| Source bytes | 8 MiB (8,388,608 bytes) |
+| Nodes | 100,000 |
+| Attributes | 200,000 |
+| Element nesting depth | 256 |
+
+These are finite starting budgets, **not a universal safe size or total-memory
+guarantee**. The preset is a complete copy of `standard` with only those limits
+changed: syntax stays rejecting, UTF-8 checking stays off, and metering/cancellation
+stay off. Raw bytes do not become invalid merely because their source is untrusted.
+All leaves retain compile-time/runtime parity; runtime overrides explicitly can
+raise or lower budgets. A complete preset resets all baseline leaves; use its
+`.limits` subtree alone when other configured behavior must remain unchanged.
+
+Limits are enforced during parsing/measurement, not retroactively by `validate`
+on an already-created document. Parsing can allocate output before finding an
+error; validation sizes/sorts duplicate scratch before reporting findings. The
+bag cap therefore cannot replace source/output/scratch limits. For strict heap
+budgets, use fixed pools or a bounded allocator covering all relevant allocations,
+including diagnostic storage, temporary growth buffers and request concurrency.
+Merely counting final records does not bound an allocator's peak usage.
+
+For cooperative scheduling, explicitly enable metering/cancellation and use fixed
+sessions with an application-owned total work/deadline budget. `advance(n)` bounds
+one call, not total work if called indefinitely. Validation is still unmetered;
+scratch sizing, heapsort and name comparisons do not poll cancellation internally.
+Use input/attribute limits and, where required, external worker isolation/timeouts.
+
+Prefer `ReleaseSafe` as a defense-in-depth default at hostile-input boundaries.
+`ReleaseFast` and `ReleaseSmall` disable compiler runtime safety checks by default;
+they do not remove the library's explicit policy/capacity checks. An undiscovered
+illegal operation may have arbitrary effects without safety checks; `ReleaseSafe`
+can catch additional violations with a panic, not a recoverable parser result.
+Neither mode proves memory safety or prevents resource exhaustion. Keep adversarial
+tests and fuzzing in the validation process regardless of build mode. See the
+[Zig build-mode and illegal-behavior documentation](https://ziglang.org/documentation/0.16.0/#Illegal-Behavior).
 
 ## Policies and sessions
 

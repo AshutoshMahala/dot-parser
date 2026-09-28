@@ -8,6 +8,25 @@ Policies never rewrite source bytes.
 The ordinary `dot.validate` and `dot.parseAndValidate` functions keep their strict
 defaults. [Runnable example](../examples/policies.zig).
 
+## Untrusted input
+
+Bound input acquisition before allocating/reading the source, set finite
+`limits.max_nesting`, `max_statements` and `max_attributes`, and use bounded output,
+scratch and diagnostic resources. DOT currently has no application-sized
+`max_source_bytes` policy or `presets.untrusted`; enforce your source-byte budget
+in the caller. The u32 representation ceiling is not a practical server budget.
+
+Growable diagnostic bags now stop at 1,024 entries by default; see
+[diagnostic destinations](REPORTING.md) for explicit u16 limits or unlimited opt-in.
+A bag cap does not bound a diagnostic-free tree or work performed before reporting.
+Metered sessions need an application-owned total-work budget; repeated calls do
+not impose a total limit. Validation is not bounded by parse credits. Prefer
+`ReleaseSafe` for defense in depth, and keep adversarial tests/fuzzing regardless
+of mode. It catches additional illegal operations by panicking, not by turning
+bugs into recoverable errors. See the [shared safety guidance](MARKUP.md#untrusted-input)
+for allocator, peak-memory and build-mode qualifications; its named preset is
+markup-specific, not a DOT preset.
+
 ## Standard and lenient presets
 
 `dot.presets.standard` names the library defaults; `dot.Profile(.{})` is

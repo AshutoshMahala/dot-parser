@@ -137,8 +137,10 @@ does not replace its original cause; failed delivery remains visible separately.
 `FixedDiagnosticBag(N)` accepts the Nth entry and requests stopping. A zero-sized
 bag rejects the first attempt. Use `reporting.FixedBag(Diagnostic, N, .omit)` to
 explicitly keep a prefix and count omissions while continuing. General examples
-use `GrowableDiagnosticBag.init(allocator, .{})`; growth is explicit, and an optional
-`max_entries` limit or allocation failure stops work. Streaming callbacks return
+use `GrowableDiagnosticBag.init(allocator, .{})`; growth is explicit and the default
+cap is 1,024 entries. `max_entries = .{ .limited = N }` selects a u16 limit;
+`.unlimited` explicitly opts out. The last accepted entry or allocation failure
+stops work. Streaming callbacks return
 `DiagnosticSinkError!DiagnosticAction`: `.proceed` or `.stop` on acceptance.
 Discard/filtering sinks may accept without retaining; that alone never stops work.
 See [diagnostic destinations](REPORTING.md).

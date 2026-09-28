@@ -190,7 +190,8 @@ The diagnostic destination is caller policy:
 - Direct diagnostic sink with no retained bag.
 - Caller-provided fixed-capacity bag.
 - Growable bag with an explicit caller allocator (including arenas), used in
-  general examples; optional hard entry limit.
+  general examples; a default limit of 1,024 entries, configurable through a
+  finite `u16` limit or explicit `.unlimited` retention.
 - Filtering sink that hides selected messages for presentation. Severity and
   validity come from policy; sink filtering or restyling cannot change them.
 
@@ -1025,6 +1026,24 @@ Callers must be able to limit at least:
 The exact set of limits may vary by profile, but embedded and server users must
 not need to trust the document to remain within a safe budget.
 
+**Retention hardening implemented 2026-09-27.** Shared growable diagnostic bags
+default to 1,024 entries. Finite limits are `EntryLimit.limited: u16`; zero means
+retain none and 65,535 remains finite. Only `.unlimited` removes that retention
+budget. The last accepted entry requests stopping; unfinished work remains
+incomplete. Counts of discovered findings and native allocation sizes are not
+narrowed. This bounds retained entries, not allocator overhead, transient growth,
+arena consumption or the work before the next finding.
+
+Standalone markup provides `presets.untrusted`, a complete standard policy with
+limits of 8 MiB source, 100,000 nodes, 200,000 attributes and 256 nesting levels.
+These are overridable starting budgets, not a total-heap or wall-time guarantee.
+Callers must bound input acquisition and account for output, scratch, diagnostics,
+concurrency and validation work. DOT still requires a caller-side source-byte
+budget and explicit finite parser limits; it has no `untrusted` preset. Validation
+sizing, sorting and name comparison are not internally metered. `ReleaseSafe`
+compiler checks and continued fuzz/adversarial testing provide defense in depth,
+not substitutes for explicit resource limits or correct parser code.
+
 ### R-SEC-003: Prevent algorithmic complexity attacks
 
 Normal parsing should remain near-linear even for rejected input. The parser
@@ -1453,6 +1472,12 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-09-27 — **R-FUNC-008 and R-SEC-002 retention hardening:** shared growable
+  bags default to 1,024 retained diagnostics with finite `u16` limits and explicit
+  unlimited retention. Wide finding counters and diagnostic payloads are unchanged.
+  Markup adds an ordinary `untrusted` resource preset; neither retention limits
+  nor parse budgets claim bounded validation, total heap or total execution time.
 
 - 2026-09-27 — **R-MOD-014 standalone slice 4a:** optional UTF-8 checking over the
   original source, independent of parsing and default off. Ordinary encoding

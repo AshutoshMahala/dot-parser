@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-27 (standalone structural markup slices 1–3 and 4a).
+Last reconciled: 2026-09-27 (standalone structural markup slices 1–3 and 4a; diagnostic retention budgets).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -1233,8 +1233,11 @@ Caller-owned routing can feed one destination, separate fixed/growable bags, or 
 with no retained bag. No processor or fragment requires its own allocated bag.
 A processor may report multiple independent findings. As revised 2026-09-26,
 fixed bags request stopping on their last accepted entry; growable bags are the
-default in general examples, with explicit allocator ownership and optional hard
-limits. Prefix-and-count retention remains an explicit continuing destination.
+default in general examples, with explicit allocator ownership. As hardened
+2026-09-27, growable bags default to 1,024 entries, with a finite `u16` limit or
+explicit `.unlimited` retention. The last accepted entry requests stopping;
+factual counters and allocation sizes are not narrowed. Prefix-and-count retention
+remains an explicit continuing destination.
 Sink stop/failure terminates unfinished DOT parsing/validation and future composed
 work; ordinary findings still do not. Counts retain discovered facts, including
 source-order pending findings, without claiming unvisited input was checked.
@@ -1525,6 +1528,11 @@ Open; nothing currently forces the choice.
 
 ## Reconciliation log
 
+- 2026-09-27 — Shared growable bags now default to 1,024 retained diagnostics;
+  finite limits use `u16` and unlimited retention is explicit. Markup adds
+  `presets.untrusted` with finite source/node/attribute/nesting budgets. Diagnostic
+  payloads and finding counters are unchanged; UTF-8 findings remain one per bad
+  byte. These bounds do not promise total heap, time or bounded validation.
 - 2026-09-27 — Structural slice 4a adds optional whole-source UTF-8 checking with
   default-off error/warning policies and independent validation. Encoding and
   duplicate findings are source-ordered without a queue; names, known-reference

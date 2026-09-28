@@ -89,4 +89,18 @@ pub const presets = struct {
         },
         .execution = .{ .metering = false, .cancellation = false },
     };
+
+    /// Starting budgets for untrusted fragments, not a total heap/time bound or
+    /// a new dialect. Pair with bounded diagnostics and caller resource budgets.
+    /// Like standard, this is a complete policy (including disabled UTF-8).
+    pub const untrusted: Policy = blk: {
+        var input = standard;
+        input.limits = .{
+            .max_source_bytes = 8 * 1024 * 1024,
+            .max_nodes = 100_000,
+            .max_attributes = 200_000,
+            .max_nesting = 256,
+        };
+        break :blk input;
+    };
 };

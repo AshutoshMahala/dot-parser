@@ -137,29 +137,48 @@ pub fn FixedBag(comptime Item: type, comptime capacity: usize, comptime overflow
     };
 }
 
-/// Explicitly allocator-backed retention. init does not allocate. Growth never
-/// reserves more than max_entries; the limit counts entries, not allocator overhead.
+/// A bounded retention budget, or explicit opt-in to allocator/representation
+/// limits only. Zero means no retention; 65,535 is an ordinary finite limit.
+/// This is not a finding counter or a limit on source/processor work.
+pub const EntryLimit = union(enum) {
+    limited: u16,
+    unlimited,
+
+    fn maximum(self: EntryLimit, comptime Item: type) usize {
+        return switch (self) {
+            .limited => |count| count,
+            .unlimited => std.math.maxInt(usize) / @max(1, @sizeOf(Item)),
+        };
+    }
+};
+pub const default_entry_limit: u16 = 1024;
+
+/// Explicitly allocator-backed retention, limited to 1,024 entries by default.
+/// init does not allocate. Growth never reserves more than the selected limit;
+/// this excludes allocator overhead and simultaneous old/new growth buffers.
 /// items() views expire on growth/reset/deinit. The bag and allocator are caller-owned.
+/// Treat configuration as immutable after init; reset retains capacity and limit.
 pub fn GrowableBag(comptime Item: type) type {
     return struct {
         const Self = @This();
-        pub const Options = struct { max_entries: usize = std.math.maxInt(usize) / @max(1, @sizeOf(Item)) };
+        pub const Options = struct { max_entries: EntryLimit = .{ .limited = default_entry_limit } };
         allocator: std.mem.Allocator,
         storage: std.ArrayList(Item) = .empty,
-        max_entries: usize,
+        max_entries: EntryLimit,
 
         pub fn init(allocator: std.mem.Allocator, options: Options) Self {
             return .{ .allocator = allocator, .max_entries = options.max_entries };
         }
 
         pub fn push(self: *Self, item: Item) SinkError!Action {
-            if (self.storage.items.len == self.max_entries) return error.DiagnosticCapacityExceeded;
+            const maximum = self.max_entries.maximum(Item);
+            if (self.storage.items.len >= maximum) return error.DiagnosticCapacityExceeded;
             if (self.storage.items.len == self.storage.capacity) {
                 const grown = std.math.add(usize, self.storage.capacity, self.storage.capacity / 2 + 8) catch std.math.maxInt(usize);
-                try self.storage.ensureTotalCapacityPrecise(self.allocator, @min(grown, self.max_entries));
+                try self.storage.ensureTotalCapacityPrecise(self.allocator, @min(grown, maximum));
             }
             self.storage.appendAssumeCapacity(item);
-            return if (self.storage.items.len == self.max_entries) .stop else .proceed;
+            return if (self.storage.items.len == maximum) .stop else .proceed;
         }
 
         pub fn items(self: *const Self) []const Item {
@@ -203,7 +222,7 @@ test "fixed destinations acknowledge accepted stop, zero capacity and explicit o
 }
 
 test "growth, hard limit, retained capacity and allocation failure" {
-    var bag = GrowableBag(u32).init(std.testing.allocator, .{ .max_entries = 40 });
+    var bag = GrowableBag(u32).init(std.testing.allocator, .{ .max_entries = .{ .limited = 40 } });
     defer bag.deinit();
     for (0..40) |i| try std.testing.expectEqual(if (i == 39) Action.stop else Action.proceed, try bag.push(@intCast(i)));
     try std.testing.expect(bag.storage.capacity <= 40);
@@ -218,7 +237,66 @@ test "growth, hard limit, retained capacity and allocation failure" {
     defer failing.deinit();
     try std.testing.expectError(error.OutOfMemory, failing.sink().emit(1));
     try std.testing.expectEqual(@as(usize, 0), failing.items().len);
-    var zero = GrowableBag(u32).init(std.testing.failing_allocator, .{ .max_entries = 0 });
+    var zero = GrowableBag(u32).init(std.testing.failing_allocator, .{ .max_entries = .{ .limited = 0 } });
     defer zero.deinit();
     try std.testing.expectError(error.DiagnosticCapacityExceeded, zero.push(1));
+}
+
+test "default retention cap stops at 1024, never over-reserves, and survives reset" {
+    try std.testing.expect(@FieldType(EntryLimit, "limited") == u16);
+    var bag = GrowableBag(u32).init(std.testing.allocator, .{});
+    defer bag.deinit();
+    try std.testing.expectEqual(@as(usize, 0), bag.storage.capacity);
+    for (0..2) |_| {
+        for (0..1024) |i| {
+            try std.testing.expectEqual(if (i == 1023) Action.stop else .proceed, try bag.push(@intCast(i)));
+            try std.testing.expect(bag.storage.capacity <= 1024);
+        }
+        try std.testing.expectEqual(@as(usize, 1024), bag.items().len);
+        try std.testing.expectError(error.DiagnosticCapacityExceeded, bag.push(1024));
+        bag.reset();
+        try std.testing.expectEqual(@as(usize, 0), bag.items().len);
+        try std.testing.expectEqual(@as(usize, 1024), bag.storage.capacity);
+        try std.testing.expectEqual(EntryLimit{ .limited = 1024 }, bag.max_entries);
+    }
+}
+
+test "finite u16 maximum is not unlimited and one is not zero" {
+    inline for (.{ 1, std.math.maxInt(u16) }) |limit| {
+        var bag = GrowableBag(u8).init(std.testing.allocator, .{ .max_entries = .{ .limited = limit } });
+        defer bag.deinit();
+        for (0..limit) |i| {
+            try std.testing.expectEqual(if (i + 1 == limit) Action.stop else .proceed, try bag.push(@truncate(i)));
+            try std.testing.expect(bag.storage.capacity <= limit);
+        }
+        try std.testing.expectError(error.DiagnosticCapacityExceeded, bag.push(0));
+    }
+}
+
+test "unlimited retention crosses u16 without narrowing native storage lengths" {
+    var bag = GrowableBag(u8).init(std.testing.allocator, .{ .max_entries = .unlimited });
+    defer bag.deinit();
+    for (0..65_536) |i| try std.testing.expectEqual(Action.proceed, try bag.push(@truncate(i)));
+    try std.testing.expectEqual(@as(usize, 65_536), bag.items().len);
+    for (bag.items(), 0..) |byte, i| try std.testing.expectEqual(@as(u8, @truncate(i)), byte);
+    bag.reset();
+    try std.testing.expectEqual(Action.proceed, try bag.push(1));
+}
+
+fn bagAllocationCase(allocator: std.mem.Allocator) !void {
+    var bag = GrowableBag(u32).init(allocator, .{});
+    defer bag.deinit();
+    for (0..1024) |i| {
+        const action = bag.push(@intCast(i)) catch |err| {
+            // Failed growth neither appends a value nor discards prior entries.
+            try std.testing.expectEqual(i, bag.items().len);
+            for (bag.items(), 0..) |value, index| try std.testing.expectEqual(@as(u32, @intCast(index)), value);
+            return err;
+        };
+        try std.testing.expectEqual(if (i == 1023) Action.stop else .proceed, action);
+    }
+}
+
+test "every diagnostic growth failure preserves entries and releases storage" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, bagAllocationCase, .{});
 }

@@ -6,6 +6,18 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- **Breaking:** shared growable diagnostic bags (including DOT and markup) now
+  stop at 1,024 entries by default. `Options.max_entries` is an `EntryLimit`:
+  `.{ .limited = N }` has a u16 payload (0–65,535); `.unlimited` explicitly opts
+  out. No sentinel values or legacy numeric option remain. Native storage lengths
+  and wide finding counters are unchanged; stop still means incomplete work.
+- Add markup `presets.untrusted`: standard behavior with limits of 8 MiB source,
+  100,000 nodes, 200,000 attributes and depth 256. Document bounded input acquisition,
+  diagnostics, allocator/work budgets and build-mode tradeoffs without claiming a
+  total memory/time guarantee. Add default-cap floods, exact preset boundaries,
+  zero/u16-maximum/unlimited retention and allocation-failure regression tests.
+  UTF-8 findings remain one per invalid byte; no parser hot-path change is added.
+
 - Add standalone markup `validation.invalid_utf8` (`off` by default, `warning`,
   `err`) with compile-time/runtime parity. Independently checks all raw source
   bytes without mutation or allocation, merging diagnostics with duplicate checks

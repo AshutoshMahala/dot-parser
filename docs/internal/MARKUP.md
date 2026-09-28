@@ -17,6 +17,7 @@ this parser. Independent parsing must not import DOT grammar or retained records
 | 2 | Quoted attributes, retained order/duplicates, independent duplicate checking | Implemented |
 | 3 | References, comments and CDATA, including malformed-reference acceptance policy | Implemented |
 | 4a | Optional independent UTF-8 validation, source-ordered with duplicate findings | Implemented |
+| Resource hardening | Default-capped shared diagnostic retention and an untrusted-input resource preset | Implemented |
 | 4b | Stricter names, known-reference checks and explicitly defined structural recovery | Planned; semantics still need decisions |
 | Integration | DOT opaque recognition followed by delayed integration; during-DOT composition later | Planned |
 
@@ -105,7 +106,9 @@ The policy contains implemented limits (source bytes, nodes, attributes, nesting
 malformed-reference acceptance, duplicate-attribute and UTF-8 validation severity, scanner
 selection (`scalar` default / `block`), and execution choices (metering, cancellation). Limits/counts/ranges are u32; lengths
 at the allocator/slice boundary use native sizes. Defaults preserve the existing
-unlimited-within-representation convention. All typed combinations are meaningful,
+unlimited-within-representation convention for the standard policy. The optional
+`presets.untrusted` selects finite application-sized parse budgets (see below).
+All typed combinations are meaningful,
 including zero limits, so `validatePolicy` currently returns `valid`; no invalid
 combination is invented and parsing has no policy-error union. Fixed verification is
 comptime-only. Runtime overrides are opt-in, resolve once, and inherit the compiled
@@ -136,6 +139,51 @@ token/finding. See the follow-up below for backend details and measurements.
 No Graphviz/extended validation, stricter Unicode name checking,
 markup fixes or processor scheduling is implemented
 by this slice. See the [consumer guide](../MARKUP.md) for the actual API.
+
+## Resource hardening — 2026-09-27
+
+The shared growable diagnostic bag used by both DOT and markup now defaults to
+1,024 entries. `EntryLimit` is a tagged choice: `.limited: u16` (0–65,535) or
+explicit `.unlimited`. Neither zero nor 65,535 is a sentinel. Accepting the final
+entry requests stopping; the operation preserves known invalidity and reports
+unfinished checks as incomplete. Native allocation lengths and u32/u64 factual
+counters are unchanged. The cap lives in the sink, with no new parser hot-path
+checks, narrower diagnostic payload or changed UTF-8 finding spans. Settings and
+storage must not be mutated during a bag's lifetime; reset clears entries while
+retaining its capacity and selected limit.
+
+`presets.untrusted` is a complete ordinary standard policy with four finite
+limits: 8 MiB source bytes, 100,000 nodes, 200,000 attributes and depth 256.
+Encoding remains off and syntax/validation meanings do not change. Fixed and
+opt-in runtime profiles use the same policy resolution. The complete preset
+resets all leaves when supplied as an override; callers wanting only its limits
+can select that subtree. It bounds parsing/measurement, not independent validation
+of an already retained document.
+
+Resource tests isolate the diagnostic risk with a 16 MiB text source: both all
+invalid bytes and alternating valid/invalid bytes stop UTF-8 validation after
+1,024 findings. On the native target the bag reserves exactly 36 KiB of live
+entry storage (1,024 × 36 bytes). This is not a peak-heap or RSS measurement:
+old/new buffers can coexist during growth, arena allocations can accumulate,
+and the source, output and scratch are separate costs. Wide-count tests with a
+discarding sink still complete over 65,535 errors. Duplicate, DOT operator and
+warned-reference floods also honor the cap without claiming completion.
+
+Tests cover zero/one/max finite limits, explicit unlimited retention beyond
+65,535, reset, every default-cap allocation-failure point, and exact/one-over
+preset limits with fixed/runtime parity. A 65,536 finite limit is an expected
+compile failure. Freestanding 32-bit probes consume finite and unlimited shared
+bags using only caller-backed allocation.
+
+449/449 tests pass in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall. Examples,
+benchmark compilation, 14 expected compile failures and the consumed RISC-V32/
+Wasm32 freestanding probes pass. Formatting and diff whitespace checks pass.
+
+The [untrusted-input guide](../MARKUP.md#untrusted-input) separates input acquisition,
+retention, output/scratch, parse credits and validation costs. Validation sizing,
+sorting and name comparisons are not internally metered or cancellable; this is
+not a bounded-validation change. ReleaseSafe guidance is defense in depth, not a
+memory-safety proof. No new throughput or process-memory benchmark is claimed.
 
 ## Slice 4a implementation
 

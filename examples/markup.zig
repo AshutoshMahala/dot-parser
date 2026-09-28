@@ -4,9 +4,12 @@ const markup = @import("markup_parser");
 
 pub fn main(init: std.process.Init) !void {
     const source = "Hello &amp; <widget name='demo' name=\"retained too\"><B>world</B><br/></widget><!-- retained --><![CDATA[<raw>&text]]>!";
+    // This profile bounds parsing; the default bag independently caps findings at 1024.
+    // Bound input acquisition before parsing too; this example uses a fixed string.
+    const Reader = markup.Profile(.{ .policy = markup.presets.untrusted });
     var bag = markup.GrowableDiagnosticBag.init(init.arena.allocator(), .{});
     defer bag.deinit();
-    var parsed = markup.parseBorrowed(init.arena.allocator(), source, bag.sink(), .{});
+    var parsed = Reader.parseBorrowed(init.arena.allocator(), source, bag.sink(), .{});
     defer parsed.deinit();
     var buffer: [2048]u8 = undefined;
     var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);

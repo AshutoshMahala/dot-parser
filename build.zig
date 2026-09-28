@@ -109,6 +109,7 @@ pub fn build(b: *std.Build) void {
     // Public policy constraints must fail for actual consumers, not just pass
     // reflection checks in unit tests. Expected-error builds run with test.
     for ([_]struct { name: []const u8, message: []const u8 }{
+        .{ .name = "diagnostic_limit", .message = "type 'u16' cannot represent integer value '65536'" },
         .{ .name = "fixed_policy_override", .message = "tests/compile_fail/fixed_policy_override.zig:3:36: error: no field named 'policy' in struct /?/" },
         .{ .name = "runtime_check_on_fixed_profile", .message = "error: unable to evaluate comptime expression" },
         .{ .name = "digraph_treatment", .message = "error: no field named 'treated_as' in struct 'dot.policy.Policy.Operators'" },
@@ -284,6 +285,17 @@ pub fn build(b: *std.Build) void {
             .target = portable_target,
             .optimize = .ReleaseSmall,
         });
+        const reporting_probe = b.addObject(.{
+            .name = b.fmt("reporting_{s}", .{@tagName(arch)}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/freestanding_reporting.zig"),
+                .target = portable_target,
+                .optimize = .ReleaseSmall,
+                .imports = &.{.{ .name = "parser_support", .module = portable_support }},
+            }),
+        });
+        _ = reporting_probe.getEmittedBin();
+        freestanding.dependOn(&reporting_probe.step);
         const portable = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = portable_target,

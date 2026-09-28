@@ -56,13 +56,19 @@ per-fragment results are opt-in, not a mandatory retained array.
 | Destination | Storage / default behavior |
 | --- | --- |
 | Fixed bag | Caller-owned entries; accepting the last entry requests stopping |
-| Growable bag | Explicit caller allocator; grows until allocation fails or an optional entry limit is reached |
+| Growable bag | Explicit caller allocator; default 1,024-entry limit; last accepted entry requests stopping |
 | Streaming sink | Consumer decides retention, filtering and whether to continue |
 
 General examples use growable bags. Allocation-free examples keep fixed storage.
 Growth belongs to the sink, not the processor. Growable initialization need not
 allocate; clearing retains capacity and explicit destruction releases it. An
 entry limit is not a promise about allocator overhead or process RSS.
+Finite limits use `EntryLimit.limited: u16` (0–65,535); `.unlimited` is an explicit
+alternative, not a sentinel. Allocation sizes and slice lengths remain native
+sizes, and factual counters are not narrowed. The limit belongs to a bag's
+lifetime between resets, so sharing a bag across stages shares its remaining
+budget. Growth can transiently retain old and new allocations; arenas can retain
+abandoned buffers until their own teardown.
 
 An accepted item returns continue or stop. A rejected item reports capacity,
 allocation failure or delivery failure. Accepted-stop means the item was delivered
