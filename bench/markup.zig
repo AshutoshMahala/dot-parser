@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
     const writer = &output.interface;
     const args = try init.minimal.args.toSlice(allocator);
-    if (args.len > 2 or (args.len == 2 and !std.mem.eql(u8, args[1], "--rules-only"))) return error.InvalidArguments;
+    if (args.len > 2 or (args.len == 2 and !std.mem.eql(u8, args[1], "--rules-only") and !std.mem.eql(u8, args[1], "--validation-only"))) return error.InvalidArguments;
     try writer.print("Node={d} Attribute={d} KeyScratch={d} Frame={d} Diagnostic={d} fixed_session={d} bounded_session={d} runtime_session={d} ValidationResult={d}\n", .{
         @sizeOf(markup.Node),                  @sizeOf(markup.Attribute),  @sizeOf(markup.AttributeKeyScratch),
         markup.FixedParseScratch(1).byte_size, @sizeOf(markup.Diagnostic), @sizeOf(markup.Profile(.{}).Session),
@@ -25,6 +25,10 @@ pub fn main(init: std.process.Init) !void {
     });
     if (args.len == 2) {
         try benchRules(init, writer);
+        if (std.mem.eql(u8, args[1], "--validation-only")) {
+            try benchEncoding(init, writer);
+            try benchCancellation(init, writer);
+        }
         try writer.flush();
         return;
     }
@@ -107,7 +111,64 @@ pub fn main(init: std.process.Init) !void {
     }
     try benchEncoding(init, writer);
     try benchRules(init, writer);
+    try benchCancellation(init, writer);
     try writer.flush();
+}
+
+/// Observable callback counts and post-parse latency. Plain modes guard against
+/// adding cancellation overhead to profiles that compiled it out.
+fn benchCancellation(init: std.process.Init, writer: *std.Io.Writer) !void {
+    const allocator = init.arena.allocator();
+    inline for (.{ "references", "encoding", "names" }) |fixture| {
+        const names = comptime std.mem.eql(u8, fixture, "names");
+        const source = try allocator.alloc(u8, 100_000);
+        @memset(source, 'x');
+        if (names) {
+            source[0] = '<';
+            @memcpy(source[source.len - 2 ..], "/>");
+        }
+        var parsed = markup.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
+        defer parsed.deinit();
+        const document = parsed.document orelse return error.ParseFailed;
+        inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |cancellable| {
+            const patch: markup.Policy = .{ .validation = .{
+                .duplicate_attribute = .off,
+                .invalid_utf8 = if (comptime std.mem.eql(u8, fixture, "encoding")) .err else .off,
+                .names = .{ .severity = if (names) .err else .off },
+                .references = .{ .severity = if (comptime std.mem.eql(u8, fixture, "references")) .err else .off },
+            }, .execution = .{ .cancellation = cancellable } };
+            var times: [9]u64 = undefined;
+            var calls: u64 = 0;
+            for (0..warmups + times.len) |round| {
+                calls = 0;
+                const start = std.Io.Clock.Timestamp.now(init.io, .awake);
+                for (0..batch) |_| {
+                    if (!validateWithHook(runtime, cancellable, patch, &document, &calls)) return error.ValidationFailed;
+                }
+                const end = std.Io.Clock.Timestamp.now(init.io, .awake);
+                if (round >= warmups) times[round - warmups] = @intCast(@divTrunc(start.durationTo(end).raw.nanoseconds, batch));
+            }
+            std.mem.sort(u64, &times, {}, std.sort.asc(u64));
+            const ns: f64 = @floatFromInt(times[4]);
+            try writer.print("poll/{s}/{s}/{s}: source={d}, {d:.3} ms, {d:.1} MB/s, calls={d}\n", .{
+                fixture, if (runtime) "runtime" else "fixed", if (cancellable) "cancellable" else "plain", source.len, ns / 1e6, @as(f64, @floatFromInt(source.len)) * 1000 / ns, calls / batch,
+            });
+        };
+    }
+}
+
+noinline fn countPoll(context: ?*anyopaque) bool {
+    const calls: *volatile u64 = @ptrCast(@alignCast(context.?));
+    calls.* += 1;
+    return false;
+}
+noinline fn validateWithHook(comptime runtime: bool, comptime cancellable: bool, comptime patch: markup.Policy, document: *const markup.Document, calls: *u64) bool {
+    const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else patch });
+    var input = patch;
+    const opaque_patch: *volatile markup.Policy = &input;
+    const hook: markup.Cancellation = .{ .context = calls, .is_requested = countPoll };
+    const result = P.validateIn(document, .{}, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.*, .cancellation = hook } else if (cancellable) .{ .cancellation = hook } else .{});
+    return result.completion == .complete and result.validity == .valid;
 }
 
 /// New optional validation costs. Includes reference rescanning, but excludes

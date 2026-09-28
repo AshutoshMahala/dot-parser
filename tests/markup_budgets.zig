@@ -87,6 +87,10 @@ test "default bag bounds tolerated-reference floods and latched sessions do no m
 }
 
 test "untrusted is a complete resource-only preset with runtime inheritance and reset" {
+    inline for (std.meta.fields(@TypeOf(markup.presets.untrusted.limits))) |field| {
+        try expect(@field(markup.presets.untrusted.limits, field.name) != null);
+        try expect(@field(markup.presets.untrusted.limits, field.name).? < std.math.maxInt(u32));
+    }
     const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = markup.presets.untrusted });
     const HostileBaseline = markup.Profile(.{ .runtime_policy = true, .policy = .{
         .scanner = .block,

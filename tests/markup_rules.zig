@@ -287,7 +287,7 @@ test "new checks poll inside long names and reference scans with fixed-runtime c
     }) |source| {
         var parsed = P.parseBorrowed(std.testing.allocator, source, discard, .{});
         defer parsed.deinit();
-        for ([_]u32{ 0, 1, 3, 10, 500 }) |after| {
+        for ([_]u32{ 0, 1, 3, 10, 50 }) |after| {
             var stop: Stop = .{ .after = after };
             const checked = P.validateIn(&parsed.document.?, .{}, discard, .{ .cancellation = stop.hook() });
             try equal(.cancelled, checked.completion);
@@ -296,6 +296,49 @@ test "new checks poll inside long names and reference scans with fixed-runtime c
             try equal(.incomplete, checked.checks.references);
             var dynamic_stop: Stop = .{ .after = after };
             try equal(checked, Dynamic.validateIn(&parsed.document.?, .{}, discard, .{ .policy = patch, .cancellation = dynamic_stop.hook() }));
+        }
+    }
+}
+
+test "chunk polling crosses reference boundaries without changing findings" {
+    inline for (.{ false, true }) |runtime| {
+        const patch: markup.Policy = .{ .syntax = .{ .malformed_reference = .accept }, .validation = .{
+            .duplicate_attribute = .off,
+            .names = .{ .severity = .warning },
+            .references = .{ .severity = .warning },
+        }, .execution = .{ .cancellation = true } };
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = patch });
+        inline for (.{ 0, 1, 62, 63, 64, 65, 127 }) |padding| {
+            const source = "x" ** padding ++ "&amp;&" ++ "x" ** 200 ++ ";&bad&next;&東京;&\xff;tail";
+            var parsed = P.parseBorrowed(std.testing.allocator, source, discard, .{});
+            defer parsed.deinit();
+            var plain: markup.FixedDiagnosticBag(16) = .{};
+            var checked: markup.FixedDiagnosticBag(16) = .{};
+            const expected = P.validateIn(&parsed.document.?, .{}, plain.sink(), .{});
+            var stop: Stop = .{ .after = std.math.maxInt(u32) };
+            const actual = P.validateIn(&parsed.document.?, .{}, checked.sink(), .{ .cancellation = stop.hook() });
+            try equal(expected, actual);
+            try std.testing.expectEqualDeep(plain.items(), checked.items());
+            try equal(@as(u64, 5), actual.warnings);
+            try std.testing.expect(stop.polls < 30);
+        }
+    }
+}
+
+test "long plain text reference checking polls per chunk, not per byte" {
+    const source = "x" ** 100_000;
+    inline for (.{ false, true }) |runtime| {
+        inline for (.{ false, true }) |enabled| {
+            const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .validation = .{
+                .duplicate_attribute = .off,
+                .references = .{ .severity = .err },
+            }, .execution = .{ .cancellation = enabled } } });
+            var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
+            const parsed = P.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
+            var stop: Stop = .{ .after = std.math.maxInt(u32) };
+            const checked = P.validateIn(&parsed.document.?, .{}, discard, if (runtime or enabled) .{ .cancellation = stop.hook() } else .{});
+            try equal(.complete, checked.completion);
+            try equal(@as(u32, if (enabled) 2 + (source.len + 63) / 64 else 0), stop.polls);
         }
     }
 }

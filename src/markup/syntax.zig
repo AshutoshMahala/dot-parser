@@ -116,6 +116,24 @@ pub const NodeView = struct {
 /// Internal metadata precondition, checked during validation/scratch sizing in
 /// safety builds. O(1) per entry; no source-byte scanning or scratch allocation.
 /// This is not a general syntax verifier or a public document-building API.
+pub fn nodeInvariant(document: *const Document, index: u32) bool {
+    const node = document.records[index];
+    if (node.span.len == 0 or node.span.endOffset() > document.source.len or
+        node.subtree_end <= index or node.subtree_end > document.records.len) return false;
+    if (index > 0 and document.records[index - 1].span.start >= node.span.start) return false;
+    if (node.name.len != 0)
+        return node.name.start >= node.span.start and node.name.endOffset() <= node.span.endOffset();
+    if (node.subtree_end != index + 1) return false;
+    // Inspect the discriminator before calling kind(); invalid metadata is a
+    // precondition failure, never silently interpreted as a text leaf.
+    return switch (node.name.start) {
+        @intFromEnum(Kind.text) => true,
+        @intFromEnum(Kind.comment) => node.span.len >= 7,
+        @intFromEnum(Kind.cdata) => node.span.len >= 12,
+        else => false,
+    };
+}
+
 pub fn attributeInvariant(document: *const Document, index: u32) bool {
     const attribute = document.attributes[index];
     const owner = @intFromEnum(attribute.owner);
@@ -300,6 +318,27 @@ test "attribute metadata precondition rejects interleaved owners and invalid spa
     attributes[2] = original[1];
     try std.testing.expect(!attributeInvariant(&doc, 2));
     attributes = original;
+    attributes[2].value.len = 1;
+    try std.testing.expect(!attributeInvariant(&doc, 2));
+    attributes = original;
     nodes[1].name.len = 0;
     try std.testing.expect(!attributeInvariant(&doc, 1));
+}
+
+test "node metadata rejects invalid leaf discriminators and out-of-bounds spans" {
+    var nodes = [_]Node{.{ .span = .{ .start = 0, .len = 4 }, .name = .{ .start = @intFromEnum(Kind.text), .len = 0 }, .subtree_end = 1 }};
+    const doc: Document = .{ .source = "text", .records = &nodes, .attributes = &.{} };
+    try std.testing.expect(nodeInvariant(&doc, 0));
+    const original = nodes[0];
+    nodes[0].name.start = 5;
+    try std.testing.expect(!nodeInvariant(&doc, 0));
+    nodes[0] = original;
+    nodes[0].span.len = std.math.maxInt(u32);
+    try std.testing.expect(!nodeInvariant(&doc, 0));
+    nodes[0] = original;
+    nodes[0].subtree_end = 2;
+    try std.testing.expect(!nodeInvariant(&doc, 0));
+    nodes[0] = original;
+    nodes[0].name = .{ .start = 3, .len = 2 };
+    try std.testing.expect(!nodeInvariant(&doc, 0));
 }

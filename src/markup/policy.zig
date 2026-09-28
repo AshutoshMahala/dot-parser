@@ -111,12 +111,22 @@ pub const presets = struct {
     /// Like standard, this is a complete policy (including disabled UTF-8).
     pub const untrusted: Policy = blk: {
         var input = standard;
-        input.limits = .{
+        // An anonymous literal has no inherited/defaulted fields. Extending
+        // Policy.limits must require an explicit finite budget here as well.
+        const budgets = .{
             .max_source_bytes = 8 * 1024 * 1024,
             .max_nodes = 100_000,
             .max_attributes = 200_000,
             .max_nesting = 256,
         };
+        for (std.meta.fields(@TypeOf(input.limits))) |field| {
+            if (!@hasField(@TypeOf(budgets), field.name))
+                @compileError("untrusted preset needs an explicit budget for " ++ field.name);
+            const value: u32 = @field(budgets, field.name);
+            if (value == std.math.maxInt(u32))
+                @compileError("untrusted preset needs a finite budget for " ++ field.name);
+            @field(input.limits, field.name) = value;
+        }
         break :blk input;
     };
 };

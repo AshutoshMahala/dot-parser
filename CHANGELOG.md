@@ -6,6 +6,16 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Harden standalone markup name/reference validation's safety-build metadata
+  checks even when duplicate checking is disabled, including leaf discriminators,
+  quoted-value bounds and complete attribute-cursor coverage. The trusted-document
+  contract is unchanged; arbitrary hand-built pools are not repaired or certified.
+- Poll cancellation in markup validation's byte scans at 64-byte intervals
+  (finishing the current UTF-8 scalar), preserving immediate diagnostic stops.
+  Share scalar decoding with encoding checks and unify duplicate reporting across
+  both validation paths. Require explicit finite budgets for every `untrusted`
+  limit at compile time. No retained record/session layout or scratch increase.
+
 - Add independent markup `validation.names` (`xml_1_0`) and
   `validation.references` (`xml_predefined`) checks, each with default-off
   error/warning severity and fixed/runtime parity. Report precise name problems

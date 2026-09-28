@@ -304,6 +304,8 @@ retaining its capacity and selected limit.
 
 `presets.untrusted` is a complete ordinary standard policy with four finite
 limits: 8 MiB source bytes, 100,000 nodes, 200,000 attributes and depth 256.
+Compile-time enumeration of policy limits requires an explicit finite budget in
+this preset for every field; extending limits cannot silently inherit unlimited.
 Encoding remains off and syntax/validation meanings do not change. Fixed and
 opt-in runtime profiles use the same policy resolution. The complete preset
 resets all leaves when supplied as an override; callers wanting only its limits
@@ -342,8 +344,9 @@ compile-time/runtime parity. It checks the entire borrowed source independently
 of structural parsing, including comments and CDATA. Valid sequences consume
 1–4 bytes; a byte not beginning a valid sequence gets one one-byte finding, then
 scanning advances one byte. There is no mutation, normalization, decoding or XML
-character/name conformance claim. DOT and markup share only a sequence-validation
-primitive in `common/utf8.zig`; diagnostic identities and policies stay local.
+character/name conformance claim. DOT and markup share scalar decoding and its
+sequence-length wrapper in `common/utf8.zig`; diagnostic identities and policies
+stay local.
 
 One monotonic u32 cursor merges encoding findings with duplicate checks by primary
 source offset, UTF-8 first on ties. No queued findings, second sort or source-sized
@@ -353,8 +356,9 @@ allocate or need scratch. Enabled duplicate scratch is preflighted before either
 check; resource failure leaves enabled checks incomplete without running UTF-8.
 Ordinary errors continue both checks. Sink stop/failure and enabled cancellation
 stop the operation, preserving known invalidity and per-check completion. UTF-8
-polls cancellation before each sequence; existing unmetered sizing/sorting/name
-comparisons remain unchanged. This does not add bounded validation.
+polls cancellation at 64-byte scan thresholds, finishing the current scalar
+(up to three additional bytes). Existing unmetered sizing/sorting/name comparisons
+remain unchanged. This does not add bounded validation.
 
 Validation totals are u64, matching DOT's independent-check aggregation; source
 offsets, capacities and parsing counters stay u32. The parse engine, retained
@@ -1083,3 +1087,102 @@ addresses. The parser source was not changed to tune one executable's layout.
 The variation of even the unchanged baseline and these fixture-level differences
 preclude a universal zero-regression or parsing-speedup claim. Recheck actual
 consumer binaries and representative inputs before drawing such a conclusion.
+
+## Slice 4b review hardening — 2026-09-27
+
+The review fixes retain the trusted-document boundary, not an arbitrary-pool
+validation or legacy leaf representation:
+
+- Name/reference walks assert consumed node metadata before `kind()` in safety
+  builds, check attribute metadata even with duplicates off, and assert that the
+  attribute cursor consumed the whole pool before claiming completion. Source and
+  pool length assertions cover the enabled paths. Encoding-only validation still
+  does not audit unused pools; all-off validation still does not inspect input.
+- Cancellation uses a local u32 threshold every 64 scanned bytes, allowing at most
+  three additional bytes to complete a scalar/reference delimiter. Long names and
+  malformed reference candidates also poll; reference-free text uses bounded
+  delimiter searches. Diagnostic stops remain immediate. This is cooperative
+  validation, not a metered/sorting/allocator deadline guarantee.
+- Shared inline `utf8.decode` returns scalar and length in one packed 4-byte
+  temporary. `sequenceLength` wraps it for encoding-only consumers. Name and
+  encoding checks no longer implement decoding independently. An intermediate
+  non-inlined helper caused an out-of-line call and a large Unicode slowdown;
+  ordinary padded returns also slowed name checking. Neither form was retained.
+- Duplicate emission has one definition, preserving encoding-first ties, related
+  spans, severity, factual totals and sink stops. The default attribute-only walk
+  remains separate from the optional forest walk.
+- `untrusted` budgets are an explicit compile-time field list checked against
+  every policy limit. A temporary negative compilation adding a new limit without
+  a budget fails with `untrusted preset needs an explicit budget for future_limit`.
+
+Verification: **469/469 tests pass in Debug, ReleaseSafe, ReleaseFast and
+ReleaseSmall**, including 78 standalone consumer tests. Five separate-process
+assertion probes run in both safety modes: reordered attributes, short quoted
+values, invalid leaf discriminator, out-of-bounds node span and orphan attribute.
+They require rejection, not successful validation of corrupt metadata. Shared
+decoder boundaries, chunk boundaries, long scans, sink stops and fixed/runtime
+cancellation parity are covered. Examples, benchmark compilation, 14 expected
+compile failures and consumed RISC-V32/Wasm32 probes pass.
+
+Node/Attribute/Diagnostic remain 20/20/36 bytes; key scratch remains 8 bytes,
+nesting frames 12 bytes, ValidationResult 32 bytes, and fixed/bounded/runtime
+sessions 416/424/480 bytes. No retained allocation or scratch requirement is added.
+Polling state is local to active validation scans, not stored per node or
+reference. Peak process RSS and allocator overhead were not measured here.
+
+### Review-fix measurements
+
+Apple M4 Pro, Zig 0.16.0, ReleaseFast; baseline `9e94f92` versus the review fixes.
+Both use the same extended `bench/markup.zig` with `--validation-only`. Compilation
+finished before timings. Two isolated process medians per build, in
+before/after/after/before order; each has five warm-up batches and nine measured
+batches of 16 validations. Cells below are midpoints of the two reported medians,
+**milliseconds / decimal MB/s**. Parsing, construction, allocation and diagnostic
+retention are outside the timer. The observable callback increments a volatile
+counter and never requests cancellation; an atomic/deadline callback may cost more.
+
+All cancellation fixtures below are 100,000 source bytes: plain text for reference
+and encoding checks, one long ASCII element name for name checking.
+
+| Cancellable validation | Before | After | Calls before → after |
+| --- | ---: | ---: | ---: |
+| Reference scan / fixed | 0.0745 / 1351.4 | 0.0065 / 14866.4 | 100002 → 1565 |
+| Reference scan / runtime | 0.0710 / 1407.4 | 0.0070 / 15140.1 | 100002 → 1565 |
+| UTF-8 scan / fixed | 0.0930 / 1074.7 | 0.0720 / 1384.9 | 100001 → 1564 |
+| UTF-8 scan / runtime | 0.1570 / 636.2 | 0.0340 / 2934.7 | 100001 → 1564 |
+| Name scan / fixed | 0.2435 / 410.8 | 0.2250 / 444.7 | 99999 → 1565 |
+| Name scan / runtime | 0.2415 / 414.2 | 0.2275 / 440.4 | 99999 → 1565 |
+
+Callback counts fall about 64-fold. Throughput improves about 11×/10.8× for the
+reference scan, 1.29×/4.61× for encoding, and 1.08×/1.06× for names (fixed/runtime).
+These are validation-only synthetic observations, not parsing speedups or an
+exact callback-count API. Name classification, and UTF-8 decoding on Unicode
+input, still run; fewer callbacks do not imply a proportional total speedup.
+
+Representative non-cancellable checks, including the larger losses, remain visible:
+
+| Validation / policy | Before | After | Throughput change |
+| --- | ---: | ---: | ---: |
+| ASCII names / fixed | 1.9205 / 729.4 | 1.9355 / 723.5 | -0.8% |
+| Unicode names / fixed | 1.3730 / 801.0 | 1.3385 / 821.8 | +2.6% |
+| Unicode names / runtime | 1.4935 / 736.6 | 1.5210 / 723.3 | -1.8% |
+| Unicode encoding / fixed | 0.6225 / 964.4 | 0.6230 / 963.1 | -0.1% |
+| Unicode encoding / runtime | 0.6780 / 884.7 | 0.6780 / 884.9 | +0.0% |
+| Encoding + duplicates / fixed | 1.3115 / 800.8 | 1.3385 / 784.6 | -2.0% |
+| All checks / fixed | 3.1805 / 377.4 | 3.1950 / 375.6 | -0.5% |
+| 100 KB plain reference-free search / fixed | 0.0010 / 71530.8 | 0.0015 / 67699.1 | -5.4% |
+
+The last case is an approximately 1–2 microsecond warmed search, so coarse reported
+latency and process variation matter. Across all 20 non-cancellable rules/encoding
+rows in the harness, changes range from -2.0% to +4.5%; the smaller 100 KB search
+probe is listed separately above. No universal zero-regression claim is made.
+
+A separate DOT consumer checked the shared decoder with a single quoted node
+containing 50,000 repetitions of ASCII `x`, `é東京😀`, or byte `FF`. It uses the same
+alternating order, five warm-ups/nine measured batches, 32 validations per batch,
+and no timed parsing. Unicode fixed throughput is 948.6 → 948.2 MB/s; runtime
+943.8 → 948.4 MB/s. Invalid-byte fixed throughput is 354.3 → 359.0 MB/s; runtime
+235.0 → 247.7 MB/s. The first ASCII after-process was unstable (2389.3 MB/s versus
+4498.3 in the second; before 4404.0–4498.7), so it does not support a reliable ASCII
+change estimate. These measurements do not update the standard-machine baselines
+or substitute for end-to-end DOT/markup parsing benchmarks.

@@ -79,6 +79,26 @@ pub fn build(b: *std.Build) void {
     markup_step.dependOn(&run_markup_tests.step);
     markup_step.dependOn(&run_markup_integration.step);
     test_step.dependOn(&run_markup_integration.step);
+    // Assertion failures terminate a process, not a normal Zig test. Never run
+    // corrupt-representation probes with runtime safety disabled.
+    if (optimize == .Debug or optimize == .ReleaseSafe) {
+        const invariants = b.addExecutable(.{
+            .name = "markup-invariants",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/markup_invariants.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "markup_parser", .module = markup }},
+            }),
+        });
+        for (0..5) |case| {
+            const probe = b.addRunArtifact(invariants);
+            probe.addArg(b.fmt("{d}", .{case}));
+            probe.expectExitCode(0);
+            test_step.dependOn(&probe.step);
+            markup_step.dependOn(&probe.step);
+        }
+    }
     const both_parsers = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/parser_modules.zig"),

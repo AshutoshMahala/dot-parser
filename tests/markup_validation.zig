@@ -196,7 +196,7 @@ const Stop = struct {
     }
 };
 
-test "UTF-8 cancellation is per sequence and preserves known invalidity" {
+test "UTF-8 chunk cancellation preserves known invalidity" {
     const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .warning } } });
     const source = "\xff" ++ "東京" ** 1000;
     var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
@@ -207,7 +207,7 @@ test "UTF-8 cancellation is per sequence and preserves known invalidity" {
     try equal(@as(u32, 0), inactive.polls);
     inline for (.{ .err, .warning }) |severity| {
         const Fixed = markup.Profile(.{ .policy = .{ .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = severity }, .execution = .{ .cancellation = true } } });
-        for ([_]u32{ 0, 1, 2, 10, 1000 }) |after| {
+        for ([_]u32{ 0, 1, 2, 10, 50 }) |after| {
             var stop: Stop = .{ .after = after };
             const checked = Fixed.validateIn(&document, .{}, discard, .{ .cancellation = stop.hook() });
             try equal(.cancelled, checked.completion);
@@ -219,6 +219,37 @@ test "UTF-8 cancellation is per sequence and preserves known invalidity" {
             try equal(checked, Dynamic.validateIn(&document, .{}, discard, .{ .cancellation = dynamic_stop.hook(), .policy = .{ .validation = .{ .invalid_utf8 = severity }, .execution = .{ .cancellation = true } } }));
         }
     }
+}
+
+test "encoding chunk boundaries preserve whole scalars and immediate sink stops" {
+    const P = markup.Profile(.{ .policy = .{ .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err }, .execution = .{ .cancellation = true } } });
+    inline for (.{ "x", "é", "東", "😀" }) |scalar| {
+        inline for (.{ 61, 62, 63, 64, 65 }) |padding| {
+            const source = "x" ** padding ++ scalar ++ "\xff" ++ "x" ** 256;
+            var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
+            const parsed = P.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
+            var stop: Stop = .{ .after = 2 };
+            var bag: markup.FixedDiagnosticBag(2) = .{};
+            const checked = P.validateIn(&parsed.document.?, .{}, bag.sink(), .{ .cancellation = stop.hook() });
+            try equal(.cancelled, checked.completion);
+            try equal(@as(u32, 3), stop.polls);
+            try equal(@as(u64, if (padding + scalar.len < 64) 1 else 0), checked.errors);
+            // A sink stop within a chunk must not wait for its next poll.
+            var one: markup.FixedDiagnosticBag(1) = .{};
+            var never: Stop = .{ .after = std.math.maxInt(u32) };
+            const sink_stop = P.validateIn(&parsed.document.?, .{}, one.sink(), .{ .cancellation = never.hook() });
+            try equal(markup.reporting.StopReason.requested, sink_stop.completion.diagnostic_stopped);
+            try equal(@as(u32, padding + scalar.len), one.items()[0].span.start);
+            try equal(@as(u64, 1), sink_stop.errors);
+            try std.testing.expect(never.polls <= 3);
+        }
+    }
+    const source = "x" ** 100_000;
+    var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
+    const parsed = P.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
+    var never: Stop = .{ .after = std.math.maxInt(u32) };
+    try equal(.complete, P.validateIn(&parsed.document.?, .{}, discard, .{ .cancellation = never.hook() }).completion);
+    try equal(@as(u32, 1 + (source.len + 63) / 64), never.polls);
 }
 
 test "random raw bytes agree with a UTF-8 oracle across scalar and bounded block parsing" {

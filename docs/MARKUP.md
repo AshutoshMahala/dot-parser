@@ -163,8 +163,13 @@ that element's source span. Hand-built views must uphold the same invariants.
 For example, owners `[0, 1, 0]` are an invalid representation, not a supported
 alternate arrangement. Validation checks policy findings on valid syntax records;
 it does not repair or certify arbitrary pools. Debug/ReleaseSafe scratch sizing
-and enabled validation assert attribute metadata/order during their existing sizing
-pass. Fast/small builds rely on the contract; attribute lookup does not add a
+asserts attribute metadata/order during its existing sizing pass. Name/reference
+validation also checks consumed node metadata (including leaf discriminators),
+checks attributes when duplicate sizing is off, and asserts full attribute-cursor
+coverage before marking those checks complete. These checks are folded into
+existing walks, not a separate audit. Encoding-only validation checks source
+length without inspecting unused pools; an all-off policy inspects nothing.
+Fast/small builds rely on the contract; attribute lookup does not add a
 whole-pool audit to every O(log A) lookup. Delayed validation of unchanged
 parser-produced documents is unaffected.
 
@@ -327,8 +332,14 @@ not malformed syntax or proof that this element alone caused memory exhaustion.
 
 This is a separate run-to-completion pass. Parsing's `execution.metering` does not
 bound validation, sorting, scratch sizing or allocations. Enabled cancellation is
-polled at entry, between elements, before duplicate findings and before each
-UTF-8 sequence (at most four bytes), and inside name decoding/reference scans.
+polled at entry, between elements/attributes, before duplicate findings, and using
+64-byte thresholds within UTF-8, name and reference scans. Completing a scalar
+or reference delimiter can cross a threshold by at most three bytes; scans do not
+split scalars.
+Starting a new scan can poll sooner, so this is not an exact callback-count API.
+Reference-free text uses chunked delimiter search when cancellation is enabled.
+Diagnostic sink stops remain immediate, without waiting for the next poll.
+Fixed-disabled cancellation has no polling state or callback branches.
 Scratch sizing/grouping, duplicate sorting and duplicate-name comparisons are not
 internally cancellable. This is not bounded validation.
 UTF-8 checking is O(source bytes), using one u32 cursor with no finding buffer.
@@ -555,3 +566,7 @@ the same [shared reporting contracts](REPORTING.md) as DOT without sharing paylo
   process RSS.
 - `zig build bench-markup -Doptimize=ReleaseFast -- --rules-only`: just the new
   optional name/reference validation costs, without the parsing benchmark matrix.
+- `zig build bench-markup -Doptimize=ReleaseFast -- --validation-only`: name/reference
+  and encoding costs, plus fixed/runtime cancellation latency and callback counts
+  on 100 KB text/name scans. The callback counter is observable; parsing and source
+  construction are outside the timer.
