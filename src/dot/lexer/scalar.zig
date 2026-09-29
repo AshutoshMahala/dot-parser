@@ -776,21 +776,34 @@ test "metered scanner partitions preserve tokens diagnostics positions and total
 }
 
 test "zero credits leave every nonterminal continuation unchanged" {
-    var lexer = AuditedLexer.init("\"a\\\r\nb\" /*glue*/ + \"c\"; /*tail*/");
-    while (true) {
-        const before = lexer;
-        const zero = lexer.nextBounded(0);
-        try expectEqual(@as(?Result, null), zero.result);
-        try expectEqual(@as(usize, 0), zero.work_used);
-        inline for (std.meta.fields(@TypeOf(lexer))) |field| {
-            if (comptime std.mem.eql(u8, field.name, "content")) {
-                try expectEqual(before.content.keyword, lexer.content.keyword);
-            } else try expectEqual(@field(before, field.name), @field(lexer, field.name));
-        }
-        const one = lexer.nextBounded(1);
-        try expectEqual(@as(usize, 1), one.work_used);
-        if (one.result) |result| {
-            if (result == .failure or result.token.tag == .eof) break;
+    for ([_][]const u8{
+        "\"a\\\r\nb\" /*glue*/ + \"c\"; /*tail*/",
+        "<x>+<<y>>",
+        "graph <x> /*glue*/ + \"y\" + <<z>> bare",
+        "\"x\" + <<unfinished>",
+    }) |source| {
+        var lexer = AuditedLexer.init(source);
+        while (true) {
+            const before = lexer;
+            const zero = lexer.nextBounded(0);
+            try expectEqual(@as(?Result, null), zero.result);
+            try expectEqual(@as(usize, 0), zero.work_used);
+            inline for (std.meta.fields(@TypeOf(lexer))) |field| {
+                if (comptime std.mem.eql(u8, field.name, "content")) {
+                    // Only these states resume using the union's saved value.
+                    // Other states leave it dormant until a new part overwrites it.
+                    switch (before.state) {
+                        .bare => try expectEqual(before.content.keyword, lexer.content.keyword),
+                        .html => try expectEqual(before.content.html_depth, lexer.content.html_depth),
+                        else => {},
+                    }
+                } else try expectEqual(@field(before, field.name), @field(lexer, field.name));
+            }
+            const one = lexer.nextBounded(1);
+            try expectEqual(@as(usize, 1), one.work_used);
+            if (one.result) |result| {
+                if (result == .failure or result.token.tag == .eof) break;
+            }
         }
     }
 }

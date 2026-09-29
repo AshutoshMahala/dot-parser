@@ -119,10 +119,14 @@ pub fn main(init: std.process.Init) !void {
 /// adding cancellation overhead to profiles that compiled it out.
 fn benchCancellation(init: std.process.Init, writer: *std.Io.Writer) !void {
     const allocator = init.arena.allocator();
-    inline for (.{ "references", "encoding", "names" }) |fixture| {
+    inline for (.{ "references", "encoding", "names", "dense" }) |fixture| {
         const names = comptime std.mem.eql(u8, fixture, "names");
-        const source = try allocator.alloc(u8, 100_000);
-        @memset(source, 'x');
+        const dense = comptime std.mem.eql(u8, fixture, "dense");
+        const item = "<a x='1' y='2'/>";
+        const source = try allocator.alloc(u8, if (dense) item.len * 10_000 else 100_000);
+        if (dense) {
+            for (0..10_000) |index| @memcpy(source[index * item.len ..][0..item.len], item);
+        } else @memset(source, 'x');
         if (names) {
             source[0] = '<';
             @memcpy(source[source.len - 2 ..], "/>");
@@ -133,9 +137,9 @@ fn benchCancellation(init: std.process.Init, writer: *std.Io.Writer) !void {
         inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |cancellable| {
             const patch: markup.Policy = .{ .validation = .{
                 .duplicate_attribute = .off,
-                .invalid_utf8 = if (comptime std.mem.eql(u8, fixture, "encoding")) .err else .off,
-                .names = .{ .severity = if (names) .err else .off },
-                .references = .{ .severity = if (comptime std.mem.eql(u8, fixture, "references")) .err else .off },
+                .invalid_utf8 = if (dense or comptime std.mem.eql(u8, fixture, "encoding")) .err else .off,
+                .names = .{ .severity = if (names or dense) .err else .off },
+                .references = .{ .severity = if (dense or comptime std.mem.eql(u8, fixture, "references")) .err else .off },
             }, .execution = .{ .cancellation = cancellable } };
             var times: [9]u64 = undefined;
             var calls: u64 = 0;

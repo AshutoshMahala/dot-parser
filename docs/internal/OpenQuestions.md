@@ -1151,7 +1151,10 @@ there is no policy rescan or retained-layout growth. The scalar scanner shares
 its keyword word with u32 HTML depth; the block scanner shares comment-body
 state with depth and computes temporary angle masks only inside envelopes.
 All DOT fix producers pass through the stage's policy filter before delivery.
-A recovered body rejection aborts output and ends as `invalid_syntax`.
+A recovered body rejection aborts output. Unsupported-only recovery ends as
+`unsupported_feature`; only a reported syntax error makes it `invalid_syntax`.
+Cancellation or an enforced limit during recovery preserves the known rejection;
+diagnostic stop/failure outcomes remain distinct. No partial document is published.
 
 Out of the DOT passthrough slice: the summary index, inner structural parsing and
 validation, the parts view, entity handling and markup nesting policy. The
@@ -1525,9 +1528,10 @@ skips to the next `;` or `}` at the same brace depth (skipped `{` are matched
 by counting), and every later syntax error is reported through the same bag.
 No document is ever published; the outcome stays `invalid_syntax`. Lexical
 errors resume after the malformed bytes; unterminated quotes/comments, header
-errors, end of input, trailing tokens, limits and deferred features remain
-terminal. Measured: renderer-free ReleaseSmall examples grew by 350–650 B and
-ordinary throughput did not change. These measurements predate Q35's unified
+errors, end of input, trailing tokens and limits remain terminal. Excluded
+HTML-like body identifiers now also recover, retaining `unsupported_feature`
+unless a syntax error is reported (R-MOD-006). Measured: renderer-free ReleaseSmall
+examples grew by 350–650 B and ordinary throughput did not change. These measurements predate Q35's unified
 policy migration: fixed fail-fast profiles now exclude recovery handling and
 skip-depth storage; runtime profiles support both values. **Still open:** a caller-
 provided diagnostic limit that ends recovery early (R-FUNC-007, R-SEC-002),

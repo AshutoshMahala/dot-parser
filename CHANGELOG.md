@@ -6,6 +6,15 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Preserve `unsupported_feature` for DOT recovery with no reported syntax error,
+  including completion and cancellation; reset clears the classification. Add
+  fixed/runtime, scanner and bounded-execution regression coverage.
+- Share markup validation's cancellation countdown across short scans and source
+  revisits, rather than polling at each name/value. Add safety-build iterator
+  interval assertions without growing iterator/record layouts, and cover HTML
+  zero-credit continuation. Correct NUL diagnostic wording and document C-string
+  interop requirements; byte-preserving passthrough behavior is unchanged.
+
 - Add passthrough HTML-like DOT identifiers in every ID position, both scalar/block
   scanners, and mixed quoted/HTML `+` concatenations. Retain exact ranges; no inner
   parser calls or retained-record growth. Block scanning classifies angle masks
@@ -24,7 +33,7 @@ are called out here; compatibility shims are not retained.
   checks even when duplicate checking is disabled, including leaf discriminators,
   quoted-value bounds and complete attribute-cursor coverage. The trusted-document
   contract is unchanged; arbitrary hand-built pools are not repaired or certified.
-- Poll cancellation in markup validation's byte scans at 64-byte intervals
+- Poll cancellation in markup validation's byte scans at 64-unit work intervals
   (finishing the current UTF-8 scalar), preserving immediate diagnostic stops.
   Share scalar decoding with encoding checks and unify duplicate reporting across
   both validation paths. Require explicit finite budgets for every `untrusted`

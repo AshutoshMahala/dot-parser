@@ -338,9 +338,60 @@ test "long plain text reference checking polls per chunk, not per byte" {
             var stop: Stop = .{ .after = std.math.maxInt(u32) };
             const checked = P.validateIn(&parsed.document.?, .{}, discard, if (runtime or enabled) .{ .cancellation = stop.hook() } else .{});
             try equal(.complete, checked.completion);
-            try equal(@as(u32, if (enabled) 2 + (source.len + 63) / 64 else 0), stop.polls);
+            // Entry poll plus shared chunks: one node step and source bytes.
+            try equal(@as(u32, if (enabled) 1 + (1 + source.len + 63) / 64 else 0), stop.polls);
         }
     }
+}
+
+test "dense markup shares polling work across short scans with fixed-runtime parity" {
+    const source = "<a x='1' y='2'/>" ** 10_000;
+    const patch: markup.Policy = .{ .validation = .{
+        .duplicate_attribute = .off,
+        .invalid_utf8 = .err,
+        .names = .{ .severity = .err },
+        .references = .{ .severity = .err },
+    }, .execution = .{ .cancellation = true } };
+    const P = markup.Profile(.{ .policy = patch });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true });
+    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    defer parsed.deinit();
+    var never: Stop = .{ .after = std.math.maxInt(u32) };
+    const checked = P.validateIn(&parsed.document.?, .{}, discard, .{ .cancellation = never.hook() });
+    try equal(.complete, checked.completion);
+    try equal(.valid, checked.validity);
+    // Includes source revisits and record steps, not just unique source bytes.
+    // Previously 82,501 callbacks on this exact 160,000-byte input.
+    try expect(never.polls > source.len / 64 and never.polls < 4_000);
+    var dynamic_never: Stop = .{ .after = std.math.maxInt(u32) };
+    try equal(checked, Dynamic.validateIn(&parsed.document.?, .{}, discard, .{ .policy = patch, .cancellation = dynamic_never.hook() }));
+    try equal(never.polls, dynamic_never.polls);
+    for ([_]u32{ 0, 1, 5, 100, 1_300 }) |after| {
+        var stop: Stop = .{ .after = after };
+        const stopped = P.validateIn(&parsed.document.?, .{}, discard, .{ .cancellation = stop.hook() });
+        try equal(.cancelled, stopped.completion);
+        try equal(.unknown, stopped.validity);
+        try equal(after + 1, stop.polls);
+    }
+}
+
+test "encoding revisits stay cancellable after a completed reference scan" {
+    const source = "x" ** 10_000;
+    const P = markup.Profile(.{ .policy = .{ .validation = .{
+        .duplicate_attribute = .off,
+        .invalid_utf8 = .err,
+        .references = .{ .severity = .err },
+    }, .execution = .{ .cancellation = true } } });
+    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    defer parsed.deinit();
+    // Reference traversal takes fewer than 160 polls. An absolute-source
+    // high-water mark would then miss cancellation inside the encoding revisit.
+    var stop: Stop = .{ .after = 200 };
+    const checked = P.validateIn(&parsed.document.?, .{}, discard, .{ .cancellation = stop.hook() });
+    try equal(.cancelled, checked.completion);
+    try equal(.complete, checked.checks.references);
+    try equal(.incomplete, checked.checks.invalid_utf8);
+    try equal(@as(u32, 201), stop.polls);
 }
 
 test "bounded scalar and block parses produce identical later name and reference findings" {

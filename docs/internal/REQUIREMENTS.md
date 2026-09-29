@@ -173,6 +173,10 @@ compile-time excludable when its code-size cost is material.
 **Current implementation:** `Policy.recovery` offers `.fail_fast` and
 `.statements`. The latter continues diagnostics after aborting staged output;
 it never publishes a partial document or turns rejected syntax into success.
+Excluded HTML-like body identifiers can also recover: unsupported-only recovery
+remains `unsupported_feature`, while a reported syntax error yields
+`invalid_syntax`. Later cancellation/limits preserve that known rejection;
+diagnostic delivery stops/failures retain their separate outcomes.
 Successful acceptance of Q36's three syntax deviations is a separate policy
 decision. A broader per-class recovery policy and an early-stop diagnostic limit
 remain open (Q22); a bounded diagnostic bag alone limits retention, not work.

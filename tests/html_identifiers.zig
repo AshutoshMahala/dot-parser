@@ -65,6 +65,90 @@ test "none recovery continues through statements without publishing partial synt
     }
 }
 
+test "none recovery preserves unsupported-only outcomes across binding and execution modes" {
+    inline for (.{ .scalar, .block }) |backend| {
+        inline for (.{ false, true }) |runtime| {
+            const P = dot.Profile(.{ .runtime_policy = runtime, .policy = .{
+                .scanner = backend,
+                .markup = .none,
+                .recovery = .statements,
+                .execution = .{ .metering = true },
+            } });
+            inline for (.{
+                .{ "graph { <a>; b; }", dot.ParseOutcome.unsupported_feature },
+                .{ "graph { <a>; <b>; }", dot.ParseOutcome.unsupported_feature },
+                .{ "graph { <a>", dot.ParseOutcome.unsupported_feature }, // EOF during resynchronization
+                .{ "graph { <a>; b -- ; }", dot.ParseOutcome.invalid_syntax },
+                .{ "graph { b -- ; <a>; }", dot.ParseOutcome.invalid_syntax },
+                .{ "graph { <a>; } trailing", dot.ParseOutcome.invalid_syntax },
+                .{ "graph { <a>; b", dot.ParseOutcome.invalid_syntax }, // unrecoverable missing closer
+            }) |case| {
+                var bag: dot.FixedDiagnosticBag(8) = .{};
+                var parsed = if (runtime) try P.parseBorrowed(std.testing.allocator, case[0], bag.sink(), .{}) else P.parseBorrowed(std.testing.allocator, case[0], bag.sink(), .{});
+                defer parsed.deinit(std.testing.allocator);
+                try equal(case[1], parsed.outcome);
+                try expect(parsed.document == null);
+                var storage: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4 }) = .{};
+                var session = if (runtime) try P.Session.init(case[0], .{ .document = storage.storage() }, dot.diagnostic.discard, .{}) else P.Session.init(case[0], .{ .document = storage.storage() }, dot.diagnostic.discard, .{});
+                defer session.deinit();
+                while (session.result() == null) {
+                    _ = if (runtime) try session.advance(1) else session.advance(1);
+                }
+                try equal(case[1], session.result().?.outcome);
+                try expect(session.result().?.document == null);
+            }
+        }
+    }
+}
+
+test "none recovery keeps known rejection on cancellation and limits and clears it on reset" {
+    inline for (.{ .scalar, .block }) |backend| {
+        const P = dot.Profile(.{ .policy = .{
+            .scanner = backend,
+            .markup = .none,
+            .recovery = .statements,
+            .execution = .{ .metering = true },
+        } });
+        var bag: dot.FixedDiagnosticBag(8) = .{};
+        var storage: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4 }) = .{};
+        var session = P.Session.init("graph { <a>; b; }", .{ .document = storage.storage() }, bag.sink(), .{});
+        defer session.deinit();
+        while (bag.items().len == 0) _ = session.advance(1);
+        try equal(.unsupported_feature, session.cancel().outcome);
+        try expect(session.result().?.document == null);
+        session.reset("graph { b -- ; <a>; }", dot.diagnostic.discard, .{});
+        while (session.result() == null) _ = session.advance(1);
+        try equal(.invalid_syntax, session.result().?.outcome);
+        session.reset("graph { <a>; b; }", dot.diagnostic.discard, .{});
+        while (session.result() == null) _ = session.advance(1);
+        try equal(.unsupported_feature, session.result().?.outcome);
+        session.reset("graph { b; }", dot.diagnostic.discard, .{});
+        while (session.result() == null) _ = session.advance(1);
+        try equal(.success, session.result().?.outcome);
+        const Limited = dot.Profile(.{ .policy = .{ .scanner = backend, .markup = .none, .recovery = .statements, .limits = .{ .max_statements = 1 } } });
+        var limited_bag: dot.FixedDiagnosticBag(8) = .{};
+        var limited = Limited.parseBorrowed(std.testing.allocator, "graph { <a>; b; c; }", limited_bag.sink(), .{});
+        defer limited.deinit(std.testing.allocator);
+        try equal(.unsupported_feature, limited.outcome);
+        try equal(dot.Code.resource_capacity_exhausted, limited_bag.items()[1].code);
+    }
+}
+
+test "passthrough retains NUL bytes without claiming C-string compatibility" {
+    inline for (.{ .scalar, .block }) |backend| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = backend } });
+        var parsed = P.parseAndValidate(std.testing.allocator, "graph { a [label=<x\x00y>] }", dot.diagnostic.discard, .{});
+        defer parsed.deinit(std.testing.allocator);
+        try expect(parsed.documentValid());
+        var output: [3]u8 = undefined;
+        const doc = &parsed.document.?;
+        try strings("x\x00y", try dot.identifier.decodeInto(doc.text(doc.attributes[0].value), &output));
+        var quoted = P.parseBorrowed(std.testing.allocator, "graph { a [label=\"x\x00y\"] }", dot.diagnostic.discard, .{});
+        defer quoted.deinit(std.testing.allocator);
+        try equal(.invalid_syntax, quoted.outcome);
+    }
+}
+
 test "unterminated envelopes offer only a depth-one maybe fix" {
     inline for (.{ .scalar, .block }) |backend| {
         const P = dot.Profile(.{ .policy = .{ .scanner = backend } });

@@ -91,7 +91,7 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{.{ .name = "markup_parser", .module = markup }},
             }),
         });
-        for (0..5) |case| {
+        for (0..8) |case| {
             const probe = b.addRunArtifact(invariants);
             probe.addArg(b.fmt("{d}", .{case}));
             probe.expectExitCode(0);

@@ -333,14 +333,16 @@ not malformed syntax or proof that this element alone caused memory exhaustion.
 
 This is a separate run-to-completion pass. Parsing's `execution.metering` does not
 bound validation, sorting, scratch sizing or allocations. Enabled cancellation is
-polled at entry, between elements/attributes, before duplicate findings, and using
-64-byte thresholds within UTF-8, name and reference scans. Completing a scalar
-or reference delimiter can cross a threshold by at most three bytes; scans do not
-split scalars.
-Starting a new scan can poll sooner, so this is not an exact callback-count API.
+polled at entry and through one shared 64-unit work countdown: examined bytes in
+UTF-8, name and reference scans, plus element/attribute traversal steps. Short
+scans share the remainder instead of polling again at each name/value. Bytes
+revisited by another check count again, so this is not one callback per 64 unique
+source bytes or an exact callback-count API. Completing a UTF-8 scalar or reference
+delimiter can cross a threshold by at most three bytes; scans do not split scalars.
 Reference-free text uses chunked delimiter search when cancellation is enabled.
 Diagnostic sink stops remain immediate, without waiting for the next poll.
-Fixed-disabled cancellation has no polling state or callback branches.
+The countdown is one temporary u32, with no per-node storage. Fixed-disabled
+cancellation has no polling state or callback branches.
 Scratch sizing/grouping, duplicate sorting and duplicate-name comparisons are not
 internally cancellable. This is not bounded validation.
 UTF-8 checking is O(source bytes), using one u32 cursor with no finding buffer.

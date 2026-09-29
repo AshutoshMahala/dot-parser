@@ -27,6 +27,12 @@ bugs into recoverable errors. See the [shared safety guidance](MARKUP.md#untrust
 for allocator, peak-memory and build-mode qualifications; its named preset is
 markup-specific, not a DOT preset.
 
+Passthrough HTML-like identifiers preserve arbitrary interior bytes, including
+NUL; explicit decoding preserves them too. Parsed/validated values are byte
+slices, not a promise of C-string safety. Before passing a value to a NUL-terminated
+API, reject embedded NUL or use a length-aware API with compatible semantics.
+Encoding validation does not reject NUL: it is valid UTF-8.
+
 ## Standard and lenient presets
 
 `dot.presets.standard` names the library defaults; `dot.Profile(.{})` is
@@ -216,8 +222,11 @@ Neither mode invokes the standalone markup module. The scanner always recognizes
 the complete envelope and any mixed concatenation, without a second policy scan.
 `.none` also catches HTML operands after quoted operands. With statement recovery,
 body occurrences can be skipped to collect later errors; no partial document is
-published and the recovered parse ends as `invalid_syntax`. Header/trailing
-failures remain fail-fast. Changing this parse policy requires reparsing.
+published. Unsupported-only recovery ends as `unsupported_feature`; a reported
+syntax error makes the outcome `invalid_syntax`. Cancellation or a later enforced
+limit ends the diagnostic search without replacing that known rejection; sink
+stops/failures keep their dedicated outcomes. Header/trailing failures remain
+fail-fast. Changing this parse policy requires reparsing.
 
 Fix filtering applies before diagnostic delivery in both DOT parsing and validation,
 including warnings. A fix is never automatically applied; suppression does not

@@ -537,7 +537,7 @@ fn writeHint(d: Diagnostic, info: diagnostic.Code.Info, positions: *Positions, w
             ),
         },
         .invalid_byte => |byte| switch (byte) {
-            0 => try writer.writeAll("NUL is not allowed anywhere in DOT input, not even inside quotes; remove it"),
+            0 => try writer.writeAll("NUL is not allowed here; only comments and passthrough HTML-like identifiers retain it"),
             '>' => try writer.writeAll("'>' is only valid as the second character of '->'; write '->' for a directed edge or '--' for an undirected one"),
             '+' => try writer.writeAll("'+' only joins two double-quoted identifiers, and numerals take no leading '+'"),
             '|', '&', '!', '?', '@', '$', '%', '^', '*', '(', ')', '~', '`', '\'' => try writer.print(
@@ -1134,7 +1134,7 @@ fn writePrimaryLabel(details: Details, writer: anytype) !void {
         .expected_string_part => |found| try writeExpectedStringPart(found, writer),
         .invalid_byte => |byte| {
             if (byte == 0) {
-                try writer.writeAll("NUL bytes are not allowed in DOT input");
+                try writer.writeAll("NUL bytes are not allowed at this position in DOT input");
             } else if (std.ascii.isPrint(byte)) {
                 try writer.print("byte 0x{X:0>2} ('{c}') cannot start a DOT token", .{ byte, byte });
             } else {
@@ -2013,4 +2013,20 @@ test "render shows non-printable bytes as hex only" {
     const text = writer.buffered();
     try expect(std.mem.indexOf(u8, text, "0x01") != null);
     try expect(std.mem.indexOf(u8, text, "('") == null);
+}
+
+test "NUL diagnostics describe the rejected position rather than all DOT bytes" {
+    var buffer: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    const finding: diagnostic.Diagnostic = .{
+        .code = .syntax_invalid_byte,
+        .span = .{ .start = 0, .len = 1 },
+        .details = .{ .invalid_byte = 0 },
+    };
+    try render(finding, .{}, &writer);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "NUL is not allowed here") != null);
+    writer = std.Io.Writer.fixed(&buffer);
+    try renderBoxed(finding, 1, .{ .source = "\x00" }, &writer);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "at this position") != null);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "only comments and passthrough HTML-like identifiers retain it") != null);
 }

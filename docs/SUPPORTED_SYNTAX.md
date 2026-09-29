@@ -96,8 +96,11 @@ can select a different effective kind without changing the source declaration;
 Both scanners recognize an envelope by a u32 angle-depth counter: `<` increments,
 `>` decrements, and depth zero closes it. Quotes, backslashes, comments, CDATA
 spellings and entities do **not** shield brackets. Interior bytes, including
-newlines, NUL and invalid UTF-8, are retained unchanged. A stray `>` outside an
-envelope is still invalid. This lexical rule is not structural markup parsing.
+newlines, NUL and invalid UTF-8, are retained unchanged. These are length-delimited
+bytes, not C strings: reject embedded NUL before using a NUL-terminated API, or
+use a compatible length-aware API. Decoding does not sanitize the bytes. A stray
+`>` outside an envelope is still invalid. This lexical rule is not structural
+markup parsing.
 
 Every DOT ID position supports this spelling, including graph/subgraph names,
 endpoints, both port components, attribute keys/values and assignment keys/values.

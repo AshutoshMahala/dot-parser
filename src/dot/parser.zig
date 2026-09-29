@@ -48,10 +48,11 @@
 //!   tokens are skipped to the next `;` or `}` at the same brace depth
 //!   (a skipped `{` is matched by counting), the next statement parses
 //!   normally, and every further syntax error is reported the same way.
-//!   The outcome is still `invalid_syntax`, no document is ever published,
-//!   and the sink sees exactly one terminal event. Lexical errors resume
+//!   The outcome is `invalid_syntax` if a syntax error was found, otherwise
+//!   `unsupported_feature` for excluded HTML-like identifiers. No document is
+//!   published, and the sink sees exactly one terminal event. Lexical errors resume
 //!   through `Scanner.resumeAfterFailure`; end of input, header errors,
-//!   trailing tokens, limits and deferred features still stop the parse.
+//!   trailing tokens and limits still stop the parse.
 //! - Iterative state-machine parsing has no recursion, so input size and shape
 //!   cannot exhaust the call stack (R-PERF-002).
 //! - Work is a single linear scan of the input (R-PERF-001, R-SEC-003);
@@ -191,8 +192,11 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         begun: bool = false,
         /// True once the sink received its terminal abort. Recovery keeps
         /// the grammar running for diagnostics after that point, with no
-        /// further events and an `invalid_syntax` outcome.
+        /// further events and no published document.
         aborted: bool = false,
+        /// Distinguish recovered syntax errors from unsupported-only failures.
+        /// Fixed fail-fast profiles retain no recovery classification state.
+        recovered_syntax: if (recovery_enabled) bool else void = if (recovery_enabled) false else {},
         /// Braces skipped (and not yet matched) while resynchronizing.
         // Each increment consumes a brace byte in the bounded u32 source.
         skip_depth: if (recovery_enabled) u32 else void = if (recovery_enabled) 0 else {},
@@ -497,9 +501,9 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         /// Explicit cleanup works even without a polling hook or positive budget.
         pub fn cancel(self: *Self) Result {
             if (self.terminal) |result| return result;
-            // Syntax errors already reported during recovery are the
-            // truthful outcome; cancellation only ends the search for more.
-            const outcome: Outcome = if (self.recovered()) .invalid_syntax else .cancelled;
+            // A reported recovery failure remains the truthful outcome;
+            // cancellation only ends the search for more diagnostics.
+            const outcome: Outcome = if (self.recovered()) self.recoveredOutcome() else .cancelled;
             self.abortEvents(.cancelled);
             return self.finish(outcome);
         }
@@ -793,7 +797,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         self.state = .statement;
                     }
                 },
-                .eof => return self.finish(.invalid_syntax),
+                .eof => return self.finish(self.recoveredOutcome()),
                 else => {},
             }
             return null;
@@ -1063,7 +1067,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         .right => self.right_port = 0,
                         .link => self.link_port = 0,
                     },
-                    .commit => return self.finish(.invalid_syntax),
+                    .commit => return self.finish(self.recoveredOutcome()),
                     else => {},
                 }
                 return null;
@@ -1231,6 +1235,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .resource_capacity_exhausted => .resource_exhausted,
                 else => .invalid_syntax,
             };
+            if (recovery_enabled and reason == .invalid_syntax) self.recovered_syntax = true;
             if (recovery_enabled and (reason == .invalid_syntax or reason == .unsupported_feature) and self.canRecover(failure)) {
                 if (stop) |requested| return self.stopDiagnostics(requested);
                 self.abortEvents(reason);
@@ -1239,9 +1244,9 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 self.skip_depth = 0;
                 return null;
             }
-            // A limit or deferred feature met while recovering does not
-            // change what the document is: still invalid syntax.
-            const outcome: Outcome = if (self.recovered()) .invalid_syntax else switch (reason) {
+            // Keep the known rejection when a later limit ends recovery.
+            // Only an actual syntax diagnostic can promote unsupported to invalid.
+            const outcome: Outcome = if (self.recovered()) self.recoveredOutcome() else switch (reason) {
                 .invalid_syntax => .invalid_syntax,
                 .unsupported_feature => .unsupported_feature,
                 .resource_exhausted => .resource_exhausted,
@@ -1304,10 +1309,15 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             return if (self.kind == .digraph) .directed_operator else .undirected_operator;
         }
 
-        /// True once a syntax error has been recovered from: the sink was
+        /// True once a body failure has been recovered from: the sink was
         /// aborted while the grammar kept running.
         fn recovered(self: *const Self) bool {
             return self.aborted and self.terminal == null and self.begun;
+        }
+
+        fn recoveredOutcome(self: *const Self) Outcome {
+            if (!recovery_enabled) unreachable;
+            return if (self.recovered_syntax) .invalid_syntax else .unsupported_feature;
         }
 
         /// Recovery is a body-only policy: a header has no statement

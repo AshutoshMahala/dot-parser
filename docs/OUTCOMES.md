@@ -127,7 +127,10 @@ never runs — later diagnostics can be consequences of an earlier one, so
 read them in order. Header errors, end of input, trailing tokens, limits,
 and unterminated quoted/HTML-like identifiers or comments still stop the parse.
 A policy-disabled HTML identifier in the body can recover like a syntax failure;
-the resulting aborted parse still returns `invalid_syntax`.
+unsupported-only recovery returns `unsupported_feature`. A reported syntax error
+makes it `invalid_syntax`, regardless of discovery order. Cancellation or a later
+enforced limit preserves that known rejection; diagnostic stops/failures retain
+their dedicated outcomes. Neither recovery outcome publishes a document.
 
 Warnings (`W.Syntax.Numeral.033`, `W.Syntax.Operator.003`,
 `W.Syntax.Grammar.034`) do not invalidate input. Their destination can still

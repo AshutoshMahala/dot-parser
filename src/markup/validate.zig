@@ -101,21 +101,50 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         pub const Hook = if (cancellable) ?support.execution.Cancellation else void;
         const has_encoding = if (fixed) |s| s.invalid_utf8 != .off else true;
         const Offset = if (has_encoding) u32 else void;
-        /// Chunk polling is local to a scan, not retained per node/reference.
-        /// A complete UTF-8 scalar may cross the 64-byte threshold by 3 bytes.
+        /// One countdown shared by the traversal and all content scans. Charge
+        /// bytes examined (including revisits by another check) and record steps,
+        /// not absolute source progress. A scalar can cross the threshold by 3.
         /// Fixed-disabled profiles have neither state nor callback branches.
         const Poller = struct {
-            next: if (cancellable) u32 else void = if (cancellable) 0 else {},
-            inline fn check(self: *@This(), index: u32, result: *Result, hook: Hook) bool {
+            remaining: if (cancellable) u32 else void = if (cancellable) 0 else {},
+            inline fn check(self: *@This(), result: *Result, hook: Hook) bool {
                 if (!cancellable) return true;
-                if (index < self.next) return true;
+                if (self.remaining != 0) return true;
                 if (cancelled(result, hook)) return false;
-                self.next = index +| 64;
+                self.remaining = 64;
                 return true;
             }
-            inline fn end(self: @This(), len: u32) u32 {
-                return if (cancellable) @min(self.next, len) else len;
+            inline fn consume(self: *@This(), count: u32) void {
+                if (cancellable) self.remaining -|= count;
             }
+            inline fn step(self: *@This(), result: *Result, hook: Hook) bool {
+                if (!self.check(result, hook)) return false;
+                self.consume(1);
+                return true;
+            }
+            /// Keep byte-loop thresholds local; flush shared work at scan exit
+            /// and before nested checks, then reload after those checks. A false
+            /// return ends validation, so no remaining budget is used afterward.
+            const Scan = struct {
+                next: if (cancellable) u32 else void,
+                inline fn init(index: u32, poller: Poller) @This() {
+                    return .{ .next = if (cancellable) index +| poller.remaining else {} };
+                }
+                inline fn check(self: *@This(), index: u32, result: *Result, hook: Hook) bool {
+                    if (!cancellable) return true;
+                    if (index < self.next) return true;
+                    if (cancelled(result, hook)) return false;
+                    self.next = index +| 64;
+                    return true;
+                }
+                inline fn flush(self: @This(), index: u32, poller: *Poller) void {
+                    if (!cancellable) return;
+                    poller.remaining = self.next -| index;
+                }
+                inline fn end(self: @This(), len: u32) u32 {
+                    return if (cancellable) @min(self.next, len) else len;
+                }
+            };
         };
         // Expose fixed selections during semantic analysis, not just as an
         // optimizer inlining opportunity. Disabled passes must not instantiate.
@@ -167,12 +196,10 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             if (rules(settings).names.severity != .off or rules(settings).references.severity != .off)
                 return runContent(document, scratch, sink, settings, hook);
             var offset: Offset = if (has_encoding) 0 else {};
+            var poller: Poller = .{};
             var start: u32 = 0;
             while (rules(settings).duplicate_attribute != .off and start < document.attributes.len) {
-                if (requested(hook)) {
-                    result.completion = .cancelled;
-                    return result;
-                }
+                if (!poller.step(&result, hook)) return result;
                 var end = start + 1;
                 while (end < document.attributes.len and document.attributes[end].owner == document.attributes[start].owner) : (end += 1) {}
                 const count = end - start;
@@ -182,18 +209,15 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                     // Linear source-order emission through the scattered column;
                     // the name-sorted index column is no longer consulted.
                     for (keys, start..) |key, index| {
-                        if (requested(hook)) {
-                            result.completion = .cancelled;
-                            return result;
-                        }
+                        if (!poller.step(&result, hook)) return result;
                         if (key.first == index) continue;
-                        if (!emitDuplicate(document, @intCast(index), key.first, &offset, &result, sink, settings, hook)) return result;
+                        if (!emitDuplicate(document, @intCast(index), key.first, &offset, &poller, &result, sink, settings, hook)) return result;
                     }
                 }
                 start = end;
             }
             if (rules(settings).duplicate_attribute != .off) result.checks.duplicate_attribute = .complete;
-            if (!encodingThrough(document.source, @intCast(document.source.len), &offset, &result, sink, settings, hook)) return result;
+            if (!encodingThrough(document.source, @intCast(document.source.len), &offset, &poller, &result, sink, settings, hook)) return result;
             if (result.errors == 0) result.validity = .valid;
             return result;
         }
@@ -206,14 +230,15 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             std.debug.assert(document.attributes.len <= std.math.maxInt(u32));
             var result = initial(settings);
             var offset: Offset = if (has_encoding) 0 else {};
+            var poller: Poller = .{};
             var attribute: u32 = 0;
             const source = document.source;
             for (document.records, 0..) |node, id| {
-                if (cancelled(&result, hook)) return result;
+                if (!poller.step(&result, hook)) return result;
                 if (safety_checks) std.debug.assert(syntax.nodeInvariant(document, @intCast(id)));
                 switch (node.kind()) {
                     .element => {
-                        if (!checkName(source, node.name, .element, &offset, &result, sink, settings, hook)) return result;
+                        if (!checkName(source, node.name, .element, &offset, &poller, &result, sink, settings, hook)) return result;
                         const start = attribute;
                         while (attribute < document.attributes.len and @intFromEnum(document.attributes[attribute].owner) == id) : (attribute += 1) {
                             // Duplicate-enabled validation already checked these
@@ -226,17 +251,17 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                         const keys = if (duplicates) scratch.attribute_keys[0..count] else scratch.attribute_keys[0..0];
                         if (duplicates) prepareKeys(document, keys, start);
                         for (document.attributes[start..attribute], start..) |attr, index| {
-                            if (cancelled(&result, hook)) return result;
+                            if (!poller.step(&result, hook)) return result;
                             if (duplicates and keys[index - start].first != index) {
                                 const first = keys[index - start].first;
-                                if (!emitDuplicate(document, @intCast(index), first, &offset, &result, sink, settings, hook)) return result;
+                                if (!emitDuplicate(document, @intCast(index), first, &offset, &poller, &result, sink, settings, hook)) return result;
                             }
-                            if (!checkName(source, attr.name, .attribute, &offset, &result, sink, settings, hook)) return result;
+                            if (!checkName(source, attr.name, .attribute, &offset, &poller, &result, sink, settings, hook)) return result;
                             // The retained value includes its original quotes.
-                            if (!checkReferences(source, .{ .start = attr.value.start + 1, .len = attr.value.len - 2 }, &offset, &result, sink, settings, hook)) return result;
+                            if (!checkReferences(source, .{ .start = attr.value.start + 1, .len = attr.value.len - 2 }, &offset, &poller, &result, sink, settings, hook)) return result;
                         }
                     },
-                    .text => if (!checkReferences(source, node.span, &offset, &result, sink, settings, hook)) return result,
+                    .text => if (!checkReferences(source, node.span, &offset, &poller, &result, sink, settings, hook)) return result,
                     .comment, .cdata => {},
                 }
             }
@@ -246,21 +271,23 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             if (rules(settings).duplicate_attribute != .off) result.checks.duplicate_attribute = .complete;
             if (rules(settings).names.severity != .off) result.checks.names = .complete;
             if (rules(settings).references.severity != .off) result.checks.references = .complete;
-            if (!encodingThrough(source, @intCast(source.len), &offset, &result, sink, settings, hook)) return result;
+            if (!encodingThrough(source, @intCast(source.len), &offset, &poller, &result, sink, settings, hook)) return result;
             if (result.errors == 0) result.validity = .valid;
             return result;
         }
 
         /// One finding per retained name/reference name, at its first bad code
         /// point (one byte for malformed UTF-8); related identifies the full name.
-        fn checkName(source: []const u8, name: Span, context: diagnostic.NameContext, offset: *Offset, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+        /// Inline short name/value checks so shared polling stays local to the
+        /// traversal, rather than passing its state through per-attribute calls.
+        inline fn checkName(source: []const u8, name: Span, context: diagnostic.NameContext, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
             const selected = rules(settings).names;
             if (selected.severity == .off) return true;
             const bytes = name.slice(source);
             var index: u32 = 0;
-            var poller: Poller = .{};
+            var scan = Poller.Scan.init(index, poller.*);
             while (index < bytes.len) {
-                if (!poller.check(index, result, hook)) return false;
+                if (!scan.check(index, result, hook)) return false;
                 const byte = bytes[index];
                 var width: u3 = 1;
                 var point: u21 = byte;
@@ -275,9 +302,11 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                 }
                 if (problem == null and !definitions.nameCharacter(selected.rule, point, index == 0))
                     problem = if (index == 0) .invalid_start else .invalid_character;
+                index += width;
                 if (problem) |reason| {
-                    const at = name.start + index;
-                    if (!encodingThrough(source, at, offset, result, sink, settings, hook)) return false;
+                    const at = name.start + index - width;
+                    scan.flush(index, poller);
+                    if (!encodingThrough(source, at, offset, poller, result, sink, settings, hook)) return false;
                     const code: diagnostic.Code = if (selected.severity == .err) .invalid_name else .invalid_name_tolerated;
                     return emit(result, sink, .{
                         .code = code,
@@ -286,21 +315,21 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                         .details = .{ .name = .{ .context = context, .problem = reason } },
                     });
                 }
-                index += width;
             }
+            scan.flush(index, poller);
             return true;
         }
 
         /// Named references only. Reuse the scanner's byte-name predicates so
         /// malformed candidates accepted as literal text cannot become findings.
         /// Numeric candidates contain no '&'; scanning past them needs no decoding.
-        fn checkReferences(source: []const u8, span: Span, offset: *Offset, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+        inline fn checkReferences(source: []const u8, span: Span, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
             const bytes = span.slice(source);
             var index: u32 = 0;
-            var poller: Poller = .{};
+            var scan = Poller.Scan.init(index, poller.*);
             while (index < bytes.len) {
-                if (!poller.check(index, result, hook)) return false;
-                const end = poller.end(@intCast(bytes.len));
+                if (!scan.check(index, result, hook)) return false;
+                const end = scan.end(@intCast(bytes.len));
                 const relative = std.mem.indexOfScalar(u8, bytes[index..end], '&') orelse {
                     index = end;
                     continue;
@@ -312,29 +341,34 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                 const begin = index;
                 index += 1;
                 while (index < bytes.len and lexical.isNameContinue(bytes[index])) : (index += 1) {
-                    if (!poller.check(index, result, hook)) return false;
+                    if (!scan.check(index, result, hook)) return false;
                 }
                 if (index == bytes.len or bytes[index] != ';') continue;
                 const name: Span = .{ .start = span.start + begin, .len = index - begin };
                 index += 1; // ';'
+                // Nested name/encoding scans share and may exhaust the budget.
+                // Flush before calling them, then reload their remainder below.
+                scan.flush(index, poller);
                 const selected = rules(settings).references;
                 if (selected.severity != .off and !definitions.knownReference(selected.catalog, name.slice(source))) {
                     // Catalog finding starts at '&', before any name finding.
                     const at = span.start + amp;
-                    if (!encodingThrough(source, at, offset, result, sink, settings, hook)) return false;
+                    if (!encodingThrough(source, at, offset, poller, result, sink, settings, hook)) return false;
                     const code: diagnostic.Code = if (selected.severity == .err) .unknown_reference else .unknown_reference_tolerated;
                     if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = index - amp } })) return false;
                 }
-                if (!checkName(source, name, .reference, offset, result, sink, settings, hook)) return false;
+                if (!checkName(source, name, .reference, offset, poller, result, sink, settings, hook)) return false;
+                scan = Poller.Scan.init(index, poller.*);
             }
+            scan.flush(index, poller);
             return true;
         }
 
         // Both traversal paths share severity, related span and encoding-first
         // tie ordering, without adding a forest walk to the default path.
-        inline fn emitDuplicate(document: *const syntax.Document, index: u32, first: u32, offset: *Offset, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+        inline fn emitDuplicate(document: *const syntax.Document, index: u32, first: u32, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
             const name = document.attributes[index].name;
-            if (!encodingThrough(document.source, name.start, offset, result, sink, settings, hook)) return false;
+            if (!encodingThrough(document.source, name.start, offset, poller, result, sink, settings, hook)) return false;
             const code: diagnostic.Code = if (rules(settings).duplicate_attribute == .err) .duplicate_attribute else .duplicate_attribute_tolerated;
             return emit(result, sink, .{ .code = code, .span = name, .related = document.attributes[first].name });
         }
@@ -384,28 +418,56 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         /// One monotonically advancing source cursor. Each invalid leading byte
         /// is reported separately; valid sequences consume 1..4 bytes. This is
         /// encoding validation, not XML character/name validation or decoding.
-        fn encodingThrough(source: []const u8, through: u32, offset: *Offset, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+        fn encodingThrough(source: []const u8, through: u32, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
             if (comptime !has_encoding) return true;
             if (rules(settings).invalid_utf8 == .off) return true;
-            var poller: Poller = .{};
-            while (offset.* < source.len and offset.* <= through) {
-                if (!poller.check(offset.*, result, hook)) return false;
-                const at = offset.*;
-                if (source[at] < 0x80) {
-                    offset.* += 1;
-                    continue;
+            if (!cancellable) {
+                // Keep the direct, unchunked loop when polling is compiled out.
+                while (offset.* < source.len and offset.* <= through) {
+                    const at = offset.*;
+                    if (source[at] < 0x80) {
+                        offset.* += 1;
+                        continue;
+                    }
+                    if (support.utf8.sequenceLength(source[at..])) |len| {
+                        offset.* += len;
+                    } else {
+                        offset.* += 1;
+                        const code: diagnostic.Code = if (rules(settings).invalid_utf8 == .err) .invalid_utf8 else .invalid_utf8_tolerated;
+                        if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .byte = source[at] } })) return false;
+                    }
                 }
-                if (support.utf8.sequenceLength(source[at..])) |len| {
-                    offset.* += len;
-                } else {
-                    offset.* += 1;
-                    const code: diagnostic.Code = if (rules(settings).invalid_utf8 == .err) .invalid_utf8 else .invalid_utf8_tolerated;
-                    if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .byte = source[at] } })) return false;
+            } else {
+                // Publish the local cursor on every exit, including sink stops.
+                var cursor = offset.*;
+                defer offset.* = cursor;
+                var scan = Poller.Scan.init(cursor, poller.*);
+                const limit = @min(@as(u32, @intCast(source.len)), through +| 1);
+                while (cursor < limit) {
+                    if (!scan.check(cursor, result, hook)) return false;
+                    const end = scan.end(limit);
+                    // Finish whole scalars; sink stops inside chunks stay immediate.
+                    while (cursor < end) {
+                        const at = cursor;
+                        if (source[at] < 0x80) {
+                            cursor += 1;
+                            continue;
+                        }
+                        if (support.utf8.sequenceLength(source[at..])) |len| {
+                            cursor += len;
+                        } else {
+                            cursor += 1;
+                            const code: diagnostic.Code = if (rules(settings).invalid_utf8 == .err) .invalid_utf8 else .invalid_utf8_tolerated;
+                            if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .byte = source[at] } })) return false;
+                        }
+                    }
                 }
+                scan.flush(cursor, poller);
             }
             if (offset.* == source.len) result.checks.invalid_utf8 = .complete;
             return true;
         }
+
         fn nameLessThan(document: *const syntax.Document, a: AttributeKeyScratch, b: AttributeKeyScratch) bool {
             const order = std.mem.order(u8, document.attributes[a.index].name.slice(document.source), document.attributes[b.index].name.slice(document.source));
             return if (order == .eq) a.index < b.index else order == .lt;

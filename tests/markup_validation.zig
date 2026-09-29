@@ -272,8 +272,8 @@ test "random raw bytes agree with a UTF-8 oracle across scalar and bounded block
                 at += 1;
             }
         }
-        inline for (.{ .scalar, .block }) |backend| {
-            const P = markup.Profile(.{ .policy = .{ .scanner = backend, .execution = .{ .metering = true }, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err } } });
+        inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |cancellable| {
+            const P = markup.Profile(.{ .policy = .{ .scanner = backend, .execution = .{ .metering = true, .cancellation = cancellable }, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err } } });
             var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
             var session = P.Session.init(source[0..len], .{ .document = output.storage() }, discard, .{});
             while (session.result() == null) _ = session.advance(1);
@@ -284,6 +284,6 @@ test "random raw bytes agree with a UTF-8 oracle across scalar and bounded block
             try equal(@as(u64, count), checked.errors);
             try equal(count, bag.items().len);
             for (bag.items(), expected[0..count]) |finding, offset| try equal(offset, finding.span.start);
-        }
+        };
     }
 }

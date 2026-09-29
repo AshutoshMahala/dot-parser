@@ -113,9 +113,9 @@ pub const NodeView = struct {
     }
 };
 
-/// Internal metadata precondition, checked during validation/scratch sizing in
-/// safety builds. O(1) per entry; no source-byte scanning or scratch allocation.
-/// This is not a general syntax verifier or a public document-building API.
+/// Local node metadata precondition, checked during content validation in safety
+/// builds. O(1), without source-byte scans or scratch. Does not audit ancestor
+/// containment or certify caller-built forests; Document's contract still applies.
 pub fn nodeInvariant(document: *const Document, index: u32) bool {
     const node = document.records[index];
     if (node.span.len == 0 or node.span.endOffset() > document.source.len or
@@ -134,6 +134,9 @@ pub fn nodeInvariant(document: *const Document, index: u32) bool {
     };
 }
 
+/// Local attribute metadata precondition, checked during validation/scratch sizing
+/// in safety builds. O(1), without source-byte scans or scratch allocation.
+/// Not a general syntax verifier or a public document-building API.
 pub fn attributeInvariant(document: *const Document, index: u32) bool {
     const attribute = document.attributes[index];
     const owner = @intFromEnum(attribute.owner);
@@ -191,9 +194,14 @@ pub const Iterator = struct {
     next_index: u32,
     end: u32,
     pub fn next(self: *Iterator) ?NodeView {
+        std.debug.assert(self.next_index <= self.end and self.end <= self.document.records.len);
         if (self.next_index == self.end) return null;
         const id: NodeId = @enumFromInt(self.next_index);
-        self.next_index = self.document.records[self.next_index].subtree_end;
+        const subtree_end = self.document.records[self.next_index].subtree_end;
+        // Fail at the corrupt interval, before leaving this iterator's boundary
+        // or looping forever. These are preconditions, not a document audit.
+        std.debug.assert(subtree_end > self.next_index and subtree_end <= self.end);
+        self.next_index = subtree_end;
         return .{ .document = self.document, .id = id };
     }
 };
