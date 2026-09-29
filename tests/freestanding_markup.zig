@@ -2,6 +2,7 @@
 const markup = @import("markup_parser");
 const features = @import("policy_features");
 comptime {
+    if (@sizeOf(markup.Diagnostic) != 36) @compileError("review markup diagnostic retention cost");
     if (@sizeOf(markup.Node) != 20 or @sizeOf(markup.Attribute) != 20 or markup.FixedParseScratch(1).byte_size != 12 or markup.FixedValidationScratch(1).byte_size != 8)
         @compileError("review markup retained/scratch layout costs");
 }

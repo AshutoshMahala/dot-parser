@@ -64,6 +64,9 @@ pub const location = @import("parser_support").location;
 pub const diagnostic = @import("dot/diagnostic.zig");
 /// Typed processor-independent diagnostic destinations.
 pub const reporting = @import("parser_support").reporting;
+/// Shared compile-time diagnostic metadata and optional presentation engine.
+pub const wdp = @import("parser_support").wdp;
+pub const presentation = @import("parser_support").console;
 /// Compile-time policy preparation and checked raw-fragment coordinates.
 /// Processor scheduling and HTML parsing are not implemented by this module.
 pub const processor = @import("parser_support").processor;

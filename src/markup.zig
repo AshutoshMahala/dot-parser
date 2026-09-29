@@ -11,7 +11,11 @@ const results = @import("markup/result.zig");
 const validation = @import("markup/validate.zig");
 pub const location = support.location;
 pub const reporting = support.reporting;
+pub const wdp = support.wdp;
+pub const presentation = support.console;
 pub const diagnostic = @import("markup/diagnostic.zig");
+/// Optional console presentation shared with DOT; no DOT dependency.
+pub const console = @import("markup/console.zig");
 pub const Diagnostic = diagnostic.Diagnostic;
 pub const DiagnosticSink = diagnostic.Sink;
 pub const FixedDiagnosticBag = diagnostic.FixedBag;

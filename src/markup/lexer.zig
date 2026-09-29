@@ -125,6 +125,7 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
                 .code = .malformed_reference,
                 .span = .{ .start = self.reference_start, .len = self.offset - self.reference_start },
                 .details = .{ .reference = reason },
+                .fix = if (reason == .missing_semicolon) .terminate_reference else null,
             } };
             return true;
         }

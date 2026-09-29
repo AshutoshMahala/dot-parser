@@ -438,6 +438,7 @@ const parsed = Reader.parseBorrowedIn(source, memory, sink, .{
 | Policy leaf | Values/default |
 | --- | --- |
 | `scanner` | `scalar` (default), `block`; same syntax and output, different work granularity |
+| `diagnostics.fixes` | `all` (default), `machine_applicable`, `off`; filters repair offers only |
 | `limits.max_source_bytes` | u32; default `2^32 - 1` |
 | `limits.max_nodes` | u32; default `2^32 - 1`; elements, nonempty text runs, comments and CDATA sections |
 | `limits.max_attributes` | u32; default `2^32 - 1`; every occurrence counts |
@@ -545,13 +546,28 @@ An accepted warning followed by sink `.stop` aborts unfinished parsing with
 `diagnostic_stopped.requested` and complete delivery of the emitted prefix. Sink
 errors produce the corresponding reason and failed delivery. Neither case publishes
 a document, sends another diagnostic into the stopped sink, or continues scanning.
-No markup fix suggestions or syntax recovery are implemented in this slice.
+Syntax recovery is not implemented. A missing reference semicolon can carry a
+possible repair; the parser never applies it. `Diagnostic.fix` is a compact offer,
+and `Diagnostic.suggestedFix()` returns its full typed edit on demand. This offer
+is `maybe` because literal text may have been intended. `diagnostics.fixes`
+filters offers at compile time or runtime without hiding findings or changing
+outcomes; `machine_applicable` currently suppresses every markup offer. Other
+repairs, including choosing between duplicate attributes, are not guessed.
 
 Diagnostics use the `markup_parser` WDP namespace, with processor-owned typed
 details and optional related opener/first-attribute spans. `code.structured()`, `compactId()` and
 `qualifiedCompactId()` need no runtime hashing. The authoritative current registry
 is [diagnostic.zig](../src/markup/diagnostic.zig); fixed/growable/streaming bags use
 the same [shared reporting contracts](REPORTING.md) as DOT without sharing payloads.
+
+`Code.info()` provides decomposed component/primary/sequence metadata, sequence
+aliases, summaries and hints. Code text and compact identities are derived and
+validated at compile time, not manually assembled at runtime. `markup.console`
+uses the same optional console engine as DOT: compact or boxed output, related
+source annotations, ASCII/Unicode frames, opt-in ANSI colors and list summaries.
+See [metadata and presentation](REPORTING.md#metadata-and-console-presentation)
+and the runnable [example](../examples/markup.zig). Rendering is allocation-free,
+caller-driven, and absent from parser execution; markup diagnostics remain 36 bytes.
 
 ## Verification and costs
 

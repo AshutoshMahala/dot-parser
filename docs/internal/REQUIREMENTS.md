@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-09-27
+Original draft: 2026-07-13 · Last amended: 2026-09-29
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -959,18 +959,30 @@ a diagnostic identity.
 
 ### R-DIAG-007: Share infrastructure without inflating every diagnostic
 
-**Direction decided 2026-09-23; transport preparation implemented 2026-09-26 (Q40).**
+**Direction decided 2026-09-23; transport implemented 2026-09-26;
+shared registry/presentation implemented 2026-09-29 (Q40).**
 Source spans and origin mapping, severity/delivery conventions, fix conventions
 and bounded sink/bag machinery should be reusable across processors. Codes and
 typed details may remain processor-owned. Sharing must not force one universal
 payload union, copied message strings or heap allocation onto every DOT
-diagnostic. Concrete type adapters and catalog ownership remain open; existing
-identity and reporting guarantees must remain explicit.
+diagnostic. Both processors own their catalogs and typed console adapters;
+`common/wdp.zig` builds/validates metadata and identities, while
+`common/console.zig` provides a statically bound optional renderer. Neither
+processor imports the other's diagnostics. Mixed-payload routing and integrated
+execution remain separate from sharing presentation.
 
 `reporting.Sink(T)`, `FixedBag(T, N, overflow)` and `GrowableBag(T)` are shared;
 DOT exposes concrete conveniences without enlarging its payload. Raw `Fragment`
 mapping checks local spans and u32 origin arithmetic; adapters must map every
 primary/related/fix span. Consumer catalog/fix representation stays processor-owned.
+
+The shared edit shape is `reporting.Fix(Replacement)`, with processor-owned
+replacement vocabulary and common applicability/filtering. DOT retains its full
+optional edit. Markup stores a compact repair offer and materializes the edit
+through `suggestedFix()`; its 36-byte diagnostic layout does not grow. The current
+missing-reference-semicolon offer is `maybe`, not a claim of intended meaning.
+Markup's `diagnostics.fixes` has fixed/runtime parity; filtering changes offers,
+never findings or validity. Source text is never edited by either parser.
 
 Callers can route diagnostics to a shared destination, separate fixed/growable bags, or
 streaming sinks; no separate bag is mandatory per processor or fragment. A
@@ -1505,6 +1517,12 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-09-29 — **R-DIAG-004/005/007:** shared compile-time catalog/identity
+  machinery, processor-bound optional console rendering and generic typed edit
+  conventions are implemented. Markup gains full metadata/presentation and a
+  compact, policy-filtered possible semicolon repair. No universal payload,
+  runtime registration, per-finding strings or diagnostic/tree layout growth.
 
 - 2026-09-27 — **R-MOD-014 slice 4b implemented:** optional typed name-rule and
   reference-catalog selection, independent severities/completion, first-bad-name

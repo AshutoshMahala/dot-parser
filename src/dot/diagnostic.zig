@@ -29,6 +29,7 @@
 //!   there is no runtime hashing, catalog, or message template machinery.
 
 const std = @import("std");
+const wdp = @import("parser_support").wdp;
 const location = @import("parser_support").location;
 const reporting = @import("parser_support").reporting;
 
@@ -105,21 +106,18 @@ pub const Primary = enum {
 
 /// A sequence number and its canonical alias, defined together so registry
 /// entries cannot accidentally pair a number with another condition's alias.
-pub const SequenceDefinition = struct {
-    number: u16,
-    alias: []const u8,
-};
+pub const SequenceDefinition = wdp.SequenceDefinition;
 
 /// Named sequence assignments used by this diagnostic registry. Sequences
 /// identify a condition within a component/primary domain, not a complete
 /// diagnostic identity. Conventional numbers follow the pinned WDP baseline.
 pub const Sequence = struct {
     // WDP part 6 conventional assignments.
-    pub const missing: SequenceDefinition = .{ .number = 1, .alias = "MISSING" };
-    pub const mismatch: SequenceDefinition = .{ .number = 2, .alias = "MISMATCH" };
-    pub const invalid: SequenceDefinition = .{ .number = 3, .alias = "INVALID" };
-    pub const unsupported: SequenceDefinition = .{ .number = 9, .alias = "UNSUPPORTED" };
-    pub const exhausted: SequenceDefinition = .{ .number = 26, .alias = "EXHAUSTED" };
+    pub const missing = wdp.Sequence.missing;
+    pub const mismatch = wdp.Sequence.mismatch;
+    pub const invalid = wdp.Sequence.invalid;
+    pub const unsupported = wdp.Sequence.unsupported;
+    pub const exhausted = wdp.Sequence.exhausted;
 
     // Project-specific assignments (031–897). 031 and 032 follow the parser
     // example in WDP part 6 §9.5.
@@ -198,33 +196,9 @@ pub const Code = enum {
     /// memory for the retained document.
     resource_memory_exhausted,
 
-    /// Comptime metadata for one diagnostic code. All strings are static.
-    pub const Info = struct {
-        severity: Severity,
-        component: Component,
-        primary: Primary,
-        /// WDP sequence, 1–999.
-        sequence: u16,
-        /// Conventional or project-specific sequence name (WDP part 6).
-        alias: []const u8,
-        /// What went wrong.
-        summary: []const u8,
-        /// What the user can do about it. The registry text is the
-        /// fallback; renderers derive a more specific hint from the typed
-        /// payload whenever they can.
-        hint: []const u8,
-    };
-
-    /// Internal entries select the sequence/alias pair once; Info exposes
-    /// the derived number and alias for rendering and inspection.
-    const Definition = struct {
-        severity: Severity,
-        component: Component,
-        primary: Primary,
-        sequence: SequenceDefinition,
-        summary: []const u8,
-        hint: []const u8,
-    };
+    const Metadata = wdp.Catalog(Component, Primary);
+    pub const Info = Metadata.Info;
+    const Definition = Metadata.Definition;
 
     pub fn info(self: Code) Info {
         const definition: Definition = switch (self) {
@@ -381,52 +355,19 @@ pub const Code = enum {
                 .hint = "provide a larger allocator or arena, or parse into fixed pools sized for the document; the input itself may still be valid",
             },
         };
-        return .{
-            .severity = definition.severity,
-            .component = definition.component,
-            .primary = definition.primary,
-            .sequence = definition.sequence.number,
-            .alias = definition.sequence.alias,
-            .summary = definition.summary,
-            .hint = definition.hint,
-        };
+        return definition.info();
     }
 
-    pub fn severity(self: Code) Severity {
-        return self.info().severity;
-    }
-
-    /// The WDP structured code in display form, e.g. "E.Syntax.Grammar.003".
-    pub fn structured(self: Code) []const u8 {
-        return switch (self) {
-            inline else => |code| comptime structuredText(code),
-        };
-    }
-
-    /// The WDP compact ID (part 5): xxHash3 of the uppercased structured
-    /// code, low 40 bits, Base62. Precomputed at compile time.
-    pub fn compactId(self: Code) [5]u8 {
-        return switch (self) {
-            inline else => |code| comptime computeCompactId(structuredText(code)),
-        };
-    }
-
-    /// The fully qualified compact ID (WDP part 7 §5.2):
-    /// `namespace_hash-code_hash`, e.g. "4aF9x-V6a0B". Precomputed.
-    pub fn qualifiedCompactId(self: Code) [11]u8 {
-        return switch (self) {
-            inline else => |code| comptime namespace_hash ++
-                [1]u8{'-'} ++ computeCompactId(structuredText(code)),
-        };
-    }
-
-    fn structuredText(comptime code: Code) []const u8 {
-        const i = code.info();
-        return std.fmt.comptimePrint("{c}.{s}.{s}.{d:0>3}", .{
-            i.severity.letter(), i.component.name(), i.primary.name(), i.sequence,
-        });
-    }
+    const Identity = wdp.Registry(Code, namespace);
+    pub const severity = Identity.severity;
+    pub const structured = Identity.structured;
+    pub const compactId = Identity.compactId;
+    pub const qualifiedCompactId = Identity.qualifiedCompactId;
 };
+
+comptime {
+    wdp.Registry(Code, namespace).validate();
+}
 
 pub const computeCompactId = @import("parser_support").wdp.computeCompactId;
 pub const computeNamespaceHash = @import("parser_support").wdp.computeNamespaceHash;
@@ -718,17 +659,18 @@ pub const Diagnostic = struct {
     /// known to be right.
     fix: ?Fix = null,
 
+    /// Common accessor for processors with different retained repair layouts.
+    pub fn suggestedFix(self: Diagnostic) ?Fix {
+        return self.fix;
+    }
+
     /// One policy boundary for every producer, before delivery. Fixed
     /// profiles specialize this away; filtering never suppresses a finding.
     pub inline fn withFixes(self: Diagnostic, mode: @import("policy.zig").Fixes) Diagnostic {
         var result = self;
-        switch (mode) {
-            .all => {},
-            .off => result.fix = null,
-            .machine_applicable => if (result.fix) |fix| {
-                if (fix.applicability != .machine_applicable) result.fix = null;
-            },
-        }
+        if (result.fix) |fix| if (!mode.allows(fix.applicability)) {
+            result.fix = null;
+        };
         return result;
     }
 };
@@ -739,24 +681,8 @@ pub const Diagnostic = struct {
 /// (`insert_before` at its start, `insert_after` at its end). A consumer
 /// applying several fixes to one source should apply them from the highest
 /// offset down so earlier spans stay valid, and re-parse afterwards.
-pub const Fix = struct {
-    span: location.Span,
-    edit: Edit,
-    applicability: Applicability,
-};
-
-pub const Edit = union(enum) {
-    /// Remove the span.
-    delete,
-    /// Replace the span with the replacement text.
-    replace: Replacement,
-    /// Insert the replacement text before the span.
-    insert_before: Replacement,
-    /// Insert the replacement text after the span.
-    insert_after: Replacement,
-    /// Put the span in double quotes (a keyword or numeral used as a name).
-    wrap_in_quotes,
-};
+pub const Fix = reporting.Fix(Replacement);
+pub const Edit = Fix.Edit;
 
 /// Every replacement is a known text; `text` returns it.
 pub const Replacement = enum(u8) {

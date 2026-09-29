@@ -33,9 +33,10 @@ pub fn main(init: std.process.Init) !void {
         const checked = Checked.validate(init.arena.allocator(), &doc, bag.sink(), .{});
         try writer.print("validation {s}: {d} errors, {d} warnings\n", .{ @tagName(checked.validity), checked.errors, checked.warnings });
         if (checked.completion != .complete) return error.ValidationIncomplete;
-        for (bag.items()) |finding| try writer.print("{s}:{s} at byte {d}\n", .{ markup.diagnostic.namespace, finding.code.structured(), finding.span.start });
+        try markup.console.renderBoxedList(bag.items(), 0, .{ .source = source, .source_name = "example.markup" }, writer);
     } else {
-        for (bag.items()) |finding| try writer.print("{s}:{s} at byte {d}\n", .{ markup.diagnostic.namespace, finding.code.structured(), finding.span.start });
+        try markup.console.renderBoxedList(bag.items(), 0, .{ .source = source, .source_name = "example.markup" }, writer);
+        try writer.flush();
         return error.ParseFailed;
     }
     try writer.flush();

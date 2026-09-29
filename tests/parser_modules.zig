@@ -8,6 +8,13 @@ test "independent parsers coexist and share primitives, not grammars or payloads
     try std.testing.expect(dot.reporting.Delivery == markup.reporting.Delivery);
     try std.testing.expect(dot.Cancellation == markup.Cancellation);
     try std.testing.expect(dot.Diagnostic != markup.Diagnostic);
+    try std.testing.expect(dot.console.RenderOptions == markup.console.RenderOptions);
+    try std.testing.expect(dot.presentation == markup.presentation);
+    try std.testing.expect(dot.wdp == markup.wdp);
+    try std.testing.expect(dot.diagnostic.SequenceDefinition == markup.diagnostic.SequenceDefinition);
+    try std.testing.expect(dot.diagnostic.Applicability == markup.diagnostic.Applicability);
+    try std.testing.expect(dot.diagnostic.Fix == dot.reporting.Fix(dot.diagnostic.Replacement));
+    try std.testing.expect(markup.diagnostic.Fix == dot.reporting.Fix(markup.diagnostic.Replacement));
     var graph = dot.parseBorrowed(std.testing.allocator, "graph { a; }", dot.diagnostic.discard, .{});
     defer graph.deinit(std.testing.allocator);
     var fragment = markup.parseBorrowed(std.testing.allocator, "<a/>", markup.diagnostic.discard, .{});

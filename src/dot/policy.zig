@@ -8,7 +8,7 @@ pub const OperatorReading = enum { as_written, conform_to_kind };
 pub const ScannerBackend = enum { scalar, block };
 pub const MarkupMode = enum { none, passthrough };
 /// Controls repair offers only, never validity or automatic rewriting.
-pub const Fixes = enum { all, machine_applicable, off };
+pub const Fixes = @import("parser_support").reporting.Fixes;
 pub const Acceptance = enum { reject, warn, accept };
 /// The written DOT keyword, never the effective graph kind or nearby edges.
 pub const BareDashInterpretation = enum { from_keyword };

@@ -42,6 +42,9 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         fn acceptance(self: *const Self) policy.Acceptance {
             return if (fixed) |v| v.syntax.malformed_reference else self.settings.syntax.malformed_reference;
         }
+        fn fixes(self: *const Self) policy.Fixes {
+            return if (fixed) |v| v.fixes else self.settings.fixes;
+        }
         fn malformedReference(self: *Self, stack: *scratch.Stack, sink: anytype, finding: diagnostic.Diagnostic) void {
             if (!deviations_enabled or self.acceptance() == .reject)
                 return self.finish(stack, sink, .invalid_syntax, finding);
@@ -51,7 +54,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 self.warnings += 1;
                 var warning = finding;
                 warning.code = .malformed_reference_tolerated;
-                const action = self.diagnostics.emit(warning) catch |err| {
+                const action = self.diagnostics.emit(warning.withFixes(self.fixes())) catch |err| {
                     self.finish(stack, sink, .{ .diagnostic_stopped = .fromError(err) }, null);
                     self.terminal.?.diagnostic_delivery = .failed;
                     return;
@@ -64,7 +67,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
             // These findings report an already-terminal cause. Accepted-stop or
             // rejection cannot replace it; broken sinks are never reported into.
             if (finding) |d| {
-                _ = self.diagnostics.emit(d) catch {
+                _ = self.diagnostics.emit(d.withFixes(self.fixes())) catch {
                     delivery = .failed;
                 };
             }

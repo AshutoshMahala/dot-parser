@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-27 (standalone slices 1–3, 4a and 4b; retention budgets; dialect isolation and deferred recovery).
+Last reconciled: 2026-09-29 (shared diagnostic registries/presentation and compact markup repairs; standalone slices 1–3, 4a and 4b).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -281,7 +281,7 @@ that helper separately from the settled ownership boundary.
 *(Embodied: `src/dot/syntax_event.zig`, builder abort paths; R-MOD-011.)*
 
 **Q37 — How are fix suggestions carried on diagnostics for linters?**
-**Implemented; reconciled 2026-09-22:** `Diagnostic.fix: ?Fix` carries an
+**DOT implemented; reconciled 2026-09-22:** `Diagnostic.fix: ?Fix` carries an
 original-source span, typed edit (`delete`, `replace`, `insert_before`,
 `insert_after`, `wrap_in_quotes`), replacement identity and applicability.
 `Replacement.text()` supplies the known replacement bytes; producers do not
@@ -296,6 +296,14 @@ Native Zig 0.16.0 measurements record an 80-byte `Diagnostic`, including the
 optional fix; this is a layout observation, not an ABI promise. A future lean
 diagnostics profile that omits fixes is a separate optional-cost decision,
 not unfinished implementation of `Diagnostic.fix`.
+
+**Markup/shared conventions implemented 2026-09-29:** both processors use
+`reporting.Fix(Replacement)` and the same applicability/filtering semantics.
+Markup keeps `Diagnostic.fix: ?Repair` compact and exposes `suggestedFix()` to
+materialize the source edit on demand. The missing-reference-semicolon offer is
+always `maybe`; `.diagnostics.fixes` controls it at either binding time. Markup
+diagnostics remain 36 bytes. Rich catalogs/presentation do not require matching
+retained payload layouts or guessed tag/attribute repairs.
 *(Embodied: [diagnostic types](../../src/dot/diagnostic.zig),
 [operator checks](../../src/dot/validation_checks.zig),
 [repair tests](../../tests/diagnostics.zig),
@@ -1263,13 +1271,18 @@ contract below is decided. These integration details do not block the passthroug
 slice.
 
 **Shared infrastructure, independent validation (decided 2026-09-23;
-cross-processor implementation pending).** Reuse source spans/origin mapping,
+transport and presentation implemented; integrated execution pending).** Reuse source spans/origin mapping,
 severity, delivery status, fix conventions and bounded sink/bag machinery across
 processors. Share execution and resource-reporting primitives where their
 contracts actually match. Each processor may own its diagnostic codes and typed
 details; sharing infrastructure must not require one universal payload union
-whose largest extension inflates every DOT diagnostic. The concrete diagnostic
-type/adapter and catalog ownership remain to be designed (R-DIAG-007).
+whose largest extension inflates every DOT diagnostic. As of 2026-09-29, each
+processor owns its catalog, typed details and console adapter. Shared
+`wdp.Catalog`/`Registry` derive and validate metadata/identities at compile time;
+`presentation.Renderer(Adapter)` binds wording to the common optional console
+engine. DOT and markup expose the same rendering operations and options without
+an import dependency between them (R-DIAG-007). Mixed-payload routing, scheduling
+and global cross-stage source ordering are not implied by this implementation.
 
 Caller-owned routing can feed one destination, separate fixed/growable bags, or a sink
 with no retained bag. No processor or fragment requires its own allocated bag.
@@ -1581,6 +1594,11 @@ Open; nothing currently forces the choice.
 ---
 
 ## Reconciliation log
+
+- 2026-09-29 — Shared WDP metadata/identity and console machinery now serve both
+  DOT and markup, with processor-owned catalogs/typed adapters and unchanged
+  identity strings. Added conservative markup repair offers with fixed/runtime
+  filtering and no diagnostic layout increase. Integrated execution stays open.
 
 - 2026-09-27 — Slice 4b implements optional name/reference validation with typed
   selections and severities, fixed/runtime parity, source-ordered diagnostics and

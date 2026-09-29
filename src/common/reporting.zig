@@ -59,6 +59,40 @@ pub const Applicability = enum(u8) {
     maybe,
 };
 
+/// The same offer-filtering semantics for every processor. Filtering a repair
+/// never filters the finding or changes validity, delivery or source bytes.
+pub const Fixes = enum {
+    all,
+    machine_applicable,
+    off,
+
+    pub fn allows(self: Fixes, applicability: Applicability) bool {
+        return switch (self) {
+            .all => true,
+            .machine_applicable => applicability == .machine_applicable,
+            .off => false,
+        };
+    }
+};
+
+/// Allocation-free edits; the processor owns the replacement vocabulary.
+/// Replacement.text() returns static text. Consumers apply edits to their own
+/// buffer, highest offset first, then parse again. Parsers never apply fixes.
+pub fn Fix(comptime Replacement: type) type {
+    return struct {
+        span: @import("location.zig").Span,
+        edit: Edit,
+        applicability: Applicability,
+        pub const Edit = union(enum) {
+            delete,
+            replace: Replacement,
+            insert_before: Replacement,
+            insert_after: Replacement,
+            wrap_in_quotes,
+        };
+    };
+}
+
 pub const Action = enum { proceed, stop };
 pub const SinkError = error{ DiagnosticSinkFailure, DiagnosticCapacityExceeded, OutOfMemory };
 pub const Delivery = enum { complete, failed };

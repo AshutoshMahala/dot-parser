@@ -1,4 +1,4 @@
-# Diagnostic destinations
+# Diagnostic reporting
 
 General-purpose callers can retain diagnostics with an explicit allocator:
 
@@ -93,3 +93,64 @@ For hostile input, also bound input acquisition, parser output/scratch and total
 work. A capped bag cannot prevent a large diagnostic-free tree or work done before
 the first finding. See the [markup untrusted-input recipe](MARKUP.md#untrusted-input)
 and the [DOT policy guide](POLICIES.md#untrusted-input).
+
+## Metadata and console presentation
+
+DOT and standalone markup share the reporting primitives, WDP registry machinery
+and optional console renderer. Each processor owns its `Code` enum, typed details,
+namespace and wording. Neither parser imports the other; no universal payload
+union or runtime registration is required.
+
+| Facility | Shared machinery | Processor-owned part |
+| --- | --- | --- |
+| Identity | `wdp.Catalog(Component, Primary)` and `wdp.Registry(Code, namespace)` | Typed component/primary enums, paired sequence/alias definitions and code entries |
+| Metadata | `Code.info()` shape; compile-time identity/metadata/collision checks | Static summary and hint for every code |
+| Delivery | Severity, sink actions, fixed/growable/streaming destinations | Concrete diagnostic payload |
+| Presentation | `presentation.Renderer(Adapter)`, options, source excerpts, colors and summaries | Compile-time `console.Adapter` supplies explanations and related-span labels |
+| Repairs | `reporting.Fix(Replacement)`, applicability and `reporting.Fixes` filtering | Replacement vocabulary, safe offers and compact storage choices |
+
+Both roots expose `wdp` and `presentation` for reuse. `Code.info()` exposes
+`severity`, `component`, `primary`, `sequence`, `alias`, `summary`, and `hint`.
+`structured()`, `compactId()` and `qualifiedCompactId()` are derived from that
+metadata at compile time. Existing DOT/markup identity strings are unchanged.
+Metadata strings are static: they are not copied into diagnostic bag entries.
+
+Both `dot.console` and `markup.console` provide `render`, `renderBoxed` and
+`renderBoxedList` with the same `RenderOptions`:
+
+```zig
+try markup.console.renderBoxedList(bag.items(), 0, .{
+    .source = source,
+    .source_name = "example.markup",
+    .style = .unicode, // or .ascii
+    .color = .none, // explicit .ansi opt-in; no TTY probing
+    .verbose = true, // sequence alias and qualified compact ID
+}, writer);
+```
+
+The second argument counts **omitted findings**, not unfinished work. Pass zero
+for a growable bag, which stops instead of omitting; an explicit omission bag
+supplies `bag.omitted`. Still inspect the operation's completion/delivery result.
+
+Rendering allocates nothing, uses bounded excerpt/annotation scratch and writes
+only through the supplied writer; writer failures propagate to the caller.
+Locations are byte-based. Excerpts escape non-printable/non-ASCII source bytes,
+preserve tabs, and fall back to compact locations when source spans do not fit.
+Rendering may scan source bytes to derive locations; that is presentation work,
+not parser hot-path work. A list is presented in caller-supplied order, not sorted.
+An unused renderer need not be linked into the application.
+
+DOT retains `Diagnostic.fix: ?Fix`. Markup retains a compact optional `Repair`
+in `Diagnostic.fix`. Both offer `diagnostic.suggestedFix()` as a common accessor;
+markup materializes its `?Fix` on demand without allocation.
+The current markup offer inserts a missing reference semicolon and is always
+`maybe`, never proof of intended meaning. The `diagnostics.fixes` policy supports
+`all` (default), `machine_applicable`, and `off` at both binding times. Filtering
+does not alter findings, validity, delivery or source text; `.machine_applicable`
+currently suppresses every markup repair. Raw low-level lexers have no policy
+binding; their findings carry unfiltered offers.
+
+Markup diagnostics remain 36 bytes on the tested native and 32-bit targets; the
+offer uses existing padding. Retained trees and scratch pools do not grow.
+These are checked layout observations, not a stable ABI. Repairs are suggestions:
+apply them to caller-owned output, from highest offset down, then parse again.

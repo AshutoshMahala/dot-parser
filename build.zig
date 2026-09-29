@@ -111,6 +111,8 @@ pub fn build(b: *std.Build) void {
     for ([_]struct { name: []const u8, message: []const u8 }{
         .{ .name = "markup_fixed_override", .message = "tests/compile_fail/markup_fixed_override.zig:3:72: error: no field named 'policy' in struct /?/" },
         .{ .name = "markup_unmetered", .message = "error: metering is disabled; use run()" },
+        .{ .name = "markup_duplicate_diagnostic", .message = "error: duplicate diagnostic identity" },
+        .{ .name = "markup_invalid_diagnostic", .message = "error: invalid diagnostic registry metadata" },
     }) |fixture| {
         const rejected = b.addObject(.{
             .name = fixture.name,
@@ -330,6 +332,17 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseSmall,
             .imports = &.{.{ .name = "parser_support", .module = portable_support }},
         });
+        const console_probe = b.addObject(.{
+            .name = b.fmt("console_{s}", .{@tagName(arch)}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/freestanding_console.zig"),
+                .target = portable_target,
+                .optimize = .ReleaseSmall,
+                .imports = &.{.{ .name = "markup_parser", .module = portable_markup }},
+            }),
+        });
+        _ = console_probe.getEmittedBin();
+        freestanding.dependOn(&console_probe.step);
         for ([_]bool{ false, true }) |runtime_policy| {
             const options = b.addOptions();
             options.addOption(bool, "runtime_policy", runtime_policy);

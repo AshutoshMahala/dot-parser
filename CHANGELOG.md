@@ -6,6 +6,18 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Share compile-time diagnostic metadata/identity construction, repair conventions
+  and optional console layout across DOT and standalone markup. Markup gains
+  typed registry metadata, aliases, summaries, hints, source-annotated console
+  output and ASCII/ANSI styles without importing DOT. Existing identity strings
+  and DOT presentation are preserved; rendering remains caller-driven and
+  allocation-free, with no runtime processor registration.
+- Add conservative markup missing-reference-semicolon repair offers and
+  fixed/runtime `diagnostics.fixes` filtering. Offers are `maybe`, never applied
+  automatically; `Diagnostic.suggestedFix()` materializes an edit from a compact
+  offer without increasing the 36-byte diagnostic layout. No tree/scratch growth.
+  Add standalone presentation, policy parity and freestanding renderer tests.
+
 - Preserve `unsupported_feature` for DOT recovery with no reported syntax error,
   including completion and cancellation; reset clears the classification. Add
   fixed/runtime, scanner and bounded-execution regression coverage.
