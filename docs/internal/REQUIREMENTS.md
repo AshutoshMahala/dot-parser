@@ -865,6 +865,14 @@ bytes; a tab therefore advances it by one byte. Configurable tab stops and
 Unicode display-cell columns belong to diagnostic presentation, where the
 original line can be expanded for a terminal or editor.
 
+**Implemented presentation (2026-09-29):** the shared optional renderer shows
+printable UTF-8 in Unicode style, with pinned scalar-width tables and bounded
+display-cell mapping. Controls/format characters and invalid bytes are escaped;
+ASCII style escapes non-ASCII bytes too. Tabs use eight-cell excerpt-local stops.
+Locations and repairs remain byte-based. This is not grapheme shaping or a
+terminal-width guarantee; the detailed contract and presentation-only costs are
+in [REPORTING.md](../REPORTING.md#metadata-and-console-presentation).
+
 ## 8. Diagnostic requirements
 
 ### R-DIAG-001: Use WDP diagnostic identities

@@ -70,7 +70,7 @@ pub const Adapter = struct {
     pub fn hasDetails(d: Diagnostic) bool {
         return d.details != .none;
     }
-    pub fn detail(d: Diagnostic, writer: anytype) !void {
+    pub fn detail(d: Diagnostic, _: *Positions, writer: anytype) !void {
         try writeDetailValue(d.details, writer);
     }
     pub fn hasNote(d: Diagnostic) bool {
@@ -88,7 +88,7 @@ pub const Adapter = struct {
     pub fn annotations(d: Diagnostic) Annotations {
         return secondaryAnnotations(d.details);
     }
-    pub fn primaryLabel(d: Diagnostic, writer: anytype) !void {
+    pub fn primaryLabel(d: Diagnostic, _: *Positions, writer: anytype) !void {
         try writePrimaryLabel(d.details, writer);
     }
     pub fn secondaryLabel(d: Diagnostic, role: diagnostic.Related.Role, writer: anytype) !void {
@@ -794,7 +794,7 @@ test "render produces informative text" {
 
     const text = writer.buffered();
     try expect(std.mem.indexOf(u8, text, "error[dot_parser:E.Validation.Operator.002]") != null);
-    try expect(std.mem.indexOf(u8, text, "line 2, byte column 7") != null);
+    try expect(std.mem.indexOf(u8, text, "<input>:2:7: (byte column,") != null);
     try expect(std.mem.indexOf(u8, text, "detail: expected '--', found '->'") != null);
     try expect(std.mem.indexOf(u8, text, "note: graph kind declared at 1:1") != null);
     try expect(std.mem.indexOf(u8, text, "help:") != null);
@@ -981,7 +981,7 @@ test "three same-line annotations hang leftmost lowest with continuations" {
     try expect(std.mem.indexOf(u8, overlap, "│   │         ^^^ expected an identifier\n") != null);
 }
 
-test "underline padding mirrors tabs so carets stay aligned" {
+test "excerpt tabs and underline padding use the same eight-cell stops" {
     const source = "graph {\n\ta -> b;\n}";
     var buffer: [2048]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
@@ -996,7 +996,7 @@ test "underline padding mirrors tabs so carets stay aligned" {
         } },
     }, 1, .{ .source = source }, &writer);
 
-    try expect(std.mem.indexOf(u8, writer.buffered(), "│ \t  ^^ ") != null);
+    try expect(std.mem.indexOf(u8, writer.buffered(), "│           ^^ ") != null);
 }
 
 test "long lines are clamped to a window around the span" {

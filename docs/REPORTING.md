@@ -134,8 +134,29 @@ supplies `bag.omitted`. Still inspect the operation's completion/delivery result
 
 Rendering allocates nothing, uses bounded excerpt/annotation scratch and writes
 only through the supplied writer; writer failures propagate to the caller.
-Locations are byte-based. Excerpts escape non-printable/non-ASCII source bytes,
-preserve tabs, and fall back to compact locations when source spans do not fit.
+Locations are byte-based, including the clickable `source_name:line:column:`
+location in compact `render()` output. Excerpts fall back to compact locations
+when source spans do not fit. Unicode style shows printable UTF-8; ASCII style
+escapes every non-ASCII byte. Both escape invalid bytes, control/format characters
+(including bidi controls), line/paragraph separators and noncharacters. Leading
+combining marks without a visible base are escaped as well.
+
+Carets use display cells, not UTF-8 byte counts. The optional renderer uses pinned
+[Unicode 17.0 width data](https://www.unicode.org/Public/17.0.0/ucd/EastAsianWidth.txt)
+and [character categories](https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedGeneralCategory.txt):
+wide/fullwidth scalars occupy two cells, nonspacing/enclosing marks and trailing
+Hangul Jamo zero, and other printable scalars one (including ambiguous-width
+characters). A finding inside a multi-byte scalar marks the whole displayed
+scalar; a combining-mark finding points to its base. Tabs expand to eight-cell
+stops relative to the excerpt window, and clipping never splits valid UTF-8.
+This is deterministic scalar-width presentation, not grapheme/emoji shaping or
+a guarantee about every terminal/font. Canonical locations and fix spans still
+index the original bytes.
+
+The cell mapping's two 65-entry `u16` maps use **260 bytes**
+of bounded presentation scratch, plus local counters; Unicode tables live only
+in the optional renderer. The generator in `tools/generate_console_widths.py`
+prints the checked-in tables; ordinary builds require no downloads or Python.
 Rendering may scan source bytes to derive locations; that is presentation work,
 not parser hot-path work. A list is presented in caller-supplied order, not sorted.
 An unused renderer need not be linked into the application.
@@ -143,9 +164,11 @@ An unused renderer need not be linked into the application.
 DOT retains `Diagnostic.fix: ?Fix`. Markup retains a compact optional `Repair`
 in `Diagnostic.fix`. Both offer `diagnostic.suggestedFix()` as a common accessor;
 markup materializes its `?Fix` on demand without allocation.
-The current markup offer inserts a missing reference semicolon and is always
-`maybe`, never proof of intended meaning. The `diagnostics.fixes` policy supports
-`all` (default), `machine_applicable`, and `off` at both binding times. Filtering
+The current markup offer inserts a missing reference semicolon only when the
+candidate can be terminated successfully. Numeric candidates with forbidden or
+out-of-range values receive no offer. An offer is always `maybe`, never proof of
+intended meaning or successful later catalog validation. The `diagnostics.fixes`
+policy supports `all` (default), `machine_applicable`, and `off` at both binding times. Filtering
 does not alter findings, validity, delivery or source text; `.machine_applicable`
 currently suppresses every markup repair. Raw low-level lexers have no policy
 binding; their findings carry unfiltered offers.
@@ -154,3 +177,11 @@ Markup diagnostics remain 36 bytes on the tested native and 32-bit targets; the
 offer uses existing padding. Retained trees and scratch pools do not grow.
 These are checked layout observations, not a stable ABI. Repairs are suggestions:
 apply them to caller-owned output, from highest offset down, then parse again.
+
+Custom renderer adapters receive `*presentation.Positions` in `detail`, `hint`,
+`note` and `primaryLabel`. `positions.slice(span)` bounds-checks source access;
+`positions.writeSource(bytes, writer)` writes a bounded, escaped inline name in
+the selected style. This enables source-aware wording without storing strings
+in diagnostic payloads. Markup uses it to name both tags in a mismatch; absent or
+truncated source keeps the generic wording. Numeric alternatives for `&nbsp;`,
+`&copy;` and `&mdash;` are hints only: no catalog changes or automatic edits.

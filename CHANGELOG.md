@@ -6,6 +6,17 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Suppress ineffective markup semicolon fixes for forbidden/out-of-range numeric
+  references. Improve attribute/reference hints and name both mismatched tags
+  through checked source spans. **Breaking:** markup `Expected.quote` splits
+  into `opening_quote` and `closing_quote`; renderer-adapter `detail` and
+  `primaryLabel` now receive `*Positions` for source-aware wording.
+- Shared Unicode console output preserves printable UTF-8 and aligns annotations
+  by display cells; controls and invalid bytes stay escaped. ASCII mode keeps
+  byte escapes, tabs expand to eight-cell stops, and compact locations include
+  `source_name:line:byte-column:`. Unicode tables and bounded mapping scratch are
+  presentation-only; parser/diagnostic layouts do not grow.
+
 - Share compile-time diagnostic metadata/identity construction, repair conventions
   and optional console layout across DOT and standalone markup. Markup gains
   typed registry metadata, aliases, summaries, hints, source-annotated console

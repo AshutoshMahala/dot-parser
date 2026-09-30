@@ -43,6 +43,15 @@ No numeric accounting changes. *(Embodied: `src/common/location.zig`,
 `src/dot/lexer/`, `src/dot/console.zig` `Positions`; R-MEM-008 and R-DIAG-001
 amended.)*
 
+**Presentation refinement (2026-09-29):** optional shared console rendering now
+shows printable UTF-8 in Unicode style and uses bounded byte-to-display-cell maps
+for annotations. ASCII style retains byte escapes; controls and invalid encoding
+remain escaped in both. Locations/fix spans still use original byte coordinates.
+Tabs use eight-cell excerpt-local stops; scalar widths use pinned Unicode 17.0
+tables, not grapheme shaping. The maps consume 260 bytes of presentation scratch,
+not parser state. Compact output includes the caller's source name for clickable
+locations. See [the rendering contract](../REPORTING.md#metadata-and-console-presentation).
+
 **Q38 — Which scanner backend is the default, and how is a backend chosen?**
 **Decided (2026-09-18):** two implementations behind one interface, selected
 at compile time: the scalar byte-at-a-time scanner on every target, with
@@ -301,8 +310,10 @@ not unfinished implementation of `Diagnostic.fix`.
 `reporting.Fix(Replacement)` and the same applicability/filtering semantics.
 Markup keeps `Diagnostic.fix: ?Repair` compact and exposes `suggestedFix()` to
 materialize the source edit on demand. The missing-reference-semicolon offer is
-always `maybe`; `.diagnostics.fixes` controls it at either binding time. Markup
-diagnostics remain 36 bytes. Rich catalogs/presentation do not require matching
+always `maybe` and only offered for terminable candidates: the scanner's existing
+numeric value must satisfy the reference-character rule. `.diagnostics.fixes`
+controls it at either binding time. Markup diagnostics remain 36 bytes.
+Rich catalogs/presentation do not require matching
 retained payload layouts or guessed tag/attribute repairs.
 *(Embodied: [diagnostic types](../../src/dot/diagnostic.zig),
 [operator checks](../../src/dot/validation_checks.zig),

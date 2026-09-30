@@ -2,12 +2,15 @@
 //! runtime registration. Renderer(Adapter) binds wording and payloads at comptime.
 //! The adapter supplies Item, registry, Annotations, headline/hint/detail,
 //! hasDetails/hasNote/note, fix, annotations and primary/secondaryLabel methods.
+//! detail and primaryLabel receive *Positions, as do hint and note, for checked
+//! source access and bounded escaped names. No source strings enter diagnostics.
 //! Rendering writes only to the caller's writer and never allocates or probes IO.
 const std = @import("std");
 const location = @import("location.zig");
+const source_text = @import("console_text.zig");
 const Severity = @import("reporting.zig").Severity;
 
-/// Options for the boxed renderers.
+/// Options shared by compact and boxed renderers.
 pub const RenderOptions = struct {
     /// Name shown in the location line ("name:line:column"). The core never
     /// learns file names (R-MOD-003), so the presenter supplies one.
@@ -16,8 +19,8 @@ pub const RenderOptions = struct {
     /// show annotated source excerpts; when null (or when a span does not
     /// fit the given bytes), boxes fall back to compact location lines.
     source: ?[]const u8 = null,
-    /// Visual style. `.unicode` draws a box; `.ascii` is plain 7-bit output
-    /// for terminals and logs that cannot render box-drawing characters.
+    /// `.unicode` draws a box and preserves printable UTF-8 source text;
+    /// `.ascii` uses plain framing and escapes all non-ASCII source bytes.
     style: Style = .unicode,
     /// ANSI severity colors per WDP part 10 §3.1. Off by default: the
     /// presenter performs its own TTY detection and opts in.
@@ -28,7 +31,7 @@ pub const RenderOptions = struct {
     /// Number of fill characters in the summary block's closing rule.
     rule_width: usize = 54,
 
-    pub const Style = enum { unicode, ascii };
+    pub const Style = source_text.Style;
     pub const Color = enum { none, ansi };
 };
 
@@ -39,7 +42,20 @@ pub const RenderOptions = struct {
 /// bytes the offset itself is shown.
 pub const Positions = struct {
     source: ?[]const u8,
+    style: RenderOptions.Style = .unicode,
     cursor: location.PositionCursor = .{},
+
+    /// Checked original bytes for processor-owned source-aware wording.
+    pub fn slice(self: *const Positions, span: location.Span) ?[]const u8 {
+        const source = self.source orelse return null;
+        if (!spanFits(span, source)) return null;
+        return source[span.start..][0..span.len];
+    }
+
+    /// Bounded, safely escaped inline source text, using the renderer's style.
+    pub fn writeSource(self: *const Positions, bytes: []const u8, writer: anytype) !void {
+        try source_text.writeInline(bytes, self.style, writer);
+    }
 
     pub fn locate(self: *Positions, offset: u32) ?location.Location {
         const source = self.source orelse return null;
@@ -96,6 +112,7 @@ pub fn Annotations(comptime Role: type, comptime capacity: u8) type {
 /// Frame characters for the two visual styles. ASCII output has no rail —
 /// content is indented instead — so its "rail" is plain spaces.
 const Glyphs = struct {
+    style: RenderOptions.Style,
     open: []const u8,
     rail: []const u8,
     close: []const u8,
@@ -122,6 +139,7 @@ const Glyphs = struct {
     fn of(style: RenderOptions.Style) Glyphs {
         return switch (style) {
             .unicode => .{
+                .style = .unicode,
                 .open = "┌─",
                 .rail = "│",
                 .close = "└─",
@@ -141,6 +159,7 @@ const Glyphs = struct {
                 .summary_fill = "═",
             },
             .ascii => .{
+                .style = .ascii,
                 .open = "--",
                 .rail = "  ",
                 .close = "--",
@@ -330,7 +349,7 @@ pub fn Renderer(comptime Adapter: type) type {
         ///
         /// ```text
         /// error[dot_parser:E.Validation.Operator.002]: edge operator does not match the graph kind
-        ///   --> line 2, byte column 7 (offset 13, len 2)
+        ///   --> input.dot:2:7: (byte column, offset 13, len 2)
         ///   detail: expected '--', found '->'
         ///   note: graph kind declared at 1:1
         ///   help: an undirected document ('graph') connects nodes with '--'; ...
@@ -343,22 +362,22 @@ pub fn Renderer(comptime Adapter: type) type {
         /// `writer` is anything with `print`, e.g. a `*std.Io.Writer`.
         pub fn render(d: Diagnostic, options: RenderOptions, writer: anytype) !void {
             const info = d.code.info();
-            var positions: Positions = .{ .source = options.source };
+            var positions: Positions = .{ .source = options.source, .style = options.style };
             try writer.print("{s}[{s}:{s}]: ", .{
                 severityWord(info.severity), diagnostic.namespace, d.code.structured(),
             });
             try Adapter.headline(d, writer);
             try writer.writeAll("\n");
             if (positions.locate(d.span.start)) |at| {
-                try writer.print("  --> line {d}, byte column {d} (offset {d}, len {d})\n", .{
-                    at.line, at.byte_column, at.byte_offset, d.span.len,
+                try writer.print("  --> {s}:{d}:{d}: (byte column, offset {d}, len {d})\n", .{
+                    options.source_name, at.line, at.byte_column, at.byte_offset, d.span.len,
                 });
             } else {
                 try writer.print("  --> offset {d}, len {d}\n", .{ d.span.start, d.span.len });
             }
             if (Adapter.hasDetails(d)) {
                 try writer.writeAll("  detail: ");
-                try Adapter.detail(d, writer);
+                try Adapter.detail(d, &positions, writer);
                 try writer.writeAll("\n");
             }
             if (Adapter.hasNote(d)) {
@@ -385,7 +404,7 @@ pub fn Renderer(comptime Adapter: type) type {
             options: RenderOptions,
             writer: anytype,
         ) !void {
-            var positions: Positions = .{ .source = options.source };
+            var positions: Positions = .{ .source = options.source, .style = options.style };
             try renderBoxedWith(d, number, options, &positions, writer);
         }
 
@@ -423,7 +442,7 @@ pub fn Renderer(comptime Adapter: type) type {
                 // one is.
                 if (Adapter.hasDetails(d)) {
                     try writeRail(g, pal, writer);
-                    try Adapter.detail(d, writer);
+                    try Adapter.detail(d, positions, writer);
                     try writer.writeAll("\n");
                 }
                 if (Adapter.hasNote(d)) {
@@ -470,7 +489,7 @@ pub fn Renderer(comptime Adapter: type) type {
             var errors: usize = 0;
             var warnings: usize = 0;
             var worst: Severity = .trace;
-            var positions: Positions = .{ .source = options.source };
+            var positions: Positions = .{ .source = options.source, .style = options.style };
             for (diagnostics, 0..) |d, index| {
                 if (index != 0) try writer.writeAll("\n");
                 try renderBoxedWith(d, index + 1, options, &positions, writer);
@@ -509,8 +528,8 @@ pub fn Renderer(comptime Adapter: type) type {
         }
 
         /// Maximum source bytes per excerpt; escaped bytes can expand to four display
-        /// cells. Longer lines are windowed with clip markers, so even a multi-megabyte
-        /// source line has bounded output. Tabs retain their existing presentation.
+        /// cells. Unicode windows can extend by three bytes at the left edge to
+        /// retain a whole scalar. Tabs expand to eight-cell excerpt-local stops.
         const max_view = 60;
 
         /// Returns the source to excerpt from, or null when the box must fall back
@@ -575,18 +594,13 @@ pub fn Renderer(comptime Adapter: type) type {
                     try writeRail(g, pal, writer);
                     try writer.print("{s}\n", .{g.gap});
                 }
-                const view = viewFor(source, annotations[index].span.start);
+                const view = viewFor(source, annotations[index].span.start, g.style);
                 try writeRail(g, pal, writer);
                 try writeUnsigned(writer, line, gutter_width);
                 try writer.print(" {s} ", .{g.gutter});
                 if (view.clipped_left) try writer.writeAll(g.clip);
-                for (source[view.start..view.end]) |byte| {
-                    if (byte == '\t' or std.ascii.isPrint(byte)) {
-                        try writer.writeAll(&.{byte});
-                    } else {
-                        try writer.print("\\x{X:0>2}", .{byte});
-                    }
-                }
+                var layout: source_text.Layout = .{};
+                try layout.write(source[view.start..view.end], g.style, writer);
                 if (view.clipped_right) try writer.writeAll(g.clip);
                 try writer.writeAll("\n");
                 previous_line = line;
@@ -596,9 +610,9 @@ pub fn Renderer(comptime Adapter: type) type {
                 // labels hanging below it.
                 const group = annotations[index..group_end];
                 var placed: [max_secondary + 1]Placed = undefined;
-                for (group, 0..) |annotation, i| placed[i] = place(annotation, view);
+                for (group, 0..) |annotation, i| placed[i] = place(annotation, view, &layout);
                 if (group.len == 1 or overlapping(placed[0..group.len])) {
-                    for (group) |annotation| try writeUnderline(d, annotation, view, source, gutter_width, g, pal, writer);
+                    for (placed[0..group.len]) |p| try writeUnderline(d, p, view, source, gutter_width, g, pal, writer);
                 } else {
                     try writeHangingLabels(d, placed[0..group.len], view, source, gutter_width, g, pal, writer);
                 }
@@ -606,16 +620,16 @@ pub fn Renderer(comptime Adapter: type) type {
             }
         }
 
-        /// One annotation's drawn extent within the view, in byte offsets.
+        /// One annotation's drawn extent, in display cells relative to the view.
         const Placed = struct {
             annotation: Annotation,
-            /// First byte under the marks, clamped into the view.
+            /// First display cell under the marks, clamped into the view.
             start: usize,
-            /// One past the last byte under the marks. Equal to `start` for a mark
+            /// One past the last cell under the marks. Equal to `start` for a mark
             /// that stands for a position rather than bytes (a zero-width span such
             /// as end of input, or a span clipped out of the window).
             end: usize,
-            /// The byte whose cell carries the T junction and the connector below.
+            /// The cell carrying the T junction and the connector below.
             connector: usize,
 
             fn positional(self: Placed) bool {
@@ -623,14 +637,15 @@ pub fn Renderer(comptime Adapter: type) type {
             }
         };
 
-        fn place(annotation: Annotation, view: View) Placed {
-            const offset: usize = annotation.span.start;
-            const start = @min(offset, view.end);
-            const len = if (offset < view.end) @min(annotation.span.len, view.end - offset) else 0;
-            if (len == 0) return .{ .annotation = annotation, .start = start, .end = start, .connector = start };
-            // The middle cell, so the connector reads as belonging to the whole
-            // span; a one-byte span puts it under that byte.
-            return .{ .annotation = annotation, .start = start, .end = start + len, .connector = start + (len - 1) / 2 };
+        fn place(annotation: Annotation, view: View, layout: *const source_text.Layout) Placed {
+            const offset = std.math.clamp(@as(usize, annotation.span.start), view.start, view.end);
+            const len = @min(annotation.span.len, view.end - offset);
+            const start = layout.starts[offset - view.start];
+            const end = if (len == 0) start else layout.ends[offset - view.start + len - 1];
+            if (end == start) return .{ .annotation = annotation, .start = start, .end = start, .connector = start };
+            // The middle cell, so the connector belongs to the whole displayed
+            // span, including wide scalars or multi-cell escapes.
+            return .{ .annotation = annotation, .start = start, .end = end, .connector = start + (end - start - 1) / 2 };
         }
 
         /// True when two marks would share a cell (sorted by start).
@@ -641,19 +656,6 @@ pub fn Renderer(comptime Adapter: type) type {
                 if (p.start < previous_end) return true;
             }
             return false;
-        }
-
-        /// Display cells one source byte occupies in an excerpt: tabs are mirrored
-        /// as tabs, printable bytes are one cell, everything else is a 4-cell escape.
-        fn cellsOf(byte: u8) usize {
-            return if (byte == '\t' or std.ascii.isPrint(byte)) 1 else 4;
-        }
-
-        /// Blank cells mirroring `bytes`, so marks below the excerpt line up.
-        fn writeMirror(writer: anytype, bytes: []const u8) !void {
-            for (bytes) |byte| {
-                try writer.writeAll(if (byte == '\t') "\t" else if (std.ascii.isPrint(byte)) " " else "    ");
-            }
         }
 
         fn writeUnderlinePrefix(view: View, gutter_width: usize, g: Glyphs, pal: Palette, writer: anytype) !void {
@@ -673,9 +675,10 @@ pub fn Renderer(comptime Adapter: type) type {
             return !annotation.primary or Adapter.hasDetails(d);
         }
 
-        fn writeLabel(d: Diagnostic, annotation: Annotation, writer: anytype) !void {
+        fn writeLabel(d: Diagnostic, annotation: Annotation, source: []const u8, g: Glyphs, writer: anytype) !void {
             if (annotation.primary) {
-                try Adapter.primaryLabel(d, writer);
+                var positions: Positions = .{ .source = source, .style = g.style };
+                try Adapter.primaryLabel(d, &positions, writer);
             } else {
                 try Adapter.secondaryLabel(d, annotation.role.?, writer);
             }
@@ -684,21 +687,18 @@ pub fn Renderer(comptime Adapter: type) type {
         /// The marks under one placed span: carets for the primary, dashes for a
         /// secondary, with the T junction in the connector cell when the label
         /// hangs below instead of sitting inline.
-        fn writeMarks(writer: anytype, source: []const u8, p: Placed, hanging: bool, g: Glyphs) !void {
+        fn writeMarks(writer: anytype, p: Placed, hanging: bool, g: Glyphs) !void {
             const mark = if (p.annotation.primary) "^" else g.secondary_underline;
             if (p.positional()) {
                 try writer.writeAll(if (hanging) g.tee else mark);
                 return;
             }
-            var offset = p.start;
-            while (offset < p.end) : (offset += 1) {
-                const cells = cellsOf(source[offset]);
-                if (hanging and offset == p.connector) {
-                    try writer.writeAll(g.tee);
-                    try writeRepeat(writer, mark, cells - 1);
-                } else {
-                    try writeRepeat(writer, mark, cells);
-                }
+            if (hanging) {
+                try writeRepeat(writer, mark, p.connector - p.start);
+                try writer.writeAll(g.tee);
+                try writeRepeat(writer, mark, p.end - p.connector - 1);
+            } else {
+                try writeRepeat(writer, mark, p.end - p.start);
             }
         }
 
@@ -721,18 +721,18 @@ pub fn Renderer(comptime Adapter: type) type {
 
             // Mark row.
             try writeUnderlinePrefix(view, gutter_width, g, pal, writer);
-            var cursor = view.start;
+            var cursor: usize = 0;
             for (placed, 0..) |p, i| {
-                try writeMirror(writer, source[cursor..p.start]);
+                try writeRepeat(writer, " ", p.start - cursor);
                 try writer.writeAll(annotationStyle(p.annotation, pal));
-                try writeMarks(writer, source, p, i != last, g);
+                try writeMarks(writer, p, i != last, g);
                 try writer.writeAll(pal.reset);
-                cursor = p.end;
+                cursor = if (p.positional()) p.start + 1 else p.end;
             }
             const inline_annotation = placed[last].annotation;
             if (hasLabel(d, inline_annotation)) {
                 try writer.print(" {s}", .{annotationStyle(inline_annotation, pal)});
-                try writeLabel(d, inline_annotation, writer);
+                try writeLabel(d, inline_annotation, source, g, writer);
                 try writer.writeAll(pal.reset);
             }
             try writer.writeAll("\n");
@@ -742,24 +742,18 @@ pub fn Renderer(comptime Adapter: type) type {
             while (k > 0) {
                 k -= 1;
                 try writeUnderlinePrefix(view, gutter_width, g, pal, writer);
-                cursor = view.start;
+                cursor = 0;
                 for (placed[0..k]) |q| {
-                    try writeMirror(writer, source[cursor..q.connector]);
+                    try writeRepeat(writer, " ", q.connector - cursor);
                     try writer.print("{s}{s}{s}", .{ annotationStyle(q.annotation, pal), g.vertical, pal.reset });
-                    if (q.positional()) {
-                        cursor = q.connector;
-                    } else {
-                        // The connector sits in the first cell of its byte.
-                        try writeRepeat(writer, " ", cellsOf(source[q.connector]) - 1);
-                        cursor = q.connector + 1;
-                    }
+                    cursor = q.connector + 1;
                 }
                 const p = placed[k];
-                try writeMirror(writer, source[cursor..p.connector]);
+                try writeRepeat(writer, " ", p.connector - cursor);
                 try writer.print("{s}{s}{s}", .{ annotationStyle(p.annotation, pal), g.corner, g.hang });
                 if (hasLabel(d, p.annotation)) {
                     try writer.writeAll(" ");
-                    try writeLabel(d, p.annotation, writer);
+                    try writeLabel(d, p.annotation, source, g, writer);
                 }
                 try writer.print("{s}\n", .{pal.reset});
             }
@@ -771,7 +765,7 @@ pub fn Renderer(comptime Adapter: type) type {
         /// Line boundaries must agree with `location.Tracker`: LF, CRLF, and
         /// standalone CR each terminate one physical line — otherwise a diagnostic's
         /// line number and the excerpted content would contradict each other.
-        fn viewFor(source: []const u8, offset: usize) View {
+        fn viewFor(source: []const u8, offset: usize, style: RenderOptions.Style) View {
             var line_start = offset;
             while (line_start > 0 and !lineBoundaryBefore(source, line_start)) line_start -= 1;
             var line_end = offset;
@@ -786,6 +780,10 @@ pub fn Renderer(comptime Adapter: type) type {
                     start = offset - (max_view / 2);
                 }
                 end = @min(line_end, start + max_view);
+            }
+            if (style == .unicode) {
+                start = source_text.scalarStart(source, start);
+                end = source_text.scalarStart(source, end);
             }
             return .{
                 .line_start = line_start,
@@ -808,7 +806,7 @@ pub fn Renderer(comptime Adapter: type) type {
         /// One annotation on its own row: marks, then the label inline.
         fn writeUnderline(
             d: Diagnostic,
-            annotation: Annotation,
+            p: Placed,
             view: View,
             source: []const u8,
             gutter_width: usize,
@@ -817,16 +815,12 @@ pub fn Renderer(comptime Adapter: type) type {
             writer: anytype,
         ) !void {
             try writeUnderlinePrefix(view, gutter_width, g, pal, writer);
-            // Mirror tabs and account for the four cells of each escaped byte.
-            // Excerpts intentionally use byte escapes rather than Unicode display-
-            // width interpretation; canonical locations remain original byte columns.
-            const p = place(annotation, view);
-            try writeMirror(writer, source[view.start..p.start]);
-            try writer.writeAll(annotationStyle(annotation, pal));
-            try writeMarks(writer, source, p, false, g);
-            if (hasLabel(d, annotation)) {
+            try writeRepeat(writer, " ", p.start);
+            try writer.writeAll(annotationStyle(p.annotation, pal));
+            try writeMarks(writer, p, false, g);
+            if (hasLabel(d, p.annotation)) {
                 try writer.writeAll(" ");
-                try writeLabel(d, annotation, writer);
+                try writeLabel(d, p.annotation, source, g, writer);
             }
             try writer.print("{s}\n", .{pal.reset});
         }

@@ -288,6 +288,9 @@ Licensed under either of
 
 at your option (`MIT OR Apache-2.0`).
 
+The optional renderer's Unicode-derived width tables use Unicode License v3;
+the full notice is included in [console_widths.zig](src/common/console_widths.zig).
+
 Unless you explicitly state otherwise, any contribution intentionally
 submitted for inclusion in this work by you shall be dual licensed as above,
 without any additional terms or conditions.

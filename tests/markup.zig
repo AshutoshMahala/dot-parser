@@ -549,8 +549,8 @@ test "attribute token stream, grammar boundaries and precise truncation expectat
     for ([_]struct { source: []const u8, expected: markup.diagnostic.Expected }{
         .{ .source = "<a x", .expected = .equal_sign },
         .{ .source = "<a x ", .expected = .equal_sign },
-        .{ .source = "<a x=", .expected = .quote },
-        .{ .source = "<a x='v", .expected = .quote },
+        .{ .source = "<a x=", .expected = .opening_quote },
+        .{ .source = "<a x='v", .expected = .closing_quote },
         .{ .source = "<a x='v'/", .expected = .closing_angle },
     }) |case| {
         var bag: markup.FixedDiagnosticBag(1) = .{};

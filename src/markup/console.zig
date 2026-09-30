@@ -27,13 +27,17 @@ pub const Adapter = struct {
             else => false,
         };
     }
-    pub fn detail(d: Diagnostic, writer: anytype) !void {
+    pub fn detail(d: Diagnostic, positions: *Positions, writer: anytype) !void {
+        if (d.code == .mismatched_tag and try writeMismatch(d, positions, writer)) return;
         switch (d.details) {
             .none => try writer.writeAll(d.code.info().summary),
             .byte => |byte| {
                 if (std.ascii.isPrint(byte)) try writer.print("offending byte 0x{X:0>2} ('{c}')", .{ byte, byte }) else try writer.print("offending byte 0x{X:0>2}", .{byte});
             },
-            .expected => |expected| try writer.print("expected {s}", .{expectedText(expected)}),
+            .expected => |expected| if (expected == .attribute_value)
+                try writer.writeAll("'<' is not allowed in attribute values; write '&lt;'")
+            else
+                try writer.print("expected {s}", .{expectedText(expected)}),
             .feature => |feature| try writer.writeAll(switch (feature) {
                 .processing_instructions => "processing instructions are not supported",
                 .declarations => "declarations are not supported",
@@ -63,11 +67,27 @@ pub const Adapter = struct {
         try writer.writeAll(if (isDuplicate(d)) "first attribute with this name at " else "related opening element at ");
         try positions.writeColonForm(d.related.?.start, writer);
     }
-    pub fn hint(d: Diagnostic, _: *Positions, writer: anytype) !void {
+    pub fn hint(d: Diagnostic, positions: *Positions, writer: anytype) !void {
         if (d.details == .expected) {
-            try writer.print("complete the construct with {s}; source bytes are not repaired automatically", .{expectedText(d.details.expected)});
+            switch (d.details.expected) {
+                .attribute_value => try writer.writeAll("write '&lt;' for a literal '<' inside the attribute value"),
+                .opening_quote => try writer.writeAll("enclose the entire attribute value in single or double quotes"),
+                .closing_quote => try writer.writeAll("close the attribute value with the same quote that opened it"),
+                else => try writer.print("complete the construct with {s}", .{expectedText(d.details.expected)}),
+            }
         } else if (d.details == .reference and d.details.reference == .missing_semicolon) {
-            try writer.writeAll("if a reference was intended, terminate it with ';'; otherwise write '&amp;' for a literal ampersand");
+            try writer.writeAll("write '&amp;' for a literal '&'; otherwise use a valid reference ending in ';'");
+        } else if (d.details == .reference and d.details.reference == .invalid_character) {
+            try writer.writeAll("use a permitted character value, such as '&#32;' for a space");
+        } else if (d.code == .unknown_reference or d.code == .unknown_reference_tolerated) {
+            if (positions.slice(d.span)) |name| {
+                const suggestion: ?[]const u8 = if (std.mem.eql(u8, name, "&nbsp;")) "&#160;" else if (std.mem.eql(u8, name, "&copy;")) "&#169;" else if (std.mem.eql(u8, name, "&mdash;")) "&#8212;" else null;
+                if (suggestion) |replacement| {
+                    try writer.print("use '{s}' instead of '{s}', or select a catalog that defines this name", .{ replacement, name });
+                    return;
+                }
+            }
+            try writer.writeAll(d.code.info().hint);
         } else try writer.writeAll(d.code.info().hint);
     }
     pub fn fix(d: Diagnostic) ?diagnostic.Fix {
@@ -78,14 +98,14 @@ pub const Adapter = struct {
         if (d.related) |span| list.add(.{ .span = span, .primary = false, .role = if (isDuplicate(d)) .first_attribute else .opener });
         return list;
     }
-    pub fn primaryLabel(d: Diagnostic, writer: anytype) !void {
+    pub fn primaryLabel(d: Diagnostic, positions: *Positions, writer: anytype) !void {
         switch (d.code) {
-            .mismatched_tag => try writer.writeAll("expected the currently open element's name"),
+            .mismatched_tag => if (!try writeMismatch(d, positions, writer)) try writer.writeAll("expected the currently open element's name"),
             .unexpected_close => try writer.writeAll("no element is open here"),
             .unclosed_element => try writer.writeAll("expected a matching closing tag before end of input"),
             .duplicate_attribute, .duplicate_attribute_tolerated => try writer.writeAll("same name as the earlier attribute"),
             .unknown_reference, .unknown_reference_tolerated => try writer.writeAll("not in the selected reference catalog"),
-            else => try detail(d, writer),
+            else => try detail(d, positions, writer),
         }
     }
     pub fn secondaryLabel(_: Diagnostic, role: Role, writer: anytype) !void {
@@ -96,6 +116,18 @@ pub const Adapter = struct {
     }
 };
 
+fn writeMismatch(d: Diagnostic, positions: *Positions, writer: anytype) !bool {
+    const expected = positions.slice(d.related orelse return false) orelse return false;
+    const found = positions.slice(d.span) orelse return false;
+    if (expected.len == 0 or found.len == 0) return false;
+    try writer.writeAll("expected '</");
+    try positions.writeSource(expected, writer);
+    try writer.writeAll(">', found '</");
+    try positions.writeSource(found, writer);
+    try writer.writeAll(">'");
+    return true;
+}
+
 fn isDuplicate(d: Diagnostic) bool {
     return d.code == .duplicate_attribute or d.code == .duplicate_attribute_tolerated;
 }
@@ -105,9 +137,10 @@ fn expectedText(expected: diagnostic.Expected) []const u8 {
         .tag_end => "'>' or '/>'",
         .closing_angle => "'>'",
         .equal_sign => "'=' after the attribute name",
-        .quote => "a matching quote",
+        .opening_quote => "a quote (' or \") to open the attribute value",
+        .closing_quote => "a matching closing quote",
         .attribute_separator => "whitespace before the next attribute",
-        .attribute_value => "a single- or double-quoted attribute value",
+        .attribute_value => "attribute content without a literal '<'",
         .declaration_start => "'<!--' or '<![CDATA['",
         .comment_start => "'<!--'",
         .comment_end => "'-->'",

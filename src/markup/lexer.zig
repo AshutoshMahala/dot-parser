@@ -118,6 +118,14 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
             };
         }
         fn malformedReference(self: *Self, reason: diagnostic.ReferenceProblem) bool {
+            // Adding ';' must actually complete a valid reference. Inspect the
+            // state before endReference restores text/value; a named candidate
+            // must not inherit the numeric accumulator from an earlier reference.
+            const terminable = reason == .missing_semicolon and switch (self.state) {
+                .reference_name => true,
+                .reference_decimal, .reference_hex => referenceCharacter(self.reference_value),
+                else => false,
+            };
             self.endReference();
             // Consumed candidate bytes are already literal-safe in this context.
             // Do not rewind/rescan them or consume the byte that stopped recognition.
@@ -125,7 +133,7 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
                 .code = .malformed_reference,
                 .span = .{ .start = self.reference_start, .len = self.offset - self.reference_start },
                 .details = .{ .reference = reason },
-                .fix = if (reason == .missing_semicolon) .terminate_reference else null,
+                .fix = if (terminable) .terminate_reference else null,
             } };
             return true;
         }
@@ -196,7 +204,8 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
                         .slash => .closing_angle,
                         .attribute_slash => .closing_angle,
                         .attribute_name, .before_equal => .equal_sign,
-                        .before_value, .value => .quote,
+                        .before_value => .opening_quote,
+                        .value => .closing_quote,
                         .after_value => .attribute_separator,
                         .bang => .declaration_start,
                         .comment_start => .comment_start,
@@ -331,7 +340,7 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
                         self.quote = byte;
                         self.offset += 1;
                         self.state = .value;
-                    } else return self.problem(.unexpected_byte, at, .{ .expected = .quote });
+                    } else return self.problem(.unexpected_byte, at, .{ .expected = .opening_quote });
                 },
                 .value => {
                     if (byte == '&') {

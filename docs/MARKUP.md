@@ -547,7 +547,9 @@ An accepted warning followed by sink `.stop` aborts unfinished parsing with
 errors produce the corresponding reason and failed delivery. Neither case publishes
 a document, sends another diagnostic into the stopped sink, or continues scanning.
 Syntax recovery is not implemented. A missing reference semicolon can carry a
-possible repair; the parser never applies it. `Diagnostic.fix` is a compact offer,
+possible repair if terminating the candidate makes it syntactically valid;
+forbidden/out-of-range numeric values (for example `&#5` or `&#x110000`) have no
+such offer. The parser never applies it. `Diagnostic.fix` is a compact offer,
 and `Diagnostic.suggestedFix()` returns its full typed edit on demand. This offer
 is `maybe` because literal text may have been intended. `diagnostics.fixes`
 filters offers at compile time or runtime without hiding findings or changing

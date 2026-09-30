@@ -99,10 +99,10 @@ fn compare(comptime acceptance: m.Acceptance, source: []const u8) !void {
 
 test "backends agree on every prefix, arbitrary bytes, and reference policies" {
     const cases = [_][]const u8{
-        "",                                                                      "\xef\xbb\xbf<a/>",                                      "\xff\xfe<a/>",    "\x00\x00\xfe\xff",
-        "<a aa='x' b=\"&bad\">text&amp;<!-- x-y --><![CDATA[xx]]]></a>&#xD800;", "<long-name attr = 'long-value'>x</wrong-name>",         "<a x='1'x='2'/>", "<!--x--y-->",
-        "<![CDATA[",                                                             "&foo<&bar;&#x; &; &name &#99999999999999999999999999;", "<a><b></a>",      "<?pi?>",
-        "<!DOCTYPE x>",                                                          "<a>\x00</a>",
+        "",                                                                      "\xef\xbb\xbf<a/>",                                      "\xff\xfe<a/>",        "\x00\x00\xfe\xff",
+        "<a aa='x' b=\"&bad\">text&amp;<!-- x-y --><![CDATA[xx]]]></a>&#xD800;", "<long-name attr = 'long-value'>x</wrong-name>",         "<a x='1'x='2'/>",     "<!--x--y-->",
+        "<![CDATA[",                                                             "&foo<&bar;&#x; &; &name &#99999999999999999999999999;", "<a><b></a>",          "<?pi?>",
+        "<!DOCTYPE x>",                                                          "<a>\x00</a>",                                           "&#5 &amp &#x4 &copy", "<a x='&#x110000 &amp' y=\"&#9999999999999999999 &copy\"/>",
     };
     inline for (.{ .reject, .warn, .accept }) |acceptance| {
         for (cases) |source| for (0..source.len + 1) |end| {

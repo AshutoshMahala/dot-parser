@@ -226,6 +226,6 @@ test "the compact renderer says byte column and lists every note" {
     var writer = std.Io.Writer.fixed(&buffer);
     try dot.console.render(bag.items()[0], .{ .source = source }, &writer);
     const text = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, text, "line 6, byte column 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "<input>:6:1: (byte column,") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "note: unclosed delimiter opened at 1:9; misindented closing brace at 5:1") != null);
 }

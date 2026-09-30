@@ -61,7 +61,7 @@ pub const Primary = enum {
 
 pub const Feature = enum { processing_instructions, declarations, encoding };
 pub const Resource = enum { source_bytes, nesting_depth, nodes, attributes, nesting_frames, node_pool, attribute_pool, attribute_keys };
-pub const Expected = enum { name, tag_end, closing_angle, equal_sign, quote, attribute_separator, attribute_value, declaration_start, comment_start, comment_end, cdata_start, cdata_end };
+pub const Expected = enum { name, tag_end, closing_angle, equal_sign, opening_quote, closing_quote, attribute_separator, attribute_value, declaration_start, comment_start, comment_end, cdata_start, cdata_end };
 pub const ReferenceProblem = enum { missing_name, missing_digits, missing_semicolon, invalid_character };
 pub const NameContext = enum { element, attribute, reference };
 pub const NameProblem = enum { invalid_start, invalid_character, invalid_utf8 };
@@ -96,7 +96,7 @@ pub const Code = enum {
                 .primary = .byte,
                 .sequence = Sequence.invalid,
                 .summary = "invalid byte in markup",
-                .hint = "remove the forbidden byte; parsing does not replace or transcode input bytes",
+                .hint = "remove the forbidden byte",
             },
             .unexpected_byte => .{
                 .severity = .err,
@@ -120,7 +120,7 @@ pub const Code = enum {
                 .primary = .tag,
                 .sequence = Sequence.mismatch,
                 .summary = "closing tag does not match the open element",
-                .hint = "close the most recently opened element using exactly the same name; name matching is byte-exact and case-sensitive",
+                .hint = "close the most recently opened element using exactly the same name, including case",
             },
             .unexpected_close => .{
                 .severity = .err,
@@ -128,7 +128,7 @@ pub const Code = enum {
                 .primary = .tag,
                 .sequence = Sequence.invalid,
                 .summary = "closing tag has no open element",
-                .hint = "add the intended opening tag or remove this closing tag; the parser does not infer missing elements",
+                .hint = "add the intended opening tag or remove this closing tag",
             },
             .unclosed_element => .{
                 .severity = .err,
@@ -168,7 +168,7 @@ pub const Code = enum {
                 .primary = .attribute,
                 .sequence = Sequence.duplicate,
                 .summary = "repeated attribute name on one element",
-                .hint = "choose the intended attribute value or change the validation policy; every occurrence remains retained",
+                .hint = "keep one attribute with the intended value, or change the duplicate-attribute policy",
             },
             .malformed_reference, .malformed_reference_tolerated => .{
                 .severity = if (self == .malformed_reference) .err else .warning,
@@ -176,7 +176,7 @@ pub const Code = enum {
                 .primary = .reference,
                 .sequence = Sequence.invalid,
                 .summary = "malformed markup reference",
-                .hint = "use '&name;', '&#123;' or '&#x7B;'; tolerated candidates remain literal source bytes and are not expanded",
+                .hint = "write '&amp;' for a literal '&'; for a reference, use '&name;', '&#123;' or '&#x7B;'",
             },
             .invalid_utf8, .invalid_utf8_tolerated => .{
                 .severity = if (self == .invalid_utf8) .err else .warning,
@@ -184,7 +184,7 @@ pub const Code = enum {
                 .primary = .encoding,
                 .sequence = Sequence.invalid,
                 .summary = "invalid UTF-8 byte sequence",
-                .hint = "supply UTF-8 input or disable the optional encoding check for raw-byte processing; no bytes were replaced",
+                .hint = "supply UTF-8 input or disable the optional encoding check for raw-byte processing",
             },
             .invalid_name, .invalid_name_tolerated => .{
                 .severity = if (self == .invalid_name) .err else .warning,
@@ -192,7 +192,7 @@ pub const Code = enum {
                 .primary = .identifier,
                 .sequence = Sequence.invalid,
                 .summary = "name violates the selected name rule",
-                .hint = "use a name accepted by the selected rule or disable that optional check; source spelling is preserved",
+                .hint = "use a name accepted by the selected rule or disable that optional check",
             },
             .unknown_reference, .unknown_reference_tolerated => .{
                 .severity = if (self == .unknown_reference) .err else .warning,
@@ -200,7 +200,7 @@ pub const Code = enum {
                 .primary = .reference,
                 .sequence = Sequence.invalid,
                 .summary = "reference name is absent from the selected catalog",
-                .hint = "use a known reference or change the catalog policy; catalog validation does not expand references",
+                .hint = "use a known reference, a numeric reference, or change the catalog policy",
             },
         };
         return definition.info();
