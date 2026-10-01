@@ -9,11 +9,13 @@ const std = @import("std");
 const location = @import("location.zig");
 const source_text = @import("console_text.zig");
 const Severity = @import("reporting.zig").Severity;
+pub const writeSourceName = source_text.writeName;
 
 /// Options shared by compact and boxed renderers.
 pub const RenderOptions = struct {
     /// Name shown in the location line ("name:line:column"). The core never
-    /// learns file names (R-MOD-003), so the presenter supplies one.
+    /// learns file names (R-MOD-003), so the presenter supplies one. Controls
+    /// are escaped; ordinary paths are never truncated.
     source_name: []const u8 = "<input>",
     /// The source bytes the diagnostics' spans index. When present, boxes
     /// show annotated source excerpts; when null (or when a span does not
@@ -37,13 +39,13 @@ pub const RenderOptions = struct {
 
 /// Where positions are shown from. Diagnostics carry byte offsets only;
 /// with `options.source` a line and byte column are derived through one
-/// cursor shared by everything a render call prints. Ascending queries reuse
-/// that traversal; earlier related spans can require rescanning. Without source
-/// bytes the offset itself is shown.
+/// sorted position table prepared in one source pass. Standalone adapter callers
+/// may omit that table and use the cursor. Without source bytes show the offset.
 pub const Positions = struct {
     source: ?[]const u8,
     style: RenderOptions.Style = .unicode,
     cursor: location.PositionCursor = .{},
+    resolved: []const location.Location = &.{},
 
     /// Checked original bytes for processor-owned source-aware wording.
     pub fn slice(self: *const Positions, span: location.Span) ?[]const u8 {
@@ -60,6 +62,14 @@ pub const Positions = struct {
     pub fn locate(self: *Positions, offset: u32) ?location.Location {
         const source = self.source orelse return null;
         if (offset > source.len) return null;
+        var low: usize = 0;
+        var high = self.resolved.len;
+        while (low < high) {
+            const mid = low + (high - low) / 2;
+            const at = self.resolved[mid];
+            if (at.byte_offset == offset) return at;
+            if (at.byte_offset < offset) low = mid + 1 else high = mid;
+        }
         return self.cursor.locate(source, offset);
     }
 
@@ -103,6 +113,39 @@ pub fn Annotations(comptime Role: type, comptime capacity: u8) type {
             return self.items[0..self.len];
         }
     };
+}
+
+test "excerpt windows match full-line selection without walking whole lines" {
+    const A = Annotations(void, 0);
+    const R = Renderer(struct {
+        pub const Item = u8;
+        pub const registry = struct {};
+        pub const Annotations = A;
+    });
+    const source = "a" ** 90 ++ "\r\nbé中" ++ "x" ** 120 ++ "\rc\n";
+    for (0..source.len + 1) |offset| {
+        inline for (.{ .ascii, .unicode }) |style| {
+            var first = offset;
+            while (first > 0 and !R.lineBoundaryBefore(source, first)) first -= 1;
+            var last = offset;
+            while (last < source.len and source[last] != '\r' and source[last] != '\n') last += 1;
+            var start = first;
+            var end = last;
+            if (last - first > R.max_view) {
+                if (offset - first > R.max_view - 20) start = offset - R.max_view / 2;
+                end = @min(last, start + R.max_view);
+            }
+            if (style == .unicode) {
+                start = source_text.scalarStart(source, start);
+                end = source_text.scalarStart(source, end);
+            }
+            const actual = R.viewFor(source, offset, style);
+            try std.testing.expectEqual(start, actual.start);
+            try std.testing.expectEqual(end, actual.end);
+            try std.testing.expectEqual(start > first, actual.clipped_left);
+            try std.testing.expectEqual(end < last, actual.clipped_right);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +388,43 @@ pub fn Renderer(comptime Adapter: type) type {
         const diagnostic = Adapter.registry;
         const Annotation = Adapter.Annotations.Annotation;
         const max_secondary: usize = Adapter.Annotations.max_count;
+
+        /// Upper bound on caller-owned location records for list rendering.
+        /// Source is scanned once; no per-source-byte or per-line index is kept.
+        pub fn locationCapacity(diagnostics: []const Diagnostic) error{Overflow}!usize {
+            return std.math.mul(usize, diagnostics.len, max_secondary + 2);
+        }
+
+        fn prepareLocations(diagnostics: []const Diagnostic, source: ?[]const u8, scratch: []location.Location) error{LocationScratchTooSmall}![]const location.Location {
+            const bytes = source orelse return &.{};
+            var count: usize = 0;
+            for (diagnostics) |d| {
+                try addLocation(d.span.start, bytes, scratch, &count);
+                for (Adapter.annotations(d).slice()) |annotation| try addLocation(annotation.span.start, bytes, scratch, &count);
+                if (Adapter.fix(d)) |fix| try addLocation(fix.span.start, bytes, scratch, &count);
+            }
+            const entries = scratch[0..count];
+            std.sort.heap(location.Location, entries, {}, struct {
+                fn less(_: void, a: location.Location, b: location.Location) bool {
+                    return a.byte_offset < b.byte_offset;
+                }
+            }.less);
+            var cursor: location.PositionCursor = .{};
+            var unique: usize = 0;
+            for (entries) |entry| {
+                if (unique != 0 and entries[unique - 1].byte_offset == entry.byte_offset) continue;
+                entries[unique] = cursor.locate(bytes, entry.byte_offset);
+                unique += 1;
+            }
+            return entries[0..unique];
+        }
+
+        fn addLocation(offset: u32, source: []const u8, scratch: []location.Location, count: *usize) error{LocationScratchTooSmall}!void {
+            if (offset > source.len) return;
+            if (count.* == scratch.len) return error.LocationScratchTooSmall;
+            scratch[count.*] = .{ .byte_offset = offset, .line = 0, .byte_column = 0 };
+            count.* += 1;
+        }
         /// Render one diagnostic as compact log-style text, e.g.:
         ///
         /// ```text
@@ -362,15 +442,18 @@ pub fn Renderer(comptime Adapter: type) type {
         /// `writer` is anything with `print`, e.g. a `*std.Io.Writer`.
         pub fn render(d: Diagnostic, options: RenderOptions, writer: anytype) !void {
             const info = d.code.info();
-            var positions: Positions = .{ .source = options.source, .style = options.style };
+            var scratch: [max_secondary + 2]location.Location = undefined;
+            var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(&.{d}, options.source, &scratch) };
             try writer.print("{s}[{s}:{s}]: ", .{
                 severityWord(info.severity), diagnostic.namespace, d.code.structured(),
             });
             try Adapter.headline(d, writer);
             try writer.writeAll("\n");
             if (positions.locate(d.span.start)) |at| {
-                try writer.print("  --> {s}:{d}:{d}: (byte column, offset {d}, len {d})\n", .{
-                    options.source_name, at.line, at.byte_column, at.byte_offset, d.span.len,
+                try writer.writeAll("  --> ");
+                try source_text.writeName(options.source_name, options.style, writer);
+                try writer.print(":{d}:{d}: (byte column, offset {d}, len {d})\n", .{
+                    at.line, at.byte_column, at.byte_offset, d.span.len,
                 });
             } else {
                 try writer.print("  --> offset {d}, len {d}\n", .{ d.span.start, d.span.len });
@@ -404,7 +487,8 @@ pub fn Renderer(comptime Adapter: type) type {
             options: RenderOptions,
             writer: anytype,
         ) !void {
-            var positions: Positions = .{ .source = options.source, .style = options.style };
+            var scratch: [max_secondary + 2]location.Location = undefined;
+            var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(&.{d}, options.source, &scratch) };
             try renderBoxedWith(d, number, options, &positions, writer);
         }
 
@@ -428,7 +512,8 @@ pub fn Renderer(comptime Adapter: type) type {
             try writer.writeAll("\n");
 
             try writeRail(g, pal, writer);
-            try writer.print("{s}:", .{options.source_name});
+            try source_text.writeName(options.source_name, options.style, writer);
+            try writer.writeAll(":");
             try positions.writeColonForm(d.span.start, writer);
             try writer.writeAll("\n");
 
@@ -480,16 +565,21 @@ pub fn Renderer(comptime Adapter: type) type {
         /// Render a list of diagnostics as numbered boxes. When the list holds more
         /// than one diagnostic — or when a `FixedBag` overflowed (`omitted` > 0) —
         /// a summary block follows; a single complete diagnostic speaks for itself.
+        /// With source, supply locationCapacity(diagnostics) Location records.
+        /// Scratch is presentation-only, overwritten, and never retained. Without
+        /// source, an empty slice suffices. Too-small scratch fails before output.
+        /// Scratch must not alias the immutable source or diagnostic records.
         pub fn renderBoxedList(
             diagnostics: []const Diagnostic,
             omitted: u64,
             options: RenderOptions,
+            location_scratch: []location.Location,
             writer: anytype,
         ) !void {
             var errors: usize = 0;
             var warnings: usize = 0;
             var worst: Severity = .trace;
-            var positions: Positions = .{ .source = options.source, .style = options.style };
+            var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(diagnostics, options.source, location_scratch) };
             for (diagnostics, 0..) |d, index| {
                 if (index != 0) try writer.writeAll("\n");
                 try renderBoxedWith(d, index + 1, options, &positions, writer);
@@ -545,7 +635,6 @@ pub fn Renderer(comptime Adapter: type) type {
         }
 
         const View = struct {
-            line_start: usize,
             start: usize,
             end: usize,
             clipped_left: bool,
@@ -579,7 +668,7 @@ pub fn Renderer(comptime Adapter: type) type {
 
             var gutter_width: usize = 0;
             for (annotations[0..count]) |*annotation| {
-                annotation.line = positions.cursor.locate(source, annotation.span.start).line;
+                annotation.line = positions.locate(annotation.span.start).?.line;
                 gutter_width = @max(gutter_width, digits(annotation.line));
             }
 
@@ -612,9 +701,9 @@ pub fn Renderer(comptime Adapter: type) type {
                 var placed: [max_secondary + 1]Placed = undefined;
                 for (group, 0..) |annotation, i| placed[i] = place(annotation, view, &layout);
                 if (group.len == 1 or overlapping(placed[0..group.len])) {
-                    for (placed[0..group.len]) |p| try writeUnderline(d, p, view, source, gutter_width, g, pal, writer);
+                    for (placed[0..group.len]) |p| try writeUnderline(d, p, view, positions, gutter_width, g, pal, writer);
                 } else {
-                    try writeHangingLabels(d, placed[0..group.len], view, source, gutter_width, g, pal, writer);
+                    try writeHangingLabels(d, placed[0..group.len], view, positions, gutter_width, g, pal, writer);
                 }
                 index = group_end;
             }
@@ -675,10 +764,9 @@ pub fn Renderer(comptime Adapter: type) type {
             return !annotation.primary or Adapter.hasDetails(d);
         }
 
-        fn writeLabel(d: Diagnostic, annotation: Annotation, source: []const u8, g: Glyphs, writer: anytype) !void {
+        fn writeLabel(d: Diagnostic, annotation: Annotation, positions: *Positions, writer: anytype) !void {
             if (annotation.primary) {
-                var positions: Positions = .{ .source = source, .style = g.style };
-                try Adapter.primaryLabel(d, &positions, writer);
+                try Adapter.primaryLabel(d, positions, writer);
             } else {
                 try Adapter.secondaryLabel(d, annotation.role.?, writer);
             }
@@ -711,7 +799,7 @@ pub fn Renderer(comptime Adapter: type) type {
             d: Diagnostic,
             placed: []const Placed,
             view: View,
-            source: []const u8,
+            positions: *Positions,
             gutter_width: usize,
             g: Glyphs,
             pal: Palette,
@@ -732,7 +820,7 @@ pub fn Renderer(comptime Adapter: type) type {
             const inline_annotation = placed[last].annotation;
             if (hasLabel(d, inline_annotation)) {
                 try writer.print(" {s}", .{annotationStyle(inline_annotation, pal)});
-                try writeLabel(d, inline_annotation, source, g, writer);
+                try writeLabel(d, inline_annotation, positions, writer);
                 try writer.writeAll(pal.reset);
             }
             try writer.writeAll("\n");
@@ -753,7 +841,7 @@ pub fn Renderer(comptime Adapter: type) type {
                 try writer.print("{s}{s}{s}", .{ annotationStyle(p.annotation, pal), g.corner, g.hang });
                 if (hasLabel(d, p.annotation)) {
                     try writer.writeAll(" ");
-                    try writeLabel(d, p.annotation, source, g, writer);
+                    try writeLabel(d, p.annotation, positions, writer);
                 }
                 try writer.print("{s}\n", .{pal.reset});
             }
@@ -766,10 +854,13 @@ pub fn Renderer(comptime Adapter: type) type {
         /// standalone CR each terminate one physical line — otherwise a diagnostic's
         /// line number and the excerpted content would contradict each other.
         fn viewFor(source: []const u8, offset: usize, style: RenderOptions.Style) View {
+            // Only inspect enough bytes to select the visible window. Walking
+            // whole physical lines would cost O(source * diagnostics) for long
+            // text even though the displayed excerpt is bounded.
             var line_start = offset;
-            while (line_start > 0 and !lineBoundaryBefore(source, line_start)) line_start -= 1;
+            while (line_start > 0 and offset - line_start <= max_view and !lineBoundaryBefore(source, line_start)) line_start -= 1;
             var line_end = offset;
-            while (line_end < source.len and
+            while (line_end < source.len and line_end - offset <= max_view and
                 source[line_end] != '\n' and source[line_end] != '\r') line_end += 1;
 
             var start = line_start;
@@ -786,7 +877,6 @@ pub fn Renderer(comptime Adapter: type) type {
                 end = source_text.scalarStart(source, end);
             }
             return .{
-                .line_start = line_start,
                 .start = start,
                 .end = end,
                 .clipped_left = start > line_start,
@@ -808,7 +898,7 @@ pub fn Renderer(comptime Adapter: type) type {
             d: Diagnostic,
             p: Placed,
             view: View,
-            source: []const u8,
+            positions: *Positions,
             gutter_width: usize,
             g: Glyphs,
             pal: Palette,
@@ -820,7 +910,7 @@ pub fn Renderer(comptime Adapter: type) type {
             try writeMarks(writer, p, false, g);
             if (hasLabel(d, p.annotation)) {
                 try writer.writeAll(" ");
-                try writeLabel(d, p.annotation, source, g, writer);
+                try writeLabel(d, p.annotation, positions, writer);
             }
             try writer.print("{s}\n", .{pal.reset});
         }

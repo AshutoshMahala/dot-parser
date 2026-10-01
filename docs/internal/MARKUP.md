@@ -246,7 +246,7 @@ synchronization rules remain internal. Markup's planned `structural`/`graphviz`/
   and unsupported constructs stop immediately. No delimiter guessing or fabricated
   closing events. Independent fragments can still run; no partial tree is published.
 - Sink stop/failure, cancellation, exhausted storage and policy limits stop work.
-  Markup results report `completion` plus u32 `syntax_errors`, so a later operational
+  Both markup and DOT results report `completion` plus u32 `syntax_errors`, so a later operational
   outcome does not erase earlier rejection. Complete recovery still returns
   `invalid_syntax`; terminal lexical failure preserves its cause on delivery failure.
 - All ancestor lookup shares `source.len` credits (length probes and byte-pair
@@ -326,6 +326,62 @@ slowdown that must not be hidden.
 
 DOT retained pools remain **6,800,000 bytes**. Arena backing capacity remains
 **37,620,470 bytes** growing / **8,400,148 bytes** hinted; these are not RSS.
+
+### Recovery review fixes — 2026-09-30
+
+DOT now carries the same independent completion/syntax-rejection facts as markup.
+All owned/fixed/count-only/session/combined-check adapters preserve them when
+diagnostic delivery stops or later work is cancelled/exhausted. Fixed fail-fast
+profiles exclude the running counter. The invalid DOT corpus runs both recovery
+modes and scanner backends, with a bounded-driver termination guard first.
+
+Shared presentation escapes full file names and resolves list locations in one
+sorted pass using explicit caller scratch. Related spans cannot force repeated
+whole-source walks; excerpt-window selection examines only nearby bytes even on
+very long lines. Diagnostic ordering and retained payload layouts are unchanged.
+The [reporting guide](../REPORTING.md#metadata-and-console-presentation) records
+the new list-rendering argument and memory/work contract.
+
+Verification: **528/528 tests** pass in Debug, ReleaseSafe and ReleaseFast;
+examples, `check-freestanding` (Wasm32/RISC-V32) and `check-benches` pass.
+
+Local ReleaseFast spot checks against `e885f79`, Zig 0.16.0, same machine/toolchain;
+not a replacement for the standard-machine baseline. The rendering probe used
+8 MiB sources, 1,024 EOF `unclosed_element` diagnostics in inner-first order and
+a discarding writer. Location scratch was supplied before timing. One warmup and
+three measured renders per case; medians below. Output byte counts matched in
+every case (541,524 / 541,727 / 603,167 respectively).
+
+| Rendering case | Before ms | After ms |
+| --- | ---: | ---: |
+| One long line, opening tags near the start | 2054.404 | 7.329 |
+| One long line, opening tags in the middle | 4281.394 | 7.944 |
+| Many 80-byte lines, opening tags in the middle | 1345.051 | 6.821 |
+
+The probe used 3,072 caller-owned 12-byte location records (36 KiB) instead of
+hidden allocation or a source-sized line index. DOT fixed/bounded/runtime session
+sizes changed **1064 → 1072**, **1104 → 1112**, **1288 → 1296 bytes**. Its owned
+ParseResult remains 256 bytes on this target; node (16 B) and edge (36 B) records
+are unchanged. These are layout sizes, not RSS measurements.
+
+The normal DOT `bench/throughput.zig` fixture (2,733,345 bytes / 200,000 statements)
+was also checked: three alternating process pairs for scalar, six for block;
+each process uses two warmups and nine measured rounds. Values below are medians
+of process medians, with decimal MB/s calculated from the source size. The optional
+block backend is about 3% slower on this fixture, so these fixes are **not** a
+zero-cost parsing change. The internal result grew from 16 to 20 bytes; that is
+a layout observation, not a proven attribution of the timing difference.
+
+| Backend/storage | Before → after ms | Before → after MB/s |
+| --- | ---: | ---: |
+| scalar/growing | 8.000 → 7.860 | 341.7 → 347.8 |
+| scalar/hinted | 7.070 → 6.790 | 386.6 → 402.6 |
+| block/growing | 8.425 → 8.700 | 324.4 → 314.2 |
+| block/hinted | 7.515 → 7.745 | 363.7 → 352.9 |
+
+Retained output remains 6,800,000 bytes; arena backing capacity stays 37,620,470
+bytes growing / 8,400,148 hinted. This is one local fixed-policy fixture, not a
+whole-library or runtime-policy performance claim.
 
 ## Encoding boundary
 

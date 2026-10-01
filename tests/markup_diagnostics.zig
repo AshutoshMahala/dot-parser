@@ -1,6 +1,52 @@
 //! Public standalone diagnostics: no DOT dependency, allocator or OS in rendering.
 const std = @import("std");
 const markup = @import("markup_parser");
+
+test "file names escape terminal controls without truncating valid paths" {
+    const finding: markup.Diagnostic = .{ .code = .unexpected_close, .span = .{ .start = 0, .len = 1 } };
+    const prefix = "/a/very/long/directory/whose/path/must/not/be/truncated/café/";
+    const name = prefix ++ "x\x1b]0;title\x07\x1b[2J\n\r\t\xff\u{202e}.xml";
+    var buffer: [4096]u8 = undefined;
+    inline for (.{ .unicode, .ascii }) |style| {
+        inline for (.{ false, true }) |boxed| {
+            var writer = std.Io.Writer.fixed(&buffer);
+            const options: markup.console.RenderOptions = .{ .source = "x", .source_name = name, .style = style };
+            if (boxed) try markup.console.renderBoxed(finding, 1, options, &writer) else try markup.console.render(finding, options, &writer);
+            const text = writer.buffered();
+            try expect(std.mem.indexOfScalar(u8, text, 0x1b) == null);
+            try expect(std.mem.indexOfScalar(u8, text, 0x07) == null);
+            try expect(std.mem.indexOfScalar(u8, text, '\r') == null);
+            try expect(std.mem.indexOfScalar(u8, text, '\t') == null);
+            try contains(text, "\\x1B]0;title\\x07\\x1B[2J\\x0A\\x0D\\x09\\xFF\\xE2\\x80\\xAE.xml:1:1");
+            try contains(text, if (style == .unicode) prefix else "/a/very/long/directory/whose/path/must/not/be/truncated/caf\\xC3\\xA9/");
+        }
+    }
+}
+
+test "list location preparation preserves order and fails before output if scratch is short" {
+    const source = "<a>\r\n<b>\rc\n</d>";
+    const findings = [_]markup.Diagnostic{
+        .{ .code = .unclosed_element, .span = .{ .start = source.len, .len = 0 }, .related = .{ .start = 6, .len = 1 } },
+        .{ .code = .unexpected_close, .span = .{ .start = 2, .len = 1 } },
+        .{ .code = .unclosed_element, .span = .{ .start = source.len, .len = 0 }, .related = .{ .start = 1, .len = 1 } },
+    };
+    var locations: [9]markup.location.Location = undefined;
+    var buffer: [8192]u8 = undefined;
+    var expected_buffer: [8192]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try equal(@as(usize, locations.len), try markup.console.locationCapacity(&findings));
+    try std.testing.expectError(error.LocationScratchTooSmall, markup.console.renderBoxedList(&findings, 0, .{ .source = source }, locations[0..1], &writer));
+    try equal(@as(usize, 0), writer.buffered().len);
+    try markup.console.renderBoxedList(&findings, 0, .{ .source = source }, &locations, &writer);
+    var expected = std.Io.Writer.fixed(&expected_buffer);
+    for (findings, 0..) |finding, i| {
+        if (i != 0) try expected.writeAll("\n");
+        try markup.console.renderBoxed(finding, i + 1, .{ .source = source }, &expected);
+    }
+    try expect(std.mem.startsWith(u8, writer.buffered(), expected.buffered()));
+    // Caller diagnostics remain immutable and are rendered in arrival order.
+    try equal(@as(u32, 2), findings[1].span.start);
+}
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
@@ -48,7 +94,8 @@ test "markup boxed diagnostics annotate the opener and closing name in the share
     try equal(markup.Outcome.invalid_syntax, parsed.outcome);
     var storage: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&storage);
-    try markup.console.renderBoxedList(bag.items(), 0, .{ .source = source, .source_name = "input", .verbose = true }, &writer);
+    var locations: [12]markup.location.Location = undefined;
+    try markup.console.renderBoxedList(bag.items(), 0, .{ .source = source, .source_name = "input", .verbose = true }, &locations, &writer);
     const text = writer.buffered();
     try contains(text, "┌─ Error 1:");
     try contains(text, "input:2:3");
@@ -79,7 +126,8 @@ test "markup rendering supports ASCII ANSI summaries and escaped source bytes" {
     const finding: markup.Diagnostic = .{ .code = .invalid_utf8_tolerated, .span = .{ .start = 1, .len = 3 }, .details = .{ .byte = 0xff } };
     var storage: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&storage);
-    try markup.console.renderBoxedList(&.{ finding, finding }, 3, .{ .source = source, .style = .ascii }, &writer);
+    var locations: [6]markup.location.Location = undefined;
+    try markup.console.renderBoxedList(&.{ finding, finding }, 3, .{ .source = source, .style = .ascii }, &locations, &writer);
     for (writer.buffered()) |byte| try expect(byte < 128 and byte != '\r' and byte != 0x1b);
     try contains(writer.buffered(), "\\x1B\\xFF\\x00");
     try contains(writer.buffered(), "2 warnings (3 more omitted");
@@ -100,7 +148,7 @@ test "markup render falls back safely for mismatched primary and related spans" 
         try contains(writer.buffered(), "offset 99");
     }
     var writer = std.Io.Writer.fixed(&storage);
-    try markup.console.renderBoxedList(&.{}, 0, .{}, &writer);
+    try markup.console.renderBoxedList(&.{}, 0, .{}, &.{}, &writer);
     try equal(@as(usize, 0), writer.buffered().len);
     var full = std.Io.Writer.fixed(&.{});
     try std.testing.expectError(error.WriteFailed, markup.console.render(.{ .code = .out_of_memory, .span = .{ .start = 0, .len = 0 } }, .{}, &full));

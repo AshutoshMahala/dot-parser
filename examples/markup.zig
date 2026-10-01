@@ -33,9 +33,13 @@ pub fn main(init: std.process.Init) !void {
         const checked = Checked.validate(init.arena.allocator(), &doc, bag.sink(), .{});
         try writer.print("validation {s}: {d} errors, {d} warnings\n", .{ @tagName(checked.validity), checked.errors, checked.warnings });
         if (checked.completion != .complete) return error.ValidationIncomplete;
-        try markup.console.renderBoxedList(bag.items(), 0, .{ .source = source, .source_name = "example.markup" }, writer);
+        const locations = try init.arena.allocator().alloc(markup.location.Location, try markup.console.locationCapacity(bag.items()));
+        defer init.arena.allocator().free(locations);
+        try markup.console.renderBoxedList(bag.items(), 0, .{ .source = source, .source_name = "example.markup" }, locations, writer);
     } else {
-        try markup.console.renderBoxedList(bag.items(), 0, .{ .source = source, .source_name = "example.markup" }, writer);
+        const locations = try init.arena.allocator().alloc(markup.location.Location, try markup.console.locationCapacity(bag.items()));
+        defer init.arena.allocator().free(locations);
+        try markup.console.renderBoxedList(bag.items(), 0, .{ .source = source, .source_name = "example.markup" }, locations, writer);
         try writer.flush();
         return error.ParseFailed;
     }

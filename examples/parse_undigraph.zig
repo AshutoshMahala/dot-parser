@@ -30,6 +30,7 @@ pub fn main(init: std.process.Init) !void {
             bag.items(),
             0,
             .{ .source_name = "example.dot" },
+            &.{},
             stdout,
         );
         try stdout.flush();

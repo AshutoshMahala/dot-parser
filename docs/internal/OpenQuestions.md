@@ -1175,8 +1175,9 @@ state with depth and computes temporary angle masks only inside envelopes.
 All DOT fix producers pass through the stage's policy filter before delivery.
 A recovered body rejection aborts output. Unsupported-only recovery ends as
 `unsupported_feature`; only a reported syntax error makes it `invalid_syntax`.
-Cancellation or an enforced limit during recovery preserves the known rejection;
-diagnostic stop/failure outcomes remain distinct. No partial document is published.
+Cancellation or an enforced limit during recovery reports its actual stop reason;
+`syntax_errors` preserves known syntax rejection and `completion` records unfinished
+work, matching standalone markup. No partial document is published.
 
 Out of the DOT passthrough slice: the summary index, inner structural parsing and
 validation, the parts view, entity handling and markup nesting policy. The
@@ -1553,7 +1554,11 @@ the policy `recovery = .collect` (now the default, per
 R-FUNC-007), a syntax error inside the body aborts the sink once, the parser
 skips to the next `;` or `}` at the same brace depth (skipped `{` are matched
 by counting), and every later syntax error is reported through the same bag.
-No document is ever published; the outcome stays `invalid_syntax`. Lexical
+No document is ever published; completed recovery reports `invalid_syntax`.
+Later operational stops keep their own outcomes with `.incomplete` completion;
+the u32 `syntax_errors` count retains every discovered rejection, including a
+finding refused by the diagnostic sink. Fixed fail-fast excludes the running
+counter and supplies its single terminal syntax-error count directly. Lexical
 errors resume after the malformed bytes; unterminated quotes/comments, header
 errors, end of input, trailing tokens and limits remain terminal. Excluded
 HTML-like body identifiers now also recover, retaining `unsupported_feature`

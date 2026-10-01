@@ -27,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (parsed.outcome != .success) {
         // A terminal without box-drawing support would use `.style = .ascii`.
-        try dot.console.renderBoxedList(bag.items(), bag.omitted, .{}, stdout);
+        try dot.console.renderBoxedList(bag.items(), bag.omitted, .{}, &.{}, stdout);
         try stdout.flush();
         return;
     }

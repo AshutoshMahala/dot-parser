@@ -222,10 +222,11 @@ Neither mode invokes the standalone markup module. The scanner always recognizes
 the complete envelope and any mixed concatenation, without a second policy scan.
 `.none` also catches HTML operands after quoted operands. With statement recovery,
 body occurrences can be skipped to collect later errors; no partial document is
-published. Unsupported-only recovery ends as `unsupported_feature`; a reported
-syntax error makes the outcome `invalid_syntax`. Cancellation or a later enforced
-limit ends the diagnostic search without replacing that known rejection; sink
-stops/failures keep their dedicated outcomes. Header/trailing failures remain
+published. Completed unsupported-only recovery ends as `unsupported_feature`;
+completed recovery with syntax errors ends as `invalid_syntax`. Cancellation,
+later limits and sink stops keep their own outcomes. `syntax_errors` preserves
+earlier rejection independently of delivery, and `completion` distinguishes a
+finished recovery pass from an early stop. Header/trailing failures remain
 fail-fast. Changing this parse policy requires reparsing.
 
 Fix filtering applies before diagnostic delivery in both DOT parsing and validation,

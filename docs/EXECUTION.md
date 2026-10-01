@@ -70,12 +70,18 @@ unbudgeted operations. There is no OS clock, scheduler, thread, or hidden worker
   not increment this counter. Nested child statements can complete first.
 - `work_used`: credits spent in this call, not a lifetime total.
 - `outcome`: null while yielded, otherwise the terminal ParseOutcome.
+- `syntax_errors`: factual syntax rejections discovered, including a finding the
+  diagnostic sink refused; warnings and unsupported features are not syntax errors.
 - `diagnostic_delivery`: whether failure diagnostics reached their sink.
 
 `result()` is null while parsing. Once terminal, it returns FixedParseResult;
 the document exists only on success. Progress counts can describe output later
 discarded on failure or cancellation. No partial document is published.
 Successful parsing does not imply semantic validation succeeded.
+The terminal result also exposes `completion`: `.complete` after the final
+grammar/recovery checks, otherwise `.incomplete`. A later cancellation or limit
+keeps its own outcome while `syntax_errors` preserves earlier rejection. An
+incomplete result with zero syntax errors makes no validity claim.
 
 Each chain continuation gets its own grammar transition and event credit;
 there is no unbudgeted loop over a whole chain inside parsing. Fixed pools

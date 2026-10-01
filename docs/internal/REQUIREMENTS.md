@@ -175,9 +175,11 @@ compile-time excludable when its code-size cost is material.
 default `.collect`. The latter continues diagnostics after aborting staged output;
 it never publishes a partial document or turns rejected syntax into success.
 Excluded HTML-like body identifiers can also recover: unsupported-only recovery
-remains `unsupported_feature`, while a reported syntax error yields
-`invalid_syntax`. Later cancellation/limits preserve that known rejection;
-diagnostic delivery stops/failures retain their separate outcomes.
+remains `unsupported_feature`, while completed recovery with a syntax error yields
+`invalid_syntax`. Both parsers expose `completion` and factual u32 `syntax_errors`
+independently of terminal outcomes. Later cancellation/limits/storage or diagnostic
+stops retain their actual cause, without erasing discovered syntax rejection.
+No errors with incomplete work is not a validity claim.
 Successful acceptance of Q36's three syntax deviations is a separate policy
 decision. A broader per-class recovery policy remains open (Q22). Sink stop/failure
 ends work; default bounded bags signal stop when full. An explicitly omitting bag

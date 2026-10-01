@@ -58,6 +58,7 @@ const Bound = common.Renderer(Adapter);
 pub const render = Bound.render;
 pub const renderBoxed = Bound.renderBoxed;
 pub const renderBoxedList = Bound.renderBoxedList;
+pub const locationCapacity = Bound.locationCapacity;
 
 /// DOT's presentation vocabulary; layout and terminal style belong to common.
 pub const Adapter = struct {
@@ -1189,7 +1190,7 @@ test "a list of two or more diagnostics closes with a summary block" {
         .{ .code = .validation_operator_mismatch, .span = spanAt(10, 2) },
         .{ .code = .validation_operator_mismatch, .span = spanAt(21, 2) },
     };
-    try renderBoxedList(&diagnostics, 3, .{}, &writer);
+    try renderBoxedList(&diagnostics, 3, .{}, &.{}, &writer);
 
     const text = writer.buffered();
     try expect(std.mem.indexOf(u8, text, "┌─ Error 1:") != null);
@@ -1206,20 +1207,20 @@ test "a single complete diagnostic renders no summary block" {
     const diagnostics = [_]Diagnostic{
         .{ .code = .validation_operator_mismatch, .span = spanAt(10, 2) },
     };
-    try renderBoxedList(&diagnostics, 0, .{}, &writer);
+    try renderBoxedList(&diagnostics, 0, .{}, &.{}, &writer);
     try expect(std.mem.indexOf(u8, writer.buffered(), "Summary") == null);
 
     // But a single diagnostic with omissions is an incomplete story: the
     // summary block carries the omission count.
     var omitted_writer = std.Io.Writer.fixed(&buffer);
-    try renderBoxedList(&diagnostics, 2, .{}, &omitted_writer);
+    try renderBoxedList(&diagnostics, 2, .{}, &.{}, &omitted_writer);
     try expect(std.mem.indexOf(u8, omitted_writer.buffered(), "║ 1 error (2 more omitted: diagnostic bag is full)") != null);
 }
 
 test "an empty list renders nothing" {
     var buffer: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
-    try renderBoxedList(&.{}, 0, .{}, &writer);
+    try renderBoxedList(&.{}, 0, .{}, &.{}, &writer);
     try expectEqualStrings("", writer.buffered());
 }
 

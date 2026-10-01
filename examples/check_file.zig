@@ -66,16 +66,19 @@ pub fn main(init: std.process.Init) !u8 {
         if (stdout_file.supportsAnsiEscapeCodes(io) catch false) .ansi else .none;
 
     if (compact) {
-        for (bag.items()) |d| try dot.console.render(d, .{ .source = source }, stdout);
+        for (bag.items()) |d| try dot.console.render(d, .{ .source = source, .source_name = if (path) |p| std.fs.path.basename(p) else "sample.dot" }, stdout);
     } else {
+        const locations = try allocator.alloc(dot.location.Location, try dot.console.locationCapacity(bag.items()));
+        defer allocator.free(locations);
         try dot.console.renderBoxedList(bag.items(), 0, .{
             .source_name = if (path) |p| std.fs.path.basename(p) else "sample.dot",
             .source = source,
             .color = color,
-        }, stdout);
+        }, locations, stdout);
     }
-    try stdout.print("{s}: {s}{s}\n", .{
-        if (path) |p| p else "sample",                                                                        @tagName(checked.outcome),
+    try dot.presentation.writeSourceName(path orelse "sample", .unicode, stdout);
+    try stdout.print(": {s}{s}\n", .{
+        @tagName(checked.outcome),
         if (checked.documentValid()) "" else if (checked.outcome == .success) " (validation failed)" else "",
     });
     return if (path == null or checked.documentValid()) 0 else 1;

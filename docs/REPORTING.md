@@ -85,6 +85,9 @@ Terminal syntax/resource errors retain their original cause even if reporting
 fails: there was already no remaining work to continue. During syntax recovery,
 however, a stop ends the search for additional findings. There is no recursive
 attempt to diagnose a broken sink. Terminal calls do not emit again.
+Both parsers preserve `syntax_errors` and report `completion` separately from
+the stop reason. Diagnostic delivery failure cannot erase a discovered error;
+an incomplete pass with zero errors does not imply valid input.
 
 Growable bags are the default in general examples, not an implicit core allocator.
 Fixed-memory and streaming operation remain first-class choices.
@@ -119,27 +122,49 @@ Both `dot.console` and `markup.console` provide `render`, `renderBoxed` and
 `renderBoxedList` with the same `RenderOptions`:
 
 ```zig
+const locations = try allocator.alloc(markup.location.Location,
+    try markup.console.locationCapacity(bag.items()));
+defer allocator.free(locations);
 try markup.console.renderBoxedList(bag.items(), 0, .{
     .source = source,
     .source_name = "example.markup",
     .style = .unicode, // or .ascii
     .color = .none, // explicit .ansi opt-in; no TTY probing
     .verbose = true, // sequence alias and qualified compact ID
-}, writer);
+}, locations, writer);
 ```
 
 The second argument counts **omitted findings**, not unfinished work. Pass zero
 for a growable bag, which stops instead of omitting; an explicit omission bag
 supplies `bag.omitted`. Still inspect the operation's completion/delivery result.
 
-Rendering allocates nothing, uses bounded excerpt/annotation scratch and writes
-only through the supplied writer; writer failures propagate to the caller.
+Rendering allocates nothing and writes only through the supplied writer; writer
+failures propagate to the caller. `renderBoxedList` takes caller-owned location
+scratch before the writer. `locationCapacity(items)` gives a checked upper bound
+in `Location` records (12 bytes each; at most four per DOT diagnostic or three
+per markup diagnostic). A fixed array works equally well. Without source bytes,
+pass `&.{}`. Too-small scratch returns `error.LocationScratchTooSmall` before
+writing anything. Single-diagnostic renderers use bounded local scratch.
+Scratch must not alias the source or diagnostics and is not retained after return.
+
+The list renderer sorts location queries, resolves them in one forward source
+pass, then preserves the original diagnostic order while formatting. For `k`
+location queries and `n` source bytes, built-in location/excerpt work is
+`O(n + k log k)` with `O(k)` caller scratch, not a repeated source scan per related
+span. Excerpt boundary searches are bounded even on huge physical lines. No
+per-line/source-sized index is allocated. Adapter callouts and writer costs are
+separate; custom adapters should expose queried positions as primary, related or
+fix spans. Calling individual renderers repeatedly does not share a source pass;
+use the list renderer for a bag.
 Locations are byte-based, including the clickable `source_name:line:column:`
 location in compact `render()` output. Excerpts fall back to compact locations
 when source spans do not fit. Unicode style shows printable UTF-8; ASCII style
 escapes every non-ASCII byte. Both escape invalid bytes, control/format characters
 (including bidi controls), line/paragraph separators and noncharacters. Leading
 combining marks without a visible base are escaped as well.
+File names follow the same escaping rules, with tabs escaped rather than expanded.
+Ordinary paths are never truncated. Presenters can reuse
+`presentation.writeSourceName(name, style, writer)` for their own summary lines.
 
 Carets use display cells, not UTF-8 byte counts. The optional renderer uses pinned
 [Unicode 17.0 width data](https://www.unicode.org/Public/17.0.0/ucd/EastAsianWidth.txt)

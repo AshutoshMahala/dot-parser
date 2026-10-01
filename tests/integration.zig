@@ -18,6 +18,7 @@ test {
     _ = @import("html_identifiers.zig");
     _ = @import("policies.zig");
     _ = @import("policy_settings.zig");
+    _ = @import("recovery_results.zig");
     _ = @import("lenient.zig");
     _ = @import("validation_checks.zig");
 }
@@ -165,7 +166,8 @@ test "unterminated comments abort both storage paths after partial construction"
 
     var buffer: [2048]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
-    try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source, .style = .ascii }, &writer);
+    var locations: [4]dot.location.Location = undefined;
+    try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source, .style = .ascii }, &locations, &writer);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "E.Syntax.Token.032") != null);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "close the block comment") != null);
 }
@@ -265,14 +267,15 @@ test "consumer can render boxed output in unicode and ascii styles" {
         },
     }};
 
-    try dot.console.renderBoxedList(&diagnostics, 0, .{ .source_name = "pipe", .source = source }, &writer);
+    var locations: [4]dot.location.Location = undefined;
+    try dot.console.renderBoxedList(&diagnostics, 0, .{ .source_name = "pipe", .source = source }, &locations, &writer);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "┌─ Error 1: unexpected token") != null);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "│ pipe:1:6") != null);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "│ 1 │ graph} a; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "└─ E1 ─ [dot_parser:E.Syntax.Grammar.003]") != null);
 
     var ascii_writer = std.Io.Writer.fixed(&buffer);
-    try dot.console.renderBoxedList(&diagnostics, 0, .{ .source_name = "pipe", .style = .ascii }, &ascii_writer);
+    try dot.console.renderBoxedList(&diagnostics, 0, .{ .source_name = "pipe", .style = .ascii }, &.{}, &ascii_writer);
     try std.testing.expect(std.mem.indexOf(u8, ascii_writer.buffered(), "-- Error 1: unexpected token") != null);
     try std.testing.expect(std.mem.indexOf(u8, ascii_writer.buffered(), "-- E1 - [dot_parser:E.Syntax.Grammar.003]") != null);
 }
@@ -746,29 +749,53 @@ test "valid corpus parses to the expected statements, deterministically" {
 }
 
 test "invalid corpus fails with the expected diagnostic and terminates" {
-    const P = dot.Profile(.{ .policy = .{ .recovery = .fail_fast } });
-    for (invalid_corpus) |entry| {
-        errdefer std.debug.print("corpus fixture: invalid/{s}\n", .{entry.name});
+    inline for (.{ .scalar, .block }) |scanner| {
+        inline for (.{ .fail_fast, .collect }) |recovery| {
+            const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .recovery = recovery } });
+            const Bounded = dot.Profile(.{ .policy = .{ .scanner = scanner, .recovery = recovery, .execution = .{ .metering = true } } });
+            for (invalid_corpus) |entry| {
+                errdefer std.debug.print("corpus fixture: invalid/{s}\n", .{entry.name});
 
-        var bag: dot.FixedDiagnosticBag(4) = .{};
-        var checked = P.parseAndValidate(std.testing.allocator, entry.source, bag.sink(), .{});
-        defer checked.deinit(std.testing.allocator);
-        try std.testing.expect(checked.outcome == .invalid_syntax);
-        try std.testing.expect(checked.document == null);
-        try std.testing.expectEqual(@as(usize, 1), bag.items().len);
+                // Check the bounded driver first so a shared recovery loop trips
+                // this guard before the run-to-completion paths are exercised.
+                var pools: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4, .attributes = 8, .assignments = 4, .attribute_statements = 4 }) = .{};
+                var bounded_bag: dot.FixedDiagnosticBag(64) = .{};
+                var session = Bounded.Session.init(entry.source, .{ .document = pools.storage() }, bounded_bag.sink(), .{});
+                defer session.deinit();
+                var steps: usize = 0;
+                while (session.result() == null) : (steps += 1) {
+                    try std.testing.expect(steps < entry.source.len * 64 + 1024);
+                    _ = session.advance(1);
+                }
+                const bounded = session.result().?;
 
-        const failure = bag.items()[0];
-        try std.testing.expectEqual(entry.code, failure.code);
-        try std.testing.expectEqual(entry.offset, failure.span.start);
-        if (failure.code == .syntax_unterminated_construct) {
-            try std.testing.expectEqual(entry.construct.?, failure.details.unterminated);
+                var bag: dot.FixedDiagnosticBag(64) = .{};
+                var checked = P.parseAndValidate(std.testing.allocator, entry.source, bag.sink(), .{});
+                defer checked.deinit(std.testing.allocator);
+                try std.testing.expect(checked.outcome == .invalid_syntax);
+                try std.testing.expect(checked.document == null);
+                try std.testing.expect(checked.syntax_errors > 0);
+                try std.testing.expectEqual(@as(usize, checked.syntax_errors), bag.items().len);
+                if (recovery == .fail_fast) try std.testing.expectEqual(@as(usize, 1), bag.items().len);
+
+                const failure = bag.items()[0];
+                try std.testing.expectEqual(entry.code, failure.code);
+                try std.testing.expectEqual(entry.offset, failure.span.start);
+                if (failure.code == .syntax_unterminated_construct) {
+                    try std.testing.expectEqual(entry.construct.?, failure.details.unterminated);
+                }
+                var fixed_bag: dot.FixedDiagnosticBag(64) = .{};
+                const fixed = P.parseBorrowedIn(entry.source, .{ .document = pools.storage() }, fixed_bag.sink(), .{});
+                try std.testing.expect(fixed.outcome == .invalid_syntax);
+                try std.testing.expect(fixed.document == null);
+                try std.testing.expectEqual(checked.syntax_errors, fixed.syntax_errors);
+                try std.testing.expectEqual(checked.completion, fixed.completion);
+                try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), fixed_bag.items());
+
+                try std.testing.expectEqualDeep(fixed, bounded);
+                try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), bounded_bag.items());
+            }
         }
-        var pools: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4, .attributes = 8, .assignments = 4, .attribute_statements = 4 }) = .{};
-        var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
-        const fixed = P.parseBorrowedIn(entry.source, .{ .document = pools.storage() }, fixed_bag.sink(), .{});
-        try std.testing.expect(fixed.outcome == .invalid_syntax);
-        try std.testing.expect(fixed.document == null);
-        try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), fixed_bag.items());
     }
 }
 
@@ -843,6 +870,8 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
         std.meta.activeTag(second.outcome),
     );
     try std.testing.expectEqual(bag.items().len, second_bag.items().len);
+    try std.testing.expectEqual(checked.syntax_errors, second.syntax_errors);
+    try std.testing.expectEqual(checked.completion, second.completion);
     for (bag.items(), second_bag.items()) |first_diag, second_diag| {
         try std.testing.expectEqual(first_diag.code, second_diag.code);
         try std.testing.expectEqual(first_diag.span.start, second_diag.span.start);

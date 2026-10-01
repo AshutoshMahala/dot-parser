@@ -115,8 +115,12 @@ syntax, resource failures or a diagnostic sink's stop request end the run:
 
 ```zig
 var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
+defer checked.deinit(allocator);
 // Rejected syntax publishes no document; bag holds encountered findings in order.
-try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source }, stdout);
+const locations = try allocator.alloc(dot.location.Location,
+    try dot.console.locationCapacity(bag.items()));
+defer allocator.free(locations);
+try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source }, locations, stdout);
 ```
 
 Choose `dot.Profile(.{ .policy = .{ .recovery = .fail_fast } })` explicitly to

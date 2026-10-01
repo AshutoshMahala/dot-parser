@@ -110,9 +110,12 @@ pub const Outcome = union(enum) {
 /// Whether every diagnostic emitted during a parse actually reached the
 /// caller's diagnostic sink.
 pub const DiagnosticDelivery = diagnostic.Delivery;
+pub const Completion = enum { incomplete, complete };
 
 pub const Result = struct {
     outcome: Outcome,
+    completion: Completion = .incomplete,
+    syntax_errors: u32 = 0,
     diagnostic_delivery: DiagnosticDelivery = .complete,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
@@ -194,9 +197,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         /// the grammar running for diagnostics after that point, with no
         /// further events and no published document.
         aborted: bool = false,
-        /// Distinguish recovered syntax errors from unsupported-only failures.
+        /// Count discovered syntax rejections, independently of sink delivery.
+        /// Each recovery consumes input; a terminal EOF finding ends the pass.
         /// Fixed fail-fast profiles retain no recovery classification state.
-        recovered_syntax: if (recovery_enabled) bool else void = if (recovery_enabled) false else {},
+        syntax_errors: if (recovery_enabled) u32 else void = if (recovery_enabled) 0 else {},
         /// Braces skipped (and not yet matched) while resynchronizing.
         // Each increment consumes a brace byte in the bounded u32 source.
         skip_depth: if (recovery_enabled) u32 else void = if (recovery_enabled) 0 else {},
@@ -501,11 +505,9 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         /// Explicit cleanup works even without a polling hook or positive budget.
         pub fn cancel(self: *Self) Result {
             if (self.terminal) |result| return result;
-            // A reported recovery failure remains the truthful outcome;
-            // cancellation only ends the search for more diagnostics.
-            const outcome: Outcome = if (self.recovered()) self.recoveredOutcome() else .cancelled;
+            // Keep cancellation visible without erasing prior syntax findings.
             self.abortEvents(.cancelled);
-            return self.finish(outcome);
+            return self.finish(.cancelled);
         }
 
         /// The sink's one terminal abort, if it has begun and not yet
@@ -1067,7 +1069,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                         .right => self.right_port = 0,
                         .link => self.link_port = 0,
                     },
-                    .commit => return self.finish(self.recoveredOutcome()),
+                    .commit => return self.finishComplete(self.recoveredOutcome()),
                     else => {},
                 }
                 return null;
@@ -1213,6 +1215,8 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             if (self.scratch) |scratch| scratch.len = 0;
             const result: Result = .{
                 .outcome = outcome,
+                .completion = if (outcome == .success) .complete else .incomplete,
+                .syntax_errors = if (recovery_enabled) self.syntax_errors else @intFromBool(outcome == .invalid_syntax),
                 .diagnostic_delivery = self.delivery,
                 .accepted_deviations = self.acceptedDeviations(),
                 .warnings = self.warnings,
@@ -1220,6 +1224,18 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             self.terminal = result;
             if (metered or cancellable) self.work.phase = .terminal;
             return result;
+        }
+
+        fn finishComplete(self: *Self, outcome: Outcome) Result {
+            var result = self.finish(outcome);
+            result.completion = .complete;
+            self.terminal = result;
+            return result;
+        }
+
+        pub fn syntaxErrors(self: *const Self) u32 {
+            if (self.terminal) |result| return result.syntax_errors;
+            return if (recovery_enabled) self.syntax_errors else 0;
         }
 
         /// Report a failure diagnostic through the caller's sink, honoring
@@ -1235,7 +1251,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .resource_capacity_exhausted => .resource_exhausted,
                 else => .invalid_syntax,
             };
-            if (recovery_enabled and reason == .invalid_syntax) self.recovered_syntax = true;
+            if (recovery_enabled and reason == .invalid_syntax) self.syntax_errors += 1;
             if (recovery_enabled and (reason == .invalid_syntax or reason == .unsupported_feature) and self.canRecover(failure)) {
                 if (stop) |requested| return self.stopDiagnostics(requested);
                 self.abortEvents(reason);
@@ -1244,9 +1260,9 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 self.skip_depth = 0;
                 return null;
             }
-            // Keep the known rejection when a later limit ends recovery.
-            // Only an actual syntax diagnostic can promote unsupported to invalid.
-            const outcome: Outcome = if (self.recovered()) self.recoveredOutcome() else switch (reason) {
+            // The terminal cause stays visible; syntax_errors retains earlier
+            // rejection even when a resource or unsupported boundary stops work.
+            const outcome: Outcome = switch (reason) {
                 .invalid_syntax => .invalid_syntax,
                 .unsupported_feature => .unsupported_feature,
                 .resource_exhausted => .resource_exhausted,
@@ -1309,15 +1325,9 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             return if (self.kind == .digraph) .directed_operator else .undirected_operator;
         }
 
-        /// True once a body failure has been recovered from: the sink was
-        /// aborted while the grammar kept running.
-        fn recovered(self: *const Self) bool {
-            return self.aborted and self.terminal == null and self.begun;
-        }
-
         fn recoveredOutcome(self: *const Self) Outcome {
             if (!recovery_enabled) unreachable;
-            return if (self.recovered_syntax) .invalid_syntax else .unsupported_feature;
+            return if (self.syntax_errors != 0) .invalid_syntax else .unsupported_feature;
         }
 
         /// Recovery is a body-only policy: a header has no statement
@@ -2366,13 +2376,15 @@ test "statement recovery stops where there is no boundary to return to" {
         try expectEqual(case[2], testing.run(case[0], &events, bag.sink(), recovery_settings, &stack).outcome);
         try expectEqual(@as(usize, case[1]), bag.items().len);
     }
-    // A limit reached after a recovered error keeps the truthful outcome
-    // but still reports the limit.
+    // A later limit is the stop reason; the earlier syntax rejection survives.
     var events: Recording = .{};
     var bag: Bag = .{};
     var limited = recovery_settings;
     limited.limits.max_statements = 2;
-    try expect(testing.run("digraph { a -> ; b; c; d; }", &events, bag.sink(), limited, null).outcome == .invalid_syntax);
+    const stopped = testing.run("digraph { a -> ; b; c; d; }", &events, bag.sink(), limited, null);
+    try expect(stopped.outcome == .resource_exhausted);
+    try expectEqual(@as(u32, 1), stopped.syntax_errors);
+    try expectEqual(Completion.incomplete, stopped.completion);
     try expectEqual(@as(usize, 2), bag.items().len);
     try expectEqual(diagnostic.Code.resource_capacity_exhausted, bag.items()[1].code);
     // A full bag counts what it could not keep.
@@ -2387,7 +2399,7 @@ test "metered and cancellable drivers recover identically to the immediate one" 
     const total = try checkBudgetPartition(scalar_lex.Scanner, source, &.{1}, recovery_settings, null, false);
     try expectEqual(total, try checkBudgetPartition(scalar_lex.Scanner, source, &.{ 0, 3, 17 }, recovery_settings, null, false));
     _ = try checkBudgetPartition(scalar_lex.Scanner, source, &.{ 0, 1, 5 }, recovery_settings, null, true);
-    // Cancellation after a recovered error reports the errors, not a cancel.
+    // Cancellation and earlier rejection are independently observable.
     var request: CancellationProbe = .{};
     var events: BudgetSink = .{};
     var bag: Bag = .{};
@@ -2405,7 +2417,9 @@ test "metered and cancellable drivers recover identically to the immediate one" 
     while (bag.items().len == 0) _ = machine.advance(1);
     request.flag = true;
     const progress = machine.advance(1);
-    try expect(progress.result.?.outcome == .invalid_syntax);
+    try expect(progress.result.?.outcome == .cancelled);
+    try expectEqual(@as(u32, 1), progress.result.?.syntax_errors);
+    try expectEqual(Completion.incomplete, progress.result.?.completion);
     try expectEqual(@as(usize, 1), events.aborts);
 }
 

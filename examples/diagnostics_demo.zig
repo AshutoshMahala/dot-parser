@@ -37,10 +37,13 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("parsed: {s}, document valid: {}\n\n", .{
         @tagName(checked.outcome), checked.documentValid(),
     });
+    const locations = try allocator.alloc(dot.location.Location, try dot.console.locationCapacity(bag.items()));
+    defer allocator.free(locations);
     try dot.console.renderBoxedList(
         bag.items(),
         0,
         .{ .source_name = "example.dot", .source = source, .color = color },
+        locations,
         stdout,
     );
     try stdout.flush();

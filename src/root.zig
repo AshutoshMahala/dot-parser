@@ -203,11 +203,18 @@ pub const ParseOutcome = union(enum) {
     storage_failure: StorageFailure,
 };
 
+/// Completion of parsing/recovery, not a claim of valid or supported input.
+pub const Completion = parser_impl.Completion;
+
 /// Result of `parseBorrowed`. The document is present exactly when
 /// `outcome == .success` and is owned by the caller.
 pub const ParseResult = struct {
     document: ?Document = null,
     outcome: ParseOutcome,
+    completion: Completion = .incomplete,
+    /// Discovered syntax rejections, including undelivered findings. Preserved
+    /// through later stops; zero with incomplete work does not establish validity.
+    syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
     /// Accepted syntax deviations, including silent acceptances before failure.
     accepted_deviations: u32 = 0,
@@ -239,6 +246,8 @@ pub const FixedParseOptions = DefaultProfile.FixedParseOptions;
 pub const FixedParseResult = struct {
     document: ?Document = null,
     outcome: ParseOutcome,
+    completion: Completion = .incomplete,
+    syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
@@ -258,6 +267,7 @@ pub const SessionProgress = struct {
     completed_pairs: usize,
     work_used: usize,
     outcome: ?ParseOutcome,
+    syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
@@ -275,6 +285,8 @@ pub const parseBorrowedIn = DefaultProfile.parseBorrowedIn;
 pub const MeasureResult = struct {
     capacities: ?DocumentCapacities = null,
     outcome: ParseOutcome,
+    completion: Completion = .incomplete,
+    syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
@@ -291,6 +303,9 @@ pub const CheckOptions = DefaultProfile.CheckOptions;
 pub const CheckResult = struct {
     document: ?Document = null,
     outcome: ParseOutcome,
+    /// Parse/recovery completion only; validation has its own result.
+    completion: Completion = .incomplete,
+    syntax_errors: u32 = 0,
     validation: ?ValidationResult = null,
     diagnostic_delivery: diagnostic.Delivery,
     accepted_deviations: u32 = 0,

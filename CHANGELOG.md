@@ -6,6 +6,18 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- **Breaking:** DOT recovery results now match markup's separation of terminal
+  stop reason, `completion` and u32 `syntax_errors`. A later cancellation/limit
+  keeps its own outcome without losing an earlier syntax rejection. All result
+  adapters propagate the facts; progress exposes the running count. Fixed
+  fail-fast profiles compile out the running counter; retained records are unchanged.
+- Escape caller-supplied file names in both console styles without truncating
+  ordinary paths. Bound excerpt searches on long lines. **Breaking:**
+  `renderBoxedList` now takes caller-owned `[]location.Location` scratch before
+  its writer; `locationCapacity(items)` gives the upper bound. Sorting/resolving
+  queries once avoids repeated whole-source scans without hidden allocation.
+  Add both recovery modes/backends to the invalid corpus with bounded-step guards.
+
 - **Breaking:** DOT and markup now expose only `recovery = .fail_fast` or
   `.collect`, with `.collect` the default. Replace DOT's `.statements` and markup's
   recovery value `.structural`; no compatibility aliases remain. Markup processing
@@ -46,8 +58,8 @@ are called out here; compatibility shims are not retained.
   offer without increasing the 36-byte diagnostic layout. No tree/scratch growth.
   Add standalone presentation, policy parity and freestanding renderer tests.
 
-- Preserve `unsupported_feature` for DOT recovery with no reported syntax error,
-  including completion and cancellation; reset clears the classification. Add
+- Preserve `unsupported_feature` for completed DOT recovery with no reported syntax error;
+  reset clears the classification. Later cancellation retains its own outcome. Add
   fixed/runtime, scanner and bounded-execution regression coverage.
 - Share markup validation's cancellation countdown across short scans and source
   revisits, rather than polling at each name/value. Add safety-build iterator

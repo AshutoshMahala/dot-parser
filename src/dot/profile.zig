@@ -146,6 +146,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             var parsed = parseResolved(.parseBorrowed, api.ParseResult, .{ allocator, source, diagnostics, options.parse }, effective, options.cancellation);
             if (parsed.document == null) return .{
                 .outcome = parsed.outcome,
+                .completion = parsed.completion,
+                .syntax_errors = parsed.syntax_errors,
                 .diagnostic_delivery = parsed.diagnostic_delivery,
                 .accepted_deviations = parsed.accepted_deviations,
                 .warnings = parsed.warnings,
@@ -154,6 +156,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return .{
                 .document = parsed.document,
                 .outcome = parsed.outcome,
+                .completion = parsed.completion,
+                .syntax_errors = parsed.syntax_errors,
                 .validation = checked,
                 .accepted_deviations = parsed.accepted_deviations,
                 .warnings = @as(u64, parsed.warnings) + checked.warningCount(),

@@ -17,6 +17,7 @@ fn render(source: [*]const u8, len: u32, output: [*]u8, capacity: u32, style: ma
         .span = .{ .start = len, .len = 0 },
         .related = .{ .start = 0, .len = @min(len, 1) },
     };
-    markup.console.renderBoxedList(&.{finding}, 0, .{ .source = source[0..len], .style = style, .verbose = true }, &writer) catch return 0;
+    var locations: [3]markup.location.Location = undefined;
+    markup.console.renderBoxedList(&.{finding}, 0, .{ .source = source[0..len], .style = style, .verbose = true }, &locations, &writer) catch return 0;
     return @intCast(writer.buffered().len);
 }

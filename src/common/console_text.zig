@@ -83,9 +83,18 @@ pub const Layout = struct {
 /// Bounded inline source names: no tabs/newlines/escape sequences may affect the
 /// surrounding message. Long names are clipped on scalar boundaries.
 pub fn writeInline(bytes: []const u8, style: Style, writer: anytype) !void {
+    try writeEscaped(bytes, style, 32, writer);
+}
+
+/// Escape an entire caller-supplied file name without truncating ordinary paths.
+pub fn writeName(bytes: []const u8, style: Style, writer: anytype) !void {
+    try writeEscaped(bytes, style, bytes.len, writer);
+}
+
+fn writeEscaped(bytes: []const u8, style: Style, limit: usize, writer: anytype) !void {
     var offset: usize = 0;
     var anchored = false;
-    while (offset < bytes.len and offset < 32) {
+    while (offset < bytes.len and offset < limit) {
         var u = unit(bytes[offset..], style, 0, anchored);
         if (u.tab) u = .{ .len = 1, .cells = 4, .escaped = true };
         try writeUnit(bytes[offset..][0..u.len], u, writer);

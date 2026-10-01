@@ -24,6 +24,19 @@ DOT processing and does not produce a source diagnostic.
 | `.resource_exhausted` | A caller-configured limit (e.g. `max_statements` or `max_attributes`) was reached; the input may still be valid | No |
 | `.storage_failure` | Document storage could not hold the document | No |
 
+All parse, fixed-session, measurement and combined-check results also expose:
+
+| Field | Meaning |
+| --- | --- |
+| `completion` | `.complete` after EOF and the final grammar/recovery checks; otherwise `.incomplete`. This is not validity. In `CheckResult` it covers parsing only; inspect `validation` separately. |
+| `syntax_errors: u32` | Syntax rejections discovered, including a finding the sink refused. Preserved if a later cancellation, resource/storage failure, unsupported boundary or diagnostic stop ends recovery. |
+
+Both DOT and standalone markup separate the terminal **stop reason** from these
+facts. A positive syntax-error count establishes rejection even when the outcome
+is `.cancelled` or `.diagnostic_stopped`; zero errors with incomplete work does
+**not** establish validity. Session progress exposes the running syntax count.
+Only `.success` publishes a document. Unsupported findings are not syntax errors.
+
 `storage_failure` carries its own cause: `.out_of_memory` (allocator),
 `.pool_exhausted` (a fixed pool filled — the diagnostic names the pool and
 its capacity), `.statement_index_overflow`, `.attribute_index_overflow`,
@@ -127,10 +140,12 @@ never runs — later diagnostics can be consequences of an earlier one, so
 read them in order. Header errors, end of input, trailing tokens, limits,
 and unterminated quoted/HTML-like identifiers or comments still stop the parse.
 A policy-disabled HTML identifier in the body can recover like a syntax failure;
-unsupported-only recovery returns `unsupported_feature`. A reported syntax error
-makes it `invalid_syntax`, regardless of discovery order. Cancellation or a later
-enforced limit preserves that known rejection; diagnostic stops/failures retain
-their dedicated outcomes. Neither recovery outcome publishes a document.
+unsupported-only completed recovery returns `unsupported_feature`. Completed
+recovery with a syntax rejection returns `invalid_syntax`, regardless of finding
+order. A later operational stop retains its own outcome and `.incomplete`
+completion; `syntax_errors` preserves earlier syntax rejection. Neither recovery
+outcome publishes a document. Reaching EOF during resynchronization without
+finishing the grammar is still incomplete.
 Explicit `.fail_fast` stops at the first syntax failure and still uses the same
 diagnostic sink. Recovery is best-effort, not a promise to report every error.
 

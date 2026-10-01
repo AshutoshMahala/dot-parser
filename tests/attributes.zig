@@ -128,10 +128,11 @@ test "EOF in a later attribute group points at its own opener" {
     try equal(@as(usize, 14), failure.details.unexpected.related.?.span.start);
     var buffer: [2048]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
-    try dot.console.renderBoxedList(bag.items(), 0, .{ .source = input }, &writer);
+    var locations: [4]dot.location.Location = undefined;
+    try dot.console.renderBoxedList(bag.items(), 0, .{ .source = input }, &locations, &writer);
     try expect(std.mem.indexOf(u8, writer.buffered(), "opened") != null);
     var compact = std.Io.Writer.fixed(&buffer);
-    try dot.console.renderBoxedList(bag.items(), 0, .{}, &compact);
+    try dot.console.renderBoxedList(bag.items(), 0, .{}, &.{}, &compact);
     try expect(std.mem.indexOf(u8, compact.buffered(), "attribute value") != null);
 }
 

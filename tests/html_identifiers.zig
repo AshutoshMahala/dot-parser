@@ -101,7 +101,7 @@ test "none recovery preserves unsupported-only outcomes across binding and execu
     }
 }
 
-test "none recovery keeps known rejection on cancellation and limits and clears it on reset" {
+test "none recovery reports later operational stops and clears rejection on reset" {
     inline for (.{ .scalar, .block }) |backend| {
         const P = dot.Profile(.{ .policy = .{
             .scanner = backend,
@@ -114,14 +114,18 @@ test "none recovery keeps known rejection on cancellation and limits and clears 
         var session = P.Session.init("graph { <a>; b; }", .{ .document = storage.storage() }, bag.sink(), .{});
         defer session.deinit();
         while (bag.items().len == 0) _ = session.advance(1);
-        try equal(.unsupported_feature, session.cancel().outcome);
+        try equal(.cancelled, session.cancel().outcome);
+        try equal(dot.Completion.incomplete, session.result().?.completion);
         try expect(session.result().?.document == null);
         session.reset("graph { b -- ; <a>; }", dot.diagnostic.discard, .{});
         while (session.result() == null) _ = session.advance(1);
         try equal(.invalid_syntax, session.result().?.outcome);
+        try equal(@as(u32, 1), session.result().?.syntax_errors);
+        try equal(dot.Completion.complete, session.result().?.completion);
         session.reset("graph { <a>; b; }", dot.diagnostic.discard, .{});
         while (session.result() == null) _ = session.advance(1);
         try equal(.unsupported_feature, session.result().?.outcome);
+        try equal(@as(u32, 0), session.result().?.syntax_errors);
         session.reset("graph { b; }", dot.diagnostic.discard, .{});
         while (session.result() == null) _ = session.advance(1);
         try equal(.success, session.result().?.outcome);
@@ -129,7 +133,8 @@ test "none recovery keeps known rejection on cancellation and limits and clears 
         var limited_bag: dot.FixedDiagnosticBag(8) = .{};
         var limited = Limited.parseBorrowed(std.testing.allocator, "graph { <a>; b; c; }", limited_bag.sink(), .{});
         defer limited.deinit(std.testing.allocator);
-        try equal(.unsupported_feature, limited.outcome);
+        try equal(.resource_exhausted, limited.outcome);
+        try equal(dot.Completion.incomplete, limited.completion);
         try equal(dot.Code.resource_capacity_exhausted, limited_bag.items()[1].code);
     }
 }

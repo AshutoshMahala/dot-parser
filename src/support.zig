@@ -17,5 +17,6 @@ test {
     _ = processor;
     _ = stack;
     _ = utf8;
+    _ = console;
     _ = @import("common/console_text.zig");
 }

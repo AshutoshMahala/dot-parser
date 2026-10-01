@@ -276,6 +276,9 @@ unfinished work promptly, including syntax recovery and warning-producing parses
 They abort staged output once and latch `.diagnostic_stopped`. Diagnostic delivery
 is a separate fact: accepted-stop delivered its item, rejection did not. Reporting
 an already-terminal syntax/resource failure preserves that original cause.
+Parse results independently retain u32 `syntax_errors` and `completion`. During
+recovery a later cancellation/limit/storage stop remains the terminal outcome,
+with earlier syntax rejection still visible; progress exposes the running count.
 
 On a live terminal session, results are idempotent: further calls return the
 cached result without polling, scanning, emitting diagnostics, committing or

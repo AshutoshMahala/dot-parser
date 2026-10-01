@@ -2,6 +2,17 @@ const std = @import("std");
 const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 
+test "both parsers separate a later resource stop from established syntax rejection" {
+    const D = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 1 } } });
+    const M = markup.Profile(.{ .policy = .{ .limits = .{ .max_nodes = 2 } } });
+    const d = D.measureIn("graph { a -- ; b; c; d; }", .{}, dot.diagnostic.discard, .{});
+    const m = M.measure(std.testing.allocator, "</x><a/><b/><c/>", markup.diagnostic.discard, .{});
+    try std.testing.expect(d.outcome == .resource_exhausted and m.outcome == .resource_limit);
+    try std.testing.expectEqual(@as(u32, 1), d.syntax_errors);
+    try std.testing.expectEqual(d.syntax_errors, m.syntax_errors);
+    try std.testing.expect(d.completion == .incomplete and m.completion == .incomplete);
+}
+
 test "independent parsers coexist and share primitives, not grammars or payloads" {
     try std.testing.expect(dot.location.Span == markup.location.Span);
     try std.testing.expect(dot.reporting.Severity == markup.reporting.Severity);

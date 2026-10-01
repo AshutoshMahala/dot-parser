@@ -19,6 +19,8 @@ test "collect is the default while explicit fail-fast remains available" {
         const r = P.parseBorrowedIn(source, .{ .document = pools.storage() }, bag.sink(), .{});
         try expect(r.outcome == .invalid_syntax and r.document == null);
         try equal(@as(usize, if (policy.recovery == .fail_fast) 1 else 2), bag.items().len);
+        try equal(@as(u32, if (policy.recovery == .fail_fast) 1 else 2), r.syntax_errors);
+        try equal(if (policy.recovery == .fail_fast) dot.Completion.incomplete else .complete, r.completion);
     }
     // No reliable boundary exists inside an unfinished quoted/comment/HTML ID.
     for ([_][]const u8{ "graph { a; \"unfinished", "graph { a; /*unfinished", "graph { a; <unfinished", "graph { a; \"x\x00y\"; b; }", "graph { a; \"x\"+" }) |input| {
@@ -27,6 +29,8 @@ test "collect is the default while explicit fail-fast remains available" {
         const r = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, bag.sink(), .{});
         try expect(r.outcome == .invalid_syntax and r.document == null);
         try equal(@as(usize, 1), bag.items().len);
+        try equal(@as(u32, 1), r.syntax_errors);
+        try equal(dot.Completion.incomplete, r.completion);
     }
 }
 
@@ -332,6 +336,7 @@ test "fixed settings have no runtime storage and disabled controls are absent" {
     const Driver = @FieldType(@FieldType(Fixed.Session, "driver"), "machine");
     try expect(@FieldType(Driver, "settings") == void);
     try expect(@FieldType(Driver, "cancellation") == void);
+    try expect(@FieldType(Driver, "syntax_errors") == void);
     try expect(@FieldType(Driver, "work") == void);
     try expect(@FieldType(Driver, "skip_depth") == void);
     try expect(@FieldType(Fixed.Session, "interpretation_policy") == void);

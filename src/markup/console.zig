@@ -11,6 +11,7 @@ const Bound = common.Renderer(Adapter);
 pub const render = Bound.render;
 pub const renderBoxed = Bound.renderBoxed;
 pub const renderBoxedList = Bound.renderBoxedList;
+pub const locationCapacity = Bound.locationCapacity;
 
 pub const Adapter = struct {
     pub const Item = Diagnostic;

@@ -69,6 +69,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
             if (result.outcome != .success) return output;
             output.document = builder.toDocument() catch |err| {
                 output.outcome = .{ .storage_failure = storageFailure(err) };
+                output.completion = .incomplete;
                 output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, err, builder.failure_info, result.diagnostic_delivery);
                 return output;
             };
@@ -89,6 +90,8 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                     .sink_failure, .scratch_failure => |err| .{ .storage_failure = storageFailure(err) },
                 },
                 .diagnostic_delivery = result.diagnostic_delivery,
+                .completion = result.completion,
+                .syntax_errors = result.syntax_errors,
                 .accepted_deviations = result.accepted_deviations,
                 .warnings = result.warnings,
             };
@@ -183,6 +186,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                     .work_used = progress.work_used,
                     .accepted_deviations = self.machine.acceptedDeviations(),
                     .warnings = self.machine.warnings,
+                    .syntax_errors = self.machine.syntaxErrors(),
                     .outcome = if (self.terminal) |r| r.outcome else null,
                     .diagnostic_delivery = if (self.terminal) |r| r.diagnostic_delivery else self.machine.delivery,
                 };
@@ -229,6 +233,8 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                 self.terminal = .{
                     .document = if (parsed.outcome == .success) self.builder.toDocument() else null,
                     .outcome = outcome,
+                    .completion = parsed.completion,
+                    .syntax_errors = parsed.syntax_errors,
                     .accepted_deviations = parsed.accepted_deviations,
                     .warnings = parsed.warnings,
                     .diagnostic_delivery = if (parsed.outcome == .sink_failure)
