@@ -1,6 +1,7 @@
 # Standalone markup — structural slices
 
-Decisions: 2026-09-26; slices 1–3, 4a and 4b implemented 2026-09-27. Later slices below are plans, not
+Decisions: 2026-09-26; slices 1–3, 4a and 4b implemented 2026-09-27;
+diagnostics-only recovery implemented 2026-09-30. Later slices below are plans, not
 current public capabilities. R-MOD-014/015 and Q40 remain the architectural contract.
 
 ## Delivery order
@@ -19,7 +20,7 @@ this parser. Independent parsing must not import DOT grammar or retained records
 | 4a | Optional independent UTF-8 validation, source-ordered with duplicate findings | Implemented |
 | Resource hardening | Default-capped shared diagnostic retention and an untrusted-input resource preset | Implemented |
 | 4b | Optional XML 1.0 name checks and known-reference checks, without imposing either on other dialects | Implemented |
-| Recovery | Explicit structural-error recovery for additional diagnostics | Deferred to a separate design discussion; not part of 4b |
+| Recovery | Structural-error recovery for additional diagnostics; no partial tree | Implemented 2026-09-30, default `.collect`; explicit `.fail_fast` available |
 | DOT passthrough recognition | `none`/`passthrough`, both scanners, concatenation, decoding and DOT fix policy; no markup dependency | Implemented 2026-09-27 |
 | Integration | Delayed integration first; during-DOT composition later | Planned |
 
@@ -36,7 +37,8 @@ single raw identifier expression, including mixed concatenations. Public form
 classification and explicit decoding work without importing the markup module.
 No per-part view, structural summary, tree, vocabulary check or scheduler is added.
 DOT fix offers now have fixed/runtime `all`/`machine_applicable`/`off` filtering.
-Markup has no fix producers/payload yet; its equivalent leaf waits for those.
+Markup subsequently gained compact semicolon-fix offers and the same filtering
+leaf; repair production remains processor-owned and rendering is shared.
 
 Verification covers every ID position, arbitrary interior bytes, unsheltered
 angle-depth boundaries, mixed/empty operands, EOF fixes, body recovery, fixed
@@ -95,8 +97,8 @@ markup parsing. Scalar quotes/comments and long-ID microbenchmarks have small
 slowdowns in this sample; the ordinary end-to-end benchmark has no measured loss.
 
 Next integration work is the explicitly designed per-part/origin contract and
-delayed processing. Structural recovery and specialized vocabularies still need
-their own decisions; passthrough DOT support does not imply either one.
+delayed processing. Structural recovery is now implemented independently;
+specialized vocabularies still need their own decisions. DOT passthrough invokes neither.
 
 ## Settled grammar direction
 
@@ -224,17 +226,106 @@ document-pool access. Duplicate scratch remains the sole validation allocation,
 preflighted before checks. Precise API and cost semantics are in the
 [consumer guide](../MARKUP.md#optional-name-rules-and-reference-catalogs).
 
-### Structural recovery — deferred, not implicit acceptance
+### Structural recovery — implemented 2026-09-30
 
-Slice 4b adds independent validation only. Keep current fail-fast handling of
-unrecoverable structural syntax and do not publish a partial successful document.
-Before adding recovery, discuss recoverable error classes, safe synchronization
-through quoted values/comments/CDATA, mismatched-tag stack handling, progress and
-work limits, diagnostic order/cascades, output validity and termination reasons.
-Recovery for collecting more errors is distinct from syntax acceptance or repair.
-No guessed closing tags, repaired successful tree or broad recovery switch is
-authorized by this deferral. Its implementation and placement relative to later
-integration will be discussed separately; no placeholder public setting is needed.
+`Policy.recovery` is `.collect` by default, with explicit `.fail_fast` and full
+fixed/runtime parity. Both reject malformed syntax; recovery is not acceptance,
+repair, browser tree construction or permission to expose a partial tree.
+Both DOT and markup expose the same two recovery names; their grammar-specific
+synchronization rules remain internal. Markup's planned `structural`/`graphviz`/
+`extended` processing choices are a separate policy dimension, not recovery values.
+
+- Abort staged output once at the first rejection; stop output callbacks/pool
+  growth while grammar, factual counts and scratch continue. Limits still apply.
+- Unexpected closers are discarded. A mismatch searches open ancestors nearest
+  first using exact bytes: unwind through a match, otherwise discard the closer
+  without changing the open stack. One finding covers abandoned descendants.
+- At EOF, report remaining open elements innermost first. Rejected malformed
+  references resume through known scanner boundaries without becoming accepted.
+- Malformed headers, unterminated quoted values/comments/CDATA, forbidden controls
+  and unsupported constructs stop immediately. No delimiter guessing or fabricated
+  closing events. Independent fragments can still run; no partial tree is published.
+- Sink stop/failure, cancellation, exhausted storage and policy limits stop work.
+  Markup results report `completion` plus u32 `syntax_errors`, so a later operational
+  outcome does not erase earlier rejection. Complete recovery still returns
+  `invalid_syntax`; terminal lexical failure preserves its cause on delivery failure.
+- All ancestor lookup shares `source.len` credits (length probes and byte-pair
+  comparisons). Exhaustion is an explicit `resource_limit.recovery_work`; this
+  non-configurable complexity ceiling prevents quadratic malformed-input work.
+  Metered lookup is resumable, one probe/pair per step; cancellation polls normally.
+- Emit in encounter order, with no sorting buffer. EOF findings share EOF as their
+  primary location and carry earlier related opener spans. No cascade for every
+  frame discarded by a single ancestor match.
+
+Recovery state is three u32 fields in enabled machines; fixed fail-fast excludes
+it. Result facts also occupy constant session space. Nodes, attributes, diagnostics
+and nesting frames do not grow in size; additional findings/scratch still cost
+memory. Tests cover scanner/binding/execution parity, budget partitions, bounded
+adversarial ancestor searches, sink stops, cancellation and output-abort lifecycle.
+See the [consumer contract](../MARKUP.md#diagnostics-only-structural-recovery).
+
+### Recovery slice measurements — 2026-09-30
+
+Verification (including the shared `.collect` naming): **521/521** tests pass
+in Debug, ReleaseSafe and ReleaseFast.
+Examples and consumed RISC-V32/Wasm32 freestanding builds pass. Mutation and
+backend-differential cases are regression checks, not a sustained fuzz campaign.
+
+Local arm64 machine, Zig 0.16.0, ReleaseFast; parent `7d56f6e` versus this
+slice. No builds overlapped timed runs. These are development checks, not the
+separate standard-machine baseline or a universal performance guarantee.
+
+Existing `bench/markup.zig`: all 13 parsing fixtures, two backends and five
+modes; before/after/after/before processes. Each process uses five warmups and
+nine timed batches of 16. Average the two process medians per cell; the table
+shows geometric-mean throughput changes over the 13 fixtures (negative is slower).
+Both versions use their defaults: the parent stops on first error; this slice
+enables structural recovery. All timed inputs here are syntactically valid.
+
+| Mode | Scalar throughput change | Block throughput change |
+| --- | ---: | ---: |
+| fixed | -1.4% | 2.0% |
+| runtime_baseline | -1.0% | -1.5% |
+| runtime_override | -2.4% | -0.5% |
+| count_only | -0.9% | -1.0% |
+| cancellable | 1.3% | -0.7% |
+
+Selected cells, milliseconds and **decimal MB/s**; rounded measurements show
+fixture-specific costs, including the larger scalar CDATA slowdown:
+
+| Fixture/backend/mode | Before → after ms | Before → after MB/s |
+| --- | ---: | ---: |
+| flat/scalar/fixed | 0.5435 → 0.5575 | 367.9 → 358.7 |
+| mixed/scalar/fixed | 2.2910 → 2.3330 | 327.4 → 321.5 |
+| attributes/scalar/fixed | 3.1385 → 3.2160 | 350.5 → 342.0 |
+| cdata/scalar/fixed | 1.5255 → 1.6075 | 1016.2 → 964.4 |
+| prose/scalar/fixed | 0.9370 → 0.9690 | 1959.0 → 1896.6 |
+| mixed/block/fixed | 2.5730 → 2.4710 | 291.5 → 303.6 |
+
+Markup's native fixed/bounded/runtime sessions are **416 → 432**, **424 → 440**
+and **480 → 496 bytes** respectively. Node (20 B), attribute (20 B), nesting
+frame (12 B), diagnostic (36 B) and validation-key scratch (8 B) are unchanged.
+Valid-input output/scratch capacities therefore stay unchanged; recovery retains
+no additional tree pool. Collecting more findings and reaching deeper input can
+still allocate more diagnostic/scratch storage on invalid input. These figures
+are layouts/capacities, not measured process RSS or a peak-heap guarantee.
+
+DOT `bench/throughput.zig`: 2,733,345 source bytes / 200,000 statements,
+parse+validate. Three additional alternating before/after process pairs for each
+backend, each with two warmups and nine rounds; median of the three process
+medians below. The scalar gain is specific to these generated binaries/fixture,
+not evidence that recovery is intrinsically faster; block parsing has a modest
+slowdown that must not be hidden.
+
+| Backend/storage | Before → after ms | Before → after MB/s |
+| --- | ---: | ---: |
+| scalar/growing | 10.35 → 8.20 | 264.1 → 333.3 |
+| scalar/hinted | 9.47 → 7.31 | 288.6 → 373.9 |
+| block/growing | 8.59 → 8.80 | 318.2 → 310.6 |
+| block/hinted | 7.55 → 7.85 | 362.0 → 348.2 |
+
+DOT retained pools remain **6,800,000 bytes**. Arena backing capacity remains
+**37,620,470 bytes** growing / **8,400,148 bytes** hinted; these are not RSS.
 
 ## Encoding boundary
 

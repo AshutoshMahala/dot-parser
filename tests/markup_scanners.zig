@@ -40,6 +40,8 @@ fn compare(comptime acceptance: m.Acceptance, source: []const u8) !void {
         const fixed = Fixed.parseBorrowedIn(source, .{ .document = fixed_storage.storage(), .scratch = fixed_scratch.storage() }, fixed_bag.sink(), .{});
         try deep(reference.outcome, fixed.outcome);
         try equal(reference.counts, fixed.counts);
+        try equal(reference.completion, fixed.completion);
+        try equal(reference.syntax_errors, fixed.syntax_errors);
         try equal(reference.accepted_deviations, fixed.accepted_deviations);
         try deep(bag.items(), fixed_bag.items());
         if (reference.document) |doc| {
@@ -82,6 +84,8 @@ fn compare(comptime acceptance: m.Acceptance, source: []const u8) !void {
                 const got = session.result().?;
                 try deep(reference.outcome, got.outcome);
                 try deep(reference.counts, got.counts);
+                try equal(reference.completion, got.completion);
+                try equal(reference.syntax_errors, got.syntax_errors);
                 try equal(reference.accepted_deviations, got.accepted_deviations);
                 try equal(reference.warnings, got.warnings);
                 try equal(reference.diagnostic_delivery, got.diagnostic_delivery);

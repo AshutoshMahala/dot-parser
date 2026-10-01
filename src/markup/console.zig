@@ -79,6 +79,8 @@ pub const Adapter = struct {
             try writer.writeAll("write '&amp;' for a literal '&'; otherwise use a valid reference ending in ';'");
         } else if (d.details == .reference and d.details.reference == .invalid_character) {
             try writer.writeAll("use a permitted character value, such as '&#32;' for a space");
+        } else if (d.details == .capacity and d.details.capacity.resource == .recovery_work) {
+            try writer.writeAll("fix the reported tag mismatches before continuing; the source-sized recovery search budget is exhausted");
         } else if (d.code == .unknown_reference or d.code == .unknown_reference_tolerated) {
             if (positions.slice(d.span)) |name| {
                 const suggestion: ?[]const u8 = if (std.mem.eql(u8, name, "&nbsp;")) "&#160;" else if (std.mem.eql(u8, name, "&copy;")) "&#169;" else if (std.mem.eql(u8, name, "&mdash;")) "&#8212;" else null;
@@ -158,5 +160,6 @@ fn resourceText(resource: diagnostic.Resource) []const u8 {
         .node_pool => "node pool",
         .attribute_pool => "attribute pool",
         .attribute_keys => "attribute-key scratch",
+        .recovery_work => "recovery ancestor-search work",
     };
 }

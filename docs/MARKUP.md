@@ -19,7 +19,7 @@ but does not yet invoke this parser automatically.
 | Named, decimal and hexadecimal references | Syntax checked and spelling preserved; optional independent named-reference catalog check, no expansion |
 | `<!--comment-->`, `<![CDATA[text]]>` | Retained as distinct leaf nodes, including empty bodies |
 | Processing instructions, declarations | Unsupported |
-| Unclosed, mismatched or unexpected closing tags | Invalid syntax; no partial document |
+| Unclosed, mismatched or unexpected closing tags | Invalid syntax; structural recovery collects further findings by default, never publishes a partial document |
 | Leading UTF-16/32 byte-order markers | Unsupported encoding; no automatic conversion |
 
 Names start with `[A-Za-z_:]` or a byte `0x80..0xFF`; subsequent bytes may also
@@ -48,7 +48,8 @@ token, `name` is the name span and `span` is the quoted value span. Header-end t
 cover only `>` or `/>`; retained element spans still cover the entire element.
 Comments and CDATA produce whole `comment`/`cdata` tokens with raw delimiters.
 The public lexer is strict: a malformed reference returns a latched syntax problem;
-tolerance is available through policy-bound parsing, not a second lexical dialect.
+tolerance and diagnostics-only recovery are available through policy-bound parsing,
+not a second lexical dialect.
 
 ### References, comments and CDATA
 
@@ -438,6 +439,7 @@ const parsed = Reader.parseBorrowedIn(source, memory, sink, .{
 | Policy leaf | Values/default |
 | --- | --- |
 | `scanner` | `scalar` (default), `block`; same syntax and output, different work granularity |
+| `recovery` | `collect` (default), `fail_fast`; collect further syntax findings at reliable boundaries, or stop at the first syntax error. Selects error handling, not the grammar |
 | `diagnostics.fixes` | `all` (default), `machine_applicable`, `off`; filters repair offers only |
 | `limits.max_source_bytes` | u32; default `2^32 - 1` |
 | `limits.max_nodes` | u32; default `2^32 - 1`; elements, nonempty text runs, comments and CDATA sections |
@@ -488,7 +490,8 @@ a run in a window of up to 64 source bytes using native-width vectors, or handle
 a scalar boundary transition. The first byte may be reexamined when a run stops
 immediately; a nonempty run yields before its boundary is processed. Short tails
 are read scalarly, never beyond the source. Closing-name comparison remains
-byte-stepped for both backends, including rereads. The initial four-byte encoding
+byte-stepped for both backends, including rereads. A recovery search credit probes
+one ancestor length or compares one pair of name bytes. The initial four-byte encoding
 probe also remains byte-stepped. Frontier includes vector lookahead, not just
 consumed bytes.
 
@@ -517,9 +520,15 @@ can move between calls without retaining pointers into their former location.
 
 ## Results and diagnostics
 
-Results keep `outcome`, `diagnostic_delivery`, and factual `counts` separate.
-Only `.success` publishes a document. Counts on failure describe accepted prefix
-events, not a usable partial tree or completed validation.
+Results keep `outcome`, `completion`, `syntax_errors`, `diagnostic_delivery`, and
+factual `counts` separate. Only `.success` publishes a document.
+`completion = .complete` means EOF and all pending structural checks were reached;
+recovery can complete with `invalid_syntax`. Every other stop is `.incomplete`.
+The u32 `syntax_errors` total counts rejected syntax findings, even if delivery
+fails or a later cancellation/resource/unsupported outcome stops the operation.
+It excludes warnings and resource/unsupported findings. Session progress exposes
+the same running total. Counts on failure describe recognized constructs, including
+those reached during recovery, not retained records or a sizing guarantee.
 Parse results, measurement reports and session progress also expose u32
 `accepted_deviations` and `warnings`. Each tolerated ampersand increments the former;
 `warn` also increments the latter before delivery. Discarding/filtering diagnostics
@@ -532,21 +541,22 @@ summaries, not a retained per-reference history or validation's separate totals.
 | `success` | Whole fragment parsed under the selected syntax policy |
 | `invalid_syntax` | Rejected structural syntax |
 | `unsupported_feature` | Recognized construct is not processed; contents unvalidated |
-| `resource_limit` | Source/node/attribute/nesting policy reached |
+| `resource_limit` | Source/node/attribute/nesting policy or recovery ancestor-search ceiling reached |
 | `storage_exhausted` | Fixed node/attribute pool or nesting frames exhausted |
 | `out_of_memory` | Explicit allocator failed |
 | `cancelled` | Caller stopped unfinished work |
 | `sink_failure` | Private syntax consumer failed |
-| `diagnostic_stopped` | Warning sink requested stopping or rejected delivery; contains the stop reason |
+| `diagnostic_stopped` | A warning or recoverable-error sink requested stopping or rejected delivery; contains the stop reason |
 
-Parsing can emit multiple accepted-reference warnings before at most one terminal failure diagnostic.
-Its original cause survives a diagnostic destination that stops or rejects it;
-rejection sets `diagnostic_delivery = .failed`. Cancellation emits no diagnostic.
-An accepted warning followed by sink `.stop` aborts unfinished parsing with
+Parsing can emit multiple warnings and recoverable errors before completion or a
+terminal failure. An already-terminal cause (such as an unterminated quoted value)
+survives a diagnostic destination that stops or rejects it; rejection sets
+`diagnostic_delivery = .failed`. Cancellation emits no diagnostic.
+A warning or recoverable error followed by sink `.stop` aborts unfinished parsing with
 `diagnostic_stopped.requested` and complete delivery of the emitted prefix. Sink
 errors produce the corresponding reason and failed delivery. Neither case publishes
 a document, sends another diagnostic into the stopped sink, or continues scanning.
-Syntax recovery is not implemented. A missing reference semicolon can carry a
+A missing reference semicolon can carry a
 possible repair if terminating the candidate makes it syntactically valid;
 forbidden/out-of-range numeric values (for example `&#5` or `&#x110000`) have no
 such offer. The parser never applies it. `Diagnostic.fix` is a compact offer,
@@ -570,6 +580,43 @@ source annotations, ASCII/Unicode frames, opt-in ANSI colors and list summaries.
 See [metadata and presentation](REPORTING.md#metadata-and-console-presentation)
 and the runnable [example](../examples/markup.zig). Rendering is allocation-free,
 caller-driven, and absent from parser execution; markup diagnostics remain 36 bytes.
+
+## Diagnostics-only structural recovery
+
+`recovery = .collect` is the standard/untrusted default. Choose `.fail_fast`
+explicitly to stop at the first syntax error. This does not change acceptance:
+rejected input stays rejected under either policy, and validation is independent.
+Tree-dependent validation still requires a successfully parsed `Document`; this
+slice cannot run those checks on rejected input because it publishes no partial tree.
+
+| Rejected construct | Structural recovery action |
+| --- | --- |
+| Closing tag with no open element | Report and discard that closing tag |
+| Closing tag mismatches the current element | Report once; find the nearest byte-exact matching open ancestor and unwind through it. If none matches, discard the closer and keep the open stack |
+| Open elements left at EOF | Report each unclosed element, innermost first |
+| Malformed reference with `syntax.malformed_reference = .reject` | Report and resume using the scanner's known text/quoted-value boundary; do not count it as an accepted deviation |
+| Malformed header, unterminated quote/comment/CDATA, invalid control byte, unsupported feature | Stop the fragment; no guessed synchronization or extra missing-close cascade |
+
+At the first rejection, staged output is aborted exactly once. No further output
+events or pool growth occur; only scanning, grammar, counters, diagnostics and
+nesting scratch continue. Policy limits still apply after rejection. No synthetic
+tags, repaired tree or partial document are produced. One mismatch covers frames
+unwound to an ancestor; it does not produce an additional missing-close finding
+for each abandoned frame. Findings are emitted in encounter order (EOF findings
+can have earlier related opener spans), without a sorting buffer.
+
+To prevent repeated unmatched closers from causing quadratic ancestor searches,
+all searches share **`source.len` work units**: one per ancestor-length probe and
+one per compared byte pair. Exhaustion returns `resource_limit` with resource
+`recovery_work`, that ceiling in `limit`, and incomplete completion. This built-in
+complexity ceiling is not configurable in this slice. Normal scanning/comparison
+is already linear; metering/cancellation also apply during recovery. Caller
+callbacks and allocation costs remain outside parser credits.
+
+The fixed fail-fast machine excludes recovery search/count state and continuation
+paths. Recovery adds constant session state, no retained-record or per-frame
+fields. Finding storage and nesting scratch can grow while collecting errors;
+use bounded diagnostics, limits and allocator budgets for untrusted input.
 
 ## Verification and costs
 

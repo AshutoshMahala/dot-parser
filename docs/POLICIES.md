@@ -78,7 +78,7 @@ Bare-dash interpretation uses the **written header**, even for a `graph` treated
 as `.digraph`, `.generic`, or `.auto`. Syntax normalization precedes graph
 validation and any effective conformance view: accepted `-->` can promote auto to
 generic; a bare dash in `graph` cannot. A syntax warning and a mismatch warning
-are separate facts. Lenient does not enable recovery, soften mismatch errors,
+are separate facts. Lenient inherits standard's statement recovery; it does not soften mismatch errors,
 guess missing delimiters/headers, accept spaced operators, or allow keywords as
 names. Negative numeric IDs and dashes in strings/comments are unaffected.
 
@@ -352,7 +352,7 @@ These fields have identical values and semantics at both binding times:
 | `limits.max_statements` | `maxInt(usize)` | Maximum source statements, not an edge or work budget |
 | `limits.max_attributes` | `maxInt(usize)` | Maximum key/value pairs, including assignments |
 | `limits.max_nesting` | `maxInt(u32)` | Maximum active subgraph depth; root depth is zero; `u32` at both binding times |
-| `recovery` | `.fail_fast` | `.statements` continues diagnostics after a body syntax failure; never publishes a partial document |
+| `recovery` | `.collect` | Continue diagnostics at statement boundaries after a body rejection; `.fail_fast` explicitly stops at the first syntax failure. Neither publishes a partial document |
 | `scanner` | `.scalar` | `.block` selects the 64-byte scanner; credit counts differ, language results do not |
 | `execution.metering` | `false` | Enable work-credit accounting and session `advance(budget)` |
 | `execution.cancellation` | `false` | Enable polling of an explicitly supplied cancellation hook |
@@ -360,6 +360,15 @@ These fields have identical values and semantics at both binding times:
 Zero limits are valid. Policy never disables mandatory capacity/overflow checks
 or supplies backing memory. Limits remain distinct from per-call work credits.
 Every metering/cancellation combination is supported independently.
+
+Recovery is best-effort, not a promise to find every error. It stops when a safe
+boundary is unavailable: malformed headers, trailing input, EOF, unterminated
+strings/comments/HTML-like identifiers, or enforced resource failures. Diagnostic
+sink stop/failure also stops work immediately. A bag that fills on the first
+recoverable finding therefore returns `diagnostic_stopped`; increase its capacity
+to collect more findings. Validation is a separate pass, not governed by this
+syntax-recovery choice. Explicit fixed `.fail_fast` profiles exclude recovery
+handling and skip-depth state.
 
 Source, allocators, pools, scratch and cancellation contexts are **resources**,
 not policy. `ParseOptions` retains `scratch_allocator` and `document_capacities`;

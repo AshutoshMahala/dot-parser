@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-29 (shared diagnostic registries/presentation and compact markup repairs; standalone slices 1–3, 4a and 4b).
+Last reconciled: 2026-09-30 (default DOT statement recovery and standalone markup structural recovery; partial trees remain deferred).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -756,8 +756,8 @@ release versioning. No particular later release number is assigned yet.
 **Standalone-first sequencing (2026-09-26).** Build the real independent markup
 engine in vertical slices before expanding processor composition: text/elements,
 then attributes, then references/comments/CDATA, followed by further checks.
-Structural recovery is a separate deferred discussion, not part of the next
-validation slice. DOT recognition and delayed integration follow standalone work; during-DOT
+Structural recovery was separated from validation and is now implemented in its
+own slice. DOT recognition and delayed integration follow standalone work; during-DOT
 composition comes later. This supersedes passthrough-first as the next implementation
 task, not the `none`/`passthrough` contract. No further `PolicySet`/scheduler work is
 required for standalone parsing. [Markup decisions and slice record](MARKUP.md)
@@ -801,8 +801,11 @@ custom bindings/catalogs remain later work. Name checking decodes only examined 
 checking is separate, and enabling both can produce overlapping independent
 findings with their own severities. Diagnostic details and cost targets are
 recorded in [the slice contract](MARKUP.md#slice-4b--optional-validation).
-Structural recovery is deferred to an explicit design discussion; current
-fail-fast syntax behavior and the no-partial-success contract remain in force.
+**Recovery implemented 2026-09-30.** Default `.collect` continues diagnostics
+after known-boundary errors; explicit `.fail_fast` remains available. Output aborts
+once and no partial tree escapes. Ancestor-search work is source-bounded; results
+separate completion, syntax-error counts and operational stops. See the
+[recovery contract](MARKUP.md#structural-recovery--implemented-2026-09-30).
 
 **Dialect parsing clarification (2026-09-27; proposal pending).** A selected
 void-element rule could handle a tag such as HTML `<br>` during header completion,
@@ -1072,9 +1075,9 @@ the currently public alternative is count-only measurement, not public events.
 
 - Further rule/catalog implementations and custom binding APIs beyond 4b's
   XML 1.0 names and five-name XML catalog. The current typed policies, diagnostic
-  granularity/order and literal-preserving rescanning are implemented. Structural recovery needs a
-  separate discussion of synchronization, stack handling, work and output validity;
-  it is not included in 4b. Structural checking does not imply full XML conformance.
+  granularity/order and literal-preserving rescanning are implemented. Structural
+  recovery is implemented separately from 4b; partial-tree publication remains
+  deferred. Structural checking does not imply full XML conformance.
 - Public stage APIs, syntax/events and optional retained representation
   (the layering above), diagnostics, scratch capacities and work
   accounting; default behavior and how configuration composes the stages.
@@ -1116,7 +1119,7 @@ still does not invoke or require the markup engine:
    `<...>` by the verified delimiter rule and emit one identifier token
    covering the whole spelling; the parser applies the mode. In `none` the
    parser reports `E.Profile.Feature.009` with `html_identifier` on that
-   token's span and, under `recovery = .statements`, continues past it. The
+   token's span and, under `recovery = .collect`, continues past it. The
    scanner's `html` terminal and the non-recoverable path it forced are
    removed. An individual operand's form follows its spelling; the first byte
    does not identify the form or HTML presence of a whole concatenation. No
@@ -1133,8 +1136,8 @@ still does not invoke or require the markup engine:
    values `all` (default), `machine_applicable` (drop guessed `maybe`
    offers) and `off`, applied by every fix producer in parsing and
    validation, at both binding times like every other leaf. The markup
-   subsystem will carry the same leaf when it introduces fixes (it currently
-   has no fix payload or producers; do not add unused policy/layout baggage). A `>`
+   subsystem now carries the same leaf for its compact semicolon-fix offers;
+   neither processor applies repairs automatically. A `>`
    outside markup stays the invalid byte it is today.
 4. **Concatenation** is in the slice, because it is scanner behaviour:
    after an HTML-like part, `+` continues the expression, and after `+` a
@@ -1414,7 +1417,7 @@ Finding or validating an actual referenced port is still a later semantic
 pass, not part of recognizing an ID, and label rules do not apply to every ID.
 
 *(Recorded contracts: R-MOD-014 and R-MOD-015. Standalone structural slices 1–3, 4a and 4b now
-exist in `src/markup/`; later checks/recovery and integration remain pending. HTML-like
+exist in `src/markup/`, followed by structural recovery; later checks and integration remain pending. HTML-like
 DOT IDs now have passthrough recognition as documented in
 [supported syntax](../SUPPORTED_SYNTAX.md); automatic inner processing is pending.)*
 
@@ -1546,7 +1549,7 @@ limits and bounded validation remain outside this implemented slice.
 **Q22 — Which grammar boundaries are safe recovery points, and what is the
 measured binary-size cost of recovery support?**
 **Implemented (2026-09-18):** statement boundaries are the sync points. With
-the policy `recovery = .statements` (default `.fail_fast`, per
+the policy `recovery = .collect` (now the default, per
 R-FUNC-007), a syntax error inside the body aborts the sink once, the parser
 skips to the next `;` or `}` at the same brace depth (skipped `{` are matched
 by counting), and every later syntax error is reported through the same bag.
@@ -1557,9 +1560,10 @@ HTML-like body identifiers now also recover, retaining `unsupported_feature`
 unless a syntax error is reported (R-MOD-006). Measured: renderer-free ReleaseSmall
 examples grew by 350–650 B and ordinary throughput did not change. These measurements predate Q35's unified
 policy migration: fixed fail-fast profiles now exclude recovery handling and
-skip-depth storage; runtime profiles support both values. **Still open:** a caller-
-provided diagnostic limit that ends recovery early (R-FUNC-007, R-SEC-002),
-and a broader per-class abort/report/ignore policy. Q36's three lenient
+skip-depth storage; runtime profiles support both values. Diagnostic bags now
+signal stop at capacity and parsing honors that immediately. Explicit omission
+mode limits retention only. **Still open:** a broader per-class abort/report/ignore
+policy. Q36's three lenient
 acceptances are implemented and can successfully commit; recovery after a
 rejected construct remains separate and cannot publish a partial document.
 *(Embodied: `Policy.recovery`,
@@ -1605,6 +1609,13 @@ Open; nothing currently forces the choice.
 ---
 
 ## Reconciliation log
+
+- 2026-09-30 — DOT defaults to statement recovery with terminal unterminated
+  lexical constructs. Standalone markup gains default structural recovery,
+  explicit fail-fast, source-bounded ancestor lookup, completion/error facts and
+  no partial-tree publication. Sink stops end work; fixed fail-fast excludes
+  continuation state. Both processors name the choices `.fail_fast` and `.collect`;
+  recovery remains distinct from acceptance, validation and markup processing mode.
 
 - 2026-09-29 — Shared WDP metadata/identity and console machinery now serve both
   DOT and markup, with processor-owned catalogs/typed adapters and unchanged

@@ -6,6 +6,23 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- **Breaking:** DOT and markup now expose only `recovery = .fail_fast` or
+  `.collect`, with `.collect` the default. Replace DOT's `.statements` and markup's
+  recovery value `.structural`; no compatibility aliases remain. Markup processing
+  modes are separate from recovery. This rename does not change recovery behavior.
+- **Breaking:** DOT now defaults to statement-boundary recovery; explicit `.fail_fast`
+  remains available. Unterminated quotes/comments/HTML-like identifiers stop
+  immediately because no reliable restart boundary exists. A full diagnostic bag
+  can stop recovery with `diagnostic_stopped` instead of first-error termination.
+- Add standalone markup diagnostics-only structural recovery (default), with an
+  explicit fail-fast policy and fixed/runtime/scanner/execution parity. Recover
+  mismatched/unexpected closers, EOF-open elements and rejected references;
+  uncertain lexical boundaries remain terminal. Abort output once, never publish
+  a partial tree, and bound aggregate ancestor-search work by source length.
+  Parse/measurement results gain `completion` and u32 `syntax_errors`; progress
+  exposes the running error count. `Resource` gains `recovery_work`. Retained node,
+  attribute, diagnostic and frame layouts remain unchanged.
+
 - Suppress ineffective markup semicolon fixes for forbidden/out-of-range numeric
   references. Improve attribute/reference hints and name both mismatched tags
   through checked source spans. **Breaking:** markup `Expected.quote` splits

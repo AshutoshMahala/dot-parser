@@ -13,6 +13,7 @@ test {
     _ = @import("markup_budgets.zig");
     _ = @import("markup_rules.zig");
     _ = @import("markup_diagnostics.zig");
+    _ = @import("markup_recovery.zig");
 }
 
 test "standalone public lexer yields borrowed tokens and latches EOF/errors" {
@@ -131,12 +132,12 @@ test "empty/text fragments, raw high bytes, exact case, names and encoding signa
         "<a =x>",  "</a x>",     "\x00", "<a>\x01</a>", "<a\x00>", "<a></ a>",
     };
     for (invalid) |source| {
-        var bag: markup.FixedDiagnosticBag(1) = .{};
+        var bag: markup.FixedDiagnosticBag(16) = .{};
         var parsed = markup.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
         defer parsed.deinit();
         try expect(parsed.outcome == .invalid_syntax);
         try expect(parsed.document == null);
-        try equal(@as(usize, 1), bag.items().len);
+        try expect(bag.items().len >= 1);
         try expect(bag.items()[0].span.endOffset() <= source.len);
     }
     for ([_][]const u8{ "\xff\xfe<\x00", "\xfe\xff\x00<", "\x00\x00\xfe\xff", "\xff\xfe\x00\x00" }) |source| {
@@ -209,7 +210,7 @@ test "all budget partitions preserve records, diagnostics, counts, work and term
         for ([_]u32{ 1, 2, 7, 128 }) |budget| {
             var nodes: markup.FixedDocumentStorage(.{ .nodes = 12, .attributes = 12 }) = .{};
             var frames: markup.FixedParseScratch(4) = .{};
-            var bag: markup.FixedDiagnosticBag(1) = .{};
+            var bag: markup.FixedDiagnosticBag(16) = .{};
             var session = markup.BoundedSession.init(source, .{ .document = nodes.storage(), .scratch = frames.storage() }, bag.sink(), .{});
             defer session.deinit();
             try expect(session.result() == null);
@@ -232,6 +233,8 @@ test "all budget partitions preserve records, diagnostics, counts, work and term
             const got = session.result().?;
             try equal(reference.outcome, got.outcome);
             try equal(reference.counts, got.counts);
+            try equal(reference.completion, got.completion);
+            try equal(reference.syntax_errors, got.syntax_errors);
             if (reference.document) |doc| {
                 try std.testing.expectEqualDeep(doc.records, got.document.?.records);
                 try std.testing.expectEqualDeep(doc.attributes, got.document.?.attributes);
@@ -358,7 +361,8 @@ test "cancellation before each step, zero budget, relocation and terminal idempo
     try equal(@as(u32, 0), p.work_used);
 }
 
-test "terminal syntax cause survives stopped, empty, or failing diagnostic destinations" {
+test "explicit fail-fast syntax cause survives stopped, empty, or failing diagnostic destinations" {
+    const P = markup.Profile(.{ .policy = .{ .recovery = .fail_fast } });
     const Reject = struct {
         fn emit(_: ?*anyopaque, _: markup.Diagnostic) markup.reporting.SinkError!markup.reporting.Action {
             return error.DiagnosticSinkFailure;
@@ -370,11 +374,11 @@ test "terminal syntax cause survives stopped, empty, or failing diagnostic desti
     var full: markup.FixedDiagnosticBag(0) = .{};
     var last: markup.FixedDiagnosticBag(1) = .{};
     for ([_]markup.DiagnosticSink{ full.sink(), .{ .context = null, .emit_fn = Reject.emit } }) |sink| {
-        const r = markup.parseBorrowedIn("<a></b>", memory, sink, .{});
+        const r = P.parseBorrowedIn("<a></b>", memory, sink, .{});
         try equal(markup.Outcome.invalid_syntax, r.outcome);
         try equal(markup.reporting.Delivery.failed, r.diagnostic_delivery);
     }
-    const r = markup.parseBorrowedIn("<a></b>", memory, last.sink(), .{});
+    const r = P.parseBorrowedIn("<a></b>", memory, last.sink(), .{});
     try equal(markup.Outcome.invalid_syntax, r.outcome);
     try equal(markup.reporting.Delivery.complete, r.diagnostic_delivery);
     try equal(markup.location.Span{ .start = 5, .len = 1 }, last.items()[0].span);

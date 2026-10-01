@@ -746,11 +746,12 @@ test "valid corpus parses to the expected statements, deterministically" {
 }
 
 test "invalid corpus fails with the expected diagnostic and terminates" {
+    const P = dot.Profile(.{ .policy = .{ .recovery = .fail_fast } });
     for (invalid_corpus) |entry| {
         errdefer std.debug.print("corpus fixture: invalid/{s}\n", .{entry.name});
 
         var bag: dot.FixedDiagnosticBag(4) = .{};
-        var checked = dot.parseAndValidate(std.testing.allocator, entry.source, bag.sink(), .{});
+        var checked = P.parseAndValidate(std.testing.allocator, entry.source, bag.sink(), .{});
         defer checked.deinit(std.testing.allocator);
         try std.testing.expect(checked.outcome == .invalid_syntax);
         try std.testing.expect(checked.document == null);
@@ -764,7 +765,7 @@ test "invalid corpus fails with the expected diagnostic and terminates" {
         }
         var pools: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4, .attributes = 8, .assignments = 4, .attribute_statements = 4 }) = .{};
         var fixed_bag: dot.FixedDiagnosticBag(1) = .{};
-        const fixed = dot.parseBorrowedIn(entry.source, .{ .document = pools.storage() }, fixed_bag.sink(), .{});
+        const fixed = P.parseBorrowedIn(entry.source, .{ .document = pools.storage() }, fixed_bag.sink(), .{});
         try std.testing.expect(fixed.outcome == .invalid_syntax);
         try std.testing.expect(fixed.document == null);
         try std.testing.expectEqualSlices(dot.Diagnostic, bag.items(), fixed_bag.items());

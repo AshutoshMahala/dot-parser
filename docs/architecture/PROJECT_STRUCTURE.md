@@ -255,9 +255,9 @@ The parser state machine and a private, provisional syntax-event contract. It
 parses one document and emits source-shaped events. It does not allocate AST
 nodes directly and does not know about graph engines.
 
-Under the opt-in `recovery = .statements` policy a body syntax error aborts
+Under the default `recovery = .collect` policy a recoverable body syntax error aborts
 the sink once and the grammar keeps running for diagnostics only,
-resynchronizing at `;`/`}`; the default remains fail-fast.
+resynchronizing at `;`/`}`; explicit `.fail_fast` stops at the first syntax failure.
 
 Public facades offer run-to-completion and fixed-storage sessions. The metered specialization
 separately charges scanning, grammar transitions, and event attempts, retaining

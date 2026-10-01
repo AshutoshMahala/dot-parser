@@ -107,18 +107,20 @@ The quick-start switch uses `.node` endpoints because its input is node-only.
 For arbitrary DOT, handle both `Endpoint` variants as shown in the
 [subgraph endpoint example](examples/subgraph_endpoints.zig).
 
-### Show every error
+### Collect more errors
 
-Parsing is fail-fast by default: one syntax error, then the outcome. Ask for
-statement-level recovery and one run reports them all, resynchronizing at the
-next `;` or `}`:
+Parsing defaults to `recovery = .collect`: after a recoverable body error it
+resynchronizes at the next `;` or `}` to collect more findings. Unrecoverable
+syntax, resource failures or a diagnostic sink's stop request end the run:
 
 ```zig
-const Parser = dot.Profile(.{ .policy = .{ .recovery = .statements } });
-var checked = Parser.parseAndValidate(allocator, source, bag.sink(), .{});
-// checked.outcome == .invalid_syntax; bag holds every syntax error, in order.
+var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
+// Rejected syntax publishes no document; bag holds encountered findings in order.
 try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source }, stdout);
 ```
+
+Choose `dot.Profile(.{ .policy = .{ .recovery = .fail_fast } })` explicitly to
+stop at the first syntax failure. Recovery never promises to find every error.
 
 Every diagnostic is a typed value — a WDP code such as `E.Syntax.Keyword.003`,
 a span, a payload naming what was found and where in the grammar, and, when

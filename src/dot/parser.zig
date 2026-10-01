@@ -32,18 +32,18 @@
 //! Every phase of this library reports problems the same way: diagnostics
 //! are emitted into a caller-owned `diagnostic.Sink` (a fixed/growable bag or
 //! streaming destination), and the function returns only a small control-flow result
-//! (R-DIAG-003). The parser's default policy is fail-fast (R-FUNC-007), so
-//! it attempts at most one failure diagnostic unless recovery is selected.
+//! (R-DIAG-003). The default policy collects diagnostics at statement boundaries
+//! (R-FUNC-007); explicit fail-fast stops at the first syntax failure.
 //! Lexical warnings and recovery use that same reporting surface.
 //!
 //! Guarantees:
 //! - Instance-owned state, no mutable globals (R-ROB-003).
-//! - Fail fast on the first structural failure by default; the sink
+//! - Stop at unrecoverable syntax; recover body statements by default. The sink
 //!   lifecycle from `syntax_event.zig` is honored: no events before a
 //!   supported header, abort after begin when the document cannot commit —
 //!   including the documented cleanup abort after an attempted
 //!   `beginDocument` that itself failed.
-//! - With `Policy.recovery = .statements`, a syntax error inside the body
+//! - With `Policy.recovery = .collect`, a syntax error inside the body
 //!   aborts the sink once, then parsing continues for diagnostics only:
 //!   tokens are skipped to the next `;` or `}` at the same brace depth
 //!   (a skipped `{` is matched by counting), the next statement parses
@@ -139,7 +139,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         }
         syntax_event.assertSyntaxSink(info.pointer.child);
     }
-    const recovery_enabled = if (fixed) |value| value.recovery == .statements else true;
+    const recovery_enabled = if (fixed) |value| value.recovery == .collect else true;
     const deviations_enabled = if (fixed) |value| value.syntax.acceptsDeviations() else true;
     const operators_enabled = if (fixed) |value| value.syntax.acceptsOperators() else true;
     return struct {
@@ -1324,12 +1324,15 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         /// boundary to return to, trailing tokens have nothing left to
         /// parse, and end of input is already the end.
         fn canRecover(self: *const Self, failure: diagnostic.Diagnostic) bool {
-            if (self.recovery() != .statements or !self.begun) return false;
+            if (self.recovery() != .collect or !self.begun) return false;
             if (self.state == .epilogue) return false;
             if (failure.details == .unexpected and failure.details.unexpected.found == .end_of_input) return false;
             if (self.tokens.terminal != .none) return switch (self.tokens.terminal) {
-                .oversize, .none, .eof => false,
-                else => true,
+                .oversize, .none, .eof, .block, .quote, .html_unterminated => false,
+                .concat => self.tokens.opener < self.tokens.source.len,
+                // Failures inside a quoted token have no safe restart point.
+                // The scanners would otherwise abandon the rest of the source.
+                .invalid, .operator, .operator_long, .operator_spaced, .numeral => self.tokens.opener == self.tokens.anchor,
             };
             return true;
         }
@@ -1761,7 +1764,7 @@ test "cancellation can stop every lexical continuation and execution phase" {
             .tokens = Scanner.init(source),
             .events = &events,
             .diagnostics = diagnostic.discard,
-
+            .settings = .{ .recovery = .fail_fast },
             .cancellation = request.hook(),
         };
         const before = machine.advance(budget);
@@ -1805,7 +1808,7 @@ test "late cancellation from a rejected syntax diagnostic does not mask failure"
         .tokens = scalar_lex.Scanner(true, true, null).init("graph {a[x=]}"),
         .events = &events,
         .diagnostics = .{ .context = &reporter, .emit_fn = Reporter.emit },
-
+        .settings = .{ .recovery = .fail_fast },
         .cancellation = request.hook(),
     };
     while (machine.advance(1).result == null) {}
@@ -1824,7 +1827,7 @@ test "diagnostic stop aborts output once and does not resume recovery or dispatc
             .tokens = scalar_lex.Scanner(true, true, null).init(source),
             .events = &events,
             .diagnostics = bag.sink(),
-            .settings = .{ .syntax = policy.resolve(policy.defaults, policy.presets.lenient).parsing.syntax, .recovery = .statements },
+            .settings = .{ .syntax = policy.resolve(policy.defaults, policy.presets.lenient).parsing.syntax, .recovery = .collect },
         };
         while (machine.advance(1).result == null) {}
         const first = machine.terminal.?;
@@ -1977,7 +1980,7 @@ fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool, co
         // After a recovered failure, dispatches keep the grammar's own
         // bookkeeping without attempting events, and several failures can
         // fall inside one budget; the end-state comparisons below still hold.
-        const recovering = settings.recovery == .statements;
+        const recovering = settings.recovery == .collect;
         if (!recovering) try expectEqual(machine.audit.dispatch - dispatch, events.attempts - attempts);
         try expect(progress.work_used <= budget);
         try expect(examined <= progress.work_used);
@@ -2024,7 +2027,7 @@ fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool, co
 test "numeral policy is partition invariant including failure and recovery" {
     inline for (.{ scalar_lex.Scanner, block_lex.Scanner }) |ScannerOf| {
         for ([_]policy.RuleSeverity{ .err, .warning, .off }) |severity| {
-            for ([_]policy.Recovery{ .fail_fast, .statements }) |recovery_mode| {
+            for ([_]policy.Recovery{ .fail_fast, .collect }) |recovery_mode| {
                 const settings: policy.ParseSettings = .{ .ambiguous_numeral = severity, .recovery = recovery_mode };
                 const source = "graph { 1e3; { 1.2.3; a } 2z; }";
                 const total = try checkBudgetPartition(ScannerOf, source, &.{1}, settings, null, false);
@@ -2055,7 +2058,7 @@ test "lenient syntax partitions preserve events counters diagnostics and charged
         for (0..events.attempts) |index|
             _ = try checkBudgetPartition(ScannerOf, source, &.{ 0, 1, 5 }, settings, index, false);
         var recovering = settings;
-        recovering.recovery = .statements;
+        recovering.recovery = .collect;
         _ = try checkBudgetPartition(ScannerOf, "graph { ; a[x=]; ; b --- c; d - > e; ; }", &.{ 0, 1, 5 }, recovering, null, false);
     }
 }
@@ -2288,7 +2291,7 @@ fn expectAborted(source: []const u8, expected_reason: syntax_event.AbortReason) 
     try expectEqual(expected_reason, recorded[recorded.len - 1].abort_document);
 }
 
-const recovery_settings: policy.ParseSettings = .{ .recovery = .statements };
+const recovery_settings: policy.ParseSettings = .{ .recovery = .collect };
 
 fn countCode(bag: anytype, code: diagnostic.Code) usize {
     var count: usize = 0;
@@ -2417,7 +2420,7 @@ test "both scanner backends drive the grammar to identical events and diagnostic
         "graph { a -- \"unterminated",
         "digraph { a:p:n -> b:q; c => d }",
     };
-    inline for (.{ .fail_fast, .statements }) |recovery| {
+    inline for (.{ .fail_fast, .collect }) |recovery| {
         for (sources) |source| {
             errdefer std.debug.print("source: {s}\n", .{source});
             var scalar_events: Recording = .{};
@@ -2845,7 +2848,7 @@ test "unsupported outcome is a boundary, not a whole-input validity claim" {
     // under the none policy. Unsupported is not a whole-input validity claim.
     var events: Recording = .{};
     var bag: Bag = .{};
-    const result = testing.run("graph { a -- < @> @", &events, bag.sink(), .{ .markup = .none }, null);
+    const result = testing.run("graph { a -- < @> @", &events, bag.sink(), .{ .markup = .none, .recovery = .fail_fast }, null);
     try expect(result.outcome == .unsupported_feature);
     try expectEqual(diagnostic.Feature.html_identifier, bag.items()[0].details.unsupported_feature);
 }

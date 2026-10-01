@@ -46,7 +46,7 @@ pub fn Engine(comptime api: type, comptime backend: policy.ScannerBackend, compt
         };
 
         fn fixedResult(report: results.Report, builder: *const syntax.Builder) api.FixedParseResult {
-            return .{ .outcome = report.outcome, .diagnostic_delivery = report.diagnostic_delivery, .counts = report.counts, .accepted_deviations = report.accepted_deviations, .warnings = report.warnings, .document = builder.document() };
+            return .{ .outcome = report.outcome, .completion = report.completion, .syntax_errors = report.syntax_errors, .diagnostic_delivery = report.diagnostic_delivery, .counts = report.counts, .accepted_deviations = report.accepted_deviations, .warnings = report.warnings, .document = builder.document() };
         }
         pub fn parseBorrowedIn(source: []const u8, memory: api.ParseMemory, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) api.FixedParseResult {
             var session = Session.init(source, memory, diagnostics, settings, hook);
@@ -61,6 +61,8 @@ pub fn Engine(comptime api: type, comptime backend: policy.ScannerBackend, compt
             if (report.outcome == .success) builder.trimCapacity() else builder.deinit();
             return .{
                 .outcome = report.outcome,
+                .completion = report.completion,
+                .syntax_errors = report.syntax_errors,
                 .diagnostic_delivery = report.diagnostic_delivery,
                 .counts = report.counts,
                 .accepted_deviations = report.accepted_deviations,

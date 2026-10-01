@@ -10,6 +10,7 @@ const result = @import("result.zig");
 const Kind = @import("kind.zig").Kind;
 
 pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool) type {
+    const recovery_enabled = fixed == null or fixed.?.recovery == .collect;
     const deviations_enabled = fixed == null or fixed.?.syntax.malformed_reference != .reject;
     const warnings_enabled = fixed == null or fixed.?.syntax.malformed_reference == .warn;
     return struct {
@@ -20,7 +21,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         diagnostics: diagnostic.Sink,
         settings: Settings,
         hook: Hook,
-        phase: enum { preflight, begin, scan, grammar, compare_open, compare_close, open, leaf, close, open_head, attribute, empty_close, commit } = .preflight,
+        phase: enum { preflight, begin, scan, grammar, compare_open, compare_close, open, leaf, close, open_head, attribute, empty_close, commit, recover_find, recover_compare } = .preflight,
         token: lexer.Token = undefined,
         /// Only live while reading an attribute-bearing opening header. Not a
         /// nesting frame: self-closing tags still need no persistent scratch.
@@ -31,10 +32,15 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         counts: result.Counts = .{},
         deviations: if (deviations_enabled) u32 else void = if (deviations_enabled) 0 else {},
         warnings: if (warnings_enabled) u32 else void = if (warnings_enabled) 0 else {},
+        recovery_state: if (recovery_enabled) struct { errors: u32 = 0, candidate: u32 = 0, remaining: u32 = 0 } else void = if (recovery_enabled) .{} else {},
         terminal: ?result.Report = null,
 
         pub fn init(source: []const u8, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) Self {
-            return .{ .scanner = .init(source), .diagnostics = diagnostics, .settings = settings, .hook = hook };
+            var self: Self = .{ .scanner = .init(source), .diagnostics = diagnostics, .settings = settings, .hook = hook };
+            // One source-sized allowance across ALL ancestor searches, including
+            // length probes and byte comparisons. Even unmetered recovery is O(n).
+            if (recovery_enabled) self.recovery_state.remaining = @intCast(@min(source.len, support.location.max_source_len));
+            return self;
         }
         fn limits(self: *const Self) policy.Limits {
             return if (fixed) |v| v.limits else self.settings.limits;
@@ -45,9 +51,50 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         fn fixes(self: *const Self) policy.Fixes {
             return if (fixed) |v| v.fixes else self.settings.fixes;
         }
+        fn writing(self: *const Self) bool {
+            return !recovery_enabled or self.recovery_state.errors == 0;
+        }
+        fn syntaxErrors(self: *const Self) u32 {
+            if (self.terminal) |report| return report.syntax_errors;
+            return if (recovery_enabled) self.recovery_state.errors else 0;
+        }
+        /// Abort retained output once; keep only grammar/scratch for diagnostics.
+        /// Ordinary findings continue, but sink stop/failure terminates immediately.
+        fn recoverSyntax(self: *Self, stack: *scratch.Stack, sink: anytype, finding: diagnostic.Diagnostic) bool {
+            if (!recovery_enabled or (if (fixed) |v| v.recovery else self.settings.recovery) == .fail_fast) {
+                self.finish(stack, sink, .invalid_syntax, finding);
+                return false;
+            }
+            self.recovery_state.errors += 1;
+            if (self.began) {
+                sink.abort();
+                self.began = false;
+            }
+            const action = self.diagnostics.emit(finding.withFixes(self.fixes())) catch |err| {
+                self.finish(stack, sink, .{ .diagnostic_stopped = .fromError(err) }, null);
+                self.terminal.?.diagnostic_delivery = .failed;
+                return false;
+            };
+            if (action == .stop) {
+                self.finish(stack, sink, .{ .diagnostic_stopped = .requested }, null);
+                return false;
+            }
+            return true;
+        }
+        fn searchCredit(self: *Self, stack: *scratch.Stack, sink: anytype) bool {
+            if (!recovery_enabled) unreachable;
+            if (self.recovery_state.remaining == 0) {
+                self.capacity(stack, sink, .recovery_work, @intCast(self.scanner.source.len), false);
+                return false;
+            }
+            self.recovery_state.remaining -= 1;
+            return true;
+        }
         fn malformedReference(self: *Self, stack: *scratch.Stack, sink: anytype, finding: diagnostic.Diagnostic) void {
-            if (!deviations_enabled or self.acceptance() == .reject)
-                return self.finish(stack, sink, .invalid_syntax, finding);
+            if (!deviations_enabled or self.acceptance() == .reject) {
+                _ = self.recoverSyntax(stack, sink, finding);
+                return;
+            }
             // Each event owns one distinct ampersand: bounded by source length.
             self.deviations += 1;
             if (warnings_enabled and self.acceptance() == .warn) {
@@ -64,6 +111,8 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         }
         fn finish(self: *Self, stack: *scratch.Stack, sink: anytype, outcome: result.Outcome, finding: ?diagnostic.Diagnostic) void {
             var delivery: diagnostic.reporting.Delivery = .complete;
+            var syntax_errors = self.syntaxErrors();
+            if (outcome == .invalid_syntax and finding != null) syntax_errors += 1;
             // These findings report an already-terminal cause. Accepted-stop or
             // rejection cannot replace it; broken sinks are never reported into.
             if (finding) |d| {
@@ -73,7 +122,15 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
             }
             if (self.began and outcome != .success) sink.abort();
             stack.len = 0;
-            self.terminal = .{ .outcome = outcome, .diagnostic_delivery = delivery, .counts = self.counts, .accepted_deviations = if (deviations_enabled) self.deviations else 0, .warnings = if (warnings_enabled) self.warnings else 0 };
+            self.terminal = .{
+                .outcome = outcome,
+                .completion = if (outcome == .success or (outcome == .invalid_syntax and self.phase == .commit)) .complete else .incomplete,
+                .syntax_errors = syntax_errors,
+                .diagnostic_delivery = delivery,
+                .counts = self.counts,
+                .accepted_deviations = if (deviations_enabled) self.deviations else 0,
+                .warnings = if (warnings_enabled) self.warnings else 0,
+            };
         }
         fn capacity(self: *Self, stack: *scratch.Stack, sink: anytype, resource: diagnostic.Resource, limit: u32, storage: bool) void {
             self.finish(stack, sink, if (storage) .{ .storage_exhausted = resource } else .{ .resource_limit = .{ .resource = resource, .limit = limit } }, .{
@@ -92,7 +149,17 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
             }
         }
         fn invalid(self: *Self, stack: *scratch.Stack, sink: anytype, code: diagnostic.Code, span: support.location.Span, related: ?support.location.Span) void {
-            self.finish(stack, sink, .invalid_syntax, .{ .code = code, .span = span, .related = related });
+            if (!self.recoverSyntax(stack, sink, .{ .code = code, .span = span, .related = related })) return;
+            if (!recovery_enabled) unreachable;
+            switch (code) {
+                .unexpected_close => self.phase = .scan,
+                .unclosed_element => stack.len -= 1, // EOF: one finding/step, innermost first.
+                .mismatched_tag => {
+                    self.recovery_state.candidate = stack.len - 1; // top already compared
+                    self.phase = .recover_find;
+                },
+                else => unreachable,
+            }
         }
         fn step(self: *Self, stack: *scratch.Stack, sink: anytype) void {
             switch (self.phase) {
@@ -159,8 +226,38 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                     self.compare_index += 1;
                     self.phase = if (self.compare_index == self.token.name.len) .close else .compare_open;
                 },
+                .recover_find => {
+                    if (!recovery_enabled) unreachable;
+                    if (self.recovery_state.candidate == 0) {
+                        self.phase = .scan; // unmatched closer: preserve open ancestors
+                        return;
+                    }
+                    if (!self.searchCredit(stack, sink)) return;
+                    self.recovery_state.candidate -= 1;
+                    if (stack.frames[self.recovery_state.candidate].name.len == self.token.name.len) {
+                        self.compare_index = 0;
+                        self.phase = .recover_compare;
+                    }
+                },
+                .recover_compare => {
+                    if (!recovery_enabled) unreachable;
+                    if (!self.searchCredit(stack, sink)) return;
+                    const candidate = self.recovery_state.candidate;
+                    const opener = stack.frames[candidate].name;
+                    if (self.scanner.source[opener.start + self.compare_index] != self.scanner.source[self.token.name.start + self.compare_index]) {
+                        self.phase = .recover_find;
+                    } else {
+                        self.compare_index += 1;
+                        if (self.compare_index == self.token.name.len) {
+                            // Traversal only: no synthetic close events or records.
+                            // The mismatch already explains the abandoned frames.
+                            stack.len = candidate;
+                            self.phase = .scan;
+                        }
+                    }
+                },
                 .open => {
-                    const handle = sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err);
+                    const handle = if (self.writing()) sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err) else 0;
                     if (self.token.kind == .open) stack.top().handle = handle;
                     self.counts.nodes += 1;
                     self.counts.elements += 1;
@@ -174,17 +271,17 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                         .cdata => .cdata,
                         else => unreachable,
                     };
-                    sink.leaf(kind, self.token.span) catch |err| return self.failure(stack, sink, err);
+                    if (self.writing()) sink.leaf(kind, self.token.span) catch |err| return self.failure(stack, sink, err);
                     self.counts.nodes += 1;
                     self.phase = .scan;
                 },
                 .attribute => {
-                    sink.attribute(self.head.handle, self.token.name, self.token.span) catch |err| return self.failure(stack, sink, err);
+                    if (self.writing()) sink.attribute(self.head.handle, self.token.name, self.token.span) catch |err| return self.failure(stack, sink, err);
                     self.counts.attributes += 1;
                     self.phase = .scan;
                 },
                 .open_head => {
-                    const handle = sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err);
+                    const handle = if (self.writing()) sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err) else 0;
                     self.head = .{ .name = self.token.name, .handle = handle };
                     self.counts.nodes += 1;
                     self.counts.elements += 1;
@@ -192,15 +289,16 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                     self.phase = .scan;
                 },
                 .empty_close => {
-                    sink.close(self.head.handle, @as(u32, @intCast(self.token.span.endOffset()))) catch |err| return self.failure(stack, sink, err);
+                    if (self.writing()) sink.close(self.head.handle, @as(u32, @intCast(self.token.span.endOffset()))) catch |err| return self.failure(stack, sink, err);
                     self.phase = .scan;
                 },
                 .close => {
-                    sink.close(stack.top().handle, @as(u32, @intCast(self.token.span.endOffset()))) catch |err| return self.failure(stack, sink, err);
+                    if (self.writing()) sink.close(stack.top().handle, @as(u32, @intCast(self.token.span.endOffset()))) catch |err| return self.failure(stack, sink, err);
                     stack.len -= 1;
                     self.phase = .scan;
                 },
                 .commit => {
+                    if (!self.writing()) return self.finish(stack, sink, .invalid_syntax, null);
                     sink.commit() catch |err| return self.failure(stack, sink, err);
                     self.finish(stack, sink, .success, null);
                 },
@@ -232,7 +330,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 used += 1;
                 self.step(stack, sink);
             }
-            return .{ .outcome = if (self.terminal) |r| r.outcome else null, .work_used = used, .source_frontier = self.scanner.frontier, .counts = self.counts, .accepted_deviations = if (deviations_enabled) self.deviations else 0, .warnings = if (warnings_enabled) self.warnings else 0 };
+            return .{ .outcome = if (self.terminal) |r| r.outcome else null, .work_used = used, .source_frontier = self.scanner.frontier, .counts = self.counts, .accepted_deviations = if (deviations_enabled) self.deviations else 0, .warnings = if (warnings_enabled) self.warnings else 0, .syntax_errors = self.syntaxErrors() };
         }
     };
 }
@@ -241,6 +339,7 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
     const std = @import("std");
     try std.testing.expect(Machine(.scalar, .{}, false, false).Settings == void);
     try std.testing.expect(Machine(.scalar, .{}, false, false).Hook == void);
+    try std.testing.expect(@FieldType(Machine(.scalar, .{ .recovery = .fail_fast }, false, false), "recovery_state") == void);
     try std.testing.expect(@FieldType(lexer.Scanner(.scalar, false, false), "frontier") == void);
     try std.testing.expect(@FieldType(lexer.Scanner(.scalar, true, true), "frontier") == u32);
     const Probe = struct {
@@ -296,4 +395,19 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
         try std.testing.expectEqual(calls, probe.calls);
         try std.testing.expectEqual(@as(u32, if (probe.fail_at == null) 0 else 1), probe.aborts);
     }
+    // Output is aborted at the first rejection; grammar alone continues.
+    var probe: Probe = .{};
+    var storage: scratch.Fixed(4) = .{};
+    var stack: scratch.Stack = .{ .frames = storage.storage().frames };
+    var m = Machine(.scalar, .{}, true, false).init("<a><b></a><c x='1'>text</c></extra>", diagnostic.discard, {}, {});
+    var calls_at_abort: ?u32 = null;
+    while (m.terminal == null) {
+        _ = m.advance(&stack, &probe, 1);
+        if (calls_at_abort) |count| try std.testing.expectEqual(count, probe.calls);
+        if (probe.aborts != 0) calls_at_abort = probe.calls;
+    }
+    try std.testing.expectEqual(@as(u32, 1), probe.aborts);
+    try std.testing.expectEqual(@as(u32, 3), probe.calls); // begin, open a, open b
+    try std.testing.expectEqual(@as(u32, 2), m.terminal.?.syntax_errors);
+    try std.testing.expectEqual(result.Completion.complete, m.terminal.?.completion);
 }

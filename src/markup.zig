@@ -27,6 +27,7 @@ pub const RuleSeverity = policy.RuleSeverity;
 pub const NameRule = policy.NameRule;
 pub const ReferenceCatalog = policy.ReferenceCatalog;
 pub const Acceptance = policy.Acceptance;
+pub const Recovery = policy.Recovery;
 pub const ScannerBackend = policy.ScannerBackend;
 pub const presets = policy.presets;
 pub const PolicyValidation = policy.Check;
@@ -42,6 +43,7 @@ pub const FixedDocumentStorage = syntax.Fixed;
 pub const ParseScratch = scratch.Storage;
 pub const FixedParseScratch = scratch.Fixed;
 pub const Outcome = results.Outcome;
+pub const Completion = results.Completion;
 pub const Counts = results.Counts;
 pub const Report = results.Report;
 pub const Progress = results.Progress;
@@ -60,6 +62,8 @@ pub const ParseMemory = struct { document: DocumentStorage = .{}, scratch: Parse
 pub const ParseResources = struct { scratch_allocator: ?std.mem.Allocator = null };
 pub const FixedParseResult = struct {
     outcome: Outcome,
+    completion: Completion = .incomplete,
+    syntax_errors: u32 = 0,
     diagnostic_delivery: reporting.Delivery,
     counts: Counts,
     accepted_deviations: u32 = 0,
@@ -68,6 +72,8 @@ pub const FixedParseResult = struct {
 };
 pub const ParseResult = struct {
     outcome: Outcome,
+    completion: Completion = .incomplete,
+    syntax_errors: u32 = 0,
     diagnostic_delivery: reporting.Delivery,
     counts: Counts,
     accepted_deviations: u32 = 0,

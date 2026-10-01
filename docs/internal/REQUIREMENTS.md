@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-09-29
+Original draft: 2026-07-13 · Last amended: 2026-09-30
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -154,14 +154,15 @@ data and must be rebuildable from syntax data or parser events.
 
 ### R-FUNC-007: Diagnostic recovery is policy-driven
 
-The default recovery policy is `.fail_fast`: stop at the first syntax failure,
-while reporting warnings, help, and other non-fatal diagnostics encountered
-before that point through the caller's sink.
+DOT and standalone markup both default to `recovery = .collect`.
+Collect additional diagnostics only where grammar boundaries remain reliable.
+Explicit `.fail_fast` stops at the first syntax failure; it still reports through
+the same diagnostic sink. Validation findings are independent of syntax recovery.
 
-An optional recovery policy may record a recoverable syntax diagnostic,
+A recovery policy may record a recoverable syntax diagnostic,
 synchronize at a safe grammar boundary, and continue collecting problems up to
 caller-provided diagnostic and work limits. Recovery must be best-effort and
-must mark any resulting syntax tree or `DotIR` as partial/invalid. Unterminated
+must not publish a partial tree (a future partial-tree API needs its own contract). Unterminated
 quoted or HTML-like input, lost delimiter balance, and exhausted input may be
 unrecoverable even when recovery is enabled.
 
@@ -170,16 +171,19 @@ continue, or ignore. Critical internal failures, memory-safety conditions, and
 violated parser invariants cannot be ignored. Recovery machinery should be
 compile-time excludable when its code-size cost is material.
 
-**Current implementation:** `Policy.recovery` offers `.fail_fast` and
-`.statements`. The latter continues diagnostics after aborting staged output;
+**Current implementation:** DOT `Policy.recovery` offers `.fail_fast` and
+default `.collect`. The latter continues diagnostics after aborting staged output;
 it never publishes a partial document or turns rejected syntax into success.
 Excluded HTML-like body identifiers can also recover: unsupported-only recovery
 remains `unsupported_feature`, while a reported syntax error yields
 `invalid_syntax`. Later cancellation/limits preserve that known rejection;
 diagnostic delivery stops/failures retain their separate outcomes.
 Successful acceptance of Q36's three syntax deviations is a separate policy
-decision. A broader per-class recovery policy and an early-stop diagnostic limit
-remain open (Q22); a bounded diagnostic bag alone limits retention, not work.
+decision. A broader per-class recovery policy remains open (Q22). Sink stop/failure
+ends work; default bounded bags signal stop when full. An explicitly omitting bag
+limits retention only. Markup's structural recovery aborts output once, bounds
+aggregate ancestor lookup by source length, and reports completion and factual
+syntax-error count separately from later operational stops. See [its contract](MARKUP.md#structural-recovery--implemented-2026-09-30).
 
 ### R-FUNC-008: Validation completes with a diagnostic bag
 
@@ -506,8 +510,8 @@ prioritizes Graphviz as a consumer, not browser implementation. Slice 4b supplie
 XML 1.0 names and a first five-name predefined-reference catalog, not full XML
 conformance or value expansion. Name-local UTF-8 decoding does not enable a
 whole-source check. Independent findings keep their severities and may overlap.
-Structural recovery is deferred to a separate design discussion; the current
-no-guessed-repair/no-partial-success contract remains unchanged. Details and
+Structural recovery is implemented separately from validation, preserving the
+no-guessed-repair/no-partial-success contract. Details and
 remaining choices are in [the internal slice contract](MARKUP.md#slice-4b--optional-validation).
 
 **Standalone-first implementation (2026-09-27; decisions 2026-09-26):** build structural markup in
@@ -527,7 +531,8 @@ optional whole-source UTF-8 validation, off by default with error/warning choice
 its source-ordered findings do not stop independent duplicate checks. Slice 4b
 adds independent default-off name and catalog checks with source-ordered typed
 findings, no new retained pool or required scratch, and fixed/runtime parity.
-Graphviz validation, recovery and DOT recognition/integration remain subsequent slices. Current
+Structural recovery and DOT passthrough recognition are implemented; Graphviz
+validation and DOT/markup integration remain subsequent slices. Current
 coverage is documented in [the markup guide](../MARKUP.md); settled grammar and
 delivery order are recorded in [the internal slice contract](MARKUP.md).
 
@@ -1525,6 +1530,12 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-09-30 — **R-FUNC-007/R-MOD-014:** DOT defaults to statement recovery;
+  markup implements diagnostics-only structural recovery with explicit fail-fast,
+  bounded ancestor search, separate completion/error facts and no partial trees.
+  Unrecoverable lexical boundaries and sink stops end work. Retained layouts stay
+  unchanged; fixed fail-fast excludes continuation state.
 
 - 2026-09-29 — **R-DIAG-004/005/007:** shared compile-time catalog/identity
   machinery, processor-bound optional console rendering and generic typed edit

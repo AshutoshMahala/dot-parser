@@ -118,8 +118,8 @@ or is cancelled; they are not a complete deviation history.
 `CheckResult.accepted_deviations` retains the parse count. Separate validation
 reports only its own warnings. See [syntax policies](POLICIES.md).
 
-By default parsing is fail-fast: at most one failure diagnostic. With
-`Policy.recovery = .statements` a syntax error inside the body does not end the parse: the
+Parsing defaults to `Policy.recovery = .collect`: a recoverable syntax error
+inside the body does not end the parse. The
 document is aborted once, the parser skips to the next `;` or `}` at the
 same brace depth, and every further syntax error is reported too. The
 outcome is still `invalid_syntax`, no document is published, and validation
@@ -131,6 +131,8 @@ unsupported-only recovery returns `unsupported_feature`. A reported syntax error
 makes it `invalid_syntax`, regardless of discovery order. Cancellation or a later
 enforced limit preserves that known rejection; diagnostic stops/failures retain
 their dedicated outcomes. Neither recovery outcome publishes a document.
+Explicit `.fail_fast` stops at the first syntax failure and still uses the same
+diagnostic sink. Recovery is best-effort, not a promise to report every error.
 
 Warnings (`W.Syntax.Numeral.033`, `W.Syntax.Operator.003`,
 `W.Syntax.Grammar.034`) do not invalidate input. Their destination can still
@@ -221,7 +223,20 @@ the keyword would do as well). Apply fixes from the highest offset down so
 earlier spans stay valid, then re-parse; the library never applies fixes
 itself.
 
-Which diagnostics carry a fix, and how confident it is:
+`Policy.diagnostics.fixes` controls which repair offers reach the consumer:
+
+| Policy | Offers included |
+| --- | --- |
+| `.all` (default) | Both `.machine_applicable` and tentative `.maybe` repairs |
+| `.machine_applicable` | Only repairs the producer marks suitable for unattended application |
+| `.off` | No repair offers; the diagnostic still reaches the sink |
+
+These filters never apply edits, hide errors or warnings, change severity, or
+change validity/recovery. For example, a missing markup-reference semicolon is
+currently a `.maybe` repair: it appears with `.all`, but not with
+`.machine_applicable` or `.off`. Literal text may have been intended instead.
+
+Which DOT diagnostics carry a fix, and how confident it is:
 
 | Diagnostic | Situation | Fix |
 | --- | --- | --- |

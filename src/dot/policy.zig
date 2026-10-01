@@ -13,11 +13,11 @@ pub const Acceptance = enum { reject, warn, accept };
 /// The written DOT keyword, never the effective graph kind or nearby edges.
 pub const BareDashInterpretation = enum { from_keyword };
 pub const Recovery = enum {
-    /// Stop at the first failure.
+    /// Report the first syntax failure and stop.
     fail_fast,
     /// After a body syntax error, abort output once and resynchronize to report
-    /// later errors. Never publishes a partial document or changes acceptance.
-    statements,
+    /// later errors where safe. Never publishes a partial document or changes acceptance.
+    collect,
 };
 
 /// One input schema for compiled baselines and per-operation runtime patches.
@@ -125,7 +125,7 @@ pub const ParseSettings = struct {
         max_statements: usize = @import("std").math.maxInt(usize),
         max_attributes: usize = @import("std").math.maxInt(usize),
     } = .{},
-    recovery: Recovery = .fail_fast,
+    recovery: Recovery = .collect,
 };
 
 pub const SyntaxSettings = struct {
@@ -185,7 +185,7 @@ pub const presets = struct {
             .max_statements = defaults.parsing.limits.max_statements,
             .max_attributes = defaults.parsing.limits.max_attributes,
         },
-        .recovery = .fail_fast,
+        .recovery = .collect,
         .scanner = .scalar,
         .execution = .{ .metering = false, .cancellation = false },
     };
@@ -372,7 +372,7 @@ test "all existing settings inherit independently and explicit defaults replace 
     const baseline = resolve(defaults, .{
         .limits = .{ .max_nesting = 8, .max_statements = 50, .max_attributes = 30 },
         .scanner = .block,
-        .recovery = .statements,
+        .recovery = .collect,
         .execution = .{ .metering = true, .cancellation = true },
     });
     try std.testing.expectEqualDeep(baseline, resolve(baseline, .{}));

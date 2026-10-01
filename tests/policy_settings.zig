@@ -6,6 +6,30 @@ const deep = std.testing.expectEqualDeep;
 const Runtime = dot.Profile(.{ .runtime_policy = true });
 const Storage = dot.FixedDocumentStorage(.{ .statements = 16, .nodes = 16, .edges = 16, .attributes = 16, .subgraphs = 8, .scoped_edges = 8, .scoped_edge_links = 8, .edge_chains = 8, .edge_links = 16, .ported_references = 16, .assignments = 8, .attribute_statements = 8 });
 
+test "collect is the default while explicit fail-fast remains available" {
+    try equal(@as(usize, 2), std.meta.fields(dot.Recovery).len);
+    try equal(dot.Recovery.collect, dot.Profile(.{}).baseline.parsing.recovery);
+    try equal(dot.Recovery.collect, dot.presets.standard.recovery.?);
+    try equal(dot.Recovery.collect, dot.presets.lenient.recovery.?);
+    const source = "graph { a[x=]; b[y=]; c; }";
+    inline for ([_]dot.Policy{ .{}, .{ .recovery = .collect }, .{ .recovery = .fail_fast } }) |policy| {
+        const P = dot.Profile(.{ .policy = policy });
+        var bag: dot.FixedDiagnosticBag(8) = .{};
+        var pools: Storage = .{};
+        const r = P.parseBorrowedIn(source, .{ .document = pools.storage() }, bag.sink(), .{});
+        try expect(r.outcome == .invalid_syntax and r.document == null);
+        try equal(@as(usize, if (policy.recovery == .fail_fast) 1 else 2), bag.items().len);
+    }
+    // No reliable boundary exists inside an unfinished quoted/comment/HTML ID.
+    for ([_][]const u8{ "graph { a; \"unfinished", "graph { a; /*unfinished", "graph { a; <unfinished", "graph { a; \"x\x00y\"; b; }", "graph { a; \"x\"+" }) |input| {
+        var bag: dot.FixedDiagnosticBag(1) = .{};
+        var pools: Storage = .{};
+        const r = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, bag.sink(), .{});
+        try expect(r.outcome == .invalid_syntax and r.document == null);
+        try equal(@as(usize, 1), bag.items().len);
+    }
+}
+
 const Request = struct {
     polls: usize = 0,
     stop: bool = false,
@@ -29,7 +53,7 @@ test "nesting policy and depth counters use u32 with fixed and runtime boundary 
     inline for (.{ .scalar, .block }) |scanner| {
         const input: dot.Policy = .{
             .scanner = scanner,
-            .recovery = .statements,
+            .recovery = .collect,
             .execution = .{ .metering = true },
             .limits = .{ .max_nesting = maximum },
         };
@@ -72,7 +96,7 @@ test "nesting policy and depth counters use u32 with fixed and runtime boundary 
 
 test "all scanner recovery and execution combinations agree at both binding times" {
     inline for (.{ .scalar, .block }) |scanner| {
-        inline for (.{ .fail_fast, .statements }) |recovery| {
+        inline for (.{ .fail_fast, .collect }) |recovery| {
             inline for (.{ false, true }) |metering| {
                 inline for (.{ false, true }) |cancellation| {
                     const input: dot.Policy = .{
@@ -194,7 +218,7 @@ test "fixed and runtime-baseline sessions have identical bounded progress and di
                 .scanner = scanner,
                 .execution = .{ .metering = true, .cancellation = cancellable },
                 .limits = .{ .max_statements = 4, .max_attributes = 2, .max_nesting = 2 },
-                .recovery = .statements,
+                .recovery = .collect,
                 .validation = .{ .graph = .{ .treated_as = .auto } },
             };
             const Fixed = dot.Profile(.{ .policy = input });

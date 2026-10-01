@@ -180,7 +180,8 @@ test "warnings stop on sink request or delivery failure without publishing a doc
     try equal(@as(u32, 2), silent.accepted_deviations);
     try equal(@as(u32, 0), silent.warnings);
     const rejected = markup.parseBorrowedIn("&;", memory, empty.sink(), .{});
-    try equal(markup.Outcome.invalid_syntax, rejected.outcome);
+    try equal(markup.Outcome{ .diagnostic_stopped = .capacity }, rejected.outcome);
+    try equal(@as(u32, 1), rejected.syntax_errors);
     try equal(markup.reporting.Delivery.failed, rejected.diagnostic_delivery);
     const Reject = struct {
         cause: markup.reporting.SinkError,

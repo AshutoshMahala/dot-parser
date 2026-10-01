@@ -91,6 +91,7 @@ test "the facade honors hints when only a new pool is requested" {
 }
 
 test "malformed attributes fail without partial documents and with matching typed diagnostics" {
+    const P = dot.Profile(.{ .policy = .{ .recovery = .fail_fast } });
     inline for (.{
         "graph { a [x] }",            "graph { a [x=] }",            "graph { a [=1] }",
         "graph { a [,x=1] }",         "graph { a [x=1,,y=2] }",      "graph { a [;] }",
@@ -102,10 +103,10 @@ test "malformed attributes fail without partial documents and with matching type
     }) |input| {
         var a: dot.FixedDiagnosticBag(2) = .{};
         var b: dot.FixedDiagnosticBag(2) = .{};
-        var parsed = dot.parseBorrowed(std.testing.allocator, input, a.sink(), .{});
+        var parsed = P.parseBorrowed(std.testing.allocator, input, a.sink(), .{});
         defer parsed.deinit(std.testing.allocator);
         var pools: dot.FixedDocumentStorage(.{ .statements = 4, .nodes = 4, .edges = 4, .attributes = 8, .assignments = 4, .attribute_statements = 4 }) = .{};
-        const fixed = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, b.sink(), .{});
+        const fixed = P.parseBorrowedIn(input, .{ .document = pools.storage() }, b.sink(), .{});
         try expect(parsed.outcome == .invalid_syntax);
         try expect(fixed.outcome == .invalid_syntax);
         try expect(parsed.document == null and fixed.document == null);
@@ -203,7 +204,7 @@ test "capacity hints cover all six pools without allocation during parse or hand
     try equal(@as(usize, 7 * @sizeOf(dot.StatementId) + 2 * @sizeOf(dot.NodeStatement) + @sizeOf(dot.EdgeStatement) + 9 * @sizeOf(dot.Attribute) + @sizeOf(dot.Assignment) + 3 * @sizeOf(dot.AttributeStatement)), fba.end_index);
 }
 
-test "attribute errors preserve outcome when diagnostics are rejected or omitted" {
+test "recoverable attribute errors honor diagnostic stops and omissions" {
     const Reject = struct {
         fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!dot.DiagnosticAction {
             return error.DiagnosticSinkFailure;
@@ -212,7 +213,7 @@ test "attribute errors preserve outcome when diagnostics are rejected or omitted
     var pools: dot.FixedDocumentStorage(.{ .statements = 1, .nodes = 1, .attributes = 2 }) = .{};
     const input = "graph { a[x=1 y=] }";
     const rejected = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, .{ .context = null, .emit_fn = Reject.emit }, .{});
-    try expect(rejected.outcome == .invalid_syntax);
+    try expect(rejected.outcome == .diagnostic_stopped);
     try equal(dot.diagnostic.Delivery.failed, rejected.diagnostic_delivery);
     var bag: dot.reporting.FixedBag(dot.Diagnostic, 0, .omit) = .{};
     const omitted = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, bag.sink(), .{});

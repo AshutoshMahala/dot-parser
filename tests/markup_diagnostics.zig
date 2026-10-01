@@ -162,8 +162,8 @@ test "markup fixes add no diagnostic layout cost and never guess unrelated repai
     for ([_][]const u8{ "&", "&#", "&#x", "&#0;", "<a></b>", "<a>", "</a>" }) |source| {
         var bag: markup.FixedDiagnosticBag(4) = .{};
         _ = markup.measure(std.testing.allocator, source, bag.sink(), .{});
-        try equal(@as(usize, 1), bag.items().len);
-        try expect(bag.items()[0].suggestedFix() == null);
+        try expect(bag.items().len >= 1);
+        for (bag.items()) |finding| try expect(finding.suggestedFix() == null);
     }
     const overflow: markup.Diagnostic = .{ .code = .malformed_reference, .span = .{ .start = std.math.maxInt(u32), .len = 1 }, .details = .{ .reference = .missing_semicolon }, .fix = .terminate_reference };
     try expect(overflow.suggestedFix() == null);

@@ -125,7 +125,7 @@ test "diagnostics after non-ASCII identifiers retain byte positions and safe exc
     bag = .{};
     var parsed = dot.parseBorrowed(std.testing.allocator, invalid, bag.sink(), .{});
     defer parsed.deinit(std.testing.allocator);
-    try expect(parsed.outcome == .invalid_syntax);
+    try expect(parsed.outcome == .diagnostic_stopped);
     try expect(parsed.document == null);
     try equal(dot.Code.syntax_invalid_byte, bag.items()[0].code);
     try equal(@as(u32, 15), bag.items()[0].span.start);

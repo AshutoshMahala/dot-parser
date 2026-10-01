@@ -10,7 +10,7 @@
 //! cleanly (warnings allowed) and 1 otherwise. The rendering is the
 //! library's out-of-the-box console renderer; `--compact` selects the
 //! one-line-per-field log style instead of boxes with source excerpts;
-//! `--fail-fast` stops at the first syntax error, the library default.
+//! `--fail-fast` stops at the first syntax error instead of recovering statements.
 
 const std = @import("std");
 const dot = @import("dot_parser");
@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !u8 {
 
     var path: ?[]const u8 = null;
     var compact = false;
-    var recovery: dot.Recovery = .statements;
+    var recovery: dot.Recovery = .collect;
     for (argv[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--compact")) {
             compact = true;
@@ -48,8 +48,8 @@ pub fn main(init: std.process.Init) !u8 {
 
     var bag = dot.GrowableDiagnosticBag.init(allocator, .{});
     defer bag.deinit();
-    // Keep going after a syntax error so one run shows every problem
-    // (`--fail-fast` stops at the first, the library default).
+    // Recover at safe statement boundaries to collect further problems
+    // (`--fail-fast` explicitly stops at the first).
     const Parser = dot.Profile(.{ .runtime_policy = true });
     var checked = try Parser.parseAndValidate(allocator, source, bag.sink(), .{
         .policy = .{ .recovery = recovery },
