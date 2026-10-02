@@ -1255,6 +1255,10 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             if (recovery_enabled and (reason == .invalid_syntax or reason == .unsupported_feature) and self.canRecover(failure)) {
                 if (stop) |requested| return self.stopDiagnostics(requested);
                 self.abortEvents(reason);
+                // The diagnostic above retains the failed statement's context.
+                // Recovery abandons its attribute list; later findings must use
+                // the current scope or a newly opened list, not this stale '['.
+                self.open_bracket_span = null;
                 if (self.tokens.terminal != .none) self.tokens.resumeAfterFailure();
                 self.state = .recovering;
                 self.skip_depth = 0;

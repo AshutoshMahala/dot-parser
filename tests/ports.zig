@@ -76,12 +76,30 @@ test "malformed ports and ports outside node references are syntax errors" {
 }
 
 test "exact port hints reserve only retained pool payload" {
-    var bytes: [256]u8 = undefined;
+    var bytes: [256]u8 align(@alignOf(Storage)) = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&bytes);
     var parsed = dot.parseBorrowed(fba.allocator(), "graph {a:p--b:q}", dot.diagnostic.discard, .{ .document_capacities = .{ .statements = 1, .edges = 1, .ported_references = 2 } });
     defer parsed.deinit(fba.allocator());
     try expect(parsed.outcome == .success);
-    try equal(@as(usize, 8 + 36 + 2 * 28), fba.end_index);
+    const payload = @sizeOf(dot.StatementId) + @sizeOf(dot.EdgeStatement) + 2 * @sizeOf(dot.PortedReference);
+    try equal(@as(usize, payload), fba.end_index);
+}
+
+test "port hints account for padding in deliberately misaligned buffers" {
+    const alignment = @alignOf(Storage);
+    var bytes: [256]u8 align(alignment) = undefined;
+    const payload = @sizeOf(dot.StatementId) + @sizeOf(dot.EdgeStatement) + 2 * @sizeOf(dot.PortedReference);
+    for (1..alignment) |offset| {
+        var fba = std.heap.FixedBufferAllocator.init(bytes[offset..]);
+        var tracked = std.testing.FailingAllocator.init(fba.allocator(), .{});
+        var parsed = dot.parseBorrowed(tracked.allocator(), "graph {a:p--b:q}", dot.diagnostic.discard, .{ .document_capacities = .{ .statements = 1, .edges = 1, .ported_references = 2 } });
+        defer parsed.deinit(tracked.allocator());
+        try expect(parsed.outcome == .success);
+        try equal(@as(usize, payload), tracked.allocated_bytes);
+        const address = @intFromPtr(bytes[offset..].ptr);
+        const padding = std.mem.alignForward(usize, address, @alignOf(dot.StatementId)) - address;
+        try equal(@as(usize, payload) + padding, fba.end_index);
+    }
 }
 
 test "fuzz: mixed inline and pooled chains preserve every endpoint across storage policies" {

@@ -6,6 +6,12 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Clear abandoned DOT attribute-list context during statement recovery so later
+  EOF diagnostics identify the active scope and suggest `}` instead of a stale
+  `]`. Preserve the original failure's related location and fix.
+- Make exact-pool allocator tests independent of stack-buffer alignment; test
+  deliberately misaligned buffers separately from retained payload sizes.
+
 - **Breaking:** DOT recovery results now match markup's separation of terminal
   stop reason, `completion` and u32 `syntax_errors`. A later cancellation/limit
   keeps its own outcome without losing an earlier syntax rejection. All result
