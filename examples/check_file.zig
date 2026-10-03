@@ -65,11 +65,11 @@ pub fn main(init: std.process.Init) !u8 {
     const color: dot.console.RenderOptions.Color =
         if (stdout_file.supportsAnsiEscapeCodes(io) catch false) .ansi else .none;
 
+    const locations = try allocator.alloc(dot.location.Location, try dot.console.locationCapacity(bag.items()));
+    defer allocator.free(locations);
     if (compact) {
-        for (bag.items()) |d| try dot.console.render(d, .{ .source = source, .source_name = if (path) |p| std.fs.path.basename(p) else "sample.dot" }, stdout);
+        try dot.console.renderList(bag.items(), .{ .source = source, .source_name = if (path) |p| std.fs.path.basename(p) else "sample.dot" }, locations, stdout);
     } else {
-        const locations = try allocator.alloc(dot.location.Location, try dot.console.locationCapacity(bag.items()));
-        defer allocator.free(locations);
         try dot.console.renderBoxedList(bag.items(), 0, .{
             .source_name = if (path) |p| std.fs.path.basename(p) else "sample.dot",
             .source = source,

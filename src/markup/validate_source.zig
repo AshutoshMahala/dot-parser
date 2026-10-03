@@ -84,20 +84,10 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
             result: Result = .{},
             buffers: Buffers,
             header: ?struct { start: u32, name: Span } = null,
-            polls: if (cancellable) u8 else void = if (cancellable) 0 else {},
+            poller: V.Poller = .{},
 
             fn poll(self: *@This()) bool {
-                if (!cancellable) return true;
-                if (self.polls != 0) {
-                    self.polls -= 1;
-                    return true;
-                }
-                if (self.hook) |h| if (h.requested()) {
-                    self.result.completion = .cancelled;
-                    return false;
-                };
-                self.polls = 63;
-                return true;
+                return self.poller.step(&self.result, self.hook);
             }
             fn merge(self: *@This(), checked: Result) bool {
                 self.result.errors += checked.errors;
@@ -118,8 +108,11 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                     },
                 }
             }
-            fn checkScope(self: *@This(), scope: scopes.Scope, keys: []validation.AttributeKeyScratch) bool {
-                return self.merge(Local.runScopeTrusted(self.source, scope, .{ .attribute_keys = keys }, self.sink, if (fixed == null) localSettings(self.settings.validation) else {}, self.hook));
+            // Expose the known scope at this small adapter boundary; an opaque
+            // wrapper around the shared poller regresses dense short scopes.
+            // Keep the validation kernels themselves under optimizer control.
+            inline fn checkScope(self: *@This(), scope: scopes.Scope, keys: []validation.AttributeKeyScratch) bool {
+                return self.merge(Local.runScopePolled(self.source, scope, .{ .attribute_keys = keys }, self.sink, if (fixed == null) localSettings(self.settings.validation) else {}, self.hook, &self.poller));
             }
             fn recordGap(self: *@This(), at: u32) void {
                 const first = if (self.result.completion == .incomplete) @min(self.result.completion.incomplete, at) else at;
@@ -172,7 +165,10 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                         }
                     },
                     .head_end, .empty_end => return self.flush(@intCast(t.span.endOffset()), true),
-                    .close => return self.checkScope(.{ .closing_name = t.name }, &.{}),
+                    // Like retained validation, check an element's opening name
+                    // once. Matching/mismatched closers belong to syntax; callers
+                    // can still request an explicit closing_name scope check.
+                    .close => {},
                     .text => return self.checkScope(.{ .text = t.span }, &.{}),
                     .comment, .cdata, .eof => {},
                 }
@@ -204,7 +200,7 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                 }
                 // Encoding has no lexical prerequisites, so even a terminal
                 // malformed header cannot hide invalid bytes elsewhere.
-                const encoded = V.runScopeTrusted(self.source, .{ .bytes = .{ .start = 0, .len = @intCast(self.source.len) } }, .{}, self.sink, if (fixed == null) self.settings.validation else {}, self.hook);
+                const encoded = V.runScopePolled(self.source, .{ .bytes = .{ .start = 0, .len = @intCast(self.source.len) } }, .{}, self.sink, if (fixed == null) self.settings.validation else {}, self.hook, &self.poller);
                 self.result.checks.invalid_utf8 = encoded.checks.invalid_utf8;
                 if (!self.merge(encoded)) return self.result;
                 if (p.validation.duplicate_attribute == .off and p.validation.names.severity == .off and p.validation.references.severity == .off)
@@ -222,7 +218,7 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                         .problem => |problem| {
                             self.recordGap(problem.diagnostic.span.start);
                             const pending = scanner.pendingScopes();
-                            if (pending.name) |name| {
+                            if (if (pending.name_kind == .closing) null else pending.name) |name| {
                                 if (pending.name_kind == .attribute and p.validation.duplicate_attribute != .off) {
                                     std.debug.assert(self.header != null);
                                     self.buffers.append(.{ .name = name }) catch |err| {

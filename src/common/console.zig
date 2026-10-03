@@ -441,9 +441,22 @@ pub fn Renderer(comptime Adapter: type) type {
         ///
         /// `writer` is anything with `print`, e.g. a `*std.Io.Writer`.
         pub fn render(d: Diagnostic, options: RenderOptions, writer: anytype) !void {
-            const info = d.code.info();
             var scratch: [max_secondary + 2]location.Location = undefined;
             var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(&.{d}, options.source, &scratch) };
+            try renderWith(d, options, &positions, writer);
+        }
+
+        /// Compact list output, identical to repeated render() calls, but one
+        /// shared source-position pass. Supply locationCapacity(items) records
+        /// when source is present; too-small scratch fails before any output.
+        /// Scratch must not alias source/items and is never retained.
+        pub fn renderList(diagnostics: []const Diagnostic, options: RenderOptions, location_scratch: []location.Location, writer: anytype) !void {
+            var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(diagnostics, options.source, location_scratch) };
+            for (diagnostics) |d| try renderWith(d, options, &positions, writer);
+        }
+
+        fn renderWith(d: Diagnostic, options: RenderOptions, positions: *Positions, writer: anytype) !void {
+            const info = d.code.info();
             try writer.print("{s}[{s}:{s}]: ", .{
                 severityWord(info.severity), diagnostic.namespace, d.code.structured(),
             });
@@ -460,20 +473,20 @@ pub fn Renderer(comptime Adapter: type) type {
             }
             if (Adapter.hasDetails(d)) {
                 try writer.writeAll("  detail: ");
-                try Adapter.detail(d, &positions, writer);
+                try Adapter.detail(d, positions, writer);
                 try writer.writeAll("\n");
             }
             if (Adapter.hasNote(d)) {
                 try writer.writeAll("  note: ");
-                try Adapter.note(d, &positions, writer);
+                try Adapter.note(d, positions, writer);
                 try writer.writeAll("\n");
             }
             try writer.writeAll("  help: ");
-            try Adapter.hint(d, &positions, writer);
+            try Adapter.hint(d, positions, writer);
             try writer.writeAll("\n");
             if (Adapter.fix(d)) |fix| {
                 try writer.writeAll("  fix: ");
-                try writeFix(fix, &positions, writer);
+                try writeFix(fix, positions, writer);
                 try writer.writeAll("\n");
             }
         }

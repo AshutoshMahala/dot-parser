@@ -9,6 +9,7 @@ const Positions = common.Positions;
 pub const RenderOptions = common.RenderOptions;
 const Bound = common.Renderer(Adapter);
 pub const render = Bound.render;
+pub const renderList = Bound.renderList;
 pub const renderBoxed = Bound.renderBoxed;
 pub const renderBoxedList = Bound.renderBoxedList;
 pub const locationCapacity = Bound.locationCapacity;

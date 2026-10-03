@@ -1,6 +1,7 @@
 //! Private traversal of already validated identifier expressions.
 //! Public decoding validates first; syntax analysis uses committed spans.
 const std = @import("std");
+const cursor = @import("identifier_cursor.zig");
 
 /// Internal analysis helpers for identifier spans from a committed Document.
 /// No revalidation, decoded allocations or normalization; callers guarantee validity.
@@ -44,20 +45,13 @@ pub const Chunks = struct {
         }
         while (self.offset < self.raw.len) {
             if (!self.quoted) {
-                self.skipGlue();
+                cursor.skipGlue(self.raw, &self.offset);
                 if (self.offset == self.raw.len) return null;
                 const open = self.raw[self.offset];
                 self.offset += 1;
                 if (open == '<') {
                     const body = self.offset;
-                    var depth: u32 = 1;
-                    while (depth != 0) : (self.offset += 1) {
-                        switch (self.raw[self.offset]) {
-                            '<' => depth += 1,
-                            '>' => depth -= 1,
-                            else => {},
-                        }
-                    }
+                    self.offset = cursor.htmlEnd(self.raw, self.offset - 1);
                     const inner = self.raw[body .. self.offset - 1];
                     // Empty operands must not end logical key comparison.
                     if (inner.len != 0) return inner;
@@ -74,46 +68,20 @@ pub const Chunks = struct {
                 },
                 '\\' => {
                     const after = self.raw[start + 1]; // validated escape pair
-                    self.offset += 2;
+                    self.offset = cursor.escapeEnd(self.raw, start);
                     switch (after) {
                         '"' => return self.raw[start + 1 .. self.offset],
                         '\n' => {},
-                        '\r' => {
-                            if (self.offset < self.raw.len and self.raw[self.offset] == '\n') self.offset += 1;
-                        },
+                        '\r' => {},
                         else => return self.raw[start..self.offset],
                     }
                 },
                 else => {
-                    self.offset += 1;
-                    while (self.offset < self.raw.len and self.raw[self.offset] != '"' and self.raw[self.offset] != '\\') self.offset += 1;
+                    self.offset = cursor.quotedRunEnd(self.raw, start + 1);
                     return self.raw[start..self.offset];
                 },
             }
         }
         return null;
-    }
-
-    fn skipGlue(self: *Chunks) void {
-        while (self.offset < self.raw.len) {
-            switch (self.raw[self.offset]) {
-                '"', '<' => return,
-                '#' => self.skipLine(),
-                '/' => {
-                    if (self.raw[self.offset + 1] == '/') {
-                        self.skipLine();
-                    } else {
-                        self.offset += 2;
-                        while (!(self.raw[self.offset] == '*' and self.raw[self.offset + 1] == '/')) self.offset += 1;
-                        self.offset += 2;
-                    }
-                },
-                else => self.offset += 1, // validated whitespace or '+'
-            }
-        }
-    }
-
-    fn skipLine(self: *Chunks) void {
-        while (self.offset < self.raw.len and self.raw[self.offset] != '\r' and self.raw[self.offset] != '\n') self.offset += 1;
     }
 };

@@ -16,6 +16,7 @@ pub fn Result(comptime api: type, comptime fixed: bool) type {
         /// A caller driving several fragments must stop its requested batch on
         /// true. Ordinary syntax/validation findings alone return false.
         pub fn stopped(self: *const @This()) bool {
+            if (self.parse.diagnostic_stop != null or self.parse.diagnostic_delivery == .failed) return true;
             switch (self.parse.outcome) {
                 .success, .invalid_syntax => {},
                 else => return true,

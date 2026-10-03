@@ -118,8 +118,8 @@ Both roots expose `wdp` and `presentation` for reuse. `Code.info()` exposes
 metadata at compile time. Existing DOT/markup identity strings are unchanged.
 Metadata strings are static: they are not copied into diagnostic bag entries.
 
-Both `dot.console` and `markup.console` provide `render`, `renderBoxed` and
-`renderBoxedList` with the same `RenderOptions`:
+Both `dot.console` and `markup.console` provide `render`, `renderList`,
+`renderBoxed` and `renderBoxedList` with the same `RenderOptions`:
 
 ```zig
 const locations = try allocator.alloc(markup.location.Location,
@@ -138,8 +138,12 @@ The second argument counts **omitted findings**, not unfinished work. Pass zero
 for a growable bag, which stops instead of omitting; an explicit omission bag
 supplies `bag.omitted`. Still inspect the operation's completion/delivery result.
 
+For compact output, use `renderList(items, options, locations, writer)`. It emits
+the same bytes as successive `render` calls, without a summary or added separators.
+The `check_file --compact` example uses this shared-pass form.
+
 Rendering allocates nothing and writes only through the supplied writer; writer
-failures propagate to the caller. `renderBoxedList` takes caller-owned location
+failures propagate to the caller. Both list renderers take caller-owned location
 scratch before the writer. `locationCapacity(items)` gives a checked upper bound
 in `Location` records (12 bytes each; at most four per DOT diagnostic or three
 per markup diagnostic). A fixed array works equally well. Without source bytes,
@@ -147,7 +151,7 @@ pass `&.{}`. Too-small scratch returns `error.LocationScratchTooSmall` before
 writing anything. Single-diagnostic renderers use bounded local scratch.
 Scratch must not alias the source or diagnostics and is not retained after return.
 
-The list renderer sorts location queries, resolves them in one forward source
+Each list renderer sorts location queries, resolves them in one forward source
 pass, then preserves the original diagnostic order while formatting. For `k`
 location queries and `n` source bytes, built-in location/excerpt work is
 `O(n + k log k)` with `O(k)` caller scratch, not a repeated source scan per related
@@ -155,7 +159,7 @@ span. Excerpt boundary searches are bounded even on huge physical lines. No
 per-line/source-sized index is allocated. Adapter callouts and writer costs are
 separate; custom adapters should expose queried positions as primary, related or
 fix spans. Calling individual renderers repeatedly does not share a source pass;
-use the list renderer for a bag.
+use the corresponding list renderer for a bag.
 Locations are byte-based, including the clickable `source_name:line:column:`
 location in compact `render()` output. Excerpts fall back to compact locations
 when source spans do not fit. Unicode style shows printable UTF-8; ASCII style

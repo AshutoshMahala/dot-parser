@@ -6,6 +6,16 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Preserve markup terminal diagnostic stop/failure acknowledgments in parse and
+  measurement results; fragment helpers never start validation into a stopped
+  sink. Source validation shares its cancellation countdown across local scopes
+  and checks element names only at opening occurrences, matching document
+  validation; explicit closing-name scopes remain available. Reuse scope metadata
+  audits and DOT identifier operand-boundary primitives without extra source passes.
+- Add allocation-free compact `console.renderList` to DOT and markup, using the
+  same caller-owned location scratch as boxed lists. `check_file --compact` now
+  resolves locations in a shared pass instead of rescanning once per diagnostic.
+
 - Add explicit delayed DOT/markup integration: checked identifier operand views,
   reusable prepared markup policies, growing/fixed `parseAndValidateFragment`
   operations and original-source diagnostics/fixes. Validation still checks local

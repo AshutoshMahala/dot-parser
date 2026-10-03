@@ -5,6 +5,25 @@
 const std = @import("std");
 const dot = @import("dot_parser");
 
+test "DOT compact list preserves individual output including related locations and fixes" {
+    const source = "graph {\n a -> b;\n c -> d;\n}";
+    var bag = dot.GrowableDiagnosticBag.init(std.testing.allocator, .{});
+    defer bag.deinit();
+    var checked = dot.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});
+    defer checked.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), bag.items().len);
+    const locations = try std.testing.allocator.alloc(dot.location.Location, try dot.console.locationCapacity(bag.items()));
+    defer std.testing.allocator.free(locations);
+    var left: [4096]u8 = undefined;
+    var right: [4096]u8 = undefined;
+    var list = std.Io.Writer.fixed(&left);
+    var single = std.Io.Writer.fixed(&right);
+    const options: dot.console.RenderOptions = .{ .source = source, .source_name = "example.dot" };
+    try dot.console.renderList(bag.items(), options, locations, &list);
+    for (bag.items()) |d| try dot.console.render(d, options, &single);
+    try std.testing.expectEqualStrings(single.buffered(), list.buffered());
+}
+
 const Case = struct {
     source: []const u8,
     code: dot.Code,

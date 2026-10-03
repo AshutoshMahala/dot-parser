@@ -111,6 +111,10 @@ Explicit diagnostic stop/failure terminates unfinished DOT parsing/validation,
 not just future inner work. A failure being reported after an operation has
 already failed does not erase that original failure; delivery remains separate.
 Never recursively report a broken diagnostic sink through itself.
+Markup parse results preserve terminal acknowledgments in `diagnostic_stop`,
+separate from the original outcome and delivery status. Fragment wrappers check
+it before starting validation, including when the terminal syntax finding filled
+a bag and was successfully delivered. No additional readiness callback is needed.
 
 This revises the old default fixed-bag omission and continue-after-delivery-failure
 behavior. No compatibility aliases or legacy implementations are required.

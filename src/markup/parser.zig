@@ -117,14 +117,18 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         }
         fn finish(self: *Self, stack: *scratch.Stack, sink: anytype, outcome: result.Outcome, finding: ?diagnostic.Diagnostic) void {
             var delivery: diagnostic.reporting.Delivery = .complete;
+            var diagnostic_stop: ?diagnostic.reporting.StopReason = if (outcome == .diagnostic_stopped) outcome.diagnostic_stopped else null;
             var syntax_errors = self.syntaxErrors();
             if (outcome == .invalid_syntax and finding != null) syntax_errors += 1;
-            // These findings report an already-terminal cause. Accepted-stop or
-            // rejection cannot replace it; broken sinks are never reported into.
+            // Preserve the original terminal cause AND the acknowledgment. A
+            // parent operation must not emit again after accepted-stop/failure.
             if (finding) |d| {
-                _ = self.diagnostics.emit(d.withFixes(self.fixes())) catch {
+                const action = self.diagnostics.emit(d.withFixes(self.fixes())) catch |err| action: {
                     delivery = .failed;
+                    diagnostic_stop = .fromError(err);
+                    break :action .proceed;
                 };
+                if (action == .stop) diagnostic_stop = .requested;
             }
             if (self.began and outcome != .success) sink.abort();
             stack.len = 0;
@@ -133,6 +137,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 .completion = if (outcome == .success or (outcome == .invalid_syntax and self.phase == .commit)) .complete else .incomplete,
                 .syntax_errors = syntax_errors,
                 .diagnostic_delivery = delivery,
+                .diagnostic_stop = diagnostic_stop,
                 .counts = self.counts,
                 .accepted_deviations = if (deviations_enabled) self.deviations else 0,
                 .warnings = if (warnings_enabled) self.warnings else 0,

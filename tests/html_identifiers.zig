@@ -5,6 +5,28 @@ const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
 
+test "operand boundaries and decoding agree across every quoted HTML and glue combination" {
+    const operands = [_][]const u8{ "\"\"", "<>", "<abc>", "<<b>x</b>>", "\"abc\"", "\"a\\\"b\"", "\"a\\\r\nb\"", "\"a\\\nb\"", "\"a\\\rb\"", "\"a\\\\b\"", "\"a\\qb\"", "\"café\"" };
+    for (operands) |left| for (operands) |right| for ([_][]const u8{ "+", " /*<>*/ + ", "+ //<>\n", "+ #<>\r\n" }) |glue| {
+        var source_buffer: [256]u8 = undefined;
+        const source = try std.fmt.bufPrint(&source_buffer, "{s}{s}{s}", .{ left, glue, right });
+        var decoded_buffer: [256]u8 = undefined;
+        const decoded = try dot.identifier.decodeInto(source, &decoded_buffer);
+        var joined: [256]u8 = undefined;
+        var offset: usize = 0;
+        var parts = try dot.identifier.parts(source, .{ .start = 0, .len = @intCast(source.len) });
+        var count: u32 = 0;
+        while (parts.next()) |part| {
+            try strings(if (count == 0) left else right, part.raw.slice(source));
+            const value = try dot.identifier.decodeInto(part.raw.slice(source), joined[offset..]);
+            offset += value.len;
+            count += 1;
+        }
+        try equal(@as(u32, 2), count);
+        try strings(decoded, joined[0..offset]);
+    };
+}
+
 test "passthrough is the default and all ID positions preserve their spelling" {
     const source = "digraph <G> { subgraph <S> { <a>:<p>:<n> -> <b> [<k>=<<B>x</B>>]; } <x>=<y>; node [<z>=<>]; }";
     inline for (.{ .scalar, .block }) |backend| {

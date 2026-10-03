@@ -22,6 +22,9 @@ pub const Report = struct {
     /// Survives later operational failure; resource/unsupported findings excluded.
     syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.reporting.Delivery = .complete,
+    /// A terminal finding can stop delivery without replacing its original
+    /// parse outcome. Composed callers must not start another stage afterward.
+    diagnostic_stop: ?diagnostic.reporting.StopReason = null,
     /// Recognized constructs (including after recovery), not retained records
     /// or a sizing promise on failure. Enforced limits still cover these counts.
     counts: Counts = .{},

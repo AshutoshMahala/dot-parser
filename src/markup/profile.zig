@@ -42,7 +42,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             pub fn parseAndValidateFragment(self: @This(), allocator: std.mem.Allocator, input: api.Fragment, diagnostics: api.DiagnosticSink, resources: api.ParseResources) api.Fragment.Error!api.FragmentResult {
                 var mapped = try api.diagnostic.OriginSink.init(input, diagnostics);
                 const parsed = callPrepared("parseBorrowed", api.ParseResult, .{ allocator, input.bytes, mapped.sink(), resources }, self);
-                const checked: ?api.ValidationResult = switch (parsed.outcome) {
+                const checked: ?api.ValidationResult = if (parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed) null else switch (parsed.outcome) {
                     .success => validatePrepared("allocated", .{ allocator, &parsed.document.?, mapped.sink() }, self),
                     .invalid_syntax => sourceValidationPrepared("allocated", .{ allocator, input.bytes, mapped.sink() }, self),
                     else => null,
@@ -55,7 +55,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             pub fn parseAndValidateFragmentIn(self: @This(), input: api.Fragment, memory: api.ParseMemory, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink) api.Fragment.Error!api.FixedFragmentResult {
                 var mapped = try api.diagnostic.OriginSink.init(input, diagnostics);
                 const parsed = callPrepared("parseBorrowedIn", api.FixedParseResult, .{ input.bytes, memory, mapped.sink() }, self);
-                const checked: ?api.ValidationResult = switch (parsed.outcome) {
+                const checked: ?api.ValidationResult = if (parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed) null else switch (parsed.outcome) {
                     .success => validatePrepared("run", .{ &parsed.document.?, api.ValidationScratch{ .attribute_keys = scratch.attribute_keys }, mapped.sink() }, self),
                     .invalid_syntax => sourceValidationPrepared("run", .{ input.bytes, scratch, mapped.sink() }, self),
                     else => null,

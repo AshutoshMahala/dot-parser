@@ -19,5 +19,6 @@ fn render(source: [*]const u8, len: u32, output: [*]u8, capacity: u32, style: ma
     };
     var locations: [3]markup.location.Location = undefined;
     markup.console.renderBoxedList(&.{finding}, 0, .{ .source = source[0..len], .style = style, .verbose = true }, &locations, &writer) catch return 0;
+    markup.console.renderList(&.{finding}, .{ .source = source[0..len], .style = style }, &locations, &writer) catch return 0;
     return @intCast(writer.buffered().len);
 }

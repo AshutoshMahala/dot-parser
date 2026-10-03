@@ -114,47 +114,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         /// bytes examined (including revisits by another check) and record steps,
         /// not absolute source progress. A scalar can cross the threshold by 3.
         /// Fixed-disabled profiles have neither state nor callback branches.
-        const Poller = struct {
-            remaining: if (cancellable) u32 else void = if (cancellable) 0 else {},
-            inline fn check(self: *@This(), result: *Result, hook: Hook) bool {
-                if (!cancellable) return true;
-                if (self.remaining != 0) return true;
-                if (cancelled(result, hook)) return false;
-                self.remaining = 64;
-                return true;
-            }
-            inline fn consume(self: *@This(), count: u32) void {
-                if (cancellable) self.remaining -|= count;
-            }
-            inline fn step(self: *@This(), result: *Result, hook: Hook) bool {
-                if (!self.check(result, hook)) return false;
-                self.consume(1);
-                return true;
-            }
-            /// Keep byte-loop thresholds local; flush shared work at scan exit
-            /// and before nested checks, then reload after those checks. A false
-            /// return ends validation, so no remaining budget is used afterward.
-            const Scan = struct {
-                next: if (cancellable) u32 else void,
-                inline fn init(index: u32, poller: Poller) @This() {
-                    return .{ .next = if (cancellable) index +| poller.remaining else {} };
-                }
-                inline fn check(self: *@This(), index: u32, result: *Result, hook: Hook) bool {
-                    if (!cancellable) return true;
-                    if (index < self.next) return true;
-                    if (cancelled(result, hook)) return false;
-                    self.next = index +| 64;
-                    return true;
-                }
-                inline fn flush(self: @This(), index: u32, poller: *Poller) void {
-                    if (!cancellable) return;
-                    poller.remaining = self.next -| index;
-                }
-                inline fn end(self: @This(), len: u32) u32 {
-                    return if (cancellable) @min(self.next, len) else len;
-                }
-            };
-        };
+        pub const Poller = @import("validation_poller.zig").For(cancellable, Result);
         // Expose fixed selections during semantic analysis, not just as an
         // optimizer inlining opportunity. Disabled passes must not instantiate.
         inline fn rules(settings: Settings) policy.ValidationSettings {
@@ -218,38 +178,23 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         }
         /// Always check caller-built metadata, even with content checks off.
         /// Invalid descriptors produce no source diagnostic or allocator calls.
+        const MetadataProgress = struct {
+            result: *Result,
+            poller: *Poller,
+            hook: Hook,
+            pub fn proceed(self: @This()) bool {
+                return self.poller.step(self.result, self.hook);
+            }
+        };
         fn scopeInputFailure(source: []const u8, scope: scopes.Scope, settings: Settings, hook: Hook) ?Result {
             const invalid: Result = .{ .completion = .invalid_scope };
             const range = scope.span();
             if (source.len > support.location.max_source_len or range.endOffset() > source.len) return invalid;
             var result = scopeInitial(scope, settings);
             if (cancelled(&result, hook)) return result;
-            switch (scope) {
-                .opening_header => |h| {
-                    if (h.attributes.len > std.math.maxInt(u32) or h.name.len == 0 or
-                        h.name.start < range.start or h.name.endOffset() > range.endOffset()) return invalid;
-                    var previous = h.name.endOffset();
-                    var poller: Poller = .{};
-                    for (h.attributes) |a| {
-                        if (!poller.step(&result, hook)) return result;
-                        if (a.name.len == 0 or a.name.start < previous or a.name.endOffset() > range.endOffset() or
-                            a.value.endOffset() > source.len) return invalid;
-                        if (a.value.len == 0) {
-                            if (h.complete) return invalid;
-                            previous = a.name.endOffset();
-                            continue;
-                        }
-                        if (a.value.len < 2 or a.value.start < a.name.endOffset() or
-                            a.value.endOffset() > range.endOffset()) return invalid;
-                        // Bounds precede both reads, including ReleaseFast.
-                        const value = a.value.slice(source);
-                        if ((value[0] != '\'' and value[0] != '"') or value[value.len - 1] != value[0]) return invalid;
-                        previous = a.value.endOffset();
-                    }
-                },
-                .opening_name, .closing_name, .attribute_name => |name| if (name.len == 0) return invalid,
-                else => {},
-            }
+            var poller: Poller = .{};
+            if (!scopes.metadataValid(source, scope, MetadataProgress{ .result = &result, .poller = &poller, .hook = hook }))
+                return if (result.completion == .cancelled) result else invalid;
             return null;
         }
         pub fn runScope(source: []const u8, scope: scopes.Scope, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
@@ -261,36 +206,22 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         /// scopes must satisfy the borrowed-range contract; no enclosing tree is
         /// needed. Encoding is clipped to this scope, including scalar lookahead.
         pub fn runScopeTrusted(source: []const u8, scope: scopes.Scope, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
+            var poller: Poller = .{};
+            return runScopePolled(source, scope, scratch, sink, settings, hook, &poller);
+        }
+        /// Internal composition reuses one countdown across scanner and scopes.
+        pub fn runScopePolled(source: []const u8, scope: scopes.Scope, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook, poller: *Poller) Result {
             var result = scopeInitial(scope, settings);
             if (!scopeRequested(result)) return .{ .validity = .valid };
-            if (cancelled(&result, hook)) return result;
+            if (!poller.check(&result, hook)) return result;
             const range = scope.span();
-            std.debug.assert(source.len <= support.location.max_source_len);
-            std.debug.assert(range.endOffset() <= source.len);
+            if (safety_checks) std.debug.assert(scopes.metadataValid(source, scope, {}));
             const end: u32 = @intCast(range.endOffset());
             var incomplete_offset = end;
             const bounded_source = source[0..end];
             var offset: Offset = if (has_encoding) range.start else {};
-            var poller: Poller = .{};
             switch (scope) {
                 .opening_header => |h| {
-                    if (safety_checks) {
-                        std.debug.assert(h.name.len != 0 and h.name.start >= range.start and h.name.endOffset() <= end);
-                        var previous = h.name.endOffset();
-                        for (h.attributes) |a| {
-                            std.debug.assert(a.name.len != 0 and a.name.start >= previous and a.name.endOffset() <= end);
-                            if (a.value.len == 0) {
-                                std.debug.assert(!h.complete);
-                                previous = a.name.endOffset();
-                                continue;
-                            }
-                            std.debug.assert(a.name.endOffset() <= a.value.start);
-                            std.debug.assert(a.value.len >= 2 and a.value.endOffset() <= end);
-                            const value = a.value.slice(source);
-                            std.debug.assert((value[0] == '\'' or value[0] == '"') and value[value.len - 1] == value[0]);
-                            previous = a.value.endOffset();
-                        }
-                    }
                     const required: u32 = if (rules(settings).duplicate_attribute != .off and h.attributes.len >= 2) @intCast(h.attributes.len) else 0;
                     if (scratch.attribute_keys.len < required) {
                         var stopped = unavailable(.{ .storage_exhausted = required }, sink, @intCast(scratch.attribute_keys.len), h.name, settings);
@@ -300,29 +231,28 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                     const keys = scratch.attribute_keys[0..required];
                     const context = .{ .source = source, .attributes = h.attributes };
                     if (required != 0) prepareKeys(&context, keys, 0);
-                    if (!checkName(bounded_source, h.name, .element, &offset, &poller, &result, sink, settings, hook)) return result;
+                    if (!checkName(bounded_source, h.name, .element, &offset, poller, &result, sink, settings, hook)) return result;
                     for (h.attributes, 0..) |a, index| {
                         if (!poller.step(&result, hook)) return result;
                         if (a.value.len == 0) incomplete_offset = @min(incomplete_offset, @as(u32, @intCast(a.name.endOffset())));
                         if (required != 0 and keys[index].first != index) {
-                            if (!emitDuplicate(bounded_source, a.name, h.attributes[keys[index].first].name, &offset, &poller, &result, sink, settings, hook)) return result;
+                            if (!emitDuplicate(bounded_source, a.name, h.attributes[keys[index].first].name, &offset, poller, &result, sink, settings, hook)) return result;
                         }
-                        if (!checkName(bounded_source, a.name, .attribute, &offset, &poller, &result, sink, settings, hook)) return result;
+                        if (!checkName(bounded_source, a.name, .attribute, &offset, poller, &result, sink, settings, hook)) return result;
                         if (a.value.len != 0 and (rules(settings).names.severity != .off or rules(settings).references.severity != .off) and
-                            !checkReferences(bounded_source, .{ .start = a.value.start + 1, .len = a.value.len - 2 }, &offset, &poller, &result, sink, settings, hook)) return result;
+                            !checkReferences(bounded_source, .{ .start = a.value.start + 1, .len = a.value.len - 2 }, &offset, poller, &result, sink, settings, hook)) return result;
                     }
                 },
                 .opening_name, .closing_name, .attribute_name => |name| {
-                    std.debug.assert(name.len != 0);
-                    if (!checkName(bounded_source, name, if (scope == .attribute_name) .attribute else .element, &offset, &poller, &result, sink, settings, hook)) return result;
+                    if (!checkName(bounded_source, name, if (scope == .attribute_name) .attribute else .element, &offset, poller, &result, sink, settings, hook)) return result;
                 },
                 .text, .attribute_value => |value| {
                     if ((rules(settings).names.severity != .off or rules(settings).references.severity != .off) and
-                        !checkReferences(bounded_source, value, &offset, &poller, &result, sink, settings, hook)) return result;
+                        !checkReferences(bounded_source, value, &offset, poller, &result, sink, settings, hook)) return result;
                 },
                 .bytes => {},
             }
-            if (!encodingThrough(bounded_source, end, &offset, &poller, &result, sink, settings, hook)) return result;
+            if (!encodingThrough(bounded_source, end, &offset, poller, &result, sink, settings, hook)) return result;
             const complete = scope != .opening_header or scope.opening_header.complete;
             inline for (std.meta.fields(@TypeOf(result.checks))) |field| {
                 if (@field(result.checks, field.name) != .not_run)

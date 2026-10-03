@@ -123,6 +123,95 @@ fn requested(_: ?*anyopaque) bool {
     return true;
 }
 
+test "terminal diagnostic acknowledgment survives parsing and forbids a second fragment stage" {
+    const Destination = struct {
+        mode: enum { stop, failure, capacity, oom },
+        calls: u32 = 0,
+        fn emit(context: ?*anyopaque, _: markup.Diagnostic) markup.reporting.SinkError!markup.reporting.Action {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.calls += 1;
+            return switch (self.mode) {
+                .stop => .stop,
+                .failure => error.DiagnosticSinkFailure,
+                .capacity => error.DiagnosticCapacityExceeded,
+                .oom => error.OutOfMemory,
+            };
+        }
+        fn sink(self: *@This()) markup.DiagnosticSink {
+            return .{ .context = self, .emit_fn = emit };
+        }
+    };
+    inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| inline for (.{ .fail_fast, .collect }) |recovery| {
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .scanner = backend, .recovery = recovery, .execution = .{ .metering = true } } });
+        for ([_][]const u8{ "<a x='1' x='2'><", "<a x='1' x='2'></b>" }, 0..) |source, i| {
+            inline for (.{ .stop, .failure, .capacity, .oom }) |mode| {
+                const reason: markup.reporting.StopReason = switch (@as(@FieldType(Destination, "mode"), mode)) {
+                    .stop => .requested,
+                    .failure => .failure,
+                    .capacity => .capacity,
+                    .oom => .out_of_memory,
+                };
+                var destination: Destination = .{ .mode = mode };
+                var grown = try P.parseAndValidateFragment(allocator, try markup.Fragment.init(source, 17), destination.sink(), .{});
+                defer grown.deinit();
+                try equal(@as(u32, 1), destination.calls);
+                try equal(reason, grown.parse.diagnostic_stop.?);
+                try equal(if (mode == .stop) markup.reporting.Delivery.complete else .failed, grown.parse.diagnostic_delivery);
+                try expect(grown.validation == null and grown.stopped());
+                try equal(@as(u32, 1), grown.parse.syntax_errors);
+                if (i == 0 or recovery == .fail_fast) try equal(markup.Outcome.invalid_syntax, grown.parse.outcome);
+                var storage: markup.FixedDocumentStorage(.{ .nodes = 4, .attributes = 2 }) = .{};
+                var frames: markup.FixedParseScratch(2) = .{};
+                var scratch: markup.FixedSourceValidationScratch(2) = .{};
+                const memory: markup.ParseMemory = .{ .document = storage.storage(), .scratch = frames.storage() };
+                destination.calls = 0;
+                const fixed = try P.parseAndValidateFragmentIn(try markup.Fragment.init(source, 17), memory, scratch.storage(), destination.sink(), .{});
+                try equal(@as(u32, 1), destination.calls);
+                try equal(grown.parse.diagnostic_stop, fixed.parse.diagnostic_stop);
+                try expect(fixed.validation == null and fixed.stopped());
+                destination.calls = 0;
+                var session = P.Session.init(source, memory, destination.sink(), .{});
+                defer session.deinit();
+                while (session.result() == null) {
+                    _ = if (runtime) try session.advance(1) else session.advance(1);
+                }
+                try equal(reason, session.run().diagnostic_stop.?);
+                try std.testing.expectEqualDeep(session.run(), session.cancel());
+                try equal(@as(u32, 1), destination.calls);
+                destination.calls = 0;
+                const measured = P.measureIn(source, frames.storage(), destination.sink(), .{});
+                try equal(reason, measured.diagnostic_stop.?);
+                try equal(@as(u32, 1), destination.calls);
+            }
+        }
+    };
+    const Fast = markup.Profile(.{ .policy = .{ .recovery = .fail_fast } });
+    var full: markup.FixedDiagnosticBag(1) = .{};
+    var once = try Fast.parseAndValidateFragment(allocator, try markup.Fragment.init("<a x='1' x='2'></b>", 0), full.sink(), .{});
+    defer once.deinit();
+    try equal(@as(usize, 1), full.items().len);
+    try equal(markup.reporting.Delivery.complete, once.parse.diagnostic_delivery);
+    try expect(once.validation == null);
+}
+
+test "fragment route does not duplicate an element name finding when syntax elsewhere fails" {
+    inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| {
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .scanner = backend, .validation = .{ .names = .{ .severity = .err } } } });
+        for ([_][]const u8{ "<a×></a×>", "<a×></a×></x>" }) |source| {
+            var bag: markup.FixedDiagnosticBag(8) = .{};
+            var checked = try P.parseAndValidateFragment(allocator, try markup.Fragment.init(source, 30), bag.sink(), .{});
+            defer checked.deinit();
+            try equal(@as(u64, 1), checked.validation.?.errors);
+            var names: u32 = 0;
+            for (bag.items()) |finding| if (finding.code == .invalid_name) {
+                names += 1;
+                try equal(@as(u32, 32), finding.span.start); // invalid scalar, not the whole name
+            };
+            try equal(@as(u32, 1), names);
+        }
+    };
+}
+
 test "operational parse stops skip validation and validation stops keep committed inner tree" {
     const input = try markup.Fragment.init("<a x='1' x='2'/>", 10);
     var full: markup.FixedDiagnosticBag(1) = .{};

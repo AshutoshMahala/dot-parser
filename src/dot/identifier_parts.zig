@@ -2,6 +2,7 @@
 const support = @import("parser_support");
 const Span = support.location.Span;
 const Fragment = support.processor.Fragment;
+const cursor = @import("identifier_cursor.zig");
 
 pub const Part = struct {
     pub const Form = enum { bare, numeral, quoted, html };
@@ -25,7 +26,7 @@ pub const Parts = struct {
     pub fn next(self: *Parts) ?Part {
         const bytes = self.input.bytes;
         if (self.offset == bytes.len) return null;
-        self.skipGlue();
+        if (self.compound) cursor.skipGlue(bytes, &self.offset);
         if (self.offset == bytes.len) return null;
         const start = self.offset;
         const kind: Part.Form = switch (bytes[start]) {
@@ -38,21 +39,14 @@ pub const Parts = struct {
             .bare, .numeral => self.offset = @intCast(bytes.len),
             .quoted => {
                 self.offset += 1;
-                while (bytes[self.offset] != '"') {
-                    if (bytes[self.offset] == '\\') self.offset += 1;
-                    self.offset += 1;
+                while (true) {
+                    self.offset = cursor.quotedRunEnd(bytes, self.offset);
+                    if (bytes[self.offset] == '"') break;
+                    self.offset = cursor.escapeEnd(bytes, self.offset);
                 }
                 self.offset += 1;
             },
-            .html => {
-                var depth: u32 = 1;
-                self.offset += 1;
-                while (depth != 0) : (self.offset += 1) switch (bytes[self.offset]) {
-                    '<' => depth += 1,
-                    '>' => depth -= 1,
-                    else => {},
-                };
-            },
+            .html => self.offset = cursor.htmlEnd(bytes, self.offset),
         }
         const wrapped = kind == .quoted or kind == .html;
         return .{
@@ -60,29 +54,5 @@ pub const Parts = struct {
             .raw = .{ .start = self.input.origin + start, .len = self.offset - start },
             .inner = .{ .start = self.input.origin + start + @intFromBool(wrapped), .len = self.offset - start - (if (wrapped) @as(u32, 2) else 0) },
         };
-    }
-
-    fn skipGlue(self: *Parts) void {
-        if (!self.compound) return;
-        const raw = self.input.bytes;
-        while (self.offset < raw.len) switch (raw[self.offset]) {
-            '"', '<' => return,
-            '#' => self.skipLine(),
-            '/' => {
-                if (raw[self.offset + 1] == '/') {
-                    self.skipLine();
-                } else {
-                    self.offset += 2;
-                    while (!(raw[self.offset] == '*' and raw[self.offset + 1] == '/')) self.offset += 1;
-                    self.offset += 2;
-                }
-            },
-            else => self.offset += 1,
-        };
-    }
-
-    fn skipLine(self: *Parts) void {
-        const raw = self.input.bytes;
-        while (self.offset < raw.len and raw[self.offset] != '\n' and raw[self.offset] != '\r') self.offset += 1;
     }
 };

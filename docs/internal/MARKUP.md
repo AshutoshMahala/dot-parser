@@ -104,6 +104,72 @@ The per-part/origin contract and explicit delayed processing are now implemented
 below. Structural recovery remains independent; specialized vocabularies and
 during-DOT scheduling still need separate slices. DOT passthrough invokes neither.
 
+## Delayed-integration review fixes — 2026-10-03
+
+The non-policy fixes from the integration review are implemented:
+
+| Finding | Resolution |
+| --- | --- |
+| Terminal syntax diagnostic stops/rejects delivery, then validation emits again | Parse/measurement reports retain `diagnostic_stop` separately from the original outcome and delivery; fragment wrappers skip validation after either stop or failed delivery |
+| A bad element name is repeated only on the source-validation route | Automatic validation checks opening occurrences once, including unfinished-header prefixes; explicit `closing_name` scopes remain supported, and whole-source encoding still covers all bytes |
+| Each source scope restarts cancellation polling | Scanner work and local kernels share one countdown; no per-scope callback or extra retained state in fixed-disabled profiles |
+| Compact rendering repeatedly rescans from byte zero | Shared `renderList` uses caller-owned location scratch and one position-resolution pass; the compact file example uses it |
+| Operand traversal duplicated between views and decoding | Share glue, angle-envelope, quoted-run and escape-boundary primitives; no extra decoding pass or allocation |
+| Public scope audits and trusted assertions repeat metadata rules | One cancellable metadata predicate; real checks at public boundaries, debug/safe-only assertions internally |
+
+Still requiring policy discussion, and deliberately unchanged here:
+
+- Whether unsupported constructs and per-fragment limits should end the entire
+  requested batch (`FragmentResult.stopped()` currently says yes).
+- Whether source validation should synchronize independently of parse recovery
+  (`.fail_fast` currently disables malformed-header synchronization there too).
+
+Regression tests cover accepted-stop versus rejected delivery (failure/capacity/
+allocation), terminal and recoverable syntax, incremental sessions, repeated
+terminal calls, both scanners, fixed/runtime policies, original-source mapping,
+cross-scope cancellation, compact output parity and mixed identifier operands.
+Public scope metadata tests still cover cancellation and invalid spans under all
+optimization modes. No typo-based healing, changed tag matching or partial trees
+are introduced by this review.
+All **579 tests pass** in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall.
+Examples, benchmark compilation, and consumed RISC-V32/Wasm32 freestanding
+profiles also pass; formatting and whitespace checks are clean.
+
+### Local measurements
+
+Baseline `7ad284f`, macOS arm64, Zig 0.16.0, ReleaseFast. Targeted cancellation and
+decoding runs alternate before/after/after/before, with no overlapping builds;
+each process reports the median of nine batches after three warmups. The source
+is 160,000 bytes: 10,000 `<a x='1' y='2'/>` elements, name/reference checks enabled,
+fixed buffers outside timing and a continuing counting cancellation hook. Values
+below average the two process medians; throughput uses decimal MB/s.
+
+| Source validation | Before ms | After ms | Before MB/s | After MB/s | Hook calls before → after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Duplicate check off | 0.990 | 0.856 | 161.8 | 187.1 | 102,501 → 3,282 |
+| Duplicate check error | 0.860 | 0.823 | 186.2 | 194.5 | 22,501 → 3,594 |
+
+The countdown charges scanner work and content/record visits, not only distinct
+input bytes. The initial shared-poller implementation reduced callback counts but
+slowed the duplicate-off case. Inlining only the small scope-dispatch adapter
+removed that regression; validation kernels remain optimizer-controlled. Forcing
+the whole scope kernel inline also helped but enlarged the targeted executable
+by about 33 KiB, so that version was not kept.
+
+Compact rendering with 1,024 findings near the end of an 8 MiB all-newline input
+took approximately **14.5 s** with repeated `render` calls versus **14 ms** with
+`renderList`, writing the same 195,584 bytes to a discard writer. This is a
+deliberate worst-case location workload, not ordinary rendering throughput. Batch
+rendering uses explicit caller location scratch, not hidden allocation. The
+targeted mixed quoted/HTML identifier decoding check measured 794 → 743 ns per
+expression; these short timings are noise/code-layout sensitive, not a general
+speedup claim.
+
+Native node/attribute/diagnostic/frame sizes remain 20/20/36/12 bytes;
+`ValidationResult` remains 32 bytes, and fixed/bounded/runtime sessions remain
+432/440/496 bytes. No new per-node/attribute storage is added. This is a layout
+check, not process RSS measurement or an update to the standard-machine baseline.
+
 ## Explicit delayed integration — 2026-10-03
 
 The [public recipe](../MARKUP.md#delayed-processing-inside-dot) and

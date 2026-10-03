@@ -44,7 +44,7 @@ iteration. Source must remain alive and unchanged while using views.
 | `ready.parseAndValidateFragment(allocator, fragment, sink, resources)` | Explicit allocation; optional `resources.scratch_allocator` for parsing scratch |
 | `ready.parseAndValidateFragmentIn(fragment, memory, scratch, sink)` | Allocation-free; `ParseMemory` and `SourceValidationScratch`; key scratch reused for document validation |
 | `checked.parse` | Ordinary parse result; no partial tree on syntax failure |
-| `checked.validation` | Document validation on success; source-scope validation on `invalid_syntax`; null after operational stops/unsupported input |
+| `checked.validation` | Document validation on success; source-scope validation on `invalid_syntax`; null after operational stops/unsupported input, including a terminal diagnostic's sink stop/failure |
 | `checked.documentValid()` | Successful complete parsing AND complete valid validation |
 | `checked.stopped()` | End the requested batch on cancellation, limit/capacity/allocation/delivery failure, explicit sink stop or unsupported input |
 
@@ -378,6 +378,13 @@ unfinished quoted-value prefix are checkable too. Missing delimiters are never
 invented. With `.collect`, selected malformed headers synchronize using the same
 quote-aware scanner boundary rules as parsing; skipped bytes are not certified.
 Uncertain boundaries stop the scope walk; `.fail_fast` disables its synchronization.
+Like document validation, the automatic source walk checks element names at their
+opening occurrence, not again at the closer. Tag matching remains parsing's job;
+explicit `closing_name` scope validation is still available. Whole-source encoding
+validation still covers closing-tag bytes. When cancellation is enabled, the source
+walk and local checks share one 64-work-unit polling countdown instead of polling
+on each scope entry. Units include scanner steps, examined bytes and record steps;
+revisited bytes count again, so this is not one callback per 64 source bytes.
 
 **A complete, valid source-validation result is not proof of well-formed markup.**
 It describes the selected local checks, not tag balance or syntax acceptance.
@@ -702,8 +709,8 @@ can move between calls without retaining pointers into their former location.
 
 ## Results and diagnostics
 
-Results keep `outcome`, `completion`, `syntax_errors`, `diagnostic_delivery`, and
-factual `counts` separate. Only `.success` publishes a document.
+Results keep `outcome`, `completion`, `syntax_errors`, `diagnostic_delivery`,
+`diagnostic_stop`, and factual `counts` separate. Only `.success` publishes a document.
 `completion = .complete` means EOF and all pending structural checks were reached;
 recovery can complete with `invalid_syntax`. Every other stop is `.incomplete`.
 The u32 `syntax_errors` total counts rejected syntax findings, even if delivery
@@ -733,7 +740,13 @@ summaries, not a retained per-reference history or validation's separate totals.
 Parsing can emit multiple warnings and recoverable errors before completion or a
 terminal failure. An already-terminal cause (such as an unterminated quoted value)
 survives a diagnostic destination that stops or rejects it; rejection sets
-`diagnostic_delivery = .failed`. Cancellation emits no diagnostic.
+`diagnostic_delivery = .failed`. Parse results and measurement/session reports
+also carry `diagnostic_stop: ?reporting.StopReason`: null means no destination stop;
+`.requested` means the last finding was accepted with `.stop`; rejection records
+its failure reason. This preserves both the original terminal outcome and the
+destination acknowledgment. Composed callers must not begin another phase after
+this field is set or delivery failed; fragment helpers enforce that rule.
+Cancellation emits no diagnostic.
 A warning or recoverable error followed by sink `.stop` aborts unfinished parsing with
 `diagnostic_stopped.requested` and complete delivery of the emitted prefix. Sink
 errors produce the corresponding reason and failed delivery. Neither case publishes

@@ -51,6 +51,33 @@ const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
 
+test "compact lists match single renders with one shared location table" {
+    const source = "<a>\r\n&bad\n</b>";
+    const findings = [_]markup.Diagnostic{
+        .{ .code = .mismatched_tag, .span = .{ .start = 12, .len = 1 }, .related = .{ .start = 1, .len = 1 } },
+        .{ .code = .malformed_reference, .span = .{ .start = 5, .len = 4 }, .details = .{ .reference = .missing_semicolon }, .fix = .terminate_reference },
+        .{ .code = .unclosed_element, .span = .{ .start = source.len, .len = 0 }, .related = .{ .start = 1, .len = 1 } },
+    };
+    var locations: [9]markup.location.Location = undefined;
+    var buffer: [8192]u8 = undefined;
+    var expected_buffer: [8192]u8 = undefined;
+    inline for (.{ .unicode, .ascii }) |style| for ([_]?[]const u8{ source, source[0..7], null }) |bytes| {
+        const options: markup.console.RenderOptions = .{ .source = bytes, .source_name = "café\x1b.xml", .style = style };
+        var writer = std.Io.Writer.fixed(&buffer);
+        var expected = std.Io.Writer.fixed(&expected_buffer);
+        try markup.console.renderList(&findings, options, if (bytes != null) &locations else &.{}, &writer);
+        for (findings) |d| try markup.console.render(d, options, &expected);
+        try strings(expected.buffered(), writer.buffered());
+    };
+    var too_small = std.Io.Writer.fixed(&buffer);
+    try std.testing.expectError(error.LocationScratchTooSmall, markup.console.renderList(&findings, .{ .source = source }, locations[0..1], &too_small));
+    try equal(@as(usize, 0), too_small.buffered().len);
+    try markup.console.renderList(&.{}, .{ .source = source }, &.{}, &too_small);
+    try equal(@as(usize, 0), too_small.buffered().len);
+    var no_output = std.Io.Writer.fixed(&.{});
+    try std.testing.expectError(error.WriteFailed, markup.console.renderList(&findings, .{}, &.{}, &no_output));
+}
+
 fn contains(text: []const u8, needle: []const u8) !void {
     errdefer std.debug.print("missing '{s}' in:\n{s}\n", .{ needle, text });
     try expect(std.mem.indexOf(u8, text, needle) != null);

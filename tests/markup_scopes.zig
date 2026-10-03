@@ -270,13 +270,61 @@ test "a broken attribute value does not hide its name or completed references in
     try equal(@as(u64, 2), r.errors);
     try equal(markup.diagnostic.Code.duplicate_attribute, bag.items()[0].code);
     try equal(markup.diagnostic.Code.unknown_reference, bag.items()[1].code);
-    for ([_][]const u8{ "<x \xff=0>", "<x \xff='unfinished", "<\xff </x>", "<x></\xff" }) |input| {
+    for ([_][]const u8{ "<x \xff=0>", "<x \xff='unfinished", "<\xff </x>" }) |input| {
         var names: markup.FixedDiagnosticBag(8) = .{};
         const checked = P.validateSource(std.testing.allocator, input, names.sink(), .{});
         try expect(checked.completion == .incomplete);
         try equal(@as(u64, 1), checked.errors);
         try equal(markup.diagnostic.Code.invalid_name, names.items()[0].code);
     }
+}
+
+test "automatic name checking excludes closers but explicit closing scopes remain checkable" {
+    const P = markup.Profile(.{ .policy = .{ .validation = .{ .names = .{ .severity = .err } } } });
+    const source = "<x></\xff";
+    const automatic = P.validateSource(std.testing.allocator, source, discard, .{});
+    try expect(automatic.completion == .incomplete);
+    try equal(@as(u64, 0), automatic.errors);
+    const explicit = P.validateScopeIn(source, .{ .closing_name = .{ .start = 5, .len = 1 } }, .{}, discard, .{});
+    try equal(@as(u64, 1), explicit.errors);
+}
+
+test "source validation shares cancellation countdown across dense scopes and headers" {
+    const Probe = struct {
+        calls: u32 = 0,
+        stop_at: u32 = std.math.maxInt(u32),
+        fn poll(context: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.calls += 1;
+            return self.calls >= self.stop_at;
+        }
+    };
+    const source = "<a x='1' y='2'/>" ** 10000;
+    inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| inline for (.{ .off, .err }) |duplicate| {
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .scanner = backend, .execution = .{ .cancellation = true }, .validation = .{
+            .duplicate_attribute = duplicate,
+            .names = .{ .severity = .err },
+            .references = .{ .severity = .err },
+        } } });
+        var probe: Probe = .{};
+        const options: P.Options = .{ .cancellation = .{ .context = &probe, .is_requested = Probe.poll } };
+        const result = P.validateSource(std.testing.allocator, source, discard, options);
+        try equal(.complete, result.completion);
+        // Scanner work PLUS content/record checks, not one poll per scope.
+        try expect(probe.calls > source.len / 64 and probe.calls < source.len / 16);
+        for ([_]u32{ 1, 2, 20, 100 }) |stop_at| {
+            probe = .{ .stop_at = stop_at };
+            const stopped = P.validateSource(std.testing.allocator, source, discard, options);
+            try equal(.cancelled, stopped.completion);
+            try equal(stop_at, probe.calls);
+        }
+        if (runtime) {
+            probe = .{ .stop_at = 1 };
+            const unhooked = P.validateSource(std.testing.allocator, source, discard, .{ .policy = .{ .execution = .{ .cancellation = false } }, .cancellation = options.cancellation });
+            try equal(.complete, unhooked.completion);
+            try equal(@as(u32, 0), probe.calls);
+        }
+    };
 }
 
 test "scope severities have fixed runtime and disabled-check parity" {
