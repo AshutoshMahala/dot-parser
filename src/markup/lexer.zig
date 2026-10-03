@@ -21,6 +21,14 @@ const ScanResult = union(enum) { token: Token, problem: result.Problem, malforme
 /// Error-path cursor only; the strict scanner and public lexer never enter it.
 pub const HeaderRecovery = enum(u32) { unquoted, single_quote, double_quote, slash };
 pub const HeaderBoundary = enum { pending, open, empty, blocked };
+/// Trustworthy subregions available before a terminal lexical error. Prefix
+/// content is not a claim that a quote/tag was closed. No additional scan/state.
+pub const PendingScopes = struct {
+    name: ?Span = null,
+    name_kind: enum { opening, closing, attribute } = .opening,
+    content: ?Span = null,
+    content_kind: enum { text, attribute_value } = .text,
+};
 
 pub fn isNameStart(byte: u8) bool {
     return switch (byte) {
@@ -112,6 +120,37 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
                 .attribute_name, .before_equal, .before_value, .after_value, .attributes => true,
                 else => false,
             };
+        }
+
+        pub fn pendingScopes(self: *const Self) PendingScopes {
+            var pending: PendingScopes = .{};
+            const in_reference = switch (self.state) {
+                .reference_start, .reference_name, .reference_number_start, .reference_hex_start, .reference_decimal, .reference_hex => true,
+                else => false,
+            };
+            const in_value = self.state == .value or (in_reference and self.reference_context == .value);
+            switch (self.state) {
+                .name, .after_name, .slash => {
+                    const end = if (self.state == .name) self.offset else self.name_end;
+                    pending.name = .{ .start = self.name_start, .len = end - self.name_start };
+                    pending.name_kind = if (self.closing) .closing else .opening;
+                },
+                .attribute_name, .before_equal, .before_value => {
+                    const end = if (self.state == .attribute_name) self.offset else self.name_end;
+                    pending.name = .{ .start = self.name_start, .len = end - self.name_start };
+                    pending.name_kind = .attribute;
+                },
+                else => {},
+            }
+            if (in_value) {
+                pending.name = .{ .start = self.name_start, .len = self.name_end - self.name_start };
+                pending.name_kind = .attribute;
+                pending.content = .{ .start = self.start + 1, .len = self.offset - self.start - 1 };
+                pending.content_kind = .attribute_value;
+            } else if (self.state == .text or (in_reference and self.reference_context == .text)) {
+                pending.content = .{ .start = self.start, .len = self.offset - self.start };
+            }
+            return pending;
         }
 
         /// One byte per recovery step, no rescanning, tokens, values or fixes.

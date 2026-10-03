@@ -60,7 +60,7 @@ pub const Primary = enum {
 };
 
 pub const Feature = enum { processing_instructions, declarations, encoding };
-pub const Resource = enum { source_bytes, nesting_depth, nodes, attributes, nesting_frames, node_pool, attribute_pool, attribute_keys, recovery_work };
+pub const Resource = enum { source_bytes, nesting_depth, nodes, attributes, nesting_frames, node_pool, attribute_pool, attribute_keys, recovery_work, header_attributes };
 pub const Expected = enum { name, tag_end, closing_angle, equal_sign, opening_quote, closing_quote, attribute_separator, attribute_value, declaration_start, comment_start, comment_end, cdata_start, cdata_end };
 pub const ReferenceProblem = enum { missing_name, missing_digits, missing_semicolon, invalid_character };
 pub const NameContext = enum { element, attribute, reference };

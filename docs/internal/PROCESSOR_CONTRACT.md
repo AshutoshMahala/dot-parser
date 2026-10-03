@@ -51,6 +51,35 @@ pausing does neither. Abort cannot undo arbitrary consumer side effects. Reading
 results or repeating terminal execution must not repeat callbacks. Detailed
 per-fragment results are opt-in, not a mandatory retained array.
 
+### Local validation scopes — 2026-10-02
+
+Recognizing a boundary, checking its content, and matching its enclosing structure
+are separate responsibilities. A check needs trustworthy bytes for its own scope,
+not a valid enclosing tree. An opening header, attribute name, attribute-value
+content, text, closing name and element matching have different prerequisites.
+An unfinished enclosing header may still contain complete strings or recognized
+names; report known findings without claiming coverage of unavailable regions.
+No inferred delimiter, typo correction or partial-tree publication follows from
+this separation. Operational stops still end the requested operation.
+
+Standalone markup implements borrowed `ValidationScope` inputs and independent
+source-scope traversal, sharing document validation's kernels. Neither changes
+parse-only calls or creates a composed scheduler. Future compile-time-bound string
+processors can consume these local views; they are not implemented by this slice.
+Detailed results remain opt-in calls rather than a retained object per scope.
+
+Caller-built scope metadata is checked at the public boundary in every build
+mode; invalid metadata is `invalid_scope`, not a source finding. Internally
+produced spans bypass the audit. An incomplete local result carries the earliest
+coverage gap in original-source bytes, not a resume cursor: other independent
+checks and regions can have completed beyond it.
+
+Uniform byte spans may help SIMD within a region and future batching of scopes
+using the same rule/profile. Cross-input SIMD is not automatic: lengths, alignment,
+state, diagnostic ordering and cancellation differ. No batching, parallel execution
+or performance improvement is promised without measurement; do not add copying or
+mandatory queues for that possibility.
+
 ## Diagnostic destinations and stopping
 
 | Destination | Storage / default behavior |

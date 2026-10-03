@@ -1615,6 +1615,18 @@ Open; nothing currently forces the choice.
 
 ## Reconciliation log
 
+- 2026-10-02 — Harden the public scope boundary with all-build-mode metadata
+  checks and `invalid_scope`; keep scanner-produced scopes on the trusted internal
+  path. `incomplete: u32` now identifies the earliest coverage gap, not a resume
+  cursor. Closing-name coverage and recovery selection are unchanged.
+
+- 2026-10-02 — Separate markup local validation scopes from enclosing structure.
+  Headers, names, attribute-value content and text can be checked without a tree
+  through `validateScope[In]` and `validateSource[In]`. Recognized prefixes retain
+  findings, missing coverage remains incomplete, and parse-only costs/contracts
+  stay separate. Shared kernels preserve standalone document validation. No
+  custom string processor or SIMD batching is added. See [local scopes](MARKUP.md#independent-local-validation-scopes--2026-10-02).
+
 - 2026-10-02 — Standalone markup `.collect` now synchronizes selected rejected
   opening-header attribute errors at explicit quote-aware `>`/`/>` boundaries.
   Preserve written names and stack effects; uncertain boundaries remain terminal.

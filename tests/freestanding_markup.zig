@@ -42,3 +42,12 @@ export fn parse_markup(source: [*]const u8, len: usize, limit: u32, stop: *u8) u
     session.reset("<x/>", markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .execution = .{ .metering = false } } } else .{});
     return total +% session.run().counts.nodes;
 }
+
+export fn validate_markup_scopes(source: [*]const u8, len: usize, stop: *u8) u32 {
+    var scratch: markup.FixedSourceValidationScratch(8) = .{};
+    const options: P.Options = .{ .cancellation = .{ .context = stop, .is_requested = stopped } };
+    const checked = P.validateSourceIn(source[0..len], scratch.storage(), markup.diagnostic.discard, options);
+    if (checked.completion != .complete) return 0;
+    const local = P.validateScopeIn(source[0..len], .{ .bytes = .{ .start = 0, .len = @intCast(len) } }, .{}, markup.diagnostic.discard, options);
+    return @truncate(checked.errors +% checked.warnings +% local.errors);
+}

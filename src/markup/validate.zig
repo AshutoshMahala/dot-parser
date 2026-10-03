@@ -1,4 +1,5 @@
-//! Independent policy checks over completed syntax, never rewriting it.
+//! Independent policy checks over completed syntax or checked local scopes.
+//! Never rewrites input; document and local traversal share the same kernels.
 //! Scratch is reused per element. Heap sorting has deterministic O(A log A)
 //! comparisons, with bytewise name comparisons; no hash-collision worst case.
 //! This pass is run-to-completion, not a metered parsing session.
@@ -10,6 +11,7 @@ const diagnostic = @import("diagnostic.zig");
 const definitions = @import("validation_rules.zig");
 const lexical = @import("lexer.zig");
 const Span = support.location.Span;
+const scopes = @import("scope.zig");
 const safety_checks = switch (@import("builtin").mode) {
     .Debug, .ReleaseSafe => true,
     .ReleaseFast, .ReleaseSmall => false,
@@ -37,7 +39,14 @@ pub const CheckStatus = enum { not_run, incomplete, complete };
 pub const Result = struct {
     completion: union(enum) {
         complete,
-        storage_exhausted: u32, // required entries for the largest attribute list
+        /// Earliest loss of local coverage, in original-source bytes. Later
+        /// regions may have been checked; this is not a resume cursor.
+        incomplete: u32,
+        /// Invalid caller-supplied scope metadata, not invalid document content.
+        invalid_scope,
+        source_limit: u32,
+        /// Required entries; a lower bound if a source walk stopped at capacity.
+        storage_exhausted: u32,
         out_of_memory,
         cancelled,
         diagnostic_stopped: support.reporting.StopReason,
@@ -187,6 +196,157 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             const required = if (rules(settings).duplicate_attribute != .off) requirement(document) else Requirement{};
             return runSized(document, scratch, sink, settings, hook, required);
         }
+
+        fn scopeInitial(scope: scopes.Scope, settings: Settings) Result {
+            var result = initial(settings);
+            if (scope != .opening_header) result.checks.duplicate_attribute = .not_run;
+            switch (scope) {
+                .bytes => {
+                    result.checks.names = .not_run;
+                    result.checks.references = .not_run;
+                },
+                .opening_name, .closing_name, .attribute_name => result.checks.references = .not_run,
+                else => {},
+            }
+            return result;
+        }
+        fn scopeRequested(result: Result) bool {
+            inline for (std.meta.fields(@TypeOf(result.checks))) |field| {
+                if (@field(result.checks, field.name) != .not_run) return true;
+            }
+            return false;
+        }
+        /// Always check caller-built metadata, even with content checks off.
+        /// Invalid descriptors produce no source diagnostic or allocator calls.
+        fn scopeInputFailure(source: []const u8, scope: scopes.Scope, settings: Settings, hook: Hook) ?Result {
+            const invalid: Result = .{ .completion = .invalid_scope };
+            const range = scope.span();
+            if (source.len > support.location.max_source_len or range.endOffset() > source.len) return invalid;
+            var result = scopeInitial(scope, settings);
+            if (cancelled(&result, hook)) return result;
+            switch (scope) {
+                .opening_header => |h| {
+                    if (h.attributes.len > std.math.maxInt(u32) or h.name.len == 0 or
+                        h.name.start < range.start or h.name.endOffset() > range.endOffset()) return invalid;
+                    var previous = h.name.endOffset();
+                    var poller: Poller = .{};
+                    for (h.attributes) |a| {
+                        if (!poller.step(&result, hook)) return result;
+                        if (a.name.len == 0 or a.name.start < previous or a.name.endOffset() > range.endOffset() or
+                            a.value.endOffset() > source.len) return invalid;
+                        if (a.value.len == 0) {
+                            if (h.complete) return invalid;
+                            previous = a.name.endOffset();
+                            continue;
+                        }
+                        if (a.value.len < 2 or a.value.start < a.name.endOffset() or
+                            a.value.endOffset() > range.endOffset()) return invalid;
+                        // Bounds precede both reads, including ReleaseFast.
+                        const value = a.value.slice(source);
+                        if ((value[0] != '\'' and value[0] != '"') or value[value.len - 1] != value[0]) return invalid;
+                        previous = a.value.endOffset();
+                    }
+                },
+                .opening_name, .closing_name, .attribute_name => |name| if (name.len == 0) return invalid,
+                else => {},
+            }
+            return null;
+        }
+        pub fn runScope(source: []const u8, scope: scopes.Scope, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
+            if (scopeInputFailure(source, scope, settings, hook)) |failure| return failure;
+            return runScopeTrusted(source, scope, scratch, sink, settings, hook);
+        }
+        /// Internal scanner-produced path: no release-mode metadata audit.
+        /// Local checks share the exact document-validation kernels. Source and
+        /// scopes must satisfy the borrowed-range contract; no enclosing tree is
+        /// needed. Encoding is clipped to this scope, including scalar lookahead.
+        pub fn runScopeTrusted(source: []const u8, scope: scopes.Scope, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
+            var result = scopeInitial(scope, settings);
+            if (!scopeRequested(result)) return .{ .validity = .valid };
+            if (cancelled(&result, hook)) return result;
+            const range = scope.span();
+            std.debug.assert(source.len <= support.location.max_source_len);
+            std.debug.assert(range.endOffset() <= source.len);
+            const end: u32 = @intCast(range.endOffset());
+            var incomplete_offset = end;
+            const bounded_source = source[0..end];
+            var offset: Offset = if (has_encoding) range.start else {};
+            var poller: Poller = .{};
+            switch (scope) {
+                .opening_header => |h| {
+                    if (safety_checks) {
+                        std.debug.assert(h.name.len != 0 and h.name.start >= range.start and h.name.endOffset() <= end);
+                        var previous = h.name.endOffset();
+                        for (h.attributes) |a| {
+                            std.debug.assert(a.name.len != 0 and a.name.start >= previous and a.name.endOffset() <= end);
+                            if (a.value.len == 0) {
+                                std.debug.assert(!h.complete);
+                                previous = a.name.endOffset();
+                                continue;
+                            }
+                            std.debug.assert(a.name.endOffset() <= a.value.start);
+                            std.debug.assert(a.value.len >= 2 and a.value.endOffset() <= end);
+                            const value = a.value.slice(source);
+                            std.debug.assert((value[0] == '\'' or value[0] == '"') and value[value.len - 1] == value[0]);
+                            previous = a.value.endOffset();
+                        }
+                    }
+                    const required: u32 = if (rules(settings).duplicate_attribute != .off and h.attributes.len >= 2) @intCast(h.attributes.len) else 0;
+                    if (scratch.attribute_keys.len < required) {
+                        var stopped = unavailable(.{ .storage_exhausted = required }, sink, @intCast(scratch.attribute_keys.len), h.name, settings);
+                        stopped.checks = result.checks;
+                        return stopped;
+                    }
+                    const keys = scratch.attribute_keys[0..required];
+                    const context = .{ .source = source, .attributes = h.attributes };
+                    if (required != 0) prepareKeys(&context, keys, 0);
+                    if (!checkName(bounded_source, h.name, .element, &offset, &poller, &result, sink, settings, hook)) return result;
+                    for (h.attributes, 0..) |a, index| {
+                        if (!poller.step(&result, hook)) return result;
+                        if (a.value.len == 0) incomplete_offset = @min(incomplete_offset, @as(u32, @intCast(a.name.endOffset())));
+                        if (required != 0 and keys[index].first != index) {
+                            if (!emitDuplicate(bounded_source, a.name, h.attributes[keys[index].first].name, &offset, &poller, &result, sink, settings, hook)) return result;
+                        }
+                        if (!checkName(bounded_source, a.name, .attribute, &offset, &poller, &result, sink, settings, hook)) return result;
+                        if (a.value.len != 0 and (rules(settings).names.severity != .off or rules(settings).references.severity != .off) and
+                            !checkReferences(bounded_source, .{ .start = a.value.start + 1, .len = a.value.len - 2 }, &offset, &poller, &result, sink, settings, hook)) return result;
+                    }
+                },
+                .opening_name, .closing_name, .attribute_name => |name| {
+                    std.debug.assert(name.len != 0);
+                    if (!checkName(bounded_source, name, if (scope == .attribute_name) .attribute else .element, &offset, &poller, &result, sink, settings, hook)) return result;
+                },
+                .text, .attribute_value => |value| {
+                    if ((rules(settings).names.severity != .off or rules(settings).references.severity != .off) and
+                        !checkReferences(bounded_source, value, &offset, &poller, &result, sink, settings, hook)) return result;
+                },
+                .bytes => {},
+            }
+            if (!encodingThrough(bounded_source, end, &offset, &poller, &result, sink, settings, hook)) return result;
+            const complete = scope != .opening_header or scope.opening_header.complete;
+            inline for (std.meta.fields(@TypeOf(result.checks))) |field| {
+                if (@field(result.checks, field.name) != .not_run)
+                    @field(result.checks, field.name) = if (complete) .complete else .incomplete;
+            }
+            if (!complete) result.completion = .{ .incomplete = incomplete_offset };
+            if (result.errors == 0 and complete) result.validity = .valid;
+            return result;
+        }
+        pub fn allocatedScope(allocator: std.mem.Allocator, source: []const u8, scope: scopes.Scope, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
+            if (scopeInputFailure(source, scope, settings, hook)) |failure| return failure;
+            var result = scopeInitial(scope, settings);
+            if (!scopeRequested(result)) return .{ .validity = .valid };
+            if (cancelled(&result, hook)) return result;
+            const count = if (scope == .opening_header and rules(settings).duplicate_attribute != .off and scope.opening_header.attributes.len >= 2) scope.opening_header.attributes.len else 0;
+            if (count == 0) return runScopeTrusted(source, scope, .{}, sink, settings, hook);
+            const keys = allocator.alloc(AttributeKeyScratch, count) catch {
+                var stopped = unavailable(.out_of_memory, sink, 0, scope.opening_header.name, settings);
+                stopped.checks = result.checks;
+                return stopped;
+            };
+            defer allocator.free(keys);
+            return runScopeTrusted(source, scope, .{ .attribute_keys = keys }, sink, settings, hook);
+        }
         fn runSized(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook, required: Requirement) Result {
             var result = initial(settings);
             std.debug.assert(document.source.len <= support.location.max_source_len);
@@ -211,7 +371,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                     for (keys, start..) |key, index| {
                         if (!poller.step(&result, hook)) return result;
                         if (key.first == index) continue;
-                        if (!emitDuplicate(document, @intCast(index), key.first, &offset, &poller, &result, sink, settings, hook)) return result;
+                        if (!emitDuplicate(document.source, document.attributes[index].name, document.attributes[key.first].name, &offset, &poller, &result, sink, settings, hook)) return result;
                     }
                 }
                 start = end;
@@ -254,7 +414,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                             if (!poller.step(&result, hook)) return result;
                             if (duplicates and keys[index - start].first != index) {
                                 const first = keys[index - start].first;
-                                if (!emitDuplicate(document, @intCast(index), first, &offset, &poller, &result, sink, settings, hook)) return result;
+                                if (!emitDuplicate(source, attr.name, document.attributes[first].name, &offset, &poller, &result, sink, settings, hook)) return result;
                             }
                             if (!checkName(source, attr.name, .attribute, &offset, &poller, &result, sink, settings, hook)) return result;
                             // The retained value includes its original quotes.
@@ -366,20 +526,27 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
 
         // Both traversal paths share severity, related span and encoding-first
         // tie ordering, without adding a forest walk to the default path.
-        inline fn emitDuplicate(document: *const syntax.Document, index: u32, first: u32, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
-            const name = document.attributes[index].name;
-            if (!encodingThrough(document.source, name.start, offset, poller, result, sink, settings, hook)) return false;
+        inline fn emitDuplicate(source: []const u8, name: Span, first: Span, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+            if (!encodingThrough(source, name.start, offset, poller, result, sink, settings, hook)) return false;
             const code: diagnostic.Code = if (rules(settings).duplicate_attribute == .err) .duplicate_attribute else .duplicate_attribute_tolerated;
-            return emit(result, sink, .{ .code = code, .span = name, .related = document.attributes[first].name });
+            return emit(result, sink, .{ .code = code, .span = name, .related = first });
         }
 
-        inline fn prepareKeys(document: *const syntax.Document, keys: []AttributeKeyScratch, start: u32) void {
+        inline fn prepareKeys(context: anytype, keys: []AttributeKeyScratch, start: u32) void {
+            // Pass a view pointer, not copied slices, through the comparator.
+            // The retained path keeps its existing Document pointer directly.
+            const Order = struct {
+                fn less(self: @TypeOf(context), a: AttributeKeyScratch, b: AttributeKeyScratch) bool {
+                    const order = std.mem.order(u8, self.attributes[a.index].name.slice(self.source), self.attributes[b.index].name.slice(self.source));
+                    return if (order == .eq) a.index < b.index else order == .lt;
+                }
+            };
             for (keys, start..) |*key, index| key.* = .{ .index = @intCast(index), .first = 0 };
-            std.sort.heap(AttributeKeyScratch, keys, document, nameLessThan);
+            std.sort.heap(AttributeKeyScratch, keys, context, Order.less);
             var first = keys[0].index;
             keys[first - start].first = first;
             for (keys[1..]) |key| {
-                if (!std.mem.eql(u8, document.attributes[first].name.slice(document.source), document.attributes[key.index].name.slice(document.source))) first = key.index;
+                if (!std.mem.eql(u8, context.attributes[first].name.slice(context.source), context.attributes[key.index].name.slice(context.source))) first = key.index;
                 keys[key.index - start].first = first;
             }
         }
@@ -466,11 +633,6 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             }
             if (offset.* == source.len) result.checks.invalid_utf8 = .complete;
             return true;
-        }
-
-        fn nameLessThan(document: *const syntax.Document, a: AttributeKeyScratch, b: AttributeKeyScratch) bool {
-            const order = std.mem.order(u8, document.attributes[a.index].name.slice(document.source), document.attributes[b.index].name.slice(document.source));
-            return if (order == .eq) a.index < b.index else order == .lt;
         }
     };
 }

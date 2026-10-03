@@ -1,7 +1,8 @@
 # Standalone markup — structural slices
 
 Decisions: 2026-09-26; slices 1–3, 4a and 4b implemented 2026-09-27;
-diagnostics-only recovery implemented 2026-09-30. Later slices below are plans, not
+diagnostics-only recovery implemented 2026-09-30; local validation scopes 2026-10-02.
+Later slices below are plans, not
 current public capabilities. R-MOD-014/015 and Q40 remain the architectural contract.
 
 ## Delivery order
@@ -21,6 +22,7 @@ this parser. Independent parsing must not import DOT grammar or retained records
 | Resource hardening | Default-capped shared diagnostic retention and an untrusted-input resource preset | Implemented |
 | 4b | Optional XML 1.0 name checks and known-reference checks, without imposing either on other dialects | Implemented |
 | Recovery | Structural-error recovery for additional diagnostics; no partial tree | Implemented 2026-09-30, default `.collect`; explicit `.fail_fast` available |
+| Local validation scopes | Header/name/value/text checks independent of enclosing structure; source-scope pass without a tree | Implemented 2026-10-02; no implicit parse-time checks |
 | DOT passthrough recognition | `none`/`passthrough`, both scanners, concatenation, decoding and DOT fix policy; no markup dependency | Implemented 2026-09-27 |
 | Integration | Delayed integration first; during-DOT composition later | Planned |
 
@@ -278,8 +280,9 @@ headers, malformed closers and normally scanned quoted-value errors stay termina
 Report the initial header error once; skipped attributes/references are neither
 validated nor counted as recognized/accepted. Preserve the original pending name
 and the actual delimiter's stack effect, with no synthetic output events. Retained
-output is aborted once, and no partial tree or duplicate-attribute validation of
-rejected documents is introduced. This is not typo correction or a syntax dialect.
+output is aborted once, and no partial tree is introduced. The recovery operation
+itself does not run attribute validation; the later local-scope entry points below
+can check rejected input independently. This is not typo correction or a dialect.
 
 The error-only header scanner examines at most one byte per step and resumes at
 the next byte after an explicit boundary. The parser outlines the new rejection
@@ -299,6 +302,121 @@ Verification: **542/542** tests pass in Debug, ReleaseSafe and ReleaseFast;
 examples and freestanding RISC-V32/Wasm32 checks pass. The reported fixture with
 two independent errors now reports the unquoted value and later bare ampersand, with
 `invalid_syntax`, `.complete` traversal and no document.
+
+### Independent local validation scopes — 2026-10-02
+
+Opening headers, their names/attribute names, attribute-value content, text and
+closing names are borrowed local validation inputs. Element matching remains the
+parser's responsibility. `validateScope[In]` uses these views directly; the existing
+document validator and local validator share name/reference/encoding/duplicate
+kernels rather than manufacturing a partial `Document` or duplicating rules.
+No parser state, retained record, tree pool or default parse-time work is added.
+
+Public scope inputs are runtime-checked in every build mode, including content-
+disabled profiles, before allocation or rule execution. Invalid bounds, order,
+empty names or value framing return `invalid_scope` (unknown validity, no findings
+or source diagnostic). Header audits are O(A) and cancellable; leaf audits O(1).
+The internal scanner-produced path bypasses this audit. Borrowed slice lifetimes,
+aliasing and faithful scope descriptions remain caller responsibilities.
+
+`validateSource[In]` independently recognizes scopes using the existing scanner.
+It has no element stack and does not emit syntax findings. Complete attributes
+remain checkable despite a bad closer; recognized names and complete references
+in unfinished strings' known prefixes are checkable before abandoning an uncertain
+region. `Scanner.pendingScopes` exposes only already examined ranges on errors;
+it does not rescan, invent quotes, add scanner fields or alter normal tokens.
+Header synchronization shares the scanner's quote-aware error-path helper.
+
+With duplicate checking enabled, a header buffers 16-byte name/value span pairs
+plus the existing 8-byte sorting keys; zero-length value is reserved for an
+unavailable value in an incomplete header. An empty quoted value has length two.
+Buffers are explicit caller storage or caller-allocator growth, reused per header.
+With duplicates off, local name/value checks stream without these allocations.
+Sorting stays heap-based with deterministic comparison cost, not an attacker-
+controlled hash table. Allocation/sorting/validation are not work-credit metered.
+
+Scope coverage and validity are separate. Positive findings survive missing
+boundaries; missing coverage is incomplete/unknown, never a pass. A complete local
+result does not assert balanced tags or successful parsing. Requested check states
+survive operational stops; whole-source UTF-8 runs independently first and can
+complete even if later lexical scope recognition stops. Local findings then follow
+encounter/source order. Closing names are checked independently in the source path;
+the retained path still checks byte-identical matched names once per element.
+
+`incomplete: u32` carries the earliest gap in original-source coordinates, not a
+resume cursor or the last examined byte. The source walk retains the first lexical
+problem location, including across recovery and later findings; unsupported
+constructs point at their opening and EOF failures at `source.len`. A supplied
+incomplete header reports the end of its first name with an unavailable value,
+otherwise its prefix end. The source walk owns its gap independently because it
+can additionally check the unfinished value prefix. Operational stops keep their
+own terminal cause. Closing-name checks and recovery policy remain unchanged.
+
+Source traversal enforces `max_source_bytes` and its caller scratch capacity;
+tree/node/nesting/attribute parse limits still belong to parsing. Do not implicitly
+start source validation after a parse resource/sink/cancellation stop. Running it
+after syntax rejection is allowed. It is an explicit additional lexical pass;
+it neither secretly reruns document validation nor keeps global already-checked
+state. A future composed driver can feed the same local inputs directly. No
+custom string processor, runtime implementation binding, SIMD batching or scheduler
+is introduced. See [the public contract](../MARKUP.md#local-scopes-including-rejected-documents).
+
+#### Verification and explicit costs
+
+After the checked-input/offset review, 561/561 tests pass in Debug, ReleaseSafe,
+ReleaseFast and ReleaseSmall, plus examples and consumed RISC-V32/Wasm32 builds.
+Coverage includes scalar/block and fixed/runtime
+parity, every truncation of a mixed fixture, 2,048 deterministic byte mutations,
+allocation failures, sink stops/failure, cancellation, source limits and borrowed-
+view invariant checks. The review moves scope misuse from assertion probes
+into ordinary all-build-mode tests; retained-document assertion probes remain.
+Additional cases cover oversized descriptors before dereference, disabled-rule
+audits, failure before allocation/diagnostics, cancellable metadata audits, gap
+coordinates across multiple recoveries/EOF and later operational-stop precedence.
+This is targeted regression coverage, not a sustained
+fuzz campaign.
+The source-scope benchmark also passes with the payload-bearing completion;
+the post-review smoke run is not a controlled before/after performance comparison.
+
+Native layouts stay unchanged: Node 20 B, Attribute 20 B, diagnostic 36 B,
+parser frame 12 B, fixed/bounded/runtime sessions 432/440/496 B and validation
+result 32 B. Beyond its fixed scanner/operation state, source validation uses
+explicit per-header scratch: 24 B per attribute slot with duplicates enabled,
+no header scratch with that check off. These are layout/backing-storage figures,
+not process RSS.
+
+Pre-review measurements, local arm64, Zig 0.16.0, ReleaseFast: `--scopes-only`
+measures the additional source pass, including scope recognition, header buffering and validation, with
+20,000 findings discarded and 72 B reusable scratch. Nine timed rounds after
+five warmups, 16 calls per round; one process median, decimal MB/s:
+
+| Fixture | Bytes | Scalar fixed ms / MB/s | Scalar runtime ms / MB/s | Block fixed ms / MB/s | Block runtime ms / MB/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Complete headers | 260,000 | 1.152 / 225.7 | 1.213 / 214.3 | 1.217 / 213.6 | 1.257 / 206.9 |
+| Wrong closers | 300,000 | 1.287 / 233.1 | 1.352 / 221.9 | 1.305 / 229.9 | 1.376 / 218.0 |
+| Malformed headers | 360,000 | 1.659 / 217.0 | 1.702 / 211.5 | 1.803 / 199.6 | 1.710 / 210.5 |
+
+These are neither parse-plus-validation totals nor a claim of speedup. Existing
+document validation avoids this lexical pass. Block scanning is not a win on
+these short-token fixtures; cross-input batching has not been implemented.
+
+The unchanged pre-separation benchmark harness was also compiled against
+`273d0ba` and the pre-review implementation. A sequential updated/baseline process pair,
+with no overlapping builds, reports these throughput changes across 13 parsing
+fixtures (geometric means):
+
+| Backend | Fixed | Runtime baseline | Runtime override | Count-only | Cancellable |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Scalar | +5.10% | +4.46% | +3.50% | +4.73% | +2.06% |
+| Block | -1.05% | -0.38% | -0.80% | -1.72% | -0.20% |
+
+Record/pool/session sizes are identical. This is a local guard, not a universal
+speedup or exact-parity claim: earlier process repetitions had substantial noise
+in individual short fixtures. Retained duplicate-only validation on the unique-
+attribute fixture went from 1.332 to 1.397 ms (+4.9% latency), while the duplicate
+fixture went from 0.970 to 0.935 ms (-3.6%). The retained path still passes its
+original document pointer into sorting rather than copying generic view slices.
+No hidden source walk was added to parsing or retained-document validation.
 
 ### Opening-header recovery measurements — 2026-10-02
 

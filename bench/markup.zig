@@ -17,13 +17,18 @@ pub fn main(init: std.process.Init) !void {
     var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
     const writer = &output.interface;
     const args = try init.minimal.args.toSlice(allocator);
-    if (args.len > 2 or (args.len == 2 and !std.mem.eql(u8, args[1], "--rules-only") and !std.mem.eql(u8, args[1], "--validation-only"))) return error.InvalidArguments;
+    if (args.len > 2 or (args.len == 2 and !std.mem.eql(u8, args[1], "--rules-only") and !std.mem.eql(u8, args[1], "--validation-only") and !std.mem.eql(u8, args[1], "--scopes-only"))) return error.InvalidArguments;
     try writer.print("Node={d} Attribute={d} KeyScratch={d} Frame={d} Diagnostic={d} fixed_session={d} bounded_session={d} runtime_session={d} ValidationResult={d}\n", .{
         @sizeOf(markup.Node),                  @sizeOf(markup.Attribute),  @sizeOf(markup.AttributeKeyScratch),
         markup.FixedParseScratch(1).byte_size, @sizeOf(markup.Diagnostic), @sizeOf(markup.Profile(.{}).Session),
         @sizeOf(markup.BoundedSession),        @sizeOf(Runtime.Session),   @sizeOf(markup.ValidationResult),
     });
     if (args.len == 2) {
+        if (std.mem.eql(u8, args[1], "--scopes-only")) {
+            try benchScopes(init, writer);
+            try writer.flush();
+            return;
+        }
         try benchRules(init, writer);
         if (std.mem.eql(u8, args[1], "--validation-only")) {
             try benchEncoding(init, writer);
@@ -113,6 +118,52 @@ pub fn main(init: std.process.Init) !void {
     try benchRules(init, writer);
     try benchCancellation(init, writer);
     try writer.flush();
+}
+
+/// Explicit tree-free source-validation cost, including lexical recognition,
+/// header buffering and local rules. Fixed buffers/source are outside timing.
+fn benchScopes(init: std.process.Init, writer: *std.Io.Writer) !void {
+    const allocator = init.arena.allocator();
+    inline for (.{ "complete", "bad_closer", "bad_header" }) |fixture| {
+        const item = if (comptime std.mem.eql(u8, fixture, "complete"))
+            "<x a='1' a='2'>&bogus;</x>"
+        else if (comptime std.mem.eql(u8, fixture, "bad_closer"))
+            "<x a='1' a='2'>&bogus;</wrong>"
+        else
+            "<x a='1' a='2' bad=0/><y>&bogus;</y>";
+        const repetitions = 10_000;
+        const source = try allocator.alloc(u8, repetitions * item.len);
+        for (0..repetitions) |i| @memcpy(source[i * item.len ..][0..item.len], item);
+        inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| {
+            var scratch: markup.FixedSourceValidationScratch(3) = .{};
+            var times: [9]u64 = undefined;
+            for (0..warmups + times.len) |round| {
+                const start = std.Io.Clock.Timestamp.now(init.io, .awake);
+                var errors: u64 = 0;
+                for (0..batch) |_| {
+                    const r = sourceScopes(backend, runtime, source, scratch.storage());
+                    if (std.meta.activeTag(r.completion) != (if (comptime std.mem.eql(u8, fixture, "bad_header")) .incomplete else .complete)) return error.ValidationFailed;
+                    errors += r.errors;
+                }
+                const end = std.Io.Clock.Timestamp.now(init.io, .awake);
+                if (errors != repetitions * 2 * batch) return error.ValidationFailed;
+                if (round >= warmups) times[round - warmups] = @intCast(@divTrunc(start.durationTo(end).raw.nanoseconds, batch));
+            }
+            std.mem.sort(u64, &times, {}, std.sort.asc(u64));
+            const ns: f64 = @floatFromInt(times[4]);
+            try writer.print("scopes/{s}/{s}/{s}: source={d}, {d:.3} ms, {d:.1} MB/s, scratch={d}\n", .{
+                fixture,  @tagName(backend),                               if (runtime) "runtime" else "fixed", source.len,
+                ns / 1e6, @as(f64, @floatFromInt(source.len)) * 1000 / ns, @sizeOf(@TypeOf(scratch)),
+            });
+        };
+    }
+}
+noinline fn sourceScopes(comptime backend: markup.ScannerBackend, comptime runtime: bool, source: []const u8, scratch: markup.SourceValidationScratch) markup.ValidationResult {
+    const p: markup.Policy = .{ .scanner = backend, .validation = .{ .names = .{ .severity = .err }, .references = .{ .severity = .err } } };
+    const P = markup.Profile(.{ .runtime_policy = runtime, .policy = p });
+    var patch: markup.Policy = .{};
+    const input: *volatile markup.Policy = &patch;
+    return P.validateSourceIn(source, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = input.* } else .{});
 }
 
 /// Observable callback counts and post-parse latency. Plain modes guard against

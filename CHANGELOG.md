@@ -6,6 +6,15 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Separate markup's local validation inputs from its retained tree. Add
+  `validateScope[In]` and `validateSource[In]` for headers, names, attribute-value
+  content and text, sharing existing rules. Known duplicate keys, names and
+  references remain reportable despite enclosing syntax errors; unavailable
+  regions stay incomplete. Parsing, tag matching and tree publication are unchanged.
+  Public caller-built scopes are checked in every build mode and return
+  `invalid_scope` for invalid metadata. Incomplete validation carries the earliest
+  coverage-gap offset as `incomplete: u32`; this is not a resume cursor.
+
 - Extend markup `.collect` to recover selected opening-header attribute errors at
   explicit, quote-aware `>`/`/>` boundaries. Preserve the element's written name
   and delimiter without repairing syntax or publishing a partial tree. Ambiguous

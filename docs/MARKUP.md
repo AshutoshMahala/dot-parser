@@ -218,7 +218,8 @@ Measurement followed by parsing is two explicit passes, not caching.
 Parsing checks structure; it does **not** run duplicate, encoding, name-rule or
 reference-catalog validation.
 Validate a completed document immediately or later, under the same or a different
-profile. Validation never changes the retained records or discards occurrences.
+profile. Alternatively, validate local scopes without a document (below).
+Validation never changes retained records or discards occurrences.
 
 ```zig
 const document = parsed.document.?;
@@ -247,7 +248,7 @@ With all checks off, source and pools are not inspected.
 
 Duplicate checking compares attribute names byte-for-byte and case-sensitively,
 scoped to a single element. Each occurrence after the first produces one finding
-whose related span identifies the first. Findings from all enabled checks are merged in document order by primary
+whose related span identifies the first. In document validation, findings from all enabled checks are merged in document order by primary
 span start. At equal starts the order is encoding, duplicate attribute, name rule,
 then reference catalog. Error findings make
 validity invalid but do not stop further checks; warning findings do not invalidate.
@@ -263,6 +264,112 @@ byte in `details.byte`. No replacement, transcoding, normalization, entity
 expansion, XML character/name validation or source mutation occurs. Valid UTF-8
 does not imply XML or Graphviz conformance, and cannot weaken parsing's control-byte
 or unsupported-encoding rules.
+
+### Local scopes, including rejected documents
+
+Local validation does not require a valid enclosing element or a published tree.
+These entry points use the **same validation policies and rule implementations**:
+
+| Entry points on `markup` or a configured `Profile` | Input and responsibility |
+| --- | --- |
+| `validate` / `validateIn` | Completed `Document`; checks retained content, not parsing again |
+| `validateScope` / `validateScopeIn` | One caller-described `ValidationScope` in the original source; bounds-checked local checks |
+| `validateSource` / `validateSourceIn` | Recognizes local scopes directly from source, even if element matching fails; no tree or nesting stack |
+
+`ValidationScope` has `opening_header`, `opening_name`, `closing_name`,
+`attribute_name`, `attribute_value`, `text` and `bytes` alternatives. Name scopes
+run name/encoding checks; text and attribute values run reference/name/encoding
+checks; `bytes` runs encoding only. Header scopes also check duplicate keys.
+Attribute-value scopes contain the content **without quotes**. No generic string
+dialect, decoding, normalization or custom string processor is added here.
+
+```zig
+// This region can be checked even when a later closing tag is wrong.
+const checked_value = Checked.validateScopeIn(
+    source, .{ .attribute_value = content_span }, .{}, bag.sink(), .{},
+);
+
+// After parsing returns success OR invalid_syntax, local validation need not
+// depend on parsed.document. Do not automatically continue after cancellation,
+// resource exhaustion or a diagnostic stop/failure.
+const checked_source = Checked.validateSource(allocator, source, bag.sink(), .{});
+```
+
+`validateSource` emits **validation findings only**, not a second copy of syntax
+diagnostics. `<x a='1' a='2'></wrong>` reports the duplicate independently of
+the mismatched closer. `<x a='1' a='2'` can still report the known duplicate,
+but reports incomplete coverage. Recognized names and completed references in an
+unfinished quoted-value prefix are checkable too. Missing delimiters are never
+invented. With `.collect`, selected malformed headers synchronize using the same
+quote-aware scanner boundary rules as parsing; skipped bytes are not certified.
+Uncertain boundaries stop the scope walk; `.fail_fast` disables its synchronization.
+
+**A complete, valid source-validation result is not proof of well-formed markup.**
+It describes the selected local checks, not tag balance or syntax acceptance.
+Acceptance still requires successful parsing and completed, valid validation.
+`completion = .{ .incomplete = offset }` identifies the earliest loss of requested
+scope coverage, as a zero-based offset in the original source. Already observed
+errors keep `validity = .invalid`, otherwise validity is unknown. The source walk
+uses the first lexical problem's location (EOF is `source.len`, an unsupported
+construct points to its opening). Recovery never advances this offset past an
+earlier gap. Later regions may still be checked, and whole-source encoding may
+already be complete: this is **not a resume cursor or a last-validated offset**.
+Operational stops retain their own completion cause instead of returning a gap.
+Individual `validateScope` results stay independent of their enclosing document.
+No partial tree is published or constructed for validation.
+
+`HeaderScope` contains its raw `span`, `name`, ordered `ScopeAttribute` slice and
+`complete` flag. Attributes retain quoted-value spans; `value.len == 0` means an
+unavailable value in an incomplete header (an empty quoted value has length 2).
+Names and duplicates remain checkable in that case. For an incomplete supplied
+header, the offset is the end of the first attribute name whose value is
+unavailable; otherwise it is the end of the supplied header prefix. Unlike the
+source walk, this call cannot check value prefixes the caller did not describe.
+
+Public scope calls check metadata **in every build mode**, even with all content
+checks disabled: source/index range, span containment, nonempty names, attribute
+ordering and matching quote framing for present values. Invalid metadata returns
+`completion = .invalid_scope`, unknown validity, zero findings and all checks
+`not_run`. It is a caller-input failure, not a document error: no source diagnostic
+is emitted and no scratch allocation occurs. Checking is O(1) for a leaf and O(A)
+for a header with A attributes; enabled cancellation is polled during that audit.
+Scanner-produced scopes use a separate internal trusted path without this audit.
+
+These checks do not reparse the supplied scope or discover omitted attributes.
+Callers remain responsible for faithful regions and valid borrowed slices:
+source, attributes and scratch must remain alive and unmodified during the call;
+scratch must not alias source, scope data or diagnostics. Diagnostics keep original
+source coordinates. The existing retained-`Document` contract is unchanged.
+
+`validateScopeIn(source, scope, scratch, sink, options)` reuses `ValidationScratch`;
+only a header with duplicate checking and at least two attributes needs keys.
+`validateScope(allocator, source, scope, sink, options)` allocates those keys only
+when needed, and releases them before returning.
+
+`validateSourceIn(source, scratch, sink, options)` uses `SourceValidationScratch`
+with `attributes` and `attribute_keys` slices. `FixedSourceValidationScratch(n)`
+provides both: **24 bytes per attribute slot**, reused for the largest header,
+including recognized names whose values are unfinished. The allocator-backed
+form grows/reuses these two buffers and frees them on return; growth can transiently
+hold old and new allocations. Duplicate checking off needs neither buffer and
+works with a failing allocator. No per-element scope objects are allocated.
+`storage_exhausted` reports required entries (a lower bound when scanning stopped
+at a full buffer); the resource diagnostic distinguishes header attributes from
+sorting keys. `source_limit` reports the enforced `limits.max_source_bytes`.
+Other parse limits still belong to parsing, not this tree-free validation pass.
+Use fixed scratch to bound header memory explicitly.
+
+The source form is an **additional lexical pass**, not a free extension of parsing.
+Do not also run document validation into the same bag unless repeating findings
+is intentional. Standalone scope validation avoids that source pass when a caller
+already has trustworthy boundaries. Existing parse-only calls do no new work.
+Source validation checks enabled whole-source UTF-8 first, then local scopes in
+encounter order; each phase is source ordered, not globally interleaved. A closing
+name is independently checked even when it differs from its opener; on valid
+documents, the retained validator still checks identical matched names once.
+Encoding can complete even if later scope recognition cannot. All forms honor
+sink stop/failure and enabled cancellation. As with document validation, sorting,
+allocation and validation calls are **not work-credit metered**.
 
 ### Optional name rules and reference catalogs
 
@@ -586,8 +693,9 @@ caller-driven, and absent from parser execution; markup diagnostics remain 36 by
 `recovery = .collect` is the standard/untrusted default. Choose `.fail_fast`
 explicitly to stop at the first syntax error. This does not change acceptance:
 rejected input stays rejected under either policy, and validation is independent.
-Tree-dependent validation still requires a successfully parsed `Document`; this
-slice cannot run those checks on rejected input because it publishes no partial tree.
+Tree-dependent checks still require a successfully parsed `Document`. The local
+checks described above can instead run through `validateSource` or `validateScope`
+without a partial tree; they are not implicitly run by parsing/recovery.
 
 | Rejected construct | Structural recovery action |
 | --- | --- |
@@ -604,7 +712,8 @@ opening header. After reporting the triggering attribute error, the remaining
 header bytes are skipped, not validated or retained. Earlier findings from the
 same header remain reported; its skipped attributes/references do not increase
 attribute, warning or accepted-deviation counts. Normal syntax checks resume
-after the header. Duplicate-attribute validation still needs a completed document.
+after the header. Independent source/scope validation can inspect recognized
+attributes even when parsing cannot publish a document.
 
 Single and double quotes shelter `>` and `/` during synchronization. A raw `<`
 (even inside quotes), forbidden control byte, EOF before a boundary, or unquoted
@@ -663,3 +772,6 @@ use bounded diagnostics, limits and allocator budgets for untrusted input.
   and encoding costs, plus fixed/runtime cancellation latency and callback counts
   on 100 KB text/name scans. The callback counter is observable; parsing and source
   construction are outside the timer.
+- `zig build bench-markup -Doptimize=ReleaseFast -- --scopes-only`: independent
+  source validation of complete headers, bad closers and malformed headers;
+  scalar/block and fixed/runtime policies, with explicit reusable scratch.

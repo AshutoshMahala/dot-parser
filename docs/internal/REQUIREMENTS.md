@@ -191,6 +191,21 @@ stops. See [its contract](MARKUP.md#structural-recovery--implemented-2026-09-30)
 
 ### R-FUNC-008: Validation completes with a diagnostic bag
 
+**Local-scope separation (2026-10-02):** checks require trustworthy input for
+their own region, not a valid enclosing tree. Standalone markup exposes borrowed
+header/name/value/text scopes and independent source-scope validation, sharing
+retained-document rule implementations. A malformed enclosing header or closer
+must not erase known local findings. Unavailable coverage remains incomplete;
+ordinary findings continue independent work, while operational stops still end
+the operation. No repair, partial-tree publication or mandatory per-scope object
+allocation is implied. String-processor composition and SIMD batching remain
+future work, not prerequisites for this separation.
+Public caller-built scopes must check bounds, ordering and value framing in all
+build modes, returning `invalid_scope` rather than relying on assertions. Trusted
+scanner-produced scopes bypass that public audit. Incomplete local coverage carries
+its earliest original-source gap offset; it is not a restart point or a claim
+that no later region was checked.
+
 Validation is an analysis pass, not fail-fast syntax control flow. It should
 continue after independent document errors and attempt to validate all available
 syntax or `DotIR`. A completed validation pass returns both document validity and
@@ -1534,6 +1549,11 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-10-02 — **R-FUNC-008:** implement markup local validation scopes and a
+  tree-independent source-scope pass. Separate lexical boundaries, local checks
+  and enclosing structure; preserve findings from recognized prefixes, truthful
+  incomplete coverage, explicit costs and shared validators.
 
 - 2026-10-02 — **R-FUNC-007:** standalone markup adds bounded, diagnostics-only
   recovery of selected opening-header attribute errors. Explicit delimiters and

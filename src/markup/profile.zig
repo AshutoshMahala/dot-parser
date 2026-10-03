@@ -4,6 +4,7 @@ const std = @import("std");
 const policy = @import("policy.zig");
 const engine = @import("engine.zig");
 const validation = @import("validate.zig");
+const source_validation = @import("validate_source.zig");
 
 pub fn Profile(comptime api: type, comptime config: policy.Config) type {
     const Binding = @import("parser_support").processor.PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
@@ -117,6 +118,36 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         /// returning. Encoding/name/reference-only validation needs no allocation.
         pub fn validate(allocator: std.mem.Allocator, document: *const api.Document, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
             return validateCall("allocated", .{ allocator, document, diagnostics }, options);
+        }
+
+        /// Check an independently recognizable region; no enclosing tree needed.
+        /// Caller-built original-source spans are checked in every build mode;
+        /// invalid metadata returns invalid_scope, without source diagnostics.
+        pub fn validateScopeIn(source: []const u8, scope: api.ValidationScope, scratch: api.ValidationScratch, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+            return validateCall("runScope", .{ source, scope, scratch, diagnostics }, options);
+        }
+        pub fn validateScope(allocator: std.mem.Allocator, source: []const u8, scope: api.ValidationScope, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+            return validateCall("allocatedScope", .{ allocator, source, scope, diagnostics }, options);
+        }
+        fn SourceValidator(comptime v: Variant) type {
+            return source_validation.Validator(v.backend(), if (runtime_policy) null else baseline, v.cancellation());
+        }
+        fn sourceValidationCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
+            const effective = resolve(options);
+            if (runtime_policy) switch (variantOf(effective)) {
+                inline else => |v| return @call(.auto, @field(SourceValidator(v), method), args ++ .{ effective, hook(v, options.cancellation) }),
+            };
+            const v = comptime variantOf(baseline);
+            return @call(.auto, @field(SourceValidator(v), method), args ++ .{ {}, hook(v, options.cancellation) });
+        }
+        /// Local validation without a Document. This does not check tag balance
+        /// or replace parsing; incomplete lexical regions cannot be certified.
+        /// Like document validation, this operation is not work-credit metered.
+        pub fn validateSourceIn(source: []const u8, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+            return sourceValidationCall("run", .{ source, scratch, diagnostics }, options);
+        }
+        pub fn validateSource(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+            return sourceValidationCall("allocated", .{ allocator, source, diagnostics }, options);
         }
 
         const Inner = if (runtime_policy) union(Variant) {

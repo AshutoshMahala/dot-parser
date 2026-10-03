@@ -161,6 +161,7 @@ fn resourceText(resource: diagnostic.Resource) []const u8 {
         .node_pool => "node pool",
         .attribute_pool => "attribute pool",
         .attribute_keys => "attribute-key scratch",
+        .header_attributes => "header-attribute scratch",
         .recovery_work => "recovery ancestor-search work",
     };
 }
