@@ -8,7 +8,8 @@ not establish inner validity (see [OUTCOMES.md](OUTCOMES.md)).
 
 The independently importable [markup parser](MARKUP.md) does not change this DOT
 coverage table: DOT recognizes passthrough HTML-like identifiers independently.
-Automatic inner parsing and DOT/markup composition remain deferred.
+Explicit [delayed markup processing](MARKUP.md#delayed-processing-inside-dot)
+is available; automatic during-DOT scheduling remains deferred.
 
 ## Terminology
 

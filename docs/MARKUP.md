@@ -6,6 +6,81 @@ not browser HTML, complete XML, or Graphviz label validation. DOT independently
 supports [passthrough HTML-like identifiers](SUPPORTED_SYNTAX.md#passthrough-html-like-identifiers),
 but does not yet invoke this parser automatically.
 
+## Delayed processing inside DOT
+
+Import both modules and select preserved identifiers explicitly. Ordinary DOT
+calls do not invoke markup. See the runnable
+[delayed markup example](../examples/delayed_markup.zig).
+
+```zig
+const Reader = markup.Profile(.{ .policy = markup.presets.untrusted });
+const ready = Reader.prepare(.{}); // once, reusable across selected operands
+var parts = try dot.identifier.parts(dot_document.source, attribute.value);
+while (parts.next()) |part| {
+    if (part.form != .html) continue;
+    var checked = try ready.parseAndValidateFragment(
+        allocator, try part.fragment(dot_document.source), bag.sink(), .{},
+    );
+    defer checked.deinit();
+    // Consume checked.parse.document here if present; it borrows source bytes.
+    if (checked.stopped()) break; // also end any surrounding batch loop
+    // Ordinary findings alone do not stop later fragments.
+}
+```
+
+Selection is application-owned: any DOT identifier position can be selected, not
+just `label`. `identifier.parts(source, range)` checks one complete expression,
+then returns a borrowed iterator of `Part { form, raw, inner }`. Forms are `bare`,
+`numeral`, `quoted`, `html`; spans use original-source bytes. `inner` removes
+exactly one surrounding quote/angle pair, without decoding or joining operands.
+Thus `<<b/>> + <text>` supplies separate `<b/>` and `text` fragments. Empty
+operands remain present; quoted `<...>` text is not automatically markup.
+Invalid metadata/expression returns `InvalidSpan`/`InvalidIdentifier` before
+iteration. Source must remain alive and unchanged while using views.
+
+| API/result | Behavior |
+| --- | --- |
+| `Reader.prepare(options)` | No allocation/scan/callbacks; resolve once into reusable `Prepared` |
+| `ready.parseAndValidateFragment(allocator, fragment, sink, resources)` | Explicit allocation; optional `resources.scratch_allocator` for parsing scratch |
+| `ready.parseAndValidateFragmentIn(fragment, memory, scratch, sink)` | Allocation-free; `ParseMemory` and `SourceValidationScratch`; key scratch reused for document validation |
+| `checked.parse` | Ordinary parse result; no partial tree on syntax failure |
+| `checked.validation` | Document validation on success; source-scope validation on `invalid_syntax`; null after operational stops/unsupported input |
+| `checked.documentValid()` | Successful complete parsing AND complete valid validation |
+| `checked.stopped()` | End the requested batch on cancellation, limit/capacity/allocation/delivery failure, explicit sink stop or unsupported input |
+
+Both operations also exist directly on `markup` and configured profiles, taking
+their normal policy options last. Growing results require `deinit()`; fixed
+results own neither source nor pools. Validation failure preserves a successful
+inner tree. Outer and inner validity remain independent. Do not start child work
+after an outer operational stop; outer validation findings alone do not block it.
+
+`Fragment.init(bytes, origin)` checks the u32 coordinate domain;
+`Fragment.fromSource(source, span)` additionally checks source bounds before
+slicing. `fragment.child(local_span)` composes origins for another raw nested
+input, such as a markup attribute value passed to a consumer string processor.
+Decoded/concatenated/transcoded input requires a different source map.
+
+All emitted primary/related/fix spans and validation `incomplete` offsets map to
+the original file. Resource capacities/limits are counts and are not rebased.
+**Tree spans stay local to the retained markup `document.source`.** Render mapped
+diagnostics against the original DOT source. Custom parse-only, validation-only
+or bounded-session workflows can use `markup.diagnostic.OriginSink.init(fragment,
+destination)`; keep this adapter at a stable address while its `.sink()` is used.
+Do not wrap already mapped fragment operations in another origin adapter.
+
+Costs: operand selection validates then traverses the selected expression (two
+linear scans, no allocation), not the entire DOT file. Selected markup is parsed
+and validated; rejected syntax can require a source-scope rescan. Mapping adds
+constant bounds checks per diagnostic, not per byte/node. No per-identifier fields
+or mandatory child-result array are added. These operations are run-to-completion;
+parse metering does not bound validation, enumeration, sorting or callbacks.
+
+Delivery order is syntax findings, validation findings, then the next selected
+operand. No global source sorting or universal diagnostic union is added.
+During-DOT scheduling, a shared resumable budget, Graphviz vocabulary validation
+and a built-in string processor remain unimplemented. See
+[nested policies](POLICIES.md#composing-processor-policies) for consumer schemas.
+
 ## Supported input
 
 | Input | Behavior |

@@ -11,6 +11,18 @@ const Chunks = @import("identifier_value.zig").Chunks;
 
 pub const DecodeError = error{ InvalidIdentifier, NoSpaceLeft, OverlappingBuffers };
 pub const Form = enum { bare, numeral, quoted, html, concatenation };
+pub const Part = @import("identifier_parts.zig").Part;
+pub const Parts = @import("identifier_parts.zig").Parts;
+
+/// Explicit delayed operand traversal. Validates only the selected expression,
+/// not the DOT document; a second linear walk exposes original raw/inner spans.
+/// No decoding, allocation, markup processing or parser-session work credits.
+pub fn parts(source: []const u8, range: @import("parser_support").location.Span) error{ InvalidSpan, InvalidIdentifier }!Parts {
+    const Fragment = @import("parser_support").processor.Fragment;
+    const input = Fragment.fromSource(source, range) catch return error.InvalidSpan;
+    const token = try validate(input.bytes);
+    return .{ .input = input, .compound = token.flags.concatenated };
+}
 
 /// Validate one complete spelling and classify it. Concatenations are not
 /// classified by their first operand. No decoding or allocation is performed.

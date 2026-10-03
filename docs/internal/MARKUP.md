@@ -1,7 +1,8 @@
 # Standalone markup — structural slices
 
 Decisions: 2026-09-26; slices 1–3, 4a and 4b implemented 2026-09-27;
-diagnostics-only recovery implemented 2026-09-30; local validation scopes 2026-10-02.
+diagnostics-only recovery implemented 2026-09-30; local validation scopes 2026-10-02;
+explicit delayed integration 2026-10-03.
 Later slices below are plans, not
 current public capabilities. R-MOD-014/015 and Q40 remain the architectural contract.
 
@@ -10,8 +11,8 @@ current public capabilities. R-MOD-014/015 and Q40 remain the architectural cont
 Build and measure the real standalone processor before expanding the composition
 framework. The same engine will later serve standalone, delayed and during-DOT
 use. This changes the earlier passthrough-first implementation sequence, not the agreed
-DOT `none`/`passthrough` semantics. Do not extend `PolicySet` or a scheduler to justify
-this parser. Independent parsing must not import DOT grammar or retained records.
+DOT `none`/`passthrough` semantics. Preparation follows actual integration needs,
+not speculative scheduling. Independent parsing must not import DOT grammar or retained records.
 
 | Slice | Scope | Status |
 | --- | --- | --- |
@@ -24,7 +25,8 @@ this parser. Independent parsing must not import DOT grammar or retained records
 | Recovery | Structural-error recovery for additional diagnostics; no partial tree | Implemented 2026-09-30, default `.collect`; explicit `.fail_fast` available |
 | Local validation scopes | Header/name/value/text checks independent of enclosing structure; source-scope pass without a tree | Implemented 2026-10-02; no implicit parse-time checks |
 | DOT passthrough recognition | `none`/`passthrough`, both scanners, concatenation, decoding and DOT fix policy; no markup dependency | Implemented 2026-09-27 |
-| Integration | Delayed integration first; during-DOT composition later | Planned |
+| Delayed integration | Explicit per-operand views, reusable prepared policies, original-source diagnostics, independent inner results | Implemented 2026-10-03 |
+| During-DOT composition | Automatic child scheduling and shared resumable budgets | Planned; not implied by delayed calls |
 
 Each slice needs tests, truthful supported-syntax documentation and measurements.
 Recognition of an excluded feature reports unsupported without validating its body.
@@ -98,9 +100,94 @@ parent rejects HTML tokens. This measures passthrough envelope scanning, not str
 markup parsing. Scalar quotes/comments and long-ID microbenchmarks have small
 slowdowns in this sample; the ordinary end-to-end benchmark has no measured loss.
 
-Next integration work is the explicitly designed per-part/origin contract and
-delayed processing. Structural recovery is now implemented independently;
-specialized vocabularies still need their own decisions. DOT passthrough invokes neither.
+The per-part/origin contract and explicit delayed processing are now implemented
+below. Structural recovery remains independent; specialized vocabularies and
+during-DOT scheduling still need separate slices. DOT passthrough invokes neither.
+
+## Explicit delayed integration — 2026-10-03
+
+The [public recipe](../MARKUP.md#delayed-processing-inside-dot) and
+[runnable example](../../examples/delayed_markup.zig) use separately imported DOT
+and markup modules. `identifier.parts(source, range)` validates one selected raw
+expression and exposes operands without merging/decoding them. Each HTML operand
+supplies its interior bytes and original origin. Selecting attributes, names,
+ports or other positions is the application's decision, not an implicit label rule.
+
+`Profile.prepare` resolves once into `Prepared`, reused across explicit calls to
+`parseAndValidateFragment[In]`. Fixed settings have zero state; runtime settings
+are not rediscovered per token/fragment. Growing and fixed-memory results preserve
+independent parse/validation outcomes. Parse success uses document validation;
+`invalid_syntax` uses recognizable source scopes, so enclosing structural errors
+do not hide complete-header checks. Operational stops skip that fallback and
+instruct the caller to end its requested batch. No partial tree is published.
+
+Mapped primary/related/fix spans and coverage gaps refer to the original DOT
+source; retained tree spans remain local to the fragment. `OriginSink` also
+supports explicit parse-only/validation-only/bounded-session calls. Nested raw
+`Fragment.child` origins map a deeper processor's findings once, not once at
+every parent. Buffers stay borrowed; decoded/transcoded input needs a different map.
+
+`PolicySet` is recursively composable: a set exposes the same `Policies` surface
+as a leaf profile. Tests configure DOT, a markup group containing a consumer-owned
+string schema, and a separate sibling string schema. Each leaf is statically
+selected; runtime patches cannot change implementation or add fields. Policy
+groups do not schedule execution. Markup `Prepared` can consume its own resolved
+state from the set without resolving again. Existing ordinary DOT methods retain
+their own preparation; this does not pretend their runtime state is reused.
+
+Costs: selected expressions receive validation plus operand traversal; inner
+syntax rejection can add a source-scope rescan. Mapping costs constant checks per
+finding. No DOT record/session layout change, per-identifier processor state,
+global queue/result array or universal diagnostic payload is introduced.
+Operations are run-to-completion; no combined metered validation claim. Findings
+are delivered by phase and selected-operand order, not globally sorted.
+
+Still pending: during-DOT invocation, shared budgets/cancellation scheduling,
+specialized vocabularies and a built-in string processor. The consumer-owned
+string check in tests proves schema/origin extensibility, not shipped string syntax.
+
+### Verification and local costs
+
+572 tests pass in Debug. The initial 570-test suite passed ReleaseSafe,
+ReleaseFast and ReleaseSmall; after adding two final regressions, all 14 tests
+in the cross-module suite passed again in those three modes. Examples and
+consumed RISC-V32/Wasm32 fixed/runtime builds pass, including the allocation-free
+fragment operation. Tests cover original primary/related/fix locations, coverage
+gaps versus capacity counts, maximum-u32 origins, operand truncations, mixed
+concatenation, scalar/block and fixed/runtime parity, independent outer/inner
+validity, cancellation in either phase, sink stops/failure, and allocation cleanup.
+
+Baseline `3c0b979`, same macOS arm64 machine and Zig 0.16.0, ReleaseFast; unchanged
+`bench/markup.zig` compiled before/after. Timed runs were before/after/after/before,
+with no overlapping builds; each process uses five warmups and nine timed rounds
+of sixteen operations. Compare the mean of each pair of process medians. These
+are standalone regression checks, **not** an end-to-end delayed-DOT throughput
+claim or an update to the separate standard-machine baseline.
+
+| Existing parsing mode, both scanners / 13 fixtures | Geometric-mean throughput change |
+| --- | ---: |
+| Fixed policies | -0.3% |
+| Runtime baseline | -0.9% |
+| Runtime override | -1.2% |
+| Count-only | -1.6% |
+| Cancellable | -0.3% |
+| All 130 cases | -0.9% |
+
+For the 750,000-byte mixed fragment, scalar fixed is 2.355 → 2.395 ms
+(318.5 → 313.3 decimal MB/s); block fixed is 2.523 → 2.566 ms
+(297.4 → 292.3 MB/s). Individual parsing cells range from -13.1% to +10.3%.
+The largest negative is scalar prose/count-only: before 0.891/0.895 ms, after
+1.140/0.916 ms, showing substantial run variation. Text/scalar/runtime-override
+is more consistently slower in this sample (0.455 → 0.488 ms, -6.7%); the aggregate
+must not hide it. Independent name/reference/encoding validation's twenty cells
+range from -0.8% to +50.1%; no universal improvement is inferred from that spread.
+
+All retained/scratch counts in the harness are unchanged. Node/attribute records
+remain 20/20 B, diagnostics 36 B, nesting frames 12 B, validation results 32 B,
+and fixed/bounded/runtime sessions 432/440/496 B. Fixed-only nested policy state
+and default fixed `Prepared` are zero-sized. The ordinary consumed benchmark's
+`__text` remains 818,084 B and `__TEXT` remains 895,264 B. This does not measure
+process RSS or claim that using the new operations adds no executable code.
 
 ## Settled grammar direction
 

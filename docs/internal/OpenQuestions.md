@@ -1184,11 +1184,18 @@ validation, the parts view, entity handling and markup nesting policy. The
 independent markup subsystem implements those in its own vertical slices.
 
 **Content processor vision and policy ownership (decided 2026-09-22;
-interface and implementation pending).** DOT owns lexical boundaries and
+explicit delayed subset implemented, automatic composition pending).** DOT owns lexical boundaries and
 source preservation. An inner parser (content processor) owns its content
 rules and typed policy schema. Consumers can supply new processing behavior
 and settings, not merely a preset of the built-in DOT policy fields. The
 implementation supplies behavior; its policy configures that behavior.
+
+Implementation update (2026-10-03): recursive named policy preparation, checked
+raw operand/child views and explicit delayed markup parse/validation are now
+implemented; see [the integration record](MARKUP.md#explicit-delayed-integration--2026-10-03).
+Automatic during-DOT and recursively scheduled execution remain pending. No
+built-in string processor, general source map or shared bounded validation is
+implied by this first integration slice.
 
 | Composed selection | DOT responsibility | Inner parser responsibility |
 | --- | --- | --- |

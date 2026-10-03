@@ -3,8 +3,9 @@
 The preparation APIs below are implemented. Standalone markup now has its own
 [structural slice](MARKUP.md). DOT and markup share policy binding and can join a
 `PolicySet` for preparation; neither this nor standalone markup adds a scheduler.
-DOT HTML recognition, inner-stage scheduling, and a `.processors` option on DOT's
-`Profile` are not implemented yet. The intended
+DOT HTML recognition and explicit delayed fragment processing are implemented.
+Automatic inner-stage scheduling and a `.processors` option on DOT's
+`Profile` are not implemented. The intended
 execution/result contract is in [the processor contract](PROCESSOR_CONTRACT.md).
 These are implementation/design notes, not a public processor integration guide.
 
@@ -56,13 +57,24 @@ Preparation neither invokes processors nor scans, allocates or emits diagnostics
 This is a preparation primitive, not an execution wrapper: existing DOT parsing
 methods perform their own policy preparation internally. Calling `PolicySet.prepare`
 and then an ordinary DOT method does not automatically reuse that prepared state.
-Resolved-state stage integration and compatibility checks belong to the later
-scheduler slice. Do not claim a composed budget from policy preflight alone.
+Markup delayed calls can reuse their state through `Markup.Prepared{ .policies =
+prepared.path }`; `Markup.prepare(options)` prepares the same value directly.
+Automatic stage integration/compatibility checks belong to the later scheduler
+slice. Do not claim a composed budget from policy preflight alone.
+
+Sets now expose their own `Policies` binding and may nest other sets. Preparing
+the root visits each runtime leaf once; an all-fixed subtree remains zero-sized.
+Sibling/deeper instances of the same consumer implementation have independent
+typed settings. This supports DOT → markup → string and DOT → string policy
+paths without runtime registries. The nested tests use a consumer-owned byte
+check, not a shipped string processor. Execution remains explicitly caller-driven.
 
 ## Raw fragment coordinates and diagnostics
 
 `processor.Fragment.init(bytes, origin)` validates the u32 source domain;
 `fragment.rebase(local_span)` checks local bounds and maps to original coordinates.
+`Fragment.fromSource(source, span)` checks before slicing; `fragment.child(span)`
+composes a child's original origin from a parent-local range.
 Apply it exactly once to every primary, related and fix span in a custom payload.
 The caller establishes provenance; this does not prove that arbitrary bytes are
 part of a particular file. Decoding or concatenating input needs a separate source

@@ -6,6 +6,15 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add explicit delayed DOT/markup integration: checked identifier operand views,
+  reusable prepared markup policies, growing/fixed `parseAndValidateFragment`
+  operations and original-source diagnostics/fixes. Validation still checks local
+  scopes after syntax rejection, while operational stops halt requested child
+  work. Outer and inner results stay independent; no partial trees or DOT record
+  growth. Policy sets now nest consumer-owned schemas, and raw fragment origins
+  compose across additional levels. Automatic during-DOT scheduling and shared
+  resumable validation budgets remain deferred.
+
 - Separate markup's local validation inputs from its retained tree. Add
   `validateScope[In]` and `validateSource[In]` for headers, names, attribute-value
   content and text, sharing existing rules. Known duplicate keys, names and

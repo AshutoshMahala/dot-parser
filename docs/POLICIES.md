@@ -232,8 +232,9 @@ fail-fast. Changing this parse policy requires reparsing.
 Fix filtering applies before diagnostic delivery in both DOT parsing and validation,
 including warnings. A fix is never automatically applied; suppression does not
 change sink stops, finding counts or outcomes. A `maybe` offer can be an assumption
-rather than the author's intent. Standalone markup currently produces no fix
-offers; its own fix-policy leaf is deferred until it has offers to control.
+rather than the author's intent. Markup has its own `diagnostics.fixes` leaf and
+compact semicolon offers. Delayed integration maps those edits to the original
+DOT source without changing applicability or automatically applying them.
 
 ## Fixed baseline
 
@@ -510,6 +511,53 @@ benchmark machine; this work does not replace its baseline. Run
 runtime-baseline and runtime-override paths. `zig build check-benches` compiles
 the probes without running or changing baselines.
 
-Still outside this slice: keyword-as-name acceptance, deviation history, HTML,
+Still outside this slice: keyword-as-name acceptance, deviation history, HTML vocabulary checks,
 bounded validation, allocator-backed resumable
 sessions, semantic resolution, custom rules, and graph conversion/export.
+
+## Composing processor policies
+
+`dot.processor.PolicySet` prepares named configured profiles and can nest other
+sets. Names are consumer-chosen; DOT does not interpret an inner schema's fields.
+For example, if `StringReader` is a consumer-defined profile:
+
+```zig
+const Markup = markup.Profile(.{ .runtime_policy = true });
+const Group = dot.processor.PolicySet(.{ .parser = Markup, .string = StringReader });
+const App = dot.processor.PolicySet(.{
+    .dot = dot.Profile(.{}), .markup = Group, .string = StringReader,
+});
+const state = try App.prepare(.{
+    .markup = .{ .parser = .{ .policy = .{
+        .validation = .{ .duplicate_attribute = .warning },
+    } } },
+});
+const ready: Markup.Prepared = .{ .policies = state.markup.parser };
+// Reuse ready.parseAndValidateFragment(...) without preparing the policy again.
+```
+
+This is preparation, not execution scheduling. Each runtime-enabled leaf is
+resolved/checked once, before processing/callbacks. Fixed-only groups have
+zero-sized options/state; fixed markup `Prepared` is zero-sized unless carrying
+a cancellation hook. Runtime patches only configure compiled-in fields, never
+register/replace processors. A failed check returns its schema's typed error;
+processing must not start. Ordinary DOT methods still prepare their own policies;
+preflight alone does not change their calling convention.
+
+A consumer profile exposes `Policies = dot.processor.PolicyBinding(Schema, config)`.
+`config` contains `.policy` and default-off `.runtime_policy`. The schema supplies
+`Policy` (partial input), `Effective`, `defaults`, pure `resolve(baseline, patch)`,
+pure `check(effective, patch)`, and `Error`. Checks return `.valid` or
+`.invalid: Issue`; `Issue.asError()` returns the typed error. Infallible schemas
+use `Error = error{}` and a valid-only check. Public/effective layouts may differ.
+Consumer code supplies processing behavior; new policy fields alone do not
+implement a parser or hook it into DOT. See the
+[consumer schema tests](../tests/processors.zig) and
+[nested integration tests](../tests/markup_integration.zig).
+
+There is no two-processor/two-level limit. Different paths may configure the
+same implementation independently (strings inside markup versus strings directly
+inside DOT). Checked `Fragment.child` origins support raw nested input. Each
+implementation retains its own results, diagnostics, storage and stopping
+contract. A built-in string processor and automatic recursive scheduling are
+not implemented; applications currently drive these calls explicitly.

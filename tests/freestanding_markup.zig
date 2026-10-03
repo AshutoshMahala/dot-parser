@@ -51,3 +51,12 @@ export fn validate_markup_scopes(source: [*]const u8, len: usize, stop: *u8) u32
     const local = P.validateScopeIn(source[0..len], .{ .bytes = .{ .start = 0, .len = @intCast(len) } }, .{}, markup.diagnostic.discard, options);
     return @truncate(checked.errors +% checked.warnings +% local.errors);
 }
+
+export fn check_markup_fragment(source: [*]const u8, len: usize, origin: u32, stop: *u8) u32 {
+    var storage: markup.FixedDocumentStorage(.{ .nodes = 16, .attributes = 16 }) = .{};
+    var frames: markup.FixedParseScratch(8) = .{};
+    var scratch: markup.FixedSourceValidationScratch(16) = .{};
+    const input = markup.Fragment.init(source[0..len], origin) catch return 0;
+    const checked = P.parseAndValidateFragmentIn(input, .{ .document = storage.storage(), .scratch = frames.storage() }, scratch.storage(), markup.diagnostic.discard, .{ .cancellation = .{ .context = stop, .is_requested = stopped } }) catch return 0;
+    return if (checked.documentValid()) checked.parse.counts.nodes else 0;
+}

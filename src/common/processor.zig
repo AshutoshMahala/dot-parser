@@ -57,7 +57,7 @@ pub fn PolicyBinding(comptime Schema: type, comptime config: struct {
     };
 }
 
-/// Named configured profiles expose `Policies`, a PolicyBinding. This prepares
+/// Named configured profiles/groups expose `Policies`, a policy binding. This prepares
 /// only policies, not sessions. Call once before initializing any stage. No
 /// profile's prepare method may scan input, allocate or invoke consumer callbacks.
 /// Stage/resource compatibility will be checked by the future stage composition.
@@ -69,12 +69,29 @@ pub fn PolicySet(comptime profiles: anytype) type {
             @compileError("configured processor profile must expose Policies");
     }
     return struct {
+        const Self = @This();
         pub const Options = namedFields(profiles, "Options", true);
         pub const State = namedFields(profiles, "State", false);
         pub const Error = blk: {
             var errors: type = error{};
             for (fields) |field| errors = errors || @field(profiles, field.name).Policies.Error;
             break :blk errors;
+        };
+
+        /// A set is itself a configured group. Nesting preserves field paths;
+        /// preparing the root visits each leaf once, without runtime discovery.
+        pub const Policies = struct {
+            pub const Options = Self.Options;
+            pub const State = Self.State;
+            pub const Error = Self.Error;
+            pub const runtime_policy = blk: {
+                for (fields) |field| if (@field(profiles, field.name).Policies.runtime_policy) break :blk true;
+                break :blk false;
+            };
+            pub fn prepare(options: Self.Options) (if (runtime_policy) Self.Error!Self.State else Self.State) {
+                if (runtime_policy) return Self.prepare(options);
+                return Self.prepare(options) catch unreachable; // all fixed leaves are verified at compile time
+            }
         };
 
         pub fn prepare(options: Options) Error!State {
@@ -124,5 +141,16 @@ pub const Fragment = struct {
         _ = try init(self.bytes, self.origin);
         if (local.endOffset() > self.bytes.len) return error.InvalidSpan;
         return .{ .start = self.origin + local.start, .len = local.len };
+    }
+
+    /// Select a raw child using parent-local coordinates. The child stores its
+    /// final original-source origin, so leaf diagnostics are rebased only once.
+    pub fn child(self: Fragment, local: location.Span) Error!Fragment {
+        const original = try self.rebase(local);
+        return .{ .bytes = self.bytes[local.start..@intCast(local.endOffset())], .origin = original.start };
+    }
+
+    pub fn fromSource(source: []const u8, span: location.Span) Error!Fragment {
+        return (try init(source, 0)).child(span);
     }
 };

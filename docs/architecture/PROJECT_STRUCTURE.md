@@ -1,7 +1,7 @@
 # Project Structure
 
 Status: living document — updated as slices land  
-Last updated: 2026-09-27 (common/DOT/markup source separation)
+Last updated: 2026-10-03 (explicit delayed integration; independent modules)
 
 The package provides independent Zig DOT and markup modules and must not depend
 on Zigraph. Source directories separate language-owned implementation from shared
@@ -49,6 +49,7 @@ dot-parser/
 │   │   │   ├── scalar.zig     (one byte per credit; the default)
 │   │   │   └── block.zig      (64-byte block masks; opt-in)
 │   │   ├── identifier.zig
+│   │   ├── identifier_parts.zig (borrowed raw operands; no markup dependency)
 │   │   ├── identifier_value.zig
 │   │   ├── syntax_event.zig
 │   │   ├── parser.zig
@@ -57,6 +58,7 @@ dot-parser/
 │   │   ├── validate.zig
 │   │   └── validation_checks.zig
 │   └── markup/
+│       ├── fragment_result.zig (independent delayed parse/validation results)
 │       ├── policy.zig
 │       ├── profile.zig
 │       ├── lexer.zig

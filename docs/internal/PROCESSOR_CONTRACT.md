@@ -1,12 +1,12 @@
 # Processor preparation contract — internal design
 
-Decisions reconciled 2026-09-26. This contract guides the preparation slice;
-it does not claim that HTML recognition, markup parsing, processor scheduling,
-or bounded validation is implemented. This document is the durable design record;
+Decisions reconciled 2026-09-26; delayed integration added 2026-10-03. This contract
+also includes future scheduling requirements, not a claim of bounded composition.
+This document is the durable design record;
 it must not depend on disposable working files. Current preparation code is
 described in [the implementation notes](PROCESSOR_PREPARATION.md). The later
-[standalone structural slice](MARKUP.md) is now implemented independently; DOT
-recognition and stage scheduling still do not exist. This preparation contract
+[standalone structural slice](MARKUP.md), DOT passthrough recognition and explicit
+delayed processing are implemented; automatic stage scheduling is not. This contract
 does not make standalone use depend on the composition APIs below.
 
 ## Binding and initialization
@@ -134,9 +134,10 @@ coordinates; exact original rendering needs live original bytes or a source hand
 Adapter metadata, conversion-error behavior and mapping APIs remain unimplemented;
 their allocation and rescan costs must be explicit, not added to every raw fragment.
 
-Keep existing DOT source ordering. Composed ordering and selector/concatenation
-rules need their own final API tests; no global source-sorted guarantee is implied
-by phase order. Markup grammar and full session composition are subsequent slices.
+Keep existing DOT source ordering. Delayed calls explicitly select preserved
+operands; each is parsed then validated independently. No global source-sorted
+guarantee is implied by phase order. Automatic selection and full session
+composition remain subsequent slices, separate from the implemented markup grammar.
 
 ## Acceptance checks
 

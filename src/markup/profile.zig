@@ -1,5 +1,5 @@
 //! Markup-owned compile-time baseline and default-off runtime patches. No
-//! processor registry/composition. Resolve once, specialize execution variants.
+//! runtime registry. Resolve once, specialize execution variants.
 const std = @import("std");
 const policy = @import("policy.zig");
 const engine = @import("engine.zig");
@@ -9,6 +9,7 @@ const source_validation = @import("validate_source.zig");
 pub fn Profile(comptime api: type, comptime config: policy.Config) type {
     const Binding = @import("parser_support").processor.PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
     return struct {
+        const Self = @This();
         pub const Policies = Binding;
         pub const baseline = Binding.baseline;
         pub const runtime_policy = config.runtime_policy;
@@ -27,6 +28,57 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             scratch_allocator: ?std.mem.Allocator = null,
         };
         pub const validatePolicy = Binding.validatePolicy;
+        /// Prepared once for any number of explicitly selected raw fragments.
+        /// For a PolicySet, use .{ .policies = state.path_to_markup } instead.
+        /// Policies must be produced by Policies.prepare/PolicySet.prepare;
+        /// cancellation is an explicit borrowed callback, not a policy leaf.
+        pub const Prepared = struct {
+            policies: State,
+            cancellation: Hook = if (Hook == void) {} else null,
+
+            /// Parse, then validate the document or recognizable source scopes.
+            /// Validation is skipped after an operational parsing stop. Neither
+            /// this operation nor identifier operand enumeration is work-metered.
+            pub fn parseAndValidateFragment(self: @This(), allocator: std.mem.Allocator, input: api.Fragment, diagnostics: api.DiagnosticSink, resources: api.ParseResources) api.Fragment.Error!api.FragmentResult {
+                var mapped = try api.diagnostic.OriginSink.init(input, diagnostics);
+                const parsed = callPrepared("parseBorrowed", api.ParseResult, .{ allocator, input.bytes, mapped.sink(), resources }, self);
+                const checked: ?api.ValidationResult = switch (parsed.outcome) {
+                    .success => validatePrepared("allocated", .{ allocator, &parsed.document.?, mapped.sink() }, self),
+                    .invalid_syntax => sourceValidationPrepared("allocated", .{ allocator, input.bytes, mapped.sink() }, self),
+                    else => null,
+                };
+                return .{ .parse = parsed, .validation = rebaseValidation(input, checked) };
+            }
+
+            /// Allocation-free variant. Source validation scratch is reused for
+            /// document validation too; capacities/limits remain local counts.
+            pub fn parseAndValidateFragmentIn(self: @This(), input: api.Fragment, memory: api.ParseMemory, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink) api.Fragment.Error!api.FixedFragmentResult {
+                var mapped = try api.diagnostic.OriginSink.init(input, diagnostics);
+                const parsed = callPrepared("parseBorrowedIn", api.FixedParseResult, .{ input.bytes, memory, mapped.sink() }, self);
+                const checked: ?api.ValidationResult = switch (parsed.outcome) {
+                    .success => validatePrepared("run", .{ &parsed.document.?, api.ValidationScratch{ .attribute_keys = scratch.attribute_keys }, mapped.sink() }, self),
+                    .invalid_syntax => sourceValidationPrepared("run", .{ input.bytes, scratch, mapped.sink() }, self),
+                    else => null,
+                };
+                return .{ .parse = parsed, .validation = rebaseValidation(input, checked) };
+            }
+        };
+        pub fn prepare(options: Options) Prepared {
+            return .{ .policies = resolve(options), .cancellation = options.cancellation };
+        }
+        fn rebaseValidation(input: api.Fragment, checked: ?api.ValidationResult) ?api.ValidationResult {
+            var result = checked orelse return null;
+            // Engine-produced, fragment-local coverage gap, not a resource count.
+            if (result.completion == .incomplete) result.completion.incomplete += input.origin;
+            return result;
+        }
+        pub fn parseAndValidateFragment(allocator: std.mem.Allocator, input: api.Fragment, diagnostics: api.DiagnosticSink, options: ParseOptions) api.Fragment.Error!api.FragmentResult {
+            const opts: Options = if (runtime_policy) .{ .policy = options.policy, .cancellation = options.cancellation } else .{ .cancellation = options.cancellation };
+            return Self.prepare(opts).parseAndValidateFragment(allocator, input, diagnostics, .{ .scratch_allocator = options.scratch_allocator });
+        }
+        pub fn parseAndValidateFragmentIn(input: api.Fragment, memory: api.ParseMemory, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink, options: Options) api.Fragment.Error!api.FixedFragmentResult {
+            return Self.prepare(options).parseAndValidateFragmentIn(input, memory, scratch, diagnostics);
+        }
         fn resolve(options: Options) State {
             if (!runtime_policy) return {};
             // Enforce today's infallible API at compile time. If the schema
@@ -71,7 +123,10 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return if (comptime variant.cancellation()) value else {};
         }
         fn call(comptime method: []const u8, comptime T: type, args: anytype, options: Options) T {
-            const effective = resolve(options);
+            return callPrepared(method, T, args, prepare(options));
+        }
+        fn callPrepared(comptime method: []const u8, comptime T: type, args: anytype, options: Prepared) T {
+            const effective = options.policies;
             if (runtime_policy) switch (variantOf(effective)) {
                 inline else => |v| return @call(.auto, @field(Core(v), method), args ++ .{ settings(v, effective), hook(v, options.cancellation) }),
             };
@@ -102,7 +157,10 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return validation.Validator(if (runtime_policy) null else baseline.validation, v.cancellation());
         }
         fn validateCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
-            const effective = resolve(options);
+            return validatePrepared(method, args, prepare(options));
+        }
+        fn validatePrepared(comptime method: []const u8, args: anytype, options: Prepared) api.ValidationResult {
+            const effective = options.policies;
             if (runtime_policy) switch (variantOf(effective)) {
                 inline else => |v| return @call(.auto, @field(Validator(v), method), args ++ .{ effective.validation, hook(v, options.cancellation) }),
             };
@@ -133,7 +191,10 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return source_validation.Validator(v.backend(), if (runtime_policy) null else baseline, v.cancellation());
         }
         fn sourceValidationCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
-            const effective = resolve(options);
+            return sourceValidationPrepared(method, args, prepare(options));
+        }
+        fn sourceValidationPrepared(comptime method: []const u8, args: anytype, options: Prepared) api.ValidationResult {
+            const effective = options.policies;
             if (runtime_policy) switch (variantOf(effective)) {
                 inline else => |v| return @call(.auto, @field(SourceValidator(v), method), args ++ .{ effective, hook(v, options.cancellation) }),
             };

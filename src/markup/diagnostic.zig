@@ -5,6 +5,30 @@ const support = @import("parser_support");
 const wdp = support.wdp;
 const Span = support.location.Span;
 pub const reporting = support.reporting;
+
+/// Synchronous adapter for local engine diagnostics. Keep this value at a stable
+/// address for the lifetime of its sink (including any resumable Session).
+/// Never wrap it around an already rebased fragment operation. No allocation.
+pub const OriginSink = struct {
+    input: support.processor.Fragment,
+    destination: Sink,
+
+    pub fn init(input: support.processor.Fragment, destination: Sink) support.processor.Fragment.Error!@This() {
+        return .{ .input = try support.processor.Fragment.init(input.bytes, input.origin), .destination = destination };
+    }
+    pub fn sink(self: *@This()) Sink {
+        return .{ .context = self, .emit_fn = emit };
+    }
+    fn emit(context: ?*anyopaque, item: Diagnostic) reporting.SinkError!reporting.Action {
+        const self: *@This() = @ptrCast(@alignCast(context.?));
+        var mapped = item;
+        mapped.span = self.input.rebase(item.span) catch return error.DiagnosticSinkFailure;
+        if (item.related) |span| mapped.related = self.input.rebase(span) catch return error.DiagnosticSinkFailure;
+        // Compact repairs derive their edit range from Diagnostic.span, so
+        // suggestedFix() now materializes an original-source edit too.
+        return self.destination.emit(mapped);
+    }
+};
 pub const namespace = "markup_parser";
 pub const namespace_hash = support.wdp.computeNamespaceHash(namespace);
 pub const Severity = reporting.Severity;

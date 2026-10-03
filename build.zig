@@ -170,6 +170,17 @@ pub fn build(b: *std.Build) void {
     });
     examples_step.dependOn(&b.addRunArtifact(markup_example).step);
     examples_step.dependOn(&b.addInstallArtifact(markup_example, .{}).step);
+    const delayed_example = b.addExecutable(.{
+        .name = "delayed_markup",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/delayed_markup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(delayed_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(delayed_example, .{}).step);
     const example_names = [_][]const u8{
         "parse_undigraph",
         "fixed_buffer",

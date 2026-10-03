@@ -1,6 +1,9 @@
 const std = @import("std");
 const dot = @import("dot_parser");
 const markup = @import("markup_parser");
+test {
+    _ = @import("markup_integration.zig");
+}
 
 test "both parsers separate a later resource stop from established syntax rejection" {
     const D = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 1 } } });

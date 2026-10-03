@@ -1,7 +1,7 @@
 //! Standalone, byte-oriented markup fragments, structural slices through 4b.
 //! Elements, attributes, references, comments, CDATA and optional validation. Not a browser
 //! HTML parser, a complete XML processor, or Graphviz label validation.
-//! No dependency on DOT grammar, retained documents, or processor composition.
+//! Raw fragment operations support explicit delayed use without depending on DOT.
 const std = @import("std");
 const support = @import("parser_support");
 const syntax = @import("markup/syntax.zig");
@@ -21,6 +21,9 @@ pub const DiagnosticSink = diagnostic.Sink;
 pub const FixedDiagnosticBag = diagnostic.FixedBag;
 pub const GrowableDiagnosticBag = diagnostic.GrowableBag;
 pub const Cancellation = support.execution.Cancellation;
+pub const Fragment = support.processor.Fragment;
+pub const FragmentResult = @import("markup/fragment_result.zig").Result(@This(), false);
+pub const FixedFragmentResult = @import("markup/fragment_result.zig").Result(@This(), true);
 pub const Policy = policy.Policy;
 pub const PolicyConfig = policy.Config;
 pub const RuleSeverity = policy.RuleSeverity;
@@ -106,6 +109,9 @@ pub fn Profile(comptime config: PolicyConfig) type {
     return @import("markup/profile.zig").Profile(@This(), config);
 }
 const Default = Profile(.{});
+pub const prepare = Default.prepare;
+pub const parseAndValidateFragment = Default.parseAndValidateFragment;
+pub const parseAndValidateFragmentIn = Default.parseAndValidateFragmentIn;
 pub const parseBorrowed = Default.parseBorrowed;
 pub const parseBorrowedIn = Default.parseBorrowedIn;
 pub const measure = Default.measure;
