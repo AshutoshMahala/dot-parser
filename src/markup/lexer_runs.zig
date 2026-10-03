@@ -140,7 +140,7 @@ test "plain block runs have no window cap while bounded runs stop at 64 bytes" {
     }
 }
 
-test "block probes and tails preserve the first boundary and exact source bounds" {
+test "runs preserve the first boundary and exact source bounds at nonzero offsets" {
     var bytes: [256]u8 = undefined;
     inline for (comptime std.meta.tags(Mode)) |mode| {
         const good: u8 = if (mode == .space) ' ' else 'a';
@@ -152,21 +152,23 @@ test "block probes and tails preserve the first boundary and exact source bounds
             .comment => '-',
             .cdata => ']',
         };
-        for (0..130) |len| {
+        for (0..130) |len| inline for (.{ 0, 1, 15, 63, 64 }) |start| {
             @memset(&bytes, good);
-            const source = bytes[3 .. 3 + len];
-            inline for (.{ false, true }) |bounded| {
-                const limit: u32 = @intCast(if (bounded) @min(len, 64) else len);
-                try std.testing.expectEqual(Run{ .consumed = limit, .examined = limit }, prefix(.block, bounded, mode, source, 0));
+            @memset(bytes[0..start], 0); // Forbidden in every run mode; must not be examined.
+            const source = bytes[0 .. start + len];
+            inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |bounded| {
+                const limit: u32 = @intCast(if (backend == .block and bounded) @min(len, 64) else len);
+                try std.testing.expectEqual(Run{ .consumed = limit, .examined = limit }, prefix(backend, bounded, mode, source, start));
                 for (0..len) |at| {
-                    source[at] = stop;
-                    const got = prefix(.block, bounded, mode, source, 0);
+                    source[start + at] = stop;
+                    const got = prefix(backend, bounded, mode, source, start);
                     try std.testing.expectEqual(@min(limit, @as(u32, @intCast(at))), got.consumed);
                     try std.testing.expect(got.examined >= got.consumed and got.examined <= limit);
                     if (at < limit) try std.testing.expect(got.examined > at);
-                    source[at] = good;
+                    if (backend == .scalar) try std.testing.expectEqual(@min(limit, @as(u32, @intCast(at + 1))), got.examined);
+                    source[start + at] = good;
                 }
-            }
-        }
+            };
+        };
     }
 }

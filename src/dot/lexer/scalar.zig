@@ -273,13 +273,16 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
         fn examine(self: *Self) ?u8 {
             if (audited) self.examinations += 1;
             const offset = self.cursor;
-            if (offset == self.source.len) return null;
+            if (offset >= self.source.len) return null;
             if (metered) self.source_frontier = @max(self.source_frontier, @as(usize, offset) + 1);
             return self.source[offset];
         }
 
         fn consume(self: *Self) void {
-            self.cursor += 1;
+            // Every caller consumes an existing byte (including the cached
+            // slash after rewind). initRaw checks source.len <= maxInt(u32),
+            // so cursor < source.len proves this increment cannot wrap.
+            self.cursor +%= 1;
         }
 
         inline fn microstep(self: *Self, comptime state: State) State {

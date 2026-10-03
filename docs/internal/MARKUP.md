@@ -120,6 +120,38 @@ Unstripped benchmark executables changed from 1,042,184 to 1,042,936 bytes for
 markup, and 686,344 to 703,296 for DOT's policy harness. These include the harness,
 runtime-selectable variants and symbols, not a minimal fixed-profile feature cost.
 
+## Checked-loop optimization subset — 2026-10-03
+
+DOT's scalar byte fetch uses `>=` for its EOF guard. Its single-byte consume uses
+wrapping addition only under the documented invariant
+`cursor < source.len <= maxInt(u32)`: the addition cannot actually wrap. No runtime
+safety setting is disabled, and no allocation, retained field or policy is added.
+
+Markup's production loops are unchanged. A three-loop slice-iteration trial
+slowed local ReleaseSafe block prose/text throughput by about 10%. A narrower
+scalar-loop trial improved ReleaseSafe text/prose but slowed ReleaseFast prose by
+about 8%. Retaining the original `u32` counter removed most of the latter loss
+but also lost the ReleaseSafe gain. All of these markup rewrites were reverted;
+the proposed metered-markup arithmetic changes were not applied either.
+
+Verification: 590/590 tests in Debug, ReleaseSafe and ReleaseFast, plus consumed
+RISC-V32/Wasm32 builds. Run tests now cover both backends, bounded/plain execution,
+five nonzero/zero starting offsets, every stopping position through 129 bytes,
+empty tails and exact scalar lookahead. An additional deterministic differential
+check passed 200,000 random/mutated/truncated inputs per parser, including DOT
+recovery and bounded stepping. This is a bounded check, not sustained fuzzing.
+
+Local Apple M4 Pro / Zig 0.16.0 comparison against `3263bd7`, no concurrent builds.
+The final DOT recheck alternated original / guard-only / guard-and-increment /
+guard-and-increment / guard-only / original. For 200,000 node statements, original
+ReleaseSafe plain-session medians were 4.05/4.06 ms, guard-only 3.79/3.85 ms, and
+the retained pair 3.74/3.70 ms (about 9% higher throughput). Earlier trials included
+outliers; this is one fixture, not a blanket speedup claim. Markup trials used
+five fixtures, fixed/cancellable parsing on both backends, nine eight-parse
+samples after three warmups, in before/after/after/before order. No official
+standard-machine baseline was updated. Session and retained-record layouts are
+unchanged within each optimization mode.
+
 ## DOT passthrough recognition — 2026-09-27
 
 Implemented the Q40 recognition contract after standalone slice 4b. DOT owns a
