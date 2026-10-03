@@ -18,6 +18,10 @@ pub const Result = union(enum) { token: Token, problem: result.Problem };
 /// Recoverable lexical finding, interpreted only by the policy-bound parser.
 const ScanResult = union(enum) { token: Token, problem: result.Problem, malformed_reference: diagnostic.Diagnostic };
 
+/// Error-path cursor only; the strict scanner and public lexer never enter it.
+pub const HeaderRecovery = enum(u32) { unquoted, single_quote, double_quote, slash };
+pub const HeaderBoundary = enum { pending, open, empty, blocked };
+
 pub fn isNameStart(byte: u8) bool {
     return switch (byte) {
         'A'...'Z', 'a'...'z', '_', ':', 0x80...0xff => true,
@@ -97,6 +101,55 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
         }
         fn unsupported(self: *Self, feature: diagnostic.Feature, at: u32) bool {
             return self.problem(.unsupported_feature, at, .{ .feature = feature });
+        }
+
+        /// These states are reachable only after an open_head was delivered.
+        /// Its exact element name is held by the parser, not these reused lexical
+        /// name spans. Other header errors and failures inside values stay terminal.
+        pub fn canRecoverHeader(self: *const Self) bool {
+            if (self.ready != .problem or self.ready.problem.diagnostic.code != .unexpected_byte) return false;
+            return switch (self.state) {
+                .attribute_name, .before_equal, .before_value, .after_value, .attributes => true,
+                else => false,
+            };
+        }
+
+        /// One byte per recovery step, no rescanning, tokens, values or fixes.
+        /// Quotes shelter '>' and '/', but never '<' or forbidden controls.
+        /// An unquoted slash must form an adjacent '/>'; otherwise stop rather
+        /// than guess whether it belongs to a malformed terminator or value.
+        pub fn recoverHeaderStep(self: *Self, cursor: *HeaderRecovery) HeaderBoundary {
+            const at = self.offset;
+            if (at == self.source.len) return .blocked;
+            const byte = self.source[at];
+            if (metered) self.frontier = @max(self.frontier, at + 1);
+            if (byte == '<' or (byte < 0x20 and !whitespace(byte))) return .blocked;
+            switch (cursor.*) {
+                .single_quote, .double_quote => {
+                    if (byte == @as(u8, if (cursor.* == .single_quote) '\'' else '"')) cursor.* = .unquoted;
+                },
+                .unquoted => switch (byte) {
+                    '\'' => cursor.* = .single_quote,
+                    '"' => cursor.* = .double_quote,
+                    '/' => cursor.* = .slash,
+                    '>' => {
+                        self.offset += 1;
+                        self.state = .content;
+                        self.done = false;
+                        return .open;
+                    },
+                    else => {},
+                },
+                .slash => {
+                    if (byte != '>') return .blocked;
+                    self.offset += 1;
+                    self.state = .content;
+                    self.done = false;
+                    return .empty;
+                },
+            }
+            self.offset += 1;
+            return .pending;
         }
         fn token(self: *Self, kind: @FieldType(Token, "kind")) bool {
             const t: Token = .{ .kind = kind, .span = .{ .start = self.start, .len = self.offset - self.start }, .name = if (kind == .text or kind == .comment or kind == .cdata or kind == .head_end or kind == .empty_end) .{ .start = 0, .len = 0 } else .{ .start = self.name_start, .len = self.name_end - self.name_start } };

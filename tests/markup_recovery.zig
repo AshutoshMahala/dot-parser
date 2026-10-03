@@ -84,7 +84,7 @@ test "reference acceptance remains independent of recovery and preserves factual
 }
 
 test "uncertain lexical boundaries stop recovery without cascading EOF findings" {
-    for ([_][]const u8{ "<a x=0>", "<a x='", "<!--", "<![CDATA[", "<1/>", "<a>\x00" }) |suffix| {
+    for ([_][]const u8{ "<a x=0", "<a x='", "<!--", "<![CDATA[", "<1/>", "<a>\x00" }) |suffix| {
         const source = try std.fmt.allocPrint(std.testing.allocator, "</bad><outer>{s}", .{suffix});
         defer std.testing.allocator.free(source);
         var bag: markup.FixedDiagnosticBag(8) = .{};
@@ -122,9 +122,9 @@ test "sink stop and failure terminate recovery immediately and preserve rejected
     try equal(markup.reporting.Delivery.failed, failed.diagnostic_delivery);
     try equal(@as(u32, 1), failed.syntax_errors);
     try equal(@as(u32, 1), reject.calls);
-    // A lexical failure is already terminal: delivery failure cannot replace it.
+    // An unterminated quote is already terminal: delivery failure cannot replace it.
     var empty: markup.FixedDiagnosticBag(0) = .{};
-    const terminal = markup.measureIn("<a x=0>", .{}, empty.sink(), .{});
+    const terminal = markup.measureIn("<a x='", .{}, empty.sink(), .{});
     try equal(markup.Outcome.invalid_syntax, terminal.outcome);
     try equal(markup.reporting.Delivery.failed, terminal.diagnostic_delivery);
     try equal(@as(u32, 1), terminal.syntax_errors);

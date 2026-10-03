@@ -14,6 +14,7 @@ test {
     _ = @import("markup_rules.zig");
     _ = @import("markup_diagnostics.zig");
     _ = @import("markup_recovery.zig");
+    _ = @import("markup_header_recovery.zig");
 }
 
 test "standalone public lexer yields borrowed tokens and latches EOF/errors" {

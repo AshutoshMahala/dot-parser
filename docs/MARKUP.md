@@ -595,7 +595,32 @@ slice cannot run those checks on rejected input because it publishes no partial 
 | Closing tag mismatches the current element | Report once; find the nearest byte-exact matching open ancestor and unwind through it. If none matches, discard the closer and keep the open stack |
 | Open elements left at EOF | Report each unclosed element, innermost first |
 | Malformed reference with `syntax.malformed_reference = .reject` | Report and resume using the scanner's known text/quoted-value boundary; do not count it as an accepted deviation |
-| Malformed header, unterminated quote/comment/CDATA, invalid control byte, unsupported feature | Stop the fragment; no guessed synchronization or extra missing-close cascade |
+| Attribute error in a recognized opening header: missing `=`, missing/unquoted value, missing separator, or invalid attribute-tail byte | Report the first error; scan forward to an explicit `>` or `/>` using the rules below, then resume content |
+| Other malformed headers, errors inside quoted values, unterminated quote/comment/CDATA, invalid control byte, unsupported feature | Stop the fragment; no guessed synchronization or extra missing-close cascade |
+
+Opening-header recovery is diagnostics-only, not acceptance of unquoted/boolean
+attributes. It requires an already recognized element name and attribute-bearing
+opening header. After reporting the triggering attribute error, the remaining
+header bytes are skipped, not validated or retained. Earlier findings from the
+same header remain reported; its skipped attributes/references do not increase
+attribute, warning or accepted-deviation counts. Normal syntax checks resume
+after the header. Duplicate-attribute validation still needs a completed document.
+
+Single and double quotes shelter `>` and `/` during synchronization. A raw `<`
+(even inside quotes), forbidden control byte, EOF before a boundary, or unquoted
+slash not immediately followed by `>` stops with `.incomplete`; no additional
+parent/unclosed-element cascade is emitted for this abandoned region. Invalid
+element names, malformed closing tags, and errors within normally scanned quoted
+values remain terminal. This is a conservative continuation rule, not an inference
+of the author's intended correction.
+
+An explicit `>` pushes the pending element's original name onto the traversal
+stack; `/>` adds no frame. The opening element was already counted and checked
+against node/depth limits, so it is not counted again. Scratch exhaustion still
+stops execution. A fully recovered fragment remains `invalid_syntax` with
+`.complete` completion; it never publishes a repaired or partial document.
+Synchronization performs at most one byte examination per parser step, uses no
+header buffer, and honors normal cancellation, metering and diagnostic stops.
 
 At the first rejection, staged output is aborted exactly once. No further output
 events or pool growth occur; only scanning, grammar, counters, diagnostics and

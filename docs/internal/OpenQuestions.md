@@ -1615,6 +1615,12 @@ Open; nothing currently forces the choice.
 
 ## Reconciliation log
 
+- 2026-10-02 — Standalone markup `.collect` now synchronizes selected rejected
+  opening-header attribute errors at explicit quote-aware `>`/`/>` boundaries.
+  Preserve written names and stack effects; uncertain boundaries remain terminal.
+  No syntax acceptance, typo correction, partial tree or validation of skipped
+  attributes is introduced. See [opening-header recovery](MARKUP.md#opening-header-recovery--2026-10-02).
+
 - 2026-09-30 — DOT defaults to statement recovery with terminal unterminated
   lexical constructs. Standalone markup gains default structural recovery,
   explicit fail-fast, source-bounded ancestor lookup, completion/error facts and

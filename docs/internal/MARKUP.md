@@ -242,8 +242,10 @@ synchronization rules remain internal. Markup's planned `structural`/`graphviz`/
   without changing the open stack. One finding covers abandoned descendants.
 - At EOF, report remaining open elements innermost first. Rejected malformed
   references resume through known scanner boundaries without becoming accepted.
-- Malformed headers, unterminated quoted values/comments/CDATA, forbidden controls
-  and unsupported constructs stop immediately. No delimiter guessing or fabricated
+- Opening attribute-header errors can synchronize at explicit delimiters (see the
+  2026-10-02 extension below). Other malformed headers, errors inside quoted values,
+  unterminated values/comments/CDATA, forbidden controls and unsupported constructs
+  stop immediately. No delimiter guessing or fabricated
   closing events. Independent fragments can still run; no partial tree is published.
 - Sink stop/failure, cancellation, exhausted storage and policy limits stop work.
   Both markup and DOT results report `completion` plus u32 `syntax_errors`, so a later operational
@@ -263,6 +265,81 @@ and nesting frames do not grow in size; additional findings/scratch still cost
 memory. Tests cover scanner/binding/execution parity, budget partitions, bounded
 adversarial ancestor searches, sink stops, cancellation and output-abort lifecycle.
 See the [consumer contract](../MARKUP.md#diagnostics-only-structural-recovery).
+
+### Opening-header recovery — 2026-10-02
+
+Extend `.collect` only after an attribute-bearing opening header has delivered
+its element name. Reject missing `=`, missing/unquoted values, separator errors
+and invalid attribute-tail bytes, then scan the remaining header for `>` or `/>`.
+Quotes shelter angle terminators and slashes. Raw `<`, forbidden controls, EOF
+and non-adjacent/malformed unquoted `/` terminators block synchronization. Other
+headers, malformed closers and normally scanned quoted-value errors stay terminal.
+
+Report the initial header error once; skipped attributes/references are neither
+validated nor counted as recognized/accepted. Preserve the original pending name
+and the actual delimiter's stack effect, with no synthetic output events. Retained
+output is aborted once, and no partial tree or duplicate-attribute validation of
+rejected documents is introduced. This is not typo correction or a syntax dialect.
+
+The error-only header scanner examines at most one byte per step and resumes at
+the next byte after an explicit boundary. The parser outlines the new rejection
+and synchronization helpers, leaving the existing terminal-error handling inline.
+The normal scanner state machine and standalone lexer's fail-fast contract are
+unchanged. The tiny cursor shares the
+ancestor-search u32 slot (the parser phase is the discriminator), with a size
+assertion keeping recovery scratch at 12 bytes even in safety-enabled builds.
+Fixed fail-fast excludes recovery state and handling.
+Existing source/work limits, diagnostic stops, cancellation and nesting-scratch
+allocation/failure semantics still apply. No header buffer or per-element field
+is added. Tests cover both backends, fixed/runtime policies, single-credit driving,
+all truncations/block offsets, nested bad headers, quote sheltering, sink failures,
+allocation failures, cancellation, counts and the once-only output abort.
+
+Verification: **542/542** tests pass in Debug, ReleaseSafe and ReleaseFast;
+examples and freestanding RISC-V32/Wasm32 checks pass. The reported fixture with
+two independent errors now reports the unquoted value and later bare ampersand, with
+`invalid_syntax`, `.complete` traversal and no document.
+
+### Opening-header recovery measurements — 2026-10-02
+
+Local arm64 machine, Zig 0.16.0, ReleaseFast, parent `a4397c1` versus this
+extension. A focused copy of `bench/markup.zig` retains all 13 valid-input
+fixtures, both backends, and the fixed/runtime-baseline/cancellable modes;
+runtime-override and count-only were not remeasured for the final version.
+Before/after/after/before processes, five warmups and nine timed batches of 16,
+with no builds overlapping timing. Average the two process medians per cell;
+geometric-mean throughput changes across fixtures are below (negative is slower).
+
+| Mode | Scalar throughput change | Block throughput change |
+| --- | ---: | ---: |
+| fixed | +0.2% | +1.1% |
+| runtime_baseline | -0.1% | -0.4% |
+| cancellable | +2.4% | -2.4% |
+
+Selected cells, milliseconds and **decimal MB/s**:
+
+| Fixture/backend/mode | Before → after ms | Before → after MB/s |
+| --- | ---: | ---: |
+| mixed/scalar/fixed | 2.3400 → 2.3005 | 320.5 → 326.0 |
+| mixed/block/fixed | 2.3985 → 2.4320 | 312.7 → 308.4 |
+| long_names/scalar/fixed | 0.2340 → 0.2340 | 2799.1 → 2799.1 |
+| long_names/scalar/cancellable | 2.5490 → 2.5535 | 257.0 → 256.5 |
+| comments/block/cancellable | 2.5440 → 2.6785 | 550.3 → 522.7 |
+
+Error-path placement materially affected generated-code performance in trial
+builds: outlining all scanner-error handling hurt plain scalar long names;
+inlining all new rejection handling hurt cancellable scalar long names. The
+retained implementation outlines only the new header-rejection/synchronization
+helpers. The final runs avoid those large regressions, but still show a modest
+block/cancellable cost (about 5% on comments); aggregate numbers must not hide it.
+Small gains and variable text/prose timings are not a universal speedup claim.
+
+Native fixed/bounded/runtime session sizes remain **432/440/496 bytes**. Node
+(20 B), attribute (20 B), frame (12 B), diagnostic (36 B) and validation-key
+scratch (8 B) are unchanged. No additional retained pool, header buffer or
+per-element field is introduced. These are layouts/capacities, not a process-RSS
+measurement. Reaching later errors can intentionally consume more diagnostic and
+nesting-scratch storage than stopping at the first malformed header.
 
 ### Recovery slice measurements — 2026-09-30
 

@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-09-30
+Original draft: 2026-07-13 · Last amended: 2026-10-02
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -184,8 +184,10 @@ Successful acceptance of Q36's three syntax deviations is a separate policy
 decision. A broader per-class recovery policy remains open (Q22). Sink stop/failure
 ends work; default bounded bags signal stop when full. An explicitly omitting bag
 limits retention only. Markup's structural recovery aborts output once, bounds
-aggregate ancestor lookup by source length, and reports completion and factual
-syntax-error count separately from later operational stops. See [its contract](MARKUP.md#structural-recovery--implemented-2026-09-30).
+aggregate ancestor lookup by source length, synchronizes selected opening-header
+attribute errors at explicit quote-aware delimiters without accepting them, and
+reports completion and factual syntax-error count separately from later operational
+stops. See [its contract](MARKUP.md#structural-recovery--implemented-2026-09-30).
 
 ### R-FUNC-008: Validation completes with a diagnostic bag
 
@@ -1532,6 +1534,11 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-10-02 — **R-FUNC-007:** standalone markup adds bounded, diagnostics-only
+  recovery of selected opening-header attribute errors. Explicit delimiters and
+  the original element name guide continuation; skipped attributes are not
+  validated or accepted, and uncertain boundaries stop without a partial tree.
 
 - 2026-09-30 — **R-FUNC-007/R-MOD-014:** DOT defaults to statement recovery;
   markup implements diagnostics-only structural recovery with explicit fail-fast,

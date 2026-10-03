@@ -21,7 +21,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         diagnostics: diagnostic.Sink,
         settings: Settings,
         hook: Hook,
-        phase: enum { preflight, begin, scan, grammar, compare_open, compare_close, open, leaf, close, open_head, attribute, empty_close, commit, recover_find, recover_compare } = .preflight,
+        phase: enum { preflight, begin, scan, grammar, compare_open, compare_close, open, leaf, close, open_head, attribute, empty_close, commit, recover_find, recover_compare, recover_header, recover_open } = .preflight,
         token: lexer.Token = undefined,
         /// Only live while reading an attribute-bearing opening header. Not a
         /// nesting frame: self-closing tags still need no persistent scratch.
@@ -32,7 +32,13 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         counts: result.Counts = .{},
         deviations: if (deviations_enabled) u32 else void = if (deviations_enabled) 0 else {},
         warnings: if (warnings_enabled) u32 else void = if (warnings_enabled) 0 else {},
-        recovery_state: if (recovery_enabled) struct { errors: u32 = 0, candidate: u32 = 0, remaining: u32 = 0 } else void = if (recovery_enabled) .{} else {},
+        recovery_state: if (recovery_enabled) struct {
+            errors: u32 = 0,
+            // phase is the discriminator: ancestor search and header sync never
+            // overlap. Explicit layout avoids a second safety tag in Debug/Safe.
+            cursor: extern union { candidate: u32, header: lexer.HeaderRecovery } = .{ .candidate = 0 },
+            remaining: u32 = 0,
+        } else void = if (recovery_enabled) .{} else {},
         terminal: ?result.Report = null,
 
         pub fn init(source: []const u8, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) Self {
@@ -155,10 +161,28 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 .unexpected_close => self.phase = .scan,
                 .unclosed_element => stack.len -= 1, // EOF: one finding/step, innermost first.
                 .mismatched_tag => {
-                    self.recovery_state.candidate = stack.len - 1; // top already compared
+                    self.recovery_state.cursor = .{ .candidate = stack.len - 1 }; // top already compared
                     self.phase = .recover_find;
                 },
                 else => unreachable,
+            }
+        }
+        // Keep optional header recovery out of the ordinary scan/grammar loop.
+        noinline fn beginHeaderRecovery(self: *Self, stack: *scratch.Stack, sink: anytype, finding: diagnostic.Diagnostic) void {
+            if (!recovery_enabled) unreachable;
+            if (!self.recoverSyntax(stack, sink, finding)) return;
+            self.recovery_state.cursor = .{ .header = .unquoted };
+            self.phase = .recover_header;
+        }
+        noinline fn recoverHeader(self: *Self, stack: *scratch.Stack, sink: anytype) void {
+            if (!recovery_enabled) unreachable;
+            switch (self.scanner.recoverHeaderStep(&self.recovery_state.cursor.header)) {
+                .pending => {},
+                .open => self.phase = .recover_open,
+                .empty => self.phase = .scan,
+                // The initial header diagnostic already rejected this region.
+                // Do not fabricate EOF findings for its parents.
+                .blocked => self.finish(stack, sink, .invalid_syntax, null),
             }
         }
         fn step(self: *Self, stack: *scratch.Stack, sink: anytype) void {
@@ -174,7 +198,11 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 },
                 .scan => if (self.scanner.stepReady()) {
                     switch (self.scanner.ready) {
-                        .problem => |p| self.finish(stack, sink, p.outcome, p.diagnostic),
+                        .problem => |p| {
+                            if (recovery_enabled and self.scanner.canRecoverHeader()) {
+                                self.beginHeaderRecovery(stack, sink, p.diagnostic);
+                            } else self.finish(stack, sink, p.outcome, p.diagnostic);
+                        },
                         .malformed_reference => |d| self.malformedReference(stack, sink, d),
                         .token => |t| {
                             self.token = t;
@@ -228,13 +256,13 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 },
                 .recover_find => {
                     if (!recovery_enabled) unreachable;
-                    if (self.recovery_state.candidate == 0) {
+                    if (self.recovery_state.cursor.candidate == 0) {
                         self.phase = .scan; // unmatched closer: preserve open ancestors
                         return;
                     }
                     if (!self.searchCredit(stack, sink)) return;
-                    self.recovery_state.candidate -= 1;
-                    if (stack.frames[self.recovery_state.candidate].name.len == self.token.name.len) {
+                    self.recovery_state.cursor.candidate -= 1;
+                    if (stack.frames[self.recovery_state.cursor.candidate].name.len == self.token.name.len) {
                         self.compare_index = 0;
                         self.phase = .recover_compare;
                     }
@@ -242,7 +270,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 .recover_compare => {
                     if (!recovery_enabled) unreachable;
                     if (!self.searchCredit(stack, sink)) return;
-                    const candidate = self.recovery_state.candidate;
+                    const candidate = self.recovery_state.cursor.candidate;
                     const opener = stack.frames[candidate].name;
                     if (self.scanner.source[opener.start + self.compare_index] != self.scanner.source[self.token.name.start + self.compare_index]) {
                         self.phase = .recover_find;
@@ -255,6 +283,14 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                             self.phase = .scan;
                         }
                     }
+                },
+                .recover_header => self.recoverHeader(stack, sink),
+                .recover_open => {
+                    if (!recovery_enabled) unreachable;
+                    // open_head already enforced element/depth limits and counted
+                    // this element. Only its explicit '>' adds a nesting frame.
+                    stack.push(self.head) catch |err| return self.failure(stack, sink, err);
+                    self.phase = .scan;
                 },
                 .open => {
                     const handle = if (self.writing()) sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err) else 0;
@@ -340,6 +376,7 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
     try std.testing.expect(Machine(.scalar, .{}, false, false).Settings == void);
     try std.testing.expect(Machine(.scalar, .{}, false, false).Hook == void);
     try std.testing.expect(@FieldType(Machine(.scalar, .{ .recovery = .fail_fast }, false, false), "recovery_state") == void);
+    try std.testing.expectEqual(@as(usize, 3 * @sizeOf(u32)), @sizeOf(@FieldType(Machine(.scalar, .{}, true, false), "recovery_state")));
     try std.testing.expect(@FieldType(lexer.Scanner(.scalar, false, false), "frontier") == void);
     try std.testing.expect(@FieldType(lexer.Scanner(.scalar, true, true), "frontier") == u32);
     const Probe = struct {
@@ -408,6 +445,21 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
     }
     try std.testing.expectEqual(@as(u32, 1), probe.aborts);
     try std.testing.expectEqual(@as(u32, 3), probe.calls); // begin, open a, open b
+    try std.testing.expectEqual(@as(u32, 2), m.terminal.?.syntax_errors);
+    try std.testing.expectEqual(result.Completion.complete, m.terminal.?.completion);
+
+    probe = .{};
+    m = Machine(.scalar, .{}, true, false).init("<a good='1' bad=0><b broken=0/></a>", diagnostic.discard, {}, {});
+    calls_at_abort = null;
+    while (m.terminal == null) {
+        const calls = probe.calls;
+        _ = m.advance(&stack, &probe, 1);
+        try std.testing.expect(probe.calls - calls <= 1);
+        if (calls_at_abort) |count| try std.testing.expectEqual(count, probe.calls);
+        if (probe.aborts != 0) calls_at_abort = probe.calls;
+    }
+    try std.testing.expectEqual(@as(u32, 1), probe.aborts);
+    try std.testing.expectEqual(@as(u32, 3), probe.calls); // begin, open a, good attribute
     try std.testing.expectEqual(@as(u32, 2), m.terminal.?.syntax_errors);
     try std.testing.expectEqual(result.Completion.complete, m.terminal.?.completion);
 }

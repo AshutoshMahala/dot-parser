@@ -6,6 +6,11 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Extend markup `.collect` to recover selected opening-header attribute errors at
+  explicit, quote-aware `>`/`/>` boundaries. Preserve the element's written name
+  and delimiter without repairing syntax or publishing a partial tree. Ambiguous
+  boundaries still stop; fixed fail-fast and standalone tokenization stay strict.
+
 - Clear abandoned DOT attribute-list context during statement recovery so later
   EOF diagnostics identify the active scope and suggest `}` instead of a stale
   `]`. Preserve the original failure's related location and fix.
