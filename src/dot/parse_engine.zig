@@ -10,6 +10,10 @@ const diagnostic = @import("diagnostic.zig");
 const location = @import("parser_support").location;
 
 pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptime metering: bool, comptime cancellable: bool, comptime backend: policy.ScannerBackend) type {
+    return EngineWithProcessor(api, fixed, metering, cancellable, backend, void);
+}
+
+pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSettings, comptime metering: bool, comptime cancellable: bool, comptime backend: policy.ScannerBackend, comptime Processor: type) type {
     return struct {
         pub const cancellation_enabled = cancellable;
         const ParseResult = api.ParseResult;
@@ -23,12 +27,13 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
         const SessionProgress = api.SessionProgress;
 
         pub const Options = struct {
+            processor: Processor = if (Processor == void) {} else undefined,
             parsing: if (fixed == null) policy.ParseSettings else void,
             cancellation: if (cancellable) ?api.Cancellation else void,
         };
 
         fn DriverFor(comptime Sink: type) type {
-            return parser_impl.Machine(Sink, metering, false, cancellable, lexer_impl.scannerFor(backend), fixed);
+            return parser_impl.MachineWithProcessor(Sink, metering, false, cancellable, lexer_impl.scannerFor(backend), fixed, Processor);
         }
 
         fn drive(source: []const u8, events: anytype, diagnostics: DiagnosticSink, scratch: *scratch_impl.Stack, options: Options) parser_impl.Result {
@@ -36,6 +41,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
             var machine: Driver = .{
                 .tokens = @FieldType(Driver, "tokens").init(source),
                 .events = events,
+                .processor = options.processor,
                 .diagnostics = diagnostics,
                 .settings = options.parsing,
                 .scratch = scratch,
@@ -86,6 +92,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                 .outcome = switch (result.outcome) {
                     .success => .success,
                     .cancelled => .cancelled,
+                    .processor_stopped => .processor_stopped,
                     .diagnostic_stopped => |reason| .{ .diagnostic_stopped = reason },
                     .invalid_syntax => .invalid_syntax,
                     .unsupported_feature => .unsupported_feature,
@@ -170,6 +177,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                         .tokens = @FieldType(Driver, "tokens").init(source),
                         // Never retain a pointer into the returned init temporary.
                         .events = undefined,
+                        .processor = options.processor,
                         .diagnostics = diagnostics,
                         .settings = options.parsing,
                         .cancellation = options.cancellation,
@@ -233,6 +241,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                 const outcome: ParseOutcome = switch (parsed.outcome) {
                     .success => .success,
                     .cancelled => .cancelled,
+                    .processor_stopped => .processor_stopped,
                     .diagnostic_stopped => |reason| .{ .diagnostic_stopped = reason },
                     .invalid_syntax => .invalid_syntax,
                     .unsupported_feature => .unsupported_feature,

@@ -47,9 +47,10 @@ HTML-like identifiers and standalone markup are not part of the published
 attributes, references, comments and CDATA, with independent duplicate-attribute
 validation, opt-in encoding/name/reference checks, and policy-selected scalar/vector scanning;
 DOT preserves passthrough HTML-like identifiers and mixed quoted/HTML concatenations.
-[Explicit delayed processing](docs/MARKUP.md#delayed-processing-inside-dot) maps
-markup diagnostics to the DOT source; automatic during-DOT scheduling remains
-deferred. Other features, including
+[One-call composition](docs/MARKUP.md#one-call-during-dot-parsing) checks markup
+during DOT parsing with one shared diagnostic bag. [Explicit delayed processing](docs/MARKUP.md#delayed-processing-inside-dot)
+remains available for selected operands and retained child trees. Shared-budget
+resumable composition and other features, including
 semantic edge-product expansion, remain deferred. The authoritative
 construct-by-construct table is [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
 

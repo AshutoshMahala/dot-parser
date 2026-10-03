@@ -4,8 +4,9 @@ The preparation APIs below are implemented. Standalone markup now has its own
 [structural slice](MARKUP.md). DOT and markup share policy binding and can join a
 `PolicySet` for preparation; neither this nor standalone markup adds a scheduler.
 DOT HTML recognition and explicit delayed fragment processing are implemented.
-Automatic inner-stage scheduling and a `.processors` option on DOT's
-`Profile` are not implemented. The intended
+One-shot automatic HTML-operand scheduling is now available through DOT's
+`Profile(.{ .processors = .{ .markup = ConfiguredProcessor } })`. It uses a single
+composed bag/sink; shared-budget resumable scheduling remains unimplemented. The
 execution/result contract is in [the processor contract](PROCESSOR_CONTRACT.md).
 These are implementation/design notes, not a public processor integration guide.
 
@@ -59,15 +60,17 @@ methods perform their own policy preparation internally. Calling `PolicySet.prep
 and then an ordinary DOT method does not automatically reuse that prepared state.
 Markup delayed calls can reuse their state through `Markup.Prepared{ .policies =
 prepared.path }`; `Markup.prepare(options)` prepares the same value directly.
-Automatic stage integration/compatibility checks belong to the later scheduler
-slice. Do not claim a composed budget from policy preflight alone.
+The composed facade preflights outer policies and the prepared child once before
+entering the DOT engine. Compile-time contract checks reject incompatible child
+bindings. Do not claim a composed budget from policy preflight or one-shot calls.
 
 Sets now expose their own `Policies` binding and may nest other sets. Preparing
 the root visits each runtime leaf once; an all-fixed subtree remains zero-sized.
 Sibling/deeper instances of the same consumer implementation have independent
 typed settings. This supports DOT → markup → string and DOT → string policy
 paths without runtime registries. The nested tests use a consumer-owned byte
-check, not a shipped string processor. Execution remains explicitly caller-driven.
+check, not a shipped string processor. Execution of these deeper paths remains
+caller-driven; the one-shot DOT facade schedules only its bound markup slot.
 
 ## Raw fragment coordinates and diagnostics
 

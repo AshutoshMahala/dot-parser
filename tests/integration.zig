@@ -851,7 +851,7 @@ fn fuzzParse(context: void, smith: *std.testing.Smith) !void {
     // themselves; success produces a document.
     switch (checked.outcome) {
         .success => try std.testing.expect(checked.document != null),
-        .invalid_syntax, .unsupported_feature, .resource_exhausted, .diagnostic_stopped => {
+        .invalid_syntax, .unsupported_feature, .resource_exhausted, .diagnostic_stopped, .processor_stopped => {
             try std.testing.expect(checked.document == null);
             try std.testing.expect(bag.items().len >= 1);
         },

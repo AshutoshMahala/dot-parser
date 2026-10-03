@@ -11,6 +11,12 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
     return struct {
         const Self = @This();
         pub const Policies = Binding;
+        pub const Diagnostic = api.Diagnostic;
+        pub const DiagnosticSink = api.DiagnosticSink;
+        pub const CheckResult = api.FragmentResult;
+        pub const InputError = api.Fragment.Error;
+        pub const ParseResources = api.ParseResources;
+        pub const console = api.console;
         pub const baseline = Binding.baseline;
         pub const runtime_policy = config.runtime_policy;
         const State = Binding.State;
@@ -44,7 +50,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             /// Validation is skipped after an operational parsing stop or a
             /// fail-fast syntax error. Neither
             /// this operation nor identifier operand enumeration is work-metered.
-            pub fn parseAndValidateFragment(self: @This(), allocator: std.mem.Allocator, input: api.Fragment, diagnostics: api.DiagnosticSink, resources: api.ParseResources) api.Fragment.Error!api.FragmentResult {
+            pub fn parseAndValidate(self: @This(), allocator: std.mem.Allocator, input: api.Fragment, diagnostics: api.DiagnosticSink, resources: api.ParseResources) api.Fragment.Error!api.FragmentResult {
                 var mapped = try api.diagnostic.OriginSink.init(input, diagnostics);
                 const parsed = callPrepared("parseBorrowed", api.ParseResult, .{ allocator, input.bytes, mapped.sink(), resources }, self);
                 const checked: ?api.ValidationResult = if (parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed) null else switch (parsed.outcome) {
@@ -57,7 +63,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
 
             /// Allocation-free variant. Source validation scratch is reused for
             /// document validation too; capacities/limits remain local counts.
-            pub fn parseAndValidateFragmentIn(self: @This(), input: api.Fragment, memory: api.ParseMemory, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink) api.Fragment.Error!api.FixedFragmentResult {
+            pub fn parseAndValidateIn(self: @This(), input: api.Fragment, memory: api.ParseMemory, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink) api.Fragment.Error!api.FixedFragmentResult {
                 var mapped = try api.diagnostic.OriginSink.init(input, diagnostics);
                 const parsed = callPrepared("parseBorrowedIn", api.FixedParseResult, .{ input.bytes, memory, mapped.sink() }, self);
                 const checked: ?api.ValidationResult = if (parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed) null else switch (parsed.outcome) {
@@ -87,12 +93,12 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             if (result.completion == .incomplete) result.completion.incomplete += input.origin;
             return result;
         }
-        pub fn parseAndValidateFragment(allocator: std.mem.Allocator, input: api.Fragment, diagnostics: api.DiagnosticSink, options: ParseOptions) api.Fragment.Error!api.FragmentResult {
+        pub fn parseAndValidate(allocator: std.mem.Allocator, input: api.Fragment, diagnostics: api.DiagnosticSink, options: ParseOptions) api.Fragment.Error!api.FragmentResult {
             const opts: Options = if (runtime_policy) .{ .policy = options.policy, .cancellation = options.cancellation } else .{ .cancellation = options.cancellation };
-            return Self.prepare(opts).parseAndValidateFragment(allocator, input, diagnostics, .{ .scratch_allocator = options.scratch_allocator });
+            return Self.prepare(opts).parseAndValidate(allocator, input, diagnostics, .{ .scratch_allocator = options.scratch_allocator });
         }
-        pub fn parseAndValidateFragmentIn(input: api.Fragment, memory: api.ParseMemory, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink, options: Options) api.Fragment.Error!api.FixedFragmentResult {
-            return Self.prepare(options).parseAndValidateFragmentIn(input, memory, scratch, diagnostics);
+        pub fn parseAndValidateIn(input: api.Fragment, memory: api.ParseMemory, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink, options: Options) api.Fragment.Error!api.FixedFragmentResult {
+            return Self.prepare(options).parseAndValidateIn(input, memory, scratch, diagnostics);
         }
         fn resolve(options: Options) State {
             if (!runtime_policy) return {};

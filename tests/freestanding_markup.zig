@@ -57,6 +57,6 @@ export fn check_markup_fragment(source: [*]const u8, len: usize, origin: u32, st
     var frames: markup.FixedParseScratch(8) = .{};
     var scratch: markup.FixedSourceValidationScratch(16) = .{};
     const input = markup.Fragment.init(source[0..len], origin) catch return 0;
-    const checked = P.parseAndValidateFragmentIn(input, .{ .document = storage.storage(), .scratch = frames.storage() }, scratch.storage(), markup.diagnostic.discard, .{ .cancellation = .{ .context = stop, .is_requested = stopped } }) catch return 0;
+    const checked = P.parseAndValidateIn(input, .{ .document = storage.storage(), .scratch = frames.storage() }, scratch.storage(), markup.diagnostic.discard, .{ .cancellation = .{ .context = stop, .is_requested = stopped } }) catch return 0;
     return if (checked.documentValid()) checked.parse.counts.nodes else 0;
 }

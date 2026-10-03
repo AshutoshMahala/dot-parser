@@ -18,6 +18,7 @@ DOT processing and does not produce a source diagnostic.
 | --- | --- | --- |
 | `.success` | The document parsed completely | Yes |
 | `.cancelled` | A session was cancelled, or an enabled cancellation hook stopped a one-shot operation | No |
+| `.processor_stopped` | A bound child ended during-DOT composition: its operational stop, the shared sink, or parent fail-fast after child errors | No |
 | `.diagnostic_stopped` | A diagnostic destination stopped unfinished work: requested, capacity, failure, or out_of_memory | No |
 | `.invalid_syntax` | The input is not accepted by the selected syntax policy | No |
 | `.unsupported_feature` | Recognized policy-disabled input; reporting severity does not change this outcome | No |
@@ -37,6 +38,15 @@ facts. A positive syntax-error count establishes rejection even when the outcome
 is `.cancelled` or `.diagnostic_stopped`; zero errors with incomplete work does
 **not** establish validity. Session progress exposes the running syntax count.
 Only `.success` publishes a document. Unsupported findings are not syntax errors.
+
+The optional [composed profile](MARKUP.md#one-call-during-dot-parsing) exposes
+ordinary outer facts in `result.dot` and child coverage/validity in `result.markup`.
+`processor_stopped` is not a DOT syntax error; it means the outer parse did not
+finish. With a collecting parent, ordinary child errors can instead leave a
+complete DOT document: `result.dot.documentValid()` and the combined
+`result.documentValid()` then intentionally differ. Both components report through
+one sink. `result.dot.diagnostic_stop` / `diagnostic_delivery` reflect that shared
+destination; outer syntax/validation counters still count only DOT findings.
 
 `storage_failure` carries its own cause: `.out_of_memory` (allocator),
 `.pool_exhausted` (a fixed pool filled — the diagnostic names the pool and

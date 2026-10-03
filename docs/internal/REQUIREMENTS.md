@@ -398,8 +398,9 @@ or resolved-graph constraints. Schema/value rules, required attributes, cycles,
 connectivity, degree limits, explicit node declarations and referenced-port
 resolution remain separately costed optional-pass designs. Allocators, pools,
 scratch and callback resources are intentionally not moved into `Policy`.
-R-MOD-015 records the planned compile-time content-extension contract; it is
-not implemented by the current typed policy core.
+R-MOD-015 records the compile-time content-extension contract. The subsequent
+one-shot markup composition slice implements its first execution subset; policy
+schemas by themselves do not implement processing behavior.
 
 ### R-MOD-006: Unsupported input is distinct from invalid input
 
@@ -634,13 +635,15 @@ and `graphviz`, not five values in a DOT-owned enum. DOT owns recognition and
 rejection/preservation, with passthrough recognition the first-slice default; inner
 processing modes belong to the selected implementation's policy. Q40 in
 [OpenQuestions.md](OpenQuestions.md) defines the composition and first-slice
-contract. Remaining fragment details, extended vocabulary, the composed API and
-parts view remain open. General XML conformance is not promised. Only the
-standalone subset identified above is delivered, not all modes or usage paths.
+contract. Parts views, delayed processing and one-shot during-DOT composition
+are implemented. Extended/Graphviz vocabulary, application-specific selection and
+shared-budget resumable composition remain open. General XML conformance is not
+promised; this does not claim all proposed modes are delivered.
 
 ### R-MOD-015: Content processors are replaceable at compile time
 
-**Direction decided 2026-09-22; interface and implementation pending (Q40).**
+**Direction decided 2026-09-22; first one-shot markup interface and execution
+subset implemented 2026-10-03 (Q40).**
 DOT owns lexical boundaries and source preservation. Inner parsers/content
 processors own their processing behavior and typed policy schemas. Consumers
 must be able to replace a built-in processor with their own implementation

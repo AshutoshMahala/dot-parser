@@ -35,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
         var operands = try dot.identifier.parts(source, attribute.value);
         while (operands.next()) |part| {
             if (part.form != .html) continue;
-            var checked = try ready.parseAndValidateFragment(allocator, try part.fragment(source), bag.sink(), .{});
+            var checked = try ready.parseAndValidate(allocator, try part.fragment(source), bag.sink(), .{});
             defer checked.deinit();
             try writer.print("operand at byte {d}: valid={any}, nodes={d}\n", .{ part.raw.start, checked.documentValid(), checked.parse.counts.nodes });
             // Parent policy applies after this complete child invocation. Its

@@ -181,6 +181,17 @@ pub fn build(b: *std.Build) void {
     });
     examples_step.dependOn(&b.addRunArtifact(delayed_example).step);
     examples_step.dependOn(&b.addInstallArtifact(delayed_example, .{}).step);
+    const composed_example = b.addExecutable(.{
+        .name = "composed_markup",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/composed_markup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(composed_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(composed_example, .{}).step);
     const example_names = [_][]const u8{
         "parse_undigraph",
         "fixed_buffer",

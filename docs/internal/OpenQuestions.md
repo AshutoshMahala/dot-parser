@@ -741,7 +741,8 @@ is authorized by these decisions.
 **Q40 — How are HTML-like identifiers recognized, parsed and validated, and
 which markup policies are offered?**
 **Architecture, mode names and usage paths decided (2026-09-19); standalone
-structural slices 1–3, 4a and 4b implemented (2026-09-27), DOT integration pending.** HTML-like identifiers must work
+structural slices 1–3, 4a and 4b implemented (2026-09-27); delayed and one-shot
+during-DOT integration implemented (2026-10-03).** HTML-like identifiers must work
 wherever the DOT grammar permits an ID, not only as label values. DOT parsing
 recognizes and preserves the complete raw identifier; recognition alone makes
 no claim that its inner markup is well-formed or is a valid Graphviz label.
@@ -757,10 +758,10 @@ release versioning. No particular later release number is assigned yet.
 engine in vertical slices before expanding processor composition: text/elements,
 then attributes, then references/comments/CDATA, followed by further checks.
 Structural recovery was separated from validation and is now implemented in its
-own slice. DOT recognition and delayed integration follow standalone work; during-DOT
-composition comes later. This supersedes passthrough-first as the next implementation
-task, not the `none`/`passthrough` contract. No further `PolicySet`/scheduler work is
-required for standalone parsing. [Markup decisions and slice record](MARKUP.md)
+own slice. DOT recognition, delayed integration and then one-shot during-DOT
+composition followed standalone work. This supersedes the original passthrough-first
+implementation order, not the `none`/`passthrough` contract. Standalone parsing does
+not depend on `PolicySet` or scheduling. [Markup decisions and slice record](MARKUP.md)
 define the agreed grammar, byte/encoding boundary and the implemented layout/API.
 
 The module supports empty/text/multiple-root fragments, arbitrary case-sensitive,
@@ -1184,7 +1185,7 @@ validation, the parts view, entity handling and markup nesting policy. The
 independent markup subsystem implements those in its own vertical slices.
 
 **Content processor vision and policy ownership (decided 2026-09-22;
-explicit delayed subset implemented, automatic composition pending).** DOT owns lexical boundaries and
+explicit delayed and one-shot during-DOT subsets implemented).** DOT owns lexical boundaries and
 source preservation. An inner parser (content processor) owns its content
 rules and typed policy schema. Consumers can supply new processing behavior
 and settings, not merely a preset of the built-in DOT policy fields. The
@@ -1193,7 +1194,8 @@ implementation supplies behavior; its policy configures that behavior.
 Implementation update (2026-10-03): recursive named policy preparation, checked
 raw operand/child views and explicit delayed markup parse/validation are now
 implemented; see [the integration record](MARKUP.md#explicit-delayed-integration--2026-10-03).
-Automatic during-DOT and recursively scheduled execution remain pending. No
+One-shot during-DOT checking now binds configured profiles and shares one typed
+bag/sink; shared-budget and recursively scheduled execution remain pending. No
 built-in string processor, general source map or shared bounded validation is
 implied by this first integration slice.
 
@@ -1261,7 +1263,7 @@ inner parser.**
 
 | Extension | Required integration | Status |
 | --- | --- | --- |
-| Custom processing within existing quoted or HTML-like boundaries | Implement the content processor contract | Decided direction; API and implementation pending |
+| Custom processing within existing quoted or HTML-like boundaries | Implement the content processor contract | One-shot custom HTML-operand processors implemented; quoted-content scheduling remains future work |
 | A new identifier spelling, for example `@{...}` | A compile-time lexical extension with explicit boundary, escaping, collision/precedence, recovery and work-accounting rules; feed an ID to the existing grammar | Separate future design; not included in the passthrough or first content-processor slice |
 | New statements or operators | A grammar extension, not just an inner parser | Outside this content-extension contract |
 
@@ -1285,15 +1287,15 @@ policy, with a composition wrapper coordinating preflight and execution. This
 is not restricted to exactly two schemas. The adapter must coordinate session
 init/reset, latched settings, storage lifetimes, work accounting, cancellation,
 diagnostic origins and sink lifecycle. It must support selecting intended
-identifier uses without applying label rules to unrelated IDs. Exact methods,
-selection context, concatenation handling, operational failure propagation and
-handling of incompatible execution profiles remain open; a bounded parent must
-never silently invoke an unbounded child. The validation continuation and result
-contract below is decided. These integration details do not block the passthrough-only
-slice.
+identifier uses without applying label rules to unrelated IDs. The implemented
+one-shot facade checks every encountered HTML operand with the selected structural
+processor, preserves concatenation parts and propagates operational stops. It
+exposes no bounded parent session: a bounded parent must never silently invoke an
+unbounded child. Application-specific selection and composed session/reset/budget
+contracts remain future work. Delayed selection remains available.
 
 **Shared infrastructure, independent validation (decided 2026-09-23;
-transport and presentation implemented; integrated execution pending).** Reuse source spans/origin mapping,
+transport, presentation and one-shot integrated execution implemented).** Reuse source spans/origin mapping,
 severity, delivery status, fix conventions and bounded sink/bag machinery across
 processors. Share execution and resource-reporting primitives where their
 contracts actually match. Each processor may own its diagnostic codes and typed
@@ -1347,9 +1349,9 @@ reuse scratch once earlier users have released it; no parallel runtime or hidden
 per-fragment state is required. The existing
 [DOT validator](../../src/dot/validate.zig) and
 [fixed diagnostic bag](../../src/dot/diagnostic.zig) already implement continuation
-and bounded retention within DOT. Bounded/cancellable validation and composition
-with automatically scheduled inner processors are still future work; explicit
-delayed fragment calls and parent-controlled continuation are implemented.
+and bounded retention within DOT. Bounded/cancellable validation and shared-budget
+composition are still future work; explicit delayed fragment calls and one-shot
+automatic scheduling with parent-controlled continuation are implemented.
 
 **Scheduling and independent results.** Inner validation must be callable
 standalone, during explicitly composed DOT processing, or later on selected
@@ -1392,14 +1394,15 @@ exhaustive checks; markup exposes `Policies` without changing its infallible par
 API. `processor.PolicySet` binds named configured
 profiles and prepares enabled runtime settings once before stage initialization;
 fixed-only sets have no runtime settings storage. This is preflight, not a stage
-scheduler or an implemented `.processors` option on DOT's `Profile`.
+scheduler. DOT's separate `.processors.markup` facade now uses the same configured
+profile contract for one-shot during-DOT execution.
 `reporting` supplies typed sinks/fixed/growable bags, and `processor.Fragment`
 provides checked raw-span rebasing. The test processor exercises independent
 operations, consumer payloads and source coordinates without an HTML dependency.
 The [processor contract](PROCESSOR_CONTRACT.md) records stages
 1–4 and reset/ownership defaults. The standalone markup subset is described in
-[its slice record](MARKUP.md); later grammar, selectors, during-DOT/delayed
-scheduling and bounded validation remain subsequent work.
+[its slice record](MARKUP.md); additional dialects, application-specific selectors,
+recursive scheduling and bounded validation remain subsequent work.
 
 Only shared binding/preflight has been extracted; inheritance and checks remain
 schema-owned.
@@ -1431,9 +1434,11 @@ Finding or validating an actual referenced port is still a later semantic
 pass, not part of recognizing an ID, and label rules do not apply to every ID.
 
 *(Recorded contracts: R-MOD-014 and R-MOD-015. Standalone structural slices 1–3, 4a and 4b now
-exist in `src/markup/`, followed by structural recovery; later checks and integration remain pending. HTML-like
+exist in `src/markup/`, followed by structural recovery and delayed/one-shot
+during-DOT integration; additional dialects and bounded validation remain pending. HTML-like
 DOT IDs now have passthrough recognition as documented in
-[supported syntax](../SUPPORTED_SYNTAX.md); automatic inner processing is pending.)*
+[supported syntax](../SUPPORTED_SYNTAX.md); optional automatic inner checking is
+documented in [markup usage](../MARKUP.md#one-call-during-dot-parsing).)*
 
 **Q1 — Is version 1 the complete documented DOT grammar or a named subset?**
 Direction: the complete documented grammar, reached through vertical slices;

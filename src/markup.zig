@@ -113,8 +113,8 @@ pub fn Profile(comptime config: PolicyConfig) type {
 }
 const Default = Profile(.{});
 pub const prepare = Default.prepare;
-pub const parseAndValidateFragment = Default.parseAndValidateFragment;
-pub const parseAndValidateFragmentIn = Default.parseAndValidateFragmentIn;
+pub const parseAndValidate = Default.parseAndValidate;
+pub const parseAndValidateIn = Default.parseAndValidateIn;
 pub const parseBorrowed = Default.parseBorrowed;
 pub const parseBorrowedIn = Default.parseBorrowedIn;
 pub const measure = Default.measure;

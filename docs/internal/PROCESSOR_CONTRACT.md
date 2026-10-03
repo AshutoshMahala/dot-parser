@@ -6,7 +6,8 @@ This document is the durable design record;
 it must not depend on disposable working files. Current preparation code is
 described in [the implementation notes](PROCESSOR_PREPARATION.md). The later
 [standalone structural slice](MARKUP.md), DOT passthrough recognition and explicit
-delayed processing are implemented; automatic stage scheduling is not. This contract
+delayed processing and one-shot during-DOT scheduling are implemented. Shared-budget
+resumable composition remains future work. This contract
 does not make standalone use depend on the composition APIs below.
 
 ## Binding and initialization
@@ -26,6 +27,9 @@ fragment state as needed, without retaining an instance for every identifier.
 
 Share mechanisms with matching contracts; keep schemas, diagnostic payloads and
 output types processor-owned. There is no universal largest diagnostic union.
+A composed profile may generate a tagged union of only its bound processors for
+one caller-facing bag/sink. Each entry then fits the largest bound payload plus
+tag/alignment; ordinary processor bags retain their independent compact layouts.
 Ordinary DOT must not gain processor metadata on every retained record. Static
 composition permits inlining; forced inlining still requires measurement.
 
@@ -37,16 +41,20 @@ must be charged to the parent's remaining budget; an unbounded callback is not a
 bounded processor. Current DOT validation remains unmetered until separately
 implemented; this preparation slice must not claim bounded composed validation.
 
-For retained composition, run outer DOT validation then selected inner fragments
-in source order. Default `.on_error = .collect` keeps independent checks/fragments
+For delayed retained composition, run outer DOT validation then selected inner
+fragments in source order. During-DOT one-shot composition instead processes each
+recognized HTML operand at its scanner boundary, before the next DOT grammar
+transition, then validates outer DOT after parsing succeeds. These are distinct
+phase orders, not a global source-sort promise. Default `.on_error = .collect` keeps independent checks/fragments
 running after ordinary errors; explicit `.fail_fast` ends the active operation
 at its first error. Recovery is the internal safe synchronization needed to
 collect syntax findings, not another public policy. Warnings do not trigger
 fail-fast and sink filtering never changes error classification.
 Missing prerequisites make dependent work unavailable, not successful. An explicit
 operational stop ends remaining requested work; independently invoked operations
-are unaffected. Standalone, delayed and during-DOT workflows remain supported
-design goals; no retained tree is mandatory for every processor.
+are unaffected. Standalone, delayed and one-shot during-DOT workflows are supported;
+the composed helper checks and frees each temporary child tree. Retaining child
+trees remains an explicit delayed operation; no per-fragment result array is added.
 
 Keep completion, validity and diagnostic delivery separate. Requested work stopped
 before starting is incomplete with a reason, not "not requested". Completed outer
@@ -159,8 +167,9 @@ their allocation and rescan costs must be explicit, not added to every raw fragm
 
 Keep existing DOT source ordering. Delayed calls explicitly select preserved
 operands; each is parsed then validated independently. No global source-sorted
-guarantee is implied by phase order. Automatic selection and full session
-composition remain subsequent slices, separate from the implemented markup grammar.
+guarantee is implied by phase order. Automatic one-shot selection visits every
+recognized HTML operand; application-specific selection remains explicit delayed
+work. Fixed-memory and full resumable session composition remain subsequent slices.
 
 ## Acceptance checks
 

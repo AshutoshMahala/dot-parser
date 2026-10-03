@@ -53,7 +53,7 @@ test "delayed selected operands keep outer validity independent and continue aft
     var count: u32 = 0;
     while (parts.next()) |part| {
         if (part.form != .html) continue;
-        var inner = try ready.parseAndValidateFragment(allocator, try part.fragment(source), bag.sink(), .{});
+        var inner = try ready.parseAndValidate(allocator, try part.fragment(source), bag.sink(), .{});
         defer inner.deinit();
         try expect(!inner.stopped());
         try expect(inner.documentValid() == (count == 1));
@@ -78,7 +78,7 @@ test "fragment parsing validates recognizable scopes after syntax rejection with
         const options: P.Options = if (runtime) .{ .policy = .{ .scanner = backend, .validation = .{ .references = .{ .severity = .err } } } } else .{};
         const ready = P.prepare(options);
         var bag: markup.FixedDiagnosticBag(16) = .{};
-        var parsed = try ready.parseAndValidateFragment(allocator, input, bag.sink(), .{});
+        var parsed = try ready.parseAndValidate(allocator, input, bag.sink(), .{});
         defer parsed.deinit();
         try equal(markup.Outcome.invalid_syntax, parsed.parse.outcome);
         try expect(parsed.parse.document == null and !parsed.stopped());
@@ -92,7 +92,7 @@ test "fragment parsing validates recognizable scopes after syntax rejection with
         var frames: markup.FixedParseScratch(4) = .{};
         var scratch: markup.FixedSourceValidationScratch(2) = .{};
         var fixed_bag: markup.FixedDiagnosticBag(16) = .{};
-        const fixed = try ready.parseAndValidateFragmentIn(input, .{ .document = storage.storage(), .scratch = frames.storage() }, scratch.storage(), fixed_bag.sink());
+        const fixed = try ready.parseAndValidateIn(input, .{ .document = storage.storage(), .scratch = frames.storage() }, scratch.storage(), fixed_bag.sink());
         try std.testing.expectEqualDeep(parsed.validation, fixed.validation);
         try std.testing.expectEqualSlices(markup.Diagnostic, findings, fixed_bag.items());
     };
@@ -102,7 +102,7 @@ test "fragment fixes related spans EOF and coverage gaps map once while resource
     const input = try markup.Fragment.init("<a>&amp</b>", 100);
     const P = markup.Profile(.{ .policy = .{ .diagnostics = .{ .fixes = .all } } });
     var bag: markup.FixedDiagnosticBag(16) = .{};
-    var r = try P.parseAndValidateFragment(allocator, input, bag.sink(), .{});
+    var r = try P.parseAndValidate(allocator, input, bag.sink(), .{});
     defer r.deinit();
     try equal(@as(u32, 103), bag.items()[0].span.start);
     try equal(@as(u32, 107), bag.items()[0].suggestedFix().?.span.start);
@@ -110,11 +110,11 @@ test "fragment fixes related spans EOF and coverage gaps map once while resource
         try expect(d.span.start >= 100 and d.span.endOffset() <= 111);
         if (d.related) |related| try expect(related.start >= 100);
     }
-    var unfinished = try markup.parseAndValidateFragment(allocator, try markup.Fragment.init("<a x='1'", 73), discard, .{});
+    var unfinished = try markup.parseAndValidate(allocator, try markup.Fragment.init("<a x='1'", 73), discard, .{});
     defer unfinished.deinit();
     try equal(@as(u32, 81), unfinished.validation.?.completion.incomplete);
     var storage: markup.FixedDocumentStorage(.{ .nodes = 1, .attributes = 2 }) = .{};
-    const stopped = try markup.parseAndValidateFragmentIn(try markup.Fragment.init("<a x='1' x='2'/>", 100), .{ .document = storage.storage() }, .{}, discard, .{});
+    const stopped = try markup.parseAndValidateIn(try markup.Fragment.init("<a x='1' x='2'/>", 100), .{ .document = storage.storage() }, .{}, discard, .{});
     try expect(stopped.stopped());
     try equal(@as(u32, 2), stopped.validation.?.completion.storage_exhausted);
 }
@@ -152,7 +152,7 @@ test "terminal diagnostic acknowledgment survives parsing and forbids a second f
                     .oom => .out_of_memory,
                 };
                 var destination: Destination = .{ .mode = mode };
-                var grown = try P.parseAndValidateFragment(allocator, try markup.Fragment.init(source, 17), destination.sink(), .{});
+                var grown = try P.parseAndValidate(allocator, try markup.Fragment.init(source, 17), destination.sink(), .{});
                 defer grown.deinit();
                 try equal(@as(u32, 1), destination.calls);
                 try equal(reason, grown.parse.diagnostic_stop.?);
@@ -165,7 +165,7 @@ test "terminal diagnostic acknowledgment survives parsing and forbids a second f
                 var scratch: markup.FixedSourceValidationScratch(2) = .{};
                 const memory: markup.ParseMemory = .{ .document = storage.storage(), .scratch = frames.storage() };
                 destination.calls = 0;
-                const fixed = try P.parseAndValidateFragmentIn(try markup.Fragment.init(source, 17), memory, scratch.storage(), destination.sink(), .{});
+                const fixed = try P.parseAndValidateIn(try markup.Fragment.init(source, 17), memory, scratch.storage(), destination.sink(), .{});
                 try equal(@as(u32, 1), destination.calls);
                 try equal(grown.parse.diagnostic_stop, fixed.parse.diagnostic_stop);
                 try expect(fixed.validation == null and fixed.stopped());
@@ -187,7 +187,7 @@ test "terminal diagnostic acknowledgment survives parsing and forbids a second f
     };
     const Fast = markup.Profile(.{ .policy = .{ .on_error = .fail_fast } });
     var full: markup.FixedDiagnosticBag(1) = .{};
-    var once = try Fast.parseAndValidateFragment(allocator, try markup.Fragment.init("<a x='1' x='2'></b>", 0), full.sink(), .{});
+    var once = try Fast.parseAndValidate(allocator, try markup.Fragment.init("<a x='1' x='2'></b>", 0), full.sink(), .{});
     defer once.deinit();
     try equal(@as(usize, 1), full.items().len);
     try equal(markup.reporting.Delivery.complete, once.parse.diagnostic_delivery);
@@ -199,7 +199,7 @@ test "fragment route does not duplicate an element name finding when syntax else
         const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .scanner = backend, .validation = .{ .names = .{ .severity = .err } } } });
         for ([_][]const u8{ "<a×></a×>", "<a×></a×></x>" }) |source| {
             var bag: markup.FixedDiagnosticBag(8) = .{};
-            var checked = try P.parseAndValidateFragment(allocator, try markup.Fragment.init(source, 30), bag.sink(), .{});
+            var checked = try P.parseAndValidate(allocator, try markup.Fragment.init(source, 30), bag.sink(), .{});
             defer checked.deinit();
             try equal(@as(u64, 1), checked.validation.?.errors);
             var names: u32 = 0;
@@ -215,36 +215,36 @@ test "fragment route does not duplicate an element name finding when syntax else
 test "operational parse stops skip validation and validation stops keep committed inner tree" {
     const input = try markup.Fragment.init("<a x='1' x='2'/>", 10);
     var full: markup.FixedDiagnosticBag(1) = .{};
-    var checked = try markup.parseAndValidateFragment(allocator, input, full.sink(), .{});
+    var checked = try markup.parseAndValidate(allocator, input, full.sink(), .{});
     defer checked.deinit();
     try expect(checked.stopped() and checked.parse.document != null);
     try equal(.diagnostic_stopped, std.meta.activeTag(checked.validation.?.completion));
     var fail_bag = markup.GrowableDiagnosticBag.init(std.testing.failing_allocator, .{});
     defer fail_bag.deinit();
-    var delivery = try markup.parseAndValidateFragment(allocator, input, fail_bag.sink(), .{});
+    var delivery = try markup.parseAndValidate(allocator, input, fail_bag.sink(), .{});
     defer delivery.deinit();
     try expect(delivery.stopped());
     try equal(.failed, delivery.validation.?.diagnostic_delivery);
     var bad: markup.FixedDiagnosticBag(1) = .{};
-    var rejected = try markup.parseAndValidateFragment(allocator, try markup.Fragment.init("<a x=1/>", 10), bad.sink(), .{});
+    var rejected = try markup.parseAndValidate(allocator, try markup.Fragment.init("<a x=1/>", 10), bad.sink(), .{});
     defer rejected.deinit();
     try expect(rejected.stopped() and rejected.validation == null);
-    var oom = try markup.parseAndValidateFragment(std.testing.failing_allocator, input, discard, .{});
+    var oom = try markup.parseAndValidate(std.testing.failing_allocator, input, discard, .{});
     defer oom.deinit();
     try expect(oom.stopped() and oom.validation == null);
-    const limited = try markup.parseAndValidateFragmentIn(input, .{}, .{}, discard, .{});
+    const limited = try markup.parseAndValidateIn(input, .{}, .{}, discard, .{});
     try expect(limited.stopped() and limited.validation == null);
     const Cancel = markup.Profile(.{ .policy = .{ .execution = .{ .cancellation = true } } });
-    var cancelled = try Cancel.parseAndValidateFragment(allocator, input, discard, .{ .cancellation = .{ .context = null, .is_requested = requested } });
+    var cancelled = try Cancel.parseAndValidate(allocator, input, discard, .{ .cancellation = .{ .context = null, .is_requested = requested } });
     defer cancelled.deinit();
     try equal(markup.Outcome.cancelled, cancelled.parse.outcome);
     try expect(cancelled.validation == null);
     const Limits = markup.Profile(.{ .policy = .{ .limits = .{ .max_nodes = 0 } } });
-    var limit = try Limits.parseAndValidateFragment(allocator, input, discard, .{});
+    var limit = try Limits.parseAndValidate(allocator, input, discard, .{});
     defer limit.deinit();
     try expect(!limit.stopped() and limit.validation == null and limit.has_errors);
     try expect(limit.shouldStop(.fail_fast) and !limit.shouldStop(.collect));
-    try std.testing.expectError(error.InvalidFragment, markup.parseAndValidateFragment(allocator, .{ .bytes = "xx", .origin = std.math.maxInt(u32) }, discard, .{}));
+    try std.testing.expectError(error.InvalidFragment, markup.parseAndValidate(allocator, .{ .bytes = "xx", .origin = std.math.maxInt(u32) }, discard, .{}));
 }
 
 test "origin sink supports caller-driven bounded parsing and rejects malformed local diagnostic ranges" {
@@ -271,7 +271,7 @@ test "origin sink supports caller-driven bounded parsing and rejects malformed l
 
 fn allocations(a: std.mem.Allocator) !void {
     for ([_][]const u8{ "<a x='1' x='2'><b/></wrong>", "<a x='1' x='2'><b/></a>" }) |source| {
-        var result = try markup.parseAndValidateFragment(a, try markup.Fragment.init(source, 90), discard, .{});
+        var result = try markup.parseAndValidate(a, try markup.Fragment.init(source, 90), discard, .{});
         defer result.deinit();
         if (result.parse.outcome == .out_of_memory or (result.validation != null and result.validation.?.completion == .out_of_memory)) return error.OutOfMemory;
         try equal(@as(u64, 1), result.validation.?.errors);
@@ -299,7 +299,7 @@ test "fragment validation cancellation preserves the parsed document" {
     defer plain.deinit();
     probe.stop_after = probe.calls;
     probe.calls = 0;
-    var checked = try P.parseAndValidateFragment(allocator, input, discard, .{ .policy = .{ .execution = .{ .cancellation = true } }, .cancellation = hook });
+    var checked = try P.parseAndValidate(allocator, input, discard, .{ .policy = .{ .execution = .{ .cancellation = true } }, .cancellation = hook });
     defer checked.deinit();
     try expect(checked.stopped() and checked.parse.document != null);
     try equal(.cancelled, checked.validation.?.completion);
@@ -324,7 +324,7 @@ test "operand traversal handles every truncation without unchecked rejected inpu
     const edge = try markup.Fragment.init("x", std.math.maxInt(u32) - 1);
     const eof = try edge.child(.{ .start = 1, .len = 0 });
     try equal(std.math.maxInt(u32), eof.origin);
-    var empty = try markup.parseAndValidateFragment(allocator, eof, discard, .{});
+    var empty = try markup.parseAndValidate(allocator, eof, discard, .{});
     defer empty.deinit();
     try expect(empty.documentValid());
 }
@@ -372,7 +372,7 @@ test "nested policies support DOT to markup to consumer string and an independen
     const source = "graph { a [label=<<b x='?'>!</b>>]; }";
     var parts = try dot.identifier.parts(source, span(source, "<<b x='?'>!</b>>"));
     const fragment = try parts.next().?.fragment(source);
-    var inner = try ready.parseAndValidateFragment(allocator, fragment, discard, .{});
+    var inner = try ready.parseAndValidate(allocator, fragment, discard, .{});
     defer inner.deinit();
     try expect(inner.documentValid());
     const attribute = inner.parse.document.?.attributes[0];

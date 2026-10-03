@@ -55,7 +55,7 @@ test "fail-fast syntax ends the combined child but explicit local validation is 
     const P = markup.Profile(.{ .policy = .{ .on_error = .fail_fast } });
     const text = "<p q=1/><x a='1' a='2'/>";
     var bag: markup.FixedDiagnosticBag(8) = .{};
-    var child = try P.parseAndValidateFragment(allocator, try markup.Fragment.init(text, 50), bag.sink(), .{});
+    var child = try P.parseAndValidate(allocator, try markup.Fragment.init(text, 50), bag.sink(), .{});
     defer child.deinit();
     try expect(child.parse.outcome == .invalid_syntax and child.validation == null);
     try expect(child.has_errors and !child.stopped());
@@ -74,7 +74,7 @@ test "each parent child on_error combination respects its own operation boundary
         var bag: markup.FixedDiagnosticBag(16) = .{};
         var visited: u32 = 0;
         for ([_][]const u8{ "<a x='1' x='2' x='3'/>", "<b y='1' y='2'/>" }) |text| {
-            var child = try ready.parseAndValidateFragment(allocator, try markup.Fragment.init(text, 0), bag.sink(), .{});
+            var child = try ready.parseAndValidate(allocator, try markup.Fragment.init(text, 0), bag.sink(), .{});
             defer child.deinit();
             visited += 1;
             try expect(child.has_errors and !child.stopped());
@@ -94,9 +94,9 @@ test "unsupported markup is never silently accepted or automatically a batch sto
         for ([_][]const u8{ "<?pi?>", "<!DOCTYPE x>", "\xff\xfe<a/>" }) |text| {
             var bag: markup.FixedDiagnosticBag(8) = .{};
             var storage: markup.FixedDocumentStorage(.{ .nodes = 8, .attributes = 2 }) = .{};
-            var child = try P.parseAndValidateFragment(allocator, try markup.Fragment.init(text, 7), bag.sink(), if (runtime) .{ .policy = patch } else .{});
+            var child = try P.parseAndValidate(allocator, try markup.Fragment.init(text, 7), bag.sink(), if (runtime) .{ .policy = patch } else .{});
             defer child.deinit();
-            const fixed = try P.parseAndValidateFragmentIn(try markup.Fragment.init(text, 7), .{ .document = storage.storage() }, .{}, markup.diagnostic.discard, options);
+            const fixed = try P.parseAndValidateIn(try markup.Fragment.init(text, 7), .{ .document = storage.storage() }, .{}, markup.diagnostic.discard, options);
             const measured = P.measureIn(text, .{}, markup.diagnostic.discard, options);
             try std.testing.expectEqualDeep(child.parse.outcome, measured.outcome);
             try equal(child.parse.warnings, measured.warnings);
@@ -140,7 +140,7 @@ test "DOT unsupported reporting is separate from passthrough and continuation" {
 test "actual destination stops still end both levels including terminal unsupported findings" {
     const M = markup.Profile(.{ .policy = .{ .diagnostics = .{ .unsupported = .warning } } });
     var bag: markup.FixedDiagnosticBag(1) = .{};
-    var child = try M.parseAndValidateFragment(allocator, try markup.Fragment.init("<?pi?>", 0), bag.sink(), .{});
+    var child = try M.parseAndValidate(allocator, try markup.Fragment.init("<?pi?>", 0), bag.sink(), .{});
     defer child.deinit();
     try expect(!child.has_errors and child.stopped() and child.shouldStop(.collect));
     try equal(markup.reporting.StopReason.requested, child.parse.diagnostic_stop.?);
@@ -155,7 +155,7 @@ test "actual destination stops still end both levels including terminal unsuppor
 test "unsupported warnings do not erase earlier syntax errors in a child" {
     inline for (.{ .warning, .silent }) |unsupported| {
         const P = markup.Profile(.{ .policy = .{ .diagnostics = .{ .unsupported = unsupported } } });
-        var child = try P.parseAndValidateFragment(allocator, try markup.Fragment.init("</extra><?pi?>", 0), markup.diagnostic.discard, .{});
+        var child = try P.parseAndValidate(allocator, try markup.Fragment.init("</extra><?pi?>", 0), markup.diagnostic.discard, .{});
         defer child.deinit();
         try equal(@as(u32, 1), child.parse.syntax_errors);
         try expect(child.has_errors and !child.stopped());

@@ -92,6 +92,8 @@ pub const Outcome = union(enum) {
     success,
     /// Explicit cancellation or an observed caller request; no diagnostic.
     cancelled,
+    /// A compile-time-bound child stopped the enclosing operation.
+    processor_stopped,
     diagnostic_stopped: diagnostic.StopReason,
     /// The input is not accepted by the selected syntax policy.
     invalid_syntax,
@@ -136,6 +138,11 @@ const Progress = struct {
 /// Fixed policies capture limits/recovery in code; only scratch is retained as
 /// a resource. Runtime policies retain the resolved parse-stage settings once.
 pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool, comptime ScannerOf: fn (comptime bool, comptime bool, comptime ?bool) type, comptime fixed: ?policy.ParseSettings) type {
+    return MachineWithProcessor(EventsPtr, metered, audited, cancellable, ScannerOf, fixed, void);
+}
+
+pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool, comptime ScannerOf: fn (comptime bool, comptime bool, comptime ?bool) type, comptime fixed: ?policy.ParseSettings, comptime Processor: type) type {
+    if (Processor != void and metered) @compileError("during-DOT composition is run-to-completion; child validation is not work-metered");
     comptime {
         const info = @typeInfo(EventsPtr);
         if (info != .pointer or info.pointer.size != .one) {
@@ -163,6 +170,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             dispatch: usize = 0,
         };
 
+        processor: Processor = if (Processor == void) {} else undefined,
         tokens: ScannerOf(metered, audited, if (fixed) |value| value.ambiguous_numeral != .off else null),
         work: if (metered or cancellable) Work else void = if (metered or cancellable) .{} else {},
         cancellation: if (cancellable) ?execution.Cancellation else void = if (cancellable) null else {},
@@ -415,7 +423,21 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 },
             };
             if (self.forwardWarning()) return self.terminal;
+            if (self.processIdentifier(token)) |result| return result;
             return self.transition(token);
+        }
+
+        fn processIdentifier(self: *Self, token: lex.Token) ?Result {
+            if (Processor == void) return null;
+            const markup = if (fixed) |value| value.markup else self.settings.markup;
+            if (markup == .none or !token.flags.has_html) return null;
+            const on_error = if (fixed) |value| value.on_error else self.settings.on_error;
+            if (self.processor.processIdentifier(self.tokens.source, token, on_error)) |stop| {
+                self.abortEvents(.processor_stopped);
+                if (stop.delivery == .failed) self.delivery = .failed;
+                return self.finishReported(.processor_stopped, stop.diagnostic_stop);
+            }
+            return null;
         }
 
         fn numeralSeverity(self: *const Self) policy.RuleSeverity {
@@ -475,6 +497,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                                     if (self.terminal != null) break;
                                     continue;
                                 }
+                                if (self.processIdentifier(token) != null) break;
                                 self.work.token = token;
                                 self.work.phase = .grammar;
                             },
@@ -1290,7 +1313,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .resource_exhausted => .resource_exhausted,
                 // `fail` only handles diagnostic-classified failures; event
                 // sink failures route through `sinkFailure` exclusively.
-                .sink_failure, .scratch_failure, .cancelled, .diagnostic_stopped => unreachable,
+                .sink_failure, .scratch_failure, .cancelled, .diagnostic_stopped, .processor_stopped => unreachable,
             };
             self.abortEvents(reason);
             return self.finishReported(outcome, stop);

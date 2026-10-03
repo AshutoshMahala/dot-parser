@@ -11,7 +11,7 @@ current public capabilities. R-MOD-014/015 and Q40 remain the architectural cont
 ## Delivery order
 
 Build and measure the real standalone processor before expanding the composition
-framework. The same engine will later serve standalone, delayed and during-DOT
+framework. The same engine serves standalone, delayed and one-shot during-DOT
 use. This changes the earlier passthrough-first implementation sequence, not the agreed
 DOT `none`/`passthrough` semantics. Preparation follows actual integration needs,
 not speculative scheduling. Independent parsing must not import DOT grammar or retained records.
@@ -28,7 +28,8 @@ not speculative scheduling. Independent parsing must not import DOT grammar or r
 | Local validation scopes | Header/name/value/text checks independent of enclosing structure; source-scope pass without a tree | Implemented 2026-10-02; no implicit parse-time checks |
 | DOT passthrough recognition | `none`/`passthrough`, both scanners, concatenation, decoding and DOT fix policy; no markup dependency | Implemented 2026-09-27 |
 | Delayed integration | Explicit per-operand views, reusable prepared policies, original-source diagnostics, independent inner results | Implemented 2026-10-03 |
-| During-DOT composition | Automatic child scheduling and shared resumable budgets | Planned; not implied by delayed calls |
+| During-DOT one-shot composition | Automatic HTML-operand checking, one typed bag/sink, independent results | Implemented 2026-10-03 |
+| Resumable composition | Shared budgets and composed fixed-storage sessions | Planned; validation is still unmetered |
 
 Each slice needs tests, truthful supported-syntax documentation and measurements.
 Recognition of an excluded feature reports unsupported without validating its body.
@@ -220,9 +221,10 @@ parent rejects HTML tokens. This measures passthrough envelope scanning, not str
 markup parsing. Scalar quotes/comments and long-ID microbenchmarks have small
 slowdowns in this sample; the ordinary end-to-end benchmark has no measured loss.
 
-The per-part/origin contract and explicit delayed processing are now implemented
-below. Structural recovery remains independent; specialized vocabularies and
-during-DOT scheduling still need separate slices. DOT passthrough invokes neither.
+The per-part/origin contract, explicit delayed processing and one-shot during-DOT
+composition are now implemented below. Structural recovery remains independent;
+specialized vocabularies and shared-budget composition still need separate slices.
+Ordinary, uncomposed DOT passthrough invokes no child parser.
 
 ## Delayed-integration review fixes — 2026-10-03
 
@@ -297,7 +299,7 @@ supplies its interior bytes and original origin. Selecting attributes, names,
 ports or other positions is the application's decision, not an implicit label rule.
 
 `Profile.prepare` resolves once into `Prepared`, reused across explicit calls to
-`parseAndValidateFragment[In]`. Fixed settings have zero state; runtime settings
+`parseAndValidate[In]`. Fixed settings have zero state; runtime settings
 are not rediscovered per token/fragment. Growing and fixed-memory results preserve
 independent parse/validation outcomes. Parse success uses document validation;
 `invalid_syntax` uses recognizable source scopes, so enclosing structural errors
@@ -325,11 +327,88 @@ global queue/result array or universal diagnostic payload is introduced.
 Operations are run-to-completion; no combined metered validation claim. Findings
 are delivered by phase and selected-operand order, not globally sorted.
 
-Still pending: during-DOT invocation, shared budgets/cancellation scheduling,
+Still pending: shared budgets/cancellation scheduling,
 specialized vocabularies and a built-in string processor. The consumer-owned
 string check in tests proves schema/origin extensibility, not shipped string syntax.
 
-### Verification and local costs
+## During-DOT one-shot composition — 2026-10-03
+
+User-selected first slice: one run-to-completion `parseAndValidate`, not a pretend
+bounded callback inside `advance`. `Profile.processors.markup` binds a configured
+processor type. The optional parser hook runs once at token acquisition, before
+grammar replay/dispatch, for every complete HTML-containing identifier permitted
+by the DOT gate. Each raw operand keeps original coordinates; quoted parts are
+not reclassified or decoded. Ordinary profiles erase the hook/state at compile
+time and do not depend on markup. Scanner/grammar engines are not duplicated.
+
+One generated tagged diagnostic union supports growable/fixed/prefix/streaming
+destinations and preserves both namespaces. The common composed renderer shares
+one location-resolution pass across all payloads, using original adapters.
+There is no global diagnostic union; only opted-in compositions pay its larger
+slot size. Sink stops/failures terminate both processors without another delivery.
+
+The child runs its own parse/validation policy before the parent decides whether
+to continue. Parent collect/child fail-fast continues with the next operand;
+parent fail-fast/child collect retains all findings from the first failing child.
+Limits remain child-local; allocation/storage/cancellation and shared-sink stops
+are operational. `processor_stopped` marks an unfinished outer parse, without
+calling it invalid DOT or publishing a partial tree. Parent validation runs after
+successful outer parsing; child diagnostics therefore precede that phase.
+
+The facade retains DOT syntax and a constant-size child report; child trees are
+deinitialized after each invocation. Applications wanting retained child trees or
+subset selection use explicit delayed calls. Arena allocators can still retain
+deinitialized allocations until arena teardown. No composed Session/advance,
+fixed-memory facade, recursive scheduler or output-tree collection is implied.
+Cancellation hooks remain component-specific; an outer-only hook does not make
+an uncancellable child interruptible.
+
+Markup's combined methods are now `parseAndValidate` / `parseAndValidateIn`,
+including `Prepared`; no old-name aliases. The consumer-facing structural
+contract and runtime option paths are documented in [policies](../POLICIES.md#bound-processors),
+with a [single-call example](../../examples/composed_markup.zig).
+
+### One-shot verification and local costs
+
+604 tests pass in Debug, ReleaseSafe and ReleaseFast, including a deterministic 512-input scalar/block
+differential over mutated/truncated mixed DOT/markup input. Allocation-failure
+injection, shared sink capacity/failure/omission, independent parent/child error
+policies, custom consumer binding, mixed rendering and original fix coordinates
+are covered. This is bounded regression coverage, not a sustained fuzz campaign.
+Examples, benchmark builds and existing freestanding modules also pass.
+
+Native arm64 sizes: DOT diagnostics remain 80 bytes, markup 36 bytes; the optional
+composed diagnostic is 88 bytes and its child report 20 bytes. Document and fixed/
+runtime DOT session sizes are unchanged (232 / 1,080 / 1,304 bytes). These are
+payload/layout sizes, not peak RSS or allocator overhead.
+
+Same-machine ReleaseFast probe against `b6c1909`, Zig 0.16.0: unchanged
+`bench/policies.zig`, before/after/after/before, no overlapping builds. Fixed scalar
+medians are 0.862/0.853 ms before versus 0.845/0.861 ms after; fixed block
+1.012/1.020 versus 0.943/0.929 ms for 50,000 statements. The runtime cells range
+from similar to faster, but this small, layout-sensitive probe is not a broad
+throughput guarantee or a standard-machine baseline update.
+
+An allocator-backed exploratory composition probe compares outer-only checking,
+explicit delayed child checks (one prepared child reused), and during-DOT
+composition with discard sinks. Each case has 5,000 node statements, three
+warmups and nine timed complete parse/validate/free operations using the process
+general allocator. Four warmed process runs give these median ranges:
+
+| Fixture | Source bytes | Outer only | Delayed | During DOT |
+| --- | ---: | ---: | ---: | ---: |
+| `a;` | 10,010 | 0.111–0.113 ms | 0.109–0.112 ms | 0.115–0.118 ms |
+| `a [label=<<b x='1'>hi</b>>];` | 140,010 | 0.332–0.369 ms | 1.225–1.252 ms | 1.209–1.253 ms |
+| `a [label=<<b>` + 100 × `long text ` + `</b>>];` | 5,100,010 | 2.889–2.928 ms | 12.336–12.599 ms | 9.417–9.628 ms |
+
+The first process had a cold/no-HTML timing outlier (0.28–0.29 ms in outer/delayed
+calls); it is not hidden in the warmed ranges above. Enabled composition has a
+small no-HTML dispatch cost; child parsing/validation and temporary allocation
+are real additional work. Longer inputs avoid delayed selection's extra expression
+validation scan. These few fixtures do not establish general speedups or memory
+peaks, and do not measure retained diagnostics/rendering.
+
+## Earlier delayed-integration verification and local costs
 
 572 tests pass in Debug. The initial 570-test suite passed ReleaseSafe,
 ReleaseFast and ReleaseSmall; after adding two final regressions, all 14 tests

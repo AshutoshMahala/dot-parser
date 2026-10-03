@@ -194,6 +194,7 @@ pub const PortedReference = struct {
 /// never through this enum (R-DIAG-003). Grows in later slices
 /// (cancellation, configured limits, …).
 pub const AbortReason = enum {
+    processor_stopped,
     diagnostic_stopped,
     scratch_failure,
     cancelled,

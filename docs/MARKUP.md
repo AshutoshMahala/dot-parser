@@ -3,8 +3,69 @@
 Current development implementation, after 0.3.0: import `markup_parser` without
 importing `dot_parser`. This is an experimental XML-like **fragment** parser,
 not browser HTML, complete XML, or Graphviz label validation. DOT independently
-supports [passthrough HTML-like identifiers](SUPPORTED_SYNTAX.md#passthrough-html-like-identifiers),
-but does not yet invoke this parser automatically.
+supports [passthrough HTML-like identifiers](SUPPORTED_SYNTAX.md#passthrough-html-like-identifiers).
+Attaching a processor opts into automatic checking during DOT parsing; ordinary
+DOT profiles still neither import nor invoke markup.
+
+## One call during DOT parsing
+
+```zig
+const Parser = dot.Profile(.{
+    .processors = .{ .markup = markup.Profile(.{}) },
+});
+var bag = Parser.GrowableDiagnosticBag.init(allocator, .{});
+defer bag.deinit();
+var result = try Parser.parseAndValidate(allocator, source, bag.sink(), .{});
+defer result.deinit(allocator);
+// result.dot.document: retained DOT syntax, even if child checks rejected input.
+// result.markup: aggregate coverage/validity, without a retained child-tree array.
+// result.documentValid(): outer and requested inner checks succeeded.
+```
+
+The [runnable example](../examples/composed_markup.zig) uses one bag and
+`Parser.console.renderBoxedList`. `Parser.FixedDiagnosticBag(N)` and streaming
+`Parser.DiagnosticSink` are also available; `PrefixDiagnosticBag(N)` explicitly
+omits findings after filling. A shared destination has one capacity/stop budget.
+Items are a tagged `.dot` / `.markup` union preserving each original diagnostic's
+code, details, related spans and fixes. Each flat entry fits the larger bound
+payload plus its tag/alignment; ordinary DOT/markup bags do not grow. Rendering a
+mixed list uses one source-location pass and the original processor renderers.
+
+Every lexically complete HTML operand encountered by DOT is selected, including
+names, ports, attribute keys/values and recovery regions—not only `label`. Mixed
+concatenations are visited once per HTML operand; quoted operands remain quoted.
+The DOT `markup = .none` gate never invokes a child. Source remains untouched.
+Children execute before DOT has a complete document; their syntax/scope validation
+findings are emitted immediately. Outer DOT validation runs after successful DOT
+parsing. Emission order is deterministic, not globally source-sorted.
+
+Parent/child `on_error` policies remain independent. A collecting parent visits
+the next operand after ordinary child errors, unsupported input or child policy
+limits. Parent fail-fast waits for the active child to return, then stops. A sink
+stop/failure, child cancellation or allocation/storage failure ends the operation.
+Early child stops produce `result.dot.outcome = .processor_stopped`, incomplete
+outer parsing and no partial DOT document. Already collected findings survive.
+`result.markup.complete` describes traversal coverage, not content validity.
+
+Resources/options are grouped as `.dot` (ordinary DOT `CheckOptions`), `.markup`
+(the bound processor's `Options`) and `.markup_resources` (its `ParseResources`).
+Runtime patches require runtime support in the respective profile; all policies
+are prepared before scanning, allocation or callbacks. Cancellation callbacks are
+component-specific: enabling/passing the child hook allows polling inside child
+work, while a DOT-only hook polls the outer driver between child invocations.
+
+This first composed API is allocator-backed and **run-to-completion**. It exposes
+no composed `Session`/`advance` or shared work-budget guarantee. Each child's
+temporary tree is freed before the next child; there is no mandatory per-ID state
+or child-result array. An arena can retain freed allocations until its teardown;
+choose allocator behavior to match the required peak-memory bound.
+Use delayed `parseAndValidate[In]` below when selecting
+only some operands, retaining child trees, or supplying fixed child storage.
+
+`markup.parseAndValidate[In]` is also the standalone/delayed combined entry point:
+its input is a checked `Fragment` (use origin zero for standalone bytes). The
+old longer function name has been removed, not aliased. Processor implementations
+remain compile-time types; see [policy composition](POLICIES.md#bound-processors).
 
 ## Delayed processing inside DOT
 
@@ -19,7 +80,7 @@ const parent_on_error: markup.OnError = .collect;
 var parts = try dot.identifier.parts(dot_document.source, attribute.value);
 while (parts.next()) |part| {
     if (part.form != .html) continue;
-    var checked = try ready.parseAndValidateFragment(
+    var checked = try ready.parseAndValidate(
         allocator, try part.fragment(dot_document.source), bag.sink(), .{},
     );
     defer checked.deinit();
@@ -41,8 +102,8 @@ iteration. Source must remain alive and unchanged while using views.
 | API/result | Behavior |
 | --- | --- |
 | `Reader.prepare(options)` | No allocation/scan/callbacks; resolve once into reusable `Prepared` |
-| `ready.parseAndValidateFragment(allocator, fragment, sink, resources)` | Explicit allocation; optional `resources.scratch_allocator` for parsing scratch |
-| `ready.parseAndValidateFragmentIn(fragment, memory, scratch, sink)` | Allocation-free; `ParseMemory` and `SourceValidationScratch`; key scratch reused for document validation |
+| `ready.parseAndValidate(allocator, fragment, sink, resources)` | Explicit allocation; optional `resources.scratch_allocator` for parsing scratch |
+| `ready.parseAndValidateIn(fragment, memory, scratch, sink)` | Allocation-free; `ParseMemory` and `SourceValidationScratch`; key scratch reused for document validation |
 | `checked.parse` | Ordinary parse result; no partial tree on syntax failure |
 | `checked.validation` | Document validation on success; source-scope validation on `invalid_syntax` only with child `.on_error = .collect`; null after fail-fast syntax rejection, unsupported input or operational stops |
 | `checked.documentValid()` | Successful complete parsing AND complete valid validation |
@@ -96,9 +157,10 @@ or mandatory child-result array are added. These operations are run-to-completio
 parse metering does not bound validation, enumeration, sorting or callbacks.
 
 Delivery order is syntax findings, validation findings, then the next selected
-operand. No global source sorting or universal diagnostic union is added.
-During-DOT scheduling, a shared resumable budget, Graphviz vocabulary validation
-and a built-in string processor remain unimplemented. See
+operand. Delayed calls retain the child diagnostic type; the optional during-DOT
+facade provides its own mixed diagnostic type. Neither globally sorts findings.
+A shared resumable budget, Graphviz vocabulary validation and a built-in string
+processor remain unimplemented. See
 [nested policies](POLICIES.md#composing-processor-policies) for consumer schemas.
 
 ## Supported input

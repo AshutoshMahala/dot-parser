@@ -69,7 +69,8 @@ pub const reporting = @import("parser_support").reporting;
 pub const wdp = @import("parser_support").wdp;
 pub const presentation = @import("parser_support").console;
 /// Compile-time policy preparation and checked raw-fragment coordinates.
-/// Processor scheduling and HTML parsing are not implemented by this module.
+/// Opt-in one-shot scheduling is selected with Profile.processors; ordinary DOT
+/// profiles neither import markup grammar nor retain processor metadata.
 pub const processor = @import("parser_support").processor;
 const lexer_impl = @import("dot/lexer/lexer.zig");
 pub const lexer = struct {
@@ -189,6 +190,8 @@ pub const StorageFailure = enum {
 /// the caller's diagnostic sink, never through this value.
 pub const ParseOutcome = union(enum) {
     success,
+    /// A bound child stopped during-DOT composition; see the composed report.
+    processor_stopped,
     /// A cancellation-enabled operation or a session was cancelled.
     cancelled,
     /// Diagnostic destination stopped unfinished work. No partial document.

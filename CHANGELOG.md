@@ -6,6 +6,16 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Add opt-in during-DOT `Profile(.{ .processors = .{ .markup = MarkupProfile } })`
+  composition: one `parseAndValidate` call, one typed bag/sink and a mixed renderer.
+  Child checks run once per encountered HTML operand, preserve original-source
+  diagnostics and respect independent parent/child error policies. Ordinary DOT
+  profiles have no child state or dependency. Temporary child trees are released;
+  shared-budget sessions and retained child-result collections remain deferred.
+  **Breaking:** add `processor_stopped` to DOT outcomes/event abort reasons.
+- **Breaking:** rename markup's combined methods to `parseAndValidate` and
+  `parseAndValidateIn`, including prepared profiles, without compatibility aliases.
+
 - **Breaking:** replace both parsers' `recovery` field / `Recovery` type with
   `on_error` / shared `OnError` (`collect` by default, or `fail_fast`), without
   compatibility aliases. Validation now honors the same policy and reports
@@ -31,13 +41,13 @@ are called out here; compatibility shims are not retained.
   resolves locations in a shared pass instead of rescanning once per diagnostic.
 
 - Add explicit delayed DOT/markup integration: checked identifier operand views,
-  reusable prepared markup policies, growing/fixed `parseAndValidateFragment`
+  reusable prepared markup policies, growing/fixed `parseAndValidate`
   operations and original-source diagnostics/fixes. Validation still checks local
   scopes after syntax rejection, while operational stops halt requested child
   work. Outer and inner results stay independent; no partial trees or DOT record
   growth. Policy sets now nest consumer-owned schemas, and raw fragment origins
-  compose across additional levels. Automatic during-DOT scheduling and shared
-  resumable validation budgets remain deferred.
+  compose across additional levels. Shared resumable validation budgets remain
+  deferred.
 
 - Separate markup's local validation inputs from its retained tree. Add
   `validateScope[In]` and `validateSource[In]` for headers, names, attribute-value

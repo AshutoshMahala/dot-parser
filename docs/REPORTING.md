@@ -117,6 +117,14 @@ and optional console renderer. Each processor owns its `Code` enum, typed detail
 namespace and wording. Neither parser imports the other; no universal payload
 union or runtime registration is required.
 
+An opt-in composed DOT profile provides `Parser.GrowableDiagnosticBag`,
+`Parser.FixedDiagnosticBag(N)` and `Parser.DiagnosticSink` for **one shared
+destination**. Its tagged `.dot` / `.markup` entries preserve both original
+payloads. Only the bound composition pays the largest-payload slot cost;
+standalone bags keep their existing sizes. `Parser.console` renders the mixed
+bag using the same list APIs and one shared source-location pass. See the
+[one-call example](MARKUP.md#one-call-during-dot-parsing).
+
 | Facility | Shared machinery | Processor-owned part |
 | --- | --- | --- |
 | Identity | `wdp.Catalog(Component, Primary)` and `wdp.Registry(Code, namespace)` | Typed component/primary enums, paired sequence/alias definitions and code entries |

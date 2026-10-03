@@ -289,6 +289,8 @@ pub fn check(effective: Effective, input: Policy) Check {
 pub const Config = struct {
     policy: Policy = .{},
     runtime_policy: bool = false,
+    /// Compile-time implementations; never part of a runtime policy patch.
+    processors: struct { markup: ?type = null } = .{},
 };
 
 test "named standard is the complete default and lenient changes only syntax" {

@@ -8,6 +8,29 @@ Policies never rewrite source bytes.
 The ordinary `dot.validate` and `dot.parseAndValidate` functions keep their strict
 defaults. [Runnable example](../examples/policies.zig).
 
+## Bound processors
+
+`Profile(.{ .processors = .{ .markup = MyProcessor } })` binds a configured type
+at compile time. It exposes one-shot `parseAndValidate` and one composed diagnostic
+destination; see [usage and costs](MARKUP.md#one-call-during-dot-parsing).
+`.processors` is configuration, never a runtime policy leaf. Runtime options use
+`.dot.policy` and `.markup.policy`, only where the respective profile opted in.
+
+A consumer implementation supplies `Policies`, `Options`, `Prepared`, `prepare`,
+`Diagnostic`, `DiagnosticSink`, `ParseResources`, `InputError` and `CheckResult`.
+Preparation must be pure (no scan, allocation or callbacks), verifying policies
+once. `Prepared.parseAndValidate(allocator, Fragment, sink, resources)` returns
+`InputError!CheckResult`; the result exposes `has_errors`, `documentValid()`,
+`stopped()` and `deinit()`. It must honor sink acknowledgments and map every
+diagnostic span to the fragment's original-source origin. These are compile-time
+structural requirements, not runtime registration or capability queries.
+The optional composed renderer requires `console.Adapter`, using the shared
+presentation contract. Merely sharing a method name is not the full contract.
+
+This slice schedules the markup slot only. Nested `PolicySet` preparation remains
+available; automatic recursive scheduling, a built-in string processor and
+composed fixed-storage/bounded sessions remain separate work.
+
 ## Untrusted input
 
 Bound input acquisition before allocating/reading the source, set finite
@@ -548,7 +571,7 @@ const state = try App.prepare(.{
     } } },
 });
 const ready: Markup.Prepared = .{ .policies = state.markup.parser };
-// Reuse ready.parseAndValidateFragment(...) without preparing the policy again.
+// Reuse ready.parseAndValidate(...) without preparing the policy again.
 ```
 
 This is preparation, not execution scheduling. Each runtime-enabled leaf is
