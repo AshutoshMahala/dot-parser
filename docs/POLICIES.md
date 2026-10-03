@@ -1,7 +1,7 @@
 # Parsing and graph policies
 
 `dot.Profile(...)` binds a typed policy at compile time. Runtime overrides are
-off by default. Policies configure limits, recovery, scanner selection,
+off by default. Policies configure limits, error handling, scanner selection,
 execution, syntax acceptance, graph validation and effective interpretation.
 Policies never rewrite source bytes.
 
@@ -94,11 +94,12 @@ reconstruct dropped syntax or reject its former spelling.
 and produced syntax warnings, even before later failure/cancellation and even
 with a discard, filtered or failing sink. Explicit stop/failure ends unfinished
 work; the counters then describe only findings already discovered, not the whole
-input. Lexer numeral warnings count as
+input. Lexer numeral and unsupported-feature warnings count as
 warnings, not accepted deviations. `CheckResult.accepted_deviations` preserves
 the parse count; its `warnings` totals syntax and validation warnings. Staged
-validation's count remains in `ValidationResult.outcome.completed.warnings`, or
-`outcome.diagnostic_stopped.warnings` if its sink stopped the pass.
+validation's count remains in `ValidationResult.outcome.completed.warnings`,
+`outcome.error_stopped.warnings`, or `outcome.diagnostic_stopped.warnings`,
+depending on completion. `warningCount()` handles all outcomes.
 The parse-only u32 counters are bounded by the u32 source domain. Validation
 counts and `CheckResult.warnings` use u64: independent checks can report the same
 byte, so their aggregate is not bounded by source length. No counter retains history.
@@ -215,19 +216,28 @@ both complete presets include the defaults.
 
 | Leaf | Choices | Default | Behavior |
 | --- | --- | --- | --- |
-| `markup` | `.none`, `.passthrough` | `.passthrough` | Recognize/preserve HTML-like IDs in every ID position, or reject the full expression with `E.Profile.Feature.009` |
+| `markup` | `.none`, `.passthrough` | `.passthrough` | Recognize/preserve HTML-like IDs in every ID position, or mark the full expression unsupported |
 | `diagnostics.fixes` | `.all`, `.machine_applicable`, `.off` | `.all` | Keep all fix offers, only machine-applicable offers, or none; findings and validity are unchanged |
+| `diagnostics.unsupported` | `.err`, `.warning`, `.silent` | `.err` | Classify/report recognized unsupported input; never turns it into accepted or validated input |
 
 Neither mode invokes the standalone markup module. The scanner always recognizes
 the complete envelope and any mixed concatenation, without a second policy scan.
-`.none` also catches HTML operands after quoted operands. With statement recovery,
-body occurrences can be skipped to collect later errors; no partial document is
+`.none` also catches HTML operands after quoted operands. With `.on_error = .collect`,
+body occurrences can be skipped to collect later findings; no partial document is
 published. Completed unsupported-only recovery ends as `unsupported_feature`;
 completed recovery with syntax errors ends as `invalid_syntax`. Cancellation,
 later limits and sink stops keep their own outcomes. `syntax_errors` preserves
 earlier rejection independently of delivery, and `completion` distinguishes a
 finished recovery pass from an early stop. Header/trailing failures remain
-fail-fast. Changing this parse policy requires reparsing.
+terminal when no safe continuation is available. Changing this parse policy requires reparsing.
+
+`.passthrough` is supported raw preservation, not silent unsupported reporting.
+With `.none`, `.err` emits `E.Profile.Feature.009`, `.warning` emits
+`W.Profile.Feature.009`, and `.silent` emits nothing. All three retain the factual
+unsupported outcome and publish no document. Warning/silence do not trigger
+error-based fail-fast: safely delimited body occurrences can still synchronize
+under `.fail_fast`. An uncertain boundary, enforced resource limit or explicit
+sink stop still ends work. Unsupported interiors are never certified as checked.
 
 Fix filtering applies before diagnostic delivery in both DOT parsing and validation,
 including warnings. A fix is never automatically applied; suppression does not
@@ -345,7 +355,7 @@ These are configuration failures, **not** `ParseOutcome.invalid_syntax` and not
 WDP diagnostics. Successful configuration verification says nothing about DOT
 validity or whether the caller supplied sufficient storage.
 
-## Limits, recovery, scanner and execution
+## Limits, error handling, scanner and execution
 
 These fields have identical values and semantics at both binding times:
 
@@ -354,7 +364,7 @@ These fields have identical values and semantics at both binding times:
 | `limits.max_statements` | `maxInt(usize)` | Maximum source statements, not an edge or work budget |
 | `limits.max_attributes` | `maxInt(usize)` | Maximum key/value pairs, including assignments |
 | `limits.max_nesting` | `maxInt(u32)` | Maximum active subgraph depth; root depth is zero; `u32` at both binding times |
-| `recovery` | `.collect` | Continue diagnostics at statement boundaries after a body rejection; `.fail_fast` explicitly stops at the first syntax failure. Neither publishes a partial document |
+| `on_error` | `.collect` | Continue independent validation checks/safe syntax recovery; `.fail_fast` ends the requested operation at its first error. Neither publishes a partial document |
 | `scanner` | `.scalar` | `.block` selects the 64-byte scanner; credit counts differ, language results do not |
 | `execution.metering` | `false` | Enable work-credit accounting and session `advance(budget)` |
 | `execution.cancellation` | `false` | Enable polling of an explicitly supplied cancellation hook |
@@ -368,9 +378,14 @@ boundary is unavailable: malformed headers, trailing input, EOF, unterminated
 strings/comments/HTML-like identifiers, or enforced resource failures. Diagnostic
 sink stop/failure also stops work immediately. A bag that fills on the first
 recoverable finding therefore returns `diagnostic_stopped`; increase its capacity
-to collect more findings. Validation is a separate pass, not governed by this
-syntax-recovery choice. Explicit fixed `.fail_fast` profiles exclude recovery
-handling and skip-depth state.
+to collect more findings. Recovery is an internal continuation mechanism, not
+a second public setting. Validation also honors `on_error`: `.fail_fast` returns
+`error_stopped` after reporting its first error; warnings continue. Filtering a
+finding in the sink does not change this classification. Source-order merging can
+already have discovered other pending findings, which remain in factual counts.
+Fixed fail-fast profiles exclude recovery state unless non-error unsupported
+handling needs safe synchronization. No legacy `recovery` field or `Recovery`
+type alias is retained; the shared type is `OnError`.
 
 Source, allocators, pools, scratch and cancellation contexts are **resources**,
 not policy. `ParseOptions` retains `scratch_allocator` and `document_capacities`;

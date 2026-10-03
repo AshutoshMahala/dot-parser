@@ -6,7 +6,8 @@ const markup = @import("markup_parser");
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const source = "digraph { a [label=<<b title='one' title='two'>Hello</b>> + \" literal \" + <<i>world</i>>]; }";
-    const Outer = dot.Profile(.{ .policy = .{ .limits = .{ .max_nesting = 64, .max_statements = 1000, .max_attributes = 1000 } } });
+    const outer_on_error: dot.OnError = .collect;
+    const Outer = dot.Profile(.{ .policy = .{ .on_error = outer_on_error, .limits = .{ .max_nesting = 64, .max_statements = 1000, .max_attributes = 1000 } } });
     const Inner = markup.Profile(.{ .policy = markup.presets.untrusted });
     var outer_bag = dot.GrowableDiagnosticBag.init(allocator, .{});
     defer outer_bag.deinit();
@@ -37,7 +38,9 @@ pub fn main(init: std.process.Init) !void {
             var checked = try ready.parseAndValidateFragment(allocator, try part.fragment(source), bag.sink(), .{});
             defer checked.deinit();
             try writer.print("operand at byte {d}: valid={any}, nodes={d}\n", .{ part.raw.start, checked.documentValid(), checked.parse.counts.nodes });
-            if (checked.stopped()) {
+            // Parent policy applies after this complete child invocation. Its
+            // own fail-fast/collect setting never overrides the child's setting.
+            if (checked.shouldStop(outer_on_error)) {
                 halted = true;
                 break;
             }

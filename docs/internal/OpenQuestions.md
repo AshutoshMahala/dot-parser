@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-30 (default DOT statement recovery and standalone markup structural recovery; partial trees remain deferred).
+Last reconciled: 2026-10-03 (`on_error`, unsupported reporting, and independent parent/child continuation; partial trees remain deferred).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -542,7 +542,7 @@ baselines and `digraph.treated_as`. Consumed profiles compile for Wasm32 and
 RISC-V32. [Consumer API and costs](../POLICIES.md).
 
 **Existing-settings slice implemented:** `limits.max_nesting`, `max_statements`
-and `max_attributes`, `recovery`, `scanner`, and `execution.metering` /
+and `max_attributes`, `on_error`, `scanner`, and `execution.metering` /
 `cancellation` now use the same baseline/patch model. The default ordinary parse
 is scalar, fail-fast, unmetered and uncancellable, with nesting at `maxInt(u32)`
 and statement/attribute limits at `maxInt(usize)`;
@@ -1119,7 +1119,7 @@ still does not invoke or require the markup engine:
    `<...>` by the verified delimiter rule and emit one identifier token
    covering the whole spelling; the parser applies the mode. In `none` the
    parser reports `E.Profile.Feature.009` with `html_identifier` on that
-   token's span and, under `recovery = .collect`, continues past it. The
+   token's span and, under `on_error = .collect`, continues past it. The
    scanner's `html` terminal and the non-recoverable path it forced are
    removed. An individual operand's form follows its spelling; the first byte
    does not identify the form or HTML presence of a whole concatenation. No
@@ -1316,16 +1316,21 @@ explicit `.unlimited` retention. The last accepted entry requests stopping;
 factual counters and allocation sizes are not narrowed. Prefix-and-count retention
 remains an explicit continuing destination.
 Sink stop/failure terminates unfinished DOT parsing/validation and future composed
-work; ordinary findings still do not. Counts retain discovered facts, including
+work; ordinary findings follow each operation's `on_error` policy. Counts retain discovered facts, including
 source-order pending findings, without claiming unvisited input was checked.
 Delivery, retention and completion remain separate. Terminal syntax/resource
 failures retain their cause if the reporting attempt itself fails.
 
-Validation findings are not fail-fast control flow. An inner validation error
-must not prevent DOT validation, another independent processor, or another
-reliably delimited fragment from being checked. A DOT validation violation also
-does not gate inner validation. Continue all requested independent checks for
-which prerequisites and resources remain available. If an inner structural parse
+**Refined 2026-10-03:** `.on_error = .collect` (default) continues independent
+checks; `.fail_fast` ends the operation at its first error, including validation.
+Warnings never trigger error-based stopping. Parent and child use their own
+policies: child fail-fast/parent collect permits the next fragment; child
+collect/parent fail-fast delivers the child's findings before stopping the batch.
+`diagnostics.unsupported = .err | .warning | .silent` changes reporting and error
+classification, never factual unsupported status or acceptance. Unsupported
+boundaries and child policy limits are not unconditional batch stops; shared
+operational failures still are. `.passthrough` remains supported raw preservation.
+If an inner structural parse
 fails, checks that need its complete structure may be unavailable: report that
 limitation and do not invent dependent findings or call those checks passed.
 The outer parser cannot promise further fragments after an unrecoverable loss of
@@ -1343,7 +1348,8 @@ per-fragment state is required. The existing
 [DOT validator](../../src/dot/validate.zig) and
 [fixed diagnostic bag](../../src/dot/diagnostic.zig) already implement continuation
 and bounded retention within DOT. Bounded/cancellable validation and composition
-with inner processors are still future work.
+with automatically scheduled inner processors are still future work; explicit
+delayed fragment calls and parent-controlled continuation are implemented.
 
 **Scheduling and independent results.** Inner validation must be callable
 standalone, during explicitly composed DOT processing, or later on selected
@@ -1557,7 +1563,7 @@ limits and bounded validation remain outside this implemented slice.
 **Q22 — Which grammar boundaries are safe recovery points, and what is the
 measured binary-size cost of recovery support?**
 **Implemented (2026-09-18):** statement boundaries are the sync points. With
-the policy `recovery = .collect` (now the default, per
+the policy `on_error = .collect` (now the default, per
 R-FUNC-007), a syntax error inside the body aborts the sink once, the parser
 skips to the next `;` or `}` at the same brace depth (skipped `{` are matched
 by counting), and every later syntax error is reported through the same bag.
@@ -1578,7 +1584,7 @@ mode limits retention only. **Still open:** a broader per-class abort/report/ign
 policy. Q36's three lenient
 acceptances are implemented and can successfully commit; recovery after a
 rejected construct remains separate and cannot publish a partial document.
-*(Embodied: `Policy.recovery`,
+*(Embodied: `Policy.on_error`,
 `tests/diagnostics.zig`, `tests/policy_settings.zig`; R-FUNC-007, R-DX-002.)*
 
 ---
@@ -1621,6 +1627,13 @@ Open; nothing currently forces the choice.
 ---
 
 ## Reconciliation log
+
+- 2026-10-03 — Replace `recovery` / `Recovery` with `on_error` / `OnError`, no
+  aliases. Apply fail-fast to validation and combined operations; separately
+  requested source validation still synchronizes safe malformed headers. Add
+  unsupported reporting without treating silence as passthrough. Delayed child
+  results distinguish errors from operational stops and expose parent-controlled
+  continuation. See [the processor contract](PROCESSOR_CONTRACT.md).
 
 - 2026-10-02 — Harden the public scope boundary with all-build-mode metadata
   checks and `invalid_scope`; keep scanner-produced scopes on the trusted internal

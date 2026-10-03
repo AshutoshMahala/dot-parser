@@ -1,8 +1,9 @@
 //! Policy-selected validation over committed syntax data.
 //!
-//! Validation is an analysis pass, not fail-fast control flow (R-FUNC-008):
-//! absent an operational stop it examines the whole document and continues after every independent violation,
-//! and reports each one through the caller's diagnostic sink in
+//! Validation obeys the operation's on_error policy (R-FUNC-008): collect
+//! examines the whole document absent an operational stop; fail-fast reports
+//! the first error and leaves remaining checks incomplete. Both modes report
+//! through the caller's diagnostic sink in
 //! deterministic source order (R-PORT-005). Completing the pass and the
 //! document being valid are separate facts — `Result` reports both.
 //!
@@ -31,6 +32,9 @@ pub const AttributeKeyScratch = checks.AttributeKeyScratch;
 /// How the pass ended. An incomplete-but-valid pass is unrepresentable.
 /// Scratch preflight is implemented; bounded/cancellable validation is not.
 pub const Outcome = union(enum) {
+    /// The operation's first reported error, not a destination stop. Other
+    /// source-order cursors may already have discovered pending findings.
+    error_stopped: struct { violations: u64, warnings: u64 },
     /// Findings are prefix facts; unvisited checks are not claimed valid.
     diagnostic_stopped: struct { reason: diagnostic.StopReason, violations: u64, warnings: u64 },
     /// The pass examined every statement (R-FUNC-008). Any number of
@@ -63,6 +67,8 @@ pub const Result = struct {
     /// Delivery is separate from completion: accepted-stop can have complete
     /// delivery while validation remains incomplete.
     diagnostic_delivery: diagnostic.Delivery,
+    /// Preserve a terminal resource diagnostic's acknowledgment too.
+    diagnostic_stop: ?diagnostic.StopReason = null,
 
     /// True only for a completed pass that found no violations.
     pub fn documentValid(self: *const Result) bool {
@@ -70,6 +76,7 @@ pub const Result = struct {
             .completed => |completed| completed.document_valid,
             .insufficient_scratch => false,
             .diagnostic_stopped => false,
+            .error_stopped => false,
         };
     }
 
@@ -78,6 +85,7 @@ pub const Result = struct {
             .completed => |completed| completed.warnings,
             .insufficient_scratch => 0,
             .diagnostic_stopped => |stopped| stopped.warnings,
+            .error_stopped => |stopped| stopped.warnings,
         };
     }
 };
@@ -96,19 +104,24 @@ pub fn validate(
     // never masquerade as a completed, valid pass, even with a discard sink.
     if (settings.repeated_attribute != .off and scratch.attribute_keys.len < document.attributes.len) {
         var delivery: diagnostic.Delivery = .complete;
-        _ = diagnostics.emit(.{
+        var stop: ?diagnostic.StopReason = null;
+        const action = diagnostics.emit(.{
             .code = .resource_capacity_exhausted,
             .span = document.keyword,
             .details = .{ .capacity = .{ .resource = .validation_attribute_keys, .limit = scratch.attribute_keys.len } },
-        }) catch {
+        }) catch |err| failure: {
             delivery = .failed;
+            stop = .fromError(err);
+            break :failure .proceed;
         };
+        if (action == .stop) stop = .requested;
         return .{
             .outcome = .{ .insufficient_scratch = .{
                 .required_attribute_keys = @intCast(document.attributes.len),
                 .provided_attribute_keys = scratch.attribute_keys.len,
             } },
             .diagnostic_delivery = delivery,
+            .diagnostic_stop = stop,
         };
     }
 
@@ -137,6 +150,10 @@ pub fn validate(
             return stoppedResult(diagnostic.StopReason.fromError(err), .failed, errors, warnings, &pending, index);
         };
         if (action == .stop) return stoppedResult(.requested, .complete, errors, warnings, &pending, index);
+        if (settings.on_error == .fail_fast and d.code.severity() == .err) {
+            // Keep already discovered prefix facts, but deliver no further item.
+            return .{ .outcome = .{ .error_stopped = prefixCounts(errors, warnings, &pending, index) }, .diagnostic_delivery = .complete };
+        }
         inline for (fields, 0..) |field, at| {
             if (index == at) pending[at] = @field(cursors, field.name).next();
         }
@@ -149,7 +166,7 @@ pub fn validate(
 
 // Source-order merging may already have discovered one pending finding from
 // another rule. Keep those facts without advancing any cursor after a stop.
-fn stoppedResult(reason: diagnostic.StopReason, delivery: diagnostic.Delivery, errors: u64, warnings: u64, pending: []const ?diagnostic.Diagnostic, emitted: usize) Result {
+fn prefixCounts(errors: u64, warnings: u64, pending: []const ?diagnostic.Diagnostic, emitted: usize) @FieldType(Outcome, "error_stopped") {
     var violations = errors;
     var notices = warnings;
     for (pending, 0..) |finding, index| {
@@ -158,9 +175,15 @@ fn stoppedResult(reason: diagnostic.StopReason, delivery: diagnostic.Delivery, e
             if (d.code.severity() == .err) violations += 1 else notices += 1;
         }
     }
+    return .{ .violations = violations, .warnings = notices };
+}
+
+fn stoppedResult(reason: diagnostic.StopReason, delivery: diagnostic.Delivery, errors: u64, warnings: u64, pending: []const ?diagnostic.Diagnostic, emitted: usize) Result {
+    const counts = prefixCounts(errors, warnings, pending, emitted);
     return .{
-        .outcome = .{ .diagnostic_stopped = .{ .reason = reason, .violations = violations, .warnings = notices } },
+        .outcome = .{ .diagnostic_stopped = .{ .reason = reason, .violations = counts.violations, .warnings = counts.warnings } },
         .diagnostic_delivery = delivery,
+        .diagnostic_stop = reason,
     };
 }
 

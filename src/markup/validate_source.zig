@@ -238,7 +238,10 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                             if (pending.content) |content| {
                                 if (!self.checkScope(if (pending.content_kind == .text) .{ .text = content } else .{ .attribute_value = content }, &.{})) return self.result;
                             }
-                            if (p.recovery != .collect or !scanner.canRecoverHeader()) return self.finish();
+                            // This operation checks local content, not syntax.
+                            // A lexical gap is not a second syntax finding. Seek
+                            // later trustworthy scopes even in fail-fast validation.
+                            if (!scanner.canRecoverHeader()) return self.finish();
                             var cursor: lexer.HeaderRecovery = .unquoted;
                             while (true) {
                                 if (!self.poll()) return self.result;

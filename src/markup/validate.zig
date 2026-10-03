@@ -39,6 +39,8 @@ pub const CheckStatus = enum { not_run, incomplete, complete };
 pub const Result = struct {
     completion: union(enum) {
         complete,
+        /// This operation's first error; the destination remains usable by a parent.
+        error_stopped,
         /// Earliest loss of local coverage, in original-source bytes. Later
         /// regions may have been checked; this is not a resume cursor.
         incomplete: u32,
@@ -403,7 +405,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                         .span = .{ .start = at, .len = if (reason == .invalid_utf8) 1 else width },
                         .related = name,
                         .details = .{ .name = .{ .context = context, .problem = reason } },
-                    });
+                    }, settings);
                 }
             }
             scan.flush(index, poller);
@@ -445,7 +447,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                     const at = span.start + amp;
                     if (!encodingThrough(source, at, offset, poller, result, sink, settings, hook)) return false;
                     const code: diagnostic.Code = if (selected.severity == .err) .unknown_reference else .unknown_reference_tolerated;
-                    if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = index - amp } })) return false;
+                    if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = index - amp } }, settings)) return false;
                 }
                 if (!checkName(source, name, .reference, offset, poller, result, sink, settings, hook)) return false;
                 scan = Poller.Scan.init(index, poller.*);
@@ -459,7 +461,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         inline fn emitDuplicate(source: []const u8, name: Span, first: Span, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
             if (!encodingThrough(source, name.start, offset, poller, result, sink, settings, hook)) return false;
             const code: diagnostic.Code = if (rules(settings).duplicate_attribute == .err) .duplicate_attribute else .duplicate_attribute_tolerated;
-            return emit(result, sink, .{ .code = code, .span = name, .related = first });
+            return emit(result, sink, .{ .code = code, .span = name, .related = first }, settings);
         }
 
         inline fn prepareKeys(context: anytype, keys: []AttributeKeyScratch, start: u32) void {
@@ -496,7 +498,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             result.completion = .cancelled;
             return true;
         }
-        fn emit(result: *Result, sink: diagnostic.Sink, finding: diagnostic.Diagnostic) bool {
+        fn emit(result: *Result, sink: diagnostic.Sink, finding: diagnostic.Diagnostic, settings: Settings) bool {
             if (finding.code.severity() == .err) {
                 result.errors += 1;
                 result.validity = .invalid;
@@ -508,6 +510,10 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             };
             if (action == .stop) {
                 result.completion = .{ .diagnostic_stopped = .requested };
+                return false;
+            }
+            if (rules(settings).on_error == .fail_fast and finding.code.severity() == .err) {
+                result.completion = .error_stopped;
                 return false;
             }
             return true;
@@ -531,7 +537,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                     } else {
                         offset.* += 1;
                         const code: diagnostic.Code = if (rules(settings).invalid_utf8 == .err) .invalid_utf8 else .invalid_utf8_tolerated;
-                        if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .byte = source[at] } })) return false;
+                        if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .byte = source[at] } }, settings)) return false;
                     }
                 }
             } else {
@@ -555,7 +561,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                         } else {
                             cursor += 1;
                             const code: diagnostic.Code = if (rules(settings).invalid_utf8 == .err) .invalid_utf8 else .invalid_utf8_tolerated;
-                            if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .byte = source[at] } })) return false;
+                            if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .byte = source[at] } }, settings)) return false;
                         }
                     }
                 }

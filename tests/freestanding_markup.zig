@@ -19,7 +19,7 @@ export fn parse_markup(source: [*]const u8, len: usize, limit: u32, stop: *u8) u
     var frames: markup.FixedParseScratch(8) = .{};
     var keys: markup.FixedValidationScratch(32) = .{};
     const hook: markup.Cancellation = .{ .context = stop, .is_requested = stopped };
-    var session = P.Session.init(source[0..len], .{ .document = storage.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .recovery = @enumFromInt(limit % 2), .limits = .{ .max_nodes = limit }, .syntax = .{ .malformed_reference = @enumFromInt(limit % 3) } }, .cancellation = hook } else .{ .cancellation = hook });
+    var session = P.Session.init(source[0..len], .{ .document = storage.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .on_error = @enumFromInt(limit % 2), .diagnostics = .{ .unsupported = @enumFromInt(limit % 3) }, .limits = .{ .max_nodes = limit }, .syntax = .{ .malformed_reference = @enumFromInt(limit % 3) } }, .cancellation = hook } else .{ .cancellation = hook });
     defer session.deinit();
     while (true) {
         const p = if (features.runtime_policy) session.advance(1) catch return 0 else session.advance(1);

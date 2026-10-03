@@ -75,6 +75,10 @@ pub const Fixes = enum {
     }
 };
 
+/// Classification of recognized-but-unprocessed input, not a processing mode.
+/// Silent suppresses delivery, never recognition or the unsupported result.
+pub const Unsupported = enum { err, warning, silent };
+
 /// Allocation-free edits; the processor owns the replacement vocabulary.
 /// Replacement.text() returns static text. Consumers apply edits to their own
 /// buffer, highest offset first, then parse again. Parsers never apply fixes.

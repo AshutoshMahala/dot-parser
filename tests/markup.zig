@@ -364,7 +364,7 @@ test "cancellation before each step, zero budget, relocation and terminal idempo
 }
 
 test "explicit fail-fast syntax cause survives stopped, empty, or failing diagnostic destinations" {
-    const P = markup.Profile(.{ .policy = .{ .recovery = .fail_fast } });
+    const P = markup.Profile(.{ .policy = .{ .on_error = .fail_fast } });
     const Reject = struct {
         fn emit(_: ?*anyopaque, _: markup.Diagnostic) markup.reporting.SinkError!markup.reporting.Action {
             return error.DiagnosticSinkFailure;

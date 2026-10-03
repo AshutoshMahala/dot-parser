@@ -48,7 +48,7 @@ pools still produce `.storage_failure` with a diagnostic.
 Credits do not bound CPU instructions or wall-clock time. User diagnostic and
 cancellation hooks are callouts; their execution time is excluded. Terminal
 housekeeping can attempt one diagnostic and one internal cleanup abort without
-another credit. With `Policy.recovery = .collect`, each recovered
+another credit. With `Policy.on_error = .collect`, each recovered
 syntax error and each lexical warning is one more diagnostic callout attached
 to the microstep that found it; the abort still happens once. Validation, identifier decoding, and rendering are separate,
 unbudgeted operations. There is no OS clock, scheduler, thread, or hidden worker.

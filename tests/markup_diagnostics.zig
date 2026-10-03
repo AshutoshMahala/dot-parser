@@ -87,11 +87,11 @@ test "markup decomposed registry preserves every existing structured identity" {
     const expected = [_][]const u8{
         "E.Syntax.Byte.003",          "E.Syntax.Grammar.003",       "E.Syntax.Grammar.031",
         "E.Syntax.Tag.002",           "E.Syntax.Tag.003",           "E.Syntax.Tag.032",
-        "E.Profile.Feature.009",      "E.Resource.Capacity.026",    "E.Resource.Memory.026",
-        "E.Validation.Attribute.006", "W.Validation.Attribute.006", "E.Syntax.Reference.003",
-        "W.Syntax.Reference.003",     "E.Validation.Encoding.003",  "W.Validation.Encoding.003",
-        "E.Validation.Name.003",      "W.Validation.Name.003",      "E.Validation.Reference.003",
-        "W.Validation.Reference.003",
+        "E.Profile.Feature.009",      "W.Profile.Feature.009",      "E.Resource.Capacity.026",
+        "E.Resource.Memory.026",      "E.Validation.Attribute.006", "W.Validation.Attribute.006",
+        "E.Syntax.Reference.003",     "W.Syntax.Reference.003",     "E.Validation.Encoding.003",
+        "W.Validation.Encoding.003",  "E.Validation.Name.003",      "W.Validation.Name.003",
+        "E.Validation.Reference.003", "W.Validation.Reference.003",
     };
     const codes = std.enums.values(markup.diagnostic.Code);
     try equal(expected.len, codes.len);

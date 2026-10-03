@@ -91,7 +91,7 @@ test "the facade honors hints when only a new pool is requested" {
 }
 
 test "malformed attributes fail without partial documents and with matching typed diagnostics" {
-    const P = dot.Profile(.{ .policy = .{ .recovery = .fail_fast } });
+    const P = dot.Profile(.{ .policy = .{ .on_error = .fail_fast } });
     inline for (.{
         "graph { a [x] }",            "graph { a [x=] }",            "graph { a [=1] }",
         "graph { a [,x=1] }",         "graph { a [x=1,,y=2] }",      "graph { a [;] }",

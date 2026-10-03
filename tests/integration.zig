@@ -751,8 +751,8 @@ test "valid corpus parses to the expected statements, deterministically" {
 test "invalid corpus fails with the expected diagnostic and terminates" {
     inline for (.{ .scalar, .block }) |scanner| {
         inline for (.{ .fail_fast, .collect }) |recovery| {
-            const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .recovery = recovery } });
-            const Bounded = dot.Profile(.{ .policy = .{ .scanner = scanner, .recovery = recovery, .execution = .{ .metering = true } } });
+            const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .on_error = recovery } });
+            const Bounded = dot.Profile(.{ .policy = .{ .scanner = scanner, .on_error = recovery, .execution = .{ .metering = true } } });
             for (invalid_corpus) |entry| {
                 errdefer std.debug.print("corpus fixture: invalid/{s}\n", .{entry.name});
 

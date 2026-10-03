@@ -48,7 +48,8 @@ pub const OperatorReading = policy_impl.OperatorReading;
 pub const ScannerBackend = policy_impl.ScannerBackend;
 pub const MarkupMode = policy_impl.MarkupMode;
 pub const Fixes = policy_impl.Fixes;
-pub const Recovery = policy_impl.Recovery;
+pub const OnError = policy_impl.OnError;
+pub const Unsupported = policy_impl.Unsupported;
 const DefaultProfile = Profile(.{});
 
 /// Policy-bound parsing, execution, validation and interpretation. Runtime
@@ -216,9 +217,12 @@ pub const ParseResult = struct {
     /// through later stops; zero with incomplete work does not establish validity.
     syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
+    /// Sink acknowledgment, even when reporting an already-terminal failure.
+    /// The original outcome is preserved; do not start child work after a stop.
+    diagnostic_stop: ?diagnostic.StopReason = null,
     /// Accepted syntax deviations, including silent acceptances before failure.
     accepted_deviations: u32 = 0,
-    /// Syntax warnings produced, independent of diagnostic retention/delivery.
+    /// Parse warnings (including unsupported reporting), independent of delivery.
     warnings: u32 = 0,
 
     pub fn deinit(self: *ParseResult, allocator: std.mem.Allocator) void {
@@ -249,6 +253,7 @@ pub const FixedParseResult = struct {
     completion: Completion = .incomplete,
     syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
+    diagnostic_stop: ?diagnostic.StopReason = null,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
 };
@@ -269,6 +274,7 @@ pub const SessionProgress = struct {
     outcome: ?ParseOutcome,
     syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
+    diagnostic_stop: ?diagnostic.StopReason = null,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
 };
@@ -288,6 +294,7 @@ pub const MeasureResult = struct {
     completion: Completion = .incomplete,
     syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
+    diagnostic_stop: ?diagnostic.StopReason = null,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
 };
@@ -308,6 +315,7 @@ pub const CheckResult = struct {
     syntax_errors: u32 = 0,
     validation: ?ValidationResult = null,
     diagnostic_delivery: diagnostic.Delivery,
+    diagnostic_stop: ?diagnostic.StopReason = null,
     accepted_deviations: u32 = 0,
     /// Total syntax and validation warnings produced, including dropped ones.
     // Independent rules may report the same byte: the aggregate is not bounded

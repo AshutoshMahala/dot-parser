@@ -41,8 +41,8 @@ test "unquoted header value does not hide a later independent reference error" {
 
 test "header recovery preserves actual open and empty boundaries across execution policies" {
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| inline for (.{ .fail_fast, .collect }) |recovery| inline for (.{ false, true }) |metered| {
-        const p: markup.Policy = .{ .scanner = backend, .recovery = recovery, .execution = .{ .metering = metered } };
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{ .recovery = .fail_fast } else p });
+        const p: markup.Policy = .{ .scanner = backend, .on_error = recovery, .execution = .{ .metering = metered } };
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{ .on_error = .fail_fast } else p });
         const options: P.Options = if (runtime) .{ .policy = p } else .{};
         for (headers, 0..) |header, index| {
             const source = try std.fmt.allocPrint(std.testing.allocator, "<root>{s}<later>fish & chips</later></root>\n", .{header});

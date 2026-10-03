@@ -257,7 +257,7 @@ The parser state machine and a private, provisional syntax-event contract. It
 parses one document and emits source-shaped events. It does not allocate AST
 nodes directly and does not know about graph engines.
 
-Under the default `recovery = .collect` policy a recoverable body syntax error aborts
+Under the default `on_error = .collect` policy a recoverable body syntax error aborts
 the sink once and the grammar keeps running for diagnostics only,
 resynchronizing at `;`/`}`; explicit `.fail_fast` stops at the first syntax failure.
 

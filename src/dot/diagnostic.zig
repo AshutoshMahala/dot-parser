@@ -189,6 +189,7 @@ pub const Code = enum {
     /// E.Profile.Feature.009 (UNSUPPORTED) — a recognized construct is
     /// disabled by the selected policy (R-MOD-006); not an inner-validity claim.
     profile_unsupported_feature,
+    profile_unsupported_feature_warning,
     /// E.Resource.Capacity.026 (EXHAUSTED) — a caller-configured capacity was
     /// reached; distinct from invalid syntax (R-ROB-002).
     resource_capacity_exhausted,
@@ -330,13 +331,13 @@ pub const Code = enum {
                 .summary = "edge operator mismatch accepted by policy",
                 .hint = "the selected policy determines whether the operator is preserved or interpreted as conforming to the graph kind",
             },
-            .profile_unsupported_feature => .{
-                .severity = .err,
+            .profile_unsupported_feature, .profile_unsupported_feature_warning => .{
+                .severity = if (self == .profile_unsupported_feature) .err else .warning,
                 .component = .profile,
                 .primary = .feature,
                 .sequence = Sequence.unsupported,
                 .summary = "recognized DOT construct is not supported by this profile",
-                .hint = "this recognized construct is disabled by policy; select passthrough markup recognition to preserve it without inner validation; later input has not been checked",
+                .hint = "select passthrough markup recognition to preserve this identifier without inner validation",
             },
             .resource_capacity_exhausted => .{
                 .severity = .err,

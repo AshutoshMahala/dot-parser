@@ -108,9 +108,9 @@ test "partial header validation survives missing delimiters and safely resumes o
     try equal(span(source, "0").start, recovered.completion.incomplete);
     try equal(@as(u64, 3), recovered.errors);
     try equal(.incomplete, recovered.checks.duplicate_attribute);
-    const Fast = markup.Profile(.{ .policy = .{ .recovery = .fail_fast } });
+    const Fast = markup.Profile(.{ .policy = .{ .on_error = .fail_fast } });
     const fast = Fast.validateSourceIn(source, scratch.storage(), discard, .{});
-    try equal(recovered.completion.incomplete, fast.completion.incomplete);
+    try equal(.error_stopped, fast.completion);
     try equal(@as(u64, 1), fast.errors);
     const quoted = P.validateSourceIn("<x good='&bogus;' bad='unfinished", scratch.storage(), discard, .{});
     try expect(quoted.completion == .incomplete);

@@ -6,6 +6,20 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- **Breaking:** replace both parsers' `recovery` field / `Recovery` type with
+  `on_error` / shared `OnError` (`collect` by default, or `fail_fast`), without
+  compatibility aliases. Validation now honors the same policy and reports
+  `error_stopped`; fail-fast combined markup calls skip validation after syntax
+  failure. Explicit source validation still synchronizes safe malformed headers.
+- Add `diagnostics.unsupported = .err | .warning | .silent` (default `err`) to
+  both policies. Reporting never changes unsupported input into success and stays
+  separate from DOT passthrough recognition. Add `W.Profile.Feature.009`.
+- Fragment results expose `has_errors` and `shouldStop(parent_on_error)`.
+  Unsupported input and child policy limits no longer unconditionally end a
+  batch; the parent decides after the child returns. Sink stops/failures,
+  allocation/storage failure and cancellation still halt the batch. DOT results
+  now preserve terminal `diagnostic_stop` acknowledgments, matching markup.
+
 - Preserve markup terminal diagnostic stop/failure acknowledgments in parse and
   measurement results; fragment helpers never start validation into a stopped
   sink. Source validation shares its cancellation countdown across local scopes
@@ -57,7 +71,7 @@ are called out here; compatibility shims are not retained.
   queries once avoids repeated whole-source scans without hidden allocation.
   Add both recovery modes/backends to the invalid corpus with bounded-step guards.
 
-- **Breaking:** DOT and markup now expose only `recovery = .fail_fast` or
+- **Breaking:** DOT and markup now expose only `on_error = .fail_fast` or
   `.collect`, with `.collect` the default. Replace DOT's `.statements` and markup's
   recovery value `.structural`; no compatibility aliases remain. Markup processing
   modes are separate from recovery. This rename does not change recovery behavior.
@@ -354,7 +368,7 @@ and the planned markup subsystem are deferred until after this release.
 - `W.Syntax.Numeral.033`: numerals running into a letter or second dot
   (`1e3`, `1.2.3`) warn, matching Graphviz, and the parse continues. First
   use of the warning severity.
-- `ParseOptions.recovery = .statements` (also fixed and session options):
+- `ParseOptions.on_error = .statements` (also fixed and session options):
   after a body syntax error, resynchronize at `;`/`}` and keep reporting
   syntax errors. Still no document, one abort, `invalid_syntax`.
 - `measure` / `measureIn`: count-only dry run returning the exact

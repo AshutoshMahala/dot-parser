@@ -149,6 +149,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
                 .completion = parsed.completion,
                 .syntax_errors = parsed.syntax_errors,
                 .diagnostic_delivery = parsed.diagnostic_delivery,
+                .diagnostic_stop = parsed.diagnostic_stop,
                 .accepted_deviations = parsed.accepted_deviations,
                 .warnings = parsed.warnings,
             };
@@ -159,6 +160,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
                 .completion = parsed.completion,
                 .syntax_errors = parsed.syntax_errors,
                 .validation = checked,
+                .diagnostic_stop = checked.diagnostic_stop orelse parsed.diagnostic_stop,
                 .accepted_deviations = parsed.accepted_deviations,
                 .warnings = @as(u64, parsed.warnings) + checked.warningCount(),
                 .diagnostic_delivery = if (parsed.diagnostic_delivery == .failed or checked.diagnostic_delivery == .failed) .failed else .complete,

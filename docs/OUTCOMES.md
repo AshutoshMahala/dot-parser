@@ -20,7 +20,7 @@ DOT processing and does not produce a source diagnostic.
 | `.cancelled` | A session was cancelled, or an enabled cancellation hook stopped a one-shot operation | No |
 | `.diagnostic_stopped` | A diagnostic destination stopped unfinished work: requested, capacity, failure, or out_of_memory | No |
 | `.invalid_syntax` | The input is not accepted by the selected syntax policy | No |
-| `.unsupported_feature` | The parse stopped at a policy-disabled DOT construct | No |
+| `.unsupported_feature` | Recognized policy-disabled input; reporting severity does not change this outcome | No |
 | `.resource_exhausted` | A caller-configured limit (e.g. `max_statements` or `max_attributes`) was reached; the input may still be valid | No |
 | `.storage_failure` | Document storage could not hold the document | No |
 
@@ -30,6 +30,7 @@ All parse, fixed-session, measurement and combined-check results also expose:
 | --- | --- |
 | `completion` | `.complete` after EOF and the final grammar/recovery checks; otherwise `.incomplete`. This is not validity. In `CheckResult` it covers parsing only; inspect `validation` separately. |
 | `syntax_errors: u32` | Syntax rejections discovered, including a finding the sink refused. Preserved if a later cancellation, resource/storage failure, unsupported boundary or diagnostic stop ends recovery. |
+| `diagnostic_stop` | Optional sink stop/failure reason, including an accepted stop while reporting an already-terminal failure; original outcome remains intact |
 
 Both DOT and standalone markup separate the terminal **stop reason** from these
 facts. A positive syntax-error count establishes rejection even when the outcome
@@ -77,7 +78,11 @@ The distinction the taxonomy is built around:
   without checking inner markup.
 
 An unsupported outcome is a **boundary, not a validity claim**: the envelope
-was scanned, but its contents and later DOT syntax have not been validated. And the classification is
+was scanned, but its contents were not processed. Later DOT syntax is visited
+only when safe recovery permits it; inspect `completion`. Reporting is selected
+by `diagnostics.unsupported = .err | .warning | .silent`, independently of
+recognition. Warning/silence never publish a document or imply acceptance.
+The classification is
 grammar-aware — a deferred keyword in a position where it is not legal DOT
 (`subgraph` as the document root) is plain `invalid_syntax`.
 
@@ -102,36 +107,45 @@ var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
 ```
 
 `ValidationResult.outcome` is `.completed { document_valid, violations, warnings }`,
+`.error_stopped { violations, warnings }`,
 `.diagnostic_stopped { reason, violations, warnings }`, or
 `.insufficient_scratch { required_attribute_keys, provided_attribute_keys }`.
 Scratch failure runs no checks and leaves scratch unchanged; the document remains
 available, but `documentValid()` is false. It emits a capacity diagnostic naming
 `validation_attribute_keys`. Only optional repeated-key checking requires scratch.
+`diagnostic_stop` also preserves that terminal diagnostic's acknowledgment without
+replacing the scratch-failure outcome; it is propagated to combined check results.
 `violations` counts errors, while `warnings` counts warning-severity findings;
 only errors invalidate the document. Both count occurrences independently of sink
 retention/delivery. [Profiles](POLICIES.md) configure severity, graph treatment
 and effective operator reading. Bounded/cancellable validation is future work; outcomes for those
-behaviors will be added when implemented. Without an operational stop, validation
-reports every violation in source order; a document violation alone never stops
-the pass. Resource preflight can prevent the pass
+behaviors will be added when implemented. Default `.on_error = .collect`
+reports violations in source order until completion or an operational stop.
+`.fail_fast` returns `.error_stopped` after its first reported error; warnings
+continue. The parsed document remains available but `documentValid()` is false.
+This does not stop the sink or prevent separately requested operations.
+Resource preflight can prevent the pass
 from starting. Independent checks may report the same byte, so validation counts
 are u64 even on 32-bit targets. `warningCount()` returns the count for a completed
-pass, the discovered count when diagnostic delivery stopped work, or zero when
+pass, the discovered count when error policy or diagnostic delivery stopped work, or zero when
 scratch preflight failed. Explicit sink stopping is distinct from document errors.
+Counts include pending findings already discovered for source-order merging,
+not just delivered entries. A real sink stop/failure takes precedence when it
+occurs while reporting the first error.
 
 ## The diagnostic bag
 
 Parse, fixed-parse, measure and session-progress results contain factual
 `accepted_deviations: u32` and `warnings: u32`. The first counts syntax-policy
 acceptances, including silent `.accept`; the second counts produced syntax
-warnings, including numeral warnings. Neither depends on bag retention,
+warnings, including numeral and unsupported-feature warnings. Neither depends on bag retention,
 filtering or successful delivery. Counts remain available when later work fails
 or is cancelled; they are not a complete deviation history.
 `CheckResult.warnings: u64` totals syntax and validation warnings;
 `CheckResult.accepted_deviations` retains the parse count. Separate validation
 reports only its own warnings. See [syntax policies](POLICIES.md).
 
-Parsing defaults to `Policy.recovery = .collect`: a recoverable syntax error
+Parsing defaults to `Policy.on_error = .collect`: a recoverable syntax error
 inside the body does not end the parse. The
 document is aborted once, the parser skips to the next `;` or `}` at the
 same brace depth, and every further syntax error is reported too. The
@@ -146,8 +160,10 @@ order. A later operational stop retains its own outcome and `.incomplete`
 completion; `syntax_errors` preserves earlier syntax rejection. Neither recovery
 outcome publishes a document. Reaching EOF during resynchronization without
 finishing the grammar is still incomplete.
-Explicit `.fail_fast` stops at the first syntax failure and still uses the same
+Explicit `.fail_fast` stops at the first error and still uses the same
 diagnostic sink. Recovery is best-effort, not a promise to report every error.
+Unsupported warnings/silence do not trigger error-based stopping, though unsafe
+boundaries still end parsing. Passthrough recognition produces no unsupported finding.
 
 Warnings (`W.Syntax.Numeral.033`, `W.Syntax.Operator.003`,
 `W.Syntax.Grammar.034`) do not invalidate input. Their destination can still
@@ -201,7 +217,7 @@ payload (`Unexpected.context`, `ReservedKeyword.context`).
 | `E/W.Validation.Encoding.003` | Invalid UTF-8 under the optional whole-source check | `.invalid_utf8`: offending byte; one-byte recovery |
 | `E/W.Validation.Attribute.035` | Repeated logical key in one statement's combined attribute lists | `.repeated_attribute`: first equal key's span |
 | `E/W.Validation.Restriction.003` | Consumer restriction on effective kind, ports or subgraphs | `.restriction`: `undigraph`, `digraph`, `generic`, `port` or `subgraph` |
-| `E.Profile.Feature.009` | Policy-disabled DOT construct | `.unsupported_feature` |
+| `E/W.Profile.Feature.009` | Policy-disabled DOT construct, with configured error/warning reporting; silent emits no entry | `.unsupported_feature` |
 | `E.Resource.Capacity.026` | A configured capacity was exhausted | `.capacity` when available, otherwise `.none` |
 | `E.Resource.Memory.026` | Document memory was exhausted | `.none` |
 

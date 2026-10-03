@@ -74,7 +74,9 @@ bag may opt into a tagged union; that cost does not affect plain DOT diagnostics
 
 ## Stopping is not invalid input
 
-Ordinary validation findings continue independent checks. Sink stop/failure ends
+With default `.on_error = .collect`, validation findings continue independent
+checks; `.fail_fast` ends the current operation at its first error. A warning
+does not trigger fail-fast. Sink stop/failure ends
 unfinished work and is not a validation verdict. Completed DOT output remains
 available if validation stops. Accepted-stop can have complete delivery but
 incomplete validation. A rejected diagnostic is counted as discovered, and the
@@ -85,9 +87,20 @@ Terminal syntax/resource errors retain their original cause even if reporting
 fails: there was already no remaining work to continue. During syntax recovery,
 however, a stop ends the search for additional findings. There is no recursive
 attempt to diagnose a broken sink. Terminal calls do not emit again.
+Both parsers expose `diagnostic_stop` so an accepted terminal stop also prevents
+starting later child work into that sink; complete delivery does not mean proceed.
 Both parsers preserve `syntax_errors` and report `completion` separately from
 the stop reason. Diagnostic delivery failure cannot erase a discovered error;
 an incomplete pass with zero errors does not imply valid input.
+
+`diagnostics.unsupported = .err | .warning | .silent` selects classification and
+reporting for unsupported input. It does not implement the missing feature,
+publish a successful tree or certify skipped bytes. `.silent` is not `.passthrough`:
+DOT passthrough actively supports preserving an HTML-like identifier's envelope.
+Sink filtering is presentation only and cannot downgrade an error. Parent and
+child `on_error` policies are independent; the parent decides whether to visit
+another child after the active child has returned. See the
+[fragment continuation table](MARKUP.md#delayed-processing-inside-dot).
 
 Growable bags are the default in general examples, not an implicit core allocator.
 Fixed-memory and streaming operation remain first-class choices.

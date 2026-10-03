@@ -73,7 +73,7 @@ test "none rejects whole mixed expressions at either binding time" {
 
 test "none recovery continues through statements without publishing partial syntax" {
     inline for (.{ .scalar, .block }) |backend| {
-        const P = dot.Profile(.{ .policy = .{ .scanner = backend, .markup = .none, .recovery = .collect } });
+        const P = dot.Profile(.{ .policy = .{ .scanner = backend, .markup = .none, .on_error = .collect } });
         const source = "graph { <a> -- { <skipped> }; b -- ; <c>; }";
         var bag: dot.FixedDiagnosticBag(8) = .{};
         var result = P.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
@@ -93,7 +93,7 @@ test "none recovery preserves unsupported-only outcomes across binding and execu
             const P = dot.Profile(.{ .runtime_policy = runtime, .policy = .{
                 .scanner = backend,
                 .markup = .none,
-                .recovery = .collect,
+                .on_error = .collect,
                 .execution = .{ .metering = true },
             } });
             inline for (.{
@@ -128,7 +128,7 @@ test "none recovery reports later operational stops and clears rejection on rese
         const P = dot.Profile(.{ .policy = .{
             .scanner = backend,
             .markup = .none,
-            .recovery = .collect,
+            .on_error = .collect,
             .execution = .{ .metering = true },
         } });
         var bag: dot.FixedDiagnosticBag(8) = .{};
@@ -151,7 +151,7 @@ test "none recovery reports later operational stops and clears rejection on rese
         session.reset("graph { b; }", dot.diagnostic.discard, .{});
         while (session.result() == null) _ = session.advance(1);
         try equal(.success, session.result().?.outcome);
-        const Limited = dot.Profile(.{ .policy = .{ .scanner = backend, .markup = .none, .recovery = .collect, .limits = .{ .max_statements = 1 } } });
+        const Limited = dot.Profile(.{ .policy = .{ .scanner = backend, .markup = .none, .on_error = .collect, .limits = .{ .max_statements = 1 } } });
         var limited_bag: dot.FixedDiagnosticBag(8) = .{};
         var limited = Limited.parseBorrowed(std.testing.allocator, "graph { <a>; b; c; }", limited_bag.sink(), .{});
         defer limited.deinit(std.testing.allocator);
@@ -286,7 +286,7 @@ test "bounded sessions preserve HTML continuation and reset runtime patches" {
 }
 
 test "stopping diagnostic destinations abort none-policy recovery promptly" {
-    const P = dot.Profile(.{ .policy = .{ .markup = .none, .recovery = .collect } });
+    const P = dot.Profile(.{ .policy = .{ .markup = .none, .on_error = .collect } });
     var bag: dot.FixedDiagnosticBag(1) = .{};
     var result = P.parseBorrowed(std.testing.allocator, "graph { <a>; <b>; }", bag.sink(), .{});
     defer result.deinit(std.testing.allocator);

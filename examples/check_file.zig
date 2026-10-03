@@ -31,12 +31,12 @@ pub fn main(init: std.process.Init) !u8 {
 
     var path: ?[]const u8 = null;
     var compact = false;
-    var recovery: dot.Recovery = .collect;
+    var on_error: dot.OnError = .collect;
     for (argv[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--compact")) {
             compact = true;
         } else if (std.mem.eql(u8, arg, "--fail-fast")) {
-            recovery = .fail_fast;
+            on_error = .fail_fast;
         } else {
             path = arg;
         }
@@ -52,7 +52,7 @@ pub fn main(init: std.process.Init) !u8 {
     // (`--fail-fast` explicitly stops at the first).
     const Parser = dot.Profile(.{ .runtime_policy = true });
     var checked = try Parser.parseAndValidate(allocator, source, bag.sink(), .{
-        .policy = .{ .recovery = recovery },
+        .policy = .{ .on_error = on_error },
     });
     defer checked.deinit(allocator);
 

@@ -3,6 +3,7 @@ const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 test {
     _ = @import("markup_integration.zig");
+    _ = @import("error_policy.zig");
 }
 
 test "both parsers separate a later resource stop from established syntax rejection" {

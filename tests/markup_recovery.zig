@@ -7,11 +7,11 @@ const deep = std.testing.expectEqualDeep;
 const discard = markup.diagnostic.discard;
 
 test "collect is the markup recovery default and presets expose the same two choices" {
-    try equal(@as(usize, 2), std.meta.fields(markup.Recovery).len);
-    try equal(markup.Recovery.collect, markup.Profile(.{}).baseline.recovery);
-    try equal(markup.Recovery.collect, markup.presets.standard.recovery.?);
-    try equal(markup.Recovery.collect, markup.presets.untrusted.recovery.?);
-    try equal(markup.Recovery.fail_fast, markup.Profile(.{ .policy = .{ .recovery = .fail_fast } }).baseline.recovery);
+    try equal(@as(usize, 2), std.meta.fields(markup.OnError).len);
+    try equal(markup.OnError.collect, markup.Profile(.{}).baseline.on_error);
+    try equal(markup.OnError.collect, markup.presets.standard.on_error.?);
+    try equal(markup.OnError.collect, markup.presets.untrusted.on_error.?);
+    try equal(markup.OnError.fail_fast, markup.Profile(.{ .policy = .{ .on_error = .fail_fast } }).baseline.on_error);
 }
 
 test "structural recovery reports independent findings without publishing a tree" {
@@ -160,10 +160,10 @@ test "after rejection output pools stop growing but scratch and policy limits st
 }
 
 test "recovery has compile-time runtime scanner and execution parity, including reset" {
-    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .recovery = .fail_fast } });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .on_error = .fail_fast } });
     const source = "<aa><bb><cc></aa></bad>&;";
     inline for (.{ .scalar, .block }) |scanner| inline for (.{ .fail_fast, .collect }) |recovery| inline for (.{ false, true }) |metered| inline for (.{ false, true }) |cancellable| {
-        const p: markup.Policy = .{ .scanner = scanner, .recovery = recovery, .execution = .{ .metering = metered, .cancellation = cancellable } };
+        const p: markup.Policy = .{ .scanner = scanner, .on_error = recovery, .execution = .{ .metering = metered, .cancellation = cancellable } };
         const P = markup.Profile(.{ .policy = p });
         var frames: markup.FixedParseScratch(4) = .{};
         var nodes: markup.FixedDocumentStorage(.{ .nodes = 8 }) = .{};

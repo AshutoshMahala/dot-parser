@@ -142,7 +142,7 @@ test "terminal diagnostic acknowledgment survives parsing and forbids a second f
         }
     };
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| inline for (.{ .fail_fast, .collect }) |recovery| {
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .scanner = backend, .recovery = recovery, .execution = .{ .metering = true } } });
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .scanner = backend, .on_error = recovery, .execution = .{ .metering = true } } });
         for ([_][]const u8{ "<a x='1' x='2'><", "<a x='1' x='2'></b>" }, 0..) |source, i| {
             inline for (.{ .stop, .failure, .capacity, .oom }) |mode| {
                 const reason: markup.reporting.StopReason = switch (@as(@FieldType(Destination, "mode"), mode)) {
@@ -185,7 +185,7 @@ test "terminal diagnostic acknowledgment survives parsing and forbids a second f
             }
         }
     };
-    const Fast = markup.Profile(.{ .policy = .{ .recovery = .fail_fast } });
+    const Fast = markup.Profile(.{ .policy = .{ .on_error = .fail_fast } });
     var full: markup.FixedDiagnosticBag(1) = .{};
     var once = try Fast.parseAndValidateFragment(allocator, try markup.Fragment.init("<a x='1' x='2'></b>", 0), full.sink(), .{});
     defer once.deinit();
@@ -242,7 +242,8 @@ test "operational parse stops skip validation and validation stops keep committe
     const Limits = markup.Profile(.{ .policy = .{ .limits = .{ .max_nodes = 0 } } });
     var limit = try Limits.parseAndValidateFragment(allocator, input, discard, .{});
     defer limit.deinit();
-    try expect(limit.stopped() and limit.validation == null);
+    try expect(!limit.stopped() and limit.validation == null and limit.has_errors);
+    try expect(limit.shouldStop(.fail_fast) and !limit.shouldStop(.collect));
     try std.testing.expectError(error.InvalidFragment, markup.parseAndValidateFragment(allocator, .{ .bytes = "xx", .origin = std.math.maxInt(u32) }, discard, .{}));
 }
 

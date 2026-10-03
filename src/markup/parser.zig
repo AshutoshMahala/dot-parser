@@ -10,9 +10,9 @@ const result = @import("result.zig");
 const Kind = @import("kind.zig").Kind;
 
 pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool) type {
-    const recovery_enabled = fixed == null or fixed.?.recovery == .collect;
+    const recovery_enabled = fixed == null or fixed.?.on_error == .collect;
     const deviations_enabled = fixed == null or fixed.?.syntax.malformed_reference != .reject;
-    const warnings_enabled = fixed == null or fixed.?.syntax.malformed_reference == .warn;
+    const warnings_enabled = fixed == null or fixed.?.syntax.malformed_reference == .warn or fixed.?.unsupported == .warning;
     return struct {
         const Self = @This();
         pub const Settings = if (fixed == null) policy.ParseSettings else void;
@@ -57,6 +57,9 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         fn fixes(self: *const Self) policy.Fixes {
             return if (fixed) |v| v.fixes else self.settings.fixes;
         }
+        fn unsupported(self: *const Self) policy.Unsupported {
+            return if (fixed) |v| v.unsupported else self.settings.unsupported;
+        }
         fn writing(self: *const Self) bool {
             return !recovery_enabled or self.recovery_state.errors == 0;
         }
@@ -67,7 +70,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         /// Abort retained output once; keep only grammar/scratch for diagnostics.
         /// Ordinary findings continue, but sink stop/failure terminates immediately.
         fn recoverSyntax(self: *Self, stack: *scratch.Stack, sink: anytype, finding: diagnostic.Diagnostic) bool {
-            if (!recovery_enabled or (if (fixed) |v| v.recovery else self.settings.recovery) == .fail_fast) {
+            if (!recovery_enabled or (if (fixed) |v| v.on_error else self.settings.on_error) == .fail_fast) {
                 self.finish(stack, sink, .invalid_syntax, finding);
                 return false;
             }
@@ -122,7 +125,13 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
             if (outcome == .invalid_syntax and finding != null) syntax_errors += 1;
             // Preserve the original terminal cause AND the acknowledgment. A
             // parent operation must not emit again after accepted-stop/failure.
-            if (finding) |d| {
+            const offered = if (outcome == .unsupported_feature and self.unsupported() == .silent) null else finding;
+            if (offered) |item| {
+                var d = item;
+                if (warnings_enabled and outcome == .unsupported_feature and self.unsupported() == .warning) {
+                    d.code = .unsupported_feature_warning;
+                    self.warnings += 1;
+                }
                 const action = self.diagnostics.emit(d.withFixes(self.fixes())) catch |err| action: {
                     delivery = .failed;
                     diagnostic_stop = .fromError(err);
@@ -380,7 +389,7 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
     const std = @import("std");
     try std.testing.expect(Machine(.scalar, .{}, false, false).Settings == void);
     try std.testing.expect(Machine(.scalar, .{}, false, false).Hook == void);
-    try std.testing.expect(@FieldType(Machine(.scalar, .{ .recovery = .fail_fast }, false, false), "recovery_state") == void);
+    try std.testing.expect(@FieldType(Machine(.scalar, .{ .on_error = .fail_fast }, false, false), "recovery_state") == void);
     try std.testing.expectEqual(@as(usize, 3 * @sizeOf(u32)), @sizeOf(@FieldType(Machine(.scalar, .{}, true, false), "recovery_state")));
     try std.testing.expect(@FieldType(lexer.Scanner(.scalar, false, false), "frontier") == void);
     try std.testing.expect(@FieldType(lexer.Scanner(.scalar, true, true), "frontier") == u32);

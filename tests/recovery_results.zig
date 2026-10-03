@@ -126,9 +126,9 @@ test "DOT recovery discards stale attribute openers but preserves scopes and lat
         const P = dot.Profile(.{ .runtime_policy = runtime, .policy = .{
             .scanner = scanner,
             .execution = .{ .metering = metered },
-            .recovery = if (runtime) .fail_fast else .collect,
+            .on_error = if (runtime) .fail_fast else .collect,
         } });
-        const options: P.FixedParseOptions = if (runtime) .{ .policy = .{ .recovery = .collect } } else .{};
+        const options: P.FixedParseOptions = if (runtime) .{ .policy = .{ .on_error = .collect } } else .{};
         for (cases, 0..) |case, index| {
             var frames: dot.FixedParseScratch(.{ .nesting = 2 }) = .{};
             var bag: dot.FixedDiagnosticBag(8) = .{};
@@ -185,7 +185,7 @@ test "DOT recovery discards stale attribute openers but preserves scopes and lat
 
 test "DOT recovery keeps the original attribute diagnostic and terminal EOF context" {
     inline for (.{ .scalar, .block }) |scanner| inline for (.{ .fail_fast, .collect }) |recovery| {
-        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .recovery = recovery } });
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .on_error = recovery } });
         for ([_][]const u8{ "digraph { b[x=1 }", "digraph { b[x=1" }) |input| {
             var bag: dot.FixedDiagnosticBag(8) = .{};
             const result = P.measureIn(input, .{}, bag.sink(), .{});

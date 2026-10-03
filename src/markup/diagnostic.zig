@@ -97,6 +97,7 @@ pub const Code = enum {
     unexpected_close,
     unclosed_element,
     unsupported_feature,
+    unsupported_feature_warning,
     capacity_exhausted,
     out_of_memory,
     duplicate_attribute,
@@ -162,8 +163,8 @@ pub const Code = enum {
                 .summary = "input ended before an element was closed",
                 .hint = "add matching closing tags in reverse opening order, or use '/>' for an intentionally empty element",
             },
-            .unsupported_feature => .{
-                .severity = .err,
+            .unsupported_feature, .unsupported_feature_warning => .{
+                .severity = if (self == .unsupported_feature) .err else .warning,
                 .component = .profile,
                 .primary = .feature,
                 .sequence = Sequence.unsupported,

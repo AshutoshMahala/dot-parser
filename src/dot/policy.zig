@@ -12,13 +12,8 @@ pub const Fixes = @import("parser_support").reporting.Fixes;
 pub const Acceptance = enum { reject, warn, accept };
 /// The written DOT keyword, never the effective graph kind or nearby edges.
 pub const BareDashInterpretation = enum { from_keyword };
-pub const Recovery = enum {
-    /// Report the first syntax failure and stop.
-    fail_fast,
-    /// After a body syntax error, abort output once and resynchronize to report
-    /// later errors where safe. Never publishes a partial document or changes acceptance.
-    collect,
-};
+pub const OnError = @import("parser_support").execution.OnError;
+pub const Unsupported = @import("parser_support").reporting.Unsupported;
 
 /// One input schema for compiled baselines and per-operation runtime patches.
 /// null inherits the baseline leaf; omitted sibling branches never reset.
@@ -26,11 +21,11 @@ pub const Policy = struct {
     syntax: Syntax = .{},
     validation: Validation = .{},
     limits: Limits = .{},
-    recovery: ?Recovery = null,
+    on_error: ?OnError = null,
     scanner: ?ScannerBackend = null,
     execution: Execution = .{},
     markup: ?MarkupMode = null,
-    diagnostics: struct { fixes: ?Fixes = null } = .{},
+    diagnostics: struct { fixes: ?Fixes = null, unsupported: ?Unsupported = null } = .{},
 
     pub const Syntax = struct {
         empty_statement: ?Acceptance = null,
@@ -90,6 +85,7 @@ pub const Policy = struct {
 
 /// Fully resolved settings, never attached to retained syntax.
 pub const ValidationSettings = struct {
+    on_error: OnError = .collect,
     fixes: Fixes = .all,
     invalid_utf8: RuleSeverity = .off,
     repeated_attribute: RuleSeverity = .off,
@@ -116,6 +112,7 @@ pub const ValidationSettings = struct {
 };
 
 pub const ParseSettings = struct {
+    unsupported: Unsupported = .err,
     markup: MarkupMode = .passthrough,
     fixes: Fixes = .all,
     ambiguous_numeral: RuleSeverity = .warning,
@@ -125,7 +122,7 @@ pub const ParseSettings = struct {
         max_statements: usize = @import("std").math.maxInt(usize),
         max_attributes: usize = @import("std").math.maxInt(usize),
     } = .{},
-    recovery: Recovery = .collect,
+    on_error: OnError = .collect,
 };
 
 pub const SyntaxSettings = struct {
@@ -162,7 +159,7 @@ pub const defaults: Effective = .{};
 pub const presets = struct {
     pub const standard: Policy = .{
         .markup = .passthrough,
-        .diagnostics = .{ .fixes = .all },
+        .diagnostics = .{ .fixes = .all, .unsupported = .err },
         .syntax = .{
             .empty_statement = .reject,
             .long_operator = .reject,
@@ -185,7 +182,7 @@ pub const presets = struct {
             .max_statements = defaults.parsing.limits.max_statements,
             .max_attributes = defaults.parsing.limits.max_attributes,
         },
-        .recovery = .collect,
+        .on_error = .collect,
         .scanner = .scalar,
         .execution = .{ .metering = false, .cancellation = false },
     };
@@ -203,6 +200,7 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
     const digraph = input.validation.digraph;
     return .{
         .validation = .{
+            .on_error = input.on_error orelse baseline.validation.on_error,
             .fixes = input.diagnostics.fixes orelse baseline.validation.fixes,
             .invalid_utf8 = input.validation.invalid_utf8 orelse baseline.validation.invalid_utf8,
             .repeated_attribute = input.validation.repeated_attribute orelse baseline.validation.repeated_attribute,
@@ -228,6 +226,7 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
             },
         },
         .parsing = .{
+            .unsupported = input.diagnostics.unsupported orelse baseline.parsing.unsupported,
             .markup = input.markup orelse baseline.parsing.markup,
             .fixes = input.diagnostics.fixes orelse baseline.parsing.fixes,
             .ambiguous_numeral = input.validation.ambiguous_numeral orelse baseline.parsing.ambiguous_numeral,
@@ -244,7 +243,7 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
                 .max_statements = input.limits.max_statements orelse baseline.parsing.limits.max_statements,
                 .max_attributes = input.limits.max_attributes orelse baseline.parsing.limits.max_attributes,
             },
-            .recovery = input.recovery orelse baseline.parsing.recovery,
+            .on_error = input.on_error orelse baseline.parsing.on_error,
         },
         .scanner = input.scanner orelse baseline.scanner,
         .execution = .{
@@ -298,7 +297,7 @@ test "named standard is the complete default and lenient changes only syntax" {
     const lenient = resolve(defaults, presets.lenient);
     try std.testing.expectEqualDeep(defaults.validation, lenient.validation);
     try std.testing.expectEqualDeep(defaults.parsing.limits, lenient.parsing.limits);
-    try std.testing.expectEqual(defaults.parsing.recovery, lenient.parsing.recovery);
+    try std.testing.expectEqual(defaults.parsing.on_error, lenient.parsing.on_error);
     try std.testing.expectEqual(defaults.parsing.markup, lenient.parsing.markup);
     try std.testing.expectEqual(defaults.parsing.fixes, lenient.parsing.fixes);
     try std.testing.expectEqual(defaults.scanner, lenient.scanner);
@@ -372,14 +371,14 @@ test "all existing settings inherit independently and explicit defaults replace 
     const baseline = resolve(defaults, .{
         .limits = .{ .max_nesting = 8, .max_statements = 50, .max_attributes = 30 },
         .scanner = .block,
-        .recovery = .collect,
+        .on_error = .collect,
         .execution = .{ .metering = true, .cancellation = true },
     });
     try std.testing.expectEqualDeep(baseline, resolve(baseline, .{}));
     const input: Policy = .{
         .limits = .{ .max_statements = 0 },
         .scanner = .scalar,
-        .recovery = .fail_fast,
+        .on_error = .fail_fast,
         .execution = .{ .metering = false },
     };
     const result = resolve(baseline, input);
@@ -388,7 +387,9 @@ test "all existing settings inherit independently and explicit defaults replace 
     try std.testing.expectEqual(baseline.parsing.limits.max_nesting, result.parsing.limits.max_nesting);
     try std.testing.expectEqual(baseline.parsing.limits.max_attributes, result.parsing.limits.max_attributes);
     try std.testing.expectEqual(ScannerBackend.scalar, result.scanner);
-    try std.testing.expectEqual(Recovery.fail_fast, result.parsing.recovery);
+    try std.testing.expectEqual(OnError.fail_fast, result.parsing.on_error);
     try std.testing.expect(!result.execution.metering and result.execution.cancellation);
-    try std.testing.expectEqualDeep(baseline.validation, result.validation);
+    var expected = baseline.validation;
+    expected.on_error = .fail_fast;
+    try std.testing.expectEqualDeep(expected, result.validation);
 }

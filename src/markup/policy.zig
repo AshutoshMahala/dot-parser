@@ -3,14 +3,8 @@ const std = @import("std");
 pub const RuleSeverity = enum { err, warning, off };
 pub const ScannerBackend = enum { scalar, block };
 pub const Acceptance = enum { reject, warn, accept };
-/// Recovery collects syntax errors; it never repairs or publishes a partial tree.
-pub const Recovery = enum {
-    /// Report the first syntax failure and stop.
-    fail_fast,
-    /// Abort output once and collect further errors at reliable markup boundaries.
-    /// Unrecoverable input and operational failures still stop processing.
-    collect,
-};
+pub const OnError = @import("parser_support").execution.OnError;
+pub const Unsupported = @import("parser_support").reporting.Unsupported;
 pub const Fixes = @import("parser_support").reporting.Fixes;
 pub const SyntaxSettings = struct { malformed_reference: Acceptance = .reject };
 /// Optional validation rules, not parser dialects or namespace processing.
@@ -19,6 +13,7 @@ pub const ReferenceCatalog = enum { xml_predefined };
 pub const NameSettings = struct { rule: NameRule = .xml_1_0, severity: RuleSeverity = .off };
 pub const ReferenceSettings = struct { catalog: ReferenceCatalog = .xml_predefined, severity: RuleSeverity = .off };
 pub const ValidationSettings = struct {
+    on_error: OnError = .collect,
     duplicate_attribute: RuleSeverity = .err,
     invalid_utf8: RuleSeverity = .off,
     names: NameSettings = .{},
@@ -27,8 +22,8 @@ pub const ValidationSettings = struct {
 
 pub const Policy = struct {
     scanner: ?ScannerBackend = null,
-    recovery: ?Recovery = null,
-    diagnostics: struct { fixes: ?Fixes = null } = .{},
+    on_error: ?OnError = null,
+    diagnostics: struct { fixes: ?Fixes = null, unsupported: ?Unsupported = null } = .{},
     syntax: struct { malformed_reference: ?Acceptance = null } = .{},
     limits: struct {
         max_source_bytes: ?u32 = null,
@@ -56,18 +51,18 @@ pub const Limits = struct {
 };
 pub const Effective = struct {
     scanner: ScannerBackend = .scalar,
-    recovery: Recovery = .collect,
-    diagnostics: struct { fixes: Fixes = .all } = .{},
+    on_error: OnError = .collect,
+    diagnostics: struct { fixes: Fixes = .all, unsupported: Unsupported = .err } = .{},
     limits: Limits = .{},
     syntax: SyntaxSettings = .{},
     validation: ValidationSettings = .{},
     execution: struct { metering: bool = false, cancellation: bool = false } = .{},
 
     pub fn parsing(self: Effective) ParseSettings {
-        return .{ .limits = self.limits, .syntax = self.syntax, .fixes = self.diagnostics.fixes, .recovery = self.recovery };
+        return .{ .limits = self.limits, .syntax = self.syntax, .fixes = self.diagnostics.fixes, .unsupported = self.diagnostics.unsupported, .on_error = self.on_error };
     }
 };
-pub const ParseSettings = struct { limits: Limits = .{}, syntax: SyntaxSettings = .{}, fixes: Fixes = .all, recovery: Recovery = .collect };
+pub const ParseSettings = struct { limits: Limits = .{}, syntax: SyntaxSettings = .{}, fixes: Fixes = .all, unsupported: Unsupported = .err, on_error: OnError = .collect };
 pub const Config = struct { policy: Policy = .{}, runtime_policy: bool = false };
 pub const defaults: Effective = .{};
 pub const Check = enum { valid };
@@ -82,8 +77,12 @@ pub fn check(_: Effective, _: Policy) Check {
 pub fn resolve(base: Effective, patch: Policy) Effective {
     var result = base;
     if (patch.scanner) |value| result.scanner = value;
-    if (patch.recovery) |value| result.recovery = value;
+    if (patch.on_error) |value| {
+        result.on_error = value;
+        result.validation.on_error = value;
+    }
     if (patch.diagnostics.fixes) |value| result.diagnostics.fixes = value;
+    if (patch.diagnostics.unsupported) |value| result.diagnostics.unsupported = value;
     if (patch.syntax.malformed_reference) |value| result.syntax.malformed_reference = value;
     inline for (std.meta.fields(@TypeOf(patch.limits))) |field| {
         if (@field(patch.limits, field.name)) |value| @field(result.limits, field.name) = value;
@@ -105,8 +104,8 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
 pub const presets = struct {
     pub const standard: Policy = .{
         .scanner = .scalar,
-        .recovery = .collect,
-        .diagnostics = .{ .fixes = .all },
+        .on_error = .collect,
+        .diagnostics = .{ .fixes = .all, .unsupported = .err },
         .syntax = .{ .malformed_reference = .reject },
         .limits = .{
             .max_source_bytes = defaults.limits.max_source_bytes,

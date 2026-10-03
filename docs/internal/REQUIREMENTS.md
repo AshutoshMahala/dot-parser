@@ -152,14 +152,16 @@ analyzers, and future adapters.
 The syntax tree is the source of truth for source fidelity. `DotIR` is derived
 data and must be rebuildable from syntax data or parser events.
 
-### R-FUNC-007: Diagnostic recovery is policy-driven
+### R-FUNC-007: Error handling is policy-driven
 
-DOT and standalone markup both default to `recovery = .collect`.
+DOT and standalone markup both default to `on_error = .collect`.
 Collect additional diagnostics only where grammar boundaries remain reliable.
-Explicit `.fail_fast` stops at the first syntax failure; it still reports through
-the same diagnostic sink. Validation findings are independent of syntax recovery.
+Explicit `.fail_fast` stops the requested operation at its first error, including
+validation; it still reports through the same diagnostic sink. Warnings do not
+trigger it. Recovery is an internal safe-continuation mechanism, not a separate
+public setting. The shared enum is `OnError`; no legacy aliases remain.
 
-A recovery policy may record a recoverable syntax diagnostic,
+Under `.collect`, the parser may record a recoverable syntax diagnostic,
 synchronize at a safe grammar boundary, and continue collecting problems up to
 caller-provided diagnostic and work limits. Recovery must be best-effort and
 must not publish a partial tree (a future partial-tree API needs its own contract). Unterminated
@@ -171,7 +173,7 @@ continue, or ignore. Critical internal failures, memory-safety conditions, and
 violated parser invariants cannot be ignored. Recovery machinery should be
 compile-time excludable when its code-size cost is material.
 
-**Current implementation:** DOT `Policy.recovery` offers `.fail_fast` and
+**Current implementation:** DOT `Policy.on_error` offers `.fail_fast` and
 default `.collect`. The latter continues diagnostics after aborting staged output;
 it never publishes a partial document or turns rejected syntax into success.
 Excluded HTML-like body identifiers can also recover: unsupported-only recovery
@@ -180,6 +182,14 @@ remains `unsupported_feature`, while completed recovery with a syntax error yiel
 independently of terminal outcomes. Later cancellation/limits/storage or diagnostic
 stops retain their actual cause, without erasing discovered syntax rejection.
 No errors with incomplete work is not a validity claim.
+Both processors expose `diagnostics.unsupported = .err | .warning | .silent`,
+default `.err`. This classifies/reports recognized but unprocessed input; it
+never supplies missing functionality or changes unsupported into success.
+Passthrough is supported raw preservation, not silent unsupported reporting.
+Non-error unsupported input does not trigger fail-fast, but uncertain boundaries
+still stop the active fragment. DOT can synchronize excluded body identifiers
+when their boundaries remain reliable. Validation fail-fast reports
+`error_stopped`, separate from a sink-driven stop.
 Successful acceptance of Q36's three syntax deviations is a separate policy
 decision. A broader per-class recovery policy remains open (Q22). Sink stop/failure
 ends work; default bounded bags signal stop when full. An explicitly omitting bag
@@ -196,7 +206,7 @@ their own region, not a valid enclosing tree. Standalone markup exposes borrowed
 header/name/value/text scopes and independent source-scope validation, sharing
 retained-document rule implementations. A malformed enclosing header or closer
 must not erase known local findings. Unavailable coverage remains incomplete;
-ordinary findings continue independent work, while operational stops still end
+under `.collect`, ordinary findings continue independent work; operational stops end
 the operation. No repair, partial-tree publication or mandatory per-scope object
 allocation is implied. String-processor composition and SIMD batching remain
 future work, not prerequisites for this separation.
@@ -206,9 +216,9 @@ scanner-produced scopes bypass that public audit. Incomplete local coverage carr
 its earliest original-source gap offset; it is not a restart point or a claim
 that no later region was checked.
 
-Validation is an analysis pass, not fail-fast syntax control flow. It should
-continue after independent document errors and attempt to validate all available
-syntax or `DotIR`. A completed validation pass returns both document validity and
+Validation is an analysis pass using the same `on_error` policy. By default it
+continues after independent document errors and attempts all available checks;
+explicit `.fail_fast` ends it after reporting the first error. A completed pass returns both document validity and
 the collected diagnostics; completion of the pass does not imply that the
 document is valid.
 
@@ -234,8 +244,12 @@ or an internal invariant failure. Delivery failure and retention omissions must
 remain visible independently of validation completion and validity.
 
 **Cross-processor contract decided 2026-09-23; composition pending (Q40).**
-Validation findings in one processor or reliably delimited fragment must not
-stop independent requested checks in another, including DOT validation itself.
+Parent and child `on_error` settings are independent. A collecting parent visits
+the next child after ordinary errors, unsupported input or a child policy limit;
+a fail-fast parent stops before the next child if the returned child has errors.
+An inner collecting operation may deliver multiple findings before an outer
+fail-fast operation observes its result. Child fail-fast skips later phases of
+that combined call; explicit validation can still be requested independently.
 Each processor may report multiple findings. Checks whose prerequisites failed
 must be identified as unavailable, not passed; unsafe continuation after lost
 boundaries or exhausted shared resources is not required. Global cancellation
@@ -244,7 +258,17 @@ when inner validation fails; this does not authorize a partial DOT document or
 claim success for all requested stages. Continuing independent validation does
 not require parallel execution, a bag per component, or retained per-fragment
 results. Existing DOT validation has continuation and bounded bag retention;
-processor composition and bounded/cancellable validation are not implemented.
+automatic processor scheduling and bounded validation are not implemented.
+
+**Error-policy refinement implemented 2026-10-03:** delayed fragment results
+expose factual `has_errors`, operational `stopped()` and parent-aware
+`shouldStop(parent_on_error)`. Shared sink stops/failures, allocation/storage
+failure and cancellation stop the batch regardless of error policies. Limits
+remain mandatory for each active child. Source validation safely synchronizes
+malformed headers independently of syntax parsing's stopping choice; fast
+validation stops at its first validation error rather than silently skipping
+later scopes after a syntax gap. Both parsers retain terminal sink acknowledgments
+in `diagnostic_stop` without replacing the original failure.
 
 **Preparation implemented 2026-09-26.** Typed shared sinks, fixed/growable bags,
 diagnostic stop/failure handling and prefix outcomes are implemented. Findings
@@ -575,7 +599,8 @@ Inner validation does not require DOT validation to succeed. Callers may request
 outer-only validation, validate selected preserved fragments later, or validate
 standalone fragments. The initial retained-document convenience path sequences
 DOT validation before requested inner processing, even when DOT validation found
-violations; this does not replace the during-DOT path. Results distinguish not
+violations under outer `.on_error = .collect`; an outer fail-fast error ends that
+requested operation. This does not replace the during-DOT path. Results distinguish not
 requested, completed-valid, completed-invalid and incomplete-with-reason for each
 stage; diagnostic delivery and retention are separate facts. A composed result
 must not report all requested stages passed when one failed or was incomplete.
@@ -634,8 +659,9 @@ policy. Exact Zig syntax is not prescribed here.
 
 Share diagnostic infrastructure and matching execution/resource primitives
 across implementations without forcing their codes and typed payloads into one
-universal diagnostic type (R-DIAG-007). Validation findings do not abort other
-independent processors (R-FUNC-008); result separation must remain available
+universal diagnostic type (R-DIAG-007). A collecting parent continues independent
+processors after child errors; parent fail-fast stops after the active child
+returns (R-FUNC-008). Result separation must remain available
 regardless of whether processing runs during DOT or later.
 
 The contract must preserve explicit resource ownership, unchanged source,

@@ -245,7 +245,7 @@ test "factual counters survive silent acceptance discarded full or failing diagn
 
 test "prefix facts survive later syntax capacity recovery and cancellation failure" {
     inline for (.{ .fail_fast, .collect }) |recovery| {
-        const Fixed = dot.Profile(.{ .policy = .{ .syntax = dot.presets.lenient.syntax, .recovery = recovery } });
+        const Fixed = dot.Profile(.{ .policy = .{ .syntax = dot.presets.lenient.syntax, .on_error = recovery } });
         const source = "graph { ; a - b; c[x=]; }";
         var checked = Fixed.parseAndValidate(std.testing.allocator, source, dot.diagnostic.discard, .{});
         defer checked.deinit(std.testing.allocator);

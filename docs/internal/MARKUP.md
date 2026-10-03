@@ -3,6 +3,8 @@
 Decisions: 2026-09-26; slices 1–3, 4a and 4b implemented 2026-09-27;
 diagnostics-only recovery implemented 2026-09-30; local validation scopes 2026-10-02;
 explicit delayed integration 2026-10-03.
+Error-policy and parent/child continuation refinement implemented 2026-10-03;
+see [the current contract](PROCESSOR_CONTRACT.md#execution-and-completion).
 Later slices below are plans, not
 current public capabilities. R-MOD-014/015 and Q40 remain the architectural contract.
 
@@ -31,6 +33,92 @@ not speculative scheduling. Independent parsing must not import DOT grammar or r
 Each slice needs tests, truthful supported-syntax documentation and measurements.
 Recognition of an excluded feature reports unsupported without validating its body.
 No reserved public fields or pretend implementation of later checks are needed.
+
+## Error policy and continuation — 2026-10-03
+
+Both processors now expose `on_error: ?OnError` with `.collect` as the resolved
+default and `.fail_fast` as an explicit alternative. The old field/type are
+removed, not aliased. This applies to validation as well as parsing; recovery
+remains the internal mechanism for safe syntax continuation. A fast combined
+fragment call does not start validation after syntax rejection. Explicit local
+validation remains independent and synchronizes reliable malformed-header
+boundaries even in a fast profile, stopping at its first validation error.
+
+`diagnostics.unsupported` is a separate `.err | .warning | .silent` leaf, default
+`.err`. Neither warning nor silence converts unprocessed input into success or
+passthrough. Both parsers retain factual unsupported outcomes; markup can end a
+fragment at unsupported syntax without ending a collecting parent's batch.
+DOT can continue after safely delimited excluded body identifiers even in a
+fast profile when reporting is non-error. Warning codes use `W.Profile.Feature.009`.
+
+Fragment results expose factual `has_errors`, operational `stopped()` and
+`shouldStop(parent_on_error)`. Parent policy is checked after the child returns:
+collecting children may deliver multiple findings before a fast parent stops;
+fast children do not prevent a collecting parent from visiting the next fragment.
+Policy limits still stop their active child and count as errors. Shared sink
+stops/failures, allocation/storage failure and cancellation stop the batch.
+DOT now preserves terminal sink acknowledgments too, including validation scratch
+preflight. Actual sink stops take precedence over validation's `error_stopped`.
+No runtime processor replacement, new retained records or partial tree is added.
+
+Verification: **590/590 tests** in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall;
+examples, benchmark compilation and consumed RISC-V32/Wasm32 builds pass.
+Coverage includes fixed/runtime policies, both scanners, every validation rule,
+unsupported severity, parent/child combinations, malformed-header fallback,
+budget partitioning and terminal sink acknowledgments. No new sustained fuzzing
+campaign is claimed.
+
+### Error-policy costs
+
+Local Apple M4 Pro, Zig 0.16.0, ReleaseFast, compared with `4336ea3`; no official
+standard-machine baseline was updated. Retained layouts are unchanged: markup
+Node/Attribute 20 bytes, Diagnostic 36, nesting frame 12, ValidationResult 32;
+fixed/bounded/runtime markup sessions remain 432/440/496 bytes. DOT Document and
+Diagnostic remain 232/80 bytes. Its fixed/runtime sessions grow from 1072/1296
+to 1080/1304 bytes because public results retain terminal sink acknowledgments;
+there is no per-node/edge growth or new allocation. The running DOT machine does
+not duplicate the terminal stop field. These are layout/reserved-storage facts,
+not process RSS or allocator-peak measurements.
+
+The unchanged 13-fixture markup harness (nine 16-operation samples after five
+warmups) gave one-pair geometric-mean throughput changes of -2.3%/+0.4% for
+scalar fixed/runtime-override and -0.5%/-0.9% for block fixed/runtime-override.
+Scalar cancellable parsing was -5.9% in that initial pair. A focused repeat of
+mixed/text fixtures used 64-operation batches, in before/after/after/before order,
+without concurrent builds. Cells below average the two process medians;
+throughput is decimal MB/s. This repeat did not reproduce the initial scalar-text
+drop; the mixed cancellable scalar case still measured a smaller slowdown.
+
+| Markup fixture / path | Before ms | After ms | Before MB/s | After MB/s |
+| --- | ---: | ---: | ---: | ---: |
+| Mixed, scalar fixed | 2.438 | 2.423 | 307.6 | 309.5 |
+| Mixed, scalar runtime override | 2.433 | 2.431 | 308.3 | 308.5 |
+| Mixed, scalar cancellable | 4.241 | 4.382 | 176.8 | 171.2 |
+| Mixed, block fixed | 2.606 | 2.596 | 287.9 | 288.9 |
+| Mixed, block runtime override | 2.613 | 2.588 | 287.1 | 289.9 |
+| Text, scalar fixed | 0.502 | 0.492 | 1992.0 | 2032.5 |
+| Text, block fixed | 0.084 | 0.087 | 11976.0 | 11560.7 |
+
+DOT's 50,000 tiny-statement fixture gave fixed scalar 0.872 → 0.878 ms and fixed
+block 1.037 → 1.031 ms (four process medians per build). Runtime measurements
+were strongly bimodal across processes: baseline block about 1.6–3.1 ms and
+changed scalar about 1.0–1.8 ms. Removing duplicate running stop state restored
+the faster scalar timings in some runs, but does not establish runtime parity
+across workloads. Keep the standard-machine regression gate open; neither the
+apparent block speedup nor the fast scalar repeats justify a general speed claim.
+
+A paired probe then linked both DOT revisions in one executable and alternated
+their runtime parses over the same source, with equally sized separate pools,
+five warmup batches and fifteen measured batches of sixteen parses. Across three
+processes, median-of-process-medians latency was scalar 1.030 → 1.045 ms
+(97.1 → 95.7 MB/s), block 1.602 → 1.617 ms (62.4 → 61.8 MB/s).
+This did not reproduce the large separate-process slowdown on that fixture;
+the measured differences are about -1.4%/-0.9% throughput, not a claim about all
+runtime-policy workloads. No blanket zero-regression or speedup claim is made.
+
+Unstripped benchmark executables changed from 1,042,184 to 1,042,936 bytes for
+markup, and 686,344 to 703,296 for DOT's policy harness. These include the harness,
+runtime-selectable variants and symbols, not a minimal fixed-profile feature cost.
 
 ## DOT passthrough recognition — 2026-09-27
 
@@ -117,12 +205,9 @@ The non-policy fixes from the integration review are implemented:
 | Operand traversal duplicated between views and decoding | Share glue, angle-envelope, quoted-run and escape-boundary primitives; no extra decoding pass or allocation |
 | Public scope audits and trusted assertions repeat metadata rules | One cancellable metadata predicate; real checks at public boundaries, debug/safe-only assertions internally |
 
-Still requiring policy discussion, and deliberately unchanged here:
-
-- Whether unsupported constructs and per-fragment limits should end the entire
-  requested batch (`FragmentResult.stopped()` currently says yes).
-- Whether source validation should synchronize independently of parse recovery
-  (`.fail_fast` currently disables malformed-header synchronization there too).
+The two deferred policy questions were subsequently resolved by the
+2026-10-03 refinement below: child unsupported/limit failures are parent-policy
+decisions, and explicit source validation synchronizes safe headers independently.
 
 Regression tests cover accepted-stop versus rejected delivery (failure/capacity/
 allocation), terminal and recoverable syntax, incremental sessions, repeated
@@ -383,7 +468,7 @@ preflighted before checks. Precise API and cost semantics are in the
 
 ### Structural recovery — implemented 2026-09-30
 
-`Policy.recovery` is `.collect` by default, with explicit `.fail_fast` and full
+`Policy.on_error` is `.collect` by default, with explicit `.fail_fast` and full
 fixed/runtime parity. Both reject malformed syntax; recovery is not acceptance,
 repair, browser tree construction or permission to expose a partial tree.
 Both DOT and markup expose the same two recovery names; their grammar-specific

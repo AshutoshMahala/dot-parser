@@ -111,7 +111,7 @@ For arbitrary DOT, handle both `Endpoint` variants as shown in the
 
 ### Collect more errors
 
-Parsing defaults to `recovery = .collect`: after a recoverable body error it
+Parsing defaults to `on_error = .collect`: after a recoverable body error it
 resynchronizes at the next `;` or `}` to collect more findings. Unrecoverable
 syntax, resource failures or a diagnostic sink's stop request end the run:
 
@@ -125,8 +125,9 @@ defer allocator.free(locations);
 try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source }, locations, stdout);
 ```
 
-Choose `dot.Profile(.{ .policy = .{ .recovery = .fail_fast } })` explicitly to
-stop at the first syntax failure. Recovery never promises to find every error.
+Choose `dot.Profile(.{ .policy = .{ .on_error = .fail_fast } })` explicitly to
+stop the requested operation at its first error, including validation errors.
+Warnings do not trigger fail-fast. Recovery never promises to find every error.
 
 Every diagnostic is a typed value — a WDP code such as `E.Syntax.Keyword.003`,
 a span, a payload naming what was found and where in the grammar, and, when

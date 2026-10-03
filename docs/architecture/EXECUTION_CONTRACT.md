@@ -103,7 +103,7 @@ Zero credits leave normal work untouched. One-credit calls can yield before
 begin, pair, owner, and commit callbacks; successful commit is immediately
 terminal. Failures still perform at most one diagnostic attempt and one cleanup
 abort, even when discovered on the last credit. Under the default recovery
-policy (`recovery = .collect`, 2026-09-18) the first body syntax failure
+policy (`on_error = .collect`, 2026-09-18) the first body syntax failure
 performs that diagnostic attempt and the single abort, and parsing then
 continues through ordinary charged microsteps; each later failure is one more
 diagnostic attempt attached to the grammar step that found it, with no second

@@ -52,9 +52,12 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
             options: Options,
         ) ParseResult {
             var builder = syntax_impl.Builder.initCapacity(allocator, source, resources.document_capacities) catch |err| {
+                var stop: ?diagnostic.StopReason = null;
+                const delivery = emitStorageDiagnostic(diagnostics, err, null, .complete, &stop);
                 return .{
                     .outcome = .{ .storage_failure = storageFailure(err) },
-                    .diagnostic_delivery = emitStorageDiagnostic(diagnostics, err, null, .complete),
+                    .diagnostic_delivery = delivery,
+                    .diagnostic_stop = stop,
                 };
             };
             defer builder.deinit();
@@ -64,13 +67,13 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
             const result = drive(source, &builder, diagnostics, &scratch, options);
             var output = publicResult(ParseResult, result);
             if (result.outcome == .sink_failure) {
-                output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, result.outcome.sink_failure, builder.failure_info, result.diagnostic_delivery);
+                output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, result.outcome.sink_failure, builder.failure_info, result.diagnostic_delivery, &output.diagnostic_stop);
             }
             if (result.outcome != .success) return output;
             output.document = builder.toDocument() catch |err| {
                 output.outcome = .{ .storage_failure = storageFailure(err) };
                 output.completion = .incomplete;
-                output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, err, builder.failure_info, result.diagnostic_delivery);
+                output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, err, builder.failure_info, result.diagnostic_delivery, &output.diagnostic_stop);
                 return output;
             };
             return output;
@@ -90,6 +93,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                     .sink_failure, .scratch_failure => |err| .{ .storage_failure = storageFailure(err) },
                 },
                 .diagnostic_delivery = result.diagnostic_delivery,
+                .diagnostic_stop = result.diagnostic_stop,
                 .completion = result.completion,
                 .syntax_errors = result.syntax_errors,
                 .accepted_deviations = result.accepted_deviations,
@@ -122,6 +126,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
             err: anyerror,
             info: ?syntax_impl.StorageFailureInfo,
             delivery: diagnostic.Delivery,
+            stop: *?diagnostic.StopReason,
         ) diagnostic.Delivery {
             const span: location.Span = if (info) |i| i.span else .{ .start = 0, .len = 0 };
             const d: diagnostic.Diagnostic = switch (storageFailure(err)) {
@@ -139,9 +144,12 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                 },
                 .internal => return delivery,
             };
-            // This is terminal reporting after an existing storage failure;
-            // there is no unfinished work to stop or further callback to emit.
-            _ = diagnostics.emit(d) catch return .failed;
+            // Keep terminal acknowledgment independently of the storage cause.
+            const action = diagnostics.emit(d) catch |failure| {
+                stop.* = .fromError(failure);
+                return .failed;
+            };
+            if (action == .stop) stop.* = .requested;
             return delivery;
         }
 
@@ -189,6 +197,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                     .syntax_errors = self.machine.syntaxErrors(),
                     .outcome = if (self.terminal) |r| r.outcome else null,
                     .diagnostic_delivery = if (self.terminal) |r| r.diagnostic_delivery else self.machine.delivery,
+                    .diagnostic_stop = if (self.terminal) |r| r.diagnostic_stop else null,
                 };
             }
 
@@ -230,6 +239,11 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                     .resource_exhausted => .resource_exhausted,
                     .sink_failure, .scratch_failure => |err| .{ .storage_failure = storageFailure(err) },
                 };
+                var stop = parsed.diagnostic_stop;
+                const delivery = if (parsed.outcome == .sink_failure)
+                    emitStorageDiagnostic(self.machine.diagnostics, parsed.outcome.sink_failure, self.builder.failure_info, parsed.diagnostic_delivery, &stop)
+                else
+                    parsed.diagnostic_delivery;
                 self.terminal = .{
                     .document = if (parsed.outcome == .success) self.builder.toDocument() else null,
                     .outcome = outcome,
@@ -237,10 +251,8 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
                     .syntax_errors = parsed.syntax_errors,
                     .accepted_deviations = parsed.accepted_deviations,
                     .warnings = parsed.warnings,
-                    .diagnostic_delivery = if (parsed.outcome == .sink_failure)
-                        emitStorageDiagnostic(self.machine.diagnostics, parsed.outcome.sink_failure, self.builder.failure_info, parsed.diagnostic_delivery)
-                    else
-                        parsed.diagnostic_delivery,
+                    .diagnostic_delivery = delivery,
+                    .diagnostic_stop = stop,
                 };
             }
         };
@@ -256,7 +268,7 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
             const result = drive(source, &builder, diagnostics, &scratch, options);
             var output = publicResult(FixedParseResult, result);
             if (result.outcome == .sink_failure) {
-                output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, result.outcome.sink_failure, builder.failure_info, result.diagnostic_delivery);
+                output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, result.outcome.sink_failure, builder.failure_info, result.diagnostic_delivery, &output.diagnostic_stop);
             }
             if (result.outcome == .success) output.document = builder.toDocument();
             return output;

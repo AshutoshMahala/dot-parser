@@ -36,18 +36,23 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             policies: State,
             cancellation: Hook = if (Hook == void) {} else null,
 
+            inline fn effective(self: @This()) policy.Effective {
+                return if (runtime_policy) self.policies else baseline;
+            }
+
             /// Parse, then validate the document or recognizable source scopes.
-            /// Validation is skipped after an operational parsing stop. Neither
+            /// Validation is skipped after an operational parsing stop or a
+            /// fail-fast syntax error. Neither
             /// this operation nor identifier operand enumeration is work-metered.
             pub fn parseAndValidateFragment(self: @This(), allocator: std.mem.Allocator, input: api.Fragment, diagnostics: api.DiagnosticSink, resources: api.ParseResources) api.Fragment.Error!api.FragmentResult {
                 var mapped = try api.diagnostic.OriginSink.init(input, diagnostics);
                 const parsed = callPrepared("parseBorrowed", api.ParseResult, .{ allocator, input.bytes, mapped.sink(), resources }, self);
                 const checked: ?api.ValidationResult = if (parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed) null else switch (parsed.outcome) {
                     .success => validatePrepared("allocated", .{ allocator, &parsed.document.?, mapped.sink() }, self),
-                    .invalid_syntax => sourceValidationPrepared("allocated", .{ allocator, input.bytes, mapped.sink() }, self),
+                    .invalid_syntax => if (self.effective().on_error == .collect) sourceValidationPrepared("allocated", .{ allocator, input.bytes, mapped.sink() }, self) else null,
                     else => null,
                 };
-                return .{ .parse = parsed, .validation = rebaseValidation(input, checked) };
+                return .{ .parse = parsed, .validation = rebaseValidation(input, checked), .has_errors = fragmentHasErrors(parsed, checked, self.effective()) };
             }
 
             /// Allocation-free variant. Source validation scratch is reused for
@@ -57,12 +62,22 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
                 const parsed = callPrepared("parseBorrowedIn", api.FixedParseResult, .{ input.bytes, memory, mapped.sink() }, self);
                 const checked: ?api.ValidationResult = if (parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed) null else switch (parsed.outcome) {
                     .success => validatePrepared("run", .{ &parsed.document.?, api.ValidationScratch{ .attribute_keys = scratch.attribute_keys }, mapped.sink() }, self),
-                    .invalid_syntax => sourceValidationPrepared("run", .{ input.bytes, scratch, mapped.sink() }, self),
+                    .invalid_syntax => if (self.effective().on_error == .collect) sourceValidationPrepared("run", .{ input.bytes, scratch, mapped.sink() }, self) else null,
                     else => null,
                 };
-                return .{ .parse = parsed, .validation = rebaseValidation(input, checked) };
+                return .{ .parse = parsed, .validation = rebaseValidation(input, checked), .has_errors = fragmentHasErrors(parsed, checked, self.effective()) };
             }
         };
+        fn fragmentHasErrors(parsed: anytype, checked: ?api.ValidationResult, effective: policy.Effective) bool {
+            if (parsed.syntax_errors != 0) return true;
+            switch (parsed.outcome) {
+                .invalid_syntax, .resource_limit => return true,
+                .unsupported_feature => return effective.diagnostics.unsupported == .err,
+                else => {},
+            }
+            if (checked) |value| return value.errors != 0 or value.completion == .source_limit;
+            return false;
+        }
         pub fn prepare(options: Options) Prepared {
             return .{ .policies = resolve(options), .cancellation = options.cancellation };
         }

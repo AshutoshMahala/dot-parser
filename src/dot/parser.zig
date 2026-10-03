@@ -43,7 +43,7 @@
 //!   supported header, abort after begin when the document cannot commit —
 //!   including the documented cleanup abort after an attempted
 //!   `beginDocument` that itself failed.
-//! - With `Policy.recovery = .collect`, a syntax error inside the body
+//! - With `Policy.on_error = .collect`, a syntax error inside the body
 //!   aborts the sink once, then parsing continues for diagnostics only:
 //!   tokens are skipped to the next `;` or `}` at the same brace depth
 //!   (a skipped `{` is matched by counting), the next statement parses
@@ -117,6 +117,7 @@ pub const Result = struct {
     completion: Completion = .incomplete,
     syntax_errors: u32 = 0,
     diagnostic_delivery: DiagnosticDelivery = .complete,
+    diagnostic_stop: ?diagnostic.StopReason = null,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
 };
@@ -142,7 +143,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         }
         syntax_event.assertSyntaxSink(info.pointer.child);
     }
-    const recovery_enabled = if (fixed) |value| value.recovery == .collect else true;
+    const recovery_enabled = if (fixed) |value| value.on_error == .collect or (value.markup == .none and value.unsupported != .err) else true;
     const deviations_enabled = if (fixed) |value| value.syntax.acceptsDeviations() else true;
     const operators_enabled = if (fixed) |value| value.syntax.acceptsOperators() else true;
     return struct {
@@ -291,8 +292,11 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             return if (fixed) |value| @field(value.limits, name) else @field(self.settings.limits, name);
         }
 
-        fn recovery(self: *const Self) policy.Recovery {
-            return if (fixed) |value| value.recovery else self.settings.recovery;
+        fn onError(self: *const Self) policy.OnError {
+            return if (fixed) |value| value.on_error else self.settings.on_error;
+        }
+        fn unsupported(self: *const Self) policy.Unsupported {
+            return if (fixed) |value| value.unsupported else self.settings.unsupported;
         }
 
         fn syntax(self: *const Self) policy.SyntaxSettings {
@@ -307,7 +311,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             const fixes = if (fixed) |value| value.fixes else self.settings.fixes;
             const action = self.diagnostics.emit(d.withFixes(fixes)) catch |err| {
                 self.delivery = .failed;
-                return diagnostic.StopReason.fromError(err);
+                return .fromError(err);
             };
             return if (action == .stop) .requested else null;
         }
@@ -949,13 +953,13 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
 
         fn scratchFailure(self: *Self, err: scratch_impl.Stack.Error, span: location.Span) Result {
             // The resource failure is already terminal; preserve its cause.
-            _ = self.deliver(.{
+            const stop = self.deliver(.{
                 .code = if (err == error.OutOfMemory) .resource_memory_exhausted else .resource_capacity_exhausted,
                 .span = span,
                 .details = if (err == error.OutOfMemory) .none else .{ .capacity = .{ .resource = .nesting_frames, .limit = if (self.scratch) |scratch| scratch.frames.len else 0 } },
             });
             self.abortEvents(.scratch_failure);
-            return self.finish(.{ .scratch_failure = err });
+            return self.finishReported(.{ .scratch_failure = err }, stop);
         }
 
         fn startPort(self: *Self, target: @FieldType(Self, "port_target"), resume_state: State, colon: location.Span) void {
@@ -1218,11 +1222,20 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .completion = if (outcome == .success) .complete else .incomplete,
                 .syntax_errors = if (recovery_enabled) self.syntax_errors else @intFromBool(outcome == .invalid_syntax),
                 .diagnostic_delivery = self.delivery,
+                .diagnostic_stop = if (outcome == .diagnostic_stopped) outcome.diagnostic_stopped else null,
                 .accepted_deviations = self.acceptedDeviations(),
                 .warnings = self.warnings,
             };
             self.terminal = result;
             if (metered or cancellable) self.work.phase = .terminal;
+            return result;
+        }
+
+        /// Acknowledgment is terminal-only; don't keep duplicate running state.
+        fn finishReported(self: *Self, outcome: Outcome, stop: ?diagnostic.StopReason) Result {
+            var result = self.finish(outcome);
+            result.diagnostic_stop = stop;
+            self.terminal = result;
             return result;
         }
 
@@ -1245,7 +1258,12 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
         fn fail(self: *Self, failure: diagnostic.Diagnostic) ?Result {
             var d = failure;
             if (d.fix == null) d.fix = self.lexicalFix(d);
-            const stop = self.deliver(d);
+            const is_unsupported = failure.code == .profile_unsupported_feature;
+            if (is_unsupported and self.unsupported() == .warning) {
+                d.code = .profile_unsupported_feature_warning;
+                self.warnings += 1;
+            }
+            const stop = if (is_unsupported and self.unsupported() == .silent) null else self.deliver(d);
             const reason: syntax_event.AbortReason = switch (failure.code) {
                 .profile_unsupported_feature => .unsupported_feature,
                 .resource_capacity_exhausted => .resource_exhausted,
@@ -1275,7 +1293,7 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
                 .sink_failure, .scratch_failure, .cancelled, .diagnostic_stopped => unreachable,
             };
             self.abortEvents(reason);
-            return self.finish(outcome);
+            return self.finishReported(outcome, stop);
         }
 
         /// Repairs for scanner failures that need what only the parser
@@ -1334,11 +1352,13 @@ pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audite
             return if (self.syntax_errors != 0) .invalid_syntax else .unsupported_feature;
         }
 
-        /// Recovery is a body-only policy: a header has no statement
+        /// Synchronization is body-only: a header has no statement
         /// boundary to return to, trailing tokens have nothing left to
         /// parse, and end of input is already the end.
         fn canRecover(self: *const Self, failure: diagnostic.Diagnostic) bool {
-            if (self.recovery() != .collect or !self.begun) return false;
+            if (!self.begun) return false;
+            if (self.onError() == .fail_fast and
+                (failure.code != .profile_unsupported_feature or self.unsupported() == .err)) return false;
             if (self.state == .epilogue) return false;
             if (failure.details == .unexpected and failure.details.unexpected.found == .end_of_input) return false;
             if (self.tokens.terminal != .none) return switch (self.tokens.terminal) {
@@ -1778,7 +1798,7 @@ test "cancellation can stop every lexical continuation and execution phase" {
             .tokens = Scanner.init(source),
             .events = &events,
             .diagnostics = diagnostic.discard,
-            .settings = .{ .recovery = .fail_fast },
+            .settings = .{ .on_error = .fail_fast },
             .cancellation = request.hook(),
         };
         const before = machine.advance(budget);
@@ -1822,7 +1842,7 @@ test "late cancellation from a rejected syntax diagnostic does not mask failure"
         .tokens = scalar_lex.Scanner(true, true, null).init("graph {a[x=]}"),
         .events = &events,
         .diagnostics = .{ .context = &reporter, .emit_fn = Reporter.emit },
-        .settings = .{ .recovery = .fail_fast },
+        .settings = .{ .on_error = .fail_fast },
         .cancellation = request.hook(),
     };
     while (machine.advance(1).result == null) {}
@@ -1841,7 +1861,7 @@ test "diagnostic stop aborts output once and does not resume recovery or dispatc
             .tokens = scalar_lex.Scanner(true, true, null).init(source),
             .events = &events,
             .diagnostics = bag.sink(),
-            .settings = .{ .syntax = policy.resolve(policy.defaults, policy.presets.lenient).parsing.syntax, .recovery = .collect },
+            .settings = .{ .syntax = policy.resolve(policy.defaults, policy.presets.lenient).parsing.syntax, .on_error = .collect },
         };
         while (machine.advance(1).result == null) {}
         const first = machine.terminal.?;
@@ -1994,7 +2014,7 @@ fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool, co
         // After a recovered failure, dispatches keep the grammar's own
         // bookkeeping without attempting events, and several failures can
         // fall inside one budget; the end-state comparisons below still hold.
-        const recovering = settings.recovery == .collect;
+        const recovering = settings.on_error == .collect;
         if (!recovering) try expectEqual(machine.audit.dispatch - dispatch, events.attempts - attempts);
         try expect(progress.work_used <= budget);
         try expect(examined <= progress.work_used);
@@ -2041,8 +2061,8 @@ fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool, co
 test "numeral policy is partition invariant including failure and recovery" {
     inline for (.{ scalar_lex.Scanner, block_lex.Scanner }) |ScannerOf| {
         for ([_]policy.RuleSeverity{ .err, .warning, .off }) |severity| {
-            for ([_]policy.Recovery{ .fail_fast, .collect }) |recovery_mode| {
-                const settings: policy.ParseSettings = .{ .ambiguous_numeral = severity, .recovery = recovery_mode };
+            for ([_]policy.OnError{ .fail_fast, .collect }) |recovery_mode| {
+                const settings: policy.ParseSettings = .{ .ambiguous_numeral = severity, .on_error = recovery_mode };
                 const source = "graph { 1e3; { 1.2.3; a } 2z; }";
                 const total = try checkBudgetPartition(ScannerOf, source, &.{1}, settings, null, false);
                 try expectEqual(total, try checkBudgetPartition(ScannerOf, source, &.{ 0, 3, 17 }, settings, null, false));
@@ -2072,7 +2092,7 @@ test "lenient syntax partitions preserve events counters diagnostics and charged
         for (0..events.attempts) |index|
             _ = try checkBudgetPartition(ScannerOf, source, &.{ 0, 1, 5 }, settings, index, false);
         var recovering = settings;
-        recovering.recovery = .collect;
+        recovering.on_error = .collect;
         _ = try checkBudgetPartition(ScannerOf, "graph { ; a[x=]; ; b --- c; d - > e; ; }", &.{ 0, 1, 5 }, recovering, null, false);
     }
 }
@@ -2305,7 +2325,7 @@ fn expectAborted(source: []const u8, expected_reason: syntax_event.AbortReason) 
     try expectEqual(expected_reason, recorded[recorded.len - 1].abort_document);
 }
 
-const recovery_settings: policy.ParseSettings = .{ .recovery = .collect };
+const recovery_settings: policy.ParseSettings = .{ .on_error = .collect };
 
 fn countCode(bag: anytype, code: diagnostic.Code) usize {
     var count: usize = 0;
@@ -2447,7 +2467,7 @@ test "both scanner backends drive the grammar to identical events and diagnostic
                 .tokens = scalar_lex.Scanner(false, false, null).init(source),
                 .events = &scalar_events,
                 .diagnostics = scalar_bag.sink(),
-                .settings = .{ .recovery = recovery },
+                .settings = .{ .on_error = recovery },
             };
             var block_events: Recording = .{};
             var block_bag: diagnostic.FixedBag(8) = .{};
@@ -2455,7 +2475,7 @@ test "both scanner backends drive the grammar to identical events and diagnostic
                 .tokens = block_lex.Scanner(false, false, null).init(source),
                 .events = &block_events,
                 .diagnostics = block_bag.sink(),
-                .settings = .{ .recovery = recovery },
+                .settings = .{ .on_error = recovery },
             };
             try std.testing.expectEqualDeep(scalar_machine.runToCompletion(), block_machine.runToCompletion());
             try std.testing.expectEqualDeep(scalar_events.recorded(), block_events.recorded());
@@ -2866,7 +2886,7 @@ test "unsupported outcome is a boundary, not a whole-input validity claim" {
     // under the none policy. Unsupported is not a whole-input validity claim.
     var events: Recording = .{};
     var bag: Bag = .{};
-    const result = testing.run("graph { a -- < @> @", &events, bag.sink(), .{ .markup = .none, .recovery = .fail_fast }, null);
+    const result = testing.run("graph { a -- < @> @", &events, bag.sink(), .{ .markup = .none, .on_error = .fail_fast }, null);
     try expect(result.outcome == .unsupported_feature);
     try expectEqual(diagnostic.Feature.html_identifier, bag.items()[0].details.unsupported_feature);
 }

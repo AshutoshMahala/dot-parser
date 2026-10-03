@@ -7,20 +7,20 @@ const Runtime = dot.Profile(.{ .runtime_policy = true });
 const Storage = dot.FixedDocumentStorage(.{ .statements = 16, .nodes = 16, .edges = 16, .attributes = 16, .subgraphs = 8, .scoped_edges = 8, .scoped_edge_links = 8, .edge_chains = 8, .edge_links = 16, .ported_references = 16, .assignments = 8, .attribute_statements = 8 });
 
 test "collect is the default while explicit fail-fast remains available" {
-    try equal(@as(usize, 2), std.meta.fields(dot.Recovery).len);
-    try equal(dot.Recovery.collect, dot.Profile(.{}).baseline.parsing.recovery);
-    try equal(dot.Recovery.collect, dot.presets.standard.recovery.?);
-    try equal(dot.Recovery.collect, dot.presets.lenient.recovery.?);
+    try equal(@as(usize, 2), std.meta.fields(dot.OnError).len);
+    try equal(dot.OnError.collect, dot.Profile(.{}).baseline.parsing.on_error);
+    try equal(dot.OnError.collect, dot.presets.standard.on_error.?);
+    try equal(dot.OnError.collect, dot.presets.lenient.on_error.?);
     const source = "graph { a[x=]; b[y=]; c; }";
-    inline for ([_]dot.Policy{ .{}, .{ .recovery = .collect }, .{ .recovery = .fail_fast } }) |policy| {
+    inline for ([_]dot.Policy{ .{}, .{ .on_error = .collect }, .{ .on_error = .fail_fast } }) |policy| {
         const P = dot.Profile(.{ .policy = policy });
         var bag: dot.FixedDiagnosticBag(8) = .{};
         var pools: Storage = .{};
         const r = P.parseBorrowedIn(source, .{ .document = pools.storage() }, bag.sink(), .{});
         try expect(r.outcome == .invalid_syntax and r.document == null);
-        try equal(@as(usize, if (policy.recovery == .fail_fast) 1 else 2), bag.items().len);
-        try equal(@as(u32, if (policy.recovery == .fail_fast) 1 else 2), r.syntax_errors);
-        try equal(if (policy.recovery == .fail_fast) dot.Completion.incomplete else .complete, r.completion);
+        try equal(@as(usize, if (policy.on_error == .fail_fast) 1 else 2), bag.items().len);
+        try equal(@as(u32, if (policy.on_error == .fail_fast) 1 else 2), r.syntax_errors);
+        try equal(if (policy.on_error == .fail_fast) dot.Completion.incomplete else .complete, r.completion);
     }
     // No reliable boundary exists inside an unfinished quoted/comment/HTML ID.
     for ([_][]const u8{ "graph { a; \"unfinished", "graph { a; /*unfinished", "graph { a; <unfinished", "graph { a; \"x\x00y\"; b; }", "graph { a; \"x\"+" }) |input| {
@@ -57,7 +57,7 @@ test "nesting policy and depth counters use u32 with fixed and runtime boundary 
     inline for (.{ .scalar, .block }) |scanner| {
         const input: dot.Policy = .{
             .scanner = scanner,
-            .recovery = .collect,
+            .on_error = .collect,
             .execution = .{ .metering = true },
             .limits = .{ .max_nesting = maximum },
         };
@@ -105,7 +105,7 @@ test "all scanner recovery and execution combinations agree at both binding time
                 inline for (.{ false, true }) |cancellation| {
                     const input: dot.Policy = .{
                         .scanner = scanner,
-                        .recovery = recovery,
+                        .on_error = recovery,
                         .execution = .{ .metering = metering, .cancellation = cancellation },
                         .limits = .{ .max_statements = 5, .max_attributes = 2, .max_nesting = 1 },
                         .validation = .{ .graph = .{ .operator_mismatch = .warning, .operator_reading = .conform_to_kind } },
@@ -222,7 +222,7 @@ test "fixed and runtime-baseline sessions have identical bounded progress and di
                 .scanner = scanner,
                 .execution = .{ .metering = true, .cancellation = cancellable },
                 .limits = .{ .max_statements = 4, .max_attributes = 2, .max_nesting = 2 },
-                .recovery = .collect,
+                .on_error = .collect,
                 .validation = .{ .graph = .{ .treated_as = .auto } },
             };
             const Fixed = dot.Profile(.{ .policy = input });
@@ -332,7 +332,7 @@ test "one-shot and measurement cancellation do not publish staged output" {
 }
 
 test "fixed settings have no runtime storage and disabled controls are absent" {
-    const Fixed = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 3 }, .recovery = .fail_fast } });
+    const Fixed = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 3 }, .on_error = .fail_fast } });
     const Driver = @FieldType(@FieldType(Fixed.Session, "driver"), "machine");
     try expect(@FieldType(Driver, "settings") == void);
     try expect(@FieldType(Driver, "cancellation") == void);

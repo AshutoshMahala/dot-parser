@@ -38,7 +38,11 @@ bounded processor. Current DOT validation remains unmetered until separately
 implemented; this preparation slice must not claim bounded composed validation.
 
 For retained composition, run outer DOT validation then selected inner fragments
-in source order. Ordinary findings do not stop independent checks or fragments.
+in source order. Default `.on_error = .collect` keeps independent checks/fragments
+running after ordinary errors; explicit `.fail_fast` ends the active operation
+at its first error. Recovery is the internal safe synchronization needed to
+collect syntax findings, not another public policy. Warnings do not trigger
+fail-fast and sink filtering never changes error classification.
 Missing prerequisites make dependent work unavailable, not successful. An explicit
 operational stop ends remaining requested work; independently invoked operations
 are unaffected. Standalone, delayed and during-DOT workflows remain supported
@@ -50,6 +54,21 @@ results survive inner failures. Active transactional output commits or aborts on
 pausing does neither. Abort cannot undo arbitrary consumer side effects. Reading
 results or repeating terminal execution must not repeat callbacks. Detailed
 per-fragment results are opt-in, not a mandatory retained array.
+
+Parent and child error handling are independent. The child completes/stops under
+its own policy, then the parent decides whether to visit the next child. Parent
+collect/child fail-fast continues with the next fragment; parent fail-fast/child
+collect retains all findings from that child before stopping. Local policy limits
+stop the child and count as errors, not unconditional batch stops. Sink stops,
+allocation/storage failures and cancellation remain operational batch stops.
+
+`diagnostics.unsupported = .err | .warning | .silent` (default `.err`) controls
+classification/reporting, not acceptance or processing. Preserve the factual
+unsupported outcome; warning/silence cannot make unprocessed bytes valid. Unsafe
+boundaries may end the fragment under any reporting choice. Supported passthrough
+recognition is distinct from silent unsupported input. Delayed markup implements
+`has_errors` and `shouldStop(parent_on_error)`; `.stopped()` denotes operational
+stops only. Fail-fast combined calls do not start validation after a syntax error.
 
 ### Local validation scopes — 2026-10-02
 
@@ -111,7 +130,7 @@ Explicit diagnostic stop/failure terminates unfinished DOT parsing/validation,
 not just future inner work. A failure being reported after an operation has
 already failed does not erase that original failure; delivery remains separate.
 Never recursively report a broken diagnostic sink through itself.
-Markup parse results preserve terminal acknowledgments in `diagnostic_stop`,
+Both parsers preserve terminal acknowledgments in `diagnostic_stop`,
 separate from the original outcome and delivery status. Fragment wrappers check
 it before starting validation, including when the terminal syntax finding filled
 a bag and was successfully delivered. No additional readiness callback is needed.

@@ -15,6 +15,7 @@ calls do not invoke markup. See the runnable
 ```zig
 const Reader = markup.Profile(.{ .policy = markup.presets.untrusted });
 const ready = Reader.prepare(.{}); // once, reusable across selected operands
+const parent_on_error: markup.OnError = .collect;
 var parts = try dot.identifier.parts(dot_document.source, attribute.value);
 while (parts.next()) |part| {
     if (part.form != .html) continue;
@@ -23,8 +24,7 @@ while (parts.next()) |part| {
     );
     defer checked.deinit();
     // Consume checked.parse.document here if present; it borrows source bytes.
-    if (checked.stopped()) break; // also end any surrounding batch loop
-    // Ordinary findings alone do not stop later fragments.
+    if (checked.shouldStop(parent_on_error)) break; // also end surrounding loops
 }
 ```
 
@@ -44,15 +44,35 @@ iteration. Source must remain alive and unchanged while using views.
 | `ready.parseAndValidateFragment(allocator, fragment, sink, resources)` | Explicit allocation; optional `resources.scratch_allocator` for parsing scratch |
 | `ready.parseAndValidateFragmentIn(fragment, memory, scratch, sink)` | Allocation-free; `ParseMemory` and `SourceValidationScratch`; key scratch reused for document validation |
 | `checked.parse` | Ordinary parse result; no partial tree on syntax failure |
-| `checked.validation` | Document validation on success; source-scope validation on `invalid_syntax`; null after operational stops/unsupported input, including a terminal diagnostic's sink stop/failure |
+| `checked.validation` | Document validation on success; source-scope validation on `invalid_syntax` only with child `.on_error = .collect`; null after fail-fast syntax rejection, unsupported input or operational stops |
 | `checked.documentValid()` | Successful complete parsing AND complete valid validation |
-| `checked.stopped()` | End the requested batch on cancellation, limit/capacity/allocation/delivery failure, explicit sink stop or unsupported input |
+| `checked.has_errors` | Discovered syntax/validation errors, a child policy-limit failure, or unsupported input classified as error; false does not imply validity/completeness |
+| `checked.stopped()` | Operational stop: cancellation, storage/allocation/delivery failure or explicit sink stop; not ordinary errors, unsupported input or child policy limits |
+| `checked.shouldStop(parent_on_error)` | Operational stop, or child errors when the parent's policy is `.fail_fast` |
 
 Both operations also exist directly on `markup` and configured profiles, taking
 their normal policy options last. Growing results require `deinit()`; fixed
 results own neither source nor pools. Validation failure preserves a successful
 inner tree. Outer and inner validity remain independent. Do not start child work
-after an outer operational stop; outer validation findings alone do not block it.
+after an outer operational stop or an outer fail-fast error.
+
+The parent checks its policy **after the child returns**; it never overrides the
+child's error handling. There is no runtime processor replacement.
+
+| Parent `on_error` | Child `on_error` | Behavior after a child error |
+| --- | --- | --- |
+| `collect` | `fail_fast` | Child ends at its first error; visit the next child |
+| `collect` | `collect` | Child collects safely; visit the next child |
+| `fail_fast` | `fail_fast` | Child ends at its first error; no next child |
+| `fail_fast` | `collect` | Child finishes collecting; retain all findings, then no next child |
+
+Unsupported reporting follows the child's `diagnostics.unsupported` policy:
+`err` (default), `warning`, or `silent`. It never creates a successful document
+or certifies unprocessed content. Warning/silence alone do not trigger parent
+fail-fast. An unsupported boundary can still prevent that child from proceeding.
+A child policy limit remains an enforced failure; parent `.collect` may process
+other fragments. Shared sink stops, allocation/storage failure and cancellation
+end the batch regardless of either `on_error` setting.
 
 `Fragment.init(bytes, origin)` checks the u32 coordinate domain;
 `Fragment.fromSource(source, span)` additionally checks source bounds before
@@ -375,9 +395,12 @@ diagnostics. `<x a='1' a='2'></wrong>` reports the duplicate independently of
 the mismatched closer. `<x a='1' a='2'` can still report the known duplicate,
 but reports incomplete coverage. Recognized names and completed references in an
 unfinished quoted-value prefix are checkable too. Missing delimiters are never
-invented. With `.collect`, selected malformed headers synchronize using the same
-quote-aware scanner boundary rules as parsing; skipped bytes are not certified.
-Uncertain boundaries stop the scope walk; `.fail_fast` disables its synchronization.
+invented. This explicit validation operation synchronizes selected malformed
+headers using the parser's quote-aware boundary rules regardless of `on_error`;
+skipped bytes are not certified. `.fail_fast` stops at its first validation error,
+not a syntax error already reported by another operation. Uncertain boundaries
+still stop the scope walk. Combined fragment calls do not start this fallback
+after a fail-fast syntax error; callers can request it independently.
 Like document validation, the automatic source walk checks element names at their
 opening occurrence, not again at the closer. Tag matching remains parsing's job;
 explicit `closing_name` scope validation is still available. Whole-source encoding
@@ -512,6 +535,11 @@ or validity under any disabled name, encoding or reference rule. Interrupted res
 found, otherwise `unknown`. A sink's accepted
 stop ends the pass immediately with complete delivery of the discovered prefix;
 rejection ends it with failed delivery. Neither implies all findings were discovered.
+With `.on_error = .fail_fast`, the first error finding ends validation with
+`completion = .error_stopped`, invalid validity and truthful per-check statuses.
+This is not a sink stop: the same bag can receive findings from a later operation.
+Warnings and discarded/filtered delivery do not change error classification.
+Actual sink stop/failure takes precedence if it occurs while reporting the error.
 Insufficient scratch reports `storage_exhausted` with the required entry count;
 allocator failure reports `out_of_memory`. Duplicate scratch is preflighted before
 any enabled check runs; a resource failure leaves enabled checks incomplete and counts
@@ -628,8 +656,9 @@ const parsed = Reader.parseBorrowedIn(source, memory, sink, .{
 | Policy leaf | Values/default |
 | --- | --- |
 | `scanner` | `scalar` (default), `block`; same syntax and output, different work granularity |
-| `recovery` | `collect` (default), `fail_fast`; collect further syntax findings at reliable boundaries, or stop at the first syntax error. Selects error handling, not the grammar |
+| `on_error` | `collect` (default), `fail_fast`; continue independent checks/safe syntax recovery, or end the operation at its first error. Selects error handling, not the grammar |
 | `diagnostics.fixes` | `all` (default), `machine_applicable`, `off`; filters repair offers only |
+| `diagnostics.unsupported` | `err` (default), `warning`, `silent`; reporting/classification for unsupported input, not permission to accept or interpret it |
 | `limits.max_source_bytes` | u32; default `2^32 - 1` |
 | `limits.max_nodes` | u32; default `2^32 - 1`; elements, nonempty text runs, comments and CDATA sections |
 | `limits.max_attributes` | u32; default `2^32 - 1`; every occurrence counts |
@@ -721,8 +750,9 @@ those reached during recovery, not retained records or a sizing guarantee.
 Parse results, measurement reports and session progress also expose u32
 `accepted_deviations` and `warnings`. Each tolerated ampersand increments the former;
 `warn` also increments the latter before delivery. Discarding/filtering diagnostics
-does not alter counts; `accept` produces no warning or diagnostic call. Counts
-survive later failure, cancellation and sink stopping. They are source-bounded
+does not alter counts; `accept` produces no warning or diagnostic call. Warning
+counts also include unsupported-feature warnings (without an accepted deviation).
+Counts survive later failure, cancellation and sink stopping. They are source-bounded
 summaries, not a retained per-reference history or validation's separate totals.
 
 | Outcome | Meaning |
@@ -778,9 +808,11 @@ caller-driven, and absent from parser execution; markup diagnostics remain 36 by
 
 ## Diagnostics-only structural recovery
 
-`recovery = .collect` is the standard/untrusted default. Choose `.fail_fast`
-explicitly to stop at the first syntax error. This does not change acceptance:
-rejected input stays rejected under either policy, and validation is independent.
+`on_error = .collect` is the standard/untrusted default. Choose `.fail_fast`
+explicitly to stop the requested operation at its first error. Recovery is the
+internal mechanism for reaching safe boundaries, not another public policy.
+Rejected input stays rejected under either setting. Validation uses the same
+error-handling choice; explicitly invoked validation is a new operation.
 Tree-dependent checks still require a successfully parsed `Document`. The local
 checks described above can instead run through `validateSource` or `validateScope`
 without a partial tree; they are not implicitly run by parsing/recovery.
