@@ -14,7 +14,7 @@
 //!
 //! The syntax-event sink, low-level parser machine, and document builder remain private and
 //! provisional; they are reachable only through the façade until the
-//! contract stabilizes (PROJECT_STRUCTURE.md).
+//! contract stabilizes (docs/ARCHITECTURE.md).
 //!
 //! ## Ownership at a glance
 //!
@@ -344,7 +344,7 @@ test {
     std.testing.refAllDecls(@This());
     // Private, provisional modules are not exported but their unit tests
     // still run (the syntax-event sink, parser driver, and document builder stay
-    // private per PROJECT_STRUCTURE until the contract stabilizes).
+    // private per docs/ARCHITECTURE.md until the contract stabilizes).
     _ = @import("dot/syntax_event.zig");
     _ = @import("dot/parser.zig");
     _ = @import("dot/syntax.zig");

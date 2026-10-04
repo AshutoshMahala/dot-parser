@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last amended: 2026-10-02
+Original draft: 2026-07-13 · Last reconciled: 2026-10-03
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -10,6 +10,21 @@ These requirements describe the intended contract, not a claim that every
 feature is implemented. [OpenQuestions.md](OpenQuestions.md) separates settled
 policy from pending implementation and verification;
 [supported syntax](../SUPPORTED_SYNTAX.md) describes current grammar coverage.
+
+## Reading this contract
+
+The priorities remain performance and low memory usage, explicit ownership and
+resource costs, source preservation, predictable failure/diagnostic semantics,
+portable independent components and optional capabilities with measurable costs.
+Convenience APIs must not weaken those contracts. Requirements include intended
+future capabilities; their presence here does not mean the current code has them.
+
+See [the decision/status index](OpenQuestions.md#current-delivery-and-unfinished-decisions),
+[markup design](MARKUP.md) and [processor contract](PROCESSOR_CONTRACT.md) for
+unfinished choices. Public guides describe the available development APIs;
+release 0.3.0 does not contain the newer markup/integration work. Stable R-* and
+Q* IDs are retained during consolidation; no requirement is waived by removing
+a completed implementation diary.
 
 ## 1. Purpose
 
@@ -197,7 +212,7 @@ limits retention only. Markup's structural recovery aborts output once, bounds
 aggregate ancestor lookup by source length, synchronizes selected opening-header
 attribute errors at explicit quote-aware delimiters without accepting them, and
 reports completion and factual syntax-error count separately from later operational
-stops. See [its contract](MARKUP.md#structural-recovery--implemented-2026-09-30).
+stops. See [its contract](MARKUP.md#recovery-and-acceptance).
 
 ### R-FUNC-008: Validation completes with a diagnostic bag
 
@@ -243,7 +258,7 @@ early for cancellation, exhausted work/memory limits, corrupt intermediate data,
 or an internal invariant failure. Delivery failure and retention omissions must
 remain visible independently of validation completion and validity.
 
-**Cross-processor contract decided 2026-09-23; composition pending (Q40).**
+**Cross-processor contract: delayed and one-shot composition implemented (Q40).**
 Parent and child `on_error` settings are independent. A collecting parent visits
 the next child after ordinary errors, unsupported input or a child policy limit;
 a fail-fast parent stops before the next child if the returned child has errors.
@@ -252,13 +267,15 @@ fail-fast operation observes its result. Child fail-fast skips later phases of
 that combined call; explicit validation can still be requested independently.
 Each processor may report multiple findings. Checks whose prerequisites failed
 must be identified as unavailable, not passed; unsafe continuation after lost
-boundaries or exhausted shared resources is not required. Global cancellation
-stops the composed operation. A completed DOT syntax result can remain available
-when inner validation fails; this does not authorize a partial DOT document or
+boundaries or exhausted shared resources is not required. Observed cancellation
+stops the composed operation; current hooks are component-specific, not a shared
+interrupt guarantee for an uncancellable child. A completed DOT syntax result
+can remain available when inner validation fails; this does not authorize a partial DOT document or
 claim success for all requested stages. Continuing independent validation does
 not require parallel execution, a bag per component, or retained per-fragment
-results. Existing DOT validation has continuation and bounded bag retention;
-automatic processor scheduling and bounded validation are not implemented.
+results. Existing DOT validation has continuation and bounded bag retention.
+Automatic one-shot HTML-operand scheduling is implemented; recursively scheduled
+or shared-budget execution and bounded validation are not.
 
 **Error-policy refinement implemented 2026-10-03:** delayed fragment results
 expose factual `has_errors`, operational `stopped()` and parent-aware
@@ -274,8 +291,8 @@ in `diagnostic_stop` without replacing the original failure.
 diagnostic stop/failure handling and prefix outcomes are implemented. Findings
 already discovered for source-order merging remain counted on stop. Terminal
 syntax/resource failures retain their cause if reporting fails. See the
-[processor contract](PROCESSOR_CONTRACT.md) for stages 1–4,
-ownership/reset and the remaining composition scope.
+[processor contract](PROCESSOR_CONTRACT.md) for current preparation, ownership,
+stopping and remaining composed-execution requirements.
 
 ## 4. Modularity requirements
 
@@ -478,7 +495,7 @@ stepping alone is not a guarantee of bounded work or cancellation latency (Q27).
 
 The implemented fixed-storage direction is optional deterministic work metering, distinct
 from source progress, with resumable yield and terminal cancellation. The
-[execution contract](../architecture/EXECUTION_CONTRACT.md) defines the
+[execution contract](../EXECUTION.md) defines the
 microstep accounting, callback exclusions, cleanup rules, fixed-storage first
 slice, and acceptance tests; the corresponding session API is experimental 0.x.
 The scanner and parser implement separately charged source examinations, grammar
@@ -556,7 +573,7 @@ conformance or value expansion. Name-local UTF-8 decoding does not enable a
 whole-source check. Independent findings keep their severities and may overlap.
 Structural recovery is implemented separately from validation, preserving the
 no-guessed-repair/no-partial-success contract. Details and
-remaining choices are in [the internal slice contract](MARKUP.md#slice-4b--optional-validation).
+remaining choices are in [the internal slice contract](MARKUP.md#validation-and-coverage).
 
 **Standalone-first implementation (2026-09-27; decisions 2026-09-26):** build structural markup in
 vertical slices before expanding composition. `markup_parser` now independently
@@ -575,10 +592,13 @@ optional whole-source UTF-8 validation, off by default with error/warning choice
 its source-ordered findings do not stop independent duplicate checks. Slice 4b
 adds independent default-off name and catalog checks with source-ordered typed
 findings, no new retained pool or required scratch, and fixed/runtime parity.
-Structural recovery and DOT passthrough recognition are implemented; Graphviz
-validation and DOT/markup integration remain subsequent slices. Current
-coverage is documented in [the markup guide](../MARKUP.md); settled grammar and
-delivery order are recorded in [the internal slice contract](MARKUP.md).
+Structural recovery, local scope validation, DOT passthrough recognition and
+delayed/one-shot DOT integration are implemented. Markup validation is cancellable
+but not work-credit metered; source validation emits encoding findings before
+local findings rather than globally merging them by location. Graphviz validation,
+dialect extensions and shared-budget composition remain future work. Current APIs
+are in [the markup guide](../MARKUP.md) and [label integration](../LABELS.md);
+[internal markup status](MARKUP.md) separates delivered work from pending design.
 
 The selected markup implementation, built-in or consumer-supplied under
 R-MOD-015, must support three usage paths:
@@ -606,8 +626,11 @@ requested, completed-valid, completed-invalid and incomplete-with-reason for eac
 stage; diagnostic delivery and retention are separate facts. A composed result
 must not report all requested stages passed when one failed or was incomplete.
 Detailed per-fragment results are optional, not mandatory retained metadata.
-Q40 records independent continuation; exact result types, operational failure
-propagation, lifecycle and cross-component diagnostic ordering remain open.
+Q40 records the implemented one-shot result, continuation, lifetime and
+diagnostic-order contracts. Detailed per-fragment retention and composed
+session/reset/budget APIs remain open. Current child findings occur during DOT
+parsing; outer validation follows successful parsing. Explicit delayed calls
+remain caller-ordered, without a global source-sort guarantee.
 
 Structural summary facts require markup processing, even if no tree is retained.
 Maximum depth means element nesting depth, not DOT delimiter depth; element
@@ -617,8 +640,9 @@ claim structural validity. Exact summary records and any additional element-coun
 limit remain open. Parsing retains concatenation expressions and their parts;
 explicit decoding may join values without replacing that retained source.
 Simple origin-offset mapping applies to each original operand, not a combined
-decoded expression. Q40 records the planned HTML-operand concatenation exception
-to Q10's specification-first baseline and the remaining decoding API decisions.
+decoded expression. Q40 records the implemented HTML-operand concatenation
+exception to Q10's specification-first baseline, explicit decoding/form/parts
+APIs, and the remaining summary/caching and transformed-source mapping designs.
 
 The subsystem must preserve the existing ownership, raw-source, diagnostic,
 deterministic-execution, fixed-storage, security and optional-feature contracts.
@@ -812,7 +836,7 @@ Before declaring performance complete, the project must define benchmarks for:
   subgraphs.
 - Fixed-capacity failure paths.
 
-Initial measured baselines are recorded in `docs/BASELINES.md` and are
+Initial measured baselines are recorded in `docs/PERFORMANCE.md` and are
 reproducible via `zig build bench -Doptimize=ReleaseFast`. Concrete numeric
 *budgets* (pass/fail thresholds per profile) are still to be decided.
 
@@ -880,10 +904,12 @@ emission order for diagnostics at the same position. Exact ordering promises
 for nodes, edges, attributes, and lowered data must be documented with their
 APIs.
 
-Q40's cross-processor diagnostic merge order and tie-breaking remain open.
-Sequential validation stages do not inherently emit a globally source-sorted
-stream. Preserve existing DOT ordering; any composed ordering contract must
-state its guarantees and explicit storage/work costs rather than hide a sort.
+Current one-shot composition delivers child findings at operand recognition,
+then outer validation findings after successful DOT parsing. Delayed calls
+follow caller order; markup source validation checks encoding before local
+scopes. These are deterministic phase orders, not global source sorting.
+Preserve existing DOT ordering. Future scheduling must state its ordering and
+explicit storage/work costs rather than hide a merge buffer or sort.
 
 ### R-PORT-006: The core is byte-oriented and encoding-extensible
 
@@ -924,7 +950,7 @@ display-cell mapping. Controls/format characters and invalid bytes are escaped;
 ASCII style escapes non-ASCII bytes too. Tabs use eight-cell excerpt-local stops.
 Locations and repairs remain byte-based. This is not grapheme shaping or a
 terminal-width guarantee; the detailed contract and presentation-only costs are
-in [REPORTING.md](../REPORTING.md#metadata-and-console-presentation).
+in [Errors and diagnostics](../ERRORS.md#printing-diagnostics).
 
 ## 8. Diagnostic requirements
 
@@ -980,7 +1006,7 @@ even when no diagnostic is retained or delivered. Diagnostic delivery status is
 separate from the operation's outcome; callers must inspect both. Not every
 failure has a diagnostic: the current internal storage-failure fallback emits
 none, and the private event sink owns the cause of its own failures. Per-code
-payload and delivery contracts are documented in `docs/OUTCOMES.md`; these
+payload and delivery contracts are documented in `docs/ERRORS.md`; these
 exceptions must be explicit rather than inferred from an empty bag.
 
 ### R-DIAG-004: Rich messages and catalogs remain optional
@@ -1579,6 +1605,13 @@ compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
 
+- 2026-10-03 — Documentation consolidation only: retain all requirement IDs and
+  intended constraints, reconcile delivered policy/markup/one-shot integration,
+  separate future composition from current guarantees, and update internal links
+  to the reorganized guides. Completed preparation notes are consolidated into
+  the processor contract; unfinished markup and execution designs remain.
+  No runtime code, official baseline or implementation commitment changes.
+
 - 2026-10-02 — **R-FUNC-008:** implement markup local validation scopes and a
   tree-independent source-scope pass. Separate lexical boundaries, local checks
   and enclosing structure; preserve findings from recognized prefixes, truthful
@@ -1669,7 +1702,7 @@ recorded here. Entries describe their historical point in development; current
 implementation status is recorded with the requirements above.
 
 - 2026-07-17 — **R-PERF-004**: initial baselines recorded
-  (`docs/BASELINES.md`, `zig build bench`).
+  (`docs/PERFORMANCE.md`, `zig build bench`).
 - 2026-07-18 — **§2**: terminology refined — *graph* is the generic kind
   term, never specifically undirected. **§16**: open questions split out to
   `OpenQuestions.md` with stable Q-numbering.

@@ -192,7 +192,19 @@ pub fn build(b: *std.Build) void {
     });
     examples_step.dependOn(&b.addRunArtifact(composed_example).step);
     examples_step.dependOn(&b.addInstallArtifact(composed_example, .{}).step);
+    const custom_processor_example = b.addExecutable(.{
+        .name = "custom_processor",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/custom_processor.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(custom_processor_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(custom_processor_example, .{}).step);
     const example_names = [_][]const u8{
+        "quick_start",
         "parse_undigraph",
         "fixed_buffer",
         "diagnostics_demo",

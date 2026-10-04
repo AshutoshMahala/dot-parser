@@ -1,14 +1,23 @@
-# Processor preparation contract — internal design
+# Processor contract — current guarantees and remaining design
 
-Decisions reconciled 2026-09-26; delayed integration added 2026-10-03. This contract
-also includes future scheduling requirements, not a claim of bounded composition.
-This document is the durable design record;
-it must not depend on disposable working files. Current preparation code is
-described in [the implementation notes](PROCESSOR_PREPARATION.md). The later
-[standalone structural slice](MARKUP.md), DOT passthrough recognition and explicit
-delayed processing and one-shot during-DOT scheduling are implemented. Shared-budget
-resumable composition remains future work. This contract
-does not make standalone use depend on the composition APIs below.
+Reconciled: 2026-10-03. Keep this internal contract while composed execution
+still has unfinished designs. User-facing APIs are in
+[custom processors](../CUSTOM_PROCESSORS.md) and [label integration](../LABELS.md).
+Standalone parsing does not depend on composition.
+
+| Capability | Delivery status |
+| --- | --- |
+| Schema-owned policy binding and nested policy preparation | Implemented; preparation is not execution |
+| Checked fragments and original-source diagnostics | Implemented for contiguous raw bytes |
+| Standalone and delayed processing | Implemented, including explicit fixed-memory calls |
+| One-shot during-DOT processing and shared reporting | Implemented, with a compile-time-selected processor |
+| Workspace reuse and silent unsupported handling | Implemented |
+| Fixed-memory / resumable during-DOT composition | Agreed direction; not implemented |
+| Recursive execution, quoted-content scheduling and profile redesign | Further design required |
+
+The completed preparation implementation notes have been consolidated here;
+there is no separate preparation task remaining. Future work is listed under
+[remaining design](#remaining-design), not implied by the implemented interface.
 
 ## Binding and initialization
 
@@ -41,16 +50,52 @@ tag/alignment; ordinary processor bags retain their independent compact layouts.
 Ordinary DOT must not gain processor metadata on every retained record. Static
 composition permits inlining; forced inlining still requires measurement.
 
+### Schema-owned preparation
+
+`processor.PolicyBinding(Schema, config)` supplies baseline verification,
+`validatePolicy`, `Options`, `State` and `prepare`. The schema owns `Policy`,
+`Effective`, `defaults`, `resolve`, `check` and `Error`. A fallible check carries
+an issue with `asError()`; an infallible schema uses `error{}` and a valid-only
+check. Handle results exhaustively rather than inventing an invalid case or
+silently discarding future cases.
+
+Resolution/checking are pure and allocation-free. The original patch reaches
+`check`, so explicit and inherited fields remain distinguishable. Public and
+effective layouts need not match; deriving one mechanically from the other is
+not a settled requirement. Fixed bindings have `State = void`, empty options and
+compile-time-only verification. Runtime support is default-off; enabled bindings
+resolve/check once per preparation, never replace an implementation.
+
+`PolicySet` takes named configured profile types exposing `Policies`; sets expose
+that same binding and may nest. Preparing a root visits each runtime leaf once;
+all-fixed subtrees need no runtime settings storage. Repeated implementations at
+different paths have independent settings. This supports DOT → markup → string
+and sibling string policies without implementing a recursive execution scheduler
+or supplying a built-in string processor.
+
+Ordinary DOT methods still prepare their own options: calling `PolicySet.prepare`
+first does not make them reuse that state. Markup can reuse its state through
+`Prepared{ .policies = state.path }` or its own `prepare`. The composed facade
+prepares outer and child policies once before entering the engine. Workspace
+calls reuse prepared policies and buffers without capability discovery.
+
+Evidence: [binding and fragment implementation](../../src/common/processor.zig),
+[consumer tests](../../tests/processors.zig),
+[workspace tests](../../tests/markup_workspace.zig) and
+[composition](../../src/dot/composition.zig).
+
 ## Execution and completion
 
-`run()` drives execution to a terminal result. A metered `advance(budget)` pauses
-when credits run out and resumes without repeating work or callbacks. Child work
-must be charged to the parent's remaining budget; an unbounded callback is not a
-bounded processor. Current DOT validation remains unmetered until separately
-implemented; this preparation slice must not claim bounded composed validation.
+The current composed facade runs to completion and exposes no `Session` or
+`advance`. Existing standalone bounded sessions do not make composition bounded.
+Markup validation supports cancellation but is not credit-metered/resumable;
+DOT validation is neither cancellable nor credit-metered/resumable. Child hooks
+are component-specific: an outer hook alone cannot interrupt an uncancellable
+child. Shared accounting belongs to the future contract below.
 
-For delayed retained composition, run outer DOT validation then selected inner
-fragments in source order. During-DOT one-shot composition instead processes each
+The delayed recipe runs outer DOT validation then selected inner fragments in
+source order; explicit independent calls remain caller-ordered. During-DOT
+one-shot composition instead processes each
 recognized HTML operand at its scanner boundary, before the next DOT grammar
 transition, then validates outer DOT after parsing succeeds. These are distinct
 phase orders, not a global source-sort promise. Default `.on_error = .collect` keeps independent checks/fragments
@@ -69,8 +114,9 @@ live memory when a large early child is followed by growing outer output. Measur
 allocation calls and peak requested bytes separately; neither is process RSS.
 
 Keep completion, validity and diagnostic delivery separate. Requested work stopped
-before starting is incomplete with a reason, not "not requested". Completed outer
-results survive inner failures. Active transactional output commits or aborts once;
+before starting is incomplete with a reason, not "not requested". Already completed
+outer results survive later inner failures; a stop during outer parsing need not
+leave a document. Active transactional output commits or aborts once;
 pausing does neither. Abort cannot undo arbitrary consumer side effects. Reading
 results or repeating terminal execution must not repeat callbacks. Detailed
 per-fragment results are opt-in, not a mandatory retained array.
@@ -93,7 +139,7 @@ first-unsupported diagnostic metadata. Delayed markup implements
 `has_errors` and `shouldStop(parent_on_error)`; `.stopped()` denotes operational
 stops only. Fail-fast combined calls do not start validation after a syntax error.
 
-### Local validation scopes — 2026-10-02
+### Local validation scopes
 
 Recognizing a boundary, checking its content, and matching its enclosing structure
 are separate responsibilities. A check needs trustworthy bytes for its own scope,
@@ -113,8 +159,14 @@ Detailed results remain opt-in calls rather than a retained object per scope.
 Caller-built scope metadata is checked at the public boundary in every build
 mode; invalid metadata is `invalid_scope`, not a source finding. Internally
 produced spans bypass the audit. An incomplete local result carries the earliest
-coverage gap in original-source bytes, not a resume cursor: other independent
-checks and regions can have completed beyond it.
+coverage gap in supplied-source bytes (rebased by fragment wrappers), not a
+resume cursor: other independent checks and regions can have completed beyond it.
+
+The source walk checks opening names, not closing names already covered by
+syntax. An explicit `closing_name` scope remains available. Source validation
+runs encoding first and then local checks; deterministic emission does not mean
+global source sorting. It enforces the source-byte limit, not tree/nesting parse
+limits or a shared execution budget.
 
 Uniform byte spans may help SIMD within a region and future batching of scopes
 using the same rule/profile. Cross-input SIMD is not automatic: lengths, alignment,
@@ -158,9 +210,6 @@ separate from the original outcome and delivery status. Fragment wrappers check
 it before starting validation, including when the terminal syntax finding filled
 a bag and was successfully delivered. No additional readiness callback is needed.
 
-This revises the old default fixed-bag omission and continue-after-delivery-failure
-behavior. No compatibility aliases or legacy implementations are required.
-
 ## Ownership, reset and coordinates
 
 Processors never clear or destroy caller-owned bags or free borrowed storage.
@@ -172,6 +221,10 @@ expire according to documented growth/reset/destruction rules.
 Raw fragments use checked u32 ranges and one local-to-original rebase for every
 primary, related and fix span. Decoded/concatenated input requires a separate
 source map. Source origin is per active fragment, not per DOT identifier.
+`Fragment.init`, `fromSource` and `child` check ranges; the caller establishes
+provenance. Valid coordinates do not prove that arbitrary bytes came from that
+file. Child origins already refer to the original source: do not rebase at each
+parent again. Fixed-buffer views expire when storage is reused or released.
 
 Future UTF-16/32 adapters may supply UTF-8 working bytes, but must preserve original
 encoding/byte-order/BOM provenance at the source level. The existing raw-fragment
@@ -185,6 +238,31 @@ operands; each is parsed then validated independently. No global source-sorted
 guarantee is implied by phase order. Automatic one-shot selection visits every
 recognized HTML operand; application-specific selection remains explicit delayed
 work. Fixed-memory and full resumable session composition remain subsequent slices.
+
+## Remaining design
+
+These are not available APIs or a claim that implementation is in progress.
+
+| Work | Settled constraint | Decisions still required |
+| --- | --- | --- |
+| Shared-budget composition | Child work must count against the parent budget; no unbounded library callback inside a bounded operation | Metered validation, budget units, yield/resume state, cancellation propagation and failure precedence |
+| Fixed-memory during-DOT composition | Caller-owned bounded storage; exhaustion stays explicit | Resource descriptors, scratch sharing, capacities and workspace/result lifetimes |
+| Recursive / quoted-content execution | Compile-time binding; each processor owns its schema and content rules | Scheduling boundaries, selection, result aggregation and a real string-processor contract |
+| Broader profile/API surface | Existing `.processors.markup` is implemented | Revisit the deferred API proposal explicitly; workspace reuse did not decide it |
+| Context-specific label selection | Graphviz label rules must not apply to unrelated IDs | Selection metadata/API; delayed selection already works |
+| New token spellings | Replacing an inner processor cannot change DOT's lexical boundaries | Separate lexical contract for escaping, collisions, recovery and work; new statements/operators are outside this contract |
+| Source transforms / retained summaries | Explicit owners, mapping and costs; no hidden per-ID state | Decoded/transcoded maps, caching and summary layout; see [markup design](MARKUP.md#remaining-design) |
+
+For future composed sessions, `run()` must reach a terminal result, and
+`advance(budget)` must yield without repeating work or callbacks. Pausing is not
+aborting. Reset must be atomic on invalid configuration; valid reset cleans up
+unfinished work. Shared cancellation and exhausted budgets must preserve factual
+prefix results without claiming completion. Custom code is not sandboxed by
+compile-time binding; its adherence to these contracts must be tested.
+
+Keep standalone operation independent of these extensions. Do not add queues,
+instance metadata, retained child arrays or mandatory dynamic dispatch to prepare
+for hypothetical deeper execution or SIMD batching.
 
 ## Acceptance checks
 

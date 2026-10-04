@@ -1,2060 +1,251 @@
-# Standalone markup — structural slices
+# Markup — delivery status and remaining design
 
-Decisions: 2026-09-26; slices 1–3, 4a and 4b implemented 2026-09-27;
-diagnostics-only recovery implemented 2026-09-30; local validation scopes 2026-10-02;
-explicit delayed integration 2026-10-03.
-Error-policy and parent/child continuation refinement implemented 2026-10-03;
-see [the current contract](PROCESSOR_CONTRACT.md#execution-and-completion).
-Later slices below are plans, not
-current public capabilities. R-MOD-014/015 and Q40 remain the architectural contract.
+Reconciled: 2026-10-03. This is an internal status and design record, not a
+second user guide. Current APIs are in [standalone markup](../MARKUP.md),
+[DOT integration](../LABELS.md) and [custom processors](../CUSTOM_PROCESSORS.md).
+R-MOD-014/015 and Q40 remain the architectural requirements and decision IDs.
 
-## Delivery order
+Keep this file while specialized markup and integration work remain unfinished.
+Completed slice diaries and superseded local measurements are available in Git;
+removing their repetition here does not close outstanding performance gates.
 
-Build and measure the real standalone processor before expanding the composition
-framework. The same engine serves standalone, delayed and one-shot during-DOT
-use. This changes the earlier passthrough-first implementation sequence, not the agreed
-DOT `none`/`passthrough` semantics. Preparation follows actual integration needs,
-not speculative scheduling. Independent parsing must not import DOT grammar or retained records.
+## Priorities
 
-| Slice | Scope | Status |
+- Build a genuinely standalone processor. Share language-independent mechanisms,
+  not DOT grammar, graph records or a renderer dependency.
+- Keep performance, binary size and low memory usage acceptance criteria, not
+  afterthoughts. Optional rules must have explicit costs and disabled paths.
+- Preserve source spelling and byte positions. No implicit entity expansion,
+  normalization, namespace resolution, repair, rendering or external access.
+- Graphviz labels are the priority consumer of an extensible markup engine.
+  HTML subsets, SVG and custom dialects must not inherit unrelated rules.
+- Implement concrete vertical slices before generalizing composition. Built-in
+  and consumer processors use the same compile-time contract.
+
+## Delivery status
+
+“Implemented” describes the current development tree, not release 0.3.0.
+“Agreed direction” does not mean its detailed API is settled or work has started.
+
+| Area | Status | Evidence / remaining boundary |
 | --- | --- | --- |
-| 1 | Text, arbitrary matching/self-closing elements; standalone module, source-backed output, explicit memory, policy limits, bounded/cancellable execution | Implemented |
-| 2 | Quoted attributes, retained order/duplicates, independent duplicate checking | Implemented |
-| 3 | References, comments and CDATA, including malformed-reference acceptance policy | Implemented |
-| 4a | Optional independent UTF-8 validation, source-ordered with duplicate findings | Implemented |
-| Resource hardening | Default-capped shared diagnostic retention and an untrusted-input resource preset | Implemented |
-| 4b | Optional XML 1.0 name checks and known-reference checks, without imposing either on other dialects | Implemented |
-| Recovery | Structural-error recovery for additional diagnostics; no partial tree | Implemented 2026-09-30, default `.collect`; explicit `.fail_fast` available |
-| Local validation scopes | Header/name/value/text checks independent of enclosing structure; source-scope pass without a tree | Implemented 2026-10-02; no implicit parse-time checks |
-| DOT passthrough recognition | `none`/`passthrough`, both scanners, concatenation, decoding and DOT fix policy; no markup dependency | Implemented 2026-09-27 |
-| Delayed integration | Explicit per-operand views, reusable prepared policies, original-source diagnostics, independent inner results | Implemented 2026-10-03 |
-| During-DOT one-shot composition | Automatic HTML-operand checking, one typed bag/sink, independent results | Implemented 2026-10-03 |
-| Resumable composition | Shared budgets and composed fixed-storage sessions | Planned; validation is still unmetered |
-
-Each slice needs tests, truthful supported-syntax documentation and measurements.
-Recognition of an excluded feature reports unsupported without validating its body.
-No reserved public fields or pretend implementation of later checks are needed.
-
-## Error policy and continuation — 2026-10-03
-
-Both processors now expose `on_error: ?OnError` with `.collect` as the resolved
-default and `.fail_fast` as an explicit alternative. The old field/type are
-removed, not aliased. This applies to validation as well as parsing; recovery
-remains the internal mechanism for safe syntax continuation. A fast combined
-fragment call does not start validation after syntax rejection. Explicit local
-validation remains independent and synchronizes reliable malformed-header
-boundaries even in a fast profile, stopping at its first validation error.
-
-`diagnostics.unsupported` is a separate `.err | .warning | .silent` leaf, default
-`.err`. Neither warning nor silence converts unprocessed input into success or
-passthrough. Both parsers retain factual unsupported outcomes; markup can end a
-fragment at unsupported syntax without ending a collecting parent's batch.
-DOT can continue after safely delimited excluded body identifiers even in a
-fast profile when reporting is non-error. Warning codes use `W.Profile.Feature.009`.
-
-Fragment results expose factual `has_errors`, operational `stopped()` and
-`shouldStop(parent_on_error)`. Parent policy is checked after the child returns:
-collecting children may deliver multiple findings before a fast parent stops;
-fast children do not prevent a collecting parent from visiting the next fragment.
-Policy limits still stop their active child and count as errors. Shared sink
-stops/failures, allocation/storage failure and cancellation stop the batch.
-DOT now preserves terminal sink acknowledgments too, including validation scratch
-preflight. Actual sink stops take precedence over validation's `error_stopped`.
-No runtime processor replacement, new retained records or partial tree is added.
-
-Verification: **590/590 tests** in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall;
-examples, benchmark compilation and consumed RISC-V32/Wasm32 builds pass.
-Coverage includes fixed/runtime policies, both scanners, every validation rule,
-unsupported severity, parent/child combinations, malformed-header fallback,
-budget partitioning and terminal sink acknowledgments. No new sustained fuzzing
-campaign is claimed.
-
-### Error-policy costs
-
-Local Apple M4 Pro, Zig 0.16.0, ReleaseFast, compared with `4336ea3`; no official
-standard-machine baseline was updated. Retained layouts are unchanged: markup
-Node/Attribute 20 bytes, Diagnostic 36, nesting frame 12, ValidationResult 32;
-fixed/bounded/runtime markup sessions remain 432/440/496 bytes. DOT Document and
-Diagnostic remain 232/80 bytes. Its fixed/runtime sessions grow from 1072/1296
-to 1080/1304 bytes because public results retain terminal sink acknowledgments;
-there is no per-node/edge growth or new allocation. The running DOT machine does
-not duplicate the terminal stop field. These are layout/reserved-storage facts,
-not process RSS or allocator-peak measurements.
-
-The unchanged 13-fixture markup harness (nine 16-operation samples after five
-warmups) gave one-pair geometric-mean throughput changes of -2.3%/+0.4% for
-scalar fixed/runtime-override and -0.5%/-0.9% for block fixed/runtime-override.
-Scalar cancellable parsing was -5.9% in that initial pair. A focused repeat of
-mixed/text fixtures used 64-operation batches, in before/after/after/before order,
-without concurrent builds. Cells below average the two process medians;
-throughput is decimal MB/s. This repeat did not reproduce the initial scalar-text
-drop; the mixed cancellable scalar case still measured a smaller slowdown.
-
-| Markup fixture / path | Before ms | After ms | Before MB/s | After MB/s |
-| --- | ---: | ---: | ---: | ---: |
-| Mixed, scalar fixed | 2.438 | 2.423 | 307.6 | 309.5 |
-| Mixed, scalar runtime override | 2.433 | 2.431 | 308.3 | 308.5 |
-| Mixed, scalar cancellable | 4.241 | 4.382 | 176.8 | 171.2 |
-| Mixed, block fixed | 2.606 | 2.596 | 287.9 | 288.9 |
-| Mixed, block runtime override | 2.613 | 2.588 | 287.1 | 289.9 |
-| Text, scalar fixed | 0.502 | 0.492 | 1992.0 | 2032.5 |
-| Text, block fixed | 0.084 | 0.087 | 11976.0 | 11560.7 |
-
-DOT's 50,000 tiny-statement fixture gave fixed scalar 0.872 → 0.878 ms and fixed
-block 1.037 → 1.031 ms (four process medians per build). Runtime measurements
-were strongly bimodal across processes: baseline block about 1.6–3.1 ms and
-changed scalar about 1.0–1.8 ms. Removing duplicate running stop state restored
-the faster scalar timings in some runs, but does not establish runtime parity
-across workloads. Keep the standard-machine regression gate open; neither the
-apparent block speedup nor the fast scalar repeats justify a general speed claim.
-
-A paired probe then linked both DOT revisions in one executable and alternated
-their runtime parses over the same source, with equally sized separate pools,
-five warmup batches and fifteen measured batches of sixteen parses. Across three
-processes, median-of-process-medians latency was scalar 1.030 → 1.045 ms
-(97.1 → 95.7 MB/s), block 1.602 → 1.617 ms (62.4 → 61.8 MB/s).
-This did not reproduce the large separate-process slowdown on that fixture;
-the measured differences are about -1.4%/-0.9% throughput, not a claim about all
-runtime-policy workloads. No blanket zero-regression or speedup claim is made.
-
-Unstripped benchmark executables changed from 1,042,184 to 1,042,936 bytes for
-markup, and 686,344 to 703,296 for DOT's policy harness. These include the harness,
-runtime-selectable variants and symbols, not a minimal fixed-profile feature cost.
-
-## Checked-loop optimization subset — 2026-10-03
-
-DOT's scalar byte fetch uses `>=` for its EOF guard. Its single-byte consume uses
-wrapping addition only under the documented invariant
-`cursor < source.len <= maxInt(u32)`: the addition cannot actually wrap. No runtime
-safety setting is disabled, and no allocation, retained field or policy is added.
-
-Markup's production loops are unchanged. A three-loop slice-iteration trial
-slowed local ReleaseSafe block prose/text throughput by about 10%. A narrower
-scalar-loop trial improved ReleaseSafe text/prose but slowed ReleaseFast prose by
-about 8%. Retaining the original `u32` counter removed most of the latter loss
-but also lost the ReleaseSafe gain. All of these markup rewrites were reverted;
-the proposed metered-markup arithmetic changes were not applied either.
-
-Verification: 590/590 tests in Debug, ReleaseSafe and ReleaseFast, plus consumed
-RISC-V32/Wasm32 builds. Run tests now cover both backends, bounded/plain execution,
-five nonzero/zero starting offsets, every stopping position through 129 bytes,
-empty tails and exact scalar lookahead. An additional deterministic differential
-check passed 200,000 random/mutated/truncated inputs per parser, including DOT
-recovery and bounded stepping. This is a bounded check, not sustained fuzzing.
-
-Local Apple M4 Pro / Zig 0.16.0 comparison against `3263bd7`, no concurrent builds.
-The final DOT recheck alternated original / guard-only / guard-and-increment /
-guard-and-increment / guard-only / original. For 200,000 node statements, original
-ReleaseSafe plain-session medians were 4.05/4.06 ms, guard-only 3.79/3.85 ms, and
-the retained pair 3.74/3.70 ms (about 9% higher throughput). Earlier trials included
-outliers; this is one fixture, not a blanket speedup claim. Markup trials used
-five fixtures, fixed/cancellable parsing on both backends, nine eight-parse
-samples after three warmups, in before/after/after/before order. No official
-standard-machine baseline was updated. Session and retained-record layouts are
-unchanged within each optimization mode.
-
-## DOT passthrough recognition — 2026-09-27
-
-Implemented the Q40 recognition contract after standalone slice 4b. DOT owns a
-two-valued `markup` leaf (`none`, `passthrough`),
-not the inner processor's parsing/validation policies. Both scanners retain a
-single raw identifier expression, including mixed concatenations. Public form
-classification and explicit decoding work without importing the markup module.
-No per-part view, structural summary, tree, vocabulary check or scheduler is added.
-DOT fix offers now have fixed/runtime `all`/`machine_applicable`/`off` filtering.
-Markup subsequently gained compact semicolon-fix offers and the same filtering
-leaf; repair production remains processor-owned and rendering is shared.
-
-Verification covers every ID position, arbitrary interior bytes, unsheltered
-angle-depth boundaries, mixed/empty operands, EOF fixes, body recovery, fixed
-storage, runtime reset, diagnostic stops, decoded duplicate keys, every truncation,
-all 64 block shifts, budget partitions and cancellation continuations.
-
-Native verification: 480/480 tests in Debug, ReleaseSafe and ReleaseFast; all
-examples and RISC-V32/Wasm32 consumed freestanding builds pass. Under Node WASI,
-the full DOT unit suite passes both without SIMD and with `simd128` (198 passed,
-one >u32-source test skipped on the 32-bit target); all nine new public HTML tests
-also pass with SIMD enabled. Fuzz entry points here are smoke tests, not a claim
-of a new sustained fuzz campaign.
-
-### Measurements
-
-Local Apple M4 Pro, Zig 0.16.0, ReleaseFast; parent `62b9aa7` versus this slice.
-Existing `bench` and `bench-lexer`, explicit scalar/block selections, alternating
-before/after/after/before processes with no overlapping builds during timed runs.
-Each process reports nine timed rounds after two warmups. Tables average the two
-process medians (timings rounded by the benchmark); MB/s below is decimal.
-These are local targeted measurements, not the separate standard-machine gate.
-
-The end-to-end source is 2,733,345 bytes / 200,000 statements:
-
-| Backend / storage | Before ms | After ms | Before MB/s | After MB/s |
-| --- | ---: | ---: | ---: | ---: |
-| Scalar / growing | 8.045 | 8.040 | 339.8 | 340.0 |
-| Scalar / hinted | 7.025 | 6.945 | 389.1 | 393.6 |
-| Block / growing | 8.540 | 8.425 | 320.1 | 324.4 |
-| Block / hinted | 7.460 | 7.290 | 366.4 | 374.9 |
-
-Retained pools remain **6,800,000 bytes** for this source. Arena backing capacity
-is unchanged: 37,620,470 bytes growing, 8,400,148 bytes hinted (not RSS). Native
-ordinary scanner state remains 56 bytes scalar / 152 bytes block; tokens remain
-12 bytes. HTML presence/concatenation flags fit token padding; keyword/comment
-state shares storage with the u32 envelope depth. Retained syntax layouts do not
-change. The first block implementation regressed ordinary throughput by roughly
-10%; moving the HTML branch off the ordinary classified-token path and keeping
-its mask walk out of the aggressively inlined driver recovered that loss.
-
-Existing lexer fixtures, milliseconds (microbenchmarks show code-layout/noise
-sensitivity; do not infer a universal speedup from the short-token cells):
-
-| Fixture | Scalar before → after | Block before → after |
-| --- | ---: | ---: |
-| Short IDs / punctuation | 7.530 → 5.505 | 5.970 → 5.400 |
-| Short IDs / trivia | 3.285 → 3.235 | 3.375 → 2.535 |
-| Keywords / numerals | 5.750 → 5.760 | 5.850 → 5.725 |
-| Quotes / comments | 2.840 → 2.995 | 4.480 → 4.450 |
-| Long identifier | 3.310 → 3.425 | 1.975 → 2.020 |
-
-The new 80,805,888-byte long-HTML lexer fixture measures **40.395 ms scalar**
-versus **8.295 ms block** (about **4.87×**). There is no before value because the
-parent rejects HTML tokens. This measures passthrough envelope scanning, not structural
-markup parsing. Scalar quotes/comments and long-ID microbenchmarks have small
-slowdowns in this sample; the ordinary end-to-end benchmark has no measured loss.
-
-The per-part/origin contract, explicit delayed processing and one-shot during-DOT
-composition are now implemented below. Structural recovery remains independent;
-specialized vocabularies and shared-budget composition still need separate slices.
-Ordinary, uncomposed DOT passthrough invokes no child parser.
-
-## Delayed-integration review fixes — 2026-10-03
-
-The non-policy fixes from the integration review are implemented:
-
-| Finding | Resolution |
-| --- | --- |
-| Terminal syntax diagnostic stops/rejects delivery, then validation emits again | Parse/measurement reports retain `diagnostic_stop` separately from the original outcome and delivery; fragment wrappers skip validation after either stop or failed delivery |
-| A bad element name is repeated only on the source-validation route | Automatic validation checks opening occurrences once, including unfinished-header prefixes; explicit `closing_name` scopes remain supported, and whole-source encoding still covers all bytes |
-| Each source scope restarts cancellation polling | Scanner work and local kernels share one countdown; no per-scope callback or extra retained state in fixed-disabled profiles |
-| Compact rendering repeatedly rescans from byte zero | Shared `renderList` uses caller-owned location scratch and one position-resolution pass; the compact file example uses it |
-| Operand traversal duplicated between views and decoding | Share glue, angle-envelope, quoted-run and escape-boundary primitives; no extra decoding pass or allocation |
-| Public scope audits and trusted assertions repeat metadata rules | One cancellable metadata predicate; real checks at public boundaries, debug/safe-only assertions internally |
-
-The two deferred policy questions were subsequently resolved by the
-2026-10-03 refinement below: child unsupported/limit failures are parent-policy
-decisions, and explicit source validation synchronizes safe headers independently.
-
-Regression tests cover accepted-stop versus rejected delivery (failure/capacity/
-allocation), terminal and recoverable syntax, incremental sessions, repeated
-terminal calls, both scanners, fixed/runtime policies, original-source mapping,
-cross-scope cancellation, compact output parity and mixed identifier operands.
-Public scope metadata tests still cover cancellation and invalid spans under all
-optimization modes. No typo-based healing, changed tag matching or partial trees
-are introduced by this review.
-All **579 tests pass** in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall.
-Examples, benchmark compilation, and consumed RISC-V32/Wasm32 freestanding
-profiles also pass; formatting and whitespace checks are clean.
-
-### Local measurements
-
-Baseline `7ad284f`, macOS arm64, Zig 0.16.0, ReleaseFast. Targeted cancellation and
-decoding runs alternate before/after/after/before, with no overlapping builds;
-each process reports the median of nine batches after three warmups. The source
-is 160,000 bytes: 10,000 `<a x='1' y='2'/>` elements, name/reference checks enabled,
-fixed buffers outside timing and a continuing counting cancellation hook. Values
-below average the two process medians; throughput uses decimal MB/s.
-
-| Source validation | Before ms | After ms | Before MB/s | After MB/s | Hook calls before → after |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Duplicate check off | 0.990 | 0.856 | 161.8 | 187.1 | 102,501 → 3,282 |
-| Duplicate check error | 0.860 | 0.823 | 186.2 | 194.5 | 22,501 → 3,594 |
-
-The countdown charges scanner work and content/record visits, not only distinct
-input bytes. The initial shared-poller implementation reduced callback counts but
-slowed the duplicate-off case. Inlining only the small scope-dispatch adapter
-removed that regression; validation kernels remain optimizer-controlled. Forcing
-the whole scope kernel inline also helped but enlarged the targeted executable
-by about 33 KiB, so that version was not kept.
-
-Compact rendering with 1,024 findings near the end of an 8 MiB all-newline input
-took approximately **14.5 s** with repeated `render` calls versus **14 ms** with
-`renderList`, writing the same 195,584 bytes to a discard writer. This is a
-deliberate worst-case location workload, not ordinary rendering throughput. Batch
-rendering uses explicit caller location scratch, not hidden allocation. The
-targeted mixed quoted/HTML identifier decoding check measured 794 → 743 ns per
-expression; these short timings are noise/code-layout sensitive, not a general
-speedup claim.
-
-Native node/attribute/diagnostic/frame sizes remain 20/20/36/12 bytes;
-`ValidationResult` remains 32 bytes, and fixed/bounded/runtime sessions remain
-432/440/496 bytes. No new per-node/attribute storage is added. This is a layout
-check, not process RSS measurement or an update to the standard-machine baseline.
-
-## Explicit delayed integration — 2026-10-03
-
-The [public recipe](../MARKUP.md#delayed-processing-inside-dot) and
-[runnable example](../../examples/delayed_markup.zig) use separately imported DOT
-and markup modules. `identifier.parts(source, range)` validates one selected raw
-expression and exposes operands without merging/decoding them. Each HTML operand
-supplies its interior bytes and original origin. Selecting attributes, names,
-ports or other positions is the application's decision, not an implicit label rule.
-
-`Profile.prepare` resolves once into `Prepared`, reused across explicit calls to
-`parseAndValidate[In]`. Fixed settings have zero state; runtime settings
-are not rediscovered per token/fragment. Growing and fixed-memory results preserve
-independent parse/validation outcomes. Parse success uses document validation;
-`invalid_syntax` uses recognizable source scopes, so enclosing structural errors
-do not hide complete-header checks. Operational stops skip that fallback and
-instruct the caller to end its requested batch. No partial tree is published.
-
-Mapped primary/related/fix spans and coverage gaps refer to the original DOT
-source; retained tree spans remain local to the fragment. `OriginSink` also
-supports explicit parse-only/validation-only/bounded-session calls. Nested raw
-`Fragment.child` origins map a deeper processor's findings once, not once at
-every parent. Buffers stay borrowed; decoded/transcoded input needs a different map.
-
-`PolicySet` is recursively composable: a set exposes the same `Policies` surface
-as a leaf profile. Tests configure DOT, a markup group containing a consumer-owned
-string schema, and a separate sibling string schema. Each leaf is statically
-selected; runtime patches cannot change implementation or add fields. Policy
-groups do not schedule execution. Markup `Prepared` can consume its own resolved
-state from the set without resolving again. Existing ordinary DOT methods retain
-their own preparation; this does not pretend their runtime state is reused.
-
-Costs: selected expressions receive validation plus operand traversal; inner
-syntax rejection can add a source-scope rescan. Mapping costs constant checks per
-finding. No DOT record/session layout change, per-identifier processor state,
-global queue/result array or universal diagnostic payload is introduced.
-Operations are run-to-completion; no combined metered validation claim. Findings
-are delivered by phase and selected-operand order, not globally sorted.
-
-Still pending: shared budgets/cancellation scheduling,
-specialized vocabularies and a built-in string processor. The consumer-owned
-string check in tests proves schema/origin extensibility, not shipped string syntax.
-
-## During-DOT one-shot composition — 2026-10-03
-
-User-selected first slice: one run-to-completion `parseAndValidate`, not a pretend
-bounded callback inside `advance`. `Profile.processors.markup` binds a configured
-processor type. The optional parser hook runs once at token acquisition, before
-grammar replay/dispatch, for every complete HTML-containing identifier permitted
-by the DOT gate. Each raw operand keeps original coordinates; quoted parts are
-not reclassified or decoded. Ordinary profiles erase the hook/state at compile
-time and do not depend on markup. Scanner/grammar engines are not duplicated.
-
-One generated tagged diagnostic union supports growable/fixed/prefix/streaming
-destinations and preserves both namespaces. The common composed renderer shares
-one location-resolution pass across all payloads, using original adapters.
-There is no global diagnostic union; only opted-in compositions pay its larger
-slot size. Sink stops/failures terminate both processors without another delivery.
-
-The child runs its own parse/validation policy before the parent decides whether
-to continue. Parent collect/child fail-fast continues with the next operand;
-parent fail-fast/child collect retains all findings from the first failing child.
-Limits remain child-local; allocation/storage/cancellation and shared-sink stops
-are operational. Shared diagnostic stops use `diagnostic_stopped` regardless of
-emitter; other child stops use `processor_stopped`, marking an unfinished outer
-parse without calling it invalid DOT or publishing a partial tree. Parent validation runs after
-successful outer parsing; child diagnostics therefore precede that phase.
-
-The facade retains DOT syntax and a constant-size child report; one child-owned
-workspace reuses tree, nesting and validation buffers between invocations, then
-releases them at operation exit. Applications wanting independently retained child
-trees or subset selection use explicit delayed calls. Arena allocators can still
-retain deinitialized allocations until arena teardown. No composed Session/advance,
-fixed-memory facade, recursive scheduler or output-tree collection is implied.
-Cancellation hooks remain component-specific; an outer-only hook does not make
-an uncancellable child interruptible.
-
-Markup's combined methods are now `parseAndValidate` / `parseAndValidateIn`,
-including `Prepared`; no old-name aliases. The consumer-facing structural
-contract and runtime option paths are documented in [policies](../POLICIES.md#bound-processors),
-with a [single-call example](../../examples/composed_markup.zig).
-
-### Composition review follow-up — 2026-10-03
-
-The non-design review fixes are implemented:
-
-- Shared destination stops now follow the existing DOT `diagnostic_stopped`
-  outcome and event-abort path, including accepted stops, capacity rejection,
-  callback failure and diagnostic allocation failure. Child cancellation/storage
-  stops and parent fail-fast remain `processor_stopped`; no extra diagnostic is
-  emitted while propagating the stop.
-- The deterministic differential compares composed scalar/block results and
-  each ordinary DOT profile, including retained pools, validation, counters and
-  the DOT diagnostic subsequence. Both error policies and both immediate/
-  cancellable drivers are covered. Intentional parent fail-fast after child
-  errors is tested separately, not mistaken for an outer-parity regression.
-- Ordinary and composed console rendering share location collection helpers,
-  sorted offset resolution and summary tally/rendering. Regression tests compare
-  their output for reversed/duplicate locations, empty/single/multiple entries,
-  omissions, styles/colors and missing/truncated source.
-
-At this review checkpoint, allocation reuse, the profile API surface and
-silent-unsupported metadata were still separate design questions. The next
-refinement implements reuse and avoids silent diagnostic construction; profile
-surface changes remain deferred.
-
-Verification: **606/606 tests** pass in Debug, ReleaseSafe and ReleaseFast.
-Examples, RISC-V32/Wasm32 freestanding checks and benchmark builds pass. The
-parity test exercises 512 deterministic inputs under four error/execution
-combinations, each across both scanners; this is regression coverage, not a
-sustained fuzzing or throughput claim.
-
-### Reusable workspaces and silent reporting — 2026-10-03
-
-Decisions 1 and 3 are implemented; the broader profile API proposal (decision 2)
-remains for discussion. Existing consumer-facing composition syntax and options
-are unchanged. The compile-time custom-processor contract now requires
-`Prepared.initWorkspace`, `Workspace.parseAndValidate` and `Workspace.deinit`.
-No runtime capability query, per-fragment preparation or old-contract fallback is
-introduced. The child owns its buffer layout and may use a zero-sized workspace.
-
-Markup's workspace uses the existing parser/validator engines. It resets logical
-contents and retains node, attribute, nesting, source-header and duplicate-check
-capacity. Document and source-fallback validation share key scratch. Initialization
-allocates nothing; disposal releases all buffers even after cancellation, sink
-stop, input rejection or allocation failure. Returned document views borrow the
-workspace until its next call/deinit; independent owned/fixed calls remain available.
-
-DOT and markup classify silent unsupported input without constructing its
-user-facing diagnostic. Outcomes, safe recovery and parent decisions still use
-the internal failure class. No hidden first-unsupported metadata is added.
-Standalone markup tokenization remains policy-free and materializes its public
-lexical problem on demand.
-
-Reuse targets allocation churn, not guaranteed peak-memory reduction. Largest
-retained buffers and growth slack stay live through the composed operation,
-including outer validation. An early large child can increase peak memory as
-outer output grows. `bench-composition` separately measures allocator calls/peak
-requested live bytes and uninstrumented complete parse/validate/free time; source
-construction and diagnostic retention are excluded. It does not measure RSS or
-allocator-internal remap peaks, nor update a standard-machine baseline.
-
-Verification: **612/612 tests** pass in Debug, ReleaseSafe and ReleaseFast.
-Examples, RISC-V32/Wasm32 freestanding checks and benchmark builds pass. New
-coverage compares allocated/reused results, pools and diagnostics across scanners,
-fixed/runtime profiles, cancellable variants and changing origins; tests also
-cover warm-buffer allocation refusal, every growth-allocation failure, reuse after
-failed growth/cancellation/limits/sink stops, invalid fragments, custom workspace
-lifecycle and zero child allocation without HTML. Existing composed differential
-and unsupported-policy matrices pass. This is regression coverage, not a new
-sustained fuzz campaign.
-
-Local native arm64, Zig 0.16.0 ReleaseFast comparison against `15bbc96`, identical
-`bench/composition.zig` harness, before/after/after/before with no overlapping
-builds. Each process takes three warmup batches then nine timed batches of ten
-complete parse/validate/free calls, using the process general allocator and discard
-sinks. Times below are the range of the two process medians; throughput uses
-decimal MB/s. Allocation instrumentation runs separately from timing.
-
-| Fixture | Before scalar ms | Reused scalar ms | Before block ms | Reused block ms |
-| --- | ---: | ---: | ---: | ---: |
-| 1,000 plain DOT nodes, 2,010 B | 0.029–0.030 | 0.029 | 0.032 | 0.031 |
-| 1,000 small valid labels, 32,010 B | 0.345–0.347 | 0.240–0.277 | 0.365–0.385 | 0.274–0.279 |
-| 1,000 rejected labels + source validation, 35,010 B | 0.463–0.465 | 0.346–0.347 | 0.491–0.500 | 0.386–0.389 |
-| One 10,001-element label then 50,000 DOT nodes, 140,029 B | 1.561–1.581 | 1.573 | 1.665 | 1.629–1.638 |
-
-Small valid labels improve from 92.2–92.7 to 115.5–133.3 MB/s scalar and
-83.2–87.6 to 114.7–116.9 MB/s block on these runs, not a general speed guarantee.
-
-| Fixture | Allocation calls before → reused | Resize/remap calls before → reused | Peak requested live bytes before → reused |
-| --- | ---: | ---: | ---: |
-| Plain | 2 → 2 | 0/19 → 0/19 | 27,064 → 27,064 |
-| Small valid labels | 4,003 → 7 | 2,000/29 → 0/29 | 44,108 → 44,260 |
-| Rejected labels | 5,003 → 8 | 0/29 → 0/29 | 44,112 → 44,404 |
-| Large label first | 5 → 5 | 1/55 → 0/55 | 1,389,832 → 1,670,604 |
-
-Allocation figures count allocator entry calls, including unsuccessful resize/remap
-attempts; both scanners agree. Live requested bytes return to zero after disposal.
-The large-first case increases peak by 280,772 B (~20.2%), illustrating retained
-capacity rather than promising RAM savings. Other allocators may copy instead of
-remapping and have different peaks; these are not RSS measurements.
-
-An unchanged ordinary DOT `bench/policies.zig` probe in the same alternating order
-keeps fixed scalar medians at 0.865/0.867 ms before and 0.863/0.862 after; fixed
-block 0.971/0.955 before and 0.988/0.959 after for 50,000 statements. Runtime
-cells are similar or faster but noisy. DOT document/diagnostic/fixed-session/
-runtime-session sizes stay 232/80/1,080/1,304 B. No broad regression or speedup
-claim follows from these small local fixtures.
-
-### One-shot verification and local costs (before workspace reuse)
-
-604 tests pass in Debug, ReleaseSafe and ReleaseFast, including a deterministic 512-input scalar/block
-differential over mutated/truncated mixed DOT/markup input. Allocation-failure
-injection, shared sink capacity/failure/omission, independent parent/child error
-policies, custom consumer binding, mixed rendering and original fix coordinates
-are covered. This is bounded regression coverage, not a sustained fuzz campaign.
-Examples, benchmark builds and existing freestanding modules also pass.
-
-Native arm64 sizes: DOT diagnostics remain 80 bytes, markup 36 bytes; the optional
-composed diagnostic is 88 bytes and its child report 20 bytes. Document and fixed/
-runtime DOT session sizes are unchanged (232 / 1,080 / 1,304 bytes). These are
-payload/layout sizes, not peak RSS or allocator overhead.
-
-Same-machine ReleaseFast probe against `b6c1909`, Zig 0.16.0: unchanged
-`bench/policies.zig`, before/after/after/before, no overlapping builds. Fixed scalar
-medians are 0.862/0.853 ms before versus 0.845/0.861 ms after; fixed block
-1.012/1.020 versus 0.943/0.929 ms for 50,000 statements. The runtime cells range
-from similar to faster, but this small, layout-sensitive probe is not a broad
-throughput guarantee or a standard-machine baseline update.
-
-An allocator-backed exploratory composition probe compares outer-only checking,
-explicit delayed child checks (one prepared child reused), and during-DOT
-composition with discard sinks. Each case has 5,000 node statements, three
-warmups and nine timed complete parse/validate/free operations using the process
-general allocator. Four warmed process runs give these median ranges:
-
-| Fixture | Source bytes | Outer only | Delayed | During DOT |
-| --- | ---: | ---: | ---: | ---: |
-| `a;` | 10,010 | 0.111–0.113 ms | 0.109–0.112 ms | 0.115–0.118 ms |
-| `a [label=<<b x='1'>hi</b>>];` | 140,010 | 0.332–0.369 ms | 1.225–1.252 ms | 1.209–1.253 ms |
-| `a [label=<<b>` + 100 × `long text ` + `</b>>];` | 5,100,010 | 2.889–2.928 ms | 12.336–12.599 ms | 9.417–9.628 ms |
-
-The first process had a cold/no-HTML timing outlier (0.28–0.29 ms in outer/delayed
-calls); it is not hidden in the warmed ranges above. Enabled composition has a
-small no-HTML dispatch cost; child parsing/validation and temporary allocation
-are real additional work. Longer inputs avoid delayed selection's extra expression
-validation scan. These few fixtures do not establish general speedups or memory
-peaks, and do not measure retained diagnostics/rendering.
-
-## Earlier delayed-integration verification and local costs
-
-572 tests pass in Debug. The initial 570-test suite passed ReleaseSafe,
-ReleaseFast and ReleaseSmall; after adding two final regressions, all 14 tests
-in the cross-module suite passed again in those three modes. Examples and
-consumed RISC-V32/Wasm32 fixed/runtime builds pass, including the allocation-free
-fragment operation. Tests cover original primary/related/fix locations, coverage
-gaps versus capacity counts, maximum-u32 origins, operand truncations, mixed
-concatenation, scalar/block and fixed/runtime parity, independent outer/inner
-validity, cancellation in either phase, sink stops/failure, and allocation cleanup.
-
-Baseline `3c0b979`, same macOS arm64 machine and Zig 0.16.0, ReleaseFast; unchanged
-`bench/markup.zig` compiled before/after. Timed runs were before/after/after/before,
-with no overlapping builds; each process uses five warmups and nine timed rounds
-of sixteen operations. Compare the mean of each pair of process medians. These
-are standalone regression checks, **not** an end-to-end delayed-DOT throughput
-claim or an update to the separate standard-machine baseline.
-
-| Existing parsing mode, both scanners / 13 fixtures | Geometric-mean throughput change |
-| --- | ---: |
-| Fixed policies | -0.3% |
-| Runtime baseline | -0.9% |
-| Runtime override | -1.2% |
-| Count-only | -1.6% |
-| Cancellable | -0.3% |
-| All 130 cases | -0.9% |
-
-For the 750,000-byte mixed fragment, scalar fixed is 2.355 → 2.395 ms
-(318.5 → 313.3 decimal MB/s); block fixed is 2.523 → 2.566 ms
-(297.4 → 292.3 MB/s). Individual parsing cells range from -13.1% to +10.3%.
-The largest negative is scalar prose/count-only: before 0.891/0.895 ms, after
-1.140/0.916 ms, showing substantial run variation. Text/scalar/runtime-override
-is more consistently slower in this sample (0.455 → 0.488 ms, -6.7%); the aggregate
-must not hide it. Independent name/reference/encoding validation's twenty cells
-range from -0.8% to +50.1%; no universal improvement is inferred from that spread.
-
-All retained/scratch counts in the harness are unchanged. Node/attribute records
-remain 20/20 B, diagnostics 36 B, nesting frames 12 B, validation results 32 B,
-and fixed/bounded/runtime sessions 432/440/496 B. Fixed-only nested policy state
-and default fixed `Prepared` are zero-sized. The ordinary consumed benchmark's
-`__text` remains 818,084 B and `__TEXT` remains 895,264 B. This does not measure
-process RSS or claim that using the new operations adds no executable code.
-
-## Settled grammar direction
-
-- Parse fragments: empty, text-only, multiple top-level elements and mixed content.
-- Names are arbitrary vocabulary, matched byte-for-byte and case-sensitively.
-  No implicit Unicode normalization, namespace resolution or HTML tag closing.
-- Byte-oriented syntax with raw non-ASCII preservation, not full XML conformance.
-  Optional UTF-8 and XML 1.0 name validation are independent of parsing.
-- Attributes require quoted values (`'` or `"`); preserve spelling and order.
-  Duplicate checking defaults to error, with warning/off choices; retain every
-  occurrence. Off means uniqueness was not checked, not that it passed.
-- Syntactically valid named references are preserved without requiring definitions
-  in the structural grammar; known-reference checks are separate. No expansion.
-- Malformed-reference acceptance is a syntax policy: reject by default; warn or
-  silently accept by treating the offending `&` as literal text and resuming normal
-  scanning. Never consume a subsequent `<` or closing attribute quote as reference
-  content, invent a replacement value, or present tolerated input as XML-conformant.
-  Exact recognition/diagnostic extents are documented and tested in slice 3.
-- Comments and CDATA are preserved as distinct leaves. Processing instructions/declarations are
-  deferred; no DTD processing, external entities, file/URL access or rendering.
-- Preserve whitespace. Label-specific interpretation belongs to a later pass.
-- Stop the fragment at an unrecoverable structural error; no guessed closing tags
-  or published partial document. Independent fragments can still run. Validation
-  findings continue where their own prerequisites remain available.
-
-## Slice 4b — optional validation
-
-The processor stays generic and extensible, with Graphviz as its priority
-consumer; browser implementation is not the goal. Optional XML rules are supplied
-definitions, not a mandatory base dialect or a substitute for future Graphviz rules.
-
-Decided 2026-09-27: name rules and reference catalogs are independently selected
-validation behavior, not universal rules added to the scanner. HTML, SVG,
-Graphviz and custom consumers such as XAML must not inherit unrelated restrictions
-merely because they reuse this processor or share an executable. A profile may
-explicitly reuse a rule, but enabling name validation must not implicitly select
-an entity catalog, namespace processing, vocabulary checks or whole-source UTF-8
-validation. The structural defaults remain unchanged; these new checks default
-to off, with warning/error choices and compile-time/runtime policy parity.
-
-This is separation of optional validation, not a claim of grammar neutrality.
-The current parser still requires its documented XML-like fragment syntax. A
-dialect needing different tokenization or tree construction needs an explicitly
-designed grammar change or a separately bound processor; disabling a check cannot
-make previously rejected syntax parse. Full browser HTML, SVG/XAML semantics and
-Graphviz labels are not delivered by this slice. Consumer implementations remain
-compile-time bindings, not runtime-loaded parsers or registry callbacks.
-
-**Dialect construction clarification; extension proposal, not implemented.**
-Shared markup spelling does not require identical stack behavior. In XML-like
-syntax `<br>` opens an element until `</br>`; `<br/>` is empty. In HTML syntax,
-`br` is a void element and needs no end tag. See [XML elements](https://www.w3.org/TR/xml/#sec-starttags)
-and [HTML void elements](https://html.spec.whatwg.org/multipage/syntax.html#void-elements).
-A compile-time-bound dialect rule could classify selected names as void when
-their opening header ends, before pushing an open-element frame. This can reuse
-the existing engine; it does not inherently require a separate full HTML parser.
-It is a parsing/interpretation rule, not a validation severity or recovery from
-an error. Preserve the written tag spelling; do not insert a synthetic closing tag.
-
-The existing structural behavior and agreed XML-like built-in mode baseline
-remain unchanged for now. Exact void-name selection, matching/case/context,
-explicit closing-tag handling and policy surface need their own discussion.
-Implementing selected HTML-like conveniences must be described as a defined
-subset/custom dialect, not full browser HTML conformance. Standards apply to
-the compatibility being promised; a custom dialect can deliberately differ.
-The new optional name/reference checks neither implement nor prohibit this
-future parsing capability. More extensive HTML parsing rules are not implied.
-
-The first optional name rule follows [XML 1.0 Fifth Edition names](https://www.w3.org/TR/xml/#sec-common-syn)
-for element, attribute and named-reference names. It does not normalize, fold case,
-resolve namespaces or restrict tag vocabulary. The first known-reference catalog
-contains XML's [five predefined entities](https://www.w3.org/TR/xml/#sec-predefined-ent):
-`amp`, `lt`, `gt`, `quot`, `apos`. A finding means absent from the selected catalog,
-not invalid in every dialect. Other catalogs and custom catalog binding APIs are
-later work, not mandatory dependencies of structural parsing. Check references
-only in their existing text/attribute contexts, not comments/CDATA; accepted
-malformed-reference candidates remain literal text. No expansion, decoding into
-stored values, DTD processing or external lookups are added.
-
-### Name-local UTF-8 implications
-
-Checking Unicode name rules requires decoding each examined name into temporary
-code points even with the independent whole-source UTF-8 check off. This does not
-transcode the source, replace bytes, change byte-based spans or retain a Unicode
-copy. Malformed bytes in a name cannot pass that name rule; malformed bytes in
-unrelated text/comments/values are not newly rejected by enabling name checking.
-Valid UTF-8 also does not automatically mean a valid name.
-
-Independent checks keep independent severities and completion. If both checks
-are enabled, malformed bytes in a name can produce both a name-rule finding and
-an encoding finding; their counts are findings, not distinct bad byte positions.
-For example, a name error must not be downgraded because the encoding policy is
-only warning. Both delivered findings consume sink capacity, so the same retained
-entry budget can stop sooner. The completed tree is unchanged and remains usable;
-validation error, warning and incomplete work retain their existing meanings.
-The implemented policy shape is `validation.names.{rule,severity}` and
-`validation.references.{catalog,severity}`, with `xml_1_0` and `xml_predefined`
-as the initial supported selections and both severities default off. Partial
-nested patches inherit leaf-by-leaf; both complete presets reset these checks.
-All typed combinations remain meaningful and infallible to prepare.
-
-Each retained element name is checked once at its opening span; matched closing
-spelling is byte-identical. Attributes and syntactically complete named references
-are checked individually. One name finding identifies the first bad code point
-(one byte for malformed UTF-8), with the full name as related context and typed
-context/reason. Unknown-reference findings cover `&name;`. Source-order ties are
-encoding, duplicate, name, catalog. Encoding can still report every bad source
-byte, including closing tags. No deduplication changes either check's severity.
-
-Implementation targets are a fast ASCII path, name decoding proportional to
-examined name bytes, and no per-node/name/reference pool growth. Locating reference
-names also requires context-aware rescanning of existing text/value spans because
-references have no retained index. That cost can be proportional to those spans'
-full length even when they contain few references; it is not just name-decoding
-work. A whole-source encoding pass may inspect those bytes again; shared decoding
-helpers do not imply zero repeated work. Fixed-disabled checks and tables must
-be excludable when no other reachable entry point needs them. Runtime-off skips
-execution, but selectable code/tables can remain linked. A single preorder node
-walk and monotonic attribute cursor process enabled name/reference checks. Reference
-rescanning reuses the lexer's byte-name predicates and skips malformed literal
-candidates without revisiting their consumed prefix. Numeric values are not decoded
-again. Comments/CDATA do not participate. Without the new checks, the existing
-attribute-only/encoding traversal remains selected; encoding-only still needs no
-document-pool access. Duplicate scratch remains the sole validation allocation,
-preflighted before checks. Precise API and cost semantics are in the
-[consumer guide](../MARKUP.md#optional-name-rules-and-reference-catalogs).
-
-### Structural recovery — implemented 2026-09-30
-
-`Policy.on_error` is `.collect` by default, with explicit `.fail_fast` and full
-fixed/runtime parity. Both reject malformed syntax; recovery is not acceptance,
-repair, browser tree construction or permission to expose a partial tree.
-Both DOT and markup expose the same two recovery names; their grammar-specific
-synchronization rules remain internal. Markup's planned `structural`/`graphviz`/
-`extended` processing choices are a separate policy dimension, not recovery values.
-
-- Abort staged output once at the first rejection; stop output callbacks/pool
-  growth while grammar, factual counts and scratch continue. Limits still apply.
-- Unexpected closers are discarded. A mismatch searches open ancestors nearest
-  first using exact bytes: unwind through a match, otherwise discard the closer
-  without changing the open stack. One finding covers abandoned descendants.
-- At EOF, report remaining open elements innermost first. Rejected malformed
-  references resume through known scanner boundaries without becoming accepted.
-- Opening attribute-header errors can synchronize at explicit delimiters (see the
-  2026-10-02 extension below). Other malformed headers, errors inside quoted values,
-  unterminated values/comments/CDATA, forbidden controls and unsupported constructs
-  stop immediately. No delimiter guessing or fabricated
-  closing events. Independent fragments can still run; no partial tree is published.
-- Sink stop/failure, cancellation, exhausted storage and policy limits stop work.
-  Both markup and DOT results report `completion` plus u32 `syntax_errors`, so a later operational
-  outcome does not erase earlier rejection. Complete recovery still returns
-  `invalid_syntax`; terminal lexical failure preserves its cause on delivery failure.
-- All ancestor lookup shares `source.len` credits (length probes and byte-pair
-  comparisons). Exhaustion is an explicit `resource_limit.recovery_work`; this
-  non-configurable complexity ceiling prevents quadratic malformed-input work.
-  Metered lookup is resumable, one probe/pair per step; cancellation polls normally.
-- Emit in encounter order, with no sorting buffer. EOF findings share EOF as their
-  primary location and carry earlier related opener spans. No cascade for every
-  frame discarded by a single ancestor match.
-
-Recovery state is three u32 fields in enabled machines; fixed fail-fast excludes
-it. Result facts also occupy constant session space. Nodes, attributes, diagnostics
-and nesting frames do not grow in size; additional findings/scratch still cost
-memory. Tests cover scanner/binding/execution parity, budget partitions, bounded
-adversarial ancestor searches, sink stops, cancellation and output-abort lifecycle.
-See the [consumer contract](../MARKUP.md#diagnostics-only-structural-recovery).
-
-### Opening-header recovery — 2026-10-02
-
-Extend `.collect` only after an attribute-bearing opening header has delivered
-its element name. Reject missing `=`, missing/unquoted values, separator errors
-and invalid attribute-tail bytes, then scan the remaining header for `>` or `/>`.
-Quotes shelter angle terminators and slashes. Raw `<`, forbidden controls, EOF
-and non-adjacent/malformed unquoted `/` terminators block synchronization. Other
-headers, malformed closers and normally scanned quoted-value errors stay terminal.
-
-Report the initial header error once; skipped attributes/references are neither
-validated nor counted as recognized/accepted. Preserve the original pending name
-and the actual delimiter's stack effect, with no synthetic output events. Retained
-output is aborted once, and no partial tree is introduced. The recovery operation
-itself does not run attribute validation; the later local-scope entry points below
-can check rejected input independently. This is not typo correction or a dialect.
-
-The error-only header scanner examines at most one byte per step and resumes at
-the next byte after an explicit boundary. The parser outlines the new rejection
-and synchronization helpers, leaving the existing terminal-error handling inline.
-The normal scanner state machine and standalone lexer's fail-fast contract are
-unchanged. The tiny cursor shares the
-ancestor-search u32 slot (the parser phase is the discriminator), with a size
-assertion keeping recovery scratch at 12 bytes even in safety-enabled builds.
-Fixed fail-fast excludes recovery state and handling.
-Existing source/work limits, diagnostic stops, cancellation and nesting-scratch
-allocation/failure semantics still apply. No header buffer or per-element field
-is added. Tests cover both backends, fixed/runtime policies, single-credit driving,
-all truncations/block offsets, nested bad headers, quote sheltering, sink failures,
-allocation failures, cancellation, counts and the once-only output abort.
-
-Verification: **542/542** tests pass in Debug, ReleaseSafe and ReleaseFast;
-examples and freestanding RISC-V32/Wasm32 checks pass. The reported fixture with
-two independent errors now reports the unquoted value and later bare ampersand, with
-`invalid_syntax`, `.complete` traversal and no document.
-
-### Independent local validation scopes — 2026-10-02
-
-Opening headers, their names/attribute names, attribute-value content, text and
-closing names are borrowed local validation inputs. Element matching remains the
-parser's responsibility. `validateScope[In]` uses these views directly; the existing
-document validator and local validator share name/reference/encoding/duplicate
-kernels rather than manufacturing a partial `Document` or duplicating rules.
-No parser state, retained record, tree pool or default parse-time work is added.
-
-Public scope inputs are runtime-checked in every build mode, including content-
-disabled profiles, before allocation or rule execution. Invalid bounds, order,
-empty names or value framing return `invalid_scope` (unknown validity, no findings
-or source diagnostic). Header audits are O(A) and cancellable; leaf audits O(1).
-The internal scanner-produced path bypasses this audit. Borrowed slice lifetimes,
-aliasing and faithful scope descriptions remain caller responsibilities.
-
-`validateSource[In]` independently recognizes scopes using the existing scanner.
-It has no element stack and does not emit syntax findings. Complete attributes
-remain checkable despite a bad closer; recognized names and complete references
-in unfinished strings' known prefixes are checkable before abandoning an uncertain
-region. `Scanner.pendingScopes` exposes only already examined ranges on errors;
-it does not rescan, invent quotes, add scanner fields or alter normal tokens.
-Header synchronization shares the scanner's quote-aware error-path helper.
-
-With duplicate checking enabled, a header buffers 16-byte name/value span pairs
-plus the existing 8-byte sorting keys; zero-length value is reserved for an
-unavailable value in an incomplete header. An empty quoted value has length two.
-Buffers are explicit caller storage or caller-allocator growth, reused per header.
-With duplicates off, local name/value checks stream without these allocations.
-Sorting stays heap-based with deterministic comparison cost, not an attacker-
-controlled hash table. Allocation/sorting/validation are not work-credit metered.
-
-Scope coverage and validity are separate. Positive findings survive missing
-boundaries; missing coverage is incomplete/unknown, never a pass. A complete local
-result does not assert balanced tags or successful parsing. Requested check states
-survive operational stops; whole-source UTF-8 runs independently first and can
-complete even if later lexical scope recognition stops. Local findings then follow
-encounter/source order. Closing names are checked independently in the source path;
-the retained path still checks byte-identical matched names once per element.
-
-`incomplete: u32` carries the earliest gap in original-source coordinates, not a
-resume cursor or the last examined byte. The source walk retains the first lexical
-problem location, including across recovery and later findings; unsupported
-constructs point at their opening and EOF failures at `source.len`. A supplied
-incomplete header reports the end of its first name with an unavailable value,
-otherwise its prefix end. The source walk owns its gap independently because it
-can additionally check the unfinished value prefix. Operational stops keep their
-own terminal cause. Closing-name checks and recovery policy remain unchanged.
-
-Source traversal enforces `max_source_bytes` and its caller scratch capacity;
-tree/node/nesting/attribute parse limits still belong to parsing. Do not implicitly
-start source validation after a parse resource/sink/cancellation stop. Running it
-after syntax rejection is allowed. It is an explicit additional lexical pass;
-it neither secretly reruns document validation nor keeps global already-checked
-state. A future composed driver can feed the same local inputs directly. No
-custom string processor, runtime implementation binding, SIMD batching or scheduler
-is introduced. See [the public contract](../MARKUP.md#local-scopes-including-rejected-documents).
-
-#### Verification and explicit costs
-
-After the checked-input/offset review, 561/561 tests pass in Debug, ReleaseSafe,
-ReleaseFast and ReleaseSmall, plus examples and consumed RISC-V32/Wasm32 builds.
-Coverage includes scalar/block and fixed/runtime
-parity, every truncation of a mixed fixture, 2,048 deterministic byte mutations,
-allocation failures, sink stops/failure, cancellation, source limits and borrowed-
-view invariant checks. The review moves scope misuse from assertion probes
-into ordinary all-build-mode tests; retained-document assertion probes remain.
-Additional cases cover oversized descriptors before dereference, disabled-rule
-audits, failure before allocation/diagnostics, cancellable metadata audits, gap
-coordinates across multiple recoveries/EOF and later operational-stop precedence.
-This is targeted regression coverage, not a sustained
-fuzz campaign.
-The source-scope benchmark also passes with the payload-bearing completion;
-the post-review smoke run is not a controlled before/after performance comparison.
-
-Native layouts stay unchanged: Node 20 B, Attribute 20 B, diagnostic 36 B,
-parser frame 12 B, fixed/bounded/runtime sessions 432/440/496 B and validation
-result 32 B. Beyond its fixed scanner/operation state, source validation uses
-explicit per-header scratch: 24 B per attribute slot with duplicates enabled,
-no header scratch with that check off. These are layout/backing-storage figures,
-not process RSS.
-
-Pre-review measurements, local arm64, Zig 0.16.0, ReleaseFast: `--scopes-only`
-measures the additional source pass, including scope recognition, header buffering and validation, with
-20,000 findings discarded and 72 B reusable scratch. Nine timed rounds after
-five warmups, 16 calls per round; one process median, decimal MB/s:
-
-| Fixture | Bytes | Scalar fixed ms / MB/s | Scalar runtime ms / MB/s | Block fixed ms / MB/s | Block runtime ms / MB/s |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Complete headers | 260,000 | 1.152 / 225.7 | 1.213 / 214.3 | 1.217 / 213.6 | 1.257 / 206.9 |
-| Wrong closers | 300,000 | 1.287 / 233.1 | 1.352 / 221.9 | 1.305 / 229.9 | 1.376 / 218.0 |
-| Malformed headers | 360,000 | 1.659 / 217.0 | 1.702 / 211.5 | 1.803 / 199.6 | 1.710 / 210.5 |
-
-These are neither parse-plus-validation totals nor a claim of speedup. Existing
-document validation avoids this lexical pass. Block scanning is not a win on
-these short-token fixtures; cross-input batching has not been implemented.
-
-The unchanged pre-separation benchmark harness was also compiled against
-`273d0ba` and the pre-review implementation. A sequential updated/baseline process pair,
-with no overlapping builds, reports these throughput changes across 13 parsing
-fixtures (geometric means):
-
-| Backend | Fixed | Runtime baseline | Runtime override | Count-only | Cancellable |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Scalar | +5.10% | +4.46% | +3.50% | +4.73% | +2.06% |
-| Block | -1.05% | -0.38% | -0.80% | -1.72% | -0.20% |
-
-Record/pool/session sizes are identical. This is a local guard, not a universal
-speedup or exact-parity claim: earlier process repetitions had substantial noise
-in individual short fixtures. Retained duplicate-only validation on the unique-
-attribute fixture went from 1.332 to 1.397 ms (+4.9% latency), while the duplicate
-fixture went from 0.970 to 0.935 ms (-3.6%). The retained path still passes its
-original document pointer into sorting rather than copying generic view slices.
-No hidden source walk was added to parsing or retained-document validation.
-
-### Opening-header recovery measurements — 2026-10-02
-
-Local arm64 machine, Zig 0.16.0, ReleaseFast, parent `a4397c1` versus this
-extension. A focused copy of `bench/markup.zig` retains all 13 valid-input
-fixtures, both backends, and the fixed/runtime-baseline/cancellable modes;
-runtime-override and count-only were not remeasured for the final version.
-Before/after/after/before processes, five warmups and nine timed batches of 16,
-with no builds overlapping timing. Average the two process medians per cell;
-geometric-mean throughput changes across fixtures are below (negative is slower).
-
-| Mode | Scalar throughput change | Block throughput change |
-| --- | ---: | ---: |
-| fixed | +0.2% | +1.1% |
-| runtime_baseline | -0.1% | -0.4% |
-| cancellable | +2.4% | -2.4% |
-
-Selected cells, milliseconds and **decimal MB/s**:
-
-| Fixture/backend/mode | Before → after ms | Before → after MB/s |
-| --- | ---: | ---: |
-| mixed/scalar/fixed | 2.3400 → 2.3005 | 320.5 → 326.0 |
-| mixed/block/fixed | 2.3985 → 2.4320 | 312.7 → 308.4 |
-| long_names/scalar/fixed | 0.2340 → 0.2340 | 2799.1 → 2799.1 |
-| long_names/scalar/cancellable | 2.5490 → 2.5535 | 257.0 → 256.5 |
-| comments/block/cancellable | 2.5440 → 2.6785 | 550.3 → 522.7 |
-
-Error-path placement materially affected generated-code performance in trial
-builds: outlining all scanner-error handling hurt plain scalar long names;
-inlining all new rejection handling hurt cancellable scalar long names. The
-retained implementation outlines only the new header-rejection/synchronization
-helpers. The final runs avoid those large regressions, but still show a modest
-block/cancellable cost (about 5% on comments); aggregate numbers must not hide it.
-Small gains and variable text/prose timings are not a universal speedup claim.
-
-Native fixed/bounded/runtime session sizes remain **432/440/496 bytes**. Node
-(20 B), attribute (20 B), frame (12 B), diagnostic (36 B) and validation-key
-scratch (8 B) are unchanged. No additional retained pool, header buffer or
-per-element field is introduced. These are layouts/capacities, not a process-RSS
-measurement. Reaching later errors can intentionally consume more diagnostic and
-nesting-scratch storage than stopping at the first malformed header.
-
-### Recovery slice measurements — 2026-09-30
-
-Verification (including the shared `.collect` naming): **521/521** tests pass
-in Debug, ReleaseSafe and ReleaseFast.
-Examples and consumed RISC-V32/Wasm32 freestanding builds pass. Mutation and
-backend-differential cases are regression checks, not a sustained fuzz campaign.
-
-Local arm64 machine, Zig 0.16.0, ReleaseFast; parent `7d56f6e` versus this
-slice. No builds overlapped timed runs. These are development checks, not the
-separate standard-machine baseline or a universal performance guarantee.
-
-Existing `bench/markup.zig`: all 13 parsing fixtures, two backends and five
-modes; before/after/after/before processes. Each process uses five warmups and
-nine timed batches of 16. Average the two process medians per cell; the table
-shows geometric-mean throughput changes over the 13 fixtures (negative is slower).
-Both versions use their defaults: the parent stops on first error; this slice
-enables structural recovery. All timed inputs here are syntactically valid.
-
-| Mode | Scalar throughput change | Block throughput change |
-| --- | ---: | ---: |
-| fixed | -1.4% | 2.0% |
-| runtime_baseline | -1.0% | -1.5% |
-| runtime_override | -2.4% | -0.5% |
-| count_only | -0.9% | -1.0% |
-| cancellable | 1.3% | -0.7% |
-
-Selected cells, milliseconds and **decimal MB/s**; rounded measurements show
-fixture-specific costs, including the larger scalar CDATA slowdown:
-
-| Fixture/backend/mode | Before → after ms | Before → after MB/s |
-| --- | ---: | ---: |
-| flat/scalar/fixed | 0.5435 → 0.5575 | 367.9 → 358.7 |
-| mixed/scalar/fixed | 2.2910 → 2.3330 | 327.4 → 321.5 |
-| attributes/scalar/fixed | 3.1385 → 3.2160 | 350.5 → 342.0 |
-| cdata/scalar/fixed | 1.5255 → 1.6075 | 1016.2 → 964.4 |
-| prose/scalar/fixed | 0.9370 → 0.9690 | 1959.0 → 1896.6 |
-| mixed/block/fixed | 2.5730 → 2.4710 | 291.5 → 303.6 |
-
-Markup's native fixed/bounded/runtime sessions are **416 → 432**, **424 → 440**
-and **480 → 496 bytes** respectively. Node (20 B), attribute (20 B), nesting
-frame (12 B), diagnostic (36 B) and validation-key scratch (8 B) are unchanged.
-Valid-input output/scratch capacities therefore stay unchanged; recovery retains
-no additional tree pool. Collecting more findings and reaching deeper input can
-still allocate more diagnostic/scratch storage on invalid input. These figures
-are layouts/capacities, not measured process RSS or a peak-heap guarantee.
-
-DOT `bench/throughput.zig`: 2,733,345 source bytes / 200,000 statements,
-parse+validate. Three additional alternating before/after process pairs for each
-backend, each with two warmups and nine rounds; median of the three process
-medians below. The scalar gain is specific to these generated binaries/fixture,
-not evidence that recovery is intrinsically faster; block parsing has a modest
-slowdown that must not be hidden.
-
-| Backend/storage | Before → after ms | Before → after MB/s |
-| --- | ---: | ---: |
-| scalar/growing | 10.35 → 8.20 | 264.1 → 333.3 |
-| scalar/hinted | 9.47 → 7.31 | 288.6 → 373.9 |
-| block/growing | 8.59 → 8.80 | 318.2 → 310.6 |
-| block/hinted | 7.55 → 7.85 | 362.0 → 348.2 |
-
-DOT retained pools remain **6,800,000 bytes**. Arena backing capacity remains
-**37,620,470 bytes** growing / **8,400,148 bytes** hinted; these are not RSS.
-
-### Recovery review fixes — 2026-09-30
-
-DOT now carries the same independent completion/syntax-rejection facts as markup.
-All owned/fixed/count-only/session/combined-check adapters preserve them when
-diagnostic delivery stops or later work is cancelled/exhausted. Fixed fail-fast
-profiles exclude the running counter. The invalid DOT corpus runs both recovery
-modes and scanner backends, with a bounded-driver termination guard first.
-
-Shared presentation escapes full file names and resolves list locations in one
-sorted pass using explicit caller scratch. Related spans cannot force repeated
-whole-source walks; excerpt-window selection examines only nearby bytes even on
-very long lines. Diagnostic ordering and retained payload layouts are unchanged.
-The [reporting guide](../REPORTING.md#metadata-and-console-presentation) records
-the new list-rendering argument and memory/work contract.
-
-Verification: **528/528 tests** pass in Debug, ReleaseSafe and ReleaseFast;
-examples, `check-freestanding` (Wasm32/RISC-V32) and `check-benches` pass.
-
-Local ReleaseFast spot checks against `e885f79`, Zig 0.16.0, same machine/toolchain;
-not a replacement for the standard-machine baseline. The rendering probe used
-8 MiB sources, 1,024 EOF `unclosed_element` diagnostics in inner-first order and
-a discarding writer. Location scratch was supplied before timing. One warmup and
-three measured renders per case; medians below. Output byte counts matched in
-every case (541,524 / 541,727 / 603,167 respectively).
-
-| Rendering case | Before ms | After ms |
-| --- | ---: | ---: |
-| One long line, opening tags near the start | 2054.404 | 7.329 |
-| One long line, opening tags in the middle | 4281.394 | 7.944 |
-| Many 80-byte lines, opening tags in the middle | 1345.051 | 6.821 |
-
-The probe used 3,072 caller-owned 12-byte location records (36 KiB) instead of
-hidden allocation or a source-sized line index. DOT fixed/bounded/runtime session
-sizes changed **1064 → 1072**, **1104 → 1112**, **1288 → 1296 bytes**. Its owned
-ParseResult remains 256 bytes on this target; node (16 B) and edge (36 B) records
-are unchanged. These are layout sizes, not RSS measurements.
-
-The normal DOT `bench/throughput.zig` fixture (2,733,345 bytes / 200,000 statements)
-was also checked: three alternating process pairs for scalar, six for block;
-each process uses two warmups and nine measured rounds. Values below are medians
-of process medians, with decimal MB/s calculated from the source size. The optional
-block backend is about 3% slower on this fixture, so these fixes are **not** a
-zero-cost parsing change. The internal result grew from 16 to 20 bytes; that is
-a layout observation, not a proven attribution of the timing difference.
-
-| Backend/storage | Before → after ms | Before → after MB/s |
-| --- | ---: | ---: |
-| scalar/growing | 8.000 → 7.860 | 341.7 → 347.8 |
-| scalar/hinted | 7.070 → 6.790 | 386.6 → 402.6 |
-| block/growing | 8.425 → 8.700 | 324.4 → 314.2 |
-| block/hinted | 7.515 → 7.745 | 363.7 → 352.9 |
-
-Retained output remains 6,800,000 bytes; arena backing capacity stays 37,620,470
-bytes growing / 8,400,148 hinted. This is one local fixed-policy fixture, not a
-whole-library or runtime-policy performance claim.
-
-## Encoding boundary
-
-### Current implementation
-
-The byte scanner expects ASCII-compatible syntax, naturally compatible with
-UTF-8. UTF-8 validation is not implied by structural success. UTF-16/32 require
-explicit caller-side conversion, and spans then index that converted buffer;
-original-encoding mappings need a separate source map. No automatic transcoding.
-Leading UTF-16/32 BOMs are detected as unsupported encoding, without promising
-reliable identification of all incorrectly encoded or mixed-encoding bytes.
-
-### Future transcoding and source provenance — requirement, not implemented
-
-When UTF-16/32 input adapters are added, UTF-8 will be the working representation,
-not a replacement for the identity of the original source. Preserve original
-encoding, byte order and BOM presence/absence once per input/source context, not
-on every node. Keep caller-supplied or detected provenance explicit; a naked
-converted UTF-8 buffer cannot reveal its previous encoding. Unknown origin must
-remain unknown, not be guessed or mislabeled as originally UTF-8. Exact metadata
-types, source ownership and adapter APIs are still to be designed.
-
-Retaining an encoding label alone does not preserve original bytes or map offsets.
-For exact source reproduction, keep the original caller-owned bytes or an explicit
-source handle with a sufficient lifetime; do not imply that a reconstructed
-encoding is byte-for-byte identical. Lossy replacement, normalization, or discarded
-source/BOM information must never be silent or advertised as lossless. The initial
-conversion error policy needs an explicit contract before implementation.
-
-Parser spans continue to index the supplied working byte buffer. Original-source
-diagnostics/fixes need an explicit mapping; transcoding is not a constant origin
-offset. If mapping is unavailable, identify coordinates as working-buffer offsets,
-not original-file positions. Mapping representation and eager versus on-demand
-translation remain open, with explicit caller-owned storage/work budgets.
-
-Document conversion CPU, UTF-8 output-buffer size, original-buffer lifetime and
-mapping costs separately. Holding original and working buffers can increase peak
-memory; mapping may use storage or require rescanning. Bound both input and
-converted-output sizes. None of these costs should be imposed on unchanged raw-byte
-input paths. Current raw-byte acceptance with optional UTF-8 validation is not
-silently changed into mandatory valid-UTF-8 parsing by this future adapter direction.
-
-### Current lexical choices
-
-Slice 1's concrete lexical choices are:
-
-- Name start: `[A-Za-z_:]` or any byte `0x80..0xFF`; continuation additionally
-  permits `[0-9.-]`. Colons are raw name bytes, not namespace processing.
-- Syntax whitespace: space, tab, CR, LF. Other bytes below `0x20`, including NUL,
-  fail in the implemented grammar. Non-ASCII name/text bytes remain unchanged.
-- A leading UTF-8 BOM is recognized and excluded from text, as in DOT; source
-  offsets still include it. Elsewhere those bytes are ordinary content.
-- Ordinary text is a nonempty run until `<`; references stay inside that span. It is not entity-decoded or
-  subject to full XML character-data restrictions. In particular, this slice
-  makes no claim to reject every XML-forbidden character-data sequence.
-
-## Implemented architecture
-
-`markup_parser` is a separate build module rooted at `src/markup.zig`.
-Both parsers import one language-independent support module so applications can
-use both without duplicating shared type identities. Shared location, reporting,
-cancellation and WDP hashing do not depend on either grammar. Payloads/registries
-remain processor-owned; the markup namespace is `markup_parser`.
-
-Scalar and opt-in block run scanning feed one iterative event-level parser. Growable, fixed and
-count-only consumers share that grammar. Events stay private/provisional, following
-DOT's initial layering. Public retained data is a compact preorder forest: each
-20-byte node holds a raw span, a name span (zero length with a kind discriminator for leaves), and a subtree-end
-index. Direct-child iterators skip whole subtree intervals without allocations.
-This chooses intervals instead of the earlier provisional parent/child/sibling
-links. No parent lookup table, per-ID summary table or graph data is added.
-
-An open-element frame contains its name span and a consumer handle: 12 bytes,
-not the earlier 8-byte estimate. Self-closing elements count toward nesting depth
-but need no persistent frame. Allocator-backed scratch grows independently of
-output; fixed storage never allocates. Pop reuses frames, and release is bulk.
-DOT and markup instantiate the same `common/stack.zig` mechanism with their own
-frame types and u32 active-depth counters. Allocation sizes remain usize.
-Owned stack growth uses allocator `realloc`: remapping is attempted before an
-allocate/copy/free fallback. Failure leaves the original frames intact. Doubling,
-fixed-storage behavior and stack layouts are unchanged; successful in-place growth
-avoids an obligatory second live allocation.
-
-Owned successful output tries an in-place capacity reduction per pool; refusal retains
-the original allocation with no allocation/copy fallback. `ParseResult.retainedBytes()`
-reports reserved node/attribute capacity, not just occupied records, and excludes allocator
-overhead/RSS. Fixed parsing is unchanged; allocator callbacks are not budgeted work.
-
-The policy contains implemented limits (source bytes, nodes, attributes, nesting),
-malformed-reference acceptance, duplicate/encoding validation severity, optional
-name rules/reference catalogs and their independent severities, scanner
-selection (`scalar` default / `block`), and execution choices (metering, cancellation). Limits/counts/ranges are u32; lengths
-at the allocator/slice boundary use native sizes. Defaults preserve the existing
-unlimited-within-representation convention for the standard policy. The optional
-`presets.untrusted` selects finite application-sized parse budgets (see below).
-All typed combinations are meaningful,
-including zero limits, so `validatePolicy` currently returns `valid`; no invalid
-combination is invented and parsing has no policy-error union. Fixed verification is
-comptime-only. Runtime overrides are opt-in, resolve once, and inherit the compiled
-baseline; no settings copies on nodes or per-byte override merging.
-Both parsers use `common/processor.zig`'s `PolicyBinding`. Markup exposes `Policies`
-for preparation, not scheduling. Infallible schemas use `Error = error{}` and a
-valid-only check, handled exhaustively; no check result is discarded. If markup
-later introduces policy errors, its current infallible API must be updated to
-propagate them rather than silently treating them as unreachable.
-
-The standalone scanner checks the source-size domain at initialization, before
-reading bytes, rather than at each scan step. At EOF after a self-closing slash,
-the expected token is precisely `>`. With comments/CDATA implemented, `<!` alone
-is an incomplete possible supported opener. Only a distinguishing byte identifies
-an unsupported declaration family, whose body is not validated.
-
-Metered fixed sessions charge source examinations, grammar transitions, each byte
-of tag-name comparison, and individual event attempts. One credit suffices; zero
-does no normal work. Cancellation is checked before each next microstep. Fixed
-ordinary builds omit frontier/hook state when disabled. Callout time is excluded,
-and allocator-backed operations are run-to-completion, not a bounded allocation
-claim. Completed results are latched; abort occurs at most once after begin.
-Scalar scanning remains byte-stepped when either metering or cancellation is
-enabled. Bounded block scanning uses up-to-64-byte windows and scalar boundary transitions;
-its credit totals/frontiers differ from scalar. Plain scanning loops to the next
-token/finding. See the follow-up below for backend details and measurements.
-
-No Graphviz/extended vocabulary validation, namespace resolution,
-markup fixes or processor scheduling is implemented
-by this slice. See the [consumer guide](../MARKUP.md) for the actual API.
-
-## Resource hardening — 2026-09-27
-
-The shared growable diagnostic bag used by both DOT and markup now defaults to
-1,024 entries. `EntryLimit` is a tagged choice: `.limited: u16` (0–65,535) or
-explicit `.unlimited`. Neither zero nor 65,535 is a sentinel. Accepting the final
-entry requests stopping; the operation preserves known invalidity and reports
-unfinished checks as incomplete. Native allocation lengths and u32/u64 factual
-counters are unchanged. The cap lives in the sink, with no new parser hot-path
-checks, narrower diagnostic payload or changed UTF-8 finding spans. Settings and
-storage must not be mutated during a bag's lifetime; reset clears entries while
-retaining its capacity and selected limit.
-
-`presets.untrusted` is a complete ordinary standard policy with four finite
-limits: 8 MiB source bytes, 100,000 nodes, 200,000 attributes and depth 256.
-Compile-time enumeration of policy limits requires an explicit finite budget in
-this preset for every field; extending limits cannot silently inherit unlimited.
-Encoding remains off and syntax/validation meanings do not change. Fixed and
-opt-in runtime profiles use the same policy resolution. The complete preset
-resets all leaves when supplied as an override; callers wanting only its limits
-can select that subtree. It bounds parsing/measurement, not independent validation
-of an already retained document.
-
-Resource tests isolate the diagnostic risk with a 16 MiB text source: both all
-invalid bytes and alternating valid/invalid bytes stop UTF-8 validation after
-1,024 findings. On the native target the bag reserves exactly 36 KiB of live
-entry storage (1,024 × 36 bytes). This is not a peak-heap or RSS measurement:
-old/new buffers can coexist during growth, arena allocations can accumulate,
-and the source, output and scratch are separate costs. Wide-count tests with a
-discarding sink still complete over 65,535 errors. Duplicate, DOT operator and
-warned-reference floods also honor the cap without claiming completion.
-
-Tests cover zero/one/max finite limits, explicit unlimited retention beyond
-65,535, reset, every default-cap allocation-failure point, and exact/one-over
-preset limits with fixed/runtime parity. A 65,536 finite limit is an expected
-compile failure. Freestanding 32-bit probes consume finite and unlimited shared
-bags using only caller-backed allocation.
-
-449/449 tests pass in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall. Examples,
-benchmark compilation, 14 expected compile failures and the consumed RISC-V32/
-Wasm32 freestanding probes pass. Formatting and diff whitespace checks pass.
-
-The [untrusted-input guide](../MARKUP.md#untrusted-input) separates input acquisition,
-retention, output/scratch, parse credits and validation costs. Validation sizing,
-sorting and name comparisons are not internally metered or cancellable; this is
-not a bounded-validation change. ReleaseSafe guidance is defense in depth, not a
-memory-safety proof. No new throughput or process-memory benchmark is claimed.
-
-## Slice 4a implementation
-
-`validation.invalid_utf8` is off by default, with error/warning choices and full
-compile-time/runtime parity. It checks the entire borrowed source independently
-of structural parsing, including comments and CDATA. Valid sequences consume
-1–4 bytes; a byte not beginning a valid sequence gets one one-byte finding, then
-scanning advances one byte. There is no mutation, normalization, decoding or XML
-character/name conformance claim. DOT and markup share scalar decoding and its
-sequence-length wrapper in `common/utf8.zig`; diagnostic identities and policies
-stay local.
-
-One monotonic u32 cursor merges encoding findings with duplicate checks by primary
-source offset, UTF-8 first on ties. No queued findings, second sort or source-sized
-temporary storage is added. A fixed disabled check omits its scan/cursor; runtime
-off skips its scan. Encoding-only validation does not inspect attribute pools,
-allocate or need scratch. Enabled duplicate scratch is preflighted before either
-check; resource failure leaves enabled checks incomplete without running UTF-8.
-Ordinary errors continue both checks. Sink stop/failure and enabled cancellation
-stop the operation, preserving known invalidity and per-check completion. UTF-8
-polls cancellation at 64-byte scan thresholds, finishing the current scalar
-(up to three additional bytes). Existing unmetered sizing/sorting/name comparisons
-remain unchanged. This does not add bounded validation.
-
-Validation totals are u64, matching DOT's independent-check aggregation; source
-offsets, capacities and parsing counters stay u32. The parse engine, retained
-records, diagnostic payload and nesting frames are unchanged. Stricter names,
-known-reference rules and structural recovery are not implicitly selected by this
-check and need their own contracts before implementation.
-
-### Slice 4a verification and costs
-
-438/438 tests pass in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall, including
-64 standalone markup tests. Examples, benchmark compilation, expected compile
-failures, and consumed RISC-V32/Wasm32 fixed/runtime probes pass. New coverage
-includes invalid scalar encodings/truncation, all raw source contexts, fixed/runtime
-severity combinations, inherited/reset policies, source-order ties, random-byte
-oracles, scanner/budget parity, cancellation, sink backpressure and scratch failures.
-
-Native record and session sizes remain unchanged: Node/Attribute 20 bytes each,
-Diagnostic 36, duplicate key 8, nesting frame 12, and fixed/bounded/runtime sessions
-416/424/480 bytes. The validation result is now 32 bytes, including u64 totals and
-two check statuses. UTF-8-only validation has no allocation or scratch buffer;
-its source cursor is u32. Diagnostic retention is a separate caller-selected cost.
-No process-RSS or allocator peak-memory measurement is claimed here.
-
-Local ReleaseFast checks on Apple M4 Pro, Zig 0.16.0, compared `e600dab` with this
-slice. The original 13-fixture harness was used for default-off comparisons (only
-its validation return type was adapted), with nine measured 16-operation batches
-after five warm-up batches. Two isolated runs per build used before/after then
-after/before order, without concurrent compilation. Midpoints of process medians
-give geometric-mean throughput changes of +0.4% for fixed scalar and +1.3% for
-fixed block parsing; duplicate validation is -0.4% on unique attributes and +0.8%
-on duplicates. These small aggregate differences are not claimed as speedups.
-
-The broad harness's scalar text case reported -9.1%, so text/prose were also
-checked separately with eight warm-up and nine measured batches of 64 parses,
-in before/after/after/before order. Scalar text measured 2150.9 -> 2200.9 MB/s
-(0.465 -> 0.454 ms); scalar prose measured 1891.6 -> 1945.2 MB/s
-(0.971 -> 0.944 ms). Block text/prose differed by -0.2%/-0.8%. The broad text drop
-was not reproduced in this focused check. This is separate evidence, not a
-replacement for the broad result or a guarantee of parity on every workload.
-
-The opt-in pass was timed separately using the encoding benchmark's same fixtures
-and sampling, excluding parsing/allocation and using a discard sink. Cells are
-**milliseconds / decimal MB/s**. Malformed input still counts every finding.
-
-| Validation fixture | Source bytes | Fixed policy | Runtime policy | Scratch bytes |
-| --- | ---: | ---: | ---: | ---: |
-| ASCII | 500,000 | 0.283 / 1769.5 | 0.232 / 2152.6 | 0 |
-| Valid multilingual UTF-8 | 600,000 | 1.250 / 480.2 | 1.258 / 477.0 | 0 |
-| Malformed bytes, 300,000 findings | 350,000 | 1.052 / 332.7 | 1.076 / 325.2 | 0 |
-| Encoding + duplicates, 100,000 findings | 1,050,000 | 1.457 / 720.8 | 1.443 / 727.4 | 16 |
-
-Fixed/runtime differences here include code-generation and timing variability;
-they do not establish that runtime selection is intrinsically faster. Standard-
-machine baseline artifacts were not changed.
-
-## Slice 3 implementation
-
-The scalar scanner recognizes named, decimal and hexadecimal references inside
-existing text/quoted-value spans. Named references use the byte-name grammar and
-need no definition. Numeric references use XML 1.0's `Char` range, not HTML's
-replacement/legacy rules. Saturating accumulation checks range without overflow
-or expansion, including arbitrarily long or zero-padded digit sequences. No
-entity table, per-reference pool, external lookup, decoding or normalization is added.
-
-`syntax.malformed_reference` has compile-time/runtime `reject`/`warn`/`accept`
-parity. The scanner returns a recoverable finding to the grammar; the public
-low-level lexer maps it to a latched strict failure. Tolerance treats the first
-ampersand literally; already-examined candidate bytes are safe literal content
-and are not rescanned. The terminating tag/quote/ampersand is left for ordinary
-scanning. This is constant continuation state and linear work, not backtracking.
-Candidate diagnostic spans and typed reasons are part of the public contract.
-
-Comments enforce `<!--...-->` without interior `--`; CDATA enforces exact
-`<![CDATA[...]]>`. Bodies ignore reference/tag syntax but still reject prohibited
-raw control bytes. Both are distinct retained leaves. Their kind occupies the
-otherwise-unused start of a zero-length name span; node/attribute/frame layouts
-remain 20/20/12 bytes. `NodeView.content()` strips leaf delimiters on request.
-Empty comment/CDATA bodies count as nodes, not elements/depth. References create
-neither extra nodes nor attributes. The node-kind enum also serves private leaf
-events; the parser remains independent of retained syntax.
-
-Reports/results/progress expose u32 accepted-deviation and warning counts,
-including the discovered prefix on stop/failure. A fixed rejecting profile omits
-active counters and runtime policy storage; a fixed silent profile omits its
-active warning counter. Public result fields still exist. Diagnostic warning
-delivery follows sink acknowledgment and aborts exactly once on stop/failure;
-terminal syntax/resource failures keep their cause. Independent duplicate
-validation and its findings/costs are unchanged.
-
-Tests cover boundary spellings/ranges, raw preservation, capacities, every prefix,
-arbitrary bytes, long candidates/bodies, fixed/runtime/growing/count-only parity,
-budget partition invariance, cancellation/relocation, policy reset, diagnostic
-stop/error reasons and allocation failures. Freestanding probes consume the new
-leaves, runtime policy and counters. Measurements are recorded below.
-
-## Slice 2 implementation
-
-Quoted attribute parsing uses the same resumable scanner and event machine.
-Attribute-free tags retain their whole-token path. Attribute-bearing headers
-stream `open_head`, each `attribute`, then `head_end`/`empty_end`; there is no
-header-sized buffer, rescanning pass or unmetered value/name loop. Each attribute
-event is charged and cancellable. A pending header uses one constant-size frame
-in the session; only a non-self-closing header enters the nesting stack.
-The first attribute-name byte is consumed when the cached `open_head` token is
-returned; there is no separate `attribute_start` reread/credit. The token retains
-the opener's original name/span and excludes that consumed lookahead byte.
-
-The separate 20-byte attribute record contains an owner u32 and two source spans
-(name, quoted value). This keeps all nodes at 20 bytes, including attribute-free
-elements/text. Owner-sorted storage gives O(log A) attribute lookup and O(1)
-iteration; no attribute range is added to every node. Fixed document capacities
-are now `{ .nodes, .attributes }`, with no legacy scalar-capacity wrapper. Counts,
-limits, fixed/growing/count-only parsing, allocation failures and bounded sessions
-all include attributes. Quoting, whitespace and every duplicate remain intact.
-
-The retained view is a trusted representation with explicit preconditions, not a
-builder accepting arbitrary public-field layouts. Spans and preorder intervals
-must be valid; attributes must be source-ordered, owner-grouped and refer to live
-elements. Safety builds assert attribute metadata/order within the existing sizing
-pass. These are programming-contract checks, not new input policies or a general
-document validator. ReleaseFast/ReleaseSmall add no invariant-audit pass, and
-attribute lookup keeps its O(log A) cost without per-lookup whole-pool scans.
-
-`validate`/`validateIn` are independent passes over completed syntax. Exact
-case-sensitive duplicates are checked per owner; every later occurrence points
-to the first, and all findings are emitted in source order. Severity defaults to
-error, with warning/off policies and fixed/runtime parity. Off does no check or
-allocation and explicitly reports `not_run`. Parse success is not validation
-success; no implicit pass or deduplication is added.
-
-Duplicate checking uses 8-byte scratch entries, reused for the largest attribute
-list (zero for lists smaller than two). One in-place heapsort by name/index is
-followed by linear scattering into the existing `first` column, indexed by source
-position. The sorted-index column stays intact during scattering; there is no
-second sort or larger scratch record. Retained pools remain unchanged. Comparison
-cost includes name bytes; allocator-backed validation computes its scratch
-requirement only once and passes it to the internal checker. Resource diagnostics
-anchor to the first largest-list owner's name (allocation context, not syntax blame).
-Completion, validity, check status, finding counters and delivery are distinct.
-Sink stop/failure cancels further validation; an ordinary error finding does not.
-This pass is not metered: cancellation checks surround groups/findings, not each
-sorting comparison. Bounded validation remains later work, as with DOT.
-
-## Initial local measurements — 2026-09-27
-
-Apple M4 Pro, Zig 0.16.0, ReleaseFast. These are local development measurements,
-not replacements for the standard-machine DOT baselines. `bench-markup` takes
-the median of nine 16-operation batches after five warm-up batches, reporting
-per-operation latency. Sources and fixed storage are prepared outside timing;
-results are consumed. The runtime override uses the complete standard preset,
-so fixed/runtime paths process equivalent settings. Decimal MB/s, not MiB/s.
-
-| Fixture | Source bytes | Fixed ms / MB/s | Runtime baseline ms | Runtime override ms | Count-only ms |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 50,000 empty elements | 200,000 | 0.938 / 213.2 | 0.955 | 0.965 | 0.838 |
-| 50,000 mixed fragments, 150,000 nodes | 750,000 | 3.835 / 195.6 | 3.908 | 3.739 | 3.566 |
-| One text run | 1,000,000 | 3.369 / 296.8 | 3.313 | 3.287 | 3.409 |
-| 10,000 nested elements | 70,000 | 0.340 / 206.0 | 0.330 | 0.343 | 0.300 |
-
-This is an initial baseline, not a statistically established ordering of execution
-profiles or a speedup claim. The benchmark is intentionally repeatable as later
-slices arrive. No force-inlining or second scanner was added to improve a fixture.
-
-Native layouts: node 20 B, frame 12 B, markup diagnostic 36 B; ordinary fixed
-session 336 B, metered fixed session 344 B, runtime session 392 B. Mixed output
-retains 3,000,000 B plus 24 B of reserved fixed scratch. The deep fixture retains
-200,000 B plus 120,000 B reserved scratch. These exclude source, bags, session,
-allocator overhead and process RSS. Growable peak live heap/RSS was not measured;
-fixed capacity and allocation-failure tests do not establish those numbers.
-
-The shared-primitives extraction was also checked against a before-build at
-`a0cdf8b`, using the existing 100,008-byte, 50,000-statement `bench/policies.zig`:
-11 alternating before/after process pairs, each executable's nine-round median.
-
-| DOT path | Before ms | After ms |
-| --- | ---: | ---: |
-| Scalar fixed | 0.820 | 0.817 |
-| Scalar runtime baseline | 0.942 | 0.948 |
-| Scalar runtime override | 0.946 | 0.950 |
-| Block fixed | 0.963 | 0.963 |
-| Block runtime baseline | 1.241 | 1.243 |
-| Block runtime override | 1.231 | 1.237 |
-
-Changes are within about 0.7% in this targeted run. DOT layouts remain document
-232 B, diagnostic 80 B, fixed session 1,064 B, runtime session 1,288 B and runtime
-options 120 B. The consumed benchmark's native `__text` is 485,428 B both before
-and after. This is not the full historical 14-workload regression suite and does
-not establish RSS, live-heap or allocation-count equivalence.
-
-## Review hardening verification — 2026-09-27
-
-390 tests pass in Debug, ReleaseFast, ReleaseSafe and ReleaseSmall, plus 12
-compile-fail fixtures. Examples, standalone markup tests, benchmark builds and
-consumed RISC-V32/Wasm32 profiles also pass. New regressions cover EOF diagnostic
-details, unsupported prefixes, oversized descriptors without byte access,
-infallible shared policy binding, runtime hook gating across operations/reset,
-shared stack allocation failures, and successful/refused in-place trimming.
-
-Local ReleaseFast comparison against `edc1eab`, same machine/toolchain as above:
-nine alternating process pairs for DOT policies and three for markup, aggregating
-each executable's existing median. The markup benchmark source is unchanged.
-
-| Markup fixed fixture | Before ms | After ms |
-| --- | ---: | ---: |
-| 50,000 empty elements | 0.947 | 0.882 |
-| 50,000 mixed fragments | 4.011 | 3.566 |
-| One text run | 3.469 | 2.988 |
-| 10,000 nested elements | 0.348 | 0.308 |
-
-Across fixed/runtime/count-only markup paths, observed latency decreased roughly
-5–14%; DOT policy timings stayed within about 2%. This is a targeted local check,
-not a full performance-suite result or an isolated attribution to one change.
-Measured node/frame/diagnostic/session sizes and fixed reserved capacities are
-unchanged. Consumed benchmark `__text` grows from 485,428 to 485,468 B for DOT and
-303,852 to 304,788 B for markup; these include benchmark/host code, not just parsers.
-
-Allocator tests separately verify that a one-node owned result retains 20 B when
-shrinking succeeds, and exposes its original slack when resizing is refused.
-Finalization makes no additional allocation in either case and never changes a
-successful parse into OOM. These are requested node-allocation bytes, not RSS or
-allocator-internal reservations; growable peak live heap remains unmeasured.
-
-## Slice 2 verification and costs — 2026-09-27
-
-398 tests pass in Debug, ReleaseFast, ReleaseSafe and ReleaseSmall, plus the 12
-compile-fail fixtures. Standalone tests, examples, benchmark builds and consumed
-RISC-V32/Wasm32 profiles pass. New coverage includes quoted-value boundaries,
-every truncation, exact source/owner spans, duplicate-order comparison against a
-simple randomized reference, fixed/runtime policy parity, sink backpressure,
-allocation failure, attribute storage exhaustion, cancellation within long values
-and one-credit partition equivalence.
-
-Same Apple M4 Pro and Zig 0.16.0, ReleaseFast. Three alternating before/after
-process pairs compare `1aa2c3f` against slice 2 using the **unchanged original
-benchmark source** for both builds. Each value below is the median of the three
-process medians; each process takes nine 16-operation batches after five warmups.
-These small local samples show variation, not a guarantee of no regression.
-
-| Existing fixed-policy fixture | Before ms | After ms | Before MB/s | After MB/s |
-| --- | ---: | ---: | ---: | ---: |
-| 50,000 empty elements | 0.904 | 0.859 | 221.2 | 232.7 |
-| 50,000 mixed fragments | 3.573 | 3.617 | 209.9 | 207.4 |
-| One text run | 2.906 | 2.890 | 344.2 | 346.0 |
-| 10,000 nested elements | 0.307 | 0.319 | 228.3 | 219.3 |
-
-Across all 16 fixed/runtime/count-only comparisons, measured throughput ranges
-from −5.4% to +5.2%. The largest decrease is mixed count-only (229.7 → 217.3 MB/s,
-3.265 → 3.451 ms). No claim of recovered or universally unchanged throughput is
-made. The attribute-header path is separated from ordinary tag event handling;
-no second scanner, source-sized buffering or extra attribute-free retained records
-were introduced. DOT/common source and DOT retained layouts are untouched.
-
-The expanded benchmark separately adds two 1,100,000-byte fixtures: 50,000 empty
-elements with three attributes each, either distinct keys or one duplicate per
-element. A single local run of that expanded harness (not the matched comparison
-above) measured:
-
-| New fixture | Fixed parse ms / MB/s | Runtime baseline ms / MB/s | Count-only ms / MB/s | Validation-only ms / MB/s |
-| --- | ---: | ---: | ---: | ---: |
-| Distinct attributes | 4.716 / 233.2 | 4.538 / 242.4 | 4.198 / 262.0 | 1.328 / 828.2 |
-| Duplicate attributes | 4.486 / 245.2 | 4.520 / 243.4 | 4.062 / 270.8 | 1.081 / 1017.2 |
-
-Validation timings include duplicate discovery, sorting and discarded diagnostic
-delivery, but exclude parsing and scratch allocation. Throughput is normalized
-to full source bytes; validation reads retained name ranges, not all value bytes.
-The ordinary error policy still discovers all 50,000 duplicates with the discard
-sink. These fixture measurements are starting points, not profile speed rankings.
-
-Native node/frame/diagnostic sizes remain 20/12/36 B. Each attribute is 20 B;
-fixed/bounded/runtime sessions grow from 336/344/392 B to 400/408/456 B (+64 B).
-Both new fixtures retain 4,000,000 B in output pools and reserve 12 B of safe
-nesting scratch; self-closing-only input actually needs no persistent frame.
-Duplicate-validation scratch is only 24 B for either fixture, reused across all
-elements. Attribute-free output capacities are unchanged. Owned-result accounting
-tests include both pools and refused-shrink slack. These are explicit storage
-figures, not process RSS, allocator overhead or peak live-heap measurements.
-
-## Slice 2 review fixes — 2026-09-27
-
-All seven review items are addressed: explicit trusted-document invariants with
-safety-build attribute metadata assertions; useful resource-diagnostic locations;
-one sizing pass on allocator-backed validation; linear source-order mapping after
-the name sort; a specific infallible-schema contract error; remapping-first shared
-stack growth; and removal of the first-attribute reread state. The invalid-layout
-case is a caller-precondition violation, not a new policy or support for arbitrary
-hand-built document pools. Parser-produced documents and delayed validation retain
-their existing behavior. Attribute lookup does not add a whole-pool audit.
-
-404 tests pass in Debug, ReleaseFast, ReleaseSafe and ReleaseSmall, plus 13
-compile-fail fixtures. Examples, benchmark builds, standalone tests and consumed
-RISC-V32/Wasm32 profiles pass. Regressions exercise owner order, span metadata,
-largest-owner diagnostic context and ties, source-ordered findings after scattering,
-in-place stack growth, failed remap/allocation with a preserved stack and copying
-retry, and precise header-token spans after consuming its first attribute byte.
-Enum and tagged-union schemas with valid baselines but invalid-capable checks are
-both rejected by the specific compile-time contract error.
-
-ReleaseFast comparison against `f1760f9`, same Apple M4 Pro/Zig 0.16.0 and unchanged
-`bench/markup.zig` on both builds. Three alternating before/after process pairs;
-values are medians of the process medians. Validation uses preallocated scratch
-and a discard sink, so these timings do not measure the separate allocated-path
-sizing-pass improvement. Decimal MB/s is normalized to whole source bytes.
-
-| Validation fixture (1,100,000 bytes) | Before ms | After ms | Before MB/s | After MB/s |
-| --- | ---: | ---: | ---: | ---: |
-| Distinct attribute keys | 1.421 | 1.323 | 774.1 | 831.4 |
-| One duplicate per element | 1.123 | 0.915 | 979.7 | 1201.7 |
-
-| Parse fixture | Fixed MB/s before → after | Runtime baseline MB/s before → after | Count-only MB/s before → after |
-| --- | ---: | ---: | ---: |
-| Empty elements | 229.9 → 239.2 | 228.1 → 240.3 | 251.2 → 261.9 |
-| Mixed fragments | 208.6 → 213.1 | 209.2 → 215.3 | 234.2 → 229.8 |
-| Text | 342.7 → 340.8 | 343.9 → 341.2 | 340.4 → 340.8 |
-| Deep nesting | 220.7 → 222.0 | 217.9 → 223.7 | 236.1 → 233.9 |
-| Distinct attributes | 227.0 → 229.4 | 233.8 → 227.5 | 253.2 → 248.8 |
-| Duplicate attributes | 233.6 → 232.5 | 234.1 → 229.0 | 254.6 → 250.0 |
-
-Validation throughput rises about 7.4%/22.7% in these samples. Across all 24 parse
-comparisons (including runtime override), changes range from −2.7% to +5.4%; this
-is not a universal parsing-speedup or no-regression claim. Three alternating DOT
-policy-benchmark pairs show median latency changes within about 2.4%: scalar fixed
-0.868 → 0.882 ms, scalar runtime baseline 0.972 → 0.973 ms, scalar override
-0.991 → 0.976 ms, block fixed 0.971 → 0.965 ms, block runtime baseline
-1.284 → 1.301 ms, and block override 1.259 → 1.289 ms. This remains a targeted
-local guard, not the full DOT benchmark suite.
-
-All retained/scratch/session layouts are unchanged: markup node/attribute 20 B,
-frame 12 B, duplicate-key scratch 8 B, diagnostic 36 B; fixed/bounded/runtime
-sessions 400/408/456 B. DOT document/diagnostic/session layouts are also unchanged.
-The in-place growth test reaches 32 frames with one allocation and five remaps;
-copying is still permitted when an allocator cannot remap. This establishes the
-mechanism, not general heap/RSS savings. Consumed benchmark `__text` decreases from
-338,216 to 335,212 B for markup and 485,468 to 483,504 B for DOT; these figures
-include host/benchmark code, not just library code.
-
-
-## Slice 3 verification and costs — 2026-09-27
-
-Implemented references, comments/CDATA and malformed-reference acceptance.
-The full suite passes **419 tests in Debug, ReleaseSafe, ReleaseFast and
-ReleaseSmall**, plus 13 compile-fail fixtures, examples, benchmark builds and
-consumed fixed/runtime RISC-V32/Wasm32 probes. Formatting and diff checks pass.
-The DOT implementation and shared primitives are unchanged by this slice.
-
-Apple M4 Pro, Zig 0.16.0, ReleaseFast. The common comparison uses the unchanged
-six-fixture benchmark source from `f887de8`, compiled against that commit and
-this slice. Three alternating process pairs (before/after, after/before,
-before/after) ran serially after compilation finished. Each executable reports
-its median of nine 16-operation batches after five warm-up batches; the table
-uses the median of three process medians. Decimal MB/s. These local development
-samples do not replace standard-machine baselines or establish confidence bounds.
-
-| Fixture | Fixed ms, before → after | Fixed MB/s | Runtime baseline MB/s | Runtime override MB/s | Count-only MB/s |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Empty elements | 0.854 → 0.872 | 234.1 → 229.3 | 233.8 → 229.0 | 235.2 → 235.5 | 253.7 → 249.3 |
-| Mixed fragments | 3.641 → 3.748 | 206.0 → 200.1 | 209.1 → 202.1 | 207.9 → 200.9 | 222.6 → 217.5 |
-| Text | 3.017 → 3.086 | 331.4 → 324.0 | 331.4 → 332.5 | 331.9 → 332.5 | 332.5 → 310.1 |
-| Deep nesting | 0.324 → 0.314 | 215.8 → 223.3 | 216.4 → 217.0 | 222.6 → 218.2 | 231.2 → 223.0 |
-| Distinct attributes | 4.947 → 5.183 | 222.4 → 212.3 | 217.8 → 212.5 | 217.8 → 211.5 | 238.3 → 219.2 |
-| Duplicate attributes | 4.976 → 5.185 | 221.1 → 212.1 | 218.0 → 213.1 | 216.7 → 212.3 | 237.7 → 219.4 |
-
-The geometric mean over the 24 parse comparisons is **2.6% lower throughput**.
-Individual changes range from −8.0% to +3.5%. In particular, count-only text is
-6.7% slower, and count-only distinct/duplicate attributes are 8.0%/7.7% slower.
-These are remaining regressions, not a no-cost feature claim. The ordinary-text
-path avoids dispatch through tag/reference continuation states while retaining
-one-byte metering; no block scanner or unbudgeted scanning loop was introduced.
-Further count-only/hot-path work remains a performance follow-up. Timing varied
-between runs, so the small changes are not strong evidence of universal ordering.
-
-Independent validation (preallocated scratch, discard sink, source-byte-normalized
-throughput) is 814.9 → 812.1 MB/s for distinct keys and 1,186.7 → 1,165.2 MB/s for
-duplicates. Its algorithm did not change; it does not validate references or
-reinterpret comments/CDATA as attributes.
-
-The expanded `bench-markup` adds four supported-content fixtures. These are one
-process's nine-batch medians, not before/after comparisons (the old parser rejected
-them). All use valid input and a discard diagnostic sink; warning-volume costs
-are not established by these measurements.
-
-| Fixture | Source B | Fixed ms / MB/s | Runtime baseline ms / MB/s | Runtime override ms / MB/s | Count-only ms / MB/s |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| References in text | 1,700,000 | 8.246 / 206.2 | 7.800 / 217.9 | 8.322 / 204.3 | 7.646 / 222.3 |
-| References in attributes | 1,800,000 | 8.103 / 222.1 | 7.757 / 232.0 | 7.660 / 235.0 | 7.607 / 236.6 |
-| Comments | 1,400,000 | 5.243 / 267.0 | 5.076 / 275.8 | 4.995 / 280.3 | 4.913 / 285.0 |
-| CDATA | 1,550,000 | 5.411 / 286.5 | 5.440 / 284.9 | 5.561 / 278.7 | 5.354 / 289.5 |
-
-Node/attribute/frame/validation-scratch/diagnostic sizes stay **20/20/12/8/36 B**
-on the tested native layout; retained and scratch widths are also checked by the
-32-bit consumed probes. No per-reference retained storage was added. The two
-reference fixtures reserve 2,000,000 B of output and 12 B of fixed scratch each;
-the comment and CDATA fixtures reserve 1,000,000 B of output and no nesting scratch.
-The attribute-reference fixture is self-closing; its measured-depth scratch
-reservation is conservative, not a claim that it needs an active frame.
-
-| Native session | Before B | After B | Increase B |
-| --- | ---: | ---: | ---: |
-| Fixed ordinary | 400 | 424 | 24 |
-| Fixed metered | 408 | 424 | 16 |
-| Runtime policy | 456 | 480 | 24 |
-
-Continuation, policy and factual-result state have costs even though record sizes
-are unchanged. Fixed rejecting profiles omit active deviation/warning counters;
-fixed silent profiles omit the active warning counter. Public result fields remain
-present. The unchanged-harness executable's `__text` grows from 335,212 to 338,996 B
-(+3,784 B); this includes benchmark/host code, not isolated library size. Source,
-bags, allocator overhead and process RSS are excluded from retained-storage figures.
-Growable peak heap/RSS and a full DOT performance rerun were not measured.
-
-## Scanner follow-up — 2026-09-27
-
-This subsection records the initial backend implementation at `ca718c8`.
-The review follow-up below removes the window cap from plain scanning only.
-
-Implemented `Policy.scanner = .scalar | .block`, scalar by default, with the
-same compile-time/runtime selection model as DOT. The standalone strict cursor
-also exposes `lexer.For(.block)`; `lexer.Lexer` keeps the scalar default.
-This is not DOT HTML-token integration.
-
-Both choices share one lexical state machine and the existing event-level grammar.
-The block path vectorizes text, names (including named references), quoted values,
-whitespace, comments and CDATA runs in windows of at most 64 bytes. A four-byte
-scalar probe avoids vector overhead for short runs; longer runs reexamine that
-fixed prefix. Vectors are target-width chunks with scalar tails, never padded
-out-of-bounds loads. Numeric-reference accumulation and syntax boundaries use the
-shared scalar transitions. No mask cache, token ring, source-sized index or extra
-per-node metadata is introduced. This is deliberately smaller than copying DOT's
-complete mask/state architecture into markup.
-
-The scanner reports boolean readiness and keeps its result in scanner-owned
-storage. Plain execution loops to the next token/finding, with tight scalar or
-vector runs. Either metering or cancellation selects the bounded implementation:
-scalar remains one-byte stepped; a block scan step covers at most a 64-byte
-window, yielding after a nonempty run before handling its boundary. An immediate
-boundary uses the scalar transition and may reread the first byte. Grammar events
-and closing-name comparisons retain their existing charging. Frontiers account
-for actual lookahead; partition invariance is guaranteed within each backend,
-not equal credit counts between backends. Runtime selection happens at operation/
-reset entry, never per byte.
-
-Verification: 425 tests pass in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall,
-plus all 13 compile-fail fixtures, examples, benchmark builds and consumed
-RISC-V32/Wasm32 fixed/runtime profiles. Differential tests exercise every prefix,
-raw random bytes, all byte predicates/vector lanes, shifted boundaries and tails,
-all reference policies, fixed/runtime/plain/bounded/cancellable paths, reset,
-cancellation, sink stopping, retained output and budget partitions.
-
-Native retained/scratch layouts remain node 20 B, attribute 20 B, frame 12 B and
-duplicate-key scratch 8 B. Scalar and block scanners have identical state sizes;
-fixed plain sessions shrink 424 → 416 B, fixed metered remain 424 B, and runtime
-sessions remain 480 B. Runtime-enabled code now includes the block specializations:
-the unchanged original benchmark harness's executable `__text` increases
-368,356 → 406,632 B (+38,276 B). These are whole-harness/host code sizes, not an
-isolated fixed-profile library measurement.
-
-The growth-memory observation is a separate concern. Zig 0.16's `ArrayList`
-already attempts allocator remapping before allocating/copying/freeing a larger
-pool. When remapping fails, old and new allocations temporarily coexist; capacity
-slack and final in-place trimming also affect peak/final ratios. The supplied
-21–47% figure was not independently reproduced here and is not a general bound.
-This change does not alter growth or reduce its peak. Callers needing predictable
-output allocation can already measure then supply exact fixed pools, paying for
-two passes. An arena can retain abandoned growth allocations until arena teardown.
-The suggested small-attribute duplicate-check fast path remains separate work;
-validation behavior and its scratch contract are unchanged.
-
-### Local performance measurements
-
-Apple M4 Pro, Zig 0.16.0, ReleaseFast, decimal MB/s; baseline `30e8da7`.
-Sources and output/scratch storage are prepared outside the timed region.
-Each process reports the median of nine 16-parse batches after five warm-up
-batches. Baseline below is the median of two isolated process results; the final
-updated build is one process result. Both use the unchanged baseline benchmark
-source. Preliminary runs and the initial block implementation are excluded.
-These are local synthetic measurements, not platform-independent guarantees or
-a reproduction of the externally supplied speedup ratios.
-
-Plain fixed-profile scalar parsing, cells **milliseconds / MB/s**:
-
-| Fixture | Before | After |
-| --- | ---: | ---: |
-| flat | 0.894 / 223.7 | 0.581 / 344.5 |
-| mixed | 3.901 / 192.3 | 2.357 / 318.1 |
-| text | 3.226 / 310.1 | 0.494 / 2023.1 |
-| deep | 0.333 / 210.3 | 0.238 / 293.5 |
-| attributes | 5.229 / 210.4 | 3.247 / 338.8 |
-| duplicates | 5.255 / 209.4 | 3.244 / 339.1 |
-| references | 8.028 / 211.8 | 3.801 / 447.2 |
-| attribute_references | 7.954 / 226.3 | 4.029 / 446.8 |
-| comments | 5.046 / 277.4 | 1.210 / 1157.2 |
-| cdata | 5.807 / 266.9 | 1.532 / 1011.6 |
-
-All 40 original parse measurements (10 fixtures × fixed/runtime-baseline/
-runtime-override/count-only) improve in this run, with a 2.28× geometric
-mean throughput ratio. This does not establish a before/after cancellable speedup:
-the original harness did not time cancellation-enabled parsing.
-
-The expanded current benchmark separately compares scalar and block in the same
-executable (one process, same nine-batch method). Plain fixed-policy cells are
-**milliseconds / MB/s**:
-
-| Fixture | Scalar | Block | Throughput ratio |
-| --- | ---: | ---: | ---: |
-| flat | 0.576 / 347.3 | 0.660 / 303.1 | 0.87× |
-| mixed | 2.298 / 326.4 | 2.658 / 282.1 | 0.86× |
-| text | 0.467 / 2143.5 | 0.106 / 9456.5 | 4.41× |
-| deep | 0.241 / 290.8 | 0.281 / 249.4 | 0.86× |
-| attributes | 3.127 / 351.8 | 3.548 / 310.1 | 0.88× |
-| duplicates | 3.098 / 355.0 | 3.482 / 315.9 | 0.89× |
-| references | 3.761 / 452.0 | 4.166 / 408.1 | 0.90× |
-| attribute_references | 3.907 / 460.7 | 4.194 / 429.2 | 0.93× |
-| comments | 1.203 / 1163.4 | 1.113 / 1257.6 | 1.08× |
-| cdata | 1.486 / 1042.8 | 1.433 / 1081.7 | 1.04× |
-| prose | 1.106 / 1658.8 | 0.374 / 4911.8 | 2.96× |
-| long_names | 0.236 / 2771.5 | 0.113 / 5800.9 | 2.09× |
-| long_values | 1.096 / 1793.0 | 0.390 / 5041.4 | 2.81× |
-
-The block backend gains most on long uninterrupted runs and remains slower on
-dense short-tag/attribute inputs. That is why it is opt-in, not the new default.
-For cancellation-enabled execution with a real polled hook, scalar → block
-throughput was 318.3 → 8,074.2 MB/s on long text and 309.9 → 3,588.4 MB/s on prose,
-but 208.0 → 177.9 MB/s on flat tags and 197.2 → 169.3 MB/s on short attributes.
-Those compare the two new backends, not new versus old cancellable parsing.
-No peak growable-heap/RSS, non-native execution performance, full DOT throughput
-rerun, or small-attribute validation improvement is claimed.
-
-## Scanner review follow-up — 2026-09-27
-
-- Plain block scanning now continues through the full uninterrupted run. Only
-  metered/cancellable block calls retain the 64-byte window cap. This removes
-  periodic scalar state dispatch and repeated short probes on long plain runs.
-  Token/finding boundaries and control-byte/reference checks are unchanged.
-- In plain mode, when less than a native vector remains, the scalar tail starts
-  after the successful short probe rather than checking those bytes twice. Bounded
-  consumption/frontiers and work partitioning stay unchanged. Plain short source
-  tails exit before the vector loop; plain scanning also checks its first vector before
-  entering the long-run loop. These fast exits avoid the short-comment regression
-  measured in the initial unbounded-loop implementation. The block tail and the
-  scalar backend's original loop stay separate to preserve both fast paths.
-  Bounded scanning retains its original probe/tail path, including possible
-  repeated probe bytes. Extending the tail optimization to that path caused a
-  repeatable roughly 9% long-text regression locally, so it is not included.
-- Markup's private execution variants use DOT's three-bit layout (cancellation,
-  metering, backend), with matching union order. Runtime dispatch still occurs
-  only at operation/reset entry; fixed profiles remain specialized.
-- Reset captures its active variant by pointer when retrieving caller memory.
-  This removes the by-value capture; no claim is made that every optimized build
-  previously emitted a physical whole-session copy.
-- The shared BOM/CDATA marker counter is named `marker_index` and documents
-  its mutually exclusive lifetimes and u3 range. No new state field is added.
-
-The trusted-document contract is unchanged: arbitrary invalid leaf encodings,
-spans or delimiters are not accepted via public-field construction. No fallback
-silently changes an unknown kind into text. Lexical token kinds and retained
-node kinds remain distinct concepts; their existing explicit mapping is retained.
-Diagnostic bags also keep stop-at-capacity behavior. The warning example now
-states its continuing-sink precondition, and an exact-one-warning test contrasts
-fixed-stop, growable, discard and explicit omit destinations.
-
-Tests additionally cover all 64 old/new runtime-variant reset pairs, memory reuse,
-polling and metering selection, long runs across grammar contexts, and every
-short-tail boundary for every run classifier in both execution modes.
-
-Verification: 430/430 tests pass in Debug, ReleaseSafe, ReleaseFast and ReleaseSmall.
-Examples, benchmark compilation, all 13 expected compile failures, and the
-RISC-V32/Wasm32 freestanding fixed/runtime probes pass. Formatting and diff checks
-also pass. The default scalar loop remains local: extracting its tail into the
-block helper added native induction instructions in a trial. The final scalar
-`stepReady` instruction sequence matches the baseline apart from relocated
-code/data addresses in the native benchmark binary. The cancellation-enabled
-block scanner's instruction sequence is likewise preserved after excluding the
-bounded-tail optimization.
-
-Native sizes are unchanged: Node/Attribute 20 bytes each, validation key 8 bytes,
-parser frame 12 bytes, Diagnostic 36 bytes; fixed/bounded/runtime sessions
-416/424/480 bytes. No new buffers or allocation paths were added. The complete
-comparison benchmark's `__text` section is 515,752 bytes versus 514,252 bytes
-(+1,500 bytes, about 0.29%); this is not the size of a minimal consumer binary.
-Peak growable allocation and process RSS were not measured by this follow-up.
-
-### Follow-up measurements
-
-Apple M4 Pro, Zig 0.16.0, ReleaseFast; baseline `ca718c8`. The same
-13-fixture benchmark was built against both revisions, with only sampling reduced
-to seven eight-parse batches after two warm-up batches. Each reported value is
-the midpoint of two isolated process medians for that build; compilation did not
-overlap timed runs. Rejected intermediate implementations are excluded.
-
-Plain fixed-profile **block** parsing, cells **milliseconds / decimal MB/s**:
-
-| Fixture | Before | After | Throughput change |
-| --- | ---: | ---: | ---: |
-| flat | 0.623 / 320.9 | 0.596 / 335.6 | +4.5% |
-| mixed | 2.591 / 289.6 | 2.455 / 305.4 | +5.5% |
-| text | 0.098 / 10207.4 | 0.080 / 12460.8 | +22.1% |
-| deep | 0.268 / 262.0 | 0.253 / 276.7 | +5.6% |
-| attributes | 3.500 / 314.3 | 3.369 / 326.6 | +3.9% |
-| duplicates | 3.492 / 315.0 | 3.378 / 325.6 | +3.4% |
-| references | 4.218 / 403.0 | 4.112 / 413.4 | +2.6% |
-| attribute_references | 4.132 / 435.6 | 4.112 / 437.8 | +0.5% |
-| comments | 1.128 / 1240.8 | 1.115 / 1254.8 | +1.1% |
-| cdata | 1.450 / 1069.6 | 1.397 / 1109.8 | +3.8% |
-| prose | 0.370 / 4956.4 | 0.281 / 6528.1 | +31.7% |
-| long_names | 0.116 / 5674.6 | 0.093 / 7043.1 | +24.1% |
-| long_values | 0.400 / 4915.1 | 0.304 / 6473.0 | +31.7% |
-
-The geometric mean throughput gain across these 13 cases is 10.3%; the four
-long-run cases improve 22–32%. Runtime-enabled baseline selection also retains
-those long-run gains (15–35% across those four cases). Small positive changes
-should not be read as universal or statistically established speedups. Bounded
-block timings ranged from about -4.8% to +7.1% across fixtures; no bounded-path
-speedup is claimed.
-
-The broad harness's first scalar/flat case was unstable and reported an 11.1%
-drop in this pair. A separate flat-only, warmed steady-state check used eight
-64-parse warm-up batches followed by seven measured 64-parse batches, in
-before/after/after/before order. Fixed scalar measured 363.3 -> 364.4 MB/s
-(0.551 -> 0.549 ms); fixed block measured 322.0 -> 338.9 MB/s
-(0.622 -> 0.590 ms). That check does not reproduce the apparent scalar regression.
-It is a separate measurement, not a replacement inserted into the broad table.
-These remain local synthetic observations, not a guarantee of end-to-end parity
-on every input or target.
-
-## Slice 4b verification and costs — 2026-09-27
-
-Verification: **464/464 tests pass in Debug, ReleaseSafe, ReleaseFast and
-ReleaseSmall**, including 75 standalone consumer tests. Examples, benchmark
-compilation, 14 expected compile failures and consumed RISC-V32/Wasm32 fixed and
-runtime probes pass. Coverage includes XML character-range boundaries, Unicode
-names and invalid encodings, catalog case/context, literal malformed candidates,
-all nine name/catalog severity combinations with encoding/duplicate findings,
-source-order ties, fixed/runtime parity, scalar/block and bounded parse output,
-allocation failure, capped/omitting/stopping sinks, and cancellation inside long
-names/reference candidates. Seeded mixed-context tests exercise counts and order.
-
-Native Node/Attribute/Diagnostic sizes remain 20/20/36 bytes. The nesting frame
-stays 12 bytes, duplicate-key scratch 8 bytes per entry, ValidationResult 32 bytes,
-and fixed/bounded/runtime sessions 416/424/480 bytes. New checks add no retained
-pool, reference index or required scratch. Name/catalog-only validation succeeds
-with a failing allocator. Optional diagnostic retention still has its own cost;
-independent findings can overlap and consume the configured bag limit sooner.
-Peak process RSS and growable allocator overhead were not measured in this slice.
-
-Fixed policy selection is explicitly inlined so disabled passes are eliminated
-during semantic analysis, not dependent on optimizer inlining heuristics. Binary
-inspection confirms that fixed-disabled name/reference helpers are absent from
-the comparison executable; runtime-selectable helpers remain. The same consumed
-benchmark's native `__text` grows from 593,260 to 601,672 bytes (+8,412 bytes,
-1.42%); this includes runtime validators and host/benchmark code, not the size
-of a minimal fixed-profile consumer. Parser/scanner source is unchanged.
-
-### Enabled-check measurements
-
-Apple M4 Pro, Zig 0.16.0, ReleaseFast. `zig build bench-markup
--Doptimize=ReleaseFast -- --rules-only` times validation separately: parsing,
-source/pool construction and scratch allocation are outside the timer. Five
-warm-up batches precede nine measured batches of 16 validations; values are one
-process's median. The discard sink counts findings without retaining them; these
-are not full parse-plus-bag timings. Cells are **milliseconds / decimal MB/s**.
-
-| Fixture / enabled checks | Source bytes | Fixed policy | Runtime policy | Scratch bytes / findings |
-| --- | ---: | ---: | ---: | ---: |
-| ASCII element/attribute names | 1,400,000 | 1.987 / 704.5 | 2.065 / 677.8 | 0 / 0 |
-| Unicode element/attribute names | 1,100,000 | 1.395 / 788.3 | 1.554 / 708.0 | 0 / 0 |
-| XML reference catalog | 1,250,000 | 1.382 / 904.8 | 1.456 / 858.3 | 0 / 100,000 |
-| Names, catalog, UTF-8 and duplicates | 1,200,000 | 3.438 / 349.0 | 3.556 / 337.5 | 16 / 250,000 |
-| Names enabled; plain text with no references | 1,750,000 | 0.028 / 62,922.5 | 0.025 / 69,216.5 | 0 / 0 |
-| Names enabled; tolerated malformed candidates | 900,000 | 1.000 / 899.9 | 1.014 / 888.0 | 0 / 0 |
-
-The prose case measures a warmed delimiter search with no names to decode, not
-general Unicode validation throughput. Name checking still must search text/value
-spans for reference names; disabling the catalog does not remove that scan. These
-fixtures differ in shape and findings, so their throughput is not a direct
-ASCII-versus-Unicode or fixed-versus-runtime universal cost ratio.
-
-### Default-path comparison
-
-Baseline `a897745` versus final 4b code, using the **same unchanged 13-fixture
-benchmark source from the baseline** for both executables. Two isolated process
-medians per build were collected in before/after/after/before order, with no
-compilation overlapping timings. Each process uses five warm-up batches and nine
-measured batches of 16 operations. Percentages below are geometric means of
-per-fixture throughput ratios, using the midpoint of each build's two medians.
-These local measurements are not an update to the standard-machine baseline.
-
-| Parsing mode | Scalar throughput change | Block throughput change |
-| --- | ---: | ---: |
-| Fixed profile | +0.98% | -0.33% |
-| Runtime enabled, compiled baseline selected | +1.43% | -0.78% |
-| Runtime enabled, explicit standard-policy override | -0.39% | -0.68% |
-| Count-only | -1.46% | -0.73% |
-| Cancellable | +0.40% | +0.61% |
-
-Representative cases and the larger losses are retained below rather than hidden
-by the means. Cells are **milliseconds / decimal MB/s**, each the midpoint of the
-two independently reported process medians (rounded latency is not used to
-reconstruct throughput).
-
-| Fixture / mode | Before | After | Throughput change |
-| --- | ---: | ---: | ---: |
-| flat / scalar fixed | 0.564 / 354.9 | 0.563 / 355.4 | +0.1% |
-| mixed / scalar fixed | 2.327 / 322.4 | 2.296 / 326.7 | +1.3% |
-| text / scalar fixed | 0.575 / 1773.2 | 0.477 / 2097.9 | +18.3% |
-| attribute references / scalar fixed | 4.049 / 444.6 | 4.213 / 427.4 | -3.9% |
-| flat / block fixed | 0.609 / 328.2 | 0.598 / 334.8 | +2.0% |
-| text / block fixed | 0.080 / 12518.1 | 0.083 / 12126.3 | -3.1% |
-| references / block runtime override | 4.117 / 413.0 | 4.324 / 393.2 | -4.8% |
-| CDATA / scalar count-only | 1.463 / 1059.9 | 1.600 / 973.3 | -8.2% |
-| prose / block count-only | 0.254 / 7238.8 | 0.282 / 6565.3 | -9.3% |
-
-Default duplicate-only validation is near the baseline: unique-attribute input
-829.4 -> 827.9 MB/s (1.326 -> 1.329 ms), duplicate input 1197.1 -> 1190.0 MB/s
-(0.919 -> 0.924 ms), each with unchanged 24-byte scratch. Existing fixed UTF-8
-checks became faster in these executables after exposing fixed settings during
-semantic analysis: ASCII 2083.0 -> 4110.5 MB/s, Unicode 468.1 -> 876.6 MB/s and
-invalid bytes 340.8 -> 790.3 MB/s. This is not a new UTF-8 algorithm or a universal
-speedup guarantee; the same diagnostic counts and semantics are exercised.
-
-An earlier development build, before explicit policy inlining, showed about 5%
-scalar-runtime geometric-mean loss and a roughly 21% long-text loss in the broad
-harness. A separate warmed parse-only consumer did not reproduce that large
-loss (fixed long text about unchanged, runtime -2.6%); those trial measurements
-are not substituted into the final table. The final scalar scanner has the same
-1,233 instructions as the baseline after accounting for relocated code/data
-addresses. The parser source was not changed to tune one executable's layout.
-The variation of even the unchanged baseline and these fixture-level differences
-preclude a universal zero-regression or parsing-speedup claim. Recheck actual
-consumer binaries and representative inputs before drawing such a conclusion.
-
-## Slice 4b review hardening — 2026-09-27
-
-The review fixes retain the trusted-document boundary, not an arbitrary-pool
-validation or legacy leaf representation:
-
-- Name/reference walks assert consumed node metadata before `kind()` in safety
-  builds, check attribute metadata even with duplicates off, and assert that the
-  attribute cursor consumed the whole pool before claiming completion. Source and
-  pool length assertions cover the enabled paths. Encoding-only validation still
-  does not audit unused pools; all-off validation still does not inspect input.
-- Cancellation uses a local u32 threshold every 64 scanned bytes, allowing at most
-  three additional bytes to complete a scalar/reference delimiter. Long names and
-  malformed reference candidates also poll; reference-free text uses bounded
-  delimiter searches. Diagnostic stops remain immediate. This is cooperative
-  validation, not a metered/sorting/allocator deadline guarantee.
-- Shared inline `utf8.decode` returns scalar and length in one packed 4-byte
-  temporary. `sequenceLength` wraps it for encoding-only consumers. Name and
-  encoding checks no longer implement decoding independently. An intermediate
-  non-inlined helper caused an out-of-line call and a large Unicode slowdown;
-  ordinary padded returns also slowed name checking. Neither form was retained.
-- Duplicate emission has one definition, preserving encoding-first ties, related
-  spans, severity, factual totals and sink stops. The default attribute-only walk
-  remains separate from the optional forest walk.
-- `untrusted` budgets are an explicit compile-time field list checked against
-  every policy limit. A temporary negative compilation adding a new limit without
-  a budget fails with `untrusted preset needs an explicit budget for future_limit`.
-
-Verification: **469/469 tests pass in Debug, ReleaseSafe, ReleaseFast and
-ReleaseSmall**, including 78 standalone consumer tests. Five separate-process
-assertion probes run in both safety modes: reordered attributes, short quoted
-values, invalid leaf discriminator, out-of-bounds node span and orphan attribute.
-They require rejection, not successful validation of corrupt metadata. Shared
-decoder boundaries, chunk boundaries, long scans, sink stops and fixed/runtime
-cancellation parity are covered. Examples, benchmark compilation, 14 expected
-compile failures and consumed RISC-V32/Wasm32 probes pass.
-
-Node/Attribute/Diagnostic remain 20/20/36 bytes; key scratch remains 8 bytes,
-nesting frames 12 bytes, ValidationResult 32 bytes, and fixed/bounded/runtime
-sessions 416/424/480 bytes. No retained allocation or scratch requirement is added.
-Polling state is local to active validation scans, not stored per node or
-reference. Peak process RSS and allocator overhead were not measured here.
-
-### Review-fix measurements
-
-Apple M4 Pro, Zig 0.16.0, ReleaseFast; baseline `9e94f92` versus the review fixes.
-Both use the same extended `bench/markup.zig` with `--validation-only`. Compilation
-finished before timings. Two isolated process medians per build, in
-before/after/after/before order; each has five warm-up batches and nine measured
-batches of 16 validations. Cells below are midpoints of the two reported medians,
-**milliseconds / decimal MB/s**. Parsing, construction, allocation and diagnostic
-retention are outside the timer. The observable callback increments a volatile
-counter and never requests cancellation; an atomic/deadline callback may cost more.
-
-All cancellation fixtures below are 100,000 source bytes: plain text for reference
-and encoding checks, one long ASCII element name for name checking.
-
-| Cancellable validation | Before | After | Calls before → after |
-| --- | ---: | ---: | ---: |
-| Reference scan / fixed | 0.0745 / 1351.4 | 0.0065 / 14866.4 | 100002 → 1565 |
-| Reference scan / runtime | 0.0710 / 1407.4 | 0.0070 / 15140.1 | 100002 → 1565 |
-| UTF-8 scan / fixed | 0.0930 / 1074.7 | 0.0720 / 1384.9 | 100001 → 1564 |
-| UTF-8 scan / runtime | 0.1570 / 636.2 | 0.0340 / 2934.7 | 100001 → 1564 |
-| Name scan / fixed | 0.2435 / 410.8 | 0.2250 / 444.7 | 99999 → 1565 |
-| Name scan / runtime | 0.2415 / 414.2 | 0.2275 / 440.4 | 99999 → 1565 |
-
-Callback counts fall about 64-fold. Throughput improves about 11×/10.8× for the
-reference scan, 1.29×/4.61× for encoding, and 1.08×/1.06× for names (fixed/runtime).
-These are validation-only synthetic observations, not parsing speedups or an
-exact callback-count API. Name classification, and UTF-8 decoding on Unicode
-input, still run; fewer callbacks do not imply a proportional total speedup.
-
-Representative non-cancellable checks, including the larger losses, remain visible:
-
-| Validation / policy | Before | After | Throughput change |
-| --- | ---: | ---: | ---: |
-| ASCII names / fixed | 1.9205 / 729.4 | 1.9355 / 723.5 | -0.8% |
-| Unicode names / fixed | 1.3730 / 801.0 | 1.3385 / 821.8 | +2.6% |
-| Unicode names / runtime | 1.4935 / 736.6 | 1.5210 / 723.3 | -1.8% |
-| Unicode encoding / fixed | 0.6225 / 964.4 | 0.6230 / 963.1 | -0.1% |
-| Unicode encoding / runtime | 0.6780 / 884.7 | 0.6780 / 884.9 | +0.0% |
-| Encoding + duplicates / fixed | 1.3115 / 800.8 | 1.3385 / 784.6 | -2.0% |
-| All checks / fixed | 3.1805 / 377.4 | 3.1950 / 375.6 | -0.5% |
-| 100 KB plain reference-free search / fixed | 0.0010 / 71530.8 | 0.0015 / 67699.1 | -5.4% |
-
-The last case is an approximately 1–2 microsecond warmed search, so coarse reported
-latency and process variation matter. Across all 20 non-cancellable rules/encoding
-rows in the harness, changes range from -2.0% to +4.5%; the smaller 100 KB search
-probe is listed separately above. No universal zero-regression claim is made.
-
-A separate DOT consumer checked the shared decoder with a single quoted node
-containing 50,000 repetitions of ASCII `x`, `é東京😀`, or byte `FF`. It uses the same
-alternating order, five warm-ups/nine measured batches, 32 validations per batch,
-and no timed parsing. Unicode fixed throughput is 948.6 → 948.2 MB/s; runtime
-943.8 → 948.4 MB/s. Invalid-byte fixed throughput is 354.3 → 359.0 MB/s; runtime
-235.0 → 247.7 MB/s. The first ASCII after-process was unstable (2389.3 MB/s versus
-4498.3 in the second; before 4404.0–4498.7), so it does not support a reliable ASCII
-change estimate. These measurements do not update the standard-machine baselines
-or substitute for end-to-end DOT/markup parsing benchmarks.
+| Independent structural engine | Implemented | Text, multiple roots, matching/self-closing elements; [parser](../../src/markup/parser.zig), [tests](../../tests/markup.zig) |
+| Attributes, references, comments, CDATA | Implemented | Retained spelling/order, malformed-reference policy; [content tests](../../tests/markup_content.zig) |
+| Optional validation | Implemented | Duplicate attributes, UTF-8, XML 1.0 names, XML predefined references; [rules tests](../../tests/markup_rules.zig) |
+| Storage and execution | Implemented | Growable/fixed/count-only paths; scalar/block scanners; bounded and cancellable fixed parsing; [budget tests](../../tests/markup_budgets.zig) |
+| Diagnostics and resource hardening | Implemented | Shared reporting/rendering, capped bags, markup untrusted preset, suggested fixes; [diagnostic tests](../../tests/markup_diagnostics.zig) |
+| Structural and malformed-header recovery | Implemented | Diagnostics only, no partial tree; [recovery tests](../../tests/markup_recovery.zig), [header tests](../../tests/markup_header_recovery.zig) |
+| Independent local validation | Implemented | Public checked scopes and source traversal without a tree; [scope tests](../../tests/markup_scopes.zig) |
+| DOT passthrough recognition | Implemented | Every ID position, concatenations, parts and explicit decoding; [identifier tests](../../tests/html_identifiers.zig) |
+| Delayed and one-shot during-DOT integration | Implemented | Prepared profiles, original-source diagnostics, one shared destination, independent error policies; [integration tests](../../tests/markup_integration.zig), [composition](../../src/dot/composition.zig) |
+| Workspace reuse and silent unsupported reporting | Implemented | Borrowed per-call results, reusable buffers, no user-facing finding construction on the silent path; [workspace tests](../../tests/markup_workspace.zig), [error-policy tests](../../tests/error_policy.zig) |
+| Specialized Graphviz / extended validation | Agreed direction; not implemented | Vocabulary, attributes, placement, context selection and extended rules need design |
+| Dialect-specific parsing / custom catalogs | Under discussion; not implemented | Void elements, rule binding and compatibility scope are not implied by structural parsing |
+| Resumable and fixed-buffer during-DOT composition | Agreed direction; not implemented | Shared work accounting and composed lifetimes need a dedicated contract |
+| Deeper processor execution / built-in string processor | Future design; not implemented | Nested policy preparation exists; automatic recursive scheduling does not |
+| Transcoding, summary index and partial-tree publication | Not implemented | Encoding constraints are agreed; maps/summaries need design; partial trees are deferred |
+
+There is no new implementation commitment or active coding slice implied by this
+documentation cleanup. Detailed processor obligations and remaining scheduling
+questions are in [PROCESSOR_CONTRACT.md](PROCESSOR_CONTRACT.md).
+
+## Current structural contract
+
+The public grammar is an XML-like fragment subset, not full XML or browser HTML:
+
+- Empty, text-only and multiple-root inputs are supported.
+- Element names match byte-for-byte and case-sensitively. Attributes require
+  quoted values; all occurrences and their order are retained.
+- References remain inside text/value spans. Named-reference recognition does
+  not require a definition; catalog checking is separate. Numeric references are
+  checked without expansion. Tolerated malformed references treat the offending
+  ampersand as literal text without swallowing a subsequent tag or value boundary.
+- Comments and CDATA are distinct leaves. Processing instructions and declarations
+  are unsupported; there is no DTD, external-entity loading or browser repair.
+- Raw non-ASCII bytes remain unchanged. Whole-source UTF-8 checking is optional;
+  Unicode name checking decodes only names and does not turn on other rules.
+
+The retained tree uses preorder subtree intervals and a separate owner-indexed
+attribute pool. This replaces the old provisional parent/child/sibling design;
+it is not an outstanding representation decision. Nodes and attributes are
+20 bytes each and open-element frames 12 bytes on the measured targets. An
+8-byte name span is not the complete frame. Keep size assertions and measure
+target-specific layouts instead of presenting these figures as portable ABI.
+
+### Validation and coverage
+
+Names, references, duplicate attributes and encoding retain independent
+severities, completion and counts. Overlapping findings are not deduplicated by
+silently weakening one rule. Name-local UTF-8 work does not transcode stored data.
+Reference checking can rescan the full text/value span; optional checking is
+not free merely because references have no retained index.
+
+Opening headers, names, values and text can be checked independently of matching
+closing tags. `validateScope[In]` audits caller-built spans and header metadata
+in every build mode before allocation/checking; invalid metadata yields
+`invalid_scope`, not a source diagnostic. Scanner-produced internal views use
+the trusted path. A caller still owns lifetimes and truthful scope descriptions.
+
+`validateSource[In]` has no element stack and does not emit syntax findings.
+It validates recognizable local content despite rejected enclosing structure,
+synchronizing safe malformed headers independently of the parse stopping policy.
+It does not recheck closing names; callers may explicitly request a
+`closing_name` scope. No successful partial document is manufactured.
+
+Source validation runs whole-source encoding first, then local findings in
+encounter order. That is not global source order across checks. Its
+`incomplete: u32` is the earliest coverage gap, not a resume cursor; later
+independent regions may already be checked. Fragment wrappers rebase that offset
+and diagnostic spans, while tree spans remain local.
+
+Source traversal enforces `max_source_bytes` and supplied scratch capacity;
+node/attribute/nesting parse limits are not source-validation work budgets.
+Markup validation is cancellable but not resumable or credit-metered. DOT
+validation is neither cancellable nor credit-metered. Sorting/allocation have
+their documented costs; cancellation is not a hard per-comparison time bound.
+
+### Recovery and acceptance
+
+`on_error = .collect` is the default; `.fail_fast` is explicit. Recovery finds
+safe continuation points for diagnostics. It does not accept rejected syntax,
+guess typos, invent delimiters or publish a repaired/partial tree.
+
+For a mismatched closer, search nearest open ancestors by exact spelling, unwind
+through a match, or discard an unmatched closer. Aggregate ancestor lookup is
+bounded by source length; exhausted recovery work is a resource-limit result,
+not permission for quadratic searching. EOF reports remaining open elements.
+
+Selected attribute-bearing opening-header errors synchronize at explicit,
+quote-aware `>` or `/>` boundaries. Preserve the pending name and the actual
+delimiter's stack effect. Uncertain boundaries remain terminal; skipped regions
+are not reported as validated or accepted. Staged tree output aborts once, while
+safe grammar traversal and factual counters can continue. Sink/storage failures,
+cancellation and enforced limits still stop affected work.
+
+Partial-tree publication remains a separate deferred design. Local validation
+already serves tooling without weakening the current complete-document contract.
+
+### Integration, ownership and costs
+
+DOT recognizes every HTML operand, not just label attributes. Its low-level
+`none | passthrough` policy never selects an inner implementation. Bound
+processors are compile-time choices; optional runtime patches configure only
+that selected implementation.
+
+Delayed calls select operands explicitly. One-shot composition checks all
+recognized HTML operands allowed by DOT's gate, before the next grammar
+transition, then validates DOT after successful outer parsing. Parent and child
+use independent `on_error` policies; component-specific cancellation hooks do
+not imply a shared cancellation/budget guarantee.
+
+One workspace reuses tree, nesting and validation buffers. Results borrow it
+until the next call or deinitialization; DOT consumes them immediately and never
+deinitializes individual results. Independently retained trees use explicit
+allocated or fixed-buffer calls. Fixed-buffer views expire on reuse, not only
+release. Neither form changes the source-lifetime requirement.
+
+Reuse reduces allocation churn, not necessarily peak memory. An early large
+fragment can keep high-water capacity alive while the outer document grows.
+There is no mandatory child-tree/result array or per-identifier processor state.
+A composed bag contains only its bound diagnostic variants; ordinary bags are
+not inflated by unrelated processors. See the [processor contract](PROCESSOR_CONTRACT.md)
+for terminal-stop acknowledgement and silent-unsupported semantics.
+
+## Remaining design
+
+### Graphviz and extended rules
+
+The agreed processing names are `none`, `passthrough`, `structural`,
+`extended` and `graphviz`, not five values of a DOT-owned enum.
+DOT owns the first two. Today's markup engine provides structural processing;
+the latter two remain future processor-owned behaviour, not callable mode values.
+
+Graphviz checking needs tag vocabulary, attributes and parent/child placement,
+not just a whitelist. It must apply only where Graphviz interprets an ID as a
+label. `n:<p>` names port `p`; `label=<p>` contains text `p`;
+`label=<<p>x</p>>` contains an element. Port-reference resolution belongs to
+later graph semantics, not structural recognition.
+
+Before implementation, specify the supported Graphviz compatibility target,
+label-context selection, concrete rules, diagnostics and bounded-work/storage
+costs. The extended vocabulary needs an actual consumer and explicit tag,
+attribute and nesting rules; “more HTML” is not a complete contract.
+
+### Dialect parsing and custom rules
+
+A compile-time dialect rule could recognize `<br>` as void at header completion,
+without pushing an open frame or inventing a closing tag. This is parsing
+behaviour, not a validation severity. The structural baseline stays unchanged
+until void-name selection, case/context rules, explicit closers and policy
+surface are agreed.
+
+Unquoted/empty attributes and further HTML conveniences likewise need explicit
+grammar contracts. A defined subset is not full browser tree construction.
+Independent name/reference choices must not impose XML rules on other dialects.
+Additional catalogs and custom rule-binding APIs remain open; no external lookup
+or entity-expansion facility follows from a catalog extension.
+
+### Optional summaries and retention
+
+A per-identifier summary index is still only a proposal. Boundary scanning can
+supply raw ranges and lexical facts, not element depth, counts or reference
+facts. Those require context-aware markup processing, with its cost charged even
+when no tree is retained. Uncomputed fields must be absent/unknown, not zero.
+
+`<a/><b/>` has element depth 1; `<a><b/></a>` has depth 2. Both DOT envelopes
+reach angle-counter depth 2. A separate `max_elements` limit, summary layouts,
+caching owners/lifetimes and public event consumers need their own designs.
+Current count-only measurement is not a public event API.
+
+### Encoding adapters
+
+UTF-16/32 adapters are not implemented. Future UTF-8 working buffers must preserve
+original encoding, byte order and BOM provenance once per input, including
+whether it was detected or supplied. Converted bytes cannot reveal their old
+encoding; unknown provenance stays unknown.
+
+Original bytes or a live source handle are needed for exact reproduction.
+Replacement, normalization and discarded information must be reported rather
+than called lossless. Conversion error policy, metadata and ownership APIs remain
+open. Original-file diagnostics/fixes require a source map; a constant fragment
+origin is not sufficient. Without a map, identify working-buffer coordinates.
+
+Account separately for conversion CPU, output-buffer size, original-buffer
+lifetime, mapping storage/rescans and dual-buffer peak memory. Bound original
+and converted sizes. Unchanged raw-byte paths must not acquire these costs.
+
+### Composition and release choices
+
+Shared-budget/fixed-storage composition, recursive execution and a built-in
+string processor remain in the [processor design](PROCESSOR_CONTRACT.md#remaining-design).
+The broader profile/API redesign is still a discussion, not part of the
+implemented workspace change. Markup package/version independence and its
+release relationship with DOT remain open in Q40; no next version is assigned.
+
+## Verification and performance gates
+
+Completed slices have regression coverage in the linked tests; historical test
+counts and local before/after tables are in Git, not current verification claims.
+This documentation reconciliation does not rerun or certify those measurements.
+
+Keep the standard-machine gate open. Local tests have shown fixture-specific
+regressions/noise, especially in cancellable and runtime-selectable paths;
+aggregate gains do not establish per-profile parity. Compare both scanners,
+fixed/runtime settings, plain/cancellable/bounded parsing, invalid-input recovery
+and enabled/disabled checks with the same compiler, host and harness.
+
+Use `bench/markup.zig`, `bench/composition.zig` and `bench/policies.zig`.
+Report throughput/latency, allocation calls, peak requested live bytes, retained
+capacity, session/diagnostic layouts and binary size separately. RSS and allocator
+internal peaks are not interchangeable with instrumented requested bytes.
+
+One useful existing reference: the 2026-10-03 native arm64 / Zig 0.16.0
+ReleaseFast workspace comparison against `15bbc96` reduced allocations for
+1,000 small valid labels from 4,003 to 7. The large-label-first fixture increased
+peak requested live bytes from 1,389,832 to 1,670,604. These local fixtures explain
+the trade-off, not a universal speed or RAM guarantee or an official baseline.
+
+The measured DOT EOF-guard/increment optimization is implemented. The proposed
+markup safe-loop and metered-arithmetic rewrites were not retained after mixed
+local results. Revisit them only with separate measurements and differential
+tests; do not assume an optimization reported on another build is a free win.

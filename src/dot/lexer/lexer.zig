@@ -20,7 +20,7 @@
 //! long-identifier fixture). Block state is 160 B against 56 B and its
 //! code 6–9 KB larger per build; without a vector unit its compares lower
 //! to byte loops, 1.9x slower on wasm32. Hence scalar everywhere, block
-//! opt-in; see `docs/internal/OpenQuestions.md` (Q38).
+//! opt-in; see `docs/DESIGN.md` ("The scalar scanner is the default").
 
 const std = @import("std");
 const policy = @import("../policy.zig");

@@ -1,5 +1,5 @@
 //! Public integration tests. These import only the `dot_parser` module,
-//! exactly like an external consumer (PROJECT_STRUCTURE.md, test level 2).
+//! exactly like an external consumer (docs/ARCHITECTURE.md, test level 2).
 
 const std = @import("std");
 const dot = @import("dot_parser");
@@ -584,7 +584,7 @@ test "the discard sink makes ignoring diagnostics explicit" {
 }
 
 // ---------------------------------------------------------------------------
-// Corpus tests (PROJECT_STRUCTURE.md test level 3): reusable DOT inputs,
+// Corpus tests (docs/ARCHITECTURE.md test level 3): reusable DOT inputs,
 // grouped by expected outcome class.
 // ---------------------------------------------------------------------------
 
@@ -813,7 +813,7 @@ test "markup-disabled corpus names the exact unsupported feature" {
 }
 
 // ---------------------------------------------------------------------------
-// Fuzzing (PROJECT_STRUCTURE.md test level 4). Runs as a smoke test in a
+// Fuzzing (docs/ARCHITECTURE.md test level 4). Runs as a smoke test in a
 // normal `zig build test`. Verified real-fuzzing invocation on Zig 0.16.0:
 //
 //     zig build -Doptimize=ReleaseFast test --fuzz=1000

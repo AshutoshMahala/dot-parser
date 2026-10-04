@@ -389,7 +389,7 @@ and the planned markup subsystem are deferred until after this release.
   mismatches. `machine_applicable` fixes may be applied
   unattended; `maybe` fixes are offers. Both renderers print them.
   `Diagnostic` is 80 bytes on the measured native target with the field and
-  offset-only spans; see [baselines](docs/BASELINES.md).
+  offset-only spans; see [performance](docs/PERFORMANCE.md).
 - `W.Syntax.Numeral.033`: numerals running into a letter or second dot
   (`1e3`, `1.2.3`) warn, matching Graphviz, and the parse continues. First
   use of the warning severity.
@@ -422,7 +422,7 @@ and the planned markup subsystem are deferred until after this release.
 
 ### Performance
 
-The [0.3.0 baseline](docs/BASELINES.md#030-baseline-2026-09-19) compares the
+The [0.3.0 baseline](docs/PERFORMANCE.md) compares the
 unchanged release implementation with 0.2.0 on the project's standard benchmark
 machine: five invocations per revision/backend/fixture, each with two warm-ups
 and nine measured rounds. These results replace the intermediate development
@@ -609,7 +609,7 @@ borrowed syntax document.
   compile-time-sized `FixedDocumentStorage`; no allocator, no `deinit`.
 - Uniform reporting surface: small outcome values plus caller-owned
   diagnostic sinks (`FixedDiagnosticBag` or bring-your-own); WDP
-  structured codes with typed payloads (`docs/OUTCOMES.md`).
+  structured codes with typed payloads (`docs/ERRORS.md`).
 - Out-of-the-box console renderer: message-first boxes with annotated
   source excerpts, opt-in ANSI severity colors and verbose WDP identity;
   ASCII style for plain terminals.
@@ -620,4 +620,4 @@ borrowed syntax document.
   (riscv32, Cortex-M0+) with no OS, filesystem, or network dependency.
 - Corpus test suite with per-fixture expectations, fuzz harness with
   determinism checks, runnable examples, and recorded performance
-  baselines (`docs/BASELINES.md`).
+  baselines (`docs/PERFORMANCE.md`).
