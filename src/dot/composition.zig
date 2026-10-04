@@ -1,5 +1,5 @@
-//! Opt-in, one-shot composition. Children run on recognized raw HTML operands
-//! before DOT parsing completes. No registry, retained child array or shared
+//! Opt-in, one-shot composition. With markup = process, children run on recognized
+//! raw HTML operands before DOT parsing completes. No registry, retained child array or shared
 //! work-budget claim. Ordinary profiles do not instantiate this module's types.
 const std = @import("std");
 const support = @import("parser_support");
@@ -18,13 +18,18 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
         if (!@hasDecl(Child.Prepared, "initWorkspace")) @compileError("bound markup processor must expose Prepared.initWorkspace");
         if (!@hasDecl(Child.Workspace, "parseAndValidate") or !@hasDecl(Child.Workspace, "deinit")) @compileError("bound markup workspace must expose parseAndValidate and deinit");
     }
-    const Outer = @import("profile.zig").Profile(api, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
+    const Binding = support.processor.PolicyBinding(policy.Schema(true), .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
+    const Outer = struct {
+        pub const Policies = Binding;
+    };
+    const DotOptions = @import("profile.zig").CheckOptionsFor(api, Binding);
+    const can_process = config.runtime_policy or Binding.baseline.parsing.markup == .process;
     return struct {
         const Self = @This();
-        pub const baseline = Outer.baseline;
+        pub const baseline = Binding.baseline;
         pub const runtime_policy = config.runtime_policy;
         pub const Policies = support.processor.PolicySet(.{ .dot = Outer, .markup = Child }).Policies;
-        pub const Error = Outer.Policies.Error || Child.Policies.Error || Child.InputError;
+        pub const Error = Binding.Error || Child.Policies.Error || Child.InputError;
 
         /// Only this compiled composition pays for the tagged union. No payload
         /// is erased or truncated; a flat bag slot fits the largest bound type.
@@ -49,11 +54,14 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
         pub const console = support.console.ComposedRenderer(Diagnostic, .{ .dot = api.console.Adapter, .markup = Child.console.Adapter });
 
         pub const CheckOptions = struct {
-            dot: Outer.CheckOptions = .{},
+            dot: DotOptions = .{},
             markup: Child.Options = .{},
             markup_resources: Child.ParseResources = .{},
         };
         pub const MarkupReport = struct {
+            /// False for none/passthrough. No child checking was requested;
+            /// zero findings must not be mistaken for validated markup.
+            requested: bool = false,
             /// Scheduling coverage, not validity or a count of all source IDs.
             complete: bool = false,
             visited: u32 = 0,
@@ -64,15 +72,17 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
             stop: ?enum { parent_error, child_stop, diagnostic_stop, input_error } = null,
 
             pub fn allValid(self: @This()) bool {
-                return self.complete and self.stop == null and self.valid == self.visited;
+                return self.requested and self.complete and self.stop == null and self.valid == self.visited;
             }
         };
         pub const CheckResult = struct {
             dot: api.CheckResult,
             markup: MarkupReport,
 
+            /// Valid under the selected policy; passthrough does not certify
+            /// inner contents. Inspect markup.requested/allValid for that fact.
             pub fn documentValid(self: *const @This()) bool {
-                return self.dot.documentValid() and self.markup.allValid();
+                return self.dot.documentValid() and (!self.markup.requested or self.markup.allValid());
             }
             pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
                 self.dot.deinit(allocator);
@@ -85,7 +95,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
             diagnostic_stop: ?reporting.StopReason,
         };
         const Context = struct {
-            workspace: Child.Workspace,
+            workspace: if (can_process) Child.Workspace else void = if (can_process) undefined else {},
             sink: DiagnosticSink,
             report: MarkupReport = .{},
             failure: ?Child.InputError = null,
@@ -126,6 +136,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
             /// Called exactly once per scanner-produced expression, never on a
             /// grammar replay. The DOT scanner already established all bounds.
             pub fn processIdentifier(self: *@This(), source: []const u8, token: lex.Token, on_error: api.OnError) ?Stop {
+                if (!can_process) return null;
                 var parts: Parts = .{
                     .input = .{ .bytes = token.span.slice(source), .origin = token.span.start },
                     .compound = token.flags.concatenated,
@@ -162,7 +173,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
             }
         };
 
-        fn parse(comptime backend: api.ScannerBackend, comptime cancellable: bool, allocator: std.mem.Allocator, source: []const u8, context: *Context, effective: Outer.Policies.State, options: Outer.CheckOptions) api.ParseResult {
+        fn parse(comptime backend: api.ScannerBackend, comptime cancellable: bool, allocator: std.mem.Allocator, source: []const u8, context: *Context, effective: Binding.State, options: DotOptions) api.ParseResult {
             const Core = engine.EngineWithProcessor(api, if (runtime_policy) null else baseline.parsing, false, cancellable, backend, *Context);
             return Core.parseBorrowed(allocator, source, context.dotSink(), options.parse, .{
                 .processor = context,
@@ -175,11 +186,13 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
         /// exposed. Child-owned working buffers are reused across all operands.
         /// Runtime policies are prepared before scanning, allocations or callbacks.
         pub fn parseAndValidate(allocator: std.mem.Allocator, source: []const u8, diagnostics: DiagnosticSink, options: CheckOptions) Error!CheckResult {
-            const effective = if (runtime_policy) try Outer.Policies.prepare(.{ .policy = options.dot.policy }) else Outer.Policies.prepare(.{});
+            const effective = if (runtime_policy) try Binding.prepare(.{ .policy = options.dot.policy }) else Binding.prepare(.{});
+            const requested = if (runtime_policy) effective.parsing.markup == .process else baseline.parsing.markup == .process;
             const preparing = Child.prepare(options.markup);
             const ready = if (@typeInfo(@TypeOf(preparing)) == .error_union) try preparing else preparing;
-            var context: Context = .{ .workspace = ready.initWorkspace(allocator, options.markup_resources), .sink = diagnostics };
-            defer context.workspace.deinit();
+            var context: Context = .{ .sink = diagnostics, .report = .{ .requested = requested } };
+            if (can_process and requested) context.workspace = ready.initWorkspace(allocator, options.markup_resources);
+            defer if (can_process and requested) context.workspace.deinit();
             var parsed = if (runtime_policy) blk: {
                 switch (effective.scanner) {
                     inline else => |backend| break :blk if (effective.execution.cancellation)
@@ -190,7 +203,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
             } else parse(baseline.scanner, baseline.execution.cancellation, allocator, source, &context, effective, options.dot);
             errdefer parsed.deinit(allocator);
             if (context.failure) |err| return err;
-            context.report.complete = parsed.completion == .complete and context.report.stop == null;
+            context.report.complete = requested and parsed.completion == .complete and context.report.stop == null;
             const checked: ?api.ValidationResult = if (parsed.document != null and parsed.diagnostic_stop == null and parsed.diagnostic_delivery == .complete)
                 validation.validate(if (runtime_policy) null else baseline.validation, &parsed.document.?, context.dotSink(), if (runtime_policy) effective.validation else {}, options.dot.validation)
             else

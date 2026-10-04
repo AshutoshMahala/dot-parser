@@ -2,6 +2,9 @@
 const std = @import("std");
 pub const RuleSeverity = enum { err, warning, off };
 pub const ScannerBackend = enum { scalar, block };
+/// Only implemented grammars/rule sets are selectable. Graphviz and extended
+/// modes remain future work, not aliases for structural validation.
+pub const Mode = enum { structural };
 pub const Acceptance = enum { reject, warn, accept };
 pub const OnError = @import("parser_support").execution.OnError;
 pub const Unsupported = @import("parser_support").reporting.Unsupported;
@@ -21,6 +24,7 @@ pub const ValidationSettings = struct {
 };
 
 pub const Policy = struct {
+    mode: ?Mode = null,
     scanner: ?ScannerBackend = null,
     on_error: ?OnError = null,
     diagnostics: struct { fixes: ?Fixes = null, unsupported: ?Unsupported = null } = .{},
@@ -50,6 +54,7 @@ pub const Limits = struct {
     max_attributes: u32 = std.math.maxInt(u32),
 };
 pub const Effective = struct {
+    mode: Mode = .structural,
     scanner: ScannerBackend = .scalar,
     on_error: OnError = .collect,
     diagnostics: struct { fixes: Fixes = .all, unsupported: Unsupported = .err } = .{},
@@ -76,6 +81,7 @@ pub fn check(_: Effective, _: Policy) Check {
 
 pub fn resolve(base: Effective, patch: Policy) Effective {
     var result = base;
+    if (patch.mode) |value| result.mode = value;
     if (patch.scanner) |value| result.scanner = value;
     if (patch.on_error) |value| {
         result.on_error = value;
@@ -103,6 +109,7 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
 
 pub const presets = struct {
     pub const standard: Policy = .{
+        .mode = .structural,
         .scanner = .scalar,
         .on_error = .collect,
         .diagnostics = .{ .fixes = .all, .unsupported = .err },

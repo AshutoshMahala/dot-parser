@@ -430,7 +430,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         fn processIdentifier(self: *Self, token: lex.Token) ?Result {
             if (Processor == void) return null;
             const markup = if (fixed) |value| value.markup else self.settings.markup;
-            if (markup == .none or !token.flags.has_html) return null;
+            if (markup != .process or !token.flags.has_html) return null;
             const on_error = if (fixed) |value| value.on_error else self.settings.on_error;
             if (self.processor.processIdentifier(self.tokens.source, token, on_error)) |stop| {
                 if (stop.delivery == .failed) self.delivery = .failed;

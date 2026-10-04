@@ -26,6 +26,7 @@ pub const FragmentResult = @import("markup/fragment_result.zig").Result(@This(),
 pub const FixedFragmentResult = @import("markup/fragment_result.zig").Result(@This(), true);
 pub const Policy = policy.Policy;
 pub const PolicyConfig = policy.Config;
+pub const Mode = policy.Mode;
 pub const RuleSeverity = policy.RuleSeverity;
 pub const NameRule = policy.NameRule;
 pub const ReferenceCatalog = policy.ReferenceCatalog;

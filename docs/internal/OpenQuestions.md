@@ -371,7 +371,7 @@ not mean every future validation or graph-building rule is implemented.
 | Optional checks | Whole-source UTF-8, repeated attribute keys, effective graph-kind restrictions, qualified node references and subgraph occurrences | Post-parse validation; default off; `tests/validation_checks.zig` |
 | Presets and factual results | Complete `standard` / `lenient` policies; deviations and warning counts survive suppression/failure; no hidden history | Q36 and the [public contract](../POLICIES.md) |
 | Diagnostics and fixes | Typed policy-aware findings; `diagnostics.fixes = all / machine_applicable / off` filters all DOT offers at either binding time without changing validity or delivery | Q37; `tests/diagnostics.zig`, `tests/html_identifiers.zig` |
-| Passthrough identifiers | `markup = none / passthrough`, default passthrough; mixed HTML/quoted concatenation, raw spans and explicit decoding | Parsing; `tests/html_identifiers.zig` |
+| HTML-like identifiers and processing selection | `markup = none / passthrough / process`; passthrough without a bound child, process with one; raw operands and explicit decoding | Parsing; `tests/html_identifiers.zig`, `tests/during_dot.zig` |
 
 All implemented policy leaves have compile-time/runtime parity. The runtime
 support switch is a compile-time capability, not an overridable leaf. Nesting
@@ -770,7 +770,7 @@ is authorized by these decisions.
 **Q40 — How are HTML-like identifiers recognized, parsed and validated, and
 which markup policies are offered?**
 
-**Partially decided; delivery reconciled 2026-10-03.** Standalone structural
+**Partially decided; delivery reconciled 2026-10-04.** Standalone structural
 markup, DOT passthrough recognition, explicit delayed processing and one-shot
 during-DOT composition are implemented. Specialized dialects and broader
 composition remain unfinished. Details live in [markup delivery and design](MARKUP.md)
@@ -783,17 +783,20 @@ and the [processor contract](PROCESSOR_CONTRACT.md); public usage is in
 - Recognize HTML-like spelling wherever DOT permits an ID. The outer scanner
   counts every `<` and `>`; quotes, comments, CDATA and references do not shelter
   brackets at this boundary. Recognition does not prove inner structure.
-- DOT owns `none | passthrough`, default `passthrough`. Both scanner backends
+- DOT owns `none | passthrough | process`, default `passthrough` without a
+  processor and `process` with one unless explicitly overridden. Complete DOT
+  presets explicitly select passthrough. Unbound process fails policy verification
+  at compile time or runtime preflight. Both scanner backends
   retain recognition even under `none`; rejection is a processing policy, not
   a scanner-size switch. Supported passthrough is different from silently
   reporting unsupported input. Unsafe boundaries remain terminal.
 - A passthrough operation never invokes the markup engine. Other profiles or
   delayed entry points may still require it in the binary. Runtime selection
   cannot determine linking or install an implementation.
-- The agreed names are `none`, `passthrough`, `structural`, `extended` and
-  `graphviz`, not a five-value DOT enum or a compatibility ladder. Inner rules
-  belong to the chosen processor. Today's structural engine does not expose
-  implemented extended/Graphviz mode values.
+- Outer selection (`none`, `passthrough`, `process`) is independent of the
+  processor's mode. Built-in markup exposes `mode = .structural`; `extended` and
+  `graphviz` remain future modes, not callable values or a compatibility ladder.
+  Custom processors own their schema and need not expose this mode field.
 - Standalone, delayed and during-DOT paths use the same selected implementation.
   Standalone markup depends only on shared support, not DOT records/grammar.
   Its structural grammar is XML-like, not full XML or browser HTML.
@@ -836,6 +839,13 @@ only the bound processors. It has no composed `Session`, fixed-memory facade or
 retained child-tree array. Workspace results borrow until the next call/deinit;
 DOT never deinitializes individual results. Ordinary DOT gains no mandatory
 per-ID processor state.
+
+None/passthrough skips child workspace initialization and execution, not policy
+verification. Switching outer selection leaves the child policy unchanged.
+`MarkupReport.requested` distinguishes disabled work from successful validation;
+`allValid()` is false when not requested, while combined validity is relative to
+the selected policy. Execution remains synchronous after a complete operand
+boundary; no thread argument, queue or implicit concurrency is introduced.
 
 Nested DOT → markup → string and sibling string settings already prepare
 independently. Automatic deeper execution and a built-in string processor remain

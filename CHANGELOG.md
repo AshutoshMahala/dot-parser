@@ -6,6 +6,15 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Separate DOT processing selection (`markup = .none | .passthrough | .process`)
+  from the built-in markup processor's `mode = .structural`. Binding a processor
+  defaults to `.process`; unbound `.process` fails policy preflight. Graphviz and
+  extended modes remain unimplemented. Processing stays synchronous at complete
+  operand boundaries with no threads, queues or additional source copies.
+  **Breaking:** explicit `.passthrough`, including complete DOT presets, now skips
+  bound child execution and workspace initialization. `MarkupReport.requested`
+  distinguishes skipped checks from completed validation; combined validity is
+  relative to the selected policy.
 - Reuse child-owned node, attribute, nesting and validation buffers during DOT
   composition; expose the same markup workspace for standalone/delayed batches.
   Initialization allocates nothing; buffers retain high-water capacity until

@@ -307,6 +307,7 @@ Every setting:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
+| `mode` | `.structural` | The processor's grammar/rule mode; structural is the only implemented value |
 | `limits.max_source_bytes` | 4 GiB | Largest input accepted |
 | `limits.max_nodes` | no limit | Elements, text runs, comments and CDATA sections |
 | `limits.max_attributes` | no limit | Attributes in total |
@@ -323,6 +324,12 @@ Every setting:
 Every combination of markup settings is valid, so markup calls never return a
 configuration error. `Profile.validatePolicy(patch)` exists for symmetry with
 DOT and always returns `.valid`.
+
+Mode is independent of [DOT's processing choice](LABELS.md#what-happens-by-default).
+For example, `markup.Profile(.{ .policy = .{ .mode = .structural } })` works on its
+own or as a bound child. DOT's `.markup = .process` runs that child; `.passthrough`
+does not run it or change its configured mode. Replacement processors own their
+own policy fields and are not required to expose a `mode` setting.
 
 ## Building a document yourself
 

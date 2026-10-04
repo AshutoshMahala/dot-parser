@@ -17,8 +17,8 @@ files. To parse HTML-like markup without DOT, see
 
 ## What happens by default
 
-The DOT parser keeps `<...>` values exactly as written and doesn't look
-inside. It finds where a value ends the same way Graphviz does: by counting `<`
+Without a bound processor, DOT keeps `<...>` values exactly as written and
+doesn't look inside. It finds where a value ends the same way Graphviz does: by counting `<`
 and `>` until they balance. These values can appear anywhere a name can, not
 just in `label`.
 
@@ -27,9 +27,20 @@ checked the tags. You have three choices:
 
 | You want to… | Do this |
 | --- | --- |
-| Keep labels as they are, unchecked | Nothing. This is the default (`markup = .passthrough`). |
+| Keep labels as they are, unchecked | Set `markup = .passthrough`. This is the default without a bound processor. |
 | Reject HTML-like values entirely | Set `markup = .none` in the [settings](POLICIES.md#all-dot-settings). They are reported as unsupported. |
-| Check what is inside | Use one of the two ways below. |
+| Check what is inside automatically | Bind a processor; `markup` then defaults to `.process`. |
+
+DOT's `policy.markup` decides **whether** to process contents. The bound
+processor's policy decides **how**. The built-in markup processor currently
+supports only `policy.mode = .structural`; this is not Graphviz-label vocabulary
+validation or browser HTML. Graphviz and extended modes are not implemented.
+
+Explicit `.none` or `.passthrough` overrides the bound-processor default. Complete
+DOT presets also set `.passthrough`; set their `markup` leaf to `.process` when
+you want automatic checking. `.process` without a bound processor is an invalid
+policy: a compiled baseline is rejected at compilation, and a runtime patch is
+rejected before allocation, input consumption or diagnostic delivery.
 
 ## Two ways to check labels
 
@@ -54,7 +65,10 @@ const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 
 const Parser = dot.Profile(.{
-    .processors = .{ .markup = markup.Profile(.{}) },
+    .policy = .{ .markup = .process }, // Optional: binding a processor defaults to this.
+    .processors = .{ .markup = markup.Profile(.{
+        .policy = .{ .mode = .structural }, // The current markup default.
+    }) },
 });
 
 var bag = Parser.GrowableDiagnosticBag.init(allocator, .{});
@@ -74,11 +88,19 @@ The result has two parts:
 
 - `result.dot`: the ordinary DOT result, including the document. You still get
   the DOT document even when a label is wrong.
-- `result.markup`: a summary of the labels: how many were checked
+- `result.markup`: whether checking was requested (`requested`), how many were checked
   (`visited`), how many were fine (`valid`), and whether every label was
   reached (`complete`).
 
-`result.documentValid()` is true only when the DOT and every label are fine.
+Under `.process`, `result.documentValid()` requires valid DOT and successful
+checking of every encountered operand. Under `.passthrough`, it checks only DOT;
+it does not certify inner markup. For `.none` or `.passthrough`, the markup report
+has `requested = false`, `complete = false`, zero visits and `allValid() = false`.
+With `.process` but no operands, requested checking completes with zero visits.
+
+The child runs synchronously after DOT establishes each complete raw operand
+boundary, before the next DOT grammar transition. An unfinished boundary is not
+passed to the child. No thread, task queue or extra source copy is involved.
 
 Errors inside labels look like any other error, at their place in the DOT file:
 
@@ -101,6 +123,14 @@ Errors inside labels look like any other error, at their place in the DOT file:
 | `.dot` | The ordinary DOT options: run-time `.policy`, size hints in `.parse`, validation scratch in `.validation`, `.cancellation` |
 | `.markup` | The label checker's options, such as a run-time `.policy` |
 | `.markup_resources` | Resources for the label checker, such as `.scratch_allocator` |
+
+If DOT runtime policies are enabled, `.dot.policy.markup = .passthrough` skips
+inner execution for that call, and `.process` enables it again. Inner options
+such as `.markup.policy.mode` require the child's own runtime policy support.
+Outer selection never resets the child's settings. Each call inherits its
+compiled baseline, not overrides from a previous call. Configured policies are
+still prepared/verified before scanning; disabled processing does not initialize
+a child workspace or invoke its parser, validator or cancellation hook.
 
 Good to know:
 

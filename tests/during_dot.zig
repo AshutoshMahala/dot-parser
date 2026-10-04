@@ -5,6 +5,94 @@ const gpa = std.testing.allocator;
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 
+test "bound processors default to process but complete presets remain explicit policies" {
+    const Child = markup.Profile(.{ .policy = .{ .mode = .structural } });
+    const Bound = dot.Profile(.{ .processors = .{ .markup = Child } });
+    try equal(dot.MarkupMode.process, Bound.baseline.parsing.markup);
+    try equal(dot.MarkupMode.passthrough, dot.Profile(.{}).baseline.parsing.markup);
+    inline for (.{ dot.presets.standard, dot.presets.lenient }) |preset| {
+        const P = dot.Profile(.{ .policy = preset, .processors = .{ .markup = Child } });
+        try equal(dot.MarkupMode.passthrough, P.baseline.parsing.markup);
+        var checked = try P.parseAndValidate(gpa, "graph { a [label=<<b></wrong>>]; }", P.DiagnosticSink.discard, .{});
+        defer checked.deinit(gpa);
+        try expect(checked.documentValid());
+        try expect(!checked.markup.requested and !checked.markup.complete and !checked.markup.allValid());
+        try equal(@as(u32, 0), checked.markup.visited);
+    }
+}
+
+test "outer markup choices agree at both binding times and preserve DOT syntax" {
+    const source = "digraph <g> { a [label=<<b x='1' x='2'/>>+\"text\"+<<i/>>]; b [label=<<ok/>>]; }";
+    inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |controlled| {
+        const Child = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend } });
+        const Runtime = dot.Profile(.{
+            .runtime_policy = true,
+            .policy = .{ .scanner = backend, .execution = .{ .cancellation = controlled } },
+            .processors = .{ .markup = Child },
+        });
+        inline for (.{ dot.MarkupMode.none, .passthrough, .process }) |mode| {
+            const input: dot.Policy = .{ .markup = mode, .scanner = backend, .execution = .{ .cancellation = controlled } };
+            const Fixed = dot.Profile(.{ .policy = input, .processors = .{ .markup = Child } });
+            var fixed_bag: Fixed.FixedDiagnosticBag(32) = .{};
+            var runtime_bag: Runtime.FixedDiagnosticBag(32) = .{};
+            var fixed = try Fixed.parseAndValidate(gpa, source, fixed_bag.sink(), .{});
+            defer fixed.deinit(gpa);
+            var runtime = try Runtime.parseAndValidate(gpa, source, runtime_bag.sink(), .{ .dot = .{ .policy = .{ .markup = mode } } });
+            defer runtime.deinit(gpa);
+            try std.testing.expectEqualDeep(fixed.dot, runtime.dot);
+            try std.testing.expectEqualDeep(fixed.markup, runtime.markup);
+            try equal(fixed_bag.items().len, runtime_bag.items().len);
+            for (fixed_bag.items(), runtime_bag.items()) |a, b| switch (a) {
+                inline else => |d, tag| {
+                    try expect(std.mem.eql(u8, @tagName(a), @tagName(b)));
+                    try std.testing.expectEqualDeep(d, @field(b, @tagName(tag)));
+                },
+            };
+            try equal(mode == .passthrough, fixed.documentValid());
+            try equal(mode == .process, fixed.markup.requested);
+            try equal(mode == .process, fixed.markup.complete);
+            if (mode == .process) {
+                try equal(@as(u32, 4), fixed.markup.visited);
+                try equal(@as(u32, 1), fixed.markup.rejected);
+                try equal(@as(u32, 3), fixed.markup.valid);
+                try expect(fixed.dot.documentValid());
+                // Both processing and passthrough retain exactly the same DOT pools.
+                const Plain = dot.Profile(.{ .policy = .{ .scanner = backend, .execution = .{ .cancellation = controlled } } });
+                try expectPlainParity(Plain, source, fixed.dot, fixed_bag.items());
+            } else {
+                try equal(@as(u32, 0), fixed.markup.visited);
+                try expect(!fixed.markup.allValid());
+                try expectPlainParity(dot.Profile(.{ .policy = input }), source, fixed.dot, fixed_bag.items());
+            }
+        }
+    };
+}
+
+test "runtime activation does not reset the independently configured markup policy" {
+    const P = dot.Profile(.{
+        .runtime_policy = true,
+        .policy = .{ .markup = .passthrough },
+        .processors = .{ .markup = markup.Profile(.{
+            .runtime_policy = true,
+            .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .warning } },
+        }) },
+    });
+    const source = "graph { a [label=<<b x='1' x='2'/>>]; }";
+    // Each call starts from the compiled baseline, not the last runtime patch.
+    for ([_]?dot.MarkupMode{ null, .process, .passthrough, .process, null }) |mode| {
+        var bag: P.FixedDiagnosticBag(16) = .{};
+        var checked = try P.parseAndValidate(gpa, source, bag.sink(), .{
+            .dot = .{ .policy = .{ .markup = mode } },
+            .markup = .{ .policy = .{ .mode = .structural } },
+        });
+        defer checked.deinit(gpa);
+        try expect(checked.documentValid());
+        try equal(mode == .process, checked.markup.requested);
+        try equal(@as(usize, if (mode == .process) 1 else 0), bag.items().len);
+        if (mode == .process) try equal(markup.diagnostic.Code.duplicate_attribute_tolerated, bag.items()[0].markup.code);
+    }
+}
+
 test "one composed call and one bag retain independent outer and inner findings" {
     const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
     const source = "digraph { a -- b [label=<<b x='1' x='2'>text</wrong>>]; c [label=<<i>ok</i>>]; }";
@@ -229,6 +317,44 @@ test "a consumer processor runs before a document exists without runtime discove
     try expect(checked.dot.document == null and !checked.markup.complete);
     try equal(@as(u32, 1), checked.markup.valid);
     try std.testing.expectEqualDeep([2]u32{ 1, 1 }, lifecycle);
+
+    // Disabled work does not initialize even a consumer-owned workspace.
+    inline for (.{ false, true }) |runtime| inline for (.{ dot.MarkupMode.none, .passthrough, .process }) |mode| {
+        const Selected = dot.Profile(.{
+            .runtime_policy = runtime,
+            .policy = .{ .markup = if (runtime) .passthrough else mode },
+            .processors = .{ .markup = Consumer },
+        });
+        calls = 0;
+        lifecycle = .{ 0, 0 };
+        var selected = try Selected.parseAndValidate(gpa, "graph { a [label=<<b/>>]; b [label=<<i/>>]; }", Selected.DiagnosticSink.discard, .{
+            .dot = if (runtime) .{ .policy = .{ .markup = mode } } else .{},
+            .markup_resources = .{ .calls = &calls, .lifecycle = &lifecycle },
+        });
+        defer selected.deinit(gpa);
+        try equal(@as(u32, if (mode == .process) 2 else 0), calls);
+        const expected: u32 = if (mode == .process) 1 else 0;
+        try std.testing.expectEqualDeep([2]u32{ expected, expected }, lifecycle);
+    };
+}
+
+test "passthrough adds no child allocations and incomplete boundaries never reach the child" {
+    const P = dot.Profile(.{ .policy = .{ .markup = .passthrough }, .processors = .{ .markup = markup.Profile(.{}) } });
+    const source = "graph { a [label=<<b><i/></b>>]; }";
+    var plain_allocator = std.testing.FailingAllocator.init(gpa, .{});
+    var composed_allocator = std.testing.FailingAllocator.init(gpa, .{});
+    var plain = dot.parseAndValidate(plain_allocator.allocator(), source, dot.diagnostic.discard, .{});
+    defer plain.deinit(plain_allocator.allocator());
+    var composed = try P.parseAndValidate(composed_allocator.allocator(), source, P.DiagnosticSink.discard, .{});
+    defer composed.deinit(composed_allocator.allocator());
+    try equal(plain_allocator.allocated_bytes, composed_allocator.allocated_bytes);
+    try equal(plain_allocator.allocations, composed_allocator.allocations);
+    const Active = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
+    var incomplete = try Active.parseAndValidate(gpa, "graph { a [label=<<b>", Active.DiagnosticSink.discard, .{});
+    defer incomplete.deinit(gpa);
+    try equal(@as(u32, 0), incomplete.markup.visited);
+    try expect(incomplete.markup.requested and !incomplete.markup.complete);
+    try expect(!incomplete.documentValid());
 }
 
 test "no HTML allocates no child buffers and repeated operands reuse one workspace" {

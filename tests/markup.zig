@@ -18,6 +18,30 @@ test {
     _ = @import("markup_scopes.zig");
 }
 
+test "structural mode is explicit, standalone and identical at both binding times" {
+    const Default = markup.Profile(.{});
+    const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural } });
+    const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
+    try equal(markup.Mode.structural, Default.baseline.mode);
+    try equal(markup.Mode.structural, markup.presets.standard.mode.?);
+    try equal(markup.Mode.structural, markup.presets.untrusted.mode.?);
+    try equal(markup.PolicyValidation.valid, Fixed.validatePolicy(.{ .mode = .structural }));
+    try equal(markup.PolicyValidation.valid, Runtime.validatePolicy(.{ .mode = .structural }));
+    const prepared = try Runtime.Policies.prepare(.{ .policy = .{ .validation = .{ .duplicate_attribute = .off } } });
+    try equal(markup.Mode.structural, prepared.mode);
+    try equal(@sizeOf(Default.Session), @sizeOf(Fixed.Session));
+    for ([_][]const u8{ "<custom><child/></custom>", "<a></b>", "<a x='1' x='2'/>" }) |source| {
+        var fixed_bag: markup.FixedDiagnosticBag(16) = .{};
+        var runtime_bag: markup.FixedDiagnosticBag(16) = .{};
+        var fixed = try Fixed.parseAndValidate(std.testing.allocator, .{ .bytes = source, .origin = 7 }, fixed_bag.sink(), .{});
+        defer fixed.deinit();
+        var runtime = try Runtime.parseAndValidate(std.testing.allocator, .{ .bytes = source, .origin = 7 }, runtime_bag.sink(), .{ .policy = .{ .mode = .structural } });
+        defer runtime.deinit();
+        try equal(fixed.documentValid(), runtime.documentValid());
+        try std.testing.expectEqualDeep(fixed_bag.items(), runtime_bag.items());
+    }
+}
+
 test "standalone public lexer yields borrowed tokens and latches EOF/errors" {
     const source = "text<a>body<b/></a>";
     var lexer = markup.lexer.Lexer.init(source);

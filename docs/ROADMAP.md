@@ -23,9 +23,10 @@ labels are its first and most important use. HTML subsets, SVG, and custom
 dialects such as XAML should be able to build on it without inheriting each
 other's rules.
 
-- **Processing levels.** DOT already offers `none` (reject `<...>`) and
-  `passthrough` (keep it unchecked). Today's markup parser is the `structural`
-  level. `extended` and `graphviz` levels are planned. The Graphviz level would
+- **Processing selection and modes.** DOT offers `none` (unsupported `<...>`),
+  `passthrough` (keep it unchecked), and `process` (invoke its bound processor).
+  Today's markup parser provides `mode = .structural`.
+  `extended` and `graphviz` modes are planned. The Graphviz mode would
   check tags, attributes and which tags may contain which, and only where
   Graphviz expects a label. For example, an HTML-like port `n:<p>` has the value
   `p`, not an opening tag.

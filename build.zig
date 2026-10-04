@@ -113,6 +113,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "markup_unmetered", .message = "error: metering is disabled; use run()" },
         .{ .name = "markup_duplicate_diagnostic", .message = "error: duplicate diagnostic identity" },
         .{ .name = "markup_invalid_diagnostic", .message = "error: invalid diagnostic registry metadata" },
+        .{ .name = "markup_graphviz_mode", .message = "has no member named 'graphviz'" },
+        .{ .name = "markup_extended_mode", .message = "has no member named 'extended'" },
     }) |fixture| {
         const rejected = b.addObject(.{
             .name = fixture.name,
@@ -137,6 +139,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "digraph_treatment", .message = "error: no field named 'treated_as' in struct 'dot.policy.Policy.Operators'" },
         .{ .name = "invalid_policy_mismatch", .message = "error: invalid policy: graph_operator_mismatch_not_applicable" },
         .{ .name = "invalid_policy_reading", .message = "error: invalid policy: graph_operator_reading_not_applicable" },
+        .{ .name = "markup_processor_required", .message = "error: invalid policy: markup_processor_required" },
         .{ .name = "fixed_parse_override", .message = "tests/compile_fail/fixed_parse_override.zig:3:41: error: no field named 'policy' in struct /?/" },
         .{ .name = "unmetered_advance", .message = "error: metering is disabled; use run()" },
         .{ .name = "processor_fixed_override", .message = "tests/compile_fail/processor_fixed_override.zig:4:35: error: no field named 'policy' in struct /?/" },

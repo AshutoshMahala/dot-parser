@@ -6,7 +6,8 @@ pub const GraphTreatment = enum { undigraph, digraph, generic, auto };
 pub const RuleSeverity = enum { err, warning, off };
 pub const OperatorReading = enum { as_written, conform_to_kind };
 pub const ScannerBackend = enum { scalar, block };
-pub const MarkupMode = enum { none, passthrough };
+/// Outer handling only. The bound processor owns its grammar and rule modes.
+pub const MarkupMode = enum { none, passthrough, process };
 /// Controls repair offers only, never validity or automatic rewriting.
 pub const Fixes = @import("parser_support").reporting.Fixes;
 pub const Acceptance = enum { reject, warn, accept };
@@ -257,16 +258,19 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
 pub const Error = error{
     GraphOperatorMismatchNotApplicable,
     GraphOperatorReadingNotApplicable,
+    MarkupProcessorRequired,
 };
 
 pub const Issue = enum {
     graph_operator_mismatch_not_applicable,
     graph_operator_reading_not_applicable,
+    markup_processor_required,
 
     pub fn asError(self: Issue) Error {
         return switch (self) {
             .graph_operator_mismatch_not_applicable => error.GraphOperatorMismatchNotApplicable,
             .graph_operator_reading_not_applicable => error.GraphOperatorReadingNotApplicable,
+            .markup_processor_required => error.MarkupProcessorRequired,
         };
     }
 };
@@ -277,19 +281,49 @@ pub const Check = union(enum) { valid, invalid: Issue };
 /// requesting an inapplicable control is rejected, even its default value.
 /// If both fields are invalid, mismatch is reported first, deterministically.
 pub fn check(effective: Effective, input: Policy) Check {
+    return checkWithProcessor(false, effective, input);
+}
+
+fn checkWithProcessor(comptime markup_bound: bool, effective: Effective, input: Policy) Check {
     if (effective.validation.graph.treated_as == .generic or effective.validation.graph.treated_as == .auto) {
         if (input.validation.graph.operator_mismatch != null)
             return .{ .invalid = .graph_operator_mismatch_not_applicable };
         if (input.validation.graph.operator_reading != null)
             return .{ .invalid = .graph_operator_reading_not_applicable };
     }
+    if (!markup_bound and effective.parsing.markup == .process)
+        return .{ .invalid = .markup_processor_required };
     return .valid;
+}
+
+/// Binding capabilities are compile-time facts, never runtime policy leaves.
+/// A bound child defaults to processing; explicit none/passthrough (including
+/// complete presets) still win. Standalone DOT never promises unbound work.
+pub fn Schema(comptime markup_bound: bool) type {
+    if (!markup_bound) return @This();
+    const Base = @This();
+    return struct {
+        pub const Policy = Base.Policy;
+        pub const Effective = Base.Effective;
+        pub const Error = Base.Error;
+        pub const resolve = Base.resolve;
+        pub const defaults: Base.Effective = blk: {
+            var value = Base.defaults;
+            value.parsing.markup = .process;
+            break :blk value;
+        };
+
+        pub fn check(effective: Base.Effective, input: Base.Policy) Base.Check {
+            return checkWithProcessor(markup_bound, effective, input);
+        }
+    };
 }
 
 pub const Config = struct {
     policy: Policy = .{},
     runtime_policy: bool = false,
     /// Compile-time implementations; never part of a runtime policy patch.
+    /// Binding markup defaults its outer handling to process unless overridden.
     processors: struct { markup: ?type = null } = .{},
 };
 

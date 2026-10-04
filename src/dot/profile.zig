@@ -4,6 +4,23 @@ const policy = @import("policy.zig");
 const validation = @import("validate.zig");
 const engine = @import("parse_engine.zig");
 
+/// Shared option shape; composition binds its own capability-aware policies,
+/// not an ordinary DOT profile which cannot execute a child processor.
+pub fn CheckOptionsFor(comptime api: type, comptime Binding: type) type {
+    const Hook = if (Binding.runtime_policy or Binding.baseline.execution.cancellation) ?api.Cancellation else void;
+    const no_hook: Hook = if (Hook == void) {} else null;
+    return if (Binding.runtime_policy) struct {
+        policy: policy.Policy = .{},
+        parse: api.ParseResources = .{},
+        validation: api.ValidationScratch = .{},
+        cancellation: Hook = no_hook,
+    } else struct {
+        parse: api.ParseResources = .{},
+        validation: api.ValidationScratch = .{},
+        cancellation: Hook = no_hook,
+    };
+}
+
 pub fn Profile(comptime api: type, comptime config: policy.Config) type {
     if (config.processors.markup) |Child| return @import("composition.zig").Profile(api, config, Child);
     const Binding = @import("parser_support").processor.PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
@@ -35,16 +52,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             document_capacities: api.DocumentCapacities = .{},
             cancellation: Hook = no_hook,
         };
-        pub const CheckOptions = if (runtime_policy) struct {
-            policy: policy.Policy = .{},
-            parse: api.ParseResources = .{},
-            validation: api.ValidationScratch = .{},
-            cancellation: Hook = no_hook,
-        } else struct {
-            parse: api.ParseResources = .{},
-            validation: api.ValidationScratch = .{},
-            cancellation: Hook = no_hook,
-        };
+        pub const CheckOptions = CheckOptionsFor(api, Binding);
 
         pub const validatePolicy = Binding.validatePolicy;
         fn Checked(comptime T: type) type {

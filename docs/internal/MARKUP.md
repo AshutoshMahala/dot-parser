@@ -1,6 +1,6 @@
 # Markup — delivery status and remaining design
 
-Reconciled: 2026-10-03. This is an internal status and design record, not a
+Reconciled: 2026-10-04. This is an internal status and design record, not a
 second user guide. Current APIs are in [standalone markup](../MARKUP.md),
 [DOT integration](../LABELS.md) and [custom processors](../CUSTOM_PROCESSORS.md).
 R-MOD-014/015 and Q40 remain the architectural requirements and decision IDs.
@@ -37,6 +37,7 @@ removing their repetition here does not close outstanding performance gates.
 | Structural and malformed-header recovery | Implemented | Diagnostics only, no partial tree; [recovery tests](../../tests/markup_recovery.zig), [header tests](../../tests/markup_header_recovery.zig) |
 | Independent local validation | Implemented | Public checked scopes and source traversal without a tree; [scope tests](../../tests/markup_scopes.zig) |
 | DOT passthrough recognition | Implemented | Every ID position, concatenations, parts and explicit decoding; [identifier tests](../../tests/html_identifiers.zig) |
+| Outer processing selection / inner mode | Implemented | DOT `.none` / `.passthrough` / `.process`; markup `.mode = .structural`; [composition tests](../../tests/during_dot.zig) |
 | Delayed and one-shot during-DOT integration | Implemented | Prepared profiles, original-source diagnostics, one shared destination, independent error policies; [integration tests](../../tests/markup_integration.zig), [composition](../../src/dot/composition.zig) |
 | Workspace reuse and silent unsupported reporting | Implemented | Borrowed per-call results, reusable buffers, no user-facing finding construction on the silent path; [workspace tests](../../tests/markup_workspace.zig), [error-policy tests](../../tests/error_policy.zig) |
 | Specialized Graphviz / extended validation | Agreed direction; not implemented | Vocabulary, attributes, placement, context selection and extended rules need design |
@@ -155,10 +156,20 @@ for terminal-stop acknowledgement and silent-unsupported semantics.
 
 ### Graphviz and extended rules
 
-The agreed processing names are `none`, `passthrough`, `structural`,
-`extended` and `graphviz`, not five values of a DOT-owned enum.
-DOT owns the first two. Today's markup engine provides structural processing;
-the latter two remain future processor-owned behaviour, not callable mode values.
+DOT owns `policy.markup = .none | .passthrough | .process`; the bound markup
+processor owns `policy.mode = .structural` and its independent validation rules.
+`extended` and `graphviz` remain future processor-owned modes, not callable values
+or aliases for structural checking. Custom processors own their schemas and need
+not expose this mode field.
+
+Without a processor the DOT default is passthrough; binding one defaults to
+process unless explicitly overridden (complete presets include a passthrough
+leaf). Unbound process is a policy-verification failure at compile time or runtime
+preflight. None/passthrough never initialize a child workspace or run inner
+checks; configured policy verification still precedes scanning. A report marks
+this work not requested, not successfully validated. Switching outer handling
+does not change the child's policy. Process uses synchronous bounded-operand
+handoff, not threads or a queue; independent error policies remain unchanged.
 
 Graphviz checking needs tag vocabulary, attributes and parent/child placement,
 not just a whitelist. It must apply only where Graphviz interprets an ID as a

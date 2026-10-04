@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last reconciled: 2026-10-03
+Original draft: 2026-07-13 · Last reconciled: 2026-10-04
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -654,10 +654,13 @@ follows all reachable entry points and runtime-selectable modes, not the mode
 chosen for one call. Material optional costs must be excludable in passthrough-only
 builds at compile time (R-MOD-005).
 
-The combined built-in choices are `none`, `passthrough`, `structural`, `extended`,
-and `graphviz`, not five values in a DOT-owned enum. DOT owns recognition and
-rejection/preservation, with passthrough recognition the first-slice default; inner
-processing modes belong to the selected implementation's policy. Q40 in
+DOT owns `policy.markup = .none | .passthrough | .process`: unsupported,
+preservation without inner checks, or invocation of the bound processor.
+Binding a processor defaults to process unless explicitly overridden; otherwise
+passthrough is the default. Process without a bound implementation is an invalid
+policy. Inner modes belong to the selected implementation: built-in markup
+currently exposes `policy.mode = .structural`; extended and Graphviz modes remain
+future work. These are not alternatives in a single DOT enum. Q40 in
 [OpenQuestions.md](OpenQuestions.md) defines the composition and first-slice
 contract. Parts views, delayed processing and one-shot during-DOT composition
 are implemented. Extended/Graphviz vocabulary, application-specific selection and

@@ -3,7 +3,9 @@ const std = @import("std");
 const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 const Parser = dot.Profile(.{
-    .policy = .{ .limits = .{ .max_nesting = 64, .max_statements = 1000, .max_attributes = 1000 } },
+    // Binding a processor defaults to .process; spell it out here to show the
+    // outer choice independently of the child's mode/rules and limits.
+    .policy = .{ .markup = .process, .limits = .{ .max_nesting = 64, .max_statements = 1000, .max_attributes = 1000 } },
     .processors = .{ .markup = markup.Profile(.{ .policy = markup.presets.untrusted }) },
 });
 

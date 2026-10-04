@@ -1,6 +1,6 @@
 # Processor contract — current guarantees and remaining design
 
-Reconciled: 2026-10-03. Keep this internal contract while composed execution
+Reconciled: 2026-10-04. Keep this internal contract while composed execution
 still has unfinished designs. User-facing APIs are in
 [custom processors](../CUSTOM_PROCESSORS.md) and [label integration](../LABELS.md).
 Standalone parsing does not depend on composition.
@@ -26,6 +26,13 @@ not implementations which DOT must configure or inspect. Each profile owns its
 policy schema, compiled baseline and default-off runtime override support. Built-in
 and consumer processors follow the same contract. Runtime registration/replacement
 and per-fragment capability discovery are excluded.
+
+DOT's `policy.markup` selects `.none`, `.passthrough` or `.process`; it does not
+select a child grammar. Binding a child defaults to process, otherwise the default
+is passthrough. Explicit leaves, including complete presets, take precedence.
+The built-in markup child currently exposes only `policy.mode = .structural`;
+replacement schemas need not have this field. Unbound process fails policy
+verification. Runtime processing selection cannot install or replace a child.
 
 Resolve and verify all enabled runtime policies once per operation, before any
 processing or callbacks. Fixed policies are already verified at compile time and
@@ -78,6 +85,12 @@ first does not make them reuse that state. Markup can reuse its state through
 `Prepared{ .policies = state.path }` or its own `prepare`. The composed facade
 prepares outer and child policies once before entering the engine. Workspace
 calls reuse prepared policies and buffers without capability discovery.
+
+None/passthrough still verify configured policies but skip child workspace
+initialization, parsing, validation and cancellation callbacks. Reports mark
+markup `requested = false`, `complete = false` and `allValid() = false`; combined
+validity checks only the requested work. A process operation marks requested true
+even if a stop prevents the first visit. It does not claim completion in that case.
 
 Evidence: [binding and fragment implementation](../../src/common/processor.zig),
 [consumer tests](../../tests/processors.zig),

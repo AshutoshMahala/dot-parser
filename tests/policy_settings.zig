@@ -34,6 +34,31 @@ test "collect is the default while explicit fail-fast remains available" {
     }
 }
 
+test "unbound processing fails policy preflight without allocating or touching a session" {
+    const Fixed = dot.Profile(.{});
+    const patch: dot.Policy = .{ .markup = .process };
+    const rejected: dot.PolicyValidation = .{ .invalid = .markup_processor_required };
+    try std.testing.expectEqualDeep(rejected, Fixed.validatePolicy(patch));
+    try std.testing.expectEqualDeep(rejected, Runtime.validatePolicy(patch));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.Policies.prepare(.{ .policy = patch }));
+    var bag: dot.FixedDiagnosticBag(16) = .{};
+    var pools: Storage = .{};
+    const memory: dot.ParseMemory = .{ .document = pools.storage() };
+    const source = "graph { a [label=<<b/>>]; }";
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.parseBorrowed(std.testing.failing_allocator, source, bag.sink(), .{ .policy = patch }));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.parseAndValidate(std.testing.failing_allocator, source, bag.sink(), .{ .policy = patch }));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.parseBorrowedIn(source, memory, bag.sink(), .{ .policy = patch }));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.measure(std.testing.failing_allocator, source, bag.sink(), .{ .policy = patch }));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.measureIn(source, .{}, bag.sink(), .{ .policy = patch }));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.Session.init(source, memory, bag.sink(), .{ .policy = patch }));
+    var session = try Runtime.Session.init(source, memory, bag.sink(), .{});
+    defer session.deinit();
+    try equal(dot.ParseOutcome.success, session.run().outcome);
+    try std.testing.expectError(error.MarkupProcessorRequired, session.reset("garbage", bag.sink(), .{ .policy = patch }));
+    try equal(dot.ParseOutcome.success, session.result().?.outcome);
+    try equal(@as(usize, 0), bag.items().len);
+}
+
 const Request = struct {
     polls: usize = 0,
     stop: bool = false,

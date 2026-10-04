@@ -209,7 +209,7 @@ Under `.generic` and `.auto` there is no "wrong" operator, so setting
 | `scanner` | `.scalar` | Which text scanner to use. See [scanners](EXECUTION.md#two-scanners). |
 | `execution.metering` | `false` | Allow parsing in small steps. See [EXECUTION.md](EXECUTION.md). |
 | `execution.cancellation` | `false` | Allow cancelling through a callback. See [EXECUTION.md](EXECUTION.md). |
-| `markup` | `.passthrough` | Accept HTML-like `<labels>` as they are, or `.none` to report them as unsupported |
+| `markup` | `.passthrough` without a processor; `.process` with one | Preserve HTML-like IDs unchecked, report them unsupported with `.none`, or automatically check them with the bound processor using `.process` |
 | `diagnostics.fixes` | `.all` | Which suggested fixes to include: `.all`, `.machine_applicable` or `.off` |
 | `diagnostics.unsupported` | `.err` | How to report unsupported input: `.err`, `.warning` or `.silent` |
 
@@ -336,7 +336,7 @@ Every field of `dot.Policy`, with its default and where it is explained:
 | `scanner` | `.scalar`, `.block` | `.scalar` | [Two scanners](EXECUTION.md#two-scanners) |
 | `execution.metering` | `true`, `false` | `false` | [Parsing in small steps](EXECUTION.md) |
 | `execution.cancellation` | `true`, `false` | `false` | [Cancelling](EXECUTION.md#cancelling) |
-| `markup` | `.passthrough`, `.none` | `.passthrough` | [Checking HTML-like labels](LABELS.md#what-happens-by-default) |
+| `markup` | `.none`, `.passthrough`, `.process` | `.process` with a bound processor, otherwise `.passthrough` | [Checking HTML-like labels](LABELS.md#what-happens-by-default) |
 | `diagnostics.fixes` | `.all`, `.machine_applicable`, `.off` | `.all` | [Suggested fixes](ERRORS.md#suggested-fixes) |
 | `diagnostics.unsupported` | `.err`, `.warning`, `.silent` | `.err` | [Unsupported is not invalid](ERRORS.md#unsupported-is-not-invalid) |
 
