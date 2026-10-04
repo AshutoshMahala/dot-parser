@@ -433,9 +433,13 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             if (markup == .none or !token.flags.has_html) return null;
             const on_error = if (fixed) |value| value.on_error else self.settings.on_error;
             if (self.processor.processIdentifier(self.tokens.source, token, on_error)) |stop| {
-                self.abortEvents(.processor_stopped);
                 if (stop.delivery == .failed) self.delivery = .failed;
-                return self.finishReported(.processor_stopped, stop.diagnostic_stop);
+                // A shared destination stops the same operation regardless of
+                // which processor was emitting. Preserve its cause and abort
+                // lifecycle without attempting another diagnostic delivery.
+                if (stop.diagnostic_stop) |reason| return self.stopDiagnostics(reason);
+                self.abortEvents(.processor_stopped);
+                return self.finish(.processor_stopped);
             }
             return null;
         }

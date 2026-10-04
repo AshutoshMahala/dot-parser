@@ -43,8 +43,10 @@ Parent/child `on_error` policies remain independent. A collecting parent visits
 the next operand after ordinary child errors, unsupported input or child policy
 limits. Parent fail-fast waits for the active child to return, then stops. A sink
 stop/failure, child cancellation or allocation/storage failure ends the operation.
-Early child stops produce `result.dot.outcome = .processor_stopped`, incomplete
-outer parsing and no partial DOT document. Already collected findings survive.
+During child processing, a shared sink stop/failure produces
+`result.dot.outcome = .diagnostic_stopped`, just as during DOT parsing. Other
+early child stops produce `.processor_stopped`. Both leave outer parsing
+incomplete with no partial DOT document. Already collected findings survive.
 `result.markup.complete` describes traversal coverage, not content validity.
 
 Resources/options are grouped as `.dot` (ordinary DOT `CheckOptions`), `.markup`

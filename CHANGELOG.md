@@ -6,6 +6,11 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Classify shared diagnostic stops during composed child processing as DOT
+  `diagnostic_stopped`, matching outer emission and preserving the reason/delivery
+  status. Add composed-versus-ordinary DOT parity coverage. Share list location
+  resolution and summary rendering across ordinary/composed diagnostic consoles.
+
 - Add opt-in during-DOT `Profile(.{ .processors = .{ .markup = MarkupProfile } })`
   composition: one `parseAndValidate` call, one typed bag/sink and a mixed renderer.
   Child checks run once per encountered HTML operand, preserve original-source

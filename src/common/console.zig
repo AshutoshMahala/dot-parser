@@ -380,6 +380,69 @@ fn severityTitle(severity: Severity) []const u8 {
     };
 }
 
+/// Resolve collected, in-bounds offsets with one forward source walk. Both
+/// homogeneous and composed lists use this path; scratch remains caller-owned.
+fn resolveLocations(entries: []location.Location, source: []const u8) []const location.Location {
+    std.sort.heap(location.Location, entries, {}, struct {
+        fn less(_: void, a: location.Location, b: location.Location) bool {
+            return a.byte_offset < b.byte_offset;
+        }
+    }.less);
+    var cursor: location.PositionCursor = .{};
+    var unique: usize = 0;
+    for (entries) |entry| {
+        if (unique != 0 and entries[unique - 1].byte_offset == entry.byte_offset) continue;
+        entries[unique] = cursor.locate(source, entry.byte_offset);
+        unique += 1;
+    }
+    return entries[0..unique];
+}
+
+fn addLocation(offset: u32, source: []const u8, scratch: []location.Location, count: *usize) error{LocationScratchTooSmall}!void {
+    if (offset > source.len) return;
+    if (count.* == scratch.len) return error.LocationScratchTooSmall;
+    scratch[count.*] = .{ .byte_offset = offset, .line = 0, .byte_column = 0 };
+    count.* += 1;
+}
+
+const Summary = struct {
+    errors: usize = 0,
+    warnings: usize = 0,
+    worst: Severity = .trace,
+
+    fn add(self: *@This(), severity: Severity) void {
+        if (@intFromEnum(severity) > @intFromEnum(self.worst)) self.worst = severity;
+        switch (severity) {
+            .err, .blocked, .critical => self.errors += 1,
+            .warning => self.warnings += 1,
+            else => {},
+        }
+    }
+
+    fn render(self: @This(), total: usize, omitted: u64, options: RenderOptions, writer: anytype) !void {
+        if (total <= 1 and omitted == 0) return;
+        if (total != 0) try writer.writeAll("\n");
+        const g = Glyphs.of(options.style);
+        const pal = Palette.of(options.color, self.worst);
+        try writer.print("{s}{s} Summary{s}\n", .{ pal.frame, g.summary_open, pal.reset });
+        try writer.print("{s}{s}{s} ", .{ pal.frame, g.summary_rail, pal.reset });
+        if (self.errors == 0 and self.warnings == 0) {
+            try writer.print("{d} diagnostic{s}", .{ total, plural(total) });
+        } else {
+            if (self.errors > 0) try writer.print("{d} error{s}", .{ self.errors, plural(self.errors) });
+            if (self.warnings > 0) {
+                if (self.errors > 0) try writer.writeAll(", ");
+                try writer.print("{d} warning{s}", .{ self.warnings, plural(self.warnings) });
+            }
+        }
+        if (omitted > 0) try writer.print(" ({d} more omitted: diagnostic bag is full)", .{omitted});
+        try writer.writeAll("\n");
+        try writer.print("{s}{s}", .{ pal.frame, g.summary_close });
+        try writeRepeat(writer, g.summary_fill, options.rule_width);
+        try writer.print("{s}\n", .{pal.reset});
+    }
+};
+
 /// All payload-specific calls are statically bound to Adapter. Annotation
 /// capacity is a processor-specific compile-time bound, not a heap allocation.
 pub fn Renderer(comptime Adapter: type) type {
@@ -403,28 +466,9 @@ pub fn Renderer(comptime Adapter: type) type {
                 for (Adapter.annotations(d).slice()) |annotation| try addLocation(annotation.span.start, bytes, scratch, &count);
                 if (Adapter.fix(d)) |fix| try addLocation(fix.span.start, bytes, scratch, &count);
             }
-            const entries = scratch[0..count];
-            std.sort.heap(location.Location, entries, {}, struct {
-                fn less(_: void, a: location.Location, b: location.Location) bool {
-                    return a.byte_offset < b.byte_offset;
-                }
-            }.less);
-            var cursor: location.PositionCursor = .{};
-            var unique: usize = 0;
-            for (entries) |entry| {
-                if (unique != 0 and entries[unique - 1].byte_offset == entry.byte_offset) continue;
-                entries[unique] = cursor.locate(bytes, entry.byte_offset);
-                unique += 1;
-            }
-            return entries[0..unique];
+            return resolveLocations(scratch[0..count], bytes);
         }
 
-        fn addLocation(offset: u32, source: []const u8, scratch: []location.Location, count: *usize) error{LocationScratchTooSmall}!void {
-            if (offset > source.len) return;
-            if (count.* == scratch.len) return error.LocationScratchTooSmall;
-            scratch[count.*] = .{ .byte_offset = offset, .line = 0, .byte_column = 0 };
-            count.* += 1;
-        }
         /// Render one diagnostic as compact log-style text, e.g.:
         ///
         /// ```text
@@ -589,45 +633,14 @@ pub fn Renderer(comptime Adapter: type) type {
             location_scratch: []location.Location,
             writer: anytype,
         ) !void {
-            var errors: usize = 0;
-            var warnings: usize = 0;
-            var worst: Severity = .trace;
+            var summary: Summary = .{};
             var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(diagnostics, options.source, location_scratch) };
             for (diagnostics, 0..) |d, index| {
                 if (index != 0) try writer.writeAll("\n");
                 try renderBoxedWith(d, index + 1, options, &positions, writer);
-                const severity = d.code.severity();
-                if (@intFromEnum(severity) > @intFromEnum(worst)) worst = severity;
-                switch (severity) {
-                    .err, .blocked, .critical => errors += 1,
-                    .warning => warnings += 1,
-                    else => {},
-                }
+                summary.add(d.code.severity());
             }
-
-            if (diagnostics.len <= 1 and omitted == 0) return;
-            if (diagnostics.len != 0) try writer.writeAll("\n");
-
-            const g = Glyphs.of(options.style);
-            const pal = Palette.of(options.color, worst);
-            try writer.print("{s}{s} Summary{s}\n", .{ pal.frame, g.summary_open, pal.reset });
-            try writer.print("{s}{s}{s} ", .{ pal.frame, g.summary_rail, pal.reset });
-            if (errors == 0 and warnings == 0) {
-                try writer.print("{d} diagnostic{s}", .{ diagnostics.len, plural(diagnostics.len) });
-            } else {
-                if (errors > 0) try writer.print("{d} error{s}", .{ errors, plural(errors) });
-                if (warnings > 0) {
-                    if (errors > 0) try writer.writeAll(", ");
-                    try writer.print("{d} warning{s}", .{ warnings, plural(warnings) });
-                }
-            }
-            if (omitted > 0) {
-                try writer.print(" ({d} more omitted: diagnostic bag is full)", .{omitted});
-            }
-            try writer.writeAll("\n");
-            try writer.print("{s}{s}", .{ pal.frame, g.summary_close });
-            try writeRepeat(writer, g.summary_fill, options.rule_width);
-            try writer.print("{s}\n", .{pal.reset});
+            try summary.render(diagnostics.len, omitted, options, writer);
         }
 
         /// Maximum source bytes per excerpt; escaped bytes can expand to four display
@@ -951,26 +964,12 @@ pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
             for (items) |item| switch (item) {
                 inline else => |d, tag| {
                     const Adapter = @field(adapters, @tagName(tag));
-                    const Bound = Renderer(Adapter);
-                    try Bound.addLocation(d.span.start, bytes, scratch, &count);
-                    for (Adapter.annotations(d).slice()) |annotation| try Bound.addLocation(annotation.span.start, bytes, scratch, &count);
-                    if (Adapter.fix(d)) |fix| try Bound.addLocation(fix.span.start, bytes, scratch, &count);
+                    try addLocation(d.span.start, bytes, scratch, &count);
+                    for (Adapter.annotations(d).slice()) |annotation| try addLocation(annotation.span.start, bytes, scratch, &count);
+                    if (Adapter.fix(d)) |fix| try addLocation(fix.span.start, bytes, scratch, &count);
                 },
             };
-            const entries = scratch[0..count];
-            std.sort.heap(location.Location, entries, {}, struct {
-                fn less(_: void, a: location.Location, b: location.Location) bool {
-                    return a.byte_offset < b.byte_offset;
-                }
-            }.less);
-            var cursor: location.PositionCursor = .{};
-            var unique: usize = 0;
-            for (entries) |entry| {
-                if (unique != 0 and entries[unique - 1].byte_offset == entry.byte_offset) continue;
-                entries[unique] = cursor.locate(bytes, entry.byte_offset);
-                unique += 1;
-            }
-            return entries[0..unique];
+            return resolveLocations(scratch[0..count], bytes);
         }
         pub fn render(item: Item, options: RenderOptions, writer: anytype) !void {
             switch (item) {
@@ -990,43 +989,17 @@ pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
         }
         pub fn renderBoxedList(items: []const Item, omitted: u64, options: RenderOptions, scratch: []location.Location, writer: anytype) !void {
             var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(items, options.source, scratch) };
-            var errors: usize = 0;
-            var warnings: usize = 0;
-            var worst: Severity = .trace;
+            var summary: Summary = .{};
             for (items, 0..) |item, index| {
                 if (index != 0) try writer.writeAll("\n");
                 switch (item) {
                     inline else => |d, tag| {
                         try Renderer(@field(adapters, @tagName(tag))).renderBoxedWith(d, index + 1, options, &positions, writer);
-                        const severity = d.code.severity();
-                        if (@intFromEnum(severity) > @intFromEnum(worst)) worst = severity;
-                        switch (severity) {
-                            .err, .blocked, .critical => errors += 1,
-                            .warning => warnings += 1,
-                            else => {},
-                        }
+                        summary.add(d.code.severity());
                     },
                 }
             }
-            if (items.len <= 1 and omitted == 0) return;
-            if (items.len != 0) try writer.writeAll("\n");
-            const g = Glyphs.of(options.style);
-            const pal = Palette.of(options.color, worst);
-            try writer.print("{s}{s} Summary{s}\n{s}{s}{s} ", .{ pal.frame, g.summary_open, pal.reset, pal.frame, g.summary_rail, pal.reset });
-            if (errors == 0 and warnings == 0) {
-                try writer.print("{d} diagnostic{s}", .{ items.len, plural(items.len) });
-            } else {
-                if (errors > 0) try writer.print("{d} error{s}", .{ errors, plural(errors) });
-                if (warnings > 0) {
-                    if (errors > 0) try writer.writeAll(", ");
-                    try writer.print("{d} warning{s}", .{ warnings, plural(warnings) });
-                }
-            }
-            if (omitted > 0) try writer.print(" ({d} more omitted: diagnostic bag is full)", .{omitted});
-            try writer.writeAll("\n");
-            try writer.print("{s}{s}", .{ pal.frame, g.summary_close });
-            try writeRepeat(writer, g.summary_fill, options.rule_width);
-            try writer.print("{s}\n", .{pal.reset});
+            try summary.render(items.len, omitted, options, writer);
         }
     };
 }

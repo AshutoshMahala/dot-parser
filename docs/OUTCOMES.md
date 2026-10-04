@@ -18,7 +18,7 @@ DOT processing and does not produce a source diagnostic.
 | --- | --- | --- |
 | `.success` | The document parsed completely | Yes |
 | `.cancelled` | A session was cancelled, or an enabled cancellation hook stopped a one-shot operation | No |
-| `.processor_stopped` | A bound child ended during-DOT composition: its operational stop, the shared sink, or parent fail-fast after child errors | No |
+| `.processor_stopped` | A bound child ended during-DOT composition: a non-diagnostic operational stop, or parent fail-fast after child errors | No |
 | `.diagnostic_stopped` | A diagnostic destination stopped unfinished work: requested, capacity, failure, or out_of_memory | No |
 | `.invalid_syntax` | The input is not accepted by the selected syntax policy | No |
 | `.unsupported_feature` | Recognized policy-disabled input; reporting severity does not change this outcome | No |
@@ -46,7 +46,9 @@ finish. With a collecting parent, ordinary child errors can instead leave a
 complete DOT document: `result.dot.documentValid()` and the combined
 `result.documentValid()` then intentionally differ. Both components report through
 one sink. `result.dot.diagnostic_stop` / `diagnostic_delivery` reflect that shared
-destination; outer syntax/validation counters still count only DOT findings.
+destination. A shared sink stop during child processing returns
+`.diagnostic_stopped`, not `.processor_stopped`; the emitter does not change the
+stop classification. Outer syntax/validation counters still count only DOT findings.
 
 `storage_failure` carries its own cause: `.out_of_memory` (allocator),
 `.pool_exhausted` (a fixed pool filled — the diagnostic names the pool and

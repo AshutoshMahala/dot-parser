@@ -351,8 +351,9 @@ The child runs its own parse/validation policy before the parent decides whether
 to continue. Parent collect/child fail-fast continues with the next operand;
 parent fail-fast/child collect retains all findings from the first failing child.
 Limits remain child-local; allocation/storage/cancellation and shared-sink stops
-are operational. `processor_stopped` marks an unfinished outer parse, without
-calling it invalid DOT or publishing a partial tree. Parent validation runs after
+are operational. Shared diagnostic stops use `diagnostic_stopped` regardless of
+emitter; other child stops use `processor_stopped`, marking an unfinished outer
+parse without calling it invalid DOT or publishing a partial tree. Parent validation runs after
 successful outer parsing; child diagnostics therefore precede that phase.
 
 The facade retains DOT syntax and a constant-size child report; child trees are
@@ -367,6 +368,34 @@ Markup's combined methods are now `parseAndValidate` / `parseAndValidateIn`,
 including `Prepared`; no old-name aliases. The consumer-facing structural
 contract and runtime option paths are documented in [policies](../POLICIES.md#bound-processors),
 with a [single-call example](../../examples/composed_markup.zig).
+
+### Composition review follow-up — 2026-10-03
+
+The non-design review fixes are implemented:
+
+- Shared destination stops now follow the existing DOT `diagnostic_stopped`
+  outcome and event-abort path, including accepted stops, capacity rejection,
+  callback failure and diagnostic allocation failure. Child cancellation/storage
+  stops and parent fail-fast remain `processor_stopped`; no extra diagnostic is
+  emitted while propagating the stop.
+- The deterministic differential compares composed scalar/block results and
+  each ordinary DOT profile, including retained pools, validation, counters and
+  the DOT diagnostic subsequence. Both error policies and both immediate/
+  cancellable drivers are covered. Intentional parent fail-fast after child
+  errors is tested separately, not mistaken for an outer-parity regression.
+- Ordinary and composed console rendering share location collection helpers,
+  sorted offset resolution and summary tally/rendering. Regression tests compare
+  their output for reversed/duplicate locations, empty/single/multiple entries,
+  omissions, styles/colors and missing/truncated source.
+
+Allocation reuse, the profile API surface and silent-unsupported result metadata
+remain separate design work; this change adds no parser state or new public API.
+
+Verification: **606/606 tests** pass in Debug, ReleaseSafe and ReleaseFast.
+Examples, RISC-V32/Wasm32 freestanding checks and benchmark builds pass. The
+parity test exercises 512 deterministic inputs under four error/execution
+combinations, each across both scanners; this is regression coverage, not a
+sustained fuzzing or throughput claim.
 
 ### One-shot verification and local costs
 

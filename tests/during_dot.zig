@@ -85,12 +85,59 @@ test "one bag capacity stops child then outer without delivering anything else" 
         var bag: P.FixedDiagnosticBag(capacity) = .{};
         var checked = try P.parseAndValidate(gpa, source, bag.sink(), .{});
         defer checked.deinit(gpa);
-        try equal(dot.ParseOutcome.processor_stopped, checked.dot.outcome);
+        try equal(dot.ParseOutcome{ .diagnostic_stopped = if (capacity == 0) .capacity else .requested }, checked.dot.outcome);
         try expect(checked.dot.document == null and checked.dot.validation == null);
         try equal(@as(usize, capacity), bag.items().len);
         try equal(if (capacity == 0) dot.diagnostic.StopReason.capacity else .requested, checked.dot.diagnostic_stop.?);
         try equal(if (capacity == 0) dot.diagnostic.Delivery.failed else .complete, checked.dot.diagnostic_delivery);
     }
+}
+
+test "shared diagnostic stops have the same cause for outer and child emitters" {
+    inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |controlled| {
+        const P = dot.Profile(.{
+            .policy = .{ .scanner = backend, .execution = .{ .cancellation = controlled } },
+            .processors = .{ .markup = markup.Profile(.{ .policy = .{ .scanner = backend } }) },
+        });
+        const Destination = struct {
+            reason: dot.reporting.StopReason,
+            calls: u32 = 0,
+            child: bool = false,
+            fn emit(raw: ?*anyopaque, item: P.Diagnostic) dot.reporting.SinkError!dot.reporting.Action {
+                const self: *@This() = @ptrCast(@alignCast(raw.?));
+                self.calls += 1;
+                self.child = item == .markup;
+                return switch (self.reason) {
+                    .requested => .stop,
+                    .capacity => error.DiagnosticCapacityExceeded,
+                    .failure => error.DiagnosticSinkFailure,
+                    .out_of_memory => error.OutOfMemory,
+                };
+            }
+        };
+        const inputs = [_][]const u8{
+            "digraph { a -> ; b [label=<<i>ok</i>>]; }",
+            "digraph { b [label=<<i>>]; a -> ; }",
+            // A child validation finding, not only child syntax failure.
+            "digraph { b [label=<<i x='1' x='2'/>>]; a -> ; }",
+        };
+        for (std.enums.values(dot.reporting.StopReason)) |reason| {
+            for (inputs, 0..) |source, index| {
+                var destination: Destination = .{ .reason = reason };
+                var checked = try P.parseAndValidate(gpa, source, .{ .context = &destination, .emit_fn = Destination.emit }, .{});
+                defer checked.deinit(gpa);
+                try equal(dot.ParseOutcome{ .diagnostic_stopped = reason }, checked.dot.outcome);
+                try equal(reason, checked.dot.diagnostic_stop.?);
+                try equal(if (reason == .requested) dot.reporting.Delivery.complete else .failed, checked.dot.diagnostic_delivery);
+                try equal(@as(u32, 1), destination.calls);
+                try equal(index != 0, destination.child);
+                try expect(checked.dot.document == null and checked.dot.validation == null);
+                try equal(dot.Completion.incomplete, checked.dot.completion);
+                try expect(!checked.markup.complete);
+                if (index != 0) try equal(.diagnostic_stop, checked.markup.stop.?);
+            }
+        }
+    };
 }
 
 test "unsupported child severity never turns passthrough into a validation success" {
@@ -274,39 +321,138 @@ test "mixed rendering keeps original fix coordinates and works with incomplete s
     try equal(@as(usize, 0), writer.buffered().len);
 }
 
-test "during-DOT scanner differential covers malformed boundaries and recovery" {
-    const Scalar = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
-    const Block = dot.Profile(.{ .policy = .{ .scanner = .block }, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .scanner = .block } }) } });
-    const seed = "digraph <g> { a [label=<<b x='1' x='2'>&amp;</b>>+\"text\"+<<i/>>]; a -- b; c [x=<<x>text</wrong>>]; }";
-    const alphabet = "<>/'\"&;[]{}=+!-abc \n\xff";
-    var prng = std.Random.DefaultPrng.init(0x1eafa113);
-    const random = prng.random();
-    for (0..512) |_| {
-        var source: [seed.len]u8 = seed.*;
-        for (0..random.intRangeAtMost(usize, 1, 4)) |_| source[random.uintLessThan(usize, source.len)] = alphabet[random.uintLessThan(usize, alphabet.len)];
-        const len = if (random.boolean()) source.len else random.intRangeAtMost(usize, 0, source.len);
-        var left_bag: Scalar.FixedDiagnosticBag(64) = .{};
-        var right_bag: Block.FixedDiagnosticBag(64) = .{};
-        var left = try Scalar.parseAndValidate(gpa, source[0..len], left_bag.sink(), .{});
-        defer left.deinit(gpa);
-        var right = try Block.parseAndValidate(gpa, source[0..len], right_bag.sink(), .{});
-        defer right.deinit(gpa);
-        try std.testing.expectEqualDeep(left.dot.outcome, right.dot.outcome);
-        try equal(left.dot.completion, right.dot.completion);
-        try equal(left.dot.syntax_errors, right.dot.syntax_errors);
-        try std.testing.expectEqualDeep(left.dot.validation, right.dot.validation);
-        try equal(left.documentValid(), right.documentValid());
-        try equal(left.markup.visited, right.markup.visited);
-        try equal(left.markup.valid, right.markup.valid);
-        try equal(left.markup.rejected, right.markup.rejected);
-        try equal(left.markup.unprocessed, right.markup.unprocessed);
-        try equal(left.markup.complete, right.markup.complete);
-        try equal(left_bag.items().len, right_bag.items().len);
-        for (left_bag.items(), right_bag.items()) |a, b| switch (a) {
-            inline else => |d, tag| {
-                try expect(std.mem.eql(u8, @tagName(a), @tagName(b)));
-                try std.testing.expectEqualDeep(d, @field(b, @tagName(tag)));
-            },
+test "composed and standalone renderers agree on list locations and summaries" {
+    const P = dot.Profile(.{
+        .policy = .{ .validation = .{ .digraph = .{ .operator_mismatch = .warning } } },
+        .processors = .{ .markup = markup.Profile(.{}) },
+    });
+    const source = "digraph {\n a [label=<<b x='1' x='2'/> + <i y='1' y='2'/>>];\n a -- b;\n b -- c;\n}";
+    var bag: P.FixedDiagnosticBag(16) = .{};
+    var checked = try P.parseAndValidate(gpa, source, bag.sink(), .{});
+    defer checked.deinit(gpa);
+    inline for (.{ .dot, .markup }) |tag| {
+        const Provider = if (tag == .dot) dot else markup;
+        var plain_items: [16]Provider.Diagnostic = undefined;
+        var mixed_items: [16]P.Diagnostic = undefined;
+        var count: usize = 0;
+        // Reverse source order and duplicate each finding: both renderers must
+        // sort/de-duplicate their location queries without reordering output.
+        var index = bag.items().len;
+        while (index > 0) {
+            index -= 1;
+            const item = bag.items()[index];
+            if (!std.mem.eql(u8, @tagName(item), @tagName(tag))) continue;
+            for (0..2) |_| {
+                plain_items[count] = @field(item, @tagName(tag));
+                mixed_items[count] = item;
+                count += 1;
+            }
+        }
+        try expect(count >= 4);
+        var locations: [128]dot.location.Location = undefined;
+        inline for (.{ .unicode, .ascii }) |style| inline for (.{ .none, .ansi }) |color| {
+            for ([_]?[]const u8{ source, source[0..4], null }) |bytes| {
+                for ([_]usize{ 0, 1, count }) |length| {
+                    var plain_buffer: [16_384]u8 = undefined;
+                    var mixed_buffer: [16_384]u8 = undefined;
+                    var plain_writer = std.Io.Writer.fixed(&plain_buffer);
+                    var mixed_writer = std.Io.Writer.fixed(&mixed_buffer);
+                    const options: dot.presentation.RenderOptions = .{ .source = bytes, .source_name = "labels.dot", .style = style, .color = color, .verbose = true };
+                    try Provider.console.renderList(plain_items[0..length], options, &locations, &plain_writer);
+                    try P.console.renderList(mixed_items[0..length], options, &locations, &mixed_writer);
+                    try std.testing.expectEqualStrings(plain_writer.buffered(), mixed_writer.buffered());
+                    for ([_]u64{ 0, 3 }) |omitted| {
+                        plain_writer.end = 0;
+                        mixed_writer.end = 0;
+                        try Provider.console.renderBoxedList(plain_items[0..length], omitted, options, &locations, &plain_writer);
+                        try P.console.renderBoxedList(mixed_items[0..length], omitted, options, &locations, &mixed_writer);
+                        try std.testing.expectEqualStrings(plain_writer.buffered(), mixed_writer.buffered());
+                    }
+                }
+            }
         };
     }
+}
+
+test "during-DOT scanner and plain-profile parity cover boundaries and recovery" {
+    inline for (.{ dot.OnError.collect, .fail_fast }) |on_error| inline for (.{ false, true }) |controlled| {
+        const scalar_policy: dot.Policy = .{ .on_error = on_error, .execution = .{ .cancellation = controlled } };
+        const block_policy: dot.Policy = .{ .on_error = on_error, .scanner = .block, .execution = .{ .cancellation = controlled } };
+        const PlainScalar = dot.Profile(.{ .policy = scalar_policy });
+        const PlainBlock = dot.Profile(.{ .policy = block_policy });
+        const Scalar = dot.Profile(.{ .policy = scalar_policy, .processors = .{ .markup = markup.Profile(.{}) } });
+        const Block = dot.Profile(.{ .policy = block_policy, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .scanner = .block } }) } });
+        const seeds = [_][]const u8{
+            "digraph <g> { a [label=<<b x='1' x='2'>&amp;</b>>+\"text\"+<<i/>>]; a -- b; c [x=<<x>text</wrong>>]; }",
+            "digraph <g> { a [label=<<b x='1'>&amp;</b>>+\"text\"+<<i/>>]; a -> b; }",
+            "digraph { subgraph <s> { <a>:<p> -> <b>; } -> <c>:<q>; <key>=<value>; }",
+            "graph { a; b -- c; node [x=y]; }",
+            "digraph { a [x=]; b [label=<<b/>>]; c -> ; }",
+        };
+        const alphabet = "<>/'\"&;[]{}=+!-abc \n\xff";
+        var prng = std.Random.DefaultPrng.init(0x1eafa113);
+        const random = prng.random();
+        var compared: u32 = 0;
+        for (0..512) |iteration| {
+            const seed = seeds[iteration % seeds.len];
+            var storage: [256]u8 = undefined;
+            const source = storage[0..seed.len];
+            @memcpy(source, seed);
+            if (iteration >= seeds.len) {
+                for (0..random.intRangeAtMost(usize, 1, 4)) |_| source[random.uintLessThan(usize, source.len)] = alphabet[random.uintLessThan(usize, alphabet.len)];
+            }
+            const len = if (iteration < seeds.len or random.boolean()) source.len else random.intRangeAtMost(usize, 0, source.len);
+            var left_bag: Scalar.FixedDiagnosticBag(64) = .{};
+            var right_bag: Block.FixedDiagnosticBag(64) = .{};
+            var left = try Scalar.parseAndValidate(gpa, source[0..len], left_bag.sink(), .{});
+            defer left.deinit(gpa);
+            var right = try Block.parseAndValidate(gpa, source[0..len], right_bag.sink(), .{});
+            defer right.deinit(gpa);
+            try std.testing.expectEqualDeep(left.dot.outcome, right.dot.outcome);
+            try equal(left.dot.completion, right.dot.completion);
+            try equal(left.dot.syntax_errors, right.dot.syntax_errors);
+            try std.testing.expectEqualDeep(left.dot.validation, right.dot.validation);
+            try equal(left.documentValid(), right.documentValid());
+            try equal(left.markup.visited, right.markup.visited);
+            try equal(left.markup.valid, right.markup.valid);
+            try equal(left.markup.rejected, right.markup.rejected);
+            try equal(left.markup.unprocessed, right.markup.unprocessed);
+            try equal(left.markup.complete, right.markup.complete);
+            try equal(left_bag.items().len, right_bag.items().len);
+            for (left_bag.items(), right_bag.items()) |a, b| switch (a) {
+                inline else => |d, tag| {
+                    try expect(std.mem.eql(u8, @tagName(a), @tagName(b)));
+                    try std.testing.expectEqualDeep(d, @field(b, @tagName(tag)));
+                },
+            };
+            // A child rejection intentionally stops a fail-fast parent earlier.
+            // Otherwise the DOT result (including retained pools) and its diagnostic
+            // subsequence must match the corresponding ordinary profile exactly.
+            if (left.dot.outcome == .processor_stopped) {
+                try equal(dot.OnError.fail_fast, on_error);
+                try equal(.parent_error, left.markup.stop.?);
+                try equal(.parent_error, right.markup.stop.?);
+            } else {
+                try expect(left.dot.diagnostic_stop == null and right.dot.diagnostic_stop == null);
+                try expectPlainParity(PlainScalar, source[0..len], left.dot, left_bag.items());
+                try expectPlainParity(PlainBlock, source[0..len], right.dot, right_bag.items());
+                compared += 1;
+            }
+        }
+        try expect(compared > 100);
+    };
+}
+
+fn expectPlainParity(comptime Plain: type, source: []const u8, composed_dot: dot.CheckResult, mixed: anytype) !void {
+    var bag: dot.FixedDiagnosticBag(64) = .{};
+    var plain = Plain.parseAndValidate(gpa, source, bag.sink(), .{});
+    defer plain.deinit(gpa);
+    try std.testing.expectEqualDeep(plain, composed_dot);
+    var index: usize = 0;
+    for (mixed) |item| if (item == .dot) {
+        try expect(index < bag.items().len);
+        try std.testing.expectEqualDeep(bag.items()[index], item.dot);
+        index += 1;
+    };
+    try equal(bag.items().len, index);
 }
