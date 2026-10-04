@@ -356,10 +356,11 @@ emitter; other child stops use `processor_stopped`, marking an unfinished outer
 parse without calling it invalid DOT or publishing a partial tree. Parent validation runs after
 successful outer parsing; child diagnostics therefore precede that phase.
 
-The facade retains DOT syntax and a constant-size child report; child trees are
-deinitialized after each invocation. Applications wanting retained child trees or
-subset selection use explicit delayed calls. Arena allocators can still retain
-deinitialized allocations until arena teardown. No composed Session/advance,
+The facade retains DOT syntax and a constant-size child report; one child-owned
+workspace reuses tree, nesting and validation buffers between invocations, then
+releases them at operation exit. Applications wanting independently retained child
+trees or subset selection use explicit delayed calls. Arena allocators can still
+retain deinitialized allocations until arena teardown. No composed Session/advance,
 fixed-memory facade, recursive scheduler or output-tree collection is implied.
 Cancellation hooks remain component-specific; an outer-only hook does not make
 an uncancellable child interruptible.
@@ -388,8 +389,10 @@ The non-design review fixes are implemented:
   their output for reversed/duplicate locations, empty/single/multiple entries,
   omissions, styles/colors and missing/truncated source.
 
-Allocation reuse, the profile API surface and silent-unsupported result metadata
-remain separate design work; this change adds no parser state or new public API.
+At this review checkpoint, allocation reuse, the profile API surface and
+silent-unsupported metadata were still separate design questions. The next
+refinement implements reuse and avoids silent diagnostic construction; profile
+surface changes remain deferred.
 
 Verification: **606/606 tests** pass in Debug, ReleaseSafe and ReleaseFast.
 Examples, RISC-V32/Wasm32 freestanding checks and benchmark builds pass. The
@@ -397,7 +400,84 @@ parity test exercises 512 deterministic inputs under four error/execution
 combinations, each across both scanners; this is regression coverage, not a
 sustained fuzzing or throughput claim.
 
-### One-shot verification and local costs
+### Reusable workspaces and silent reporting — 2026-10-03
+
+Decisions 1 and 3 are implemented; the broader profile API proposal (decision 2)
+remains for discussion. Existing consumer-facing composition syntax and options
+are unchanged. The compile-time custom-processor contract now requires
+`Prepared.initWorkspace`, `Workspace.parseAndValidate` and `Workspace.deinit`.
+No runtime capability query, per-fragment preparation or old-contract fallback is
+introduced. The child owns its buffer layout and may use a zero-sized workspace.
+
+Markup's workspace uses the existing parser/validator engines. It resets logical
+contents and retains node, attribute, nesting, source-header and duplicate-check
+capacity. Document and source-fallback validation share key scratch. Initialization
+allocates nothing; disposal releases all buffers even after cancellation, sink
+stop, input rejection or allocation failure. Returned document views borrow the
+workspace until its next call/deinit; independent owned/fixed calls remain available.
+
+DOT and markup classify silent unsupported input without constructing its
+user-facing diagnostic. Outcomes, safe recovery and parent decisions still use
+the internal failure class. No hidden first-unsupported metadata is added.
+Standalone markup tokenization remains policy-free and materializes its public
+lexical problem on demand.
+
+Reuse targets allocation churn, not guaranteed peak-memory reduction. Largest
+retained buffers and growth slack stay live through the composed operation,
+including outer validation. An early large child can increase peak memory as
+outer output grows. `bench-composition` separately measures allocator calls/peak
+requested live bytes and uninstrumented complete parse/validate/free time; source
+construction and diagnostic retention are excluded. It does not measure RSS or
+allocator-internal remap peaks, nor update a standard-machine baseline.
+
+Verification: **612/612 tests** pass in Debug, ReleaseSafe and ReleaseFast.
+Examples, RISC-V32/Wasm32 freestanding checks and benchmark builds pass. New
+coverage compares allocated/reused results, pools and diagnostics across scanners,
+fixed/runtime profiles, cancellable variants and changing origins; tests also
+cover warm-buffer allocation refusal, every growth-allocation failure, reuse after
+failed growth/cancellation/limits/sink stops, invalid fragments, custom workspace
+lifecycle and zero child allocation without HTML. Existing composed differential
+and unsupported-policy matrices pass. This is regression coverage, not a new
+sustained fuzz campaign.
+
+Local native arm64, Zig 0.16.0 ReleaseFast comparison against `15bbc96`, identical
+`bench/composition.zig` harness, before/after/after/before with no overlapping
+builds. Each process takes three warmup batches then nine timed batches of ten
+complete parse/validate/free calls, using the process general allocator and discard
+sinks. Times below are the range of the two process medians; throughput uses
+decimal MB/s. Allocation instrumentation runs separately from timing.
+
+| Fixture | Before scalar ms | Reused scalar ms | Before block ms | Reused block ms |
+| --- | ---: | ---: | ---: | ---: |
+| 1,000 plain DOT nodes, 2,010 B | 0.029–0.030 | 0.029 | 0.032 | 0.031 |
+| 1,000 small valid labels, 32,010 B | 0.345–0.347 | 0.240–0.277 | 0.365–0.385 | 0.274–0.279 |
+| 1,000 rejected labels + source validation, 35,010 B | 0.463–0.465 | 0.346–0.347 | 0.491–0.500 | 0.386–0.389 |
+| One 10,001-element label then 50,000 DOT nodes, 140,029 B | 1.561–1.581 | 1.573 | 1.665 | 1.629–1.638 |
+
+Small valid labels improve from 92.2–92.7 to 115.5–133.3 MB/s scalar and
+83.2–87.6 to 114.7–116.9 MB/s block on these runs, not a general speed guarantee.
+
+| Fixture | Allocation calls before → reused | Resize/remap calls before → reused | Peak requested live bytes before → reused |
+| --- | ---: | ---: | ---: |
+| Plain | 2 → 2 | 0/19 → 0/19 | 27,064 → 27,064 |
+| Small valid labels | 4,003 → 7 | 2,000/29 → 0/29 | 44,108 → 44,260 |
+| Rejected labels | 5,003 → 8 | 0/29 → 0/29 | 44,112 → 44,404 |
+| Large label first | 5 → 5 | 1/55 → 0/55 | 1,389,832 → 1,670,604 |
+
+Allocation figures count allocator entry calls, including unsuccessful resize/remap
+attempts; both scanners agree. Live requested bytes return to zero after disposal.
+The large-first case increases peak by 280,772 B (~20.2%), illustrating retained
+capacity rather than promising RAM savings. Other allocators may copy instead of
+remapping and have different peaks; these are not RSS measurements.
+
+An unchanged ordinary DOT `bench/policies.zig` probe in the same alternating order
+keeps fixed scalar medians at 0.865/0.867 ms before and 0.863/0.862 after; fixed
+block 0.971/0.955 before and 0.988/0.959 after for 50,000 statements. Runtime
+cells are similar or faster but noisy. DOT document/diagnostic/fixed-session/
+runtime-session sizes stay 232/80/1,080/1,304 B. No broad regression or speedup
+claim follows from these small local fixtures.
+
+### One-shot verification and local costs (before workspace reuse)
 
 604 tests pass in Debug, ReleaseSafe and ReleaseFast, including a deterministic 512-input scalar/block
 differential over mutated/truncated mixed DOT/markup input. Allocation-failure

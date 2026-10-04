@@ -125,8 +125,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
             if (outcome == .invalid_syntax and finding != null) syntax_errors += 1;
             // Preserve the original terminal cause AND the acknowledgment. A
             // parent operation must not emit again after accepted-stop/failure.
-            const offered = if (outcome == .unsupported_feature and self.unsupported() == .silent) null else finding;
-            if (offered) |item| {
+            if (finding) |item| {
                 var d = item;
                 if (warnings_enabled and outcome == .unsupported_feature and self.unsupported() == .warning) {
                     d.code = .unsupported_feature_warning;
@@ -217,6 +216,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                                 self.beginHeaderRecovery(stack, sink, p.diagnostic);
                             } else self.finish(stack, sink, p.outcome, p.diagnostic);
                         },
+                        .unsupported => |u| self.finish(stack, sink, .{ .unsupported_feature = u.feature }, if (self.unsupported() == .silent) null else u.finding()),
                         .malformed_reference => |d| self.malformedReference(stack, sink, d),
                         .token => |t| {
                             self.token = t;

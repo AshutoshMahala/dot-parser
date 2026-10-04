@@ -74,6 +74,16 @@ pub fn Engine(comptime api: type, comptime backend: policy.ScannerBackend, compt
                 ._attributes = builder.attributes,
             };
         }
+        /// Workspace-owned pools: reset logical contents without shrinking or
+        /// transferring ownership. A returned document borrows these pools.
+        pub fn parseReusing(source: []const u8, diagnostics: diagnostic.Sink, builder: *syntax.Builder, stack: *scratch.Stack, settings: Settings, hook: Hook) api.FixedParseResult {
+            builder.abort();
+            builder.source = source;
+            stack.len = 0;
+            var machine = Machine.init(source, diagnostics, settings, hook);
+            const report = machine.run(stack, builder);
+            return fixedResult(report, builder);
+        }
         pub fn measureIn(source: []const u8, storage: scratch.Storage, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) results.Report {
             var stack: scratch.Stack = .{ .frames = storage.frames };
             var counter: syntax.Counter = .{};

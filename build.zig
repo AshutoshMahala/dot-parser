@@ -318,6 +318,18 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_markup_bench.addArgs(args);
     b.step("bench-markup", "Benchmark standalone structural markup (decimal MB/s)").dependOn(&run_markup_bench.step);
     check_benches.dependOn(&markup_bench.step);
+    const composition_bench = b.addExecutable(.{
+        .name = "composition_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/composition.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    b.step("bench-composition", "Measure composed throughput, allocation calls and peak requested bytes")
+        .dependOn(&b.addRunArtifact(composition_bench).step);
+    check_benches.dependOn(&composition_bench.step);
     for ([_]*std.Build.Step.Compile{ bench_exe, lexer_bench, session_bench, subgraph_bench, policy_bench }) |bench| {
         _ = bench.getEmittedBin();
         check_benches.dependOn(&bench.step);

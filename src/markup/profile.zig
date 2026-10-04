@@ -5,6 +5,8 @@ const policy = @import("policy.zig");
 const engine = @import("engine.zig");
 const validation = @import("validate.zig");
 const source_validation = @import("validate_source.zig");
+const syntax = @import("syntax.zig");
+const scratch_impl = @import("scratch.zig");
 
 pub fn Profile(comptime api: type, comptime config: policy.Config) type {
     const Binding = @import("parser_support").processor.PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
@@ -46,6 +48,18 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
                 return if (runtime_policy) self.policies else baseline;
             }
 
+            /// No allocation until processing needs capacity. The workspace owns
+            /// its buffers and must be deinitialized once, never through copies.
+            pub fn initWorkspace(self: @This(), allocator: std.mem.Allocator, resources: api.ParseResources) Workspace {
+                return .{
+                    .prepared = self,
+                    .allocator = allocator,
+                    .builder = .growing(&.{}, allocator),
+                    .stack = .{ .allocator = resources.scratch_allocator orelse allocator },
+                    .buffers = .init(.{}, allocator),
+                };
+            }
+
             /// Parse, then validate the document or recognizable source scopes.
             /// Validation is skipped after an operational parsing stop or a
             /// fail-fast syntax error. Neither
@@ -72,6 +86,40 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
                     else => null,
                 };
                 return .{ .parse = parsed, .validation = rebaseValidation(input, checked), .has_errors = fragmentHasErrors(parsed, checked, self.effective()) };
+            }
+        };
+        /// Reusable per-operation storage. Results borrow its pools until the
+        /// next call or deinit; source bytes remain caller-owned and unchanged.
+        /// Resetting a fragment never trims buffers or prepares policy again.
+        pub const Workspace = struct {
+            prepared: Prepared,
+            allocator: std.mem.Allocator,
+            builder: syntax.Builder,
+            stack: scratch_impl.Stack,
+            buffers: source_validation.Buffers,
+
+            pub fn parseAndValidate(self: *@This(), input: api.Fragment, diagnostics: api.DiagnosticSink) api.Fragment.Error!api.FixedFragmentResult {
+                var mapped = try api.diagnostic.OriginSink.init(input, diagnostics);
+                const parsed = callPrepared("parseReusing", api.FixedParseResult, .{ input.bytes, mapped.sink(), &self.builder, &self.stack }, self.prepared);
+                const checked: ?api.ValidationResult = if (parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed) null else switch (parsed.outcome) {
+                    .success => validatePrepared("reusing", .{ self.allocator, &parsed.document.?, &self.buffers.keys, mapped.sink() }, self.prepared),
+                    .invalid_syntax => if (self.prepared.effective().on_error == .collect) sourceValidationPrepared("reusing", .{ input.bytes, &self.buffers, mapped.sink() }, self.prepared) else null,
+                    else => null,
+                };
+                return .{ .parse = parsed, .validation = rebaseValidation(input, checked), .has_errors = fragmentHasErrors(parsed, checked, self.prepared.effective()) };
+            }
+            /// Allocator-requested buffer capacity, excluding source, diagnostics,
+            /// allocator overhead and the workspace's own constant-size value.
+            pub fn reservedBytes(self: *const @This()) usize {
+                return self.builder.list.capacity * @sizeOf(api.Node) + self.builder.attributes.capacity * @sizeOf(api.Attribute) +
+                    self.stack.frames.len * @sizeOf(scratch_impl.Frame) + self.buffers.attributes.capacity * @sizeOf(api.ScopeAttribute) +
+                    self.buffers.keys.capacity * @sizeOf(api.AttributeKeyScratch);
+            }
+            pub fn deinit(self: *@This()) void {
+                self.builder.deinit();
+                self.stack.deinit();
+                self.buffers.deinit();
+                self.* = undefined;
             }
         };
         fn fragmentHasErrors(parsed: anytype, checked: ?api.ValidationResult, effective: policy.Effective) bool {

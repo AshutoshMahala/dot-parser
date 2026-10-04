@@ -15,8 +15,16 @@ pub const Token = struct {
     name: Span = .{ .start = 0, .len = 0 },
 };
 pub const Result = union(enum) { token: Token, problem: result.Problem };
-/// Recoverable lexical finding, interpreted only by the policy-bound parser.
-const ScanResult = union(enum) { token: Token, problem: result.Problem, malformed_reference: diagnostic.Diagnostic };
+/// Unsupported boundary classification, without a user-facing diagnostic.
+const Unsupported = struct {
+    feature: diagnostic.Feature,
+    span: Span,
+    pub fn finding(self: @This()) diagnostic.Diagnostic {
+        return .{ .code = .unsupported_feature, .span = self.span, .details = .{ .feature = self.feature } };
+    }
+};
+/// Internal scanner findings; recoverable references are policy-interpreted.
+const ScanResult = union(enum) { token: Token, problem: result.Problem, unsupported: Unsupported, malformed_reference: diagnostic.Diagnostic };
 
 /// Error-path cursor only; the strict scanner and public lexer never enter it.
 pub const HeaderRecovery = enum(u32) { unquoted, single_quote, double_quote, slash };
@@ -100,7 +108,7 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
         }
         fn problem(self: *Self, code: diagnostic.Code, at: u32, details: diagnostic.Details) bool {
             const r: ScanResult = .{ .problem = .{
-                .outcome = if (details == .feature) .{ .unsupported_feature = details.feature } else .invalid_syntax,
+                .outcome = .invalid_syntax,
                 .diagnostic = .{ .code = code, .span = .{ .start = at, .len = if (at < self.source.len) 1 else 0 }, .details = details },
             } };
             self.done = true;
@@ -108,7 +116,11 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
             return true;
         }
         fn unsupported(self: *Self, feature: diagnostic.Feature, at: u32) bool {
-            return self.problem(.unsupported_feature, at, .{ .feature = feature });
+            // Only lexical classification here. Policy-bound parsing decides
+            // whether a user-facing diagnostic should be constructed at all.
+            self.ready = .{ .unsupported = .{ .feature = feature, .span = .{ .start = at, .len = if (at < self.source.len) 1 else 0 } } };
+            self.done = true;
+            return true;
         }
 
         /// These states are reachable only after an open_head was delivered.
@@ -580,6 +592,9 @@ pub fn For(comptime backend: policy.ScannerBackend) type {
             return switch (self.scanner.ready) {
                 .token => |t| .{ .token = t },
                 .problem => |p| .{ .problem = p },
+                // The standalone lexer has no reporting policy: materialize
+                // its public problem only at this boundary.
+                .unsupported => |u| .{ .problem = .{ .outcome = .{ .unsupported_feature = u.feature }, .diagnostic = u.finding() } },
                 .malformed_reference => |d| blk: {
                     const p: result.Problem = .{ .outcome = .invalid_syntax, .diagnostic = d };
                     self.scanner.ready = .{ .problem = p };

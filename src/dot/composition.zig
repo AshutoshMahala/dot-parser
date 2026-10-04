@@ -12,10 +12,11 @@ const Parts = @import("identifier_parts.zig").Parts;
 
 pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Child: type) type {
     comptime {
-        for (.{ "Policies", "Prepared", "Options", "Diagnostic", "DiagnosticSink", "CheckResult", "ParseResources", "InputError", "prepare" }) |member| {
+        for (.{ "Policies", "Prepared", "Options", "Diagnostic", "DiagnosticSink", "Workspace", "ParseResources", "InputError", "prepare" }) |member| {
             if (!@hasDecl(Child, member)) @compileError("bound markup processor is missing " ++ member);
         }
-        if (!@hasDecl(Child.Prepared, "parseAndValidate")) @compileError("bound markup processor must expose Prepared.parseAndValidate");
+        if (!@hasDecl(Child.Prepared, "initWorkspace")) @compileError("bound markup processor must expose Prepared.initWorkspace");
+        if (!@hasDecl(Child.Workspace, "parseAndValidate") or !@hasDecl(Child.Workspace, "deinit")) @compileError("bound markup workspace must expose parseAndValidate and deinit");
     }
     const Outer = @import("profile.zig").Profile(api, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
     return struct {
@@ -84,9 +85,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
             diagnostic_stop: ?reporting.StopReason,
         };
         const Context = struct {
-            allocator: std.mem.Allocator,
-            child: Child.Prepared,
-            resources: Child.ParseResources,
+            workspace: Child.Workspace,
             sink: DiagnosticSink,
             report: MarkupReport = .{},
             failure: ?Child.InputError = null,
@@ -134,12 +133,11 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
                 while (parts.next()) |part| {
                     if (part.form != .html) continue;
                     const input: support.processor.Fragment = .{ .bytes = part.inner.slice(source), .origin = part.inner.start };
-                    var checked = self.child.parseAndValidate(self.allocator, input, self.childSink(), self.resources) catch |err| {
+                    const checked = self.workspace.parseAndValidate(input, self.childSink()) catch |err| {
                         self.failure = err;
                         self.report.stop = .input_error;
                         return self.stopped();
                     };
-                    defer checked.deinit();
                     self.report.visited += 1;
                     self.report.has_errors = self.report.has_errors or checked.has_errors;
                     if (checked.documentValid()) {
@@ -174,13 +172,14 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
         }
 
         /// One synchronous operation; no Session/advance or combined budget is
-        /// exposed. Each temporary child tree is released before the next child.
+        /// exposed. Child-owned working buffers are reused across all operands.
         /// Runtime policies are prepared before scanning, allocations or callbacks.
         pub fn parseAndValidate(allocator: std.mem.Allocator, source: []const u8, diagnostics: DiagnosticSink, options: CheckOptions) Error!CheckResult {
             const effective = if (runtime_policy) try Outer.Policies.prepare(.{ .policy = options.dot.policy }) else Outer.Policies.prepare(.{});
             const preparing = Child.prepare(options.markup);
             const ready = if (@typeInfo(@TypeOf(preparing)) == .error_union) try preparing else preparing;
-            var context: Context = .{ .allocator = allocator, .child = ready, .resources = options.markup_resources, .sink = diagnostics };
+            var context: Context = .{ .workspace = ready.initWorkspace(allocator, options.markup_resources), .sink = diagnostics };
+            defer context.workspace.deinit();
             var parsed = if (runtime_policy) blk: {
                 switch (effective.scanner) {
                     inline else => |backend| break :blk if (effective.execution.cancellation)

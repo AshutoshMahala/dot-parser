@@ -17,12 +17,18 @@ destination; see [usage and costs](MARKUP.md#one-call-during-dot-parsing).
 `.dot.policy` and `.markup.policy`, only where the respective profile opted in.
 
 A consumer implementation supplies `Policies`, `Options`, `Prepared`, `prepare`,
-`Diagnostic`, `DiagnosticSink`, `ParseResources`, `InputError` and `CheckResult`.
+`Diagnostic`, `DiagnosticSink`, `ParseResources`, `InputError` and `Workspace`.
 Preparation must be pure (no scan, allocation or callbacks), verifying policies
-once. `Prepared.parseAndValidate(allocator, Fragment, sink, resources)` returns
-`InputError!CheckResult`; the result exposes `has_errors`, `documentValid()`,
-`stopped()` and `deinit()`. It must honor sink acknowledgments and map every
-diagnostic span to the fragment's original-source origin. These are compile-time
+once. `Prepared.initWorkspace(allocator, resources)` returns a child-owned
+`Workspace` without scanning, allocation or consumer callbacks. The facade creates
+it once after policy preflight and calls `Workspace.deinit()` once on every exit.
+`workspace.parseAndValidate(Fragment, sink)` returns `InputError!Result`; that
+non-owning result exposes `has_errors`, `documentValid()` and `stopped()`. It must
+remain readable until the next workspace call/deinit, but is not retained or
+deinitialized by the facade. Working buffers and their reuse strategy belong to
+the child; DOT does not inspect its storage layout. A custom workspace may be
+zero-sized if it needs no storage. The processor must honor sink acknowledgments
+and map every diagnostic span to the fragment's original-source origin. These are compile-time
 structural requirements, not runtime registration or capability queries.
 The optional composed renderer requires `console.Adapter`, using the shared
 presentation contract. Merely sharing a method name is not the full contract.
@@ -256,7 +262,9 @@ terminal when no safe continuation is available. Changing this parse policy requ
 
 `.passthrough` is supported raw preservation, not silent unsupported reporting.
 With `.none`, `.err` emits `E.Profile.Feature.009`, `.warning` emits
-`W.Profile.Feature.009`, and `.silent` emits nothing. All three retain the factual
+`W.Profile.Feature.009`, and `.silent` constructs/emits no diagnostic for that
+unsupported input. Internal classification still drives outcomes/recovery; no
+hidden first-finding record is retained. All three retain the factual
 unsupported outcome and publish no document. Warning/silence do not trigger
 error-based fail-fast: safely delimited body occurrences can still synchronize
 under `.fail_fast`. An uncertain boundary, enforced resource limit or explicit

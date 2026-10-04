@@ -1,6 +1,7 @@
 const std = @import("std");
 test {
     _ = @import("during_dot.zig");
+    _ = @import("markup_workspace.zig");
 }
 const dot = @import("dot_parser");
 const markup = @import("markup_parser");

@@ -94,6 +94,10 @@ was scanned, but its contents were not processed. Later DOT syntax is visited
 only when safe recovery permits it; inspect `completion`. Reporting is selected
 by `diagnostics.unsupported = .err | .warning | .silent`, independently of
 recognition. Warning/silence never publish a document or imply acceptance.
+The silent path does not construct a user-facing unsupported diagnostic; it
+still classifies the boundary for safe continuation and outcome tracking. An
+empty bag therefore does not imply that processing succeeded. Standalone markup
+tokenization has no reporting policy and still returns its explicit lexical problem.
 The classification is
 grammar-aware — a deferred keyword in a position where it is not legal DOT
 (`subgraph` as the document root) is plain `invalid_syntax`.

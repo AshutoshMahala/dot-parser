@@ -565,11 +565,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             if (markup == .none and token.flags.has_html and self.state != .recovering) {
                 // Scanning already consumed the entire expression. Recovery
                 // can skip it without reading its bytes again.
-                return self.fail(.{
-                    .code = .profile_unsupported_feature,
-                    .span = token.span,
-                    .details = .{ .unsupported_feature = .html_identifier },
-                });
+                return self.unsupportedAt(token.span, .html_identifier);
             }
             // Ordinary parsing replays only a finished suffix/link lookahead.
             // Controlled parsing returns after one transition and charges the
@@ -1290,14 +1286,21 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 d.code = .profile_unsupported_feature_warning;
                 self.warnings += 1;
             }
-            const stop = if (is_unsupported and self.unsupported() == .silent) null else self.deliver(d);
+            const stop = self.deliver(d);
             const reason: syntax_event.AbortReason = switch (failure.code) {
                 .profile_unsupported_feature => .unsupported_feature,
                 .resource_capacity_exhausted => .resource_exhausted,
                 else => .invalid_syntax,
             };
+            const at_eof = failure.details == .unexpected and failure.details.unexpected.found == .end_of_input;
+            return self.failClassified(reason, stop, if (recovery_enabled) self.canRecover(is_unsupported, at_eof) else false);
+        }
+
+        // Recovery needs the failure class/boundary, not a diagnostic payload.
+        // Silent unsupported input enters here without constructing one.
+        fn failClassified(self: *Self, reason: syntax_event.AbortReason, stop: ?diagnostic.StopReason, recoverable: bool) ?Result {
             if (recovery_enabled and reason == .invalid_syntax) self.syntax_errors += 1;
-            if (recovery_enabled and (reason == .invalid_syntax or reason == .unsupported_feature) and self.canRecover(failure)) {
+            if (recovery_enabled and (reason == .invalid_syntax or reason == .unsupported_feature) and recoverable) {
                 if (stop) |requested| return self.stopDiagnostics(requested);
                 self.abortEvents(reason);
                 // The diagnostic above retains the failed statement's context.
@@ -1382,12 +1385,12 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// Synchronization is body-only: a header has no statement
         /// boundary to return to, trailing tokens have nothing left to
         /// parse, and end of input is already the end.
-        fn canRecover(self: *const Self, failure: diagnostic.Diagnostic) bool {
+        fn canRecover(self: *const Self, is_unsupported: bool, at_eof: bool) bool {
             if (!self.begun) return false;
             if (self.onError() == .fail_fast and
-                (failure.code != .profile_unsupported_feature or self.unsupported() == .err)) return false;
+                (!is_unsupported or self.unsupported() == .err)) return false;
             if (self.state == .epilogue) return false;
-            if (failure.details == .unexpected and failure.details.unexpected.found == .end_of_input) return false;
+            if (at_eof) return false;
             if (self.tokens.terminal != .none) return switch (self.tokens.terminal) {
                 .oversize, .none, .eof, .block, .quote, .html_unterminated => false,
                 .concat => self.tokens.opener < self.tokens.source.len,
@@ -1561,6 +1564,8 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn unsupportedAt(self: *Self, span: location.Span, feature: diagnostic.Feature) ?Result {
+            if (self.unsupported() == .silent)
+                return self.failClassified(.unsupported_feature, null, if (recovery_enabled) self.canRecover(true, false) else false);
             return self.fail(.{
                 .code = .profile_unsupported_feature,
                 .span = span,

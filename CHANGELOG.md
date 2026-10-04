@@ -6,6 +6,16 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Reuse child-owned node, attribute, nesting and validation buffers during DOT
+  composition; expose the same markup workspace for standalone/delayed batches.
+  Initialization allocates nothing; buffers retain high-water capacity until
+  workspace disposal. This reduces allocator traffic, not necessarily peak memory.
+  **Breaking:** custom composition bindings now supply `Workspace` and
+  `Prepared.initWorkspace`; per-fragment results borrow workspace storage.
+- Skip unsupported diagnostic construction as well as delivery under `.silent`
+  in DOT and markup. Internal classification, outcomes and safe recovery remain
+  unchanged; no hidden first-finding metadata is retained.
+
 - Classify shared diagnostic stops during composed child processing as DOT
   `diagnostic_stopped`, matching outer emission and preserving the reason/delivery
   status. Add composed-versus-ordinary DOT parity coverage. Share list location
@@ -15,7 +25,7 @@ are called out here; compatibility shims are not retained.
   composition: one `parseAndValidate` call, one typed bag/sink and a mixed renderer.
   Child checks run once per encountered HTML operand, preserve original-source
   diagnostics and respect independent parent/child error policies. Ordinary DOT
-  profiles have no child state or dependency. Temporary child trees are released;
+  profiles have no child state or dependency. Temporary child storage is reused;
   shared-budget sessions and retained child-result collections remain deferred.
   **Breaking:** add `processor_stopped` to DOT outcomes/event abort reasons.
 - **Breaking:** rename markup's combined methods to `parseAndValidate` and

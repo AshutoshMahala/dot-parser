@@ -64,6 +64,16 @@ The composed facade preflights outer policies and the prepared child once before
 entering the DOT engine. Compile-time contract checks reject incompatible child
 bindings. Do not claim a composed budget from policy preflight or one-shot calls.
 
+After preflight, the facade creates one child-owned `Workspace` via
+`Prepared.initWorkspace(allocator, resources)`. Initialization allocates nothing;
+execution grows buffers lazily. Repeated `workspace.parseAndValidate(fragment,
+sink)` calls reuse capacity without re-preparing policies. The facade consumes
+non-owning results immediately and guarantees workspace `deinit` on every exit.
+Markup's standalone/delayed callers may use that same workspace, while allocating
+and fixed-buffer calls remain available for independent result lifetimes. The
+composed profile API surface is otherwise unchanged; further changes remain a
+separate design discussion.
+
 Sets now expose their own `Policies` binding and may nest other sets. Preparing
 the root visits each runtime leaf once; an all-fixed subtree remains zero-sized.
 Sibling/deeper instances of the same consumer implementation have independent

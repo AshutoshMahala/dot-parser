@@ -25,6 +25,14 @@ checks constant-size descriptors, and performs no scan, allocation or callbacks.
 Input-dependent capacity failures are checked while executing. Initialize/reuse
 fragment state as needed, without retaining an instance for every identifier.
 
+The one-shot facade uses `Prepared.initWorkspace(allocator, resources)` once and
+`workspace.parseAndValidate(fragment, sink)` for each selected operand. Workspace
+initialization is allocation-free; growth belongs to execution. The child owns
+its reusable buffers and `deinit` releases them on every exit. Results borrow that
+workspace until the next call/deinit; the facade consumes results immediately and
+does not deinitialize them or retain trees. Custom processors implement this same
+structural contract without exposing buffer layouts or runtime capability queries.
+
 Share mechanisms with matching contracts; keep schemas, diagnostic payloads and
 output types processor-owned. There is no universal largest diagnostic union.
 A composed profile may generate a tagged union of only its bound processors for
@@ -53,8 +61,12 @@ fail-fast and sink filtering never changes error classification.
 Missing prerequisites make dependent work unavailable, not successful. An explicit
 operational stop ends remaining requested work; independently invoked operations
 are unaffected. Standalone, delayed and one-shot during-DOT workflows are supported;
-the composed helper checks and frees each temporary child tree. Retaining child
+the composed helper resets each temporary child tree and reuses its capacity,
+freeing workspace buffers at operation exit. Retaining independent child
 trees remains an explicit delayed operation; no per-fragment result array is added.
+Reuse reduces allocator traffic; retained high-water buffers can increase peak
+live memory when a large early child is followed by growing outer output. Measure
+allocation calls and peak requested bytes separately; neither is process RSS.
 
 Keep completion, validity and diagnostic delivery separate. Requested work stopped
 before starting is incomplete with a reason, not "not requested". Completed outer
@@ -74,7 +86,10 @@ allocation/storage failures and cancellation remain operational batch stops.
 classification/reporting, not acceptance or processing. Preserve the factual
 unsupported outcome; warning/silence cannot make unprocessed bytes valid. Unsafe
 boundaries may end the fragment under any reporting choice. Supported passthrough
-recognition is distinct from silent unsupported input. Delayed markup implements
+recognition is distinct from silent unsupported input. Both parsers skip
+user-facing diagnostic construction/delivery on the silent unsupported path;
+only internal classification needed for control flow remains. There is no hidden
+first-unsupported diagnostic metadata. Delayed markup implements
 `has_errors` and `shouldStop(parent_on_error)`; `.stopped()` denotes operational
 stops only. Fail-fast combined calls do not start validation after a syntax error.
 

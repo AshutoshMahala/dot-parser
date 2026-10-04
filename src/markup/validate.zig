@@ -493,6 +493,16 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             if (cancelled(&result, hook)) return result;
             return runSized(document, .{ .attribute_keys = keys }, sink, settings, hook, required);
         }
+        pub fn reusing(allocator: std.mem.Allocator, document: *const syntax.Document, keys: *std.ArrayList(AttributeKeyScratch), sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
+            if (!enabled(settings)) return .{ .validity = .valid };
+            var result = initial(settings);
+            if (cancelled(&result, hook)) return result;
+            if (rules(settings).duplicate_attribute == .off) return runSized(document, .{}, sink, settings, hook, .{});
+            const required = requirement(document);
+            keys.resize(allocator, required.count) catch return unavailable(.out_of_memory, sink, 0, required.span, settings);
+            if (cancelled(&result, hook)) return result;
+            return runSized(document, .{ .attribute_keys = keys.items }, sink, settings, hook, required);
+        }
         fn cancelled(result: *Result, hook: Hook) bool {
             if (!requested(hook)) return false;
             result.completion = .cancelled;

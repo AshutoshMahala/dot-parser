@@ -57,10 +57,15 @@ component-specific: enabling/passing the child hook allows polling inside child
 work, while a DOT-only hook polls the outer driver between child invocations.
 
 This first composed API is allocator-backed and **run-to-completion**. It exposes
-no composed `Session`/`advance` or shared work-budget guarantee. Each child's
-temporary tree is freed before the next child; there is no mandatory per-ID state
-or child-result array. An arena can retain freed allocations until its teardown;
-choose allocator behavior to match the required peak-memory bound.
+no composed `Session`/`advance` or shared work-budget guarantee. One child-owned
+workspace reuses node, attribute, nesting and validation buffers across operands.
+Logical contents reset between calls; capacity is retained until the composed
+operation returns, including on failure. No child buffers allocate if no child
+needs them. There is no mandatory per-ID state or child-result array.
+Reuse reduces allocation churn, **not necessarily peak memory**: an early large
+child's capacity stays live as outer storage grows. Buffers also retain growth
+slack. An arena may retain even freed allocations until its teardown; choose
+allocator behavior and finite policy limits to match the required memory bound.
 Use delayed `parseAndValidate[In]` below when selecting
 only some operands, retaining child trees, or supplying fixed child storage.
 
@@ -68,6 +73,37 @@ only some operands, retaining child trees, or supplying fixed child storage.
 its input is a checked `Fragment` (use origin zero for standalone bytes). The
 old longer function name has been removed, not aliased. Processor implementations
 remain compile-time types; see [policy composition](POLICIES.md#bound-processors).
+
+## Reusing standalone or delayed working storage
+
+Use the same child-owned workspace explicitly when consuming each result before
+the next input. It does not require DOT:
+
+```zig
+const Reader = markup.Profile(.{});
+const ready = Reader.prepare(.{});
+var workspace = ready.initWorkspace(allocator, .{}); // no allocation yet
+defer workspace.deinit();
+for (fragments) |fragment| {
+    const checked = try workspace.parseAndValidate(fragment, bag.sink());
+    // Consume checked.parse.document now, if present.
+    if (checked.shouldStop(.collect)) break;
+}
+```
+
+Each result is a non-owning `FixedFragmentResult`: its document borrows workspace
+pools **until the next call or workspace deinit**, and source remains caller-owned.
+Never retain tree views across calls or use the workspace concurrently/reentrantly.
+Deinitialize the workspace exactly once; copying it does not duplicate ownership.
+Policy preparation and resource selection happen once, not per fragment.
+`scratch_allocator` in initialization resources controls nesting storage;
+output and validation buffers use the main allocator. `workspace.reservedBytes()`
+reports current buffer capacities in bytes, excluding source, diagnostic storage,
+allocator overhead and the workspace value itself. It is not peak RSS.
+
+Use ordinary allocating `parseAndValidate` when each returned tree needs independent
+ownership, or `parseAndValidateIn` for caller-provided fixed storage. All three paths
+share the same grammar, validation, origins and stop semantics.
 
 ## Delayed processing inside DOT
 
@@ -133,6 +169,8 @@ Unsupported reporting follows the child's `diagnostics.unsupported` policy:
 `err` (default), `warning`, or `silent`. It never creates a successful document
 or certifies unprocessed content. Warning/silence alone do not trigger parent
 fail-fast. An unsupported boundary can still prevent that child from proceeding.
+`.silent` skips construction and delivery of that user-facing diagnostic, not
+recognition or factual outcome tracking. It adds no hidden retained finding.
 A child policy limit remains an enforced failure; parent `.collect` may process
 other fragments. Shared sink stops, allocation/storage failure and cancellation
 end the batch regardless of either `on_error` setting.

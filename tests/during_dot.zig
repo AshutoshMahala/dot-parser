@@ -193,13 +193,25 @@ test "a consumer processor runs before a document exists without runtime discove
         pub const Diagnostic = markup.Diagnostic;
         pub const DiagnosticSink = markup.DiagnosticSink;
         pub const InputError = markup.Fragment.Error;
-        pub const CheckResult = markup.FragmentResult;
-        pub const ParseResources = struct { calls: ?*u32 = null };
+        pub const ParseResources = struct { calls: ?*u32 = null, lifecycle: ?*[2]u32 = null };
         pub const Prepared = struct {
             inner: Base.Prepared,
-            pub fn parseAndValidate(self: @This(), allocator: std.mem.Allocator, input: markup.Fragment, sink: DiagnosticSink, resources: ParseResources) InputError!CheckResult {
-                if (resources.calls) |calls| calls.* += 1;
-                return self.inner.parseAndValidate(allocator, input, sink, .{});
+            pub fn initWorkspace(self: @This(), allocator: std.mem.Allocator, resources: ParseResources) Workspace {
+                if (resources.lifecycle) |counts| counts[0] += 1;
+                return .{ .inner = self.inner.initWorkspace(allocator, .{}), .calls = resources.calls, .lifecycle = resources.lifecycle };
+            }
+        };
+        pub const Workspace = struct {
+            inner: Base.Workspace,
+            calls: ?*u32,
+            lifecycle: ?*[2]u32,
+            pub fn parseAndValidate(self: *@This(), input: markup.Fragment, sink: DiagnosticSink) InputError!markup.FixedFragmentResult {
+                if (self.calls) |calls| calls.* += 1;
+                return self.inner.parseAndValidate(input, sink);
+            }
+            pub fn deinit(self: *@This()) void {
+                if (self.lifecycle) |counts| counts[1] += 1;
+                self.inner.deinit();
             }
         };
         pub fn prepare(options: Options) Prepared {
@@ -209,12 +221,38 @@ test "a consumer processor runs before a document exists without runtime discove
     const P = dot.Profile(.{ .processors = .{ .markup = Consumer } });
     try expect(!@hasDecl(P, "Session")); // never disguise unbounded child work as advance()
     var calls: u32 = 0;
+    var lifecycle = [2]u32{ 0, 0 };
     // No complete DOT document can be published; child already ran at its token.
-    var checked = try P.parseAndValidate(gpa, "digraph { a [x=<<b/>>];", P.DiagnosticSink.discard, .{ .markup_resources = .{ .calls = &calls } });
+    var checked = try P.parseAndValidate(gpa, "digraph { a [x=<<b/>>];", P.DiagnosticSink.discard, .{ .markup_resources = .{ .calls = &calls, .lifecycle = &lifecycle } });
     defer checked.deinit(gpa);
     try equal(@as(u32, 1), calls);
     try expect(checked.dot.document == null and !checked.markup.complete);
     try equal(@as(u32, 1), checked.markup.valid);
+    try std.testing.expectEqualDeep([2]u32{ 1, 1 }, lifecycle);
+}
+
+test "no HTML allocates no child buffers and repeated operands reuse one workspace" {
+    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
+    var plain_allocator = std.testing.FailingAllocator.init(gpa, .{});
+    var composed_allocator = std.testing.FailingAllocator.init(gpa, .{});
+    var plain = dot.parseAndValidate(plain_allocator.allocator(), "graph { a; b; }", dot.diagnostic.discard, .{});
+    plain.deinit(plain_allocator.allocator());
+    var composed = try P.parseAndValidate(composed_allocator.allocator(), "graph { a; b; }", P.DiagnosticSink.discard, .{});
+    composed.deinit(composed_allocator.allocator());
+    try equal(plain_allocator.allocated_bytes, composed_allocator.allocated_bytes);
+    try equal(plain_allocator.allocations, composed_allocator.allocations);
+    try equal(composed_allocator.allocated_bytes, composed_allocator.freed_bytes);
+
+    var repeated_allocator = std.testing.FailingAllocator.init(gpa, .{});
+    const source = "graph {" ++ "a[label=<<b x='1' y='2'>text</b>>];" ** 1000 ++ "}";
+    var repeated = try P.parseAndValidate(repeated_allocator.allocator(), source, P.DiagnosticSink.discard, .{});
+    try expect(repeated.documentValid());
+    try equal(@as(u32, 1000), repeated.markup.valid);
+    repeated.deinit(repeated_allocator.allocator());
+    // Outer pool growth is logarithmic; a fresh allocation per child would
+    // exceed this generous allocator-independent ceiling by an order of magnitude.
+    try expect(repeated_allocator.allocations < 100);
+    try equal(repeated_allocator.allocated_bytes, repeated_allocator.freed_bytes);
 }
 
 test "child policy limits continue in a collecting parent and cancellation stops the batch" {

@@ -33,6 +33,42 @@ fn localSettings(settings: policy.ValidationSettings) policy.ValidationSettings 
     return local;
 }
 
+/// Internal workspace buffers shared by all scanner/policy variants. They own
+/// no source and retain capacity only; reset logical attributes for each pass.
+pub const Buffers = struct {
+    allocator: ?std.mem.Allocator,
+    attributes: std.ArrayList(scopes.Attribute),
+    keys: std.ArrayList(validation.AttributeKeyScratch),
+    pub fn init(storage: Scratch, allocator: ?std.mem.Allocator) @This() {
+        return .{
+            .allocator = allocator,
+            .attributes = .{ .items = storage.attributes[0..0], .capacity = storage.attributes.len },
+            .keys = .{ .items = storage.attribute_keys, .capacity = storage.attribute_keys.len },
+        };
+    }
+    pub fn deinit(self: *@This()) void {
+        if (self.allocator) |a| {
+            self.attributes.deinit(a);
+            self.keys.deinit(a);
+        }
+    }
+    fn append(self: *@This(), attribute: scopes.Attribute) !void {
+        if (self.attributes.items.len == self.attributes.capacity) {
+            const a = self.allocator orelse return error.StorageExhausted;
+            try self.attributes.ensureUnusedCapacity(a, 1);
+        }
+        self.attributes.appendAssumeCapacity(attribute);
+    }
+    fn prepare(self: *@This()) ![]validation.AttributeKeyScratch {
+        const count = if (self.attributes.items.len >= 2) self.attributes.items.len else 0;
+        if (count > self.keys.items.len) {
+            const a = self.allocator orelse return error.StorageExhausted;
+            try self.keys.resize(a, count);
+        }
+        return self.keys.items[0..count];
+    }
+};
+
 pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.Effective, comptime cancellable: bool) type {
     const V = validation.Validator(if (fixed) |f| f.validation else null, cancellable);
     const Local = validation.Validator(if (fixed) |f| localSettings(f.validation) else null, cancellable);
@@ -43,39 +79,6 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
         inline fn effective(settings: Settings) policy.Effective {
             return if (fixed) |f| f else settings;
         }
-        const Buffers = struct {
-            allocator: ?std.mem.Allocator,
-            attributes: std.ArrayList(scopes.Attribute),
-            keys: std.ArrayList(validation.AttributeKeyScratch),
-            fn init(storage: Scratch, allocator: ?std.mem.Allocator) @This() {
-                return .{
-                    .allocator = allocator,
-                    .attributes = .{ .items = storage.attributes[0..0], .capacity = storage.attributes.len },
-                    .keys = .{ .items = storage.attribute_keys, .capacity = storage.attribute_keys.len },
-                };
-            }
-            fn deinit(self: *@This()) void {
-                if (self.allocator) |a| {
-                    self.attributes.deinit(a);
-                    self.keys.deinit(a);
-                }
-            }
-            fn append(self: *@This(), attribute: scopes.Attribute) !void {
-                if (self.attributes.items.len == self.attributes.capacity) {
-                    const a = self.allocator orelse return error.StorageExhausted;
-                    try self.attributes.ensureUnusedCapacity(a, 1);
-                }
-                self.attributes.appendAssumeCapacity(attribute);
-            }
-            fn prepare(self: *@This()) ![]validation.AttributeKeyScratch {
-                const count = if (self.attributes.items.len >= 2) self.attributes.items.len else 0;
-                if (count > self.keys.items.len) {
-                    const a = self.allocator orelse return error.StorageExhausted;
-                    try self.keys.resize(a, count);
-                }
-                return self.keys.items[0..count];
-            }
-        };
         const Driver = struct {
             source: []const u8,
             sink: diagnostic.Sink,
@@ -215,6 +218,12 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                             if (t.kind == .eof) return self.finish();
                         },
                         .malformed_reference => {}, // syntax belongs to parsing
+                        .unsupported => |u| {
+                            // Encoding/prefix boundaries occur outside any
+                            // pending name/value/header; prior tokens are flushed.
+                            self.recordGap(u.span.start);
+                            return self.finish();
+                        },
                         .problem => |problem| {
                             self.recordGap(problem.diagnostic.span.start);
                             const pending = scanner.pendingScopes();
@@ -263,6 +272,12 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
         pub fn allocated(allocator: std.mem.Allocator, source: []const u8, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
             var driver: Driver = .{ .source = source, .sink = sink, .settings = settings, .hook = hook, .buffers = .init(.{}, allocator) };
             defer driver.buffers.deinit();
+            return driver.run();
+        }
+        pub fn reusing(source: []const u8, buffers: *Buffers, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
+            buffers.attributes.clearRetainingCapacity();
+            var driver: Driver = .{ .source = source, .sink = sink, .settings = settings, .hook = hook, .buffers = buffers.* };
+            defer buffers.* = driver.buffers;
             return driver.run();
         }
     };
