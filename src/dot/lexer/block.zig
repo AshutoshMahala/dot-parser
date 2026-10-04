@@ -834,7 +834,8 @@ test "tokens across a block boundary keep their spans and positions" {
 }
 
 test "block scanner state is a small constant" {
-    // 160 B measured (the saved masks are 88 of them); 192 B leaves headroom.
+    // Exact documented native layouts are guarded in tests/layouts.zig;
+    // this portable ceiling leaves headroom for target-dependent alignment.
     try expect(@sizeOf(Lexer) <= 192);
     try expectEqual(void, @FieldType(Lexer, "source_frontier"));
     try expectEqual(usize, @FieldType(Scanner(true, false, true), "source_frontier"));

@@ -389,7 +389,8 @@ Their severities are `.err`, `.warning` and `.off`: errors affect acceptance,
 warnings do not invalidate, and off means the check is not performed, not that
 its result was merely hidden. Numeral ambiguity defaults to warning; the other
 optional checks default off. Both header branches retain error-severity operator
-mismatch by default. Complete presets replace all baseline leaves; a partial
+mismatch by default. DOT presets leave `markup` unset to inherit the binding
+default or compiled baseline; they replace the other baseline leaves. A partial
 subtree patch changes only its supplied leaves.
 Numeral policy applies during parsing; the other checks inspect a committed
 document without mutation. Repeated keys compare decoded identifier bytes within

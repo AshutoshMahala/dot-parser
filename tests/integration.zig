@@ -18,6 +18,7 @@ test {
     _ = @import("html_identifiers.zig");
     _ = @import("policies.zig");
     _ = @import("policy_settings.zig");
+    _ = @import("layouts.zig");
     _ = @import("recovery_results.zig");
     _ = @import("lenient.zig");
     _ = @import("validation_checks.zig");

@@ -870,7 +870,8 @@ test "metering storage and source-examination instrumentation compile out" {
     try expect(growth >= @sizeOf(usize) and growth < @sizeOf(usize) + @alignOf(Lexer));
     // Fixed native-state guard, independent of source size; no allocation in
     // either scanner. Test buffers above are caller-owned fixture storage.
-    // 56 B measured with offset-only positions (was 104 B); 96 B leaves headroom.
+    // Exact documented native layouts are guarded in tests/layouts.zig;
+    // this portable ceiling leaves headroom for target-dependent alignment.
     try expect(@sizeOf(Lexer) <= 96);
 }
 

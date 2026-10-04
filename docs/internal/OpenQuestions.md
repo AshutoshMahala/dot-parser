@@ -735,11 +735,12 @@ syntax policy can require reparsing. A policy states what was allowed, not what
 actually occurred. Counters are not detailed history, and diagnostic suppression
 must not masquerade as absence of deviations.
 
-**Presets and reporting (implemented).** `dot.presets.standard` names the complete
-default `Policy`; `dot.presets.lenient` changes only the three syntax acceptances
+**Presets and reporting (implemented).** `dot.presets.standard` names the default
+`Policy`; `dot.presets.lenient` changes only the three syntax acceptances
 to `.warn`. There is no separate lenient flag or parser. `standard` avoids
-confusion with DOT's unrelated `strict` modifier. A full runtime preset replaces
-all baseline fields; a `.syntax` subtree patch preserves the other settings.
+confusion with DOT's unrelated `strict` modifier. Both presets leave `markup`
+unset to inherit the binding default or compiled baseline. A full runtime preset
+replaces the other baseline fields; a `.syntax` subtree patch preserves those too.
 All leaves have compile-time/runtime parity and ordinary inheritance.
 
 Both scanners retain their strict lexical contract. On the cold failure path,
@@ -784,8 +785,8 @@ and the [processor contract](PROCESSOR_CONTRACT.md); public usage is in
   counts every `<` and `>`; quotes, comments, CDATA and references do not shelter
   brackets at this boundary. Recognition does not prove inner structure.
 - DOT owns `none | passthrough | process`, default `passthrough` without a
-  processor and `process` with one unless explicitly overridden. Complete DOT
-  presets explicitly select passthrough. Unbound process fails policy verification
+  processor and `process` with one unless explicitly overridden. DOT presets
+  inherit this choice. Unbound process fails policy verification
   at compile time or runtime preflight. Both scanner backends
   retain recognition even under `none`; rejection is a processing policy, not
   a scanner-size switch. Supported passthrough is different from silently
@@ -1003,11 +1004,12 @@ consistency remain required. *(Embodied: `CHANGELOG.md`,
 
 **Q26 — Which named profiles are public conveniences?**
 **Implemented conveniences; reconciled 2026-09-22:** `dot.presets.standard`
-and `dot.presets.lenient` are complete, editable `Policy` values, not separate
+and `dot.presets.lenient` are editable `Policy` values, not separate
 parsers or boolean modes. Standard names the library defaults; lenient changes
 only the three Q36 syntax acceptances to `.warn`, not validation, recovery,
-limits, scanner or execution. A complete runtime preset replaces every baseline
-leaf; a `.syntax`-only patch preserves the other baseline choices. `Profile`
+limits, scanner or execution. Both presets leave `markup` unset to inherit the
+binding default or compiled baseline; a runtime preset replaces the other leaves.
+A `.syntax`-only patch preserves those other baseline choices too. `Profile`
 supports consumer-defined compile-time baselines and default-off runtime
 overrides, and `BoundedSession` is the fixed metered convenience. Earlier
 named-profiles-first/custom-structs-later ordering is superseded. Markup also

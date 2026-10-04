@@ -6,12 +6,20 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- DOT presets now inherit markup handling instead of selecting `.passthrough`.
+  Adding `standard` or `lenient` preserves bound child processing; runtime presets
+  preserve the compiled markup choice. Explicit markup overrides still win.
+- Share fragment validation routing/result assembly across allocating, fixed-
+  storage and reusable markup entry points. Keep storage ownership separate and
+  use compile-time dispatch; sink-stop and syntax-recovery behavior is unchanged.
+  Distinguish current DOT session/scanner layouts from historical performance
+  measurements and guard the documented aarch64 macOS sizes in tests.
 - Separate DOT processing selection (`markup = .none | .passthrough | .process`)
   from the built-in markup processor's `mode = .structural`. Binding a processor
   defaults to `.process`; unbound `.process` fails policy preflight. Graphviz and
   extended modes remain unimplemented. Processing stays synchronous at complete
   operand boundaries with no threads, queues or additional source copies.
-  **Breaking:** explicit `.passthrough`, including complete DOT presets, now skips
+  **Breaking:** explicit `.passthrough` now skips
   bound child execution and workspace initialization. `MarkupReport.requested`
   distinguishes skipped checks from completed validation; combined validity is
   relative to the selected policy.

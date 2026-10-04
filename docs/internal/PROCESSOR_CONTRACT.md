@@ -29,7 +29,8 @@ and per-fragment capability discovery are excluded.
 
 DOT's `policy.markup` selects `.none`, `.passthrough` or `.process`; it does not
 select a child grammar. Binding a child defaults to process, otherwise the default
-is passthrough. Explicit leaves, including complete presets, take precedence.
+is passthrough. An explicit markup leaf takes precedence; DOT presets leave it
+unset to inherit the binding default or compiled baseline.
 The built-in markup child currently exposes only `policy.mode = .structural`;
 replacement schemas need not have this field. Unbound process fails policy
 verification. Runtime processing selection cannot install or replace a child.

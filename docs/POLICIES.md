@@ -52,6 +52,12 @@ const Lenient = dot.Profile(.{ .policy = dot.presets.lenient });
 The default preset is called `standard`, not `strict`, because `strict` is
 already a DOT keyword with an unrelated meaning.
 
+Both DOT presets leave `markup` unset: at compile time they inherit `.process`
+when a processor is bound, or `.passthrough` otherwise. As runtime patches they
+preserve the compiled `markup` choice, including an explicit `.none` or
+`.passthrough`. Set that leaf explicitly to change it. The other fields reset to
+the preset values; use a `.syntax`-only patch to preserve those too.
+
 Markup has `markup.presets.standard` (the defaults) and
 `markup.presets.untrusted` (finite limits). See [markup settings](MARKUP.md#settings).
 

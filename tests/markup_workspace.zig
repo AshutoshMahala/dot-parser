@@ -19,10 +19,11 @@ const inputs = [_][]const u8{
     "",
 };
 
-test "workspace matches owned parsing across resets origins backends and policy variants" {
-    inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |controlled| {
+test "all fragment storage paths agree across resets origins backends and policy variants" {
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |controlled| inline for (.{ .collect, .fail_fast }) |on_error| {
         const patch: markup.Policy = .{
             .scanner = scanner,
+            .on_error = on_error,
             .execution = .{ .cancellation = controlled },
             .diagnostics = .{ .unsupported = .silent },
             .validation = .{ .invalid_utf8 = .err },
@@ -31,13 +32,20 @@ test "workspace matches owned parsing across resets origins backends and policy 
         const ready = P.prepare(if (runtime) .{ .policy = patch } else .{});
         var workspace = ready.initWorkspace(gpa, .{});
         defer workspace.deinit();
+        var storage: markup.FixedDocumentStorage(.{ .nodes = 16, .attributes = 16 }) = .{};
+        var frames: markup.FixedParseScratch(8) = .{};
+        var scratch: markup.FixedSourceValidationScratch(16) = .{};
         for (0..2) |_| for (inputs, 0..) |bytes, index| {
             const fragment = try markup.Fragment.init(bytes, @intCast(31 * index));
             var expected_bag: markup.FixedDiagnosticBag(64) = .{};
             var actual_bag: markup.FixedDiagnosticBag(64) = .{};
+            var fixed_bag: markup.FixedDiagnosticBag(64) = .{};
             var owned = try ready.parseAndValidate(gpa, fragment, expected_bag.sink(), .{});
             defer owned.deinit();
             const reused = try workspace.parseAndValidate(fragment, actual_bag.sink());
+            const fixed = try ready.parseAndValidateIn(fragment, .{ .document = storage.storage(), .scratch = frames.storage() }, scratch.storage(), fixed_bag.sink());
+            try std.testing.expectEqualDeep(fixed, reused);
+            try std.testing.expectEqualDeep(expected_bag.items(), fixed_bag.items());
             inline for (@typeInfo(markup.FixedParseResult).@"struct".fields) |field| {
                 try std.testing.expectEqualDeep(@field(owned.parse, field.name), @field(reused.parse, field.name));
             }

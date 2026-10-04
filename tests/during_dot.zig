@@ -5,19 +5,47 @@ const gpa = std.testing.allocator;
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 
-test "bound processors default to process but complete presets remain explicit policies" {
+test "DOT presets preserve bound processing and unbound passthrough defaults" {
     const Child = markup.Profile(.{ .policy = .{ .mode = .structural } });
     const Bound = dot.Profile(.{ .processors = .{ .markup = Child } });
     try equal(dot.MarkupMode.process, Bound.baseline.parsing.markup);
     try equal(dot.MarkupMode.passthrough, dot.Profile(.{}).baseline.parsing.markup);
     inline for (.{ dot.presets.standard, dot.presets.lenient }) |preset| {
         const P = dot.Profile(.{ .policy = preset, .processors = .{ .markup = Child } });
-        try equal(dot.MarkupMode.passthrough, P.baseline.parsing.markup);
-        var checked = try P.parseAndValidate(gpa, "graph { a [label=<<b></wrong>>]; }", P.DiagnosticSink.discard, .{});
+        try equal(dot.MarkupMode.process, P.baseline.parsing.markup);
+        try equal(dot.MarkupMode.passthrough, dot.Profile(.{ .policy = preset }).baseline.parsing.markup);
+        var bag: P.FixedDiagnosticBag(8) = .{};
+        var checked = try P.parseAndValidate(gpa, "graph { a [label=<<b></wrong>>]; }", bag.sink(), .{});
         defer checked.deinit(gpa);
-        try expect(checked.documentValid());
-        try expect(!checked.markup.requested and !checked.markup.complete and !checked.markup.allValid());
-        try equal(@as(u32, 0), checked.markup.visited);
+        try expect(checked.dot.documentValid());
+        try expect(!checked.documentValid());
+        try expect(checked.markup.requested and checked.markup.complete and !checked.markup.allValid());
+        try equal(@as(u32, 1), checked.markup.visited);
+        try equal(@as(u32, 1), checked.markup.rejected);
+        try expect(bag.items().len > 0);
+    }
+}
+
+test "runtime DOT presets inherit compiled markup handling including explicit choices" {
+    inline for ([_]?dot.MarkupMode{ null, .none, .passthrough, .process }) |selection| {
+        const P = dot.Profile(.{
+            .runtime_policy = true,
+            .policy = .{ .markup = selection },
+            .processors = .{ .markup = markup.Profile(.{}) },
+        });
+        const mode = selection orelse .process;
+        for ([_]dot.Policy{ dot.presets.standard, dot.presets.lenient }) |preset| {
+            var bag: P.FixedDiagnosticBag(8) = .{};
+            var checked = try P.parseAndValidate(gpa, "graph { a [label=<<b></wrong>>]; }", bag.sink(), .{
+                .dot = .{ .policy = preset },
+            });
+            defer checked.deinit(gpa);
+            try equal(mode == .passthrough, checked.documentValid());
+            try equal(mode == .process, checked.markup.requested);
+            try equal(mode == .process, checked.markup.complete);
+            try equal(@as(u32, if (mode == .process) 1 else 0), checked.markup.visited);
+            try equal(mode != .passthrough, bag.items().len > 0);
+        }
     }
 }
 

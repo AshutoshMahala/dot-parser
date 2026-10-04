@@ -36,11 +36,12 @@ processor's policy decides **how**. The built-in markup processor currently
 supports only `policy.mode = .structural`; this is not Graphviz-label vocabulary
 validation or browser HTML. Graphviz and extended modes are not implemented.
 
-Explicit `.none` or `.passthrough` overrides the bound-processor default. Complete
-DOT presets also set `.passthrough`; set their `markup` leaf to `.process` when
-you want automatic checking. `.process` without a bound processor is an invalid
-policy: a compiled baseline is rejected at compilation, and a runtime patch is
-rejected before allocation, input consumption or diagnostic delivery.
+Explicit `.none` or `.passthrough` overrides the bound-processor default. DOT
+presets leave `markup` unset, preserving that default at compile time and the
+compiled choice when used as runtime patches. Adding `standard` or `lenient`
+does not disable a bound processor. `.process` without a bound processor is an
+invalid policy: a compiled baseline is rejected at compilation, and a runtime
+patch is rejected before allocation, input consumption or diagnostic delivery.
 
 ## Two ways to check labels
 

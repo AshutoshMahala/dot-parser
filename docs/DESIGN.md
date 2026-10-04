@@ -318,12 +318,16 @@ time. Block reads 64-byte blocks with vector instructions.
 
 **Why:** once per-byte line tracking was removed, scalar was faster on every
 ordinary input, both run to completion and at normal budgets. It also has
-smaller state (56 versus 160 bytes) and less code, and it doesn't slow down on
+smaller state and less code, and it doesn't slow down on
 targets without vector instructions, where block was about 1.9 times slower on
 wasm32. Block still wins at tiny budgets (2 to 4 times faster at one credit per
 call) and on very long names (about 2 times faster), so it stays as an option.
 Scalar is also the reference that block is tested against; that comparison
 found two block bugs before release.
+
+Those timings are historical evidence for the default, not a new benchmark.
+Current, target-qualified state sizes are in
+[Performance](PERFORMANCE.md#current-development-layouts).
 
 ### The document is built from internal events
 

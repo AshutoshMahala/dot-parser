@@ -154,12 +154,12 @@ pub const Effective = struct {
 
 pub const defaults: Effective = .{};
 
-/// Ordinary, complete Policy values, not a separate parser mode. Passing a
-/// complete preset as a runtime patch replaces every baseline leaf; use only
-/// its .syntax subtree to change syntax without resetting other choices.
+/// Ordinary Policy values, not a separate parser mode. Presets leave markup
+/// handling unset so it inherits the binding default or compiled baseline.
+/// Other leaves reset to the preset; use only its .syntax subtree to change
+/// syntax without resetting other choices.
 pub const presets = struct {
     pub const standard: Policy = .{
-        .markup = .passthrough,
         .diagnostics = .{ .fixes = .all, .unsupported = .err },
         .syntax = .{
             .empty_statement = .reject,
@@ -297,8 +297,8 @@ fn checkWithProcessor(comptime markup_bound: bool, effective: Effective, input: 
 }
 
 /// Binding capabilities are compile-time facts, never runtime policy leaves.
-/// A bound child defaults to processing; explicit none/passthrough (including
-/// complete presets) still win. Standalone DOT never promises unbound work.
+/// A bound child defaults to processing; explicit none/passthrough still win.
+/// Presets inherit this choice. Standalone DOT never promises unbound work.
 pub fn Schema(comptime markup_bound: bool) type {
     if (!markup_bound) return @This();
     const Base = @This();
@@ -327,7 +327,7 @@ pub const Config = struct {
     processors: struct { markup: ?type = null } = .{},
 };
 
-test "named standard is the complete default and lenient changes only syntax" {
+test "named standard resolves to defaults and lenient changes only syntax" {
     const std = @import("std");
     try std.testing.expectEqualDeep(defaults, resolve(defaults, presets.standard));
     const lenient = resolve(defaults, presets.lenient);
@@ -344,6 +344,22 @@ test "named standard is the complete default and lenient changes only syntax" {
     try std.testing.expectEqual(Acceptance.warn, partial.parsing.syntax.long_operator);
     try std.testing.expectEqual(Acceptance.reject, partial.parsing.syntax.bare_dash.acceptance);
     try std.testing.expectEqual(BareDashInterpretation.from_keyword, partial.parsing.syntax.bare_dash.interpretation);
+}
+
+test "DOT presets inherit markup handling and permit explicit overrides" {
+    const std = @import("std");
+    inline for (.{ presets.standard, presets.lenient }) |preset| {
+        try std.testing.expectEqual(@as(?MarkupMode, null), preset.markup);
+        inline for (.{ MarkupMode.none, .passthrough, .process }) |mode| {
+            const baseline = resolve(defaults, .{ .markup = mode });
+            try std.testing.expectEqual(mode, resolve(baseline, preset).parsing.markup);
+            inline for (.{ MarkupMode.none, .passthrough, .process }) |override| {
+                var explicit = preset;
+                explicit.markup = override;
+                try std.testing.expectEqual(override, resolve(baseline, explicit).parsing.markup);
+            }
+        }
+    }
 }
 
 test "omitted leaves inherit without changing the sibling header branch" {

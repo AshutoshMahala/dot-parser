@@ -67,12 +67,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             pub fn parseAndValidate(self: @This(), allocator: std.mem.Allocator, input: api.Fragment, diagnostics: api.DiagnosticSink, resources: api.ParseResources) api.Fragment.Error!api.FragmentResult {
                 var mapped = try api.diagnostic.OriginSink.init(input, diagnostics);
                 const parsed = callPrepared("parseBorrowed", api.ParseResult, .{ allocator, input.bytes, mapped.sink(), resources }, self);
-                const checked: ?api.ValidationResult = if (parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed) null else switch (parsed.outcome) {
-                    .success => validatePrepared("allocated", .{ allocator, &parsed.document.?, mapped.sink() }, self),
-                    .invalid_syntax => if (self.effective().on_error == .collect) sourceValidationPrepared("allocated", .{ allocator, input.bytes, mapped.sink() }, self) else null,
-                    else => null,
-                };
-                return .{ .parse = parsed, .validation = rebaseValidation(input, checked), .has_errors = fragmentHasErrors(parsed, checked, self.effective()) };
+                return finishFragment(.allocated, input, &parsed, mapped.sink(), allocator, self);
             }
 
             /// Allocation-free variant. Source validation scratch is reused for
@@ -80,12 +75,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             pub fn parseAndValidateIn(self: @This(), input: api.Fragment, memory: api.ParseMemory, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink) api.Fragment.Error!api.FixedFragmentResult {
                 var mapped = try api.diagnostic.OriginSink.init(input, diagnostics);
                 const parsed = callPrepared("parseBorrowedIn", api.FixedParseResult, .{ input.bytes, memory, mapped.sink() }, self);
-                const checked: ?api.ValidationResult = if (parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed) null else switch (parsed.outcome) {
-                    .success => validatePrepared("run", .{ &parsed.document.?, api.ValidationScratch{ .attribute_keys = scratch.attribute_keys }, mapped.sink() }, self),
-                    .invalid_syntax => if (self.effective().on_error == .collect) sourceValidationPrepared("run", .{ input.bytes, scratch, mapped.sink() }, self) else null,
-                    else => null,
-                };
-                return .{ .parse = parsed, .validation = rebaseValidation(input, checked), .has_errors = fragmentHasErrors(parsed, checked, self.effective()) };
+                return finishFragment(.fixed, input, &parsed, mapped.sink(), scratch, self);
             }
         };
         /// Reusable per-operation storage. Results borrow its pools until the
@@ -101,12 +91,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             pub fn parseAndValidate(self: *@This(), input: api.Fragment, diagnostics: api.DiagnosticSink) api.Fragment.Error!api.FixedFragmentResult {
                 var mapped = try api.diagnostic.OriginSink.init(input, diagnostics);
                 const parsed = callPrepared("parseReusing", api.FixedParseResult, .{ input.bytes, mapped.sink(), &self.builder, &self.stack }, self.prepared);
-                const checked: ?api.ValidationResult = if (parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed) null else switch (parsed.outcome) {
-                    .success => validatePrepared("reusing", .{ self.allocator, &parsed.document.?, &self.buffers.keys, mapped.sink() }, self.prepared),
-                    .invalid_syntax => if (self.prepared.effective().on_error == .collect) sourceValidationPrepared("reusing", .{ input.bytes, &self.buffers, mapped.sink() }, self.prepared) else null,
-                    else => null,
-                };
-                return .{ .parse = parsed, .validation = rebaseValidation(input, checked), .has_errors = fragmentHasErrors(parsed, checked, self.prepared.effective()) };
+                return finishFragment(.reusing, input, &parsed, mapped.sink(), self, self.prepared);
             }
             /// Allocator-requested buffer capacity, excluding source, diagnostics,
             /// allocator overhead and the workspace's own constant-size value.
@@ -122,6 +107,37 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
                 self.* = undefined;
             }
         };
+        const FragmentStorage = enum { allocated, fixed, reusing };
+
+        /// One routing contract for owned, fixed and workspace-backed fragments.
+        /// Storage dispatch is compile-time-only; ownership and allocation remain
+        /// in the selected implementation. Never start another stage after a
+        /// terminal sink acknowledgment, even if parsing retained its original
+        /// syntax-failure outcome instead of replacing it with diagnostic_stopped.
+        fn finishFragment(
+            comptime storage: FragmentStorage,
+            input: api.Fragment,
+            parsed: *const (if (storage == .allocated) api.ParseResult else api.FixedParseResult),
+            diagnostics: api.DiagnosticSink,
+            resources: anytype,
+            prepared: Prepared,
+        ) if (storage == .allocated) api.FragmentResult else api.FixedFragmentResult {
+            const checked: ?api.ValidationResult = if (parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed) null else switch (parsed.outcome) {
+                .success => switch (storage) {
+                    .allocated => validatePrepared("allocated", .{ resources, &parsed.document.?, diagnostics }, prepared),
+                    .fixed => validatePrepared("run", .{ &parsed.document.?, api.ValidationScratch{ .attribute_keys = resources.attribute_keys }, diagnostics }, prepared),
+                    .reusing => validatePrepared("reusing", .{ resources.allocator, &parsed.document.?, &resources.buffers.keys, diagnostics }, prepared),
+                },
+                .invalid_syntax => if (prepared.effective().on_error == .collect) switch (storage) {
+                    .allocated => sourceValidationPrepared("allocated", .{ resources, input.bytes, diagnostics }, prepared),
+                    .fixed => sourceValidationPrepared("run", .{ input.bytes, resources, diagnostics }, prepared),
+                    .reusing => sourceValidationPrepared("reusing", .{ input.bytes, &resources.buffers, diagnostics }, prepared),
+                } else null,
+                else => null,
+            };
+            return .{ .parse = parsed.*, .validation = rebaseValidation(input, checked), .has_errors = fragmentHasErrors(parsed.*, checked, prepared.effective()) };
+        }
+
         fn fragmentHasErrors(parsed: anytype, checked: ?api.ValidationResult, effective: policy.Effective) bool {
             if (parsed.syntax_errors != 0) return true;
             switch (parsed.outcome) {

@@ -163,8 +163,9 @@ or aliases for structural checking. Custom processors own their schemas and need
 not expose this mode field.
 
 Without a processor the DOT default is passthrough; binding one defaults to
-process unless explicitly overridden (complete presets include a passthrough
-leaf). Unbound process is a policy-verification failure at compile time or runtime
+process unless explicitly overridden. DOT presets leave this leaf unset, so
+they inherit the binding default or compiled baseline. Unbound process is a
+policy-verification failure at compile time or runtime
 preflight. None/passthrough never initialize a child workspace or run inner
 checks; configured policy verification still precedes scanning. A report marks
 this work not requested, not successfully validated. Switching outer handling

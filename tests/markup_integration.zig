@@ -170,6 +170,13 @@ test "terminal diagnostic acknowledgment survives parsing and forbids a second f
                 try equal(grown.parse.diagnostic_stop, fixed.parse.diagnostic_stop);
                 try expect(fixed.validation == null and fixed.stopped());
                 destination.calls = 0;
+                var workspace = P.prepare(.{}).initWorkspace(allocator, .{});
+                defer workspace.deinit();
+                const reused = try workspace.parseAndValidate(try markup.Fragment.init(source, 17), destination.sink());
+                try equal(@as(u32, 1), destination.calls);
+                try std.testing.expectEqualDeep(fixed, reused);
+                try expect(reused.validation == null and reused.stopped());
+                destination.calls = 0;
                 var session = P.Session.init(source, memory, destination.sink(), .{});
                 defer session.deinit();
                 while (session.result() == null) {

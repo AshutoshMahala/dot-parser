@@ -17,10 +17,15 @@
 //! bench, and faster at 256 credits per call; the block scanner wins only
 //! at very small budgets (2–4x at one credit per call, since one credit
 //! classifies 64 bytes) and on long runs of one byte class (2x on the
-//! long-identifier fixture). Block state is 160 B against 56 B and its
-//! code 6–9 KB larger per build; without a vector unit its compares lower
-//! to byte loops, 1.9x slower on wasm32. Hence scalar everywhere, block
-//! opt-in; see `docs/DESIGN.md` ("The scalar scanner is the default").
+//! long-identifier fixture). Its code was 6–9 KB larger per build; without a
+//! vector unit its compares lower to byte loops, 1.9x slower on wasm32. Hence
+//! scalar everywhere, block opt-in; see `docs/DESIGN.md` ("The scalar scanner
+//! is the default").
+//!
+//! Current unmetered scanner state on aarch64 macOS / Zig 0.16.0 is 64 B
+//! (scalar) and 152 B (block), guarded in tests/layouts.zig. These are target-
+//! qualified layouts, not the historical throughput measurements above; see
+//! docs/PERFORMANCE.md ("Current development layouts").
 
 const std = @import("std");
 const policy = @import("../policy.zig");
