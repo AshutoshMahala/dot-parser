@@ -4,12 +4,27 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const support = b.createModule(.{
+        .root_source_file = b.path("src/support.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // The public library module. It must stay free of OS, filesystem, thread,
     // and network dependencies (R-PORT-001).
     const mod = b.addModule("dot_parser", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "parser_support", .module = support }},
+    });
+
+    // Independently importable: markup depends only on shared primitives, not DOT.
+    const markup = b.addModule("markup_parser", .{
+        .root_source_file = b.path("src/markup.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "parser_support", .module = support }},
     });
 
     // The default step builds (and installs) the portable static library
@@ -46,19 +61,91 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit and public integration tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_integration_tests.step);
+    const markup_tests = b.addTest(.{ .root_module = markup });
+    const run_markup_tests = b.addRunArtifact(markup_tests);
+    test_step.dependOn(&run_markup_tests.step);
+    const support_tests = b.addTest(.{ .root_module = support });
+    test_step.dependOn(&b.addRunArtifact(support_tests).step);
+    const markup_integration = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/markup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "markup_parser", .module = markup }},
+        }),
+    });
+    const markup_step = b.step("test-markup", "Test standalone markup without building DOT");
+    const run_markup_integration = b.addRunArtifact(markup_integration);
+    markup_step.dependOn(&run_markup_tests.step);
+    markup_step.dependOn(&run_markup_integration.step);
+    test_step.dependOn(&run_markup_integration.step);
+    // Assertion failures terminate a process, not a normal Zig test. Never run
+    // corrupt-representation probes with runtime safety disabled.
+    if (optimize == .Debug or optimize == .ReleaseSafe) {
+        const invariants = b.addExecutable(.{
+            .name = "markup-invariants",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/markup_invariants.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "markup_parser", .module = markup }},
+            }),
+        });
+        for (0..8) |case| {
+            const probe = b.addRunArtifact(invariants);
+            probe.addArg(b.fmt("{d}", .{case}));
+            probe.expectExitCode(0);
+            test_step.dependOn(&probe.step);
+            markup_step.dependOn(&probe.step);
+        }
+    }
+    const both_parsers = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/parser_modules.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(both_parsers).step);
+    for ([_]struct { name: []const u8, message: []const u8 }{
+        .{ .name = "markup_fixed_override", .message = "tests/compile_fail/markup_fixed_override.zig:3:72: error: no field named 'policy' in struct /?/" },
+        .{ .name = "markup_unmetered", .message = "error: metering is disabled; use run()" },
+        .{ .name = "markup_duplicate_diagnostic", .message = "error: duplicate diagnostic identity" },
+        .{ .name = "markup_invalid_diagnostic", .message = "error: invalid diagnostic registry metadata" },
+        .{ .name = "markup_graphviz_mode", .message = "has no member named 'graphviz'" },
+        .{ .name = "markup_extended_mode", .message = "has no member named 'extended'" },
+    }) |fixture| {
+        const rejected = b.addObject(.{
+            .name = fixture.name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("tests/compile_fail/{s}.zig", .{fixture.name})),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "markup_parser", .module = markup }},
+            }),
+        });
+        rejected.expect_errors = .{ .contains = fixture.message };
+        test_step.dependOn(&rejected.step);
+        markup_step.dependOn(&rejected.step);
+    }
 
     // Public policy constraints must fail for actual consumers, not just pass
     // reflection checks in unit tests. Expected-error builds run with test.
     for ([_]struct { name: []const u8, message: []const u8 }{
+        .{ .name = "diagnostic_limit", .message = "type 'u16' cannot represent integer value '65536'" },
         .{ .name = "fixed_policy_override", .message = "tests/compile_fail/fixed_policy_override.zig:3:36: error: no field named 'policy' in struct /?/" },
         .{ .name = "runtime_check_on_fixed_profile", .message = "error: unable to evaluate comptime expression" },
-        .{ .name = "digraph_treatment", .message = "error: no field named 'treated_as' in struct 'policy.Policy.Operators'" },
+        .{ .name = "digraph_treatment", .message = "error: no field named 'treated_as' in struct 'dot.policy.Policy.Operators'" },
         .{ .name = "invalid_policy_mismatch", .message = "error: invalid policy: graph_operator_mismatch_not_applicable" },
         .{ .name = "invalid_policy_reading", .message = "error: invalid policy: graph_operator_reading_not_applicable" },
+        .{ .name = "markup_processor_required", .message = "error: invalid policy: markup_processor_required" },
         .{ .name = "fixed_parse_override", .message = "tests/compile_fail/fixed_parse_override.zig:3:41: error: no field named 'policy' in struct /?/" },
         .{ .name = "unmetered_advance", .message = "error: metering is disabled; use run()" },
         .{ .name = "processor_fixed_override", .message = "tests/compile_fail/processor_fixed_override.zig:4:35: error: no field named 'policy' in struct /?/" },
         .{ .name = "processor_invalid_binding", .message = "error: configured processor profile must expose Policies" },
+        .{ .name = "processor_invalid_infallible_schema", .message = "error: infallible policy schema must declare a valid-only Check" },
+        .{ .name = "processor_infallible_union_schema", .message = "error: infallible policy schema must declare a valid-only Check" },
     }) |fixture| {
         const rejected = b.addObject(.{
             .name = fixture.name,
@@ -75,7 +162,52 @@ pub fn build(b: *std.Build) void {
 
     // Example targets. `zig build examples` builds and runs them.
     const examples_step = b.step("examples", "Build and run the examples");
+    const markup_example = b.addExecutable(.{
+        .name = "markup",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/markup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "markup_parser", .module = markup }},
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(markup_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(markup_example, .{}).step);
+    const delayed_example = b.addExecutable(.{
+        .name = "delayed_markup",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/delayed_markup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(delayed_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(delayed_example, .{}).step);
+    const composed_example = b.addExecutable(.{
+        .name = "composed_markup",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/composed_markup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(composed_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(composed_example, .{}).step);
+    const custom_processor_example = b.addExecutable(.{
+        .name = "custom_processor",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/custom_processor.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(custom_processor_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(custom_processor_example, .{}).step);
     const example_names = [_][]const u8{
+        "quick_start",
         "parse_undigraph",
         "fixed_buffer",
         "diagnostics_demo",
@@ -188,6 +320,31 @@ pub fn build(b: *std.Build) void {
     b.step("bench-policy", "Compare fixed/runtime policy costs on the standard benchmark machine")
         .dependOn(&b.addRunArtifact(policy_bench).step);
     const check_benches = b.step("check-benches", "Compile benchmarks without updating or running baselines");
+    const markup_bench = b.addExecutable(.{
+        .name = "markup_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/markup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "markup_parser", .module = markup }},
+        }),
+    });
+    const run_markup_bench = b.addRunArtifact(markup_bench);
+    if (b.args) |args| run_markup_bench.addArgs(args);
+    b.step("bench-markup", "Benchmark standalone structural markup (decimal MB/s)").dependOn(&run_markup_bench.step);
+    check_benches.dependOn(&markup_bench.step);
+    const composition_bench = b.addExecutable(.{
+        .name = "composition_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/composition.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    b.step("bench-composition", "Measure composed throughput, allocation calls and peak requested bytes")
+        .dependOn(&b.addRunArtifact(composition_bench).step);
+    check_benches.dependOn(&composition_bench.step);
     for ([_]*std.Build.Step.Compile{ bench_exe, lexer_bench, session_bench, subgraph_bench, policy_bench }) |bench| {
         _ = bench.getEmittedBin();
         check_benches.dependOn(&bench.step);
@@ -196,11 +353,45 @@ pub fn build(b: *std.Build) void {
     const freestanding = b.step("check-freestanding", "Compile consumed session and policy profiles for RISC-V32 and Wasm32");
     for ([_]std.Target.Cpu.Arch{ .riscv32, .wasm32 }) |arch| {
         const portable_target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .freestanding });
+        const portable_support = b.createModule(.{
+            .root_source_file = b.path("src/support.zig"),
+            .target = portable_target,
+            .optimize = .ReleaseSmall,
+        });
+        const reporting_probe = b.addObject(.{
+            .name = b.fmt("reporting_{s}", .{@tagName(arch)}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/freestanding_reporting.zig"),
+                .target = portable_target,
+                .optimize = .ReleaseSmall,
+                .imports = &.{.{ .name = "parser_support", .module = portable_support }},
+            }),
+        });
+        _ = reporting_probe.getEmittedBin();
+        freestanding.dependOn(&reporting_probe.step);
         const portable = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = portable_target,
             .optimize = .ReleaseSmall,
+            .imports = &.{.{ .name = "parser_support", .module = portable_support }},
         });
+        const portable_markup = b.createModule(.{
+            .root_source_file = b.path("src/markup.zig"),
+            .target = portable_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{.{ .name = "parser_support", .module = portable_support }},
+        });
+        const console_probe = b.addObject(.{
+            .name = b.fmt("console_{s}", .{@tagName(arch)}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/freestanding_console.zig"),
+                .target = portable_target,
+                .optimize = .ReleaseSmall,
+                .imports = &.{.{ .name = "markup_parser", .module = portable_markup }},
+            }),
+        });
+        _ = console_probe.getEmittedBin();
+        freestanding.dependOn(&console_probe.step);
         for ([_]bool{ false, true }) |runtime_policy| {
             const options = b.addOptions();
             options.addOption(bool, "runtime_policy", runtime_policy);
@@ -218,6 +409,20 @@ pub fn build(b: *std.Build) void {
             });
             _ = probe.getEmittedBin();
             freestanding.dependOn(&probe.step);
+            const markup_probe = b.addObject(.{
+                .name = b.fmt("markup_{s}_r{d}", .{ @tagName(arch), @intFromBool(runtime_policy) }),
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("tests/freestanding_markup.zig"),
+                    .target = portable_target,
+                    .optimize = .ReleaseSmall,
+                    .imports = &.{
+                        .{ .name = "markup_parser", .module = portable_markup },
+                        .{ .name = "policy_features", .module = options.createModule() },
+                    },
+                }),
+            });
+            _ = markup_probe.getEmittedBin();
+            freestanding.dependOn(&markup_probe.step);
         }
         for ([_]bool{ false, true }) |metering| {
             for ([_]bool{ false, true }) |cancellation| {

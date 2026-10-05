@@ -10,7 +10,7 @@
 //! cleanly (warnings allowed) and 1 otherwise. The rendering is the
 //! library's out-of-the-box console renderer; `--compact` selects the
 //! one-line-per-field log style instead of boxes with source excerpts;
-//! `--fail-fast` stops at the first syntax error, the library default.
+//! `--fail-fast` stops at the first syntax error instead of recovering statements.
 
 const std = @import("std");
 const dot = @import("dot_parser");
@@ -31,12 +31,12 @@ pub fn main(init: std.process.Init) !u8 {
 
     var path: ?[]const u8 = null;
     var compact = false;
-    var recovery: dot.Recovery = .statements;
+    var on_error: dot.OnError = .collect;
     for (argv[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--compact")) {
             compact = true;
         } else if (std.mem.eql(u8, arg, "--fail-fast")) {
-            recovery = .fail_fast;
+            on_error = .fail_fast;
         } else {
             path = arg;
         }
@@ -48,11 +48,11 @@ pub fn main(init: std.process.Init) !u8 {
 
     var bag = dot.GrowableDiagnosticBag.init(allocator, .{});
     defer bag.deinit();
-    // Keep going after a syntax error so one run shows every problem
-    // (`--fail-fast` stops at the first, the library default).
+    // Recover at safe statement boundaries to collect further problems
+    // (`--fail-fast` explicitly stops at the first).
     const Parser = dot.Profile(.{ .runtime_policy = true });
     var checked = try Parser.parseAndValidate(allocator, source, bag.sink(), .{
-        .policy = .{ .recovery = recovery },
+        .policy = .{ .on_error = on_error },
     });
     defer checked.deinit(allocator);
 
@@ -65,17 +65,20 @@ pub fn main(init: std.process.Init) !u8 {
     const color: dot.console.RenderOptions.Color =
         if (stdout_file.supportsAnsiEscapeCodes(io) catch false) .ansi else .none;
 
+    const locations = try allocator.alloc(dot.location.Location, try dot.console.locationCapacity(bag.items()));
+    defer allocator.free(locations);
     if (compact) {
-        for (bag.items()) |d| try dot.console.render(d, .{ .source = source }, stdout);
+        try dot.console.renderList(bag.items(), .{ .source = source, .source_name = if (path) |p| std.fs.path.basename(p) else "sample.dot" }, locations, stdout);
     } else {
         try dot.console.renderBoxedList(bag.items(), 0, .{
             .source_name = if (path) |p| std.fs.path.basename(p) else "sample.dot",
             .source = source,
             .color = color,
-        }, stdout);
+        }, locations, stdout);
     }
-    try stdout.print("{s}: {s}{s}\n", .{
-        if (path) |p| p else "sample",                                                                        @tagName(checked.outcome),
+    try dot.presentation.writeSourceName(path orelse "sample", .unicode, stdout);
+    try stdout.print(": {s}{s}\n", .{
+        @tagName(checked.outcome),
         if (checked.documentValid()) "" else if (checked.outcome == .success) " (validation failed)" else "",
     });
     return if (path == null or checked.documentValid()) 0 else 1;

@@ -1,0 +1,24 @@
+//! Optional shared presentation also works without an OS or an allocator.
+const std = @import("std");
+const markup = @import("markup_parser");
+
+export fn render_markup(source: [*]const u8, len: u32, output: [*]u8, capacity: u32) u32 {
+    return render(source, len, output, capacity, .ascii);
+}
+
+export fn render_markup_unicode(source: [*]const u8, len: u32, output: [*]u8, capacity: u32) u32 {
+    return render(source, len, output, capacity, .unicode);
+}
+
+fn render(source: [*]const u8, len: u32, output: [*]u8, capacity: u32, style: markup.console.RenderOptions.Style) u32 {
+    var writer = std.Io.Writer.fixed(output[0..capacity]);
+    const finding: markup.Diagnostic = .{
+        .code = .mismatched_tag,
+        .span = .{ .start = len, .len = 0 },
+        .related = .{ .start = 0, .len = @min(len, 1) },
+    };
+    var locations: [3]markup.location.Location = undefined;
+    markup.console.renderBoxedList(&.{finding}, 0, .{ .source = source[0..len], .style = style, .verbose = true }, &locations, &writer) catch return 0;
+    markup.console.renderList(&.{finding}, .{ .source = source[0..len], .style = style }, &locations, &writer) catch return 0;
+    return @intCast(writer.buffered().len);
+}

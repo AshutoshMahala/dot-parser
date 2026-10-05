@@ -1,274 +1,261 @@
 # dot-parser
 
-A reusable [DOT-language](https://graphviz.org/doc/info/lang.html) parser
-library for Zig. It parses DOT input and exposes its structure without
-performing layout and without depending on any particular graph engine.
+A parser for the [DOT graph language](https://graphviz.org/doc/info/lang.html),
+the text format used by Graphviz, written in Zig.
 
-> **Status: experimental `0.x`.** Backward compatibility is not promised and
-> breaking changes are expected.
+It reads DOT text and gives you its structure: nodes, edges, attributes and
+subgraphs. It also gives clear error messages. It does not draw graphs or
+compute layouts. You decide what to build on top, for example a linter, a
+formatter, or a converter into your own graph type.
 
-Version **0.3.0**: see the [changelog](CHANGELOG.md#030--2026-09-19).
+The package has two independent modules:
 
-## Current support (growing by vertical slices)
+- **`dot_parser`** parses DOT.
+- **`markup_parser`** parses HTML-like markup, such as Graphviz's
+  `label=<<b>Hi</b>>` labels. It can check labels while DOT is parsed, or work
+  on its own with no DOT at all.
 
-The grammar grows one narrow end-to-end slice at a time:
+> **Status: experimental (0.x).** It works and is well tested, but names may
+> still change between versions. Breaking changes are listed in the
+> [changelog](CHANGELOG.md).
 
 ```dot
-strict digraph Routes {
-    hub -> a
-    hub -> b;
-    hub;
+digraph Pipeline {
+    node [shape=box];
+    fetch -> parse -> check [color=red];
+    subgraph cluster_output { render; save }
+    check -> { render save }
 }
 ```
 
-- One root document: `graph` or `digraph`, optionally `strict`, optionally
-  named (the source keyword `graph` maps to the library kind `undigraph`;
-  in this library `graph` always means "either kind").
-- Bare identifiers (ASCII and raw non-ASCII bytes), numeral, and quoted
-  identifiers (including quoted `+` concatenation), node statements,
-  single-edge statements and edge chains;
-  semicolons are optional, as in Graphviz.
-- Basic attributes: standalone assignments, graph/node/edge attribute statements,
-  and node/edge lists. Duplicate keys and written order are preserved.
-- Named, anonymous and nested subgraphs, including edge endpoints, with allocation-free scope views.
-- Borrowed source spans, explicit caller memory, fixed-buffer operation.
-- Fixed-storage bounded sessions, with optional cooperative cancellation.
-- Typed compile-time policies and opt-in runtime overrides, including named
-  [`standard` and `lenient` presets](docs/POLICIES.md#standard-and-lenient-presets).
-- Comments (`//`, `/* ... */`, and `#` line comments), skipped without retention.
-- Port suffixes (`a:out`, `a:n`, `a:out:e`) on node statements and node endpoints.
+## Highlights
 
-Bare identifiers such as `café` and `東京` preserve their bytes exactly;
-parsing does not validate UTF-8 or normalize Unicode.
+- **Helpful errors.** Each problem points at the exact spot, explains what is
+  wrong, and often suggests a fix. Parsing keeps going after an error, so you
+  see more than one problem at a time.
+- **You choose where memory comes from.** Use any allocator, an arena, or
+  fixed buffers with no heap allocation at all.
+- **Runs anywhere.** No dependencies, no OS calls, no file access. It builds
+  for embedded targets and WebAssembly.
+- **Keeps what was written.** Spelling, order and duplicates are kept exactly.
+  Nothing is silently rewritten or interpreted.
+- **Supports safe handling of untrusted input.** Parsing uses no recursion and
+  makes one pass over the input. Limits are off by default, so you set
+  explicit budgets for size, nesting and memory, and can parse step by step
+  with cancellation.
+- **Configurable.** Strict by default, with a lenient mode and optional
+  extra checks.
+- **HTML-like markup, inside DOT or on its own.** Check the inside of labels
+  such as `label=<<b>Hi</b>>` while parsing DOT, or parse HTML-like markup by
+  itself (development version only for now).
+- **Bring your own processor.** Swap in your own label checker at compile time.
+  Its settings plug into the same settings system as DOT's.
 
-HTML-like identifiers and the planned standalone markup subsystem are not part
-of 0.3.0; implementation follows this release. Other features, including
-semantic edge-product expansion, remain deferred. The authoritative
-construct-by-construct table is [docs/SUPPORTED_SYNTAX.md](docs/SUPPORTED_SYNTAX.md).
-
-See [the attribute example](examples/attributes.zig) for fixed-storage parsing
-and ordered attribute traversal. Parsing does not apply defaults or resolve values.
-See [the port example](examples/ports.zig) for compact node references and raw
-suffix traversal. Parsing does not resolve named ports or compass attachments.
-See [subgraph endpoints](examples/subgraph_endpoints.zig) for a uniform node/scope
-endpoint switch; parsing never eagerly expands node-to-node edge products.
-See [subgraph traversal](docs/SUBGRAPHS.md) and [the example](examples/subgraphs.zig)
-for direct/recursive scope views and explicit nesting scratch.
-
-## Usage
-
-### Just parse and check
+## A quick look
 
 ```zig
 const std = @import("std");
 const dot = @import("dot_parser");
 
-var bag = dot.GrowableDiagnosticBag.init(allocator, .{});
-defer bag.deinit();
-var checked = dot.parseAndValidate(allocator, source, bag.sink(), .{});
-defer checked.deinit(allocator);
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    var buffer: [4096]u8 = undefined;
+    var stdout_writer: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
 
-if (checked.documentValid()) {
-    const document = checked.document.?;
-    var statements = document.statements();
-    while (statements.next()) |statement| {
-        switch (statement) {
-            .subgraph => |id| std.log.info("subgraph scope {d}", .{@intFromEnum(id)}),
-            .edge_chain => |chain| std.log.info("chain {s}: {d} edges", .{
-                document.text(document.nodeReference(chain.first.left.node).?.identifier), document.edgeLinkCount(chain) + 1,
-            }),
-            .node => |node| std.log.info("node {s}", .{document.text(document.nodeReference(node.reference).?.identifier)}),
-            .edge => |edge| std.log.info("edge {s} {s} {s}", .{
-                document.text(document.nodeReference(edge.left.node).?.identifier),
-                edge.operator.lexeme(),
-                document.text(document.nodeReference(edge.right.node).?.identifier),
-            }),
-            .assignment => |assignment| std.log.info("assignment {s} = {s}", .{
-                document.text(assignment.key), document.text(assignment.value),
-            }),
-            .attribute_statement => |attributes| std.log.info("{s} attributes: {d}", .{
-                @tagName(attributes.target), attributes.attributes.len,
-            }),
+    const source =
+        \\digraph {
+        \\    a -> b;
+        \\    b -> c [color=red];
+        \\}
+    ;
+
+    // Problems are collected here instead of being printed or thrown.
+    var bag = dot.GrowableDiagnosticBag.init(allocator, .{});
+    defer bag.deinit();
+
+    // Parse the text, then check it (for example, `--` inside a digraph).
+    var result = dot.parseAndValidate(allocator, source, bag.sink(), .{});
+    defer result.deinit(allocator);
+
+    if (!result.documentValid()) {
+        for (bag.items(), 1..) |problem, number| {
+            try dot.console.renderBoxed(problem, number, .{ .source = source, .source_name = "graph.dot" }, stdout);
         }
+        return;
+    }
+
+    const document = result.document.?;
+    var edges = document.edgeIterator();
+    while (edges.next()) |edge| {
+        // An edge end is a node or a whole subgraph (`a -> { b c }`).
+        if (edge.left != .node or edge.right != .node) continue;
+        const from = document.nodeReference(edge.left.node).?.identifier;
+        const to = document.nodeReference(edge.right.node).?.identifier;
+        try stdout.print("{s} {s} {s}\n", .{
+            document.text(from), edge.operator.lexeme(), document.text(to),
+        });
     }
 }
 ```
 
-The quick-start switch uses `.node` endpoints because its input is node-only.
-For arbitrary DOT, handle both `Endpoint` variants as shown in the
-[subgraph endpoint example](examples/subgraph_endpoints.zig).
+This prints:
 
-### Show every error
-
-Parsing is fail-fast by default: one syntax error, then the outcome. Ask for
-statement-level recovery and one run reports them all, resynchronizing at the
-next `;` or `}`:
-
-```zig
-const Parser = dot.Profile(.{ .policy = .{ .recovery = .statements } });
-var checked = Parser.parseAndValidate(allocator, source, bag.sink(), .{});
-// checked.outcome == .invalid_syntax; bag holds every syntax error, in order.
-try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source }, stdout);
+```text
+a -> b
+b -> c
 ```
 
-Every diagnostic is a typed value — a WDP code such as `E.Syntax.Keyword.003`,
-a span, a payload naming what was found and where in the grammar, and, when
-one edit is known to repair it, a typed `fix` a linter can apply (with an
-applicability flag saying whether it may do so unattended) — so a custom
-renderer or an auto-fixer can do as much as the console renderer. The
-registry and the fix table are in [OUTCOMES.md](docs/OUTCOMES.md);
-`examples/check_file.zig` is a ready-made command-line checker.
+If line 3 said `b -- c` instead (an undirected edge in a directed graph), you
+would get:
 
-### Build a linter
-
-For a pairwise engine-adapter view, use `document.edgeIterator()`. It visits
-single edges and chain links as `EdgeView` values in operator source order without
-allocating; chain attributes are shared. See [the chain example](examples/edge_chains.zig) for fixed-pool sizing
-and [ownership](docs/OWNERSHIP.md#edge-chains-and-memory) for the retained layout.
-
-`parseBorrowed` and `validate` are separate stages, and the document is a
-plain source-ordered view — ranges slice your buffer, and full positions
-are derived only when you ask:
-
-```zig
-// A tiny lint: flag node names longer than 8 bytes.
-var statements = document.statements();
-while (statements.next()) |statement| switch (statement) {
-    .node => |node| {
-        const name = document.nodeReference(node.reference).?.identifier;
-        if (name.len > 8) {
-            const where = name.locate(document.source);
-            std.log.warn("{d}:{d}: long node name '{s}'", .{
-                where.line, where.byte_column, document.text(name),
-            });
-        }
-    },
-    .subgraph, .edge, .edge_chain, .assignment, .attribute_statement => {}, // This lint only checks nodes.
-};
+```text
+┌─ Error 1: edge operator does not match the graph kind
+│ graph.dot:3:7
+│
+│ 1 │ digraph {
+│   │ ─────── the document is directed because of this keyword
+│ ⋯
+│ 3 │     b -- c [color=red];
+│   │       ^^ expected '->', found '--'
+│
+│ Hint: change '--' to '->', or declare the document with 'graph'
+│ Fix: replace '--' with '->' (one possible repair)
+└─ E1 ─ [dot_parser:E.Validation.Operator.002]
 ```
 
-### Use fixed memory
+This program is [examples/quick_start.zig](examples/quick_start.zig).
+[Getting started](docs/GETTING_STARTED.md) walks through it step by step.
 
-For fixed-memory operation, hand `parseBorrowedIn` your own pools — no
-allocator, nothing grows, and capacity is visible in the declarations:
+## Install
 
-```zig
-var storage: dot.FixedDocumentStorage(.{
-    .statements = 32,
-    .nodes = 32,
-    .edges = 16,
-}) = .{};
-var bag: dot.FixedDiagnosticBag(8) = .{};
-
-const parsed = dot.parseBorrowedIn(source, .{ .document = storage.storage() }, bag.sink(), .{});
-if (parsed.outcome == .success) {
-    const validation = dot.validate(&parsed.document.?, bag.sink(), .{});
-    _ = validation;
-}
-// release by reusing or discarding the storage — there is nothing to free
-```
-
-The example above reserves only flat syntax. For subgraphs, also reserve
-`.subgraphs` in the document pools and pass `.scratch = scratch.storage()` from
-`FixedParseScratch(.{ .nesting = max_active_depth })` in the memory bundle.
-The root has depth zero; siblings reuse frames.
-
-(The allocator-based calls also accept arenas and
-`std.heap.FixedBufferAllocator` with `document_capacities` hints, if an
-allocator fits your architecture better.)
-
-### Size the pools
-
-`measure` is a count-only dry run: the same grammar and limits, nothing
-retained, and the exact `DocumentCapacities` a retained parse of that source
-needs. Use it to size fixed pools for an input you do not know in advance,
-or as the hint that keeps an arena parse allocation-exact:
-
-```zig
-const measured = dot.measure(allocator, source, bag.sink(), .{});
-if (measured.capacities) |capacities| {
-    var checked = dot.parseAndValidate(arena.allocator(), source, bag.sink(), .{
-        .parse = .{ .document_capacities = capacities },
-    });
-    // ...
-}
-```
-
-This matters for arenas: growing pools leave every outgrown copy behind, so
-an unhinted parse into an arena backs a document with four to seven times its
-retained size. Hinted or measured parses reserve once. Fixed pools are a
-memory and determinism feature rather than a speed one — the parse performs
-at most a few dozen allocations either way. `measureIn` is the allocator-free
-twin, taking the same nesting scratch as `parseBorrowedIn`.
-
-### Integrate a graph engine
-
-Coming in a later slice: a consumer-neutral `DotIR` plus adapter contracts,
-so engines consume normalized semantics rather than surface syntax.
-
-### Identifier spelling versus value
-
-`document.text(range)` always returns the exact source spelling, including
-quotes and concatenation. Decode explicitly when you need the logical value:
-
-```zig
-var value_buffer: [128]u8 = undefined;
-const reference = document.nodeReference(node.reference).?;
-const value = try document.decodeIdentifier(reference.identifier, &value_buffer);
-// Or stream without a decoded-value buffer:
-try document.writeIdentifier(reference.identifier, writer);
-```
-
-Decoding performs no allocation or numeric conversion. See
-[ownership and decoding](docs/OWNERSHIP.md#identifier-values) and the runnable
-[identifier example](examples/identifiers.zig).
-
-The source bytes are borrowed: keep them alive and unchanged for as long as
-the returned document is used. See [examples/](examples/) for runnable
-versions of these paths and [docs/BASELINES.md](docs/BASELINES.md) for
-measured performance.
-
-## Building
-
-Tested with Zig **0.16.0**, also the declared minimum toolchain version.
-Newer Zig versions are not yet verified.
+You need Zig **0.16.0**. Add the package to your project:
 
 ```sh
-zig build test        # unit + public integration tests
-zig build examples    # build and run the examples
-zig build check-freestanding # consumed session profiles for RISC-V32/Wasm32
-zig build bench -Doptimize=ReleaseFast -Dlexer=block  # every bench takes scalar|block
+zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#main
 ```
 
-The library target has no OS, network, or filesystem dependency: it parses
-caller-supplied bytes, so input can come from a file, a pipe, a socket, or
-generated in memory — reading it is the application's job.
+Then import the modules you need in your `build.zig`:
 
-Two scanner backends share one interface and produce identical results: the
-byte-at-a-time scalar scanner (the default) and a 64-byte block scanner that
-classifies input with vector compares, which wins when sessions run on very
-small work budgets or the input is dominated by long identifiers, strings or
-comments in the recorded benchmarks. Select one for parsing with
-`dot.Profile(.{ .policy = .{ .scanner = .block } })`.
-[Bounded execution](docs/EXECUTION.md#scanner-backends) has the trade-off.
+```zig
+const dot_parser = b.dependency("dot_parser", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("dot_parser", dot_parser.module("dot_parser"));
+// Only if you check labels or parse markup:
+exe.root_module.addImport("markup_parser", dot_parser.module("markup_parser"));
+```
+
+This installs the development version, which is what these docs and examples
+describe. The latest release, 0.3.0, has an older API: for example, it has no
+`GrowableDiagnosticBag` and no `markup_parser`. If you need it, use `#v0.3.0`
+and follow the [README at that tag](https://github.com/AshutoshMahala/dot-parser/tree/v0.3.0).
+The differences are listed under "Unreleased" in the [changelog](CHANGELOG.md).
+
+## What it understands
+
+All of DOT's statement syntax:
+
+- `graph` and `digraph` documents, with optional `strict` and a name
+- Nodes, edges, and edge chains (`a -> b -> c`)
+- Attributes: `[color=red]` lists, `node [shape=box]` defaults, and `rankdir=LR`
+- Subgraphs, named or not, nested, and as edge ends (`a -> { b c }`)
+- Ports (`a:out`, `a:out:n`)
+- Every kind of name: plain words (including non-ASCII), numbers,
+  `"quoted strings"` joined with `+`, and HTML-like `<...>` labels
+- Comments (`//`, `/* */`, `#`) and optional semicolons
+
+See [supported syntax](docs/SUPPORTED_SYNTAX.md) for the full list and the
+few places where it differs from Graphviz.
+
+## What it does not do
+
+It reports what the file says. It does not work out what the file means:
+
+- It doesn't lay out or draw anything.
+- It doesn't interpret attribute values. `color=red` is just two pieces of text.
+- It doesn't apply defaults. `node [shape=box]` stays a statement; it isn't
+  copied onto each node.
+- It doesn't expand `a -> { b c }` into two edges, merge repeated subgraphs,
+  or build a list of unique nodes.
+- It doesn't read files. You pass it bytes.
+- It doesn't keep comments, so it can't reformat a file on its own.
+
+You can do all of these on top of the parsed document.
+[Why it works this way](docs/DESIGN.md) explains these choices.
 
 ## Documentation
 
-- Checking whether your DOT files will parse? →
-  [Supported DOT syntax](docs/SUPPORTED_SYNTAX.md)
-- Deciding who owns what, or working without an allocator? →
-  [Ownership and memory](docs/OWNERSHIP.md)
-- Yielding during parsing or supporting cancellation? →
-  [Bounded execution](docs/EXECUTION.md) · [runnable example](examples/bounded.zig)
-- Handling results, or telling malformed apart from not-yet-supported? →
-  [Outcomes and diagnostics](docs/OUTCOMES.md)
-- Choosing fixed, growable or streaming diagnostics? → [Reporting](docs/REPORTING.md)
-- Configuring limits, recovery, execution, graph kinds or runtime overrides? →
-  [Policies](docs/POLICIES.md) · [runnable example](examples/policies.zig)
-- Learning by running code? → [examples/](examples/)
-- Performance numbers → [Baselines](docs/BASELINES.md) ·
-  Architecture → [Project structure](docs/architecture/PROJECT_STRUCTURE.md) ·
-  Release history → [Changelog](CHANGELOG.md)
+**DOT**
+
+| Guide | Read it when you want to… |
+| --- | --- |
+| [Getting started](docs/GETTING_STARTED.md) | parse your first DOT file and read the result |
+| [Reading a parsed graph](docs/READING_DOCUMENTS.md) | walk nodes, edges, attributes, ports and subgraphs |
+| [Supported syntax](docs/SUPPORTED_SYNTAX.md) | check exactly which DOT input is accepted |
+| [DOT error codes](docs/ERRORS.md#dot-error-codes) | look up a DOT error or warning |
+
+**Markup**
+
+| Guide | Read it when you want to… |
+| --- | --- |
+| [Checking HTML-like labels](docs/LABELS.md) | check `<...>` labels inside DOT files |
+| [Parsing markup on its own](docs/MARKUP.md) | parse HTML-like markup without DOT, or check many fragments |
+| [Bringing your own processor](docs/CUSTOM_PROCESSORS.md) | plug your own label checker into DOT parsing |
+| [Markup error codes](docs/ERRORS.md#markup-error-codes) | look up a markup error or warning |
+
+**Both parsers**
+
+| Guide | Read it when you want to… |
+| --- | --- |
+| [Errors and diagnostics](docs/ERRORS.md) | show errors, understand results, or apply suggested fixes |
+| [Memory](docs/MEMORY.md) | use an arena or fixed buffers, or work with no allocator at all |
+| [Settings](docs/POLICIES.md) | make parsing stricter or more lenient, add checks, or set limits |
+| [Parsing in small steps](docs/EXECUTION.md) | spread parsing over time, or cancel it |
+
+**Project**
+
+| Guide | Read it when you want to… |
+| --- | --- |
+| [Why it works this way](docs/DESIGN.md) | understand the main design decisions |
+| [Roadmap](docs/ROADMAP.md) | see what is planned but not built yet |
+| [Performance](docs/PERFORMANCE.md) | see measured speed and memory use |
+| [Architecture](docs/ARCHITECTURE.md) | find your way around the source code |
+
+The same index is in [docs/README.md](docs/README.md).
+
+## Examples
+
+Small runnable programs in [examples/](examples/). `zig build examples` builds
+and runs them all, and installs each one in `zig-out/bin/`.
+
+| Example | Shows how to… | Guide |
+| --- | --- | --- |
+| [quick_start](examples/quick_start.zig) | parse, show problems, and list edges | [Getting started](docs/GETTING_STARTED.md) |
+| [parse_undigraph](examples/parse_undigraph.zig) | print every kind of statement | [Getting started](docs/GETTING_STARTED.md) |
+| [identifiers](examples/identifiers.zig) | get the real value of a quoted or joined name | [Reading](docs/READING_DOCUMENTS.md#names-spelling-versus-value) |
+| [attributes](examples/attributes.zig) | read attribute lists, defaults and assignments | [Reading](docs/READING_DOCUMENTS.md#attributes) |
+| [edge_chains](examples/edge_chains.zig) | walk chains like `a -> b -> c` | [Reading](docs/READING_DOCUMENTS.md#edges) |
+| [ports](examples/ports.zig) | read ports like `a:out:n` | [Reading](docs/READING_DOCUMENTS.md#nodes-and-ports) |
+| [subgraphs](examples/subgraphs.zig) | walk subgraphs and their contents | [Reading](docs/READING_DOCUMENTS.md#subgraphs) |
+| [subgraph_endpoints](examples/subgraph_endpoints.zig) | handle edges that end at a subgraph | [Reading](docs/READING_DOCUMENTS.md#edges) |
+| [diagnostics_demo](examples/diagnostics_demo.zig) | print problems with source lines and color | [Errors](docs/ERRORS.md#printing-diagnostics) |
+| [check_file](examples/check_file.zig) | build a command-line checker for `.dot` files | [Errors](docs/ERRORS.md) |
+| [fixed_buffer](examples/fixed_buffer.zig) | parse with no allocator at all | [Memory](docs/MEMORY.md#option-3-fixed-buffers-no-allocator) |
+| [policies](examples/policies.zig) | use checks, lenient mode, graph kinds and run-time settings | [Settings](docs/POLICIES.md) |
+| [bounded](examples/bounded.zig) | parse in small steps, and cancel | [Small steps](docs/EXECUTION.md) |
+| [composed_markup](examples/composed_markup.zig) | check every label while parsing DOT | [Labels](docs/LABELS.md#check-every-label-while-parsing) |
+| [delayed_markup](examples/delayed_markup.zig) | check only the labels you choose | [Labels](docs/LABELS.md#check-the-labels-you-choose) |
+| [markup](examples/markup.zig) | parse and validate markup on its own | [Markup](docs/MARKUP.md) |
+| [custom_processor](examples/custom_processor.zig) | plug in your own label checker | [Own processor](docs/CUSTOM_PROCESSORS.md) |
+
+## Building and testing
+
+```sh
+zig build test                 # all tests
+zig build examples             # build and run every example
+zig build check-freestanding   # compile for RISC-V32 and Wasm32
+zig build bench -Doptimize=ReleaseFast   # main benchmark
+```
 
 ## License
 
@@ -278,6 +265,10 @@ Licensed under either of
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
 
 at your option (`MIT OR Apache-2.0`).
+
+The optional console renderer uses Unicode-derived width tables under the
+Unicode License v3. The full notice is in
+[console_widths.zig](src/common/console_widths.zig).
 
 Unless you explicitly state otherwise, any contribution intentionally
 submitted for inclusion in this work by you shall be dual licensed as above,

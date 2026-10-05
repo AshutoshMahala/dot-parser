@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-09-26 (processor policy/diagnostic preparation and stages 1–4).
+Last reconciled: 2026-10-03 (documentation consolidation; current policy, markup and one-shot composition delivery reconciled).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -17,10 +17,33 @@ Status meanings:
 Policy status is separate from delivery status. Entries identify pending
 implementation or verification explicitly; a decided policy does not claim
 that every supporting feature or test already exists. Requirements describe
-the intended contract, while [supported syntax](../SUPPORTED_SYNTAX.md) is
-authoritative for what the current release actually processes.
+the intended contract, while [supported syntax](../SUPPORTED_SYNTAX.md) describes
+the current development grammar. Release capabilities follow the versioned
+documentation and changelog, not every implemented entry in this file.
 
 ---
+
+## Current delivery and unfinished decisions
+
+This table is a navigation aid, not a new feature commitment. Implemented means
+the development tree, not necessarily release 0.3.0. No “in progress” status is
+assigned merely because a topic has been discussed.
+
+| Area | Implemented | Still undecided or undelivered |
+| --- | --- | --- |
+| Policies — Q35/Q36 | Typed baselines/overrides, verification, settings migration, initial lenient syntax and optional checks | Keyword-as-name contexts, optional deviation history, semantic rules and performance gates |
+| Markup — Q40 | Structural parsing/checks/recovery, local scopes, passthrough IDs | Graphviz/extended rules, dialect grammar, catalogs, summaries and partial-tree design |
+| Processors — Q40 | Custom compile-time bindings, nested policy preparation, delayed/one-shot integration and workspace reuse | Recursive/string execution, fixed/resumable composition and broader profile API |
+| Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
+| Encoding — Q23 | Raw bytes, optional UTF-8 and byte-coordinate diagnostics | UTF-16/32 conversion, provenance/mapping APIs |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax for downstream consumers | Semantic lowering, consumer adapters and marshal/unmarshal |
+| Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
+
+Decision status and delivery status remain separate. Preserve question IDs and
+settled rationale; the historical reconciliation log records old checkpoints,
+not the current backlog. Current user contracts are in the public guides;
+unfinished markup detail remains in [MARKUP.md](MARKUP.md) and
+[PROCESSOR_CONTRACT.md](PROCESSOR_CONTRACT.md).
 
 ## Decided
 
@@ -39,9 +62,18 @@ state 544 → 368 B (scalar) and 648 → 472 B (block), fixed session 1264 →
 hinted with the scalar scanner (the per-byte tracker was a fifth of its
 lexing time), the corpus files 3–33% faster, the empty-subgraph fixtures
 21–26% faster; the block scanner gains 2–20%.
-No numeric accounting changes. *(Embodied: `src/location.zig`,
-`src/lexer/`, `src/console.zig` `Positions`; R-MEM-008 and R-DIAG-001
+No numeric accounting changes. *(Embodied: `src/common/location.zig`,
+`src/dot/lexer/`, `src/dot/console.zig` `Positions`; R-MEM-008 and R-DIAG-001
 amended.)*
+
+**Presentation refinement (2026-09-29):** optional shared console rendering now
+shows printable UTF-8 in Unicode style and uses bounded byte-to-display-cell maps
+for annotations. ASCII style retains byte escapes; controls and invalid encoding
+remain escaped in both. Locations/fix spans still use original byte coordinates.
+Tabs use eight-cell excerpt-local stops; scalar widths use pinned Unicode 17.0
+tables, not grapheme shaping. The maps consume 260 bytes of presentation scratch,
+not parser state. Compact output includes the caller's source name for clickable
+locations. See [the rendering contract](../ERRORS.md#printing-diagnostics).
 
 **Q38 — Which scanner backend is the default, and how is a backend chosen?**
 **Decided (2026-09-18):** two implementations behind one interface, selected
@@ -63,12 +95,12 @@ slower than scalar on wasm32 under V8 and 27 KB (wasm32) to 52 KB
 (riscv32) larger. An earlier measurement, before Q39 removed the per-byte
 tracker, had block ahead on comment-heavy and nested inputs and on every
 bounded session; the tracker was most of that gap. The scalar scanner is
-also the differential oracle: the equivalence tests in `src/lexer/lexer.zig`
+also the differential oracle: the equivalence tests in `src/dot/lexer/lexer.zig`
 (fixtures, truncations, block shifts, random streams with 64- and 32-bit
 draws, budget partitions) found two block-scanner bugs before release, and
 the whole suite runs on wasm32 with and without simd128 under Node's WASI.
 The execution contract accounts credits per backend. *(Embodied:
-`src/lexer/`; R-MOD-010, Q16, Q27.)*
+`src/dot/lexer/`; R-MOD-010, Q16, Q27.)*
 
 **Configuration extension implemented (2026-09-20):** Q35 puts scanner selection
 in `Policy.scanner` with compile-time/runtime parity. Fixed-only profiles can
@@ -95,8 +127,8 @@ nesting/pool capacity, not an extra `max_statements` item. No separate total-sco
 policy is introduced: fixed pool capacity bounds retained occurrences, and work
 budgets/cancellation bound execution. Allocator hints are not hard limits.
 Semantic membership, repeated-name resolution and expansion remain deferred.
-*(Embodied: `src/parser.zig`, `src/syntax.zig`, `src/scratch.zig`,
-`tests/subgraph_endpoints.zig`, `docs/SUBGRAPHS.md`.)*
+*(Embodied: `src/dot/parser.zig`, `src/dot/syntax.zig`, `src/dot/scratch.zig`,
+`tests/subgraph_endpoints.zig`, `docs/READING_DOCUMENTS.md`.)*
 
 **Q33 — How are standalone subgraphs represented, traversed and bounded?**
 Use document-local occurrence `ScopeId`s (root 0), optional raw names and a
@@ -113,8 +145,8 @@ retained output through `ParseMemory`; allocator callers may separate scratch
 allocator lifetime. `max_nesting` counts depth below root; no separate max-subgraphs
 policy is introduced; endpoint occurrences now rely on scope-pool capacity (Q34). Cycle detection is not a
 syntax-parser responsibility. Endpoint syntax is implemented by Q34; resolved
-membership remains deferred. *(Embodied: `src/syntax.zig`, `src/scratch.zig`, `src/parser.zig`,
-`tests/subgraphs.zig`, `docs/SUBGRAPHS.md`.)*
+membership remains deferred. *(Embodied: `src/dot/syntax.zig`, `src/dot/scratch.zig`, `src/dot/parser.zig`,
+`tests/subgraphs.zig`, `docs/READING_DOCUMENTS.md`.)*
 
 **Q32 — How are ports retained without inflating every node reference?**
 Use an 8-byte inline-or-pooled `NodeReference`. Bare references hold a source
@@ -131,7 +163,7 @@ private callback returning its pool handle; fixed/hinted capacities include the
 new pool, with normal abort/reset ownership. The 50% qualification break-even
 versus 12-byte references plus 20-byte suffix records concerns payloads only;
 fixed metadata and reserved capacities still cost memory. *(Embodied:
-`src/syntax.zig`, `src/parser.zig`, `tests/ports.zig`, `examples/ports.zig`.)*
+`src/dot/syntax.zig`, `src/dot/parser.zig`, `tests/ports.zig`, `examples/ports.zig`.)*
 
 **Q31 — How are identifier-only edge chains retained and budgeted?**
 Keep ordinary edge records unchanged. A separate chain owner contains the first
@@ -142,8 +174,8 @@ callback is a separately charged event; one accepted owner increments completed
 statements once. The public allocation-free edge iterator offers a pairwise view
 without changing retained syntax. Fixed capacities bound chain owners and
 continuations independently; statement limits do not bound chain length.
-Subgraph endpoints are covered by Q34; ports are covered by Q32. *(Embodied: `src/syntax.zig`,
-`src/parser.zig`, `tests/edge_chains.zig`, `tests/sessions.zig`.)*
+Subgraph endpoints are covered by Q34; ports are covered by Q32. *(Embodied: `src/dot/syntax.zig`,
+`src/dot/parser.zig`, `tests/edge_chains.zig`, `tests/sessions.zig`.)*
 
 **Q30 — How does the first attribute slice retain groups and deliver pairs?**
 Adjacent bracket groups are flattened into one ordered pair sequence, preserving
@@ -155,14 +187,14 @@ have explicit capacities for all attribute-slice pools (six at that slice;
 eight after Q31's chain support; nine with Q32; ten with Q33). `max_attributes` counts all pairs,
 including assignments, but does not bound lexical work. Defaults, effective-value
 resolution and compile-time feature removal remain future work. *(Embodied:
-`src/parser.zig`, `src/syntax_event.zig`, `src/syntax.zig`, `tests/attributes.zig`.)*
+`src/dot/parser.zig`, `src/dot/syntax_event.zig`, `src/dot/syntax.zig`, `tests/attributes.zig`.)*
 
 **Q2 — Is the primary public result a syntax AST, an event stream, or equal
 support for both?**
 Both, layered: the borrowed `Document` is the public result; the syntax-event
 stream is the internal seam between parser and builders, kept private until at
 least two vertical slices exercise it. *(Embodied: `src/root.zig` façade,
-`src/syntax_event.zig`.)*
+`src/dot/syntax_event.zig`.)*
 
 **Q3 — Must the AST preserve comments, exact quoting, whitespace, and
 separators for lossless source reproduction?**
@@ -174,11 +206,12 @@ representation; compact ranges keep the door open without paying for it now.
 a tolerant parsing mode retain it and report a diagnostic?**
 Tolerant by design: the parser is kind-agnostic (both operators always parse,
 the written operator is preserved), and the kind×operator legality rule lives
-solely in validation, which reports every independent mismatch in source
-order. Sink filtering changes reporting, not `document_valid`. Consumers may
+solely in validation, which reports independent mismatches in source order
+under the selected error policy and operational limits. Sink filtering changes
+reporting, not `document_valid`. Consumers may
 parse without validation or select independent graph/operator validation and
-interpretation policies through `Profile` (Q35). *(Embodied: `src/parser.zig`,
-`src/validate.zig`, `src/policy.zig`, corpus.)*
+interpretation policies through `Profile` (Q35). *(Embodied: `src/dot/parser.zig`,
+`src/dot/validate.zig`, `src/dot/policy.zig`, corpus.)*
 
 **Q5 — Is semantic resolution part of this package or a sibling package?**
 This package, as a separate optional layer (`DotIR` + explicit lowering
@@ -206,15 +239,15 @@ Intentional differences are listed in
 [supported syntax](../SUPPORTED_SYNTAX.md), including standalone-CR comment
 termination and whole-document consumption. Keywords, numeral IDs, quoted
 IDs, non-ASCII bare IDs and basic attributes are implemented.
-**Planned compatibility exception:** Q40 accepts concatenation with HTML-like
-operands to match the pinned Graphviz implementation, beyond the written
-specification's description of double-quoted-string concatenation. This is an
-explicit design exception, not implemented HTML support or a general preference
-for implementation quirks over the specification.
+**Implemented compatibility exception:** Q40 accepts concatenation with
+HTML-like operands to match the pinned Graphviz implementation, beyond the
+written specification's double-quoted-string concatenation rule. This explicit
+exception does not imply specialized Graphviz label validation or a general
+preference for implementation quirks over the specification.
 **Verification pending:** automate the differential harness against the
 pinned reference and record exceptions explicitly; notes first verified by
 running 15.1.0 keep that attribution until the harness re-runs them.
-*(Embodied: `src/lexer/`, compatibility notes, corpus; R-ROB-004.)*
+*(Embodied: `src/dot/lexer/`, compatibility notes, corpus; R-ROB-004.)*
 
 **Q13 — What language-specific policy governs raw pointers, unchecked
 blocks, integer casts, and dependency review?**
@@ -248,7 +281,7 @@ identities to the file layout; primaries name the failure domain (`Byte`,
 `diagnostic.Sequence`; numbers may recur across diagnostic domains. Registry
 uniqueness, format validity, and compact-ID collisions are test-enforced;
 compact-ID generation is also checked against the official WDP test vectors.
-*(Embodied: `src/diagnostic.zig`; R-DIAG-001 as amended.)*
+*(Embodied: `src/dot/diagnostic.zig`; R-DIAG-001 as amended.)*
 
 **Q21 — Are any analysis passes worth an optional parallel implementation?**
 Not now. Concurrency stays external to the core (R-ARCH-008/R-CON-004);
@@ -257,7 +290,9 @@ anywhere; frozen documents are share-safe per R-CON-003.)*
 
 **Q25 — What exact deterministic ordering is promised?**
 For the current public API, statements and per-kind pools preserve source
-order, and diagnostics follow deterministic source/emission order. Repeated
+order, and diagnostics follow deterministic phase/emission order. DOT validation
+merges findings in source order; composed and markup source-validation phases
+do not promise a global source sort (Q40). Repeated
 runs with the same input and configuration promise semantic equality, not
 literal byte identity of whole structs (padding is not part of the contract).
 Existing tests and fuzz checks cover outcome classes, statement order and
@@ -265,7 +300,7 @@ pools including borrowed ranges, and diagnostic codes, positions, and feature
 payloads. New public payloads must extend that coverage as they arrive.
 Future merged-fragment, `DotIR`, and serialized-output APIs must define their
 own ordering before publication; their absence does not leave the current
-contract undecided. *(Embodied: `src/syntax.zig`, `src/validate.zig`,
+contract undecided. *(Embodied: `src/dot/syntax.zig`, `src/dot/validate.zig`,
 validation/corpus/fuzz determinism tests; R-PORT-005/R-CON-005.)*
 
 **Q29 — Which sinks require transactional staging, and is a standard staging
@@ -278,10 +313,10 @@ complete syntax parsing, not semantic validity: consumers requiring validated
 output must also stage through validation. No reusable staging helper will be
 added until a concrete consumer demonstrates its need and cost; reconsider
 that helper separately from the settled ownership boundary.
-*(Embodied: `src/syntax_event.zig`, builder abort paths; R-MOD-011.)*
+*(Embodied: `src/dot/syntax_event.zig`, builder abort paths; R-MOD-011.)*
 
 **Q37 — How are fix suggestions carried on diagnostics for linters?**
-**Implemented; reconciled 2026-09-22:** `Diagnostic.fix: ?Fix` carries an
+**DOT implemented; reconciled 2026-09-22:** `Diagnostic.fix: ?Fix` carries an
 original-source span, typed edit (`delete`, `replace`, `insert_before`,
 `insert_after`, `wrap_in_quotes`), replacement identity and applicability.
 `Replacement.text()` supplies the known replacement bytes; producers do not
@@ -296,8 +331,18 @@ Native Zig 0.16.0 measurements record an 80-byte `Diagnostic`, including the
 optional fix; this is a layout observation, not an ABI promise. A future lean
 diagnostics profile that omits fixes is a separate optional-cost decision,
 not unfinished implementation of `Diagnostic.fix`.
-*(Embodied: [diagnostic types](../../src/diagnostic.zig),
-[operator checks](../../src/validation_checks.zig),
+
+**Markup/shared conventions implemented 2026-09-29:** both processors use
+`reporting.Fix(Replacement)` and the same applicability/filtering semantics.
+Markup keeps `Diagnostic.fix: ?Repair` compact and exposes `suggestedFix()` to
+materialize the source edit on demand. The missing-reference-semicolon offer is
+always `maybe` and only offered for terminable candidates: the scanner's existing
+numeric value must satisfy the reference-character rule. `.diagnostics.fixes`
+controls it at either binding time. Markup diagnostics remain 36 bytes.
+Rich catalogs/presentation do not require matching
+retained payload layouts or guessed tag/attribute repairs.
+*(Embodied: [diagnostic types](../../src/dot/diagnostic.zig),
+[operator checks](../../src/dot/validation_checks.zig),
 [repair tests](../../tests/diagnostics.zig),
 [policy tests](../../tests/policies.zig), [lenient tests](../../tests/lenient.zig);
 R-DX-007, R-FUNC-005.)*
@@ -314,31 +359,35 @@ syntax rules and the additional configurable checks are implemented. Follow-up
 designs and the standard-machine performance gate below remain open; this does
 not mean every future validation or graph-building rule is implemented.
 
-**Coverage at `3e1796b` (checked against source and tests):**
+**Coverage reconciled 2026-09-27 (initial core at `3e1796b`, plus passthrough DOT slice):**
 
 | Area | Implemented contract | Stage / evidence |
 | --- | --- | --- |
-| Typed configuration | `Profile`, one `Policy` schema, per-leaf inheritance, consumer baselines, default-off runtime overrides, `validatePolicy` | Configuration preflight; `src/policy.zig`, `src/profile.zig`, `tests/compile_fail/` |
+| Typed configuration | `Profile`, one `Policy` schema, per-leaf inheritance, consumer baselines, default-off runtime overrides, `validatePolicy` | Configuration preflight; `src/dot/policy.zig`, `src/dot/profile.zig`, `tests/compile_fail/` |
 | Graph meaning and operators | Separate `validation.graph` / `digraph`, all four graph treatments, mismatch severity, source-preserving effective conformance | Validation / interpretation; `tests/policies.zig` |
 | Existing settings | Nesting/statement/attribute limits, recovery, scanner, independent metering/cancellation | Parse, measure and policy-bound sessions; `tests/policy_settings.zig` |
 | Initial lenient syntax | Empty statements, exact `---`/`-->`, bare `-` from the written header; independent reject/warn/accept choices | Parsing; `tests/lenient.zig` |
 | Numeral ambiguity | `validation.ambiguous_numeral`: error/warning/off, default warning; tokenization is unchanged | Parsing, not a later validation replay; `tests/validation_checks.zig` |
 | Optional checks | Whole-source UTF-8, repeated attribute keys, effective graph-kind restrictions, qualified node references and subgraph occurrences | Post-parse validation; default off; `tests/validation_checks.zig` |
 | Presets and factual results | Complete `standard` / `lenient` policies; deviations and warning counts survive suppression/failure; no hidden history | Q36 and the [public contract](../POLICIES.md) |
-| Diagnostics and fixes | Typed policy-aware findings/fixes; severity affects validity, sink filtering does not; delivery remains separate | Q37; `tests/diagnostics.zig`, `tests/policies.zig`, `tests/validation_checks.zig` |
+| Diagnostics and fixes | Typed policy-aware findings; `diagnostics.fixes = all / machine_applicable / off` filters all DOT offers at either binding time without changing validity or delivery | Q37; `tests/diagnostics.zig`, `tests/html_identifiers.zig` |
+| HTML-like identifiers and processing selection | `markup = none / passthrough / process`; passthrough without a bound child, process with one; raw operands and explicit decoding | Parsing; `tests/html_identifiers.zig`, `tests/during_dot.zig` |
 
 All implemented policy leaves have compile-time/runtime parity. The runtime
-support switch is a compile-time capability, not an overridable leaf. Limits
-remain `usize` in the current schema; source spans/indices are still u32.
+support switch is a compile-time capability, not an overridable leaf. Nesting
+limits and active/recovery depth counters use `u32`, bounded by the source domain.
+Statement/attribute limits remain `usize`; source spans/indices are u32.
 Parse deviation/warning counters are u32; validation findings and composed
 warning totals are u64 because independent rules can overlap on one source byte.
 Sources, pools, allocators, scratch and callback contexts remain resources, not
 a second settings system. The table identifies existing coverage, not a claim
 that tests or benchmarks were rerun for this documentation reconciliation.
 
-**Not implemented in this scope:** keyword-as-name acceptance, optional deviation
-history, HTML/markup modes, bounded/cancellable validation, live auto-promotion
-events, custom rule/trait adapters, and semantic graph checks/conversion. Required
+**Remaining work:** keyword-as-name acceptance, optional deviation history,
+specialized Graphviz/extended rules, metered validation, DOT validation
+cancellation, live auto-promotion events, graph-construction adapters and semantic
+checks/conversion. Structural markup, markup validation cancellation and custom
+content-processor binding are implemented (Q40). Required
 attributes, value schemas, cycles, connectivity, degree limits, explicit-node
 requirements and referenced-port resolution need separately designed optional
 passes; the syntax restrictions above do not provide them. Mandatory safety,
@@ -502,7 +551,7 @@ the graph. There is no new DOT source keyword, and no inferred `.auto` kind in
 results. These treatments are library dialect behavior, not a claim of standard
 Graphviz compatibility. Source fidelity and kind-agnostic parsing remain binding.
 
-**Implementation status:** `src/policy.zig` and `src/profile.zig` implement the
+**Implementation status:** `src/dot/policy.zig` and `src/dot/profile.zig` implement the
 optional typed inputs, per-leaf inheritance, default-off runtime gate, checker,
 separate header branches, all four graph treatments, severity and interpretation.
 Validation adds `warnings`, a warning diagnostic twin, policy-aware payloads and
@@ -521,9 +570,10 @@ baselines and `digraph.treated_as`. Consumed profiles compile for Wasm32 and
 RISC-V32. [Consumer API and costs](../POLICIES.md).
 
 **Existing-settings slice implemented:** `limits.max_nesting`, `max_statements`
-and `max_attributes`, `recovery`, `scanner`, and `execution.metering` /
+and `max_attributes`, `on_error`, `scanner`, and `execution.metering` /
 `cancellation` now use the same baseline/patch model. The default ordinary parse
-is scalar, fail-fast, unmetered and uncancellable, with limits at `maxInt(usize)`;
+is scalar, fail-fast, unmetered and uncancellable, with nesting at `maxInt(u32)`
+and statement/attribute limits at `maxInt(usize)`;
 `BoundedSession` is the metered fixed-profile convenience. Allocators, pool hints,
 actual memory and cancellation callbacks remain explicit resources.
 
@@ -596,9 +646,10 @@ port-reference resolution still belong to later optional graph-building passes.
 rule; observation and live promotion APIs; standard-machine performance gates.
 Semantic resolution,
 custom rules, trait-style adapters and marshal/unmarshal remain separate designs.
-Q40 now records the decided direction for compile-time-replaceable content
-processors and processor-owned policy schemas; their interface and implementation
-remain pending. This is distinct from supplying a preset of existing Q35 fields.
+Q40's compile-time-replaceable HTML-content processors and processor-owned
+schemas are implemented for delayed/one-shot integration. Recursive execution
+and broader grammar extensions remain separate designs; a custom implementation
+is distinct from supplying a preset of existing Q35 fields.
 
 **Verification contract (2026-09-20):** one public name, `validatePolicy`, and
 the same `Policy` input schema for baselines and overrides. Omitted fields inherit
@@ -684,11 +735,12 @@ syntax policy can require reparsing. A policy states what was allowed, not what
 actually occurred. Counters are not detailed history, and diagnostic suppression
 must not masquerade as absence of deviations.
 
-**Presets and reporting (implemented).** `dot.presets.standard` names the complete
-default `Policy`; `dot.presets.lenient` changes only the three syntax acceptances
+**Presets and reporting (implemented).** `dot.presets.standard` names the default
+`Policy`; `dot.presets.lenient` changes only the three syntax acceptances
 to `.warn`. There is no separate lenient flag or parser. `standard` avoids
-confusion with DOT's unrelated `strict` modifier. A full runtime preset replaces
-all baseline fields; a `.syntax` subtree patch preserves the other settings.
+confusion with DOT's unrelated `strict` modifier. Both presets leave `markup`
+unset to inherit the binding default or compiled baseline. A full runtime preset
+replaces the other baseline fields; a `.syntax` subtree patch preserves those too.
 All leaves have compile-time/runtime parity and ordinary inheritance.
 
 Both scanners retain their strict lexical contract. On the cold failure path,
@@ -718,587 +770,144 @@ is authorized by these decisions.
 
 **Q40 — How are HTML-like identifiers recognized, parsed and validated, and
 which markup policies are offered?**
-**Architecture, mode names and usage paths decided (2026-09-19); detailed
-contracts and implementation pending.** HTML-like identifiers must work
-wherever the DOT grammar permits an ID, not only as label values. DOT parsing
-recognizes and preserves the complete raw identifier; recognition alone makes
-no claim that its inner markup is well-formed or is a valid Graphviz label.
 
-**Release sequencing (2026-09-19):** release the current DOT implementation as
-0.3.0 before implementing HTML-like identifiers or the markup subsystem. The
-decisions below describe post-0.3.0 work, not capabilities of that release.
-Whether markup eventually has its own package/version and how DOT would depend
-on it remain open; a dedicated source directory does not settle packaging or
-release versioning. No particular later release number is assigned yet.
+**Partially decided; delivery reconciled 2026-10-04.** Standalone structural
+markup, DOT passthrough recognition, explicit delayed processing and one-shot
+during-DOT composition are implemented. Specialized dialects and broader
+composition remain unfinished. Details live in [markup delivery and design](MARKUP.md)
+and the [processor contract](PROCESSOR_CONTRACT.md); public usage is in
+[markup](../MARKUP.md), [labels](../LABELS.md) and
+[custom processors](../CUSTOM_PROCESSORS.md).
 
-Markup gets its own dedicated source directory (proposed name:
-`src/markup/`) and independently usable stages, like the DOT subsystem:
+**Settled boundaries**
 
-```text
-DOT parsing -> raw HTML-like identifier range
-                         |
-                         +-> optional markup parsing -> structural syntax/events
-                                                       -> optional validation
-                                                       -> downstream consumer
-```
+- Recognize HTML-like spelling wherever DOT permits an ID. The outer scanner
+  counts every `<` and `>`; quotes, comments, CDATA and references do not shelter
+  brackets at this boundary. Recognition does not prove inner structure.
+- DOT owns `none | passthrough | process`, default `passthrough` without a
+  processor and `process` with one unless explicitly overridden. DOT presets
+  inherit this choice. Unbound process fails policy verification
+  at compile time or runtime preflight. Both scanner backends
+  retain recognition even under `none`; rejection is a processing policy, not
+  a scanner-size switch. Supported passthrough is different from silently
+  reporting unsupported input. Unsafe boundaries remain terminal.
+- A passthrough operation never invokes the markup engine. Other profiles or
+  delayed entry points may still require it in the binary. Runtime selection
+  cannot determine linking or install an implementation.
+- Outer selection (`none`, `passthrough`, `process`) is independent of the
+  processor's mode. Built-in markup exposes `mode = .structural`; `extended` and
+  `graphviz` remain future modes, not callable values or a compatibility ladder.
+  Custom processors own their schema and need not expose this mode field.
+- Standalone, delayed and during-DOT paths use the same selected implementation.
+  Standalone markup depends only on shared support, not DOT records/grammar.
+  Its structural grammar is XML-like, not full XML or browser HTML.
+- Graphviz validation will check vocabulary, attributes and parent/child
+  placement, only in label contexts. A `TABLE` containing a `TD` directly
+  can be balanced yet fail the required row structure.
+- `n:<p>` names port `p`; `label=<p>` is text `p`;
+  `label=<<p>x</p>>` contains a `p` element. Port spelling is not meaningless.
+  Resolving it against label declarations belongs to later graph semantics.
+- Source stays immutable and unexpanded. Preserve complete concatenations and
+  operand spelling. HTML/quoted concatenation is an implemented exception to
+  Q10's specification-first rule, matching Graphviz 16.0.0. Explicit decoding
+  may join values but never replaces the retained expression.
+- `identifier.form` and `identifier.parts` are implemented. Form follows
+  spelling, not content: quoted markup-looking bytes remain quoted. Each raw
+  operand supplies its own inner range/origin. Decoded combined expressions
+  need a source map, not one constant offset.
+- Depth means element nesting, not the outer angle counter. The retained layout
+  is settled: preorder subtree intervals and owner-indexed attributes, not the
+  earlier parent/child/sibling proposal. Frames are 12 bytes on measured targets;
+  the earlier 8-byte name-only estimate is not a capacity promise. Stack
+  compression is not required; a summary index remains a separate proposal.
+- Both markup scanners are implemented, independently selectable from DOT's.
+  Share mechanisms only where contracts match; no speculative common scanner
+  framework, guaranteed vector speedup or implicit parallel runtime is required.
+  Caller-owned threads can process separate fragments with independent state.
 
-The built-in markup parser is XML-like, not a browser HTML parser. It establishes
-elements, attributes, text and matching/nested structure without a Graphviz
-tag whitelist. Graphviz-specific validation then checks the permitted label
-elements, attributes and placement; it is not imposed on unrelated DOT IDs.
-Further interpretation, rendering and consumer-specific lowering remain
-separate, not implied deliverables. Source ranges, diagnostics and execution
-primitives should be reused without introducing graph-engine dependencies.
-Markup-fragment input is distinct from partial DOT-document parsing and does
-not change Q19.
+**Processing and policy ownership**
 
-**Modes (ownership clarified 2026-09-22):** the names are `none`, `opaque`,
-`structural`, `extended`, and `graphviz`. They describe the combined processing
-choices, not five members of one DOT-owned enum or an increasing ladder of
-compatible dialects. DOT owns rejection/preservation; the selected inner parser
-owns its processing modes and policy. The table describes the built-in markup
-implementation, not a vocabulary every consumer implementation must adopt.
-Opaque recognition is the first-slice default; the composed API, exact markup
-rules and delivery remain pending.
+Implementation identity is compile-time-only; its settings may have default-off
+runtime overrides with full supported-leaf parity. Built-in and consumer
+processors use the same contract. Each owns its schema, presets, resolved state,
+diagnostics and verification. Shared `PolicyBinding` and nested `PolicySet`
+prepare settings once, not execution. Buffers, allocators and callbacks remain
+resources, not policies. Static binding does not sandbox custom code.
 
-| Mode | DOT HTML-like identifier | Inner structure | Validation policy |
-| --- | --- | --- | --- |
-| `none` | Unsupported feature (R-MOD-006); never silently skipped | Not parsed | Not run |
-| `opaque` | Recognized and preserved | Not parsed | No inner-markup validity claim |
-| `structural` | Recognized and preserved | Parsed | Structural correctness under the defined fragment grammar; arbitrary element names |
-| `extended` | Recognized and preserved | Parsed | Extended label vocabulary and rules, including additional basic tags; exact rules pending |
-| `graphviz` | Recognized and preserved | Parsed | Graphviz label vocabulary, attributes and placement rules |
+One-shot composition binds `Profile.processors.markup`, invokes one child
+workspace per complete raw HTML operand and shares a diagnostic union/bag of
+only the bound processors. It has no composed `Session`, fixed-memory facade or
+retained child-tree array. Workspace results borrow until the next call/deinit;
+DOT never deinitializes individual results. Ordinary DOT gains no mandatory
+per-ID processor state.
 
-`opaque` stops before markup parsing. `structural` checks matching tags,
-nesting and the defined attribute syntax without assigning meaning to element
-names. `extended` and `graphviz` additionally apply their selected label
-rules where label interpretation is requested; they must not impose those
-vocabularies on unrelated DOT IDs. Accepting extended markup does not promise
-Graphviz label compatibility. None of these modes performs rendering.
+None/passthrough skips child workspace initialization and execution, not policy
+verification. Switching outer selection leaves the child policy unchanged.
+`MarkupReport.requested` distinguishes disabled work from successful validation;
+`allValid()` is false when not requested, while combined validity is relative to
+the selected policy. Execution remains synchronous after a complete operand
+boundary; no thread argument, queue or implicit concurrency is introduced.
 
-**Usage paths:** standalone use, parsing during DOT processing, and delayed
-parsing must use the same selected markup implementation and rules, whether
-built-in or consumer-supplied. These are integration/timing choices,
-not additional modes or forks of the grammar. Choosing when to parse does not
-require running label validation or retaining a markup tree.
+Nested DOT → markup → string and sibling string settings already prepare
+independently. Automatic deeper execution and a built-in string processor remain
+future work. New token spellings need a separate lexical contract for boundaries,
+escaping, collisions, recovery and work; new statements/operators are outside
+the content contract. Replacing an inner parser cannot extend DOT grammar.
+Numeral boundaries remain grammar-defined; ambiguity checking stays lexical,
+not implicit numeric conversion or a promised `.string.non_ascii` API.
 
-| Usage path | When markup parsing runs | Caller contract |
-| --- | --- | --- |
-| Standalone | Directly on caller-supplied markup, without parsing a DOT document | No DOT wrapper or retained DOT document is required; common source, diagnostic and execution primitives may be shared. |
-| During DOT parsing | As HTML-like identifiers are encountered, before the DOT parse operation completes | Opt-in composition of the DOT and markup stages; no completed DOT document is required before markup processing can start. |
-| Delayed | After DOT parsing, on an explicit request for selected preserved identifiers | Keep their source bytes available; parse any subset later or never invoke the markup parser. |
+**Diagnostics, scheduling and independent outcomes**
 
-For delayed use, a caller can first parse DOT with `opaque` preservation and
-later explicitly request `structural`, `extended`, or `graphviz` processing
-for a selected identifier. This does not require re-parsing the DOT grammar
-or automatically processing every label. `none` cannot supply this path:
-it rejects HTML-like identifiers instead of retaining them.
+Boundaries, local checks and enclosing structure have different prerequisites.
+Reliable headers/values remain checkable after enclosing syntax failure through
+the scope APIs; unavailable coverage is incomplete, not valid. No partial tree,
+guessed delimiter or typo repair follows. Public scope metadata is checked in
+all builds; incomplete coverage identifies the earliest gap, not a resume cursor.
 
-The paths share the existing contracts:
+Parent and child `on_error` choices are independent. The child returns under its
+own choice; the parent then decides whether to visit the next fragment. Ordinary
+child errors/unsupported input/policy limits are not unconditional batch stops.
+Shared sink stops/failures, storage/allocation failures and cancellation are
+operational stops. `diagnostics.unsupported` changes reporting and error
+classification, never whether unprocessed input was checked. Silence constructs
+no user-facing diagnostic; passthrough is separately supported preservation.
+Completion, validity and delivery remain separate; terminal reporting failure
+does not erase the original failure.
 
-- Borrowed source must remain alive and unchanged while later parsing or any
-  source-backed result uses it. Longer-lived copies require explicit
-  caller-owned storage; no hidden copying or background parsing is implied.
-- When composed with a bounded DOT driver, markup work must be accounted for
-  and able to yield/cancel within long or nested markup. It must not run as an
-  unbounded library-owned callback outside the driver's work budget. Running
-  during DOT parsing does not itself promise a single scan of each byte.
-- DOT syntax success, markup parse success and label-validation success are
-  distinct guarantees. Unparsed markup is not reported as structurally valid;
-  deferred failures are reported by the later operation.
-- All paths use the same markup rules and source-backed diagnostic model.
-  Integrated and delayed diagnostics must map to the original DOT source;
-  standalone diagnostics refer to their supplied markup source. Source-origin
-  mapping must not require rescanning the DOT grammar.
-- The standalone markup subsystem must be usable without depending on the DOT
-  grammar engine, DOT retained document or any renderer. Equivalent markup
-  input and mode must produce equivalent markup outcomes across the paths,
-  with offsets mapped to the corresponding source origin.
+During-DOT child findings occur at operand recognition; outer validation follows
+successful DOT parsing. Delayed calls follow caller selection/phase order.
+Source validation performs encoding first, then local scopes. Determinism does
+not promise global source sorting or hidden buffering. Shared rendering locates
+mixed findings without changing emission order.
 
-For example, opaque recognition can preserve `<<B>x</I>>`, while structural
-checking must reject its mismatched tags. `<<widget>x</widget>>` can pass
-structural checking but fails Graphviz label validation. `<<B>x</B>>` can
-pass all three stages. These are intended-contract examples, not claims of
-implemented behavior or completed differential tests.
+Rebase primary, related and fix spans exactly once from each raw fragment.
+Tree spans stay fragment-local. Decoded/transcoded bytes need a map. Source
+ownership, fixed-storage paths and explicit costs apply whether or not the
+caller retains a tree. Requested incomplete work is not “not requested”.
+Completed outer results survive later inner errors; stops during outer parsing
+need not leave a document.
 
-**Compatibility boundary:** the [DOT specification](https://graphviz.org/doc/info/lang.html#html-strings)
-allows legal XML strings as HTML-like IDs; when interpreted as labels they
-must follow the narrower [Graphviz label grammar](https://graphviz.org/doc/info/shapes.html#html).
-This does not make Graphviz an arbitrary-XML renderer. Label bodies are
-fragments, not necessarily standalone XML documents. Recognition, structural
-checking and label validation must state their separate success guarantees.
-Q10's written-specification-first policy and pinned Graphviz 16.0.0 reference
-continue to apply, with the explicit HTML-operand concatenation exception below;
-scanner boundary cases still require investigation/tests.
+**Remaining decisions, not delivered APIs**
 
-**Existing constraints remain binding:** preserve raw bytes and physical
-source offsets; no implicit normalization, entity expansion or layout
-interpretation in DOT parsing. Keep explicit ownership, fixed-storage paths,
-iterative bounded work, optional cancellation/metering and compile-time
-exclusion of material optional costs. No external-entity loading, URL/file
-access, execution or rendering. Event processing must not force retained
-trees on callers. These are inherited requirements, not newly negotiable
-tradeoffs for markup support.
-
-**Review outcomes (2026-09-19).** Decided in review, recorded here until
-the contracts they belong to are written:
-
-- **`none` is a policy, not a size lever.** DOT-level recognition of
-  `<...>` (one scanner state and a depth counter) is always compiled in;
-  `none` rejects the identifier with the unsupported-feature diagnostic but
-  still finds its end, so statement-boundary recovery (Q22) can continue
-  past it. An application using only opaque recognition can exclude the markup
-  engine. An opaque operation does not invoke that engine, even when the same
-  application includes it for standalone or delayed parsing. Code needed by
-  those other entry points must remain available. Runtime policy support in
-  DOT alone does not pull in an inner parser. A compiled processor with runtime
-  policy support retains the stages reachable through its own overrides;
-  runtime selection does not determine what was linked or install a processor.
-- **The delimiter rule is Graphviz's, verified against the 16.0.0 scanner
-  (`lib/cgraph/scan.l`, start condition `hstring`):** `<` increments a
-  depth counter, `>` decrements it, the identifier ends when the counter
-  returns to zero, newlines are allowed, nothing inside is special (quotes,
-  DOT comments, `#`, CDATA and entities do not protect a bracket; the state
-  has exactly the rules `<`, `>`, newline, anything else). Diagnostics: end
-  of input with depth above zero is `E.Syntax.Token.032` with a new
-  `html_identifier` construct at the opener, recovery to end of input; a
-  `>` outside markup stays an invalid byte; nothing inside `<...>` raises a
-  DOT diagnostic. Same rule in both scanner backends and under every
-  budget partition. A survey of other DOT parsers' boundary rules is a
-  separate discussion and does not gate the opaque slice.
-- **XML structure for every built-in parsing mode.** In the inner fragment, after
-  removing the outer DOT delimiters, an element is `<x/>` or `<x>…</x>`;
-  a lone opening tag `<x>` is an error in `structural`, `extended` and
-  `graphviz` alike. The open-tag versus self-closing distinction lives once
-  in the structural stage; `extended` and `graphviz` add their vocabulary,
-  attribute and parent/child placement rules. Supported names alone do not
-  establish label validity: `<TABLE><TD>x</TD></TABLE>` is balanced but lacks
-  the row required by the [Graphviz label grammar](https://graphviz.org/doc/info/shapes.html#html).
-- **Implementation selection and stage inclusion (reconciled 2026-09-22).**
-  The inner parser implementation is chosen at compile time and cannot be
-  replaced through a runtime policy. Q35's compile-time/runtime parity applies
-  to settings supported by that selected implementation, not to implementation
-  identity. A fixed-only profile need not pull in unreachable stages; other
-  profiles and entry points may still need them. A processor profile allowing
-  runtime mode changes retains every selectable stage of that implementation.
-  Runtime overrides are separately enabled and off by default. DOT's runtime
-  `none | opaque` gate cannot request structural parsing by itself. The delayed
-  path invokes a separately compiled processor profile, with its own fixed
-  settings or opt-in runtime overrides.
-- **Origin mapping applies to each original operand.** For an HTML-like operand,
-  the markup stages receive its bytes minus the outer DOT brackets. A
-  fragment-relative span maps to DOT by adding that operand's inner-range start;
-  standalone input has origin zero. A combined decoded expression is not one
-  contiguous original fragment: mapping its diagnostics back would require an
-  explicit part/source map, not one added offset. No markup diagnostic needs
-  the DOT grammar.
-- **Decoding stays explicit and lazy by default; eager is an opt-in
-  composition.** Nothing inspects a string's content to classify it: the
-  form (`bare`, `numeral`, `quoted`, `html`) of an individual operand is a
-  property of its spelling, so `"<B>x</B>"` is a quoted string whose value looks
-  like markup and `<<B>x</B>>` is HTML-like. Explicit decoding of an HTML-like
-  ID returns its inner bytes unchanged. Parsing every label during the DOT
-  parse is the during-DOT usage path, chosen by the consumer that knows it
-  wants all of them.
-- **Parsing never collapses the retained concatenation expression.** Preserve
-  the raw expression and expose its operands with their own forms and ranges.
-  Explicit decoding may join their values; the current quoted-string decoder
-  already does so on request. This does not replace the retained expression.
-  Graphviz's `concat` demotes `<a> + "b"` and `"a" + <b>` to a plain string;
-  the exact decoding/form API for such mixed expressions remains open. Accepting
-  HTML-like operands is an intentional compatibility exception: the Graphviz
-  16.0.0 scanner returns them as `T_qatom` and its grammar admits
-  `qatom '+' T_qatom`, while the written DOT specification describes
-  concatenation as a double-quoted-string feature (Q10).
-- **Bounded nesting, no stack compression.** Structural parsing keeps the
-  open-element stack in caller-provided fixed frames with a capacity and a
-  `max_nesting` limit reported through the existing resource-exhausted
-  outcome (an iterative parser, so no recursion to bound; CWE-400/674 are
-  the concern). `max_nesting` bounds element nesting, not the DOT scanner's
-  angle-bracket counter. A name offset/length alone would take about 8 B
-  (128 entries per KiB), but that is an estimate, not the full frame contract
-  or a promised capacity; other continuation state may be needed. Frames are
-  not compressed: run-length or cycle-pattern shrinking of the stack only
-  helps repeated patterns an
-  attacker can break by alternating tags, needs periodicity detection
-  (linear amortized at best) and complicates matching, and real deep
-  markup is nested tables, a three-tag cycle. The limit is the protection;
-  compression could be a later frame variant without API change.
-- **Both backends for both built-in scanners, independently selected.** The DOT
-  scanner and the built-in markup scanner each come in `scalar` and `block` form,
-  chosen independently through Q35's policy model in any combination. Fixed-only
-  selection can exclude the other backend; runtime selection retains both.
-  This extends the original compile-time-only choice (2026-09-20). The mask
-  helpers (chunked compares, backslash parity) move to a shared file so the
-  two block scanners do not duplicate them, and each pair gets its own
-  differential tests. The delimiter-depth rule is ported to the DOT block
-  scanner (masks for `<` and `>`, a walk over the bits) rather than retiring it.
-  This is a backend direction, not a requirement to ship both new markup
-  implementations in the first slice or a measured speedup claim. The initial
-  markup backend and delivery order remain open; block-scanner benefit and
-  code-size cost must be measured on representative markup.
-- **Parallelism is the caller's, and the design allows it.** After opaque
-  recognition every HTML-like identifier is an independent fragment with a
-  known range; the delayed path parses one fragment into caller-provided
-  storage with no shared mutable state in the engine, so a caller can hand
-  disjoint subsets of identifiers to worker threads. The library stays
-  thread-agnostic.
-
-**Direction, not yet decided — the retained markup representation.**
-Proposed layering, to be designed with concrete records: a per-identifier
-summary index (an optional pool with one small entry per HTML-like ID) that
-gives O(1) lookup. Boundary recognition can supply the raw/inner ranges and
-explicitly lexical facts; it cannot supply accurate element nesting, element
-counts or entity-reference detection. Those require markup processing that
-understands tags, attributes, comments and the other selected fragment rules.
-Such processing can run during DOT parsing or later, without retaining a tree,
-but its work must be charged to the markup stage. Uncomputed structural facts
-are unknown/absent, not zero or implicitly validated.
-
-**Depth means element nesting depth**, excluding the outer DOT delimiter pair:
-
-| Inner fragment | Maximum element depth | Element count |
-| --- | ---: | ---: |
-| `<a/><b/>` | 1 | 2 |
-| `<a><b/></a>` | 2 | 2 |
-
-Both DOT envelopes `<<a/><b/>>` and `<<a><b/></a>>` reach angle-bracket-counter
-depth 2, so that counter must never be advertised as element depth. An element
-count counts each element once, not both its opening and closing tags. A
-separate `max_elements` resource limit is a possible addition, not a substitute
-for `max_nesting` or an already agreed policy field. Summary field names and
-record layouts remain provisional. A computed summary could let consumers
-filter fragments without retaining or repeatedly parsing their bodies; it is
-not a promise of structural facts from opaque recognition alone.
-
-The next proposed layer is structure on demand per identifier or eagerly for
-all — elements, attributes and text as index-based borrowed records with parent, first
-child and next sibling links, the same shape as the DOT document — and
-validation results as a third layer. Event-only consumers must be able to
-skip every retained layer.
-
-**Still open before the relevant implementation:**
-
-- Exact XML-like fragment grammar: names and case rules, attributes and
-  duplicates, references/entities, comments, CDATA, processing instructions,
-  declarations and byte/encoding policy. Structural checking does not imply
-  full XML conformance.
-- Public stage APIs, syntax/events and optional retained representation
-  (the layering above), diagnostics, scratch capacities and work
-  accounting; default behavior and how configuration composes the stages.
-- Standalone fragment input and DOT-envelope adapter contracts beyond the
-  origin rule, and composed yield/cancellation state. Independent validation
-  continuation and separate stage outcomes are decided below; exact handling
-  of operational failures, prerequisite failures and sink lifecycle remains
-  to be specified. Optional caching needs an explicit owner, lifetime and cost
-  contract. Cross-component diagnostic ordering is also open; sequential stage
-  execution does not itself provide globally source-sorted diagnostics.
-- The form and parts API: the exact shape of the per-part view of an
-  identifier expression (form, raw range, inner range) and whether decode
-  returns bytes plus a separate form query or a tagged result.
-- Concatenation with HTML-like operands: the compatibility choice is recorded
-  above; what a mixed expression's form reports and what explicit decoding
-  yields remain open, including any mapping for a combined decoded fragment.
-- The `extended` mode's concrete consumer, tag vocabulary, attributes and
-  nesting rules, and which stages ship in which slice.
-- Nesting defaults and capacities per profile (`max_nesting`, frame
-  contents beyond name offset and length, where the scratch comes from in
-  each usage path).
-- A survey of other DOT parsers' HTML boundary rules, for the record.
-
-**Opaque slice contract (decided 2026-09-22 with the policy core in
-place; owner's choices resolved the same day).** The first HTML-like slice
-delivers `none` and `opaque` only, in the DOT subsystem, with no
-`src/markup/` code:
-
-1. **Policy leaf.** `Policy.markup: ?MarkupMode` with `MarkupMode = enum {
-   none, opaque }`, resolved into
-   `Effective.parsing.markup` like the other parse-time leaves, with the
-   same compile-time and runtime binding, preset and patch semantics as
-   every other field. **Default: `.opaque`** (decided): Graphviz accepts
-   these identifiers, so the standard preset does too; `none` is the strict
-   rejection policy. This DOT recognition gate stays two-valued; inner parsing
-   modes belong to the selected processor's policy. The later composed API may
-   expose nested processor settings without extending this DOT enum.
-2. **The scanner is policy-free.** Both backends always recognize
-   `<...>` by the verified delimiter rule and emit one identifier token
-   covering the whole spelling; the parser applies the mode. In `none` the
-   parser reports `E.Profile.Feature.009` with `html_identifier` on that
-   token's span and, under `recovery = .statements`, continues past it. The
-   scanner's `html` terminal and the non-recoverable path it forced are
-   removed. An individual operand's form follows its spelling; the first byte
-   does not identify the form or HTML presence of a whole concatenation. No
-   new token tag is required, but enforcement must cover HTML-like operands
-   after quoted operands too. The bounded mechanism for carrying or inspecting
-   that information remains an implementation decision, not permission for an
-   unbudgeted second scan.
-3. **Diagnostics.** End of input with the counter above zero: the existing
-   `E.Syntax.Token.032` with a new `UnterminatedConstruct.html_identifier`,
-   span at the opener, recovery to end of input. **Fix (decided): offer
-   `insert '>' at end of input` as a `maybe` fix when the counter is exactly
-   one** (a new `Replacement.html_close`), none when it is deeper, **and
-   fix offers become policy-controlled**: a `diagnostics.fixes` leaf with
-   values `all` (default), `machine_applicable` (drop guessed `maybe`
-   offers) and `off`, applied by every fix producer in parsing and
-   validation, at both binding times like every other leaf. The markup
-   subsystem's own policy carries the same leaf for its fixes. A `>`
-   outside markup stays the invalid byte it is today.
-4. **Concatenation** is in the slice, because it is scanner behaviour:
-   after an HTML-like part, `+` continues the expression, and after `+` a
-   part may be quoted or HTML-like, as Graphviz 16.0.0 admits; the raw
-   token span covers the whole expression exactly as quoted concatenation
-   does today, and nothing is collapsed at parse time.
-5. **Decoding and form.** `identifier.decode` and `decodedLen` accept an
-   HTML-like part and yield its inner bytes unchanged (no escape processing
-   inside markup; Graphviz's scanner has none), joining parts on request as
-   the quoted decoder already does. A minimal `identifier.form(raw)`
-   returning `bare`, `numeral`, `quoted`, `html` or `concatenation` from the
-   spelling is added now (decided); the per-part view waits for the
-   markup slice.
-6. **Every ID position:** graph and subgraph names, node IDs and endpoints,
-   port components, attribute keys and values, assignment keys and values;
-   `<graph>` in a keyword position is an identifier. No retained-layout
-   change: an HTML-like ID is a `Range` like any other.
-7. **Both backends, one slice:** the block scanner gets `<` and `>` masks
-   and a depth walk over the bits; the differential tests gain fixtures
-   for nesting, newlines, quotes and comments inside markup, unterminated
-   input, block-edge straddling, budget partitions and both concatenation
-   mixes, and the suite is run on wasm32 both ways as before.
-8. **Docs and measurement:** supported-syntax row, the policy guide's
-   limits/recovery/scanner section gains the markup leaf, outcomes note the
-   `none` diagnostic, changelog; throughput before and after on both
-   backends with the existing benches, and a new lexer fixture of long
-   HTML-like labels to measure the block scanner's claimed advantage.
-
-Out of the slice: the summary index, structural parsing, validation, the
-parts view, entity handling and `max_nesting` for elements, all of which
-begin with the markup subsystem.
-
-**Content processor vision and policy ownership (decided 2026-09-22;
-interface and implementation pending).** DOT owns lexical boundaries and
-source preservation. An inner parser (content processor) owns its content
-rules and typed policy schema. Consumers can supply new processing behavior
-and settings, not merely a preset of the built-in DOT policy fields. The
-implementation supplies behavior; its policy configures that behavior.
-
-| Composed selection | DOT responsibility | Inner parser responsibility |
-| --- | --- | --- |
-| `none` | Recognize the boundary and reject the excluded form as unsupported | Not invoked |
-| `opaque` | Recognize and preserve raw spelling without a content-validity claim | Not invoked |
-| Processing enabled | Preserve the spelling and provide the selected content input | Run the compile-time-selected implementation with its own policy |
-
-This table describes processing choices, not finalized Zig syntax or a new
-per-token settings table. Conceptual paths such as `.markup.structural` or
-`.string.non_ascii` expose settings owned by the selected processor; they are
-not additional members of DOT's `MarkupMode`. For markup, DOT's low-level
-`opaque` gate permits preservation; attaching and invoking a processor is a
-separate, explicit composition. With no processor invocation the composed
-operation is opaque. The built-in markup processor owns `structural`,
-`extended`, `graphviz` and its own entity/attribute rules, nesting limits,
-scanner, execution and fix settings. DOT does not interpret those leaves.
-Standalone and delayed callers invoke the same selected processor directly.
-Separate packaging remains possible; no package/version split is decided.
-
-**Processing choice is not diagnostic severity (clarified 2026-09-23).**
-`none` rejects an excluded form as unsupported; suppressing its diagnostic does
-not turn rejection into acceptance. `opaque` deliberately preserves without
-inner processing and therefore emits no warning merely for being opaque. It
-does not suppress independent lexical, resource or enabled validation findings,
-and preserved contents are unexamined, not structurally valid. Processor rules
-control their findings separately; reporting and retention never decide validity.
-
-**Implementation identity is compile-time-only.** A consumer chooses a
-concrete implementation type when defining the compiled profile, including
-replacing a built-in inner parser with their own. That identity cannot be
-replaced by a runtime policy. Each implementation uses the Q35 binding model:
-typed settings, a checked compile-time baseline, presets and optional runtime
-patches, disabled by default. When enabled, runtime patches configure the
-already-compiled implementation; they cannot load code, change its type or
-introduce unknown policy fields. Selecting a supported internal mode or
-backend is a setting of that implementation, not runtime replacement of the
-extension. Its source-independent policy verification remains its own.
-
-**Built-in inner parsers are ordinary implementations of the same contract.**
-There must be no privileged integration path that a consumer processor cannot
-use. The profile binds the implementation type at compile time; source buffers,
-instance state, pools, scratch and callback contexts are explicit resources,
-not policy values. There is no mandatory runtime registry, discovery mechanism,
-virtual dispatch or allocation. Implement one real built-in processor first,
-then verify a small consumer implementation can replace it without editing DOT.
-Do not build a general-purpose extension framework ahead of that evidence.
-
-**Form is not content interpretation.** `identifier.form` describes spelling,
-not a guess from its contents: `"<B>x</B>"` is quoted and `<<B>x</B>>` is
-HTML-like. Interpreting the quoted value as markup requires an explicit
-consumer choice. A string processor could own a non-ASCII rule; the exact
-`.string.non_ascii` API and choices are illustrative, not a promised built-in
-leaf. Non-ASCII content and invalid UTF-8 are different findings. Numerals
-have lexical boundaries defined by grammar, even without paired delimiters.
-Ambiguity such as `1e3` concerns recognition/tokenization, so it remains a
-lexical-stage check, regardless of its public namespace. The existing
-`validation.ambiguous_numeral` field is not renamed by this vision, and no
-implicit numerical conversion is introduced. Concatenations require expression
-and operand handling; their first operand cannot stand in for the whole value.
-
-**Custom token syntax is a separate capability, not implied by replacing an
-inner parser.**
-
-| Extension | Required integration | Status |
-| --- | --- | --- |
-| Custom processing within existing quoted or HTML-like boundaries | Implement the content processor contract | Decided direction; API and implementation pending |
-| A new identifier spelling, for example `@{...}` | A compile-time lexical extension with explicit boundary, escaping, collision/precedence, recovery and work-accounting rules; feed an ID to the existing grammar | Separate future design; not included in the opaque or first content-processor slice |
-| New statements or operators | A grammar extension, not just an inner parser | Outside this content-extension contract |
-
-Compile-time selection supports specialization and a fixed integration shape;
-it does not sandbox arbitrary consumer code or prove its safety. All processors
-must honor source lifetimes, bounds, storage/resource failures, original-source
-diagnostics, completion guarantees and sink lifecycle. Checks must not silently
-rewrite retained source; transformations use explicit caller-owned output.
-During bounded DOT processing, processor work must be charged and resumable,
-with the composed cancellation guarantee preserved. It cannot hide unbounded
-work in an ordinary callback. Disabled processors must impose no mandatory
-instance state or executed work, and fixed policies should eliminate unused
-branches. Enabled work still has a cost; throughput, state size and code size
-must be measured rather than assuming a zero-cost or automatically inlined
-implementation.
-
-**Composed profiles, not a DOT-owned hierarchy of policy schemas.** The
-consumer-facing configuration may nest processor settings, but DOT does not
-gain knowledge of each processor's leaves. Each profile resolves/checks its own
-policy, with a composition wrapper coordinating preflight and execution. This
-is not restricted to exactly two schemas. The adapter must coordinate session
-init/reset, latched settings, storage lifetimes, work accounting, cancellation,
-diagnostic origins and sink lifecycle. It must support selecting intended
-identifier uses without applying label rules to unrelated IDs. Exact methods,
-selection context, concatenation handling, operational failure propagation and
-handling of incompatible execution profiles remain open; a bounded parent must
-never silently invoke an unbounded child. The validation continuation and result
-contract below is decided. These integration details do not block the opaque-only
-slice.
-
-**Shared infrastructure, independent validation (decided 2026-09-23;
-cross-processor implementation pending).** Reuse source spans/origin mapping,
-severity, delivery status, fix conventions and bounded sink/bag machinery across
-processors. Share execution and resource-reporting primitives where their
-contracts actually match. Each processor may own its diagnostic codes and typed
-details; sharing infrastructure must not require one universal payload union
-whose largest extension inflates every DOT diagnostic. The concrete diagnostic
-type/adapter and catalog ownership remain to be designed (R-DIAG-007).
-
-Caller-owned routing can feed one destination, separate fixed/growable bags, or a sink
-with no retained bag. No processor or fragment requires its own allocated bag.
-A processor may report multiple independent findings. As revised 2026-09-26,
-fixed bags request stopping on their last accepted entry; growable bags are the
-default in general examples, with explicit allocator ownership and optional hard
-limits. Prefix-and-count retention remains an explicit continuing destination.
-Sink stop/failure terminates unfinished DOT parsing/validation and future composed
-work; ordinary findings still do not. Counts retain discovered facts, including
-source-order pending findings, without claiming unvisited input was checked.
-Delivery, retention and completion remain separate. Terminal syntax/resource
-failures retain their cause if the reporting attempt itself fails.
-
-Validation findings are not fail-fast control flow. An inner validation error
-must not prevent DOT validation, another independent processor, or another
-reliably delimited fragment from being checked. A DOT validation violation also
-does not gate inner validation. Continue all requested independent checks for
-which prerequisites and resources remain available. If an inner structural parse
-fails, checks that need its complete structure may be unavailable: report that
-limitation and do not invent dependent findings or call those checks passed.
-The outer parser cannot promise further fragments after an unrecoverable loss of
-their boundaries. Resource failure can stop affected work; global cancellation
-stops the composed operation, and a spent resumable budget yields rather than
-claiming completion. Shared-resource or invariant failures must never be ignored
-merely to continue. This does not change DOT syntax recovery into successful
-acceptance or authorize publishing a partial DOT document.
-
-"Collect all errors" means attempting the requested independent checks safely,
-not unlimited work, unlimited retained diagnostics or guaranteed discovery of
-errors behind failed prerequisites. Sequential execution is sufficient and can
-reuse scratch once earlier users have released it; no parallel runtime or hidden
-per-fragment state is required. The existing
-[DOT validator](../../src/validate.zig) and
-[fixed diagnostic bag](../../src/diagnostic.zig) already implement continuation
-and bounded retention within DOT. Bounded/cancellable validation and composition
-with inner processors are still future work.
-
-**Scheduling and independent results.** Inner validation must be callable
-standalone, during explicitly composed DOT processing, or later on selected
-preserved fragments. It does not require successful DOT validation: reliable
-fragment input and the selected checks' own prerequisites are what matter.
-For the initial retained-document convenience path, run DOT validation and then
-requested inner processing, including when DOT validation found violations.
-This is an initial sequencing choice, not a dependency on outer validity or a
-replacement for the during-DOT path. Callers can request outer-only processing
-and never invoke an inner processor.
-
-| Stage status | Guarantee |
+| Topic | Status / next decision |
 | --- | --- |
-| Not requested | No validity claim for that stage |
-| Completed, valid | All requested checks in that stage completed without error findings |
-| Completed, invalid | The stage completed and found errors; independent stages still run |
-| Incomplete, with a reason | Requested work could not finish; any prefix findings remain factual, but full validity is not established |
+| Graphviz validation | Agreed direction; context selection, rules, compatibility scope and costs |
+| Extended vocabulary | Under discussion; concrete consumer, tags, attributes and placement |
+| Dialect parsing | Under discussion; void names/case/context, explicit closers, unquoted/empty attributes and grammar policy |
+| Custom name/reference catalogs | Further design; built-ins remain independent optional checks |
+| Composed execution | Agreed direction; shared credits, cancellation, fixed scratch, reset/latching and validation scheduling |
+| Deeper/string processing | Future design; nested policy preparation is implemented |
+| Profile/API redesign | Deferred discussion; workspace reuse did not decide it |
+| Summary index / caching / public events | Optional proposals; ownership, layout, budgets and event contract unresolved |
+| Partial-tree publication | Deferred; current parse results remain complete-document-only |
+| UTF-16/32 adapters | Provenance constraints agreed; conversion errors, mapping, metadata and storage APIs open |
+| Packaging/versioning | Open; an independent module does not decide separate packages/version numbers |
+| Cross-parser boundary survey | Optional follow-up, not a gate on delivered recognition |
 
-DOT syntax, DOT validation, inner parsing and inner validation retain separate
-outcomes. Diagnostic delivery and retention/omission are separate facts from
-those outcomes. Outer-only acceptance is possible because results are separable,
-not because inner work must always happen later. A caller may use an available
-outer result despite inner failures, but a composed result cannot claim that all
-requested stages passed if one was invalid or incomplete. Unrequested work is
-not secretly performed or reported as validated. Detailed per-fragment outcomes
-may be streamed or retained explicitly; do not force an outcome array or add
-metadata to every retained DOT identifier. Exact API types remain open.
-
-**Cross-component diagnostic order remains open.** The current DOT validator's
-source-order guarantee is unchanged. Finishing DOT validation before starting
-inner validation naturally produces stage order, not global source order.
-Choose and document the composed ordering/tie-breaking contract before exposing
-that API; do not silently claim global ordering or introduce hidden buffering,
-sorting or allocations to obtain it (R-PORT-005).
-
-**Shared preparation implemented 2026-09-26.** `processor.PolicyBinding` is used
-by DOT and a consumer-owned test schema. `processor.PolicySet` binds named configured
-profiles and prepares enabled runtime settings once before stage initialization;
-fixed-only sets have no runtime settings storage. This is preflight, not a stage
-scheduler or an implemented `.processors` option on DOT's `Profile`.
-`reporting` supplies typed sinks/fixed/growable bags, and `processor.Fragment`
-provides checked raw-span rebasing. The test processor exercises independent
-operations, consumer payloads and source coordinates without an HTML dependency.
-The [processor contract](PROCESSOR_CONTRACT.md) records stages
-1–4 and reset/ownership defaults. HTML grammar, selectors, during-DOT/delayed
-scheduling and bounded validation remain subsequent work.
-
-Only shared binding/preflight has been extracted; inheritance and checks remain
-schema-owned.
-Do not commit to deriving public `Policy` directly from `Effective`: the current
-schemas differ (for example, `validation.ambiguous_numeral` resolves into
-`parsing.ambiguous_numeral`), and checking needs to distinguish explicit fields
-from inherited ones. Each processor owns its public schema, defaults, presets,
-resolved settings and verification rules. Reflection or a shared schema may
-help, but must not dictate public layout or lose explicit-field information.
-
-**Port identifiers are not markup tags (clarified 2026-09-22).** The outer
-`<...>` pair belongs to DOT's identifier spelling; only its inner bytes are
-markup input. [DOT grammar](https://graphviz.org/doc/info/lang.html) permits
-that ID spelling in a port position:
-
-| DOT spelling | Inner bytes | Meaning |
-| --- | --- | --- |
-| `n:<p>` | `p` | Port identifier `p`, not an opening tag |
-| `label=<p>` | `p` | Label text `p`, not a paragraph element |
-| `label=<<p>Hello</p>>` | `<p>Hello</p>` | A `p` element inside the DOT envelope |
-
-The first form can name a label component whose `PORT` attribute is `"p"`;
-it is not meaningless to a renderer. This follows from the documented ID and
-[port semantics](https://graphviz.org/docs/attr-types/portPos/), not a new
-runtime-probe claim. Graphviz's label grammar does not include the paragraph
-element `p`: balanced structure and a supported label vocabulary are separate
-checks. Whether the future `extended` vocabulary includes it remains open.
-Finding or validating an actual referenced port is still a later semantic
-pass, not part of recognizing an ID, and label rules do not apply to every ID.
-
-*(Recorded contracts: R-MOD-014 and R-MOD-015; implementation/verification pending.
-`src/markup/` does not yet exist and HTML-like IDs remain deferred in
-[supported syntax](../SUPPORTED_SYNTAX.md).)*
+Markup/integration are post-0.3.0 development work. No next release number,
+browser compatibility or implementation schedule is established here.
+Performance approval is separate from functional delivery; preserve the
+[standard-machine gate](MARKUP.md#verification-and-performance-gates).
 
 **Q1 — Is version 1 the complete documented DOT grammar or a named subset?**
 Direction: the complete documented grammar, reached through vertical slices;
@@ -1315,13 +924,13 @@ whether convenience APIs should ship with non-trivial defaults is open.
 cost?**
 Parser-state size is regression-guarded (≤ 512 B with the scalar scanner, currently 368 B native with offset-only positions; ≤ 640 B with the block scanner, 472 B measured) and baselines exist;
 per-profile binary-size thresholds await the profile work. *(Embodied:
-`docs/BASELINES.md`; parser-size test.)*
+`docs/PERFORMANCE.md`; parser-size test.)*
 
 **Q17 — What exact boundary separates the syntax tree from `DotIR`, and
 which lowering passes are in version 1?**
 The document side is now concrete: source-shaped, source-ordered, no
 deduplication, no implicit nodes, no attribute semantics. The `DotIR` side
-(passes, storage) is open until slice 7. *(Embodied: `src/syntax.zig`.)*
+(passes, storage) is open until slice 7. *(Embodied: `src/dot/syntax.zig`.)*
 
 **Q18 — Which index widths and pool sizes define the first embedded retained
 representation?**
@@ -1349,19 +958,36 @@ keywords remain ASCII-only. The same rule applies in every ID position and
 to both scanner backends, including bounded execution and explicit decoding.
 Outside comments and quoted content, control bytes other
 than supported whitespace are invalid when reached by the lexer. HTML-like
-constructs stop at a deferred boundary; their bodies have not been validated.
+identifiers use the implemented angle-balancing boundary; passthrough does not
+validate their bodies.
 A leading UTF-8 BOM is skipped, matching Graphviz's scanner (decided
 2026-09-18); elsewhere its bytes are identifier content, including when
-decoding an extracted identifier starting with those bytes. **HTML-like direction
-(2026-09-19):** Q40 records recognition in all DOT ID positions and a separate,
-optional staged markup subsystem. This is not implemented support.
+decoding an extracted identifier starting with those bytes. Q40's recognition in
+all DOT ID positions, independent structural markup and delayed/one-shot
+integration are implemented; specialized label rules remain future work.
 **Optional validator implemented (2026-09-20):** `validation.invalid_utf8` is
 off by default, with error and warning choices. It checks all source bytes,
 including comments and trivia, without mutation. A byte not consumed by a valid
 UTF-8 sequence is one finding, then recovery advances one byte. Overlong forms,
 surrogates and values beyond U+10FFFF are invalid. No policy weakens grammar NUL
-rules. **Still open:** the markup-specific encoding/validation contract (Q40).
-*(Embodied: `src/lexer/`, `src/validation_checks.zig`,
+rules. **Standalone markup implemented (2026-09-27, slice 4a):** the same optional
+whole-source encoding check is available independently of parsing, including
+comments/CDATA and with compile-time/runtime parity. Retained-document findings
+merge with duplicates in source order, UTF-8 first on equal starts. The separate
+source-scope path runs encoding before local checks; it is not globally sorted. Shared sequence checking
+does not share processor-owned policies/diagnostics or imply XML name/character
+conformance. Optional markup names and known-reference checks are implemented in
+slice 4b with independent selection/severity; further catalogs remain open (Q40).
+**Future UTF-16/32 adapters (requirement clarified 2026-09-27; not implemented):**
+use UTF-8 working bytes while retaining original encoding, byte order and BOM
+provenance once per source. Keep original bytes/a live source handle for exact
+reproduction, and explicit offset mapping for original-file diagnostics/fixes.
+Unknown provenance stays unknown; converted bytes alone cannot recover it. Do not
+hide replacement or normalization as lossless conversion. Metadata/API shape,
+malformed-input handling, mapping storage versus rescanning and all buffer/work
+costs remain design decisions; current raw-byte behavior stays unchanged. See
+[the encoding contract](MARKUP.md#encoding-adapters).
+*(Embodied: `src/dot/lexer/`, `src/dot/validation_checks.zig`,
 [supported syntax](../SUPPORTED_SYNTAX.md); R-PORT-006.)*
 
 **Q24 — When will the first stable compatibility boundary be declared?**
@@ -1378,15 +1004,17 @@ consistency remain required. *(Embodied: `CHANGELOG.md`,
 
 **Q26 — Which named profiles are public conveniences?**
 **Implemented conveniences; reconciled 2026-09-22:** `dot.presets.standard`
-and `dot.presets.lenient` are complete, editable `Policy` values, not separate
+and `dot.presets.lenient` are editable `Policy` values, not separate
 parsers or boolean modes. Standard names the library defaults; lenient changes
 only the three Q36 syntax acceptances to `.warn`, not validation, recovery,
-limits, scanner or execution. A complete runtime preset replaces every baseline
-leaf; a `.syntax`-only patch preserves the other baseline choices. `Profile`
+limits, scanner or execution. Both presets leave `markup` unset to inherit the
+binding default or compiled baseline; a runtime preset replaces the other leaves.
+A `.syntax`-only patch preserves those other baseline choices too. `Profile`
 supports consumer-defined compile-time baselines and default-off runtime
 overrides, and `BoundedSession` is the fixed metered convenience. Earlier
-named-profiles-first/custom-structs-later ordering is superseded. Additional
-footprint-oriented preset names/content remain open; no broader set is promised.
+named-profiles-first/custom-structs-later ordering is superseded. Markup also
+provides an `untrusted` resource preset. A DOT equivalent and additional
+footprint-oriented presets remain open; no broader set is promised.
 
 **Q27 — Which progress budgets does the bounded driver support, and what
 work unit is deterministic?**
@@ -1395,7 +1023,7 @@ execution uses deterministic work units, with source progress reported
 separately. Yield preserves continuation/staged data without abort; cancellation
 is terminal. Keep the stage-based architecture and expose factual progress, not
 a whole-pipeline percentage.
-**Implemented execution contract:** [contract](../architecture/EXECUTION_CONTRACT.md)
+**Implemented execution contract:** [contract](../EXECUTION.md)
 defines charged scan/grammar/dispatch microsteps, zero/one-credit behavior,
 callback exclusions and terminal cleanup, cancellation precedence, source
 frontier semantics, and acceptance tests. `BoundedSession` now provides public
@@ -1405,7 +1033,7 @@ context/non-failing predicate pair. Explicit
 cancel/deinit cleans up abandoned work, and reset reuses pools after cleanup.
 Partition, cancellation-boundary, failure-precedence, lifetime and freestanding
 checks accompany the API. Ordinary-path and optional costs are recorded in
-`docs/BASELINES.md` for the pre-migration implementation; policy-path comparisons
+`docs/PERFORMANCE.md` for the pre-migration implementation; policy-path comparisons
 remain pending on the standard machine. Public pull events, streaming input, total-operation work
 limits and bounded validation remain outside this implemented slice.
 *(R-MOD-010/R-MOD-013; `profile.Session`, `parser.Machine`, `lexer.scannerFor`.)*
@@ -1413,22 +1041,28 @@ limits and bounded validation remain outside this implemented slice.
 **Q22 — Which grammar boundaries are safe recovery points, and what is the
 measured binary-size cost of recovery support?**
 **Implemented (2026-09-18):** statement boundaries are the sync points. With
-the policy `recovery = .statements` (default `.fail_fast`, per
+the policy `on_error = .collect` (now the default, per
 R-FUNC-007), a syntax error inside the body aborts the sink once, the parser
 skips to the next `;` or `}` at the same brace depth (skipped `{` are matched
 by counting), and every later syntax error is reported through the same bag.
-No document is ever published; the outcome stays `invalid_syntax`. Lexical
+No document is ever published; completed recovery reports `invalid_syntax`.
+Later operational stops keep their own outcomes with `.incomplete` completion;
+the u32 `syntax_errors` count retains every discovered rejection, including a
+finding refused by the diagnostic sink. Fixed fail-fast excludes the running
+counter and supplies its single terminal syntax-error count directly. Lexical
 errors resume after the malformed bytes; unterminated quotes/comments, header
-errors, end of input, trailing tokens, limits and deferred features remain
-terminal. Measured: renderer-free ReleaseSmall examples grew by 350–650 B and
-ordinary throughput did not change. These measurements predate Q35's unified
+errors, end of input, trailing tokens and limits remain terminal. Excluded
+HTML-like body identifiers now also recover, retaining `unsupported_feature`
+unless a syntax error is reported (R-MOD-006). Measured: renderer-free ReleaseSmall
+examples grew by 350–650 B and ordinary throughput did not change. These measurements predate Q35's unified
 policy migration: fixed fail-fast profiles now exclude recovery handling and
-skip-depth storage; runtime profiles support both values. **Still open:** a caller-
-provided diagnostic limit that ends recovery early (R-FUNC-007, R-SEC-002),
-and a broader per-class abort/report/ignore policy. Q36's three lenient
+skip-depth storage; runtime profiles support both values. Diagnostic bags now
+signal stop at capacity and parsing honors that immediately. Explicit omission
+mode limits retention only. **Still open:** a broader per-class abort/report/ignore
+policy. Q36's three lenient
 acceptances are implemented and can successfully commit; recovery after a
 rejected construct remains separate and cannot publish a partial document.
-*(Embodied: `Policy.recovery`,
+*(Embodied: `Policy.on_error`,
 `tests/diagnostics.zig`, `tests/policy_settings.zig`; R-FUNC-007, R-DX-002.)*
 
 ---
@@ -1454,15 +1088,16 @@ in every parser profile?**
 Q35/Q36 implement fixed-policy specialization of supported syntax acceptance,
 checks, recovery, scanner and execution settings. The broader grammar-feature
 exclusion matrix remains open. In particular, port/subgraph restrictions are
-post-parse checks, not switches that compile those grammar features out. HTML
-recognition and markup-stage inclusion remain the planned Q40 contract.
+post-parse checks, not switches that compile those grammar features out.
+HTML recognition and optional structural-processor binding are implemented
+(Q40); neither settles the broader grammar-exclusion matrix.
 
 **Q15 — Does the smallest profile retain unsupported-feature detectors, or
 prefer the absolute smallest binary?**
 The current parser retains unsupported-feature detection (R-MOD-006). The
 implemented policy core does not define a smallest embedded grammar profile.
-Q40 separately decides that future `none` still recognizes HTML-like boundaries
-before rejecting them; broader minimal-profile choices remain open.
+Q40's implemented `none` still recognizes HTML-like boundaries before rejecting
+them; broader minimal-profile choices remain open.
 
 **Q28 — Does version 1 provide lazy semantic lowering only, or also a lazy
 syntax index over retained source?**
@@ -1471,6 +1106,98 @@ Open; nothing currently forces the choice.
 ---
 
 ## Reconciliation log
+
+Historical checkpoints below describe their dates, including features that were
+pending then and are implemented now. Current status is given above under each
+question; these entries are not a second task list.
+
+- 2026-10-03 — Documentation consolidation: preserve Q1–Q40 and decision status,
+  reconcile implemented custom bindings/integration, distinguish cancellable
+  markup validation from unmetered validation, and keep outstanding dialect,
+  scheduling, encoding, packaging and performance decisions. Completed slice
+  diaries are removed from the active markup plan; preparation details are
+  consolidated into the processor contract. No implementation or benchmark change.
+
+
+- 2026-10-03 — Replace `recovery` / `Recovery` with `on_error` / `OnError`, no
+  aliases. Apply fail-fast to validation and combined operations; separately
+  requested source validation still synchronizes safe malformed headers. Add
+  unsupported reporting without treating silence as passthrough. Delayed child
+  results distinguish errors from operational stops and expose parent-controlled
+  continuation. See [the processor contract](PROCESSOR_CONTRACT.md).
+
+- 2026-10-02 — Harden the public scope boundary with all-build-mode metadata
+  checks and `invalid_scope`; keep scanner-produced scopes on the trusted internal
+  path. `incomplete: u32` now identifies the earliest coverage gap, not a resume
+  cursor. Closing-name coverage and recovery selection are unchanged.
+
+- 2026-10-02 — Separate markup local validation scopes from enclosing structure.
+  Headers, names, attribute-value content and text can be checked without a tree
+  through `validateScope[In]` and `validateSource[In]`. Recognized prefixes retain
+  findings, missing coverage remains incomplete, and parse-only costs/contracts
+  stay separate. Shared kernels preserve standalone document validation. No
+  custom string processor or SIMD batching is added. See [local scopes](MARKUP.md#validation-and-coverage).
+
+- 2026-10-02 — Standalone markup `.collect` now synchronizes selected rejected
+  opening-header attribute errors at explicit quote-aware `>`/`/>` boundaries.
+  Preserve written names and stack effects; uncertain boundaries remain terminal.
+  No syntax acceptance, typo correction, partial tree or validation of skipped
+  attributes is introduced. See [opening-header recovery](MARKUP.md#recovery-and-acceptance).
+
+- 2026-09-30 — DOT defaults to statement recovery with terminal unterminated
+  lexical constructs. Standalone markup gains default structural recovery,
+  explicit fail-fast, source-bounded ancestor lookup, completion/error facts and
+  no partial-tree publication. Sink stops end work; fixed fail-fast excludes
+  continuation state. Both processors name the choices `.fail_fast` and `.collect`;
+  recovery remains distinct from acceptance, validation and markup processing mode.
+
+- 2026-09-29 — Shared WDP metadata/identity and console machinery now serve both
+  DOT and markup, with processor-owned catalogs/typed adapters and unchanged
+  identity strings. Added conservative markup repair offers with fixed/runtime
+  filtering and no diagnostic layout increase. Integrated execution stays open.
+
+- 2026-09-27 — Slice 4b implements optional name/reference validation with typed
+  selections and severities, fixed/runtime parity, source-ordered diagnostics and
+  no new retained pools. The parser stays generic/extensible with Graphviz its
+  priority consumer. Recovery, void elements, custom catalogs and transcoding are
+  not part of this implementation.
+- 2026-09-27 — Clarified that an HTML-like void-element rule can be a swappable
+  parsing rule in a shared engine, not just validation or recovery; the existing
+  built-in baseline remains unchanged pending design. Recorded future UTF-16/32
+  adapters' original-encoding provenance, mapping, lifetime and cost requirements.
+- 2026-09-27 — Next validation slice selects optional name rules and reference
+  catalogs independently, without imposing XML restrictions on other dialects.
+  Recorded name-local decoding, independent overlapping encoding findings and
+  explicit optional-cost targets. Structural recovery is deferred to a separate
+  design discussion; no new parser behavior or public policy API is implemented.
+- 2026-09-27 — Shared growable bags now default to 1,024 retained diagnostics;
+  finite limits use `u16` and unlimited retention is explicit. Markup adds
+  `presets.untrusted` with finite source/node/attribute/nesting budgets. Diagnostic
+  payloads and finding counters are unchanged; UTF-8 findings remain one per bad
+  byte. These bounds do not promise total heap, time or bounded validation.
+- 2026-09-27 — Structural slice 4a adds optional whole-source UTF-8 checking with
+  default-off error/warning policies and independent validation. Encoding and
+  duplicate findings are source-ordered without a queue; names, known-reference
+  checks, structural recovery and DOT integration remain subsequent work.
+- 2026-09-27 — Structural slice 3 implements raw-preserving references, comments
+  and CDATA, malformed-reference syntax policy, deviation/warning counters and
+  diagnostic-stop handling. Node/attribute/frame sizes remain unchanged; reference
+  continuation and public result state have explicit measured costs. DOT integration,
+  further optional checks and defined recovery remain pending.
+
+- 2026-09-27 — Structural slice 2 implements quoted attributes, ordered duplicate
+  retention, explicit attribute capacity/limits and independent duplicate checks
+  with fixed/runtime error/warning/off parity. Retained node layout stays 20 bytes;
+  sparse attributes and per-element validation scratch are separate costs.
+  Reference processing, bounded validation and DOT integration are still pending.
+
+- 2026-09-27 — Standalone markup first (decided 2026-09-26): implement structural parsing in vertical
+  slices before more processor composition. Recorded case-sensitive raw-byte
+  grammar, explicit encoding boundary, duplicate retention/checking and the
+  malformed-reference literal-ampersand policy. Slice 1 implements the independent
+  module, elements/text, compact retained/count-only paths, policy limits and
+  bounded/cancellable fixed sessions. Later constructs and DOT integration remain
+  unsupported. The old passthrough-first delivery order is superseded, not its rules.
 
 - 2026-09-26 — Q40 preparation: recorded agreed stages 1–4 and ownership/reset
   defaults; implemented shared typed reporting and compile-time policy preflight.
@@ -1501,25 +1228,25 @@ status is in the question entries above, not an earlier log's pending-work list.
   The initial retained-document sequence is DOT validation followed by requested
   inner processing, without requiring outer validity. Dependent checks and
   operational failures remain explicit; aggregate ordering and concrete APIs
-  remain open. Clarified that `none`/`opaque` select behavior, not diagnostic
+  remain open. Clarified that `none`/`passthrough` select behavior, not diagnostic
   severity. R-FUNC-008, R-MOD-014/015 and R-DIAG-007 record the contract; this
   does not implement processor composition or bounded validation.
 - 2026-09-22 — Q40 content-processor vision decided: implementation identity
   is compile-time-only, each processor owns its typed policy and optional
   runtime overrides, and built-in inner parsers use the same contract as
-  consumer replacements. Clarified `none`/`opaque` versus processor invocation,
+  consumer replacements. Clarified `none`/`passthrough` versus processor invocation,
   ownership of nested configuration, numeral boundaries and illustrative string
   checks. Custom lexical forms remain a separate future design, not an automatic
   consequence of replacing an inner parser. Reconciled the earlier single-enum
   and exactly-two-schemas wording; shared policy generation and the concrete
   adapter remain provisional. R-MOD-015 records the intended contract. No new
   implementation or performance result is claimed.
-- 2026-09-22 — Q40: the opaque slice contract is decided (default
-  `opaque`; unterminated fix offered at depth one with a new
+- 2026-09-22 — Q40: the passthrough slice contract is decided (default
+  `passthrough`; unterminated fix offered at depth one with a new
   policy-controlled `diagnostics.fixes` leaf; minimal `identifier.form`
   now; policy-free scanners with the mode applied by the parser;
   concatenation in scope; all ID positions; both backends). The owner
-  proposed a policy ownership split — DOT knows `none | opaque`, the markup
+  proposed a policy ownership split — DOT knows `none | passthrough`, the markup
   subsystem owns its own policy and modes, the engine attaches as a
   resource — recorded with the reviewer's analysis, to confirm. Nothing
   implemented.
@@ -1533,7 +1260,7 @@ status is in the question entries above, not an earlier log's pending-work list.
   record; no fresh performance result is claimed.
 
 - 2026-09-22 — Clarified Q40 element depth versus delimiter depth, unknown
-  structural summaries under opaque recognition, and possible element-count
+  structural summaries under passthrough recognition, and possible element-count
   limits. Corrected label validation, operation versus module inclusion,
   source-preserving concatenation versus explicit decoding, per-operand origins,
   the Q10 compatibility exception and port-ID meaning. Frame size remains an
@@ -1572,9 +1299,9 @@ status is in the question entries above, not an earlier log's pending-work list.
   no policy implementation or measured cost improvement is claimed.
 
 - 2026-09-19 — Added Q40 for the dedicated, optional staged markup subsystem
-  and recognition in every DOT ID position. Distinguished opaque preservation,
+  and recognition in every DOT ID position. Distinguished passthrough preservation,
   XML-like structural checking and Graphviz label validation. Settled the mode
-  names `none`, `opaque`, `structural`, `extended`, and `graphviz`, with a
+  names `none`, `passthrough`, `structural`, `extended`, and `graphviz`, with a
   comparison table of their processing stages and validation policies.
   Recorded standalone, during-DOT and delayed use of one markup engine, with
   a usage-path table and explicit source-lifetime, work-budget and validity

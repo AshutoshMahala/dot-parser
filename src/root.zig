@@ -14,7 +14,7 @@
 //!
 //! The syntax-event sink, low-level parser machine, and document builder remain private and
 //! provisional; they are reachable only through the façade until the
-//! contract stabilizes (PROJECT_STRUCTURE.md).
+//! contract stabilizes (docs/ARCHITECTURE.md).
 //!
 //! ## Ownership at a glance
 //!
@@ -27,11 +27,11 @@
 
 const std = @import("std");
 
-const parser_impl = @import("parser.zig");
-const syntax_impl = @import("syntax.zig");
-const validate_impl = @import("validate.zig");
-const scratch_impl = @import("scratch.zig");
-const policy_impl = @import("policy.zig");
+const parser_impl = @import("dot/parser.zig");
+const syntax_impl = @import("dot/syntax.zig");
+const validate_impl = @import("dot/validate.zig");
+const scratch_impl = @import("dot/scratch.zig");
+const policy_impl = @import("dot/policy.zig");
 
 pub const Policy = policy_impl.Policy;
 pub const presets = policy_impl.presets;
@@ -46,26 +46,33 @@ pub const GraphTreatment = policy_impl.GraphTreatment;
 pub const RuleSeverity = policy_impl.RuleSeverity;
 pub const OperatorReading = policy_impl.OperatorReading;
 pub const ScannerBackend = policy_impl.ScannerBackend;
-pub const Recovery = policy_impl.Recovery;
+pub const MarkupMode = policy_impl.MarkupMode;
+pub const Fixes = policy_impl.Fixes;
+pub const OnError = policy_impl.OnError;
+pub const Unsupported = policy_impl.Unsupported;
 const DefaultProfile = Profile(.{});
 
 /// Policy-bound parsing, execution, validation and interpretation. Runtime
 /// overrides are off by default; every supported setting has full parity.
 pub fn Profile(comptime config: PolicyConfig) type {
-    return @import("profile.zig").Profile(@This(), config);
+    return @import("dot/profile.zig").Profile(@This(), config);
 }
 
 /// Library-default policy verification is compile-time-only.
 pub const validatePolicy = Profile(.{}).validatePolicy;
 
-pub const location = @import("location.zig");
-pub const diagnostic = @import("diagnostic.zig");
+pub const location = @import("parser_support").location;
+pub const diagnostic = @import("dot/diagnostic.zig");
 /// Typed processor-independent diagnostic destinations.
-pub const reporting = @import("reporting.zig");
+pub const reporting = @import("parser_support").reporting;
+/// Shared compile-time diagnostic metadata and optional presentation engine.
+pub const wdp = @import("parser_support").wdp;
+pub const presentation = @import("parser_support").console;
 /// Compile-time policy preparation and checked raw-fragment coordinates.
-/// Processor scheduling and HTML parsing are not implemented by this module.
-pub const processor = @import("processor.zig");
-const lexer_impl = @import("lexer/lexer.zig");
+/// Opt-in one-shot scheduling is selected with Profile.processors; ordinary DOT
+/// profiles neither import markup grammar nor retain processor metadata.
+pub const processor = @import("parser_support").processor;
+const lexer_impl = @import("dot/lexer/lexer.zig");
 pub const lexer = struct {
     pub const Token = lexer_impl.Token;
     pub const Result = lexer_impl.Result;
@@ -75,12 +82,12 @@ pub const lexer = struct {
     pub const For = lexer_impl.For;
 };
 /// Explicit raw-identifier decoding into caller storage or a writer.
-pub const identifier = @import("identifier.zig");
+pub const identifier = @import("dot/identifier.zig");
 
 /// Default console presentation for diagnostics — one way to render, shipped
 /// out of the box. Consumers bring their own reporting by implementing
 /// `DiagnosticSink`; the core never renders anything itself.
-pub const console = @import("console.zig");
+pub const console = @import("dot/console.zig");
 
 // Source positions.
 pub const Location = location.Location;
@@ -183,13 +190,15 @@ pub const StorageFailure = enum {
 /// the caller's diagnostic sink, never through this value.
 pub const ParseOutcome = union(enum) {
     success,
+    /// A bound child stopped during-DOT composition; see the composed report.
+    processor_stopped,
     /// A cancellation-enabled operation or a session was cancelled.
     cancelled,
     /// Diagnostic destination stopped unfinished work. No partial document.
     diagnostic_stopped: diagnostic.StopReason,
     /// The input is not accepted by the selected syntax policy.
     invalid_syntax,
-    /// Parsing stopped at a recognized-but-deferred DOT construct; validity
+    /// Parsing stopped at a policy-disabled DOT construct; validity
     /// beyond that boundary is unknown.
     unsupported_feature,
     /// A caller-configured limit was reached; the input may still be valid.
@@ -198,15 +207,25 @@ pub const ParseOutcome = union(enum) {
     storage_failure: StorageFailure,
 };
 
+/// Completion of parsing/recovery, not a claim of valid or supported input.
+pub const Completion = parser_impl.Completion;
+
 /// Result of `parseBorrowed`. The document is present exactly when
 /// `outcome == .success` and is owned by the caller.
 pub const ParseResult = struct {
     document: ?Document = null,
     outcome: ParseOutcome,
+    completion: Completion = .incomplete,
+    /// Discovered syntax rejections, including undelivered findings. Preserved
+    /// through later stops; zero with incomplete work does not establish validity.
+    syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
+    /// Sink acknowledgment, even when reporting an already-terminal failure.
+    /// The original outcome is preserved; do not start child work after a stop.
+    diagnostic_stop: ?diagnostic.StopReason = null,
     /// Accepted syntax deviations, including silent acceptances before failure.
     accepted_deviations: u32 = 0,
-    /// Syntax warnings produced, independent of diagnostic retention/delivery.
+    /// Parse warnings (including unsupported reporting), independent of delivery.
     warnings: u32 = 0,
 
     pub fn deinit(self: *ParseResult, allocator: std.mem.Allocator) void {
@@ -234,12 +253,15 @@ pub const FixedParseOptions = DefaultProfile.FixedParseOptions;
 pub const FixedParseResult = struct {
     document: ?Document = null,
     outcome: ParseOutcome,
+    completion: Completion = .incomplete,
+    syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
+    diagnostic_stop: ?diagnostic.StopReason = null,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
 };
 
-pub const Cancellation = @import("execution.zig").Cancellation;
+pub const Cancellation = @import("parser_support").execution.Cancellation;
 pub const ExecutionPhase = parser_impl.Phase;
 
 /// By-value progress, never a partial document. Accepted counts can describe
@@ -253,7 +275,9 @@ pub const SessionProgress = struct {
     completed_pairs: usize,
     work_used: usize,
     outcome: ?ParseOutcome,
+    syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
+    diagnostic_stop: ?diagnostic.StopReason = null,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
 };
@@ -270,7 +294,10 @@ pub const parseBorrowedIn = DefaultProfile.parseBorrowedIn;
 pub const MeasureResult = struct {
     capacities: ?DocumentCapacities = null,
     outcome: ParseOutcome,
+    completion: Completion = .incomplete,
+    syntax_errors: u32 = 0,
     diagnostic_delivery: diagnostic.Delivery,
+    diagnostic_stop: ?diagnostic.StopReason = null,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
 };
@@ -286,8 +313,12 @@ pub const CheckOptions = DefaultProfile.CheckOptions;
 pub const CheckResult = struct {
     document: ?Document = null,
     outcome: ParseOutcome,
+    /// Parse/recovery completion only; validation has its own result.
+    completion: Completion = .incomplete,
+    syntax_errors: u32 = 0,
     validation: ?ValidationResult = null,
     diagnostic_delivery: diagnostic.Delivery,
+    diagnostic_stop: ?diagnostic.StopReason = null,
     accepted_deviations: u32 = 0,
     /// Total syntax and validation warnings produced, including dropped ones.
     // Independent rules may report the same byte: the aggregate is not bounded
@@ -313,11 +344,11 @@ test {
     std.testing.refAllDecls(@This());
     // Private, provisional modules are not exported but their unit tests
     // still run (the syntax-event sink, parser driver, and document builder stay
-    // private per PROJECT_STRUCTURE until the contract stabilizes).
-    _ = @import("syntax_event.zig");
-    _ = @import("parser.zig");
-    _ = @import("syntax.zig");
-    _ = @import("validate.zig");
-    _ = @import("lexer/lexer.zig");
-    _ = @import("policy.zig");
+    // private per docs/ARCHITECTURE.md until the contract stabilizes).
+    _ = @import("dot/syntax_event.zig");
+    _ = @import("dot/parser.zig");
+    _ = @import("dot/syntax.zig");
+    _ = @import("dot/validate.zig");
+    _ = @import("dot/lexer/lexer.zig");
+    _ = @import("dot/policy.zig");
 }

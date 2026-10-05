@@ -14,7 +14,7 @@ export fn prepare_profiles(choice: u8) usize {
 }
 
 export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
-    const input: dot.Policy = .{ .scanner = if (choice & 1 == 0) .scalar else .block, .execution = .{ .metering = choice & 2 != 0, .cancellation = choice & 4 != 0 }, .limits = .{ .max_statements = @as(usize, choice) + 1, .max_attributes = choice }, .recovery = if (choice & 8 == 0) .fail_fast else .statements, .validation = .{
+    const input: dot.Policy = .{ .markup = if (choice & 1 == 0) .none else .passthrough, .diagnostics = .{ .fixes = if (choice & 2 == 0) .off else .machine_applicable, .unsupported = @enumFromInt(choice % 3) }, .scanner = if (choice & 1 == 0) .scalar else .block, .execution = .{ .metering = choice & 2 != 0, .cancellation = choice & 4 != 0 }, .limits = .{ .max_statements = @as(usize, choice) + 1, .max_attributes = choice }, .on_error = if (choice & 8 == 0) .fail_fast else .collect, .validation = .{
         .ambiguous_numeral = if (choice & 16 == 0) .warning else .err,
         .invalid_utf8 = if (choice & 32 == 0) .off else .warning,
         .repeated_attribute = if (choice & 64 == 0) .off else .err,
@@ -78,7 +78,7 @@ fn cancelled(context: ?*anyopaque) bool {
 
 // Exercise runtime variant selection, persistent storage and reset in emitted
 // freestanding objects, with genuinely external choices and cancellation input.
-export fn session_policy(source: [*]const u8, len: usize, choice: u8, limit: usize, stop: *u8) usize {
+export fn session_policy(source: [*]const u8, len: usize, choice: u8, limit: u32, stop: *u8) usize {
     if (!features.runtime_policy) return 0;
     const Dynamic = dot.Profile(.{ .runtime_policy = true });
     var storage: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .edges = 8, .edge_chains = 8, .edge_links = 8 }) = .{};
@@ -91,7 +91,7 @@ export fn session_policy(source: [*]const u8, len: usize, choice: u8, limit: usi
         .scanner = if (choice & 1 == 0) .scalar else .block,
         .execution = .{ .metering = choice & 2 != 0, .cancellation = choice & 4 != 0 },
         .limits = .{ .max_statements = limit, .max_attributes = limit, .max_nesting = limit },
-        .recovery = if (choice & 8 == 0) .fail_fast else .statements,
+        .on_error = if (choice & 8 == 0) .fail_fast else .collect,
         .validation = .{ .graph = .{ .treated_as = .auto } },
     };
     var session = Dynamic.Session.init(source[0..len], .{ .document = storage.storage() }, dot.diagnostic.discard, .{ .policy = input, .cancellation = .{ .context = stop, .is_requested = cancelled } }) catch return 100;

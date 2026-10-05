@@ -175,3 +175,23 @@ test "DOT validation stops on capacity/OOM and preserves committed outer documen
     try equal(@as(u64, 2), completed.outcome.completed.violations);
     try equal(@as(usize, 2), growable.items().len);
 }
+
+test "default growable bag bounds DOT validation floods and explicit unlimited completes" {
+    const source = "graph {" ++ "a -> b;" ** 2048 ++ "}";
+    var bag = dot.GrowableDiagnosticBag.init(std.testing.allocator, .{});
+    defer bag.deinit();
+    var parsed = dot.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});
+    defer parsed.deinit(std.testing.allocator);
+    try expect(parsed.outcome == .success and parsed.document != null);
+    try expect(!parsed.documentValid());
+    const stopped = parsed.validation.?.outcome.diagnostic_stopped;
+    try equal(dot.reporting.StopReason.requested, stopped.reason);
+    try equal(@as(u64, 1024), stopped.violations);
+    try equal(@as(usize, 1024), bag.items().len);
+    try expect(bag.storage.capacity <= 1024);
+    var unlimited = dot.GrowableDiagnosticBag.init(std.testing.allocator, .{ .max_entries = .unlimited });
+    defer unlimited.deinit();
+    const complete = dot.validate(&parsed.document.?, unlimited.sink(), .{});
+    try equal(@as(u64, 2048), complete.outcome.completed.violations);
+    try equal(@as(usize, 2048), unlimited.items().len);
+}

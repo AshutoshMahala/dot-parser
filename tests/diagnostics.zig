@@ -5,6 +5,25 @@
 const std = @import("std");
 const dot = @import("dot_parser");
 
+test "DOT compact list preserves individual output including related locations and fixes" {
+    const source = "graph {\n a -> b;\n c -> d;\n}";
+    var bag = dot.GrowableDiagnosticBag.init(std.testing.allocator, .{});
+    defer bag.deinit();
+    var checked = dot.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});
+    defer checked.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), bag.items().len);
+    const locations = try std.testing.allocator.alloc(dot.location.Location, try dot.console.locationCapacity(bag.items()));
+    defer std.testing.allocator.free(locations);
+    var left: [4096]u8 = undefined;
+    var right: [4096]u8 = undefined;
+    var list = std.Io.Writer.fixed(&left);
+    var single = std.Io.Writer.fixed(&right);
+    const options: dot.console.RenderOptions = .{ .source = source, .source_name = "example.dot" };
+    try dot.console.renderList(bag.items(), options, locations, &list);
+    for (bag.items()) |d| try dot.console.render(d, options, &single);
+    try std.testing.expectEqualStrings(single.buffered(), list.buffered());
+}
+
 const Case = struct {
     source: []const u8,
     code: dot.Code,
@@ -102,7 +121,7 @@ test "every probe reports the expected identity, location, and wording" {
     for (cases) |case| {
         errdefer std.debug.print("probe source: {s}\n", .{case.source});
         var bag: dot.FixedDiagnosticBag(8) = .{};
-        var checked = dot.parseAndValidate(std.testing.allocator, case.source, bag.sink(), .{});
+        var checked = dot.Profile(.{ .policy = .{ .markup = .none } }).parseAndValidate(std.testing.allocator, case.source, bag.sink(), .{});
         defer checked.deinit(std.testing.allocator);
         try std.testing.expectEqual(case.parses, checked.outcome == .success);
         try std.testing.expect(bag.items().len >= 1);
@@ -176,7 +195,7 @@ test "applying every machine-applicable fix yields a document that parses" {
         var rounds: usize = 0;
         while (rounds < 4) : (rounds += 1) {
             var bag: dot.FixedDiagnosticBag(16) = .{};
-            var checked = dot.Profile(.{ .policy = .{ .recovery = .statements } }).parseAndValidate(allocator, source, bag.sink(), .{});
+            var checked = dot.Profile(.{ .policy = .{ .on_error = .collect } }).parseAndValidate(allocator, source, bag.sink(), .{});
             defer checked.deinit(allocator);
             // Machine-applicable fixes only, from the end of the source back.
             var best: ?dot.diagnostic.Fix = null;
@@ -209,7 +228,7 @@ test "applying every machine-applicable fix yields a document that parses" {
 
 test "a byte order mark is not a diagnostic" {
     var bag: dot.FixedDiagnosticBag(4) = .{};
-    var checked = dot.parseAndValidate(std.testing.allocator, "\xEF\xBB\xBFdigraph { a -> b; }", bag.sink(), .{});
+    var checked = dot.Profile(.{ .policy = .{ .markup = .none } }).parseAndValidate(std.testing.allocator, "\xEF\xBB\xBFdigraph { a -> b; }", bag.sink(), .{});
     defer checked.deinit(std.testing.allocator);
     try std.testing.expect(checked.documentValid());
     try std.testing.expectEqual(@as(usize, 0), bag.items().len);
@@ -226,6 +245,6 @@ test "the compact renderer says byte column and lists every note" {
     var writer = std.Io.Writer.fixed(&buffer);
     try dot.console.render(bag.items()[0], .{ .source = source }, &writer);
     const text = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, text, "line 6, byte column 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "<input>:6:1: (byte column,") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "note: unclosed delimiter opened at 1:9; misindented closing brace at 5:1") != null);
 }

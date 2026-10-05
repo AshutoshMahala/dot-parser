@@ -19,7 +19,9 @@ pub fn main(init: std.process.Init) !void {
     var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
     const writer = &output.interface;
     if (parsed.outcome != .success) {
-        try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source }, writer);
+        const locations = try init.arena.allocator().alloc(dot.location.Location, try dot.console.locationCapacity(bag.items()));
+        defer init.arena.allocator().free(locations);
+        try dot.console.renderBoxedList(bag.items(), 0, .{ .source = source }, locations, writer);
         try writer.flush();
         return;
     }

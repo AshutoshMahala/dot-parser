@@ -6,6 +6,59 @@ const deep = std.testing.expectEqualDeep;
 const Runtime = dot.Profile(.{ .runtime_policy = true });
 const Storage = dot.FixedDocumentStorage(.{ .statements = 16, .nodes = 16, .edges = 16, .attributes = 16, .subgraphs = 8, .scoped_edges = 8, .scoped_edge_links = 8, .edge_chains = 8, .edge_links = 16, .ported_references = 16, .assignments = 8, .attribute_statements = 8 });
 
+test "collect is the default while explicit fail-fast remains available" {
+    try equal(@as(usize, 2), std.meta.fields(dot.OnError).len);
+    try equal(dot.OnError.collect, dot.Profile(.{}).baseline.parsing.on_error);
+    try equal(dot.OnError.collect, dot.presets.standard.on_error.?);
+    try equal(dot.OnError.collect, dot.presets.lenient.on_error.?);
+    const source = "graph { a[x=]; b[y=]; c; }";
+    inline for ([_]dot.Policy{ .{}, .{ .on_error = .collect }, .{ .on_error = .fail_fast } }) |policy| {
+        const P = dot.Profile(.{ .policy = policy });
+        var bag: dot.FixedDiagnosticBag(8) = .{};
+        var pools: Storage = .{};
+        const r = P.parseBorrowedIn(source, .{ .document = pools.storage() }, bag.sink(), .{});
+        try expect(r.outcome == .invalid_syntax and r.document == null);
+        try equal(@as(usize, if (policy.on_error == .fail_fast) 1 else 2), bag.items().len);
+        try equal(@as(u32, if (policy.on_error == .fail_fast) 1 else 2), r.syntax_errors);
+        try equal(if (policy.on_error == .fail_fast) dot.Completion.incomplete else .complete, r.completion);
+    }
+    // No reliable boundary exists inside an unfinished quoted/comment/HTML ID.
+    for ([_][]const u8{ "graph { a; \"unfinished", "graph { a; /*unfinished", "graph { a; <unfinished", "graph { a; \"x\x00y\"; b; }", "graph { a; \"x\"+" }) |input| {
+        var bag: dot.FixedDiagnosticBag(1) = .{};
+        var pools: Storage = .{};
+        const r = dot.parseBorrowedIn(input, .{ .document = pools.storage() }, bag.sink(), .{});
+        try expect(r.outcome == .invalid_syntax and r.document == null);
+        try equal(@as(usize, 1), bag.items().len);
+        try equal(@as(u32, 1), r.syntax_errors);
+        try equal(dot.Completion.incomplete, r.completion);
+    }
+}
+
+test "unbound processing fails policy preflight without allocating or touching a session" {
+    const Fixed = dot.Profile(.{});
+    const patch: dot.Policy = .{ .markup = .process };
+    const rejected: dot.PolicyValidation = .{ .invalid = .markup_processor_required };
+    try std.testing.expectEqualDeep(rejected, Fixed.validatePolicy(patch));
+    try std.testing.expectEqualDeep(rejected, Runtime.validatePolicy(patch));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.Policies.prepare(.{ .policy = patch }));
+    var bag: dot.FixedDiagnosticBag(16) = .{};
+    var pools: Storage = .{};
+    const memory: dot.ParseMemory = .{ .document = pools.storage() };
+    const source = "graph { a [label=<<b/>>]; }";
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.parseBorrowed(std.testing.failing_allocator, source, bag.sink(), .{ .policy = patch }));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.parseAndValidate(std.testing.failing_allocator, source, bag.sink(), .{ .policy = patch }));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.parseBorrowedIn(source, memory, bag.sink(), .{ .policy = patch }));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.measure(std.testing.failing_allocator, source, bag.sink(), .{ .policy = patch }));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.measureIn(source, .{}, bag.sink(), .{ .policy = patch }));
+    try std.testing.expectError(error.MarkupProcessorRequired, Runtime.Session.init(source, memory, bag.sink(), .{ .policy = patch }));
+    var session = try Runtime.Session.init(source, memory, bag.sink(), .{});
+    defer session.deinit();
+    try equal(dot.ParseOutcome.success, session.run().outcome);
+    try std.testing.expectError(error.MarkupProcessorRequired, session.reset("garbage", bag.sink(), .{ .policy = patch }));
+    try equal(dot.ParseOutcome.success, session.result().?.outcome);
+    try equal(@as(usize, 0), bag.items().len);
+}
+
 const Request = struct {
     polls: usize = 0,
     stop: bool = false,
@@ -19,14 +72,65 @@ const Request = struct {
     }
 };
 
+test "nesting policy and depth counters use u32 with fixed and runtime boundary parity" {
+    const maximum = std.math.maxInt(u32);
+    try expect(@FieldType(dot.Policy.Limits, "max_nesting") == ?u32);
+    try expect(@TypeOf(dot.Profile(.{}).baseline.parsing.limits.max_nesting) == u32);
+    try equal(maximum, dot.Profile(.{}).baseline.parsing.limits.max_nesting);
+    try equal(@as(?u32, maximum), dot.presets.standard.limits.max_nesting);
+
+    inline for (.{ .scalar, .block }) |scanner| {
+        const input: dot.Policy = .{
+            .scanner = scanner,
+            .on_error = .collect,
+            .execution = .{ .metering = true },
+            .limits = .{ .max_nesting = maximum },
+        };
+        const Fixed = dot.Profile(.{ .policy = input });
+        const Dynamic = dot.Profile(.{ .policy = input, .runtime_policy = true });
+        const Driver = @FieldType(@FieldType(Fixed.Session, "driver"), "machine");
+        try expect(@FieldType(Driver, "skip_depth") == u32);
+        const source = "graph {{{a}}}";
+        var pools: Storage = .{};
+        var scratch: dot.FixedParseScratch(.{ .nesting = 2 }) = .{};
+        const memory: dot.ParseMemory = .{ .document = pools.storage(), .scratch = scratch.storage() };
+        try expect(Fixed.parseBorrowedIn(source, memory, dot.diagnostic.discard, .{}).outcome == .success);
+        var owned = Fixed.parseBorrowed(std.testing.allocator, source, dot.diagnostic.discard, .{});
+        defer owned.deinit(std.testing.allocator);
+        try expect(owned.outcome == .success);
+        try expect(Fixed.measureIn(source, scratch.storage(), dot.diagnostic.discard, .{}).outcome == .success);
+
+        var bag: dot.FixedDiagnosticBag(2) = .{};
+        var session = try Dynamic.Session.init(source, memory, bag.sink(), .{});
+        defer session.deinit();
+        while ((try session.advance(1)).outcome == null) {}
+        try expect(session.result().?.outcome == .success);
+        // Lower and raise a runtime limit without narrowing or clamping it.
+        for ([_]u32{ 0, 1, 2, maximum }) |limit| {
+            bag = .{};
+            try session.reset(source, bag.sink(), .{ .policy = .{ .limits = .{ .max_nesting = limit } } });
+            while ((try session.advance(1)).outcome == null) {}
+            if (limit < 2) {
+                try expect(session.result().?.outcome == .resource_exhausted);
+                try equal(@as(usize, 1), bag.items().len);
+                try equal(dot.diagnostic.Capacity.Resource.nesting_depth, bag.items()[0].details.capacity.resource);
+                try equal(@as(usize, limit), bag.items()[0].details.capacity.limit);
+            } else {
+                try expect(session.result().?.outcome == .success);
+                try equal(@as(usize, 0), bag.items().len);
+            }
+        }
+    }
+}
+
 test "all scanner recovery and execution combinations agree at both binding times" {
     inline for (.{ .scalar, .block }) |scanner| {
-        inline for (.{ .fail_fast, .statements }) |recovery| {
+        inline for (.{ .fail_fast, .collect }) |recovery| {
             inline for (.{ false, true }) |metering| {
                 inline for (.{ false, true }) |cancellation| {
                     const input: dot.Policy = .{
                         .scanner = scanner,
-                        .recovery = recovery,
+                        .on_error = recovery,
                         .execution = .{ .metering = metering, .cancellation = cancellation },
                         .limits = .{ .max_statements = 5, .max_attributes = 2, .max_nesting = 1 },
                         .validation = .{ .graph = .{ .operator_mismatch = .warning, .operator_reading = .conform_to_kind } },
@@ -143,7 +247,7 @@ test "fixed and runtime-baseline sessions have identical bounded progress and di
                 .scanner = scanner,
                 .execution = .{ .metering = true, .cancellation = cancellable },
                 .limits = .{ .max_statements = 4, .max_attributes = 2, .max_nesting = 2 },
-                .recovery = .statements,
+                .on_error = .collect,
                 .validation = .{ .graph = .{ .treated_as = .auto } },
             };
             const Fixed = dot.Profile(.{ .policy = input });
@@ -253,10 +357,11 @@ test "one-shot and measurement cancellation do not publish staged output" {
 }
 
 test "fixed settings have no runtime storage and disabled controls are absent" {
-    const Fixed = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 3 }, .recovery = .fail_fast } });
+    const Fixed = dot.Profile(.{ .policy = .{ .limits = .{ .max_statements = 3 }, .on_error = .fail_fast } });
     const Driver = @FieldType(@FieldType(Fixed.Session, "driver"), "machine");
     try expect(@FieldType(Driver, "settings") == void);
     try expect(@FieldType(Driver, "cancellation") == void);
+    try expect(@FieldType(Driver, "syntax_errors") == void);
     try expect(@FieldType(Driver, "work") == void);
     try expect(@FieldType(Driver, "skip_depth") == void);
     try expect(@FieldType(Fixed.Session, "interpretation_policy") == void);

@@ -212,7 +212,7 @@ test "suppression preserves validity while delivery failure reports incomplete v
     const Numerals = dot.Profile(.{ .policy = .{ .validation = .{ .ambiguous_numeral = .err } } });
     var numeral = Numerals.parseBorrowed(std.testing.allocator, "graph { 1e3 }", Rejecting.sink, .{});
     defer numeral.deinit(std.testing.allocator);
-    try expect(numeral.outcome == .invalid_syntax and numeral.diagnostic_delivery == .failed);
+    try expect(numeral.outcome == .diagnostic_stopped and numeral.diagnostic_delivery == .failed);
 }
 
 test "graph restrictions use effective kind and never conform or rewrite syntax" {

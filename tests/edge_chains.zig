@@ -16,7 +16,9 @@ const capacities: dot.DocumentCapacities = .{
 };
 
 test "chain hints consume only exact pool bytes with a fixed-buffer allocator" {
-    var bytes: [1024]u8 = undefined;
+    // end_index includes alignment padding, so an exact-payload assertion needs
+    // a backing buffer aligned for the retained pools, not merely for u8.
+    var bytes: [1024]u8 align(@alignOf(dot.FixedDocumentStorage(capacities))) = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&bytes);
     var parsed = dot.parseBorrowed(fba.allocator(), source, dot.diagnostic.discard, .{ .document_capacities = capacities });
     defer parsed.deinit(fba.allocator());
@@ -25,6 +27,25 @@ test "chain hints consume only exact pool bytes with a fixed-buffer allocator" {
         @sizeOf(dot.EdgeStatement) + 2 * @sizeOf(dot.EdgeChainStatement) +
         3 * @sizeOf(dot.EdgeLink) + 3 * @sizeOf(dot.Attribute) + @sizeOf(dot.Assignment);
     try equal(@as(usize, expected), fba.end_index);
+}
+
+test "chain hints account for padding in deliberately misaligned buffers" {
+    const alignment = @alignOf(dot.FixedDocumentStorage(capacities));
+    var bytes: [1024]u8 align(alignment) = undefined;
+    const payload = 5 * @sizeOf(dot.StatementId) + @sizeOf(dot.NodeStatement) +
+        @sizeOf(dot.EdgeStatement) + 2 * @sizeOf(dot.EdgeChainStatement) +
+        3 * @sizeOf(dot.EdgeLink) + 3 * @sizeOf(dot.Attribute) + @sizeOf(dot.Assignment);
+    for (1..alignment) |offset| {
+        var fba = std.heap.FixedBufferAllocator.init(bytes[offset..]);
+        var tracked = std.testing.FailingAllocator.init(fba.allocator(), .{});
+        var parsed = dot.parseBorrowed(tracked.allocator(), source, dot.diagnostic.discard, .{ .document_capacities = capacities });
+        defer parsed.deinit(tracked.allocator());
+        try expect(parsed.outcome == .success);
+        try equal(@as(usize, payload), tracked.allocated_bytes);
+        const address = @intFromPtr(bytes[offset..].ptr);
+        const padding = std.mem.alignForward(usize, address, @alignOf(dot.StatementId)) - address;
+        try equal(@as(usize, payload) + padding, fba.end_index);
+    }
 }
 
 test "long chains yield without exposing partially built statements" {
