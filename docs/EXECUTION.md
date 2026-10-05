@@ -157,16 +157,16 @@ each parser they give exactly the same results. The numbers below are for the
 DOT parser:
 
 - **`.scalar`** (default) reads one byte at a time. It is the faster choice for
-  ordinary files, uses less memory (64 bytes of state on aarch64 macOS), and works
-  the same on every target.
+  ordinary files, uses less memory, and works the same on every target.
 - **`.block`** reads 64 bytes at a time using vector instructions. It does
   better when you run sessions with very small budgets (2 to 4 times faster
   at one credit per call), or when files are mostly very long names, strings
   or comments. It is slower on targets without vector instructions, such as
   plain wasm32.
 
-The block scanner's state is 152 bytes on aarch64 macOS with Zig 0.16.0.
-These are current development layouts, not cross-target constants; see
+On aarch64 macOS with Zig 0.16.0, scalar state is 64 bytes in Debug/ReleaseSafe
+and 56 bytes in ReleaseFast/ReleaseSmall. Block state is 152 bytes in all four
+modes. These are current development layouts, not cross-target constants; see
 [current layouts](PERFORMANCE.md#current-development-layouts) and use `@sizeOf`
 for your own build.
 

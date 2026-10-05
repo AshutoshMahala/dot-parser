@@ -6,6 +6,8 @@ are called out here; compatibility shims are not retained.
 
 ## Unreleased
 
+- Fix the native aarch64 macOS layout guard and size documentation to distinguish
+  Debug/ReleaseSafe from ReleaseFast/ReleaseSmall. Parser behavior is unchanged.
 - DOT presets now inherit markup handling instead of selecting `.passthrough`.
   Adding `standard` or `lenient` preserves bound child processing; runtime presets
   preserve the compiled markup choice. Explicit markup overrides still win.

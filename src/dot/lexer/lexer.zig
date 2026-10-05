@@ -23,9 +23,10 @@
 //! is the default").
 //!
 //! Current unmetered scanner state on aarch64 macOS / Zig 0.16.0 is 64 B
-//! (scalar) and 152 B (block), guarded in tests/layouts.zig. These are target-
-//! qualified layouts, not the historical throughput measurements above; see
-//! docs/PERFORMANCE.md ("Current development layouts").
+//! (scalar) in Debug/ReleaseSafe, 56 B in ReleaseFast/ReleaseSmall, and 152 B
+//! (block) in all four modes, guarded in tests/layouts.zig. These are target-
+//! and build-mode-qualified layouts, not the historical throughput measurements
+//! above; see docs/PERFORMANCE.md ("Current development layouts").
 
 const std = @import("std");
 const policy = @import("../policy.zig");

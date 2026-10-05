@@ -50,22 +50,23 @@ statement 36 bytes, subgraph 36 bytes, statement entry 8 bytes.
 
 Checked on aarch64 macOS with Zig 0.16.0, 2026-10-04. These are `@sizeOf` values
 for the current development version. They are **not** new benchmark results,
-and they can differ on other targets or Zig versions.
+and they depend on the build mode as well as the target and Zig version.
 
-| Type | Size |
-| --- | ---: |
-| `dot.Profile(.{}).Session` | 1,088 bytes |
-| Fixed DOT session with metering and cancellation | 1,152 bytes |
-| `dot.lexer.For(.scalar)` | 64 bytes |
-| `dot.lexer.For(.block)` | 152 bytes |
+| Type | Debug / ReleaseSafe | ReleaseFast / ReleaseSmall |
+| --- | ---: | ---: |
+| `dot.Profile(.{}).Session` | 1,088 bytes | 1,080 bytes |
+| Fixed DOT session with metering and cancellation | 1,152 bytes | 1,144 bytes |
+| `dot.lexer.For(.scalar)` | 64 bytes | 56 bytes |
+| `dot.lexer.For(.block)` | 152 bytes | 152 bytes |
 
 The second row turns on `.execution = .{ .metering = true, .cancellation = true }`
 and leaves every other setting at its default. Session sizes don't include the
 source, document buffers, nesting space or diagnostics, which you supply
 separately.
-Use the actual types and `@sizeOf` for your target instead of hard-coding these
-numbers into memory reservations. [Layout tests](../tests/layouts.zig) guard this
-table on the stated target so changes require a documentation review.
+Use the actual types and `@sizeOf` for your target and build mode instead of
+hard-coding these numbers into memory reservations. [Layout tests](../tests/layouts.zig)
+guard this table on the stated target in each build mode so changes require a
+documentation review.
 
 ## Scanners
 
