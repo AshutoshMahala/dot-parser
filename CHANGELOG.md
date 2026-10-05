@@ -1,332 +1,76 @@
 # Changelog
 
 Notable changes to dot-parser. During `0.x`, minor versions may break
-compatibility, including diagnostic identities and enum values. Breaking changes
-are called out here; compatibility shims are not retained.
+compatibility, including diagnostic codes and enum values. Breaking changes
+are marked; no compatibility shims are kept.
 
 ## Unreleased
 
-- Fix the native aarch64 macOS layout guard and size documentation to distinguish
-  Debug/ReleaseSafe from ReleaseFast/ReleaseSmall. Parser behavior is unchanged.
-- DOT presets now inherit markup handling instead of selecting `.passthrough`.
-  Adding `standard` or `lenient` preserves bound child processing; runtime presets
-  preserve the compiled markup choice. Explicit markup overrides still win.
-- Share fragment validation routing/result assembly across allocating, fixed-
-  storage and reusable markup entry points. Keep storage ownership separate and
-  use compile-time dispatch; sink-stop and syntax-recovery behavior is unchanged.
-  Distinguish current DOT session/scanner layouts from historical performance
-  measurements and guard the documented aarch64 macOS sizes in tests.
-- Separate DOT processing selection (`markup = .none | .passthrough | .process`)
-  from the built-in markup processor's `mode = .structural`. Binding a processor
-  defaults to `.process`; unbound `.process` fails policy preflight. Graphviz and
-  extended modes remain unimplemented. Processing stays synchronous at complete
-  operand boundaries with no threads, queues or additional source copies.
-  **Breaking:** explicit `.passthrough` now skips
-  bound child execution and workspace initialization. `MarkupReport.requested`
-  distinguishes skipped checks from completed validation; combined validity is
-  relative to the selected policy.
-- Reuse child-owned node, attribute, nesting and validation buffers during DOT
-  composition; expose the same markup workspace for standalone/delayed batches.
-  Initialization allocates nothing; buffers retain high-water capacity until
-  workspace disposal. This reduces allocator traffic, not necessarily peak memory.
-  **Breaking:** custom composition bindings now supply `Workspace` and
-  `Prepared.initWorkspace`; per-fragment results borrow workspace storage.
-- Skip unsupported diagnostic construction as well as delivery under `.silent`
-  in DOT and markup. Internal classification, outcomes and safe recovery remain
-  unchanged; no hidden first-finding metadata is retained.
+Changes since 0.3.0.
 
-- Classify shared diagnostic stops during composed child processing as DOT
-  `diagnostic_stopped`, matching outer emission and preserving the reason/delivery
-  status. Add composed-versus-ordinary DOT parity coverage. Share list location
-  resolution and summary rendering across ordinary/composed diagnostic consoles.
+### Added
 
-- Add opt-in during-DOT `Profile(.{ .processors = .{ .markup = MarkupProfile } })`
-  composition: one `parseAndValidate` call, one typed bag/sink and a mixed renderer.
-  Child checks run once per encountered HTML operand, preserve original-source
-  diagnostics and respect independent parent/child error policies. Ordinary DOT
-  profiles have no child state or dependency. Temporary child storage is reused;
-  shared-budget sessions and retained child-result collections remain deferred.
-  **Breaking:** add `processor_stopped` to DOT outcomes/event abort reasons.
-- **Breaking:** rename markup's combined methods to `parseAndValidate` and
-  `parseAndValidateIn`, including prepared profiles, without compatibility aliases.
+- **`markup_parser`**, a second, independent module for HTML-like markup:
+  elements, quoted attributes, references, comments and CDATA. It has optional
+  validation (duplicate attributes, UTF-8, XML 1.0 names, known references),
+  error recovery that never returns a partial tree, fixed buffers, step-by-step
+  sessions, and a `presets.untrusted` policy. It works on its own or with DOT.
+- **Checking HTML-like labels in DOT.** Bind a label checker with
+  `Profile(.{ .processors = .{ .markup = ... } })` to check every `<...>` value
+  while parsing, with one diagnostic bag for both. Or check chosen values
+  afterwards with `dot.identifier.parts`. You can also bind your own processor.
+  The `markup` setting (`.none`, `.passthrough`, `.process`) chooses whether
+  labels are checked.
+- **Settings.** `dot.Profile(...)` with one typed `Policy`, fixed at compile
+  time by default, with opt-in run-time changes and `standard`/`lenient`
+  presets. It covers limits, error handling, scanner choice, step-by-step
+  execution, lenient syntax, optional checks (UTF-8, repeated attributes,
+  restrictions) and graph-kind rules (`graph.treated_as`, `.conform_to_kind`).
+- **Diagnostics.** `GrowableDiagnosticBag` (stops at 1,024 entries by default),
+  `console.renderList`, Unicode-aware console output, the `diagnostics.fixes`
+  and `diagnostics.unsupported` settings, and codes for the new checks and
+  lenient syntax.
+- Results report `completion`, `syntax_errors`, `accepted_deviations`,
+  `warnings` and `diagnostic_stop`.
+- The `quick_start` and `custom_processor` examples, and rewritten,
+  task-based documentation.
 
-- **Breaking:** replace both parsers' `recovery` field / `Recovery` type with
-  `on_error` / shared `OnError` (`collect` by default, or `fail_fast`), without
-  compatibility aliases. Validation now honors the same policy and reports
-  `error_stopped`; fail-fast combined markup calls skip validation after syntax
-  failure. Explicit source validation still synchronizes safe malformed headers.
-- Add `diagnostics.unsupported = .err | .warning | .silent` (default `err`) to
-  both policies. Reporting never changes unsupported input into success and stays
-  separate from DOT passthrough recognition. Add `W.Profile.Feature.009`.
-- Fragment results expose `has_errors` and `shouldStop(parent_on_error)`.
-  Unsupported input and child policy limits no longer unconditionally end a
-  batch; the parent decides after the child returns. Sink stops/failures,
-  allocation/storage failure and cancellation still halt the batch. DOT results
-  now preserve terminal `diagnostic_stop` acknowledgments, matching markup.
+### Changed
 
-- Preserve markup terminal diagnostic stop/failure acknowledgments in parse and
-  measurement results; fragment helpers never start validation into a stopped
-  sink. Source validation shares its cancellation countdown across local scopes
-  and checks element names only at opening occurrences, matching document
-  validation; explicit closing-name scopes remain available. Reuse scope metadata
-  audits and DOT identifier operand-boundary primitives without extra source passes.
-- Add allocation-free compact `console.renderList` to DOT and markup, using the
-  same caller-owned location scratch as boxed lists. `check_file --compact` now
-  resolves locations in a shared pass instead of rescanning once per diagnostic.
+- **Breaking:** recovering from syntax errors is now the default. The
+  `recovery` option and `Recovery` type are replaced by `Policy.on_error` and
+  `OnError`: `.collect` (default) or `.fail_fast`.
+- **Breaking:** limits and error handling move from parse options into
+  `Policy`. `max_nesting` is now a `u32`.
+- **Breaking:** `FixedSession(ExecutionFeatures)` is replaced by
+  `Profile(...).Session`. `BoundedSession` stays.
+- **Breaking:** the root-file `dot_parser_options.lexer_backend` option is
+  replaced by `Policy.scanner`; use `lexer.For(backend)` for direct lexer use.
+  The `lexer.Backend`, `lexer.backend` and `lexer.default_backend` names are
+  removed.
+- **Breaking:** `GraphKind` now means the effective kind and includes
+  `.generic`. `Document.kind` uses the new `DeclaredGraphKind`.
+- **Breaking:** `ParseOutcome` gains `.diagnostic_stopped` and
+  `.processor_stopped`. One-shot calls can now return `.cancelled` when
+  cancellation is enabled.
+- **Breaking:** a full `FixedDiagnosticBag` now stops the run instead of
+  dropping later findings. For the old behaviour, use
+  `reporting.FixedBag(Diagnostic, N, .omit)`.
+- **Breaking:** `console.renderBoxedList` takes a caller-owned location array
+  before the writer. `locationCapacity(items)` gives its size.
+- **Breaking:** HTML-like identifiers are now accepted and kept as written,
+  instead of being reported as unsupported. Set `markup = .none` for the old
+  behaviour. A bad `+` join now reports an `expected_string_part` payload.
+- Sources moved to `src/dot/`, `src/markup/` and `src/common/`. Module names
+  are unchanged, but builds that wire source files directly must also provide
+  the `parser_support` module.
 
-- Add explicit delayed DOT/markup integration: checked identifier operand views,
-  reusable prepared markup policies, growing/fixed `parseAndValidate`
-  operations and original-source diagnostics/fixes. Validation still checks local
-  scopes after syntax rejection, while operational stops halt requested child
-  work. Outer and inner results stay independent; no partial trees or DOT record
-  growth. Policy sets now nest consumer-owned schemas, and raw fragment origins
-  compose across additional levels. Shared resumable validation budgets remain
-  deferred.
+### Fixed
 
-- Separate markup's local validation inputs from its retained tree. Add
-  `validateScope[In]` and `validateSource[In]` for headers, names, attribute-value
-  content and text, sharing existing rules. Known duplicate keys, names and
-  references remain reportable despite enclosing syntax errors; unavailable
-  regions stay incomplete. Parsing, tag matching and tree publication are unchanged.
-  Public caller-built scopes are checked in every build mode and return
-  `invalid_scope` for invalid metadata. Incomplete validation carries the earliest
-  coverage-gap offset as `incomplete: u32`; this is not a resume cursor.
-
-- Extend markup `.collect` to recover selected opening-header attribute errors at
-  explicit, quote-aware `>`/`/>` boundaries. Preserve the element's written name
-  and delimiter without repairing syntax or publishing a partial tree. Ambiguous
-  boundaries still stop; fixed fail-fast and standalone tokenization stay strict.
-
-- Clear abandoned DOT attribute-list context during statement recovery so later
-  EOF diagnostics identify the active scope and suggest `}` instead of a stale
-  `]`. Preserve the original failure's related location and fix.
-- Make exact-pool allocator tests independent of stack-buffer alignment; test
-  deliberately misaligned buffers separately from retained payload sizes.
-
-- **Breaking:** DOT recovery results now match markup's separation of terminal
-  stop reason, `completion` and u32 `syntax_errors`. A later cancellation/limit
-  keeps its own outcome without losing an earlier syntax rejection. All result
-  adapters propagate the facts; progress exposes the running count. Fixed
-  fail-fast profiles compile out the running counter; retained records are unchanged.
-- Escape caller-supplied file names in both console styles without truncating
-  ordinary paths. Bound excerpt searches on long lines. **Breaking:**
-  `renderBoxedList` now takes caller-owned `[]location.Location` scratch before
-  its writer; `locationCapacity(items)` gives the upper bound. Sorting/resolving
-  queries once avoids repeated whole-source scans without hidden allocation.
-  Add both recovery modes/backends to the invalid corpus with bounded-step guards.
-
-- **Breaking:** DOT and markup now expose only `on_error = .fail_fast` or
-  `.collect`, with `.collect` the default. Replace DOT's `.statements` and markup's
-  recovery value `.structural`; no compatibility aliases remain. Markup processing
-  modes are separate from recovery. This rename does not change recovery behavior.
-- **Breaking:** DOT now defaults to statement-boundary recovery; explicit `.fail_fast`
-  remains available. Unterminated quotes/comments/HTML-like identifiers stop
-  immediately because no reliable restart boundary exists. A full diagnostic bag
-  can stop recovery with `diagnostic_stopped` instead of first-error termination.
-- Add standalone markup diagnostics-only structural recovery (default), with an
-  explicit fail-fast policy and fixed/runtime/scanner/execution parity. Recover
-  mismatched/unexpected closers, EOF-open elements and rejected references;
-  uncertain lexical boundaries remain terminal. Abort output once, never publish
-  a partial tree, and bound aggregate ancestor-search work by source length.
-  Parse/measurement results gain `completion` and u32 `syntax_errors`; progress
-  exposes the running error count. `Resource` gains `recovery_work`. Retained node,
-  attribute, diagnostic and frame layouts remain unchanged.
-
-- Suppress ineffective markup semicolon fixes for forbidden/out-of-range numeric
-  references. Improve attribute/reference hints and name both mismatched tags
-  through checked source spans. **Breaking:** markup `Expected.quote` splits
-  into `opening_quote` and `closing_quote`; renderer-adapter `detail` and
-  `primaryLabel` now receive `*Positions` for source-aware wording.
-- Shared Unicode console output preserves printable UTF-8 and aligns annotations
-  by display cells; controls and invalid bytes stay escaped. ASCII mode keeps
-  byte escapes, tabs expand to eight-cell stops, and compact locations include
-  `source_name:line:byte-column:`. Unicode tables and bounded mapping scratch are
-  presentation-only; parser/diagnostic layouts do not grow.
-
-- Share compile-time diagnostic metadata/identity construction, repair conventions
-  and optional console layout across DOT and standalone markup. Markup gains
-  typed registry metadata, aliases, summaries, hints, source-annotated console
-  output and ASCII/ANSI styles without importing DOT. Existing identity strings
-  and DOT presentation are preserved; rendering remains caller-driven and
-  allocation-free, with no runtime processor registration.
-- Add conservative markup missing-reference-semicolon repair offers and
-  fixed/runtime `diagnostics.fixes` filtering. Offers are `maybe`, never applied
-  automatically; `Diagnostic.suggestedFix()` materializes an edit from a compact
-  offer without increasing the 36-byte diagnostic layout. No tree/scratch growth.
-  Add standalone presentation, policy parity and freestanding renderer tests.
-
-- Preserve `unsupported_feature` for completed DOT recovery with no reported syntax error;
-  reset clears the classification. Later cancellation retains its own outcome. Add
-  fixed/runtime, scanner and bounded-execution regression coverage.
-- Share markup validation's cancellation countdown across short scans and source
-  revisits, rather than polling at each name/value. Add safety-build iterator
-  interval assertions without growing iterator/record layouts, and cover HTML
-  zero-credit continuation. Correct NUL diagnostic wording and document C-string
-  interop requirements; byte-preserving passthrough behavior is unchanged.
-
-- Add passthrough HTML-like DOT identifiers in every ID position, both scalar/block
-  scanners, and mixed quoted/HTML `+` concatenations. Retain exact ranges; no inner
-  parser calls or retained-record growth. Block scanning classifies angle masks
-  only inside envelopes; metering and cancellation stay bounded.
-- Add fixed/runtime `markup` policy (`.passthrough` by default, `.none` rejects with
-  recoverable body diagnostics) and `diagnostics.fixes` (`all`,
-  `machine_applicable`, `off`). Unterminated envelopes use the existing token code
-  with a typed HTML case and offer `>` at EOF only for depth one.
-- Add `identifier.form` and extend explicit decoding to HTML operands, preserving
-  their interior bytes unchanged. **Breaking:** scanner HTML unsupported terminal
-  becomes an unterminated-envelope terminal; tokens gain compact form flags;
-  concatenation payload is now `expected_string_part`. Inner markup validation,
-  the per-part view and DOT/markup composition remain separate work.
-
-- Harden standalone markup name/reference validation's safety-build metadata
-  checks even when duplicate checking is disabled, including leaf discriminators,
-  quoted-value bounds and complete attribute-cursor coverage. The trusted-document
-  contract is unchanged; arbitrary hand-built pools are not repaired or certified.
-- Poll cancellation in markup validation's byte scans at 64-unit work intervals
-  (finishing the current UTF-8 scalar), preserving immediate diagnostic stops.
-  Share scalar decoding with encoding checks and unify duplicate reporting across
-  both validation paths. Require explicit finite budgets for every `untrusted`
-  limit at compile time. No retained record/session layout or scratch increase.
-
-- Add independent markup `validation.names` (`xml_1_0`) and
-  `validation.references` (`xml_predefined`) checks, each with default-off
-  error/warning severity and fixed/runtime parity. Report precise name problems
-  and unknown-catalog references in source order alongside encoding/duplicate
-  findings. Accepted malformed-reference text is not reinterpreted. No source
-  mutation, decoding into stored values, new retained pools or scratch requirement;
-  the new checks are optional and do not impose XML rules on structural parsing.
-  Validation status and diagnostic enums gain the corresponding cases. Add
-  adversarial/Unicode/policy/cancellation tests and separate enabled-cost benchmarks.
-  Graphviz vocabulary validation, void-element dialects, recovery and UTF-16/32
-  conversion remain separate work.
-
-- **Breaking:** shared growable diagnostic bags (including DOT and markup) now
-  stop at 1,024 entries by default. `Options.max_entries` is an `EntryLimit`:
-  `.{ .limited = N }` has a u16 payload (0–65,535); `.unlimited` explicitly opts
-  out. No sentinel values or legacy numeric option remain. Native storage lengths
-  and wide finding counters are unchanged; stop still means incomplete work.
-- Add markup `presets.untrusted`: standard behavior with limits of 8 MiB source,
-  100,000 nodes, 200,000 attributes and depth 256. Document bounded input acquisition,
-  diagnostics, allocator/work budgets and build-mode tradeoffs without claiming a
-  total memory/time guarantee. Add default-cap floods, exact preset boundaries,
-  zero/u16-maximum/unlimited retention and allocation-failure regression tests.
-  UTF-8 findings remain one per invalid byte; no parser hot-path change is added.
-
-- Add standalone markup `validation.invalid_utf8` (`off` by default, `warning`,
-  `err`) with compile-time/runtime parity. Independently checks all raw source
-  bytes without mutation or allocation, merging diagnostics with duplicate checks
-  in source order. Encoding-only validation needs no scratch; enabled duplicate
-  scratch is preflighted before checks. Cancellation and sink stops preserve
-  per-check completion. DOT and markup share the UTF-8 sequence primitive only.
-  **Breaking:** markup validation error/warning totals are now u64 (as in DOT),
-  and check status/diagnostic enums gain encoding cases. Parsing counts, retained
-  record layouts and parser sessions are unchanged. This is not XML conformance,
-  structural recovery or DOT integration.
-
-- Optimize standalone markup's plain block scanner to scan complete runs without
-  a 64-byte cap and avoid rechecking successful short probes in its scalar tails.
-  Metered/cancellable block steps retain their 64-byte bound. Simplify execution
-  variant selection and avoid by-value session capture during reset; retained
-  layouts and trusted-document/diagnostic-stop contracts are unchanged.
-
-- Add standalone markup references, comments and CDATA. References remain in
-  source-backed text/attribute spans without decoding or entity lookup; comments
-  and CDATA retain distinct leaf kinds with `NodeView.content()`. Nodes remain 20 bytes.
-- Add markup `syntax.malformed_reference` (`reject`/`warn`/`accept`), factual u32
-  deviation/warning counts, and explicit diagnostic-stop outcomes with fixed/runtime,
-  bounded, cancellable and count-only parity. Tolerance preserves bytes and boundaries.
-  **Breaking:** `NodeKind` adds comment/CDATA cases, `Node.name` encodes the kind
-  when length is zero, and implemented constructs no longer have unsupported-feature
-  enum cases. Public lexer remains strict. DOT integration is not included.
-- **Breaking:** DOT `Policy.limits.max_nesting` is now `?u32`, with a resolved
-  default of `maxInt(u32)`. Active nesting and recovery brace-depth counters also
-  use u32, matching the source domain; allocation sizes remain usize.
-- Harden markup's trusted-document contract with explicit owner/order preconditions
-  and safety-build metadata assertions. Validation resource diagnostics identify
-  the relevant element instead of byte zero. Reuse scratch sizing and replace the
-  second duplicate-check sort with linear source-order mapping, keeping 8-byte entries.
-- Remove the redundant first-attribute scanner reread while preserving token spans
-  and bounded execution. Shared stack growth tries allocator remapping before
-  copying, without changing layouts or counter widths. Infallible policy schemas
-  now produce a specific contract error, covered by enum/tagged-union compile-fail tests.
-
-- Add quoted attributes to standalone markup, preserving raw values, order and
-  every duplicate. Sparse 20-byte attribute records keep nodes at 20 bytes;
-  `max_attributes`, measurement and bounded/cancellable parsing cover the new pool.
-  **Breaking:** markup `FixedDocumentStorage` takes `{ .nodes, .attributes }` capacities.
-- Add independent markup `validate`/`validateIn` passes with duplicate-attribute
-  error/warning/off policy, fixed/runtime parity, source-ordered findings and
-  explicit completion/validity/delivery. Scratch is 8 bytes per attribute in the
-  largest element, reused across elements; validation is not metered. References,
-  comments, CDATA, Graphviz rules and DOT integration remain unsupported.
-- Correct markup EOF diagnostics for `<a/` and unsupported recognition of `<!`;
-  check the scanner's source-size domain once, before reading any bytes.
-- Share policy binding and nesting-stack mechanics between DOT and markup without
-  changing frame/counter layouts. Infallible policy checks are handled exhaustively;
-  markup profiles expose `Policies` for preparation, not processor scheduling.
-- Trim growable markup output in place when the allocator permits it, with no
-  copying allocation fallback. Add `ParseResult.retainedBytes()` for reserved node
-  capacity, including any remaining slack. Clarify disabled cancellation polling
-  and restore WDP seed provenance comments.
-- Organize parser internals under `src/dot/` and `src/markup/`, with
-  language-independent primitives in `src/common/`. Keep public module names
-  and APIs unchanged; root façades are `src/root.zig`, `src/markup.zig` and
-  `src/support.zig`. This is a layout-only refactor, with no parser behavior or
-  storage-layout changes.
-- Add an independent `markup_parser` module: structural fragments with text,
-  arbitrary case-sensitive elements, borrowed compact output, fixed/growable
-  storage, count-only measurement, typed limits and opt-in runtime policies.
-  Fixed-storage sessions support bounded work and cancellation.
-- Share language-independent location, reporting, cancellation and WDP hashing
-  through one build module; DOT and markup can coexist without shared grammars
-  or enlarged DOT diagnostic/record payloads. Add standalone tests, freestanding
-  probes, example and `bench-markup`. Package-based imports remain unchanged;
-  direct CLI builds of DOT now also wire `parser_support` to `src/support.zig`.
-
-- Recover statement-heavy fixed-policy parsing throughput by inlining synchronous
-  grammar boundaries, eliminating intermediate result copies. Runtime policies
-  and metered/cancellable execution retain ordinary calls; checks, factual counters,
-  diagnostics and storage layouts are unchanged.
-- Add `presets.standard` and `presets.lenient` as ordinary, complete policy values.
-  Lenient changes only syntax acceptance; defaults stay unchanged. Each empty
-  statement, exact long operator (`---`/`-->`), and bare dash has independent
-  reject/warn/accept policy with full compile-time/runtime and session parity.
-  Bare dashes use the written graph keyword; normalization retains source ranges.
-- Add factual u32 `accepted_deviations` and `warnings` to parse, measure and
-  session results/progress; composed checks total syntax and validation warnings.
-  Counts survive suppression and later failures. New syntax warnings carry
-  typed assumptions and machine-applicable fixes, without per-edge history.
-  `invalid_syntax` now explicitly means rejected by the selected syntax policy,
-  rather than claiming rejection by every possible DOT dialect.
-
-- Add experimental graph policy profiles: independent `graph`/`digraph` rules,
-  `graph.treated_as` (`undigraph`, `digraph`, `generic`, `auto`), error/warning/off
-  severity, and source-preserving `.conform_to_kind` interpretation. Runtime
-  overrides are opt-in; fixed profiles validate configuration at compile time.
-- Add `validatePolicy`, typed configuration failures before DOT processing,
-  `W.Validation.Operator.002`, validation warning counts and policy-aware fixes.
-- Unify nesting/statement/attribute limits, recovery, scanner selection, metering
-  and cancellation in the same typed policy, with full compile-time/runtime
-  parity. Fixed profiles specialize the shared engine; runtime profiles resolve
-  once per operation/session initialization without per-token policy merging.
-- Add policy-bound `Profile.Session`: settings stay latched across yields,
-  invalid resets leave existing work intact, and completed results can be
-  validated/interpreted under the bound policy. `BoundedSession` remains a
-  metered fixed-profile convenience. Cancellation-enabled one-shot parsing and
-  measurement may now return `.cancelled`, with no document/capacity publication.
-- **Breaking:** move parse-option limits/recovery into `Policy`; replace
-  `FixedSession(ExecutionFeatures)` with `Profile(...).Session`; replace the
-  root-file `dot_parser_options.lexer_backend` hook with `Policy.scanner`
-  (`lexer.For` for direct lexical use). Storage, allocator hints and cancellation
-  callbacks remain explicit resources. Runtime-profile parse/measure methods
-  now return a policy error union instead of aliasing infallible default methods.
-- Remove retired parser/validator wrappers, duplicated parser options, root-hook
-  detection and compatibility-only tests. Scanner types use `ScannerBackend`;
-  inspect `Profile.baseline.scanner` for the resolved choice. The old
-  `lexer.Backend`, `lexer.backend` and `lexer.default_backend` aliases are removed.
-- **Breaking:** public `GraphKind` now describes effective kinds, including
-  `.generic`. Use `DeclaredGraphKind` for the original two-valued `Document.kind`.
-  Syntax leniency is not yet implemented. See [Parsing and graph policies](docs/POLICIES.md).
+- After recovering inside an attribute list, end-of-input errors point at the
+  open scope and suggest `}` instead of `]`.
+- The console escapes file names and keeps excerpt searches bounded on very
+  long lines.
 
 ## 0.3.0 — 2026-09-19
 
@@ -408,11 +152,11 @@ and the planned markup subsystem are deferred until after this release.
   mismatches. `machine_applicable` fixes may be applied
   unattended; `maybe` fixes are offers. Both renderers print them.
   `Diagnostic` is 80 bytes on the measured native target with the field and
-  offset-only spans; see [performance](docs/PERFORMANCE.md).
+  offset-only spans; see [baselines](https://github.com/AshutoshMahala/dot-parser/blob/v0.3.0/docs/BASELINES.md).
 - `W.Syntax.Numeral.033`: numerals running into a letter or second dot
   (`1e3`, `1.2.3`) warn, matching Graphviz, and the parse continues. First
   use of the warning severity.
-- `ParseOptions.on_error = .statements` (also fixed and session options):
+- `ParseOptions.recovery = .statements` (also fixed and session options):
   after a body syntax error, resynchronize at `;`/`}` and keep reporting
   syntax errors. Still no document, one abort, `invalid_syntax`.
 - `measure` / `measureIn`: count-only dry run returning the exact
@@ -441,7 +185,7 @@ and the planned markup subsystem are deferred until after this release.
 
 ### Performance
 
-The [0.3.0 baseline](docs/PERFORMANCE.md) compares the
+The [0.3.0 baseline](https://github.com/AshutoshMahala/dot-parser/blob/v0.3.0/docs/BASELINES.md#030-baseline-2026-09-19) compares the
 unchanged release implementation with 0.2.0 on the project's standard benchmark
 machine: five invocations per revision/backend/fixture, each with two warm-ups
 and nine measured rounds. These results replace the intermediate development
@@ -479,7 +223,8 @@ machine are used.
 Expand the borrowed syntax parser with comments, quoted/numeral identifiers,
 basic attributes, edge chains, ports and nested subgraphs, including subgraph
 endpoints. Add fixed-storage resumable parsing with optional work metering and
-cooperative cancellation. This is an experimental, breaking minor release.
+cooperative cancellation. This is an experimental, breaking minor release;
+see the [0.2.0 release and migration notes](https://github.com/AshutoshMahala/dot-parser/blob/v0.2.0/docs/RELEASE_0.2.0.md).
 
 ### Added and changed
 
@@ -628,7 +373,7 @@ borrowed syntax document.
   compile-time-sized `FixedDocumentStorage`; no allocator, no `deinit`.
 - Uniform reporting surface: small outcome values plus caller-owned
   diagnostic sinks (`FixedDiagnosticBag` or bring-your-own); WDP
-  structured codes with typed payloads (`docs/ERRORS.md`).
+  structured codes with typed payloads (`docs/OUTCOMES.md`).
 - Out-of-the-box console renderer: message-first boxes with annotated
   source excerpts, opt-in ANSI severity colors and verbose WDP identity;
   ASCII style for plain terminals.
@@ -639,4 +384,4 @@ borrowed syntax document.
   (riscv32, Cortex-M0+) with no OS, filesystem, or network dependency.
 - Corpus test suite with per-fixture expectations, fuzz harness with
   determinism checks, runnable examples, and recorded performance
-  baselines (`docs/PERFORMANCE.md`).
+  baselines (`docs/BASELINES.md`).
