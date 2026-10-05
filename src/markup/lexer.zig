@@ -244,7 +244,11 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
 
         /// Readiness only: the token/finding stays in scanner-owned storage.
         pub fn stepReady(self: *Self) bool {
-            if (self.done) return true;
+            if (self.done) {
+                // Favor active scanning as the fall-through path in per-byte loops.
+                @branchHint(.unlikely);
+                return true;
+            }
             if (bounded) {
                 if (backend == .block and self.skipRun()) return false;
                 return self.stepByte();
