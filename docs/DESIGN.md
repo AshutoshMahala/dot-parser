@@ -327,7 +327,7 @@ found two block bugs before release.
 
 Those timings are historical evidence for the default, not a new benchmark.
 Current, target-qualified state sizes are in
-[Performance](PERFORMANCE.md#current-development-layouts).
+[Performance](PERFORMANCE.md#type-sizes).
 
 ### The document is built from internal events
 

@@ -166,9 +166,8 @@ DOT parser:
 
 On aarch64 macOS with Zig 0.16.0, scalar state is 64 bytes in Debug/ReleaseSafe
 and 56 bytes in ReleaseFast/ReleaseSmall. Block state is 152 bytes in all four
-modes. These are current development layouts, not cross-target constants; see
-[current layouts](PERFORMANCE.md#current-development-layouts) and use `@sizeOf`
-for your own build.
+modes. They can differ on other targets; see [type sizes](PERFORMANCE.md#type-sizes)
+and use `@sizeOf` for your own build.
 
 ```zig
 const Parser = dot.Profile(.{ .policy = .{ .scanner = .block } });
