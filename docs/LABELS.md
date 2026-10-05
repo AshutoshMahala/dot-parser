@@ -17,31 +17,25 @@ files. To parse HTML-like markup without DOT, see
 
 ## What happens by default
 
-Without a bound processor, DOT keeps `<...>` values exactly as written and
-doesn't look inside. It finds where a value ends the same way Graphviz does: by counting `<`
-and `>` until they balance. These values can appear anywhere a name can, not
-just in `label`.
+The DOT parser always finds where a `<...>` value ends, the same way Graphviz
+does: by counting `<` and `>` until they balance. These values can appear
+anywhere a name can, not just in `label`. What happens next depends on the
+`markup` setting:
 
-So by default `label=<<b>Bold</i>>` parses without complaint, because nobody
-checked the tags. You have three choices:
+| `markup` | What happens | It is the default when… |
+| --- | --- | --- |
+| `.passthrough` | The value is kept exactly as written. Nobody looks inside, so `label=<<b>Bold</i>>` parses without complaint. | no label checker is bound |
+| `.process` | A label checker checks what is inside. | a label checker is bound |
+| `.none` | HTML-like values are reported as [unsupported](ERRORS.md#unsupported-is-not-invalid). | never |
 
-| You want to… | Do this |
-| --- | --- |
-| Keep labels as they are, unchecked | Set `markup = .passthrough`. This is the default without a bound processor. |
-| Reject HTML-like values entirely | Set `markup = .none` in the [settings](POLICIES.md#all-dot-settings). They are reported as unsupported. |
-| Check what is inside automatically | Bind a processor; `markup` then defaults to `.process`. |
+So to check labels, bind a label checker, as shown below. Checking is then on
+automatically.
 
-DOT's `policy.markup` decides **whether** to process contents. The bound
-processor's policy decides **how**. The built-in markup processor currently
-supports only `policy.mode = .structural`; this is not Graphviz-label vocabulary
-validation or browser HTML. Graphviz and extended modes are not implemented.
-
-Explicit `.none` or `.passthrough` overrides the bound-processor default. DOT
-presets leave `markup` unset, preserving that default at compile time and the
-compiled choice when used as runtime patches. Adding `standard` or `lenient`
-does not disable a bound processor. `.process` without a bound processor is an
-invalid policy: a compiled baseline is rejected at compilation, and a runtime
-patch is rejected before allocation, input consumption or diagnostic delivery.
+The `markup` setting decides **whether** labels are checked. The label
+checker's own settings decide **how**. The built-in checker has one way today,
+`mode = .structural`: it checks that tags match and attributes are
+well-formed. It doesn't know Graphviz's list of allowed tags, and it isn't a
+browser HTML parser.
 
 ## Two ways to check labels
 
@@ -66,10 +60,7 @@ const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 
 const Parser = dot.Profile(.{
-    .policy = .{ .markup = .process }, // Optional: binding a processor defaults to this.
-    .processors = .{ .markup = markup.Profile(.{
-        .policy = .{ .mode = .structural }, // The current markup default.
-    }) },
+    .processors = .{ .markup = markup.Profile(.{}) },
 });
 
 var bag = Parser.GrowableDiagnosticBag.init(allocator, .{});
@@ -89,19 +80,21 @@ The result has two parts:
 
 - `result.dot`: the ordinary DOT result, including the document. You still get
   the DOT document even when a label is wrong.
-- `result.markup`: whether checking was requested (`requested`), how many were checked
-  (`visited`), how many were fine (`valid`), and whether every label was
-  reached (`complete`).
+- `result.markup`: a summary of the labels: whether checking was on
+  (`requested`), how many labels were checked (`visited`), how many were fine
+  (`valid`), and whether every label was reached (`complete`).
 
-Under `.process`, `result.documentValid()` requires valid DOT and successful
-checking of every encountered operand. Under `.passthrough`, it checks only DOT;
-it does not certify inner markup. For `.none` or `.passthrough`, the markup report
-has `requested = false`, `complete = false`, zero visits and `allValid() = false`.
-With `.process` but no operands, requested checking completes with zero visits.
+`result.documentValid()` is true when the DOT is valid and every label was
+checked and is fine. A file with no labels counts as fine.
 
-The child runs synchronously after DOT establishes each complete raw operand
-boundary, before the next DOT grammar transition. An unfinished boundary is not
-passed to the child. No thread, task queue or extra source copy is involved.
+If checking is off (`.passthrough` or `.none`), `documentValid()` only reflects
+the DOT and says nothing about the labels. `result.markup.requested` is then
+`false`, and `result.markup.allValid()` is also `false`, because nothing was
+checked. Look at `requested` before relying on `allValid()`.
+
+Each label is checked as soon as the parser has read the whole value, before it
+reads any further. A value cut off by the end of the file isn't checked.
+Everything runs in your thread, and your source is never copied.
 
 Errors inside labels look like any other error, at their place in the DOT file:
 
@@ -125,13 +118,33 @@ Errors inside labels look like any other error, at their place in the DOT file:
 | `.markup` | The label checker's options, such as a run-time `.policy` |
 | `.markup_resources` | Resources for the label checker, such as `.scratch_allocator` |
 
-If DOT runtime policies are enabled, `.dot.policy.markup = .passthrough` skips
-inner execution for that call, and `.process` enables it again. Inner options
-such as `.markup.policy.mode` require the child's own runtime policy support.
-Outer selection never resets the child's settings. Each call inherits its
-compiled baseline, not overrides from a previous call. Configured policies are
-still prepared/verified before scanning; disabled processing does not initialize
-a child workspace or invoke its parser, validator or cancellation hook.
+### Turning checking on or off
+
+Checking is on as soon as a label checker is bound. To bind one but keep
+checking off, set `markup` in the DOT policy:
+
+```zig
+const Parser = dot.Profile(.{
+    .policy = .{ .markup = .passthrough }, // bound, but not checked
+    .processors = .{ .markup = markup.Profile(.{}) },
+});
+```
+
+- **Presets don't change it.** Using `dot.presets.standard` or
+  `dot.presets.lenient` keeps checking on. Set `markup` yourself to change it.
+- **Per call.** With `.runtime_policy = true` on the DOT profile, each call can
+  choose: `.dot = .{ .policy = .{ .markup = .passthrough } }` turns checking off
+  for that call, and `.process` turns it back on. Each call starts again from
+  the profile's compiled settings.
+- **Off means not run.** When checking is off, the label checker isn't called
+  and sets up no buffers. Its settings are still checked before parsing
+  starts.
+- **The checker's own settings are separate.** Turning checking on or off never
+  changes them. To change them per call (`.markup = .{ .policy = ... }`), the
+  label checker's profile needs `.runtime_policy = true` too.
+- **`.process` needs a checker.** Without a bound label checker, `.process` in
+  the compiled settings is a compile error. In per-call settings, the call
+  returns `error.MarkupProcessorRequired` before reading any input.
 
 Good to know:
 

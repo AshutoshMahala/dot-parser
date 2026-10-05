@@ -49,8 +49,8 @@ statement 36 bytes, subgraph 36 bytes, statement entry 8 bytes.
 ## Current development layouts
 
 Checked on aarch64 macOS with Zig 0.16.0, 2026-10-04. These are `@sizeOf` values
-for the current development implementation, **not** updated 0.3.0 benchmark
-results or portable ABI guarantees.
+for the current development version. They are **not** new benchmark results,
+and they can differ on other targets or Zig versions.
 
 | Type | Size |
 | --- | ---: |
@@ -59,9 +59,10 @@ results or portable ABI guarantees.
 | `dot.lexer.For(.scalar)` | 64 bytes |
 | `dot.lexer.For(.block)` | 152 bytes |
 
-The controlled session uses `.execution = .{ .metering = true, .cancellation = true }`
-with other settings left at their defaults. Session sizes exclude source bytes,
-document pools, nesting scratch and diagnostic storage supplied separately.
+The second row turns on `.execution = .{ .metering = true, .cancellation = true }`
+and leaves every other setting at its default. Session sizes don't include the
+source, document buffers, nesting space or diagnostics, which you supply
+separately.
 Use the actual types and `@sizeOf` for your target instead of hard-coding these
 numbers into memory reservations. [Layout tests](../tests/layouts.zig) guard this
 table on the stated target so changes require a documentation review.

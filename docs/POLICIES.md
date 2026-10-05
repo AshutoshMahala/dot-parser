@@ -5,6 +5,10 @@ policy to a **profile**: a type with the same functions as the top-level
 `dot` module (`parseAndValidate`, `parseBorrowed`, `validate`, `measure`, and
 so on).
 
+> **Looking for one setting?** Every DOT setting, with its values and default,
+> is in [All DOT settings](#all-dot-settings). Every markup setting is in
+> [markup settings](MARKUP.md#settings).
+
 ```zig
 const Parser = dot.Profile(.{ .policy = .{ .on_error = .fail_fast } });
 
@@ -52,11 +56,10 @@ const Lenient = dot.Profile(.{ .policy = dot.presets.lenient });
 The default preset is called `standard`, not `strict`, because `strict` is
 already a DOT keyword with an unrelated meaning.
 
-Both DOT presets leave `markup` unset: at compile time they inherit `.process`
-when a processor is bound, or `.passthrough` otherwise. As runtime patches they
-preserve the compiled `markup` choice, including an explicit `.none` or
-`.passthrough`. Set that leaf explicitly to change it. The other fields reset to
-the preset values; use a `.syntax`-only patch to preserve those too.
+Neither DOT preset sets `markup`. So a profile with a
+[label checker](#adding-a-label-processor) keeps checking labels when you use a
+preset, and a profile without one keeps `.passthrough`. Set `markup` yourself
+to change it.
 
 Markup has `markup.presets.standard` (the defaults) and
 `markup.presets.untrusted` (finite limits). See [markup settings](MARKUP.md#settings).
@@ -215,7 +218,7 @@ Under `.generic` and `.auto` there is no "wrong" operator, so setting
 | `scanner` | `.scalar` | Which text scanner to use. See [scanners](EXECUTION.md#two-scanners). |
 | `execution.metering` | `false` | Allow parsing in small steps. See [EXECUTION.md](EXECUTION.md). |
 | `execution.cancellation` | `false` | Allow cancelling through a callback. See [EXECUTION.md](EXECUTION.md). |
-| `markup` | `.passthrough` without a processor; `.process` with one | Preserve HTML-like IDs unchecked, report them unsupported with `.none`, or automatically check them with the bound processor using `.process` |
+| `markup` | `.process` with a label checker bound, otherwise `.passthrough` | Check HTML-like values with the label checker (`.process`), keep them unchecked (`.passthrough`), or report them as unsupported (`.none`). See [what happens by default](LABELS.md#what-happens-by-default). |
 | `diagnostics.fixes` | `.all` | Which suggested fixes to include: `.all`, `.machine_applicable` or `.off` |
 | `diagnostics.unsupported` | `.err` | How to report unsupported input: `.err`, `.warning` or `.silent` |
 
@@ -281,9 +284,10 @@ defer result.deinit(allocator);
 - Functions on a runtime profile return an error union, because a patch can
   be an invalid combination. They check it before reading any input.
 - A patch only affects that one call.
-- Passing a **whole preset** as a patch replaces every setting, including
-  limits. To borrow just the lenient syntax rules, copy only that part:
-  `.policy = .{ .syntax = dot.presets.lenient.syntax }`.
+- Passing a **whole preset** as a patch replaces every setting except
+  `markup`, including limits. `markup` keeps the profile's compiled choice
+  unless the patch sets it. To borrow just the lenient syntax rules, copy only
+  that part: `.policy = .{ .syntax = dot.presets.lenient.syntax }`.
 - `Runtime.validatePolicy(patch)` checks a patch without parsing anything.
 
 Runtime profiles keep all options in the program, so they are a little larger
@@ -303,6 +307,10 @@ const Parser = dot.Profile(.{
     .processors = .{ .markup = markup.Profile(.{}) }, // or your own type
 });
 ```
+
+Binding a processor turns label checking on: `markup` defaults to `.process`.
+Set `markup = .passthrough` to bind it but leave checking off; see
+[turning checking on or off](LABELS.md#turning-checking-on-or-off).
 
 Unlike the policy, a processor is a compile-time choice; it can't be changed by
 a run-time patch. The processor keeps its own settings, separate from DOT's.

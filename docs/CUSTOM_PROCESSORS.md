@@ -30,6 +30,12 @@ Everything else works as in [checking every label](LABELS.md#check-every-label-w
 one bag for DOT and your diagnostics, `result.dot`, `result.markup`, and
 `result.documentValid()`.
 
+Binding your processor turns checking on: DOT's `markup` setting defaults to
+`.process`. If a caller sets `markup = .passthrough` or `.none`, DOT doesn't run
+your processor at all. See [turning checking on or off](LABELS.md#turning-checking-on-or-off).
+Your processor's own settings don't need a `mode` field; that is just how the
+built-in markup parser describes what it checks.
+
 ## What your processor must declare
 
 The compiler checks that your processor type declares all of these:
@@ -38,10 +44,10 @@ The compiler checks that your processor type declares all of these:
 | --- | --- |
 | `Policies` | Its settings binding. See [giving your processor settings](#giving-your-processor-settings). |
 | `Options` | Per-call options. The caller passes them as `.markup`. |
-| `prepare(options)` | Returns `Prepared`, or an error union with `Policies.Error`. Must not scan, allocate or call back. |
-| `Prepared.initWorkspace(allocator, resources)` | Returns a `Workspace`. Must not scan, allocate or call back; buffers grow later. |
+| `prepare(options)` | Returns `Prepared`, or an error union with `Policies.Error`. Must not scan, allocate or call back. DOT calls it on every `parseAndValidate`, even when checking is off, so bad settings are always reported. |
+| `Prepared.initWorkspace(allocator, resources)` | Returns a `Workspace`. Must not scan, allocate or call back; buffers grow later. DOT calls it only when `markup` is `.process`. |
 | `Workspace.parseAndValidate(fragment, sink)` | Checks one value. Returns `InputError!Result`. |
-| `Workspace.deinit()` | Frees the workspace's buffers. DOT calls it exactly once, on every exit, including failures. |
+| `Workspace.deinit()` | Frees the workspace's buffers. DOT calls it exactly once for each workspace it created, on every exit, including failures. |
 | `Diagnostic` | Your diagnostic type. It must have a `span` field. |
 | `DiagnosticSink` | `dot.reporting.Sink(Diagnostic)` |
 | `ParseResources` | Passed to `initWorkspace`. The caller supplies them as `.markup_resources`. |

@@ -347,9 +347,10 @@ Tags: R-MOD-011
 
 ### A separate, extensible markup parser
 
-DOT keeps `<...>` values as written by default, finding their end with
-Graphviz's own rule (count `<` and `>`). Checking the inside is the job of a
-separate module, `markup_parser`. Its built-in grammar is XML-like: exact,
+DOT always finds where a `<...>` value ends with Graphviz's own rule (count `<`
+and `>`). Unless a label checker is bound, it keeps the value as written and
+doesn't look inside. Checking the inside is the job of a separate module,
+`markup_parser`. Its built-in grammar is XML-like: exact,
 case-sensitive tag matching, quoted attributes, and no entity expansion.
 
 **Why:** DOT users who never check labels pay nothing, and markup users don't
@@ -407,6 +408,23 @@ the label checker reuses one set of buffers for all labels.
 remove anything unused. Reusing buffers cut one test from 4,003 allocations to
 7. The trade-off is that the largest label's buffers stay alive until the
 parse ends, so peak memory can be higher.
+
+### DOT decides *whether* labels are checked; the checker decides *how*
+
+DOT's `markup` setting only chooses whether labels are checked: `.process`,
+`.passthrough` or `.none`. How they are checked belongs to the label checker's
+own settings, such as the built-in parser's `mode`. Binding a checker turns
+checking on by default, and DOT's presets don't touch `markup`.
+
+**Why:**
+
+- A caller can turn checking off for one call without knowing anything about
+  the checker's settings, and turning it off never changes them.
+- Checkers you write yourself aren't forced to share the built-in parser's idea
+  of a `mode`.
+- Adding a preset such as `lenient` for its syntax rules can't silently switch
+  label checking off. When an earlier version tied the two together, it did
+  exactly that.
 
 ## How the project is run
 
