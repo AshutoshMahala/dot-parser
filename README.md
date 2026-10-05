@@ -47,7 +47,7 @@ digraph Pipeline {
   extra checks.
 - **HTML-like markup, inside DOT or on its own.** Check the inside of labels
   such as `label=<<b>Hi</b>>` while parsing DOT, or parse HTML-like markup by
-  itself (development version only for now).
+  itself.
 - **Bring your own processor.** Swap in your own label checker at compile time.
   Its settings plug into the same settings system as DOT's.
 
@@ -133,7 +133,7 @@ This program is [examples/quick_start.zig](examples/quick_start.zig).
 You need Zig **0.16.0**. Add the package to your project:
 
 ```sh
-zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#main
+zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#v0.4.0
 ```
 
 Then import the modules you need in your `build.zig`:
@@ -145,11 +145,9 @@ exe.root_module.addImport("dot_parser", dot_parser.module("dot_parser"));
 exe.root_module.addImport("markup_parser", dot_parser.module("markup_parser"));
 ```
 
-This installs the development version, which is what these docs and examples
-describe. The latest release, 0.3.0, has an older API: for example, it has no
-`GrowableDiagnosticBag` and no `markup_parser`. If you need it, use `#v0.3.0`
-and follow the [README at that tag](https://github.com/AshutoshMahala/dot-parser/tree/v0.3.0).
-The differences are listed under "Unreleased" in the [changelog](CHANGELOG.md).
+These docs and examples target 0.4.0. To follow the development branch instead,
+replace `#v0.4.0` with `#main`. See the [changelog](CHANGELOG.md) for changes
+and breaking API updates.
 
 ## What it understands
 

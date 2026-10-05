@@ -12,8 +12,8 @@ This page shows how to check what is inside those labels while you parse DOT
 files. To parse HTML-like markup without DOT, see
 [Parsing markup on its own](MARKUP.md).
 
-> **Development version only.** Label checking and the `markup_parser` module
-> are not part of the 0.3.0 release.
+> **Available since 0.4.0.** Label checking and the `markup_parser` module
+> are included in the package.
 
 ## What happens by default
 

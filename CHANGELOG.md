@@ -4,9 +4,10 @@ Notable changes to dot-parser. During `0.x`, minor versions may break
 compatibility, including diagnostic codes and enum values. Breaking changes
 are marked; no compatibility shims are kept.
 
-## Unreleased
+## 0.4.0 — 2026-10-05
 
-Changes since 0.3.0.
+Changes since 0.3.0. This is an experimental, breaking minor release.
+Both `dot_parser` and `markup_parser` share this package version.
 
 ### Added
 

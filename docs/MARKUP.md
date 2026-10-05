@@ -9,8 +9,8 @@ works without the DOT parser. Use it to:
 
 To check labels inside DOT files, see [Checking HTML-like labels](LABELS.md).
 
-> **Development version only.** `markup_parser` is not part of the 0.3.0
-> release.
+> **Available since 0.4.0.** `markup_parser` is included in the same package
+> as `dot_parser`.
 
 ## Add the module
 
