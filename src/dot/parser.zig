@@ -124,6 +124,10 @@ pub const Result = struct {
     warnings: u32 = 0,
 };
 
+/// Internal step outcome: a pointer to the latched terminal `Result`. Eight bytes,
+/// so it is returned in a register on every grammar call (a full `?Result` is not).
+const Done = ?*const Result;
+
 // Internal execution vocabulary, not re-exported from root.zig.
 pub const Phase = enum { scan, grammar, dispatch, terminal };
 const Progress = struct {
@@ -324,21 +328,21 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return if (action == .stop) .requested else null;
         }
 
-        fn report(self: *Self, d: diagnostic.Diagnostic) ?Result {
+        fn report(self: *Self, d: diagnostic.Diagnostic) Done {
             return if (self.deliver(d)) |reason| self.stopDiagnostics(reason) else null;
         }
 
-        fn stopDiagnostics(self: *Self, reason: diagnostic.StopReason) Result {
+        fn stopDiagnostics(self: *Self, reason: diagnostic.StopReason) *const Result {
             self.abortEvents(.diagnostic_stopped);
             return self.finish(.{ .diagnostic_stopped = reason });
         }
 
-        fn warn(self: *Self, d: diagnostic.Diagnostic) ?Result {
+        fn warn(self: *Self, d: diagnostic.Diagnostic) Done {
             self.warnings += 1;
             return self.report(d);
         }
 
-        fn acceptDeviation(self: *Self, acceptance: policy.Acceptance, d: diagnostic.Diagnostic) ?Result {
+        fn acceptDeviation(self: *Self, acceptance: policy.Acceptance, d: diagnostic.Diagnostic) Done {
             if (!deviations_enabled) unreachable;
             std.debug.assert(acceptance != .reject);
             self.deviations += 1;
@@ -405,16 +409,16 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 return self.terminal.?;
             } else {
                 while (true) {
-                    if (self.step()) |result| return result;
+                    if (self.step()) |result| return result.*;
                 }
             }
         }
 
         /// Ordinary immediate driver: one token, shared grammar, direct events.
         /// It has no pending-token storage, work counter or progress counters.
-        fn step(self: *Self) ?Result {
+        fn step(self: *Self) Done {
             if (metered or cancellable) @compileError("controlled machines use drive");
-            if (self.terminal) |result| return result;
+            if (self.terminal) |*result| return result;
             const token = switch (self.tokens.next()) {
                 .token => |token| token,
                 .failure => blk: {
@@ -422,12 +426,12 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     break :blk self.operatorCandidate(d) orelse return self.fail(d);
                 },
             };
-            if (self.forwardWarning()) return self.terminal;
+            if (self.forwardWarning()) return self.done();
             if (self.processIdentifier(token)) |result| return result;
             return self.transition(token);
         }
 
-        fn processIdentifier(self: *Self, token: lex.Token) ?Result {
+        fn processIdentifier(self: *Self, token: lex.Token) Done {
             if (Processor == void) return null;
             const markup = if (fixed) |value| value.markup else self.settings.markup;
             if (markup != .process or !token.flags.has_html) return null;
@@ -538,7 +542,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             if (self.terminal) |result| return result;
             // Keep cancellation visible without erasing prior syntax findings.
             self.abortEvents(.cancelled);
-            return self.finish(.cancelled);
+            return self.finish(.cancelled).*;
         }
 
         /// The sink's one terminal abort, if it has begun and not yet
@@ -559,7 +563,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             };
         }
 
-        fn transition(self: *Self, token: lex.Token) ?Result {
+        fn transition(self: *Self, token: lex.Token) Done {
             if (audited) self.audit.grammar += 1;
             const markup = if (fixed) |value| value.markup else self.settings.markup;
             if (markup == .none and token.flags.has_html and self.state != .recovering) {
@@ -624,7 +628,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     },
                     .after_subgraph => {
                         if (token.tag == .edge_directed or token.tag == .edge_undirected) {
-                            self.operator = self.readOperator(token) orelse return self.terminal;
+                            self.operator = self.readOperator(token) orelse return self.done();
                             self.operator_span = token.span;
                             self.state = .edge_right;
                         } else if (token.tag == .colon or token.tag == .left_bracket) {
@@ -644,7 +648,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     .statement => return if (metered or cancellable or fixed == null)
                         self.beginNext(token)
                     else
-                        @call(.always_inline, beginNext, .{ self, token }),
+                        @call(.auto, beginNext, .{ self, token }),
                     .after_identifier => switch (token.tag) {
                         .colon => {
                             if (self.left_port != null) return self.unexpected(nodeEndExpected(false), .statement, token);
@@ -657,14 +661,14 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         },
                         .left_bracket => self.openAttributes(token),
                         .edge_undirected, .edge_directed => {
-                            self.operator = self.readOperator(token) orelse return self.terminal;
+                            self.operator = self.readOperator(token) orelse return self.done();
                             self.operator_span = token.span;
                             self.state = .edge_right;
                         },
                         else => return if (metered or cancellable or fixed == null)
                             self.finishPending(token, nodeEndExpected(self.left_port == null), .statement)
                         else
-                            @call(.always_inline, finishPending, .{ self, token, nodeEndExpected(self.left_port == null), .statement }),
+                            @call(.auto, finishPending, .{ self, token, nodeEndExpected(self.left_port == null), .statement }),
                     },
                     .edge_right => switch (token.tag) {
                         .identifier => {
@@ -685,7 +689,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         },
                         .left_bracket => self.openAttributes(token),
                         .edge_undirected, .edge_directed => {
-                            self.link_operator = self.readOperator(token) orelse return self.terminal;
+                            self.link_operator = self.readOperator(token) orelse return self.done();
                             self.link_operator_span = token.span;
                             self.state = .chain_right;
                         },
@@ -693,7 +697,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             return if (metered or cancellable or fixed == null)
                                 self.finishPending(token, edgeEndExpected(self.pending == .edge and self.right_port == null and self.right_scope == null), .statement_terminator)
                             else
-                                @call(.always_inline, finishPending, .{ self, token, edgeEndExpected(self.pending == .edge and self.right_port == null and self.right_scope == null), .statement_terminator });
+                                @call(.auto, finishPending, .{ self, token, edgeEndExpected(self.pending == .edge and self.right_port == null and self.right_scope == null), .statement_terminator });
                         },
                     },
                     .chain_right => switch (token.tag) {
@@ -746,7 +750,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         return if (metered or cancellable or fixed == null)
                             self.schedule(.assignment, token)
                         else
-                            @call(.always_inline, schedule, .{ self, .assignment, token });
+                            @call(.auto, schedule, .{ self, .assignment, token });
                     },
                     .completed => return self.continueAfterStatement(token),
                     .attribute_open => {
@@ -771,7 +775,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         return if (metered or cancellable or fixed == null)
                             self.schedule(.attribute, token)
                         else
-                            @call(.always_inline, schedule, .{ self, .attribute, token });
+                            @call(.auto, schedule, .{ self, .attribute, token });
                     },
                     .attribute_after_value => switch (token.tag) {
                         .right_bracket => self.closeAttributes(),
@@ -790,13 +794,13 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         } else return if (metered or cancellable or fixed == null)
                             self.finishPending(token, statementEndExpected(true), .statement_terminator)
                         else
-                            @call(.always_inline, finishPending, .{ self, token, statementEndExpected(true), .statement_terminator });
+                            @call(.auto, finishPending, .{ self, token, statementEndExpected(true), .statement_terminator });
                     },
                     .epilogue => switch (token.tag) {
                         .eof => return if (metered or cancellable or fixed == null)
                             self.schedule(.commit, token)
                         else
-                            @call(.always_inline, schedule, .{ self, .commit, token }),
+                            @call(.auto, schedule, .{ self, .commit, token }),
                         else => return self.unexpected(.{ .end_of_input = true }, .document_epilogue, token),
                     },
                     .recovering => return self.recover(token),
@@ -808,7 +812,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// One token of resynchronization: a `;` at the current depth or a
         /// `}` ends the skip; a skipped `{` is matched by counting so the
         /// scope stack stays honest. Reaching end of input ends the parse.
-        fn recover(self: *Self, token: lex.Token) ?Result {
+        fn recover(self: *Self, token: lex.Token) Done {
             if (!recovery_enabled) unreachable;
             switch (token.tag) {
                 .semicolon => if (self.skip_depth == 0) {
@@ -840,18 +844,18 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
 
         /// Recognize the header, then schedule its separate begin event.
         /// begun becomes true only when the callback is actually attempted.
-        fn beginBody(self: *Self, token: lex.Token) ?Result {
+        fn beginBody(self: *Self, token: lex.Token) Done {
             self.open_brace_span = token.span;
             self.state = .statement;
             return if (metered or cancellable or fixed == null)
                 self.schedule(.begin, token)
             else
-                @call(.always_inline, schedule, .{ self, .begin, token });
+                @call(.auto, schedule, .{ self, .begin, token });
         }
 
         /// Start a statement at its identifier or attribute keyword: the place the
         /// caller-visible statement limit is enforced.
-        fn beginStatement(self: *Self, token: lex.Token) ?Result {
+        fn beginStatement(self: *Self, token: lex.Token) Done {
             if (self.statements == self.limit("max_statements")) {
                 return self.fail(.{
                     .code = .resource_capacity_exhausted,
@@ -877,7 +881,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         // Runtime-policy and metered/cancellable engines retain ordinary calls:
         // forced inlining has mixed costs in those larger dispatch loops (even
         // @call(.auto) changed Zig 0.16's code generation in bounded sessions).
-        fn beginNext(self: *Self, token: lex.Token) ?Result {
+        fn beginNext(self: *Self, token: lex.Token) Done {
             if (deviations_enabled and token.tag == .semicolon and self.syntax().empty_statement != .reject) {
                 if (self.acceptDeviation(self.syntax().empty_statement, .{
                     .code = .syntax_empty_statement,
@@ -897,7 +901,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         return if (metered or cancellable or fixed == null)
                             self.schedule(.end_subgraph, token)
                         else
-                            @call(.always_inline, schedule, .{ self, .end_subgraph, token });
+                            @call(.auto, schedule, .{ self, .end_subgraph, token });
                     }
                 },
                 .left_brace, .keyword_subgraph => {
@@ -935,7 +939,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return .{ .left = self.left, .left_port = self.left_port, .left_scope = self.left_scope, .operator = self.operator, .operator_span = self.operator_span, .right = self.right, .right_port = self.right_port, .right_scope = self.right_scope };
         }
 
-        fn startSubgraph(self: *Self, token: lex.Token, role: syntax_event.ScopeRole) ?Result {
+        fn startSubgraph(self: *Self, token: lex.Token, role: syntax_event.ScopeRole) Done {
             self.subgraph_role = role;
             self.subgraph_start = token.span;
             self.subgraph_name = null;
@@ -944,7 +948,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return null;
         }
 
-        fn beginSubgraphBody(self: *Self, token: lex.Token) ?Result {
+        fn beginSubgraphBody(self: *Self, token: lex.Token) Done {
             if (self.nestingDepth() == self.limit("max_nesting")) return self.fail(.{
                 .code = .resource_capacity_exhausted,
                 .span = token.span,
@@ -971,10 +975,10 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return if (metered or cancellable or fixed == null)
                 self.schedule(.begin_subgraph, token)
             else
-                @call(.always_inline, schedule, .{ self, .begin_subgraph, token });
+                @call(.auto, schedule, .{ self, .begin_subgraph, token });
         }
 
-        fn scratchFailure(self: *Self, err: scratch_impl.Stack.Error, span: location.Span) Result {
+        fn scratchFailure(self: *Self, err: scratch_impl.Stack.Error, span: location.Span) *const Result {
             // The resource failure is already terminal; preserve its cause.
             const stop = self.deliver(.{
                 .code = if (err == error.OutOfMemory) .resource_memory_exhausted else .resource_capacity_exhausted,
@@ -993,12 +997,12 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             self.state = .port_first;
         }
 
-        fn finishPort(self: *Self, token: lex.Token) ?Result {
+        fn finishPort(self: *Self, token: lex.Token) Done {
             self.state = self.port_resume;
             return self.dispatchThenReplay(.ported_reference, token);
         }
 
-        fn dispatchThenReplay(self: *Self, action: Action, token: lex.Token) ?Result {
+        fn dispatchThenReplay(self: *Self, action: Action, token: lex.Token) Done {
             if (metered or cancellable) {
                 self.work.replay = true;
                 return self.schedule(action, token);
@@ -1006,10 +1010,10 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return if (fixed == null)
                 self.schedule(action, token)
             else
-                @call(.always_inline, schedule, .{ self, action, token });
+                @call(.auto, schedule, .{ self, action, token });
         }
 
-        fn finishPending(self: *Self, token: lex.Token, expected: std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false), context: diagnostic.ParseContext) ?Result {
+        fn finishPending(self: *Self, token: lex.Token, expected: std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false), context: diagnostic.ParseContext) Done {
             switch (token.tag) {
                 .semicolon, .identifier, .right_brace, .left_brace, .keyword_graph, .keyword_node, .keyword_edge, .keyword_subgraph => {},
                 else => return self.unexpected(expected, context, token),
@@ -1027,11 +1031,11 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 self.work.replay = true;
                 return self.schedule(action, token);
             }
-            if (if (fixed == null) self.schedule(action, token) else @call(.always_inline, schedule, .{ self, action, token })) |result| return result;
+            if (if (fixed == null) self.schedule(action, token) else @call(.auto, schedule, .{ self, action, token })) |result| return result;
             return self.continueAfterStatement(token);
         }
 
-        fn continueAfterStatement(self: *Self, token: lex.Token) ?Result {
+        fn continueAfterStatement(self: *Self, token: lex.Token) Done {
             if (token.tag == .semicolon) {
                 self.state = .statement;
                 return null;
@@ -1039,7 +1043,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return if (metered or cancellable or fixed == null)
                 self.beginNext(token)
             else
-                @call(.always_inline, beginNext, .{ self, token });
+                @call(.auto, beginNext, .{ self, token });
         }
 
         fn openAttributes(self: *Self, token: lex.Token) void {
@@ -1052,7 +1056,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             self.state = .after_attributes;
         }
 
-        fn countAttribute(self: *Self, at: location.Span) ?Result {
+        fn countAttribute(self: *Self, at: location.Span) Done {
             if (self.attributes == self.limit("max_attributes")) return self.fail(.{
                 .code = .resource_capacity_exhausted,
                 .span = at,
@@ -1062,14 +1066,14 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return null;
         }
 
-        fn beginAttribute(self: *Self, token: lex.Token) ?Result {
+        fn beginAttribute(self: *Self, token: lex.Token) Done {
             if (self.countAttribute(token.span)) |result| return result;
             self.attribute_key = token.span;
             self.state = .attribute_equals;
             return null;
         }
 
-        fn schedule(self: *Self, action: Action, token: lex.Token) ?Result {
+        fn schedule(self: *Self, action: Action, token: lex.Token) Done {
             if (metered or cancellable) {
                 self.work.action = action;
                 self.work.phase = .dispatch;
@@ -1081,7 +1085,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// One charged normal callback in the bounded driver. Payloads reuse
         /// saved spans and the cached token; there is no event queue or copying
         /// of a source-sized collection. Callback execution is a callout.
-        fn dispatch(self: *Self, action: Action, token: lex.Token) ?Result {
+        fn dispatch(self: *Self, action: Action, token: lex.Token) Done {
             if (audited) self.audit.dispatch += 1;
             if (self.aborted) {
                 // Recovery: the sink is terminal, so no event is attempted;
@@ -1238,7 +1242,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             }
         }
 
-        fn finish(self: *Self, outcome: Outcome) Result {
+        fn finish(self: *Self, outcome: Outcome) *const Result {
             if (self.scratch) |scratch| scratch.len = 0;
             const result: Result = .{
                 .outcome = outcome,
@@ -1251,22 +1255,24 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             };
             self.terminal = result;
             if (metered or cancellable) self.work.phase = .terminal;
-            return result;
+            return &self.terminal.?;
         }
 
         /// Acknowledgment is terminal-only; don't keep duplicate running state.
-        fn finishReported(self: *Self, outcome: Outcome, stop: ?diagnostic.StopReason) Result {
-            var result = self.finish(outcome);
-            result.diagnostic_stop = stop;
-            self.terminal = result;
-            return result;
+        fn finishReported(self: *Self, outcome: Outcome, stop: ?diagnostic.StopReason) *const Result {
+            _ = self.finish(outcome);
+            self.terminal.?.diagnostic_stop = stop;
+            return &self.terminal.?;
         }
 
-        fn finishComplete(self: *Self, outcome: Outcome) Result {
-            var result = self.finish(outcome);
-            result.completion = .complete;
-            self.terminal = result;
-            return result;
+        fn finishComplete(self: *Self, outcome: Outcome) *const Result {
+            _ = self.finish(outcome);
+            self.terminal.?.completion = .complete;
+            return &self.terminal.?;
+        }
+
+        inline fn done(self: *Self) Done {
+            return if (self.terminal) |*result| result else null;
         }
 
         pub fn syntaxErrors(self: *const Self) u32 {
@@ -1278,7 +1284,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// the event lifecycle: abort follows begin; nothing is emitted
         /// before a supported header. Returns null when the parse continues
         /// in recovery (the caller resynchronizes), else the terminal result.
-        fn fail(self: *Self, failure: diagnostic.Diagnostic) ?Result {
+        fn fail(self: *Self, failure: diagnostic.Diagnostic) Done {
             var d = failure;
             if (d.fix == null) d.fix = self.lexicalFix(d);
             const is_unsupported = failure.code == .profile_unsupported_feature;
@@ -1298,7 +1304,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
 
         // Recovery needs the failure class/boundary, not a diagnostic payload.
         // Silent unsupported input enters here without constructing one.
-        fn failClassified(self: *Self, reason: syntax_event.AbortReason, stop: ?diagnostic.StopReason, recoverable: bool) ?Result {
+        fn failClassified(self: *Self, reason: syntax_event.AbortReason, stop: ?diagnostic.StopReason, recoverable: bool) Done {
             if (recovery_enabled and reason == .invalid_syntax) self.syntax_errors += 1;
             if (recovery_enabled and (reason == .invalid_syntax or reason == .unsupported_feature) and recoverable) {
                 if (stop) |requested| return self.stopDiagnostics(requested);
@@ -1401,7 +1407,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return true;
         }
 
-        fn sinkFailure(self: *Self, err: anyerror) Result {
+        fn sinkFailure(self: *Self, err: anyerror) *const Result {
             // The event sink failed mid-lifecycle; abort so it can release
             // staged state. `abortDocument` is infallible by contract.
             self.abortEvents(.sink_failure);
@@ -1413,7 +1419,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             expected: std.enums.EnumFieldStruct(diagnostic.SyntaxItem, bool, false),
             context: diagnostic.ParseContext,
             token: lex.Token,
-        ) ?Result {
+        ) Done {
             if (self.fail(self.unexpectedDiagnostic(expected, context, token))) |result| return result;
             // Recovering: the offending token itself may be the boundary.
             return self.recover(token);
@@ -1563,7 +1569,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             };
         }
 
-        fn unsupportedAt(self: *Self, span: location.Span, feature: diagnostic.Feature) ?Result {
+        fn unsupportedAt(self: *Self, span: location.Span, feature: diagnostic.Feature) Done {
             if (self.unsupported() == .silent)
                 return self.failClassified(.unsupported_feature, null, if (recovery_enabled) self.canRecover(true, false) else false);
             return self.fail(.{
