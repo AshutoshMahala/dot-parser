@@ -2,9 +2,9 @@
 const std = @import("std");
 pub const RuleSeverity = enum { err, warning, off };
 pub const ScannerBackend = enum { scalar, block };
-/// Only implemented grammars/rule sets are selectable. Graphviz and extended
-/// modes remain future work, not aliases for structural validation.
-pub const Mode = enum { structural };
+/// Graphviz currently adds vocabulary checks only, not complete label grammar.
+/// Extended remains unimplemented. Neither mode changes the structural parser.
+pub const Mode = enum { structural, graphviz };
 pub const Acceptance = enum { reject, warn, accept };
 pub const OnError = @import("parser_support").execution.OnError;
 pub const Unsupported = @import("parser_support").reporting.Unsupported;
@@ -15,12 +15,17 @@ pub const NameRule = enum { xml_1_0 };
 pub const ReferenceCatalog = enum { xml_predefined };
 pub const NameSettings = struct { rule: NameRule = .xml_1_0, severity: RuleSeverity = .off };
 pub const ReferenceSettings = struct { catalog: ReferenceCatalog = .xml_predefined, severity: RuleSeverity = .off };
+pub const GraphvizSettings = struct {
+    unknown_element: RuleSeverity = .err,
+    invalid_attribute: RuleSeverity = .err,
+};
 pub const ValidationSettings = struct {
     on_error: OnError = .collect,
     duplicate_attribute: RuleSeverity = .err,
     invalid_utf8: RuleSeverity = .off,
     names: NameSettings = .{},
     references: ReferenceSettings = .{},
+    graphviz: GraphvizSettings = .{},
 };
 
 pub const Policy = struct {
@@ -41,6 +46,7 @@ pub const Policy = struct {
         invalid_utf8: ?RuleSeverity = null,
         names: struct { rule: ?NameRule = null, severity: ?RuleSeverity = null } = .{},
         references: struct { catalog: ?ReferenceCatalog = null, severity: ?RuleSeverity = null } = .{},
+        graphviz: struct { unknown_element: ?RuleSeverity = null, invalid_attribute: ?RuleSeverity = null } = .{},
     } = .{},
     execution: struct {
         metering: ?bool = null,
@@ -65,6 +71,11 @@ pub const Effective = struct {
 
     pub fn parsing(self: Effective) ParseSettings {
         return .{ .limits = self.limits, .syntax = self.syntax, .fixes = self.diagnostics.fixes, .unsupported = self.diagnostics.unsupported, .on_error = self.on_error };
+    }
+    pub fn validating(self: Effective) ValidationSettings {
+        var selected = self.validation;
+        if (self.mode == .structural) selected.graphviz = .{ .unknown_element = .off, .invalid_attribute = .off };
+        return selected;
     }
 };
 pub const ParseSettings = struct { limits: Limits = .{}, syntax: SyntaxSettings = .{}, fixes: Fixes = .all, unsupported: Unsupported = .err, on_error: OnError = .collect };
@@ -98,7 +109,7 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
     }
     if (patch.validation.duplicate_attribute) |v| result.validation.duplicate_attribute = v;
     if (patch.validation.invalid_utf8) |v| result.validation.invalid_utf8 = v;
-    inline for (.{ "names", "references" }) |group| {
+    inline for (.{ "names", "references", "graphviz" }) |group| {
         inline for (std.meta.fields(@TypeOf(@field(patch.validation, group)))) |field| {
             if (@field(@field(patch.validation, group), field.name)) |value|
                 @field(@field(result.validation, group), field.name) = value;
@@ -125,6 +136,7 @@ pub const presets = struct {
             .invalid_utf8 = defaults.validation.invalid_utf8,
             .names = .{ .rule = defaults.validation.names.rule, .severity = defaults.validation.names.severity },
             .references = .{ .catalog = defaults.validation.references.catalog, .severity = defaults.validation.references.severity },
+            .graphviz = .{ .unknown_element = .err, .invalid_attribute = .err },
         },
         .execution = .{ .metering = false, .cancellation = false },
     };

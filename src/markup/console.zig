@@ -25,12 +25,32 @@ pub const Adapter = struct {
     }
     pub fn hasDetails(d: Diagnostic) bool {
         return d.details != .none or switch (d.code) {
-            .mismatched_tag, .unexpected_close, .unclosed_element, .duplicate_attribute, .duplicate_attribute_tolerated, .unknown_reference, .unknown_reference_tolerated => true,
+            .mismatched_tag, .unexpected_close, .unclosed_element, .duplicate_attribute, .duplicate_attribute_tolerated, .unknown_reference, .unknown_reference_tolerated, .unknown_element, .unknown_element_tolerated, .invalid_attribute, .invalid_attribute_tolerated => true,
             else => false,
         };
     }
     pub fn detail(d: Diagnostic, positions: *Positions, writer: anytype) !void {
         if (d.code == .mismatched_tag and try writeMismatch(d, positions, writer)) return;
+        if (d.code == .unknown_element or d.code == .unknown_element_tolerated) {
+            if (positions.slice(d.span)) |name| {
+                try writer.writeAll("element '");
+                try positions.writeSource(name, writer);
+                try writer.writeAll("' is not in the Graphviz label vocabulary");
+                return;
+            }
+        }
+        if (d.code == .invalid_attribute or d.code == .invalid_attribute_tolerated) {
+            if (positions.slice(d.span)) |name| {
+                if (d.related) |span| if (positions.slice(span)) |owner| {
+                    try writer.writeAll("attribute '");
+                    try positions.writeSource(name, writer);
+                    try writer.writeAll("' is not allowed on Graphviz element '");
+                    try positions.writeSource(owner, writer);
+                    try writer.writeAll("'");
+                    return;
+                };
+            }
+        }
         switch (d.details) {
             .none => try writer.writeAll(d.code.info().summary),
             .byte => |byte| {

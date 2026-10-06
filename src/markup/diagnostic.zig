@@ -110,6 +110,10 @@ pub const Code = enum {
     invalid_name_tolerated,
     unknown_reference,
     unknown_reference_tolerated,
+    unknown_element,
+    unknown_element_tolerated,
+    invalid_attribute,
+    invalid_attribute_tolerated,
 
     const Metadata = wdp.Catalog(Component, Primary);
     pub const Info = Metadata.Info;
@@ -226,6 +230,22 @@ pub const Code = enum {
                 .sequence = Sequence.invalid,
                 .summary = "reference name is absent from the selected catalog",
                 .hint = "use a known reference, a numeric reference, or change the catalog policy",
+            },
+            .unknown_element, .unknown_element_tolerated => .{
+                .severity = if (self == .unknown_element) .err else .warning,
+                .component = .validation,
+                .primary = .tag,
+                .sequence = Sequence.unsupported,
+                .summary = "element is not in the Graphviz label vocabulary",
+                .hint = "use a documented Graphviz label element, or select structural mode for another markup dialect",
+            },
+            .invalid_attribute, .invalid_attribute_tolerated => .{
+                .severity = if (self == .invalid_attribute) .err else .warning,
+                .component = .validation,
+                .primary = .attribute,
+                .sequence = Sequence.unsupported,
+                .summary = "attribute is not allowed on this Graphviz element",
+                .hint = "remove the attribute or use an attribute documented for this element",
             },
         };
         return definition.info();

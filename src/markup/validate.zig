@@ -1,7 +1,7 @@
 //! Independent policy checks over completed syntax or checked local scopes.
 //! Never rewrites input; document and local traversal share the same kernels.
 //! Scratch is reused per element. Heap sorting has deterministic O(A log A)
-//! comparisons, with bytewise name comparisons; no hash-collision worst case.
+//! comparisons, with raw or ASCII-case-folded names; no hash-collision worst case.
 //! This pass is run-to-completion, not a metered parsing session.
 const std = @import("std");
 const support = @import("parser_support");
@@ -12,6 +12,7 @@ const definitions = @import("validation_rules.zig");
 const lexical = @import("lexer.zig");
 const Span = support.location.Span;
 const scopes = @import("scope.zig");
+const graphviz = @import("graphviz.zig");
 const safety_checks = switch (@import("builtin").mode) {
     .Debug, .ReleaseSafe => true,
     .ReleaseFast, .ReleaseSmall => false,
@@ -59,6 +60,8 @@ pub const Result = struct {
         invalid_utf8: CheckStatus = .not_run,
         names: CheckStatus = .not_run,
         references: CheckStatus = .not_run,
+        graphviz_elements: CheckStatus = .not_run,
+        graphviz_attributes: CheckStatus = .not_run,
     } = .{},
     /// Aggregate findings from independent checks, which may overlap source
     /// spans. Offsets/capacities remain u32; totals use u64, as in DOT validation.
@@ -106,7 +109,7 @@ fn requirement(document: *const syntax.Document) Requirement {
     return if (maximum < 2) .{} else .{ .count = maximum, .span = document.records[@intFromEnum(largest_owner)].name };
 }
 
-pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellable: bool) type {
+pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellable: bool, comptime mode: policy.Mode) type {
     return struct {
         pub const Settings = if (fixed == null) policy.ValidationSettings else void;
         pub const Hook = if (cancellable) ?support.execution.Cancellation else void;
@@ -129,11 +132,13 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                 .invalid_utf8 = if (s.invalid_utf8 == .off) .not_run else .incomplete,
                 .names = if (s.names.severity == .off) .not_run else .incomplete,
                 .references = if (s.references.severity == .off) .not_run else .incomplete,
+                .graphviz_elements = if (mode == .structural or s.graphviz.unknown_element == .off) .not_run else .incomplete,
+                .graphviz_attributes = if (mode == .structural or s.graphviz.invalid_attribute == .off) .not_run else .incomplete,
             } };
         }
         fn enabled(settings: Settings) bool {
             const s = rules(settings);
-            return s.duplicate_attribute != .off or s.invalid_utf8 != .off or s.names.severity != .off or s.references.severity != .off;
+            return s.duplicate_attribute != .off or s.invalid_utf8 != .off or s.names.severity != .off or s.references.severity != .off or (mode == .graphviz and (s.graphviz.unknown_element != .off or s.graphviz.invalid_attribute != .off));
         }
         fn requested(hook: Hook) bool {
             return if (cancellable) (if (hook) |h| h.requested() else false) else false;
@@ -162,6 +167,9 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         fn scopeInitial(scope: scopes.Scope, settings: Settings) Result {
             var result = initial(settings);
             if (scope != .opening_header) result.checks.duplicate_attribute = .not_run;
+            if (scope != .opening_header) result.checks.graphviz_attributes = .not_run;
+            if (scope != .opening_header and scope != .opening_name and scope != .closing_name)
+                result.checks.graphviz_elements = .not_run;
             switch (scope) {
                 .bytes => {
                     result.checks.names = .not_run;
@@ -233,6 +241,8 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                     const keys = scratch.attribute_keys[0..required];
                     const context = .{ .source = source, .attributes = h.attributes };
                     if (required != 0) prepareKeys(&context, keys, 0);
+                    const owner = elementKind(bounded_source, h.name, settings);
+                    if (!checkElement(bounded_source, h.name, owner, &offset, poller, &result, sink, settings, hook)) return result;
                     if (!checkName(bounded_source, h.name, .element, &offset, poller, &result, sink, settings, hook)) return result;
                     for (h.attributes, 0..) |a, index| {
                         if (!poller.step(&result, hook)) return result;
@@ -240,12 +250,14 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                         if (required != 0 and keys[index].first != index) {
                             if (!emitDuplicate(bounded_source, a.name, h.attributes[keys[index].first].name, &offset, poller, &result, sink, settings, hook)) return result;
                         }
+                        if (!checkAttribute(bounded_source, h.name, owner, a.name, &offset, poller, &result, sink, settings, hook)) return result;
                         if (!checkName(bounded_source, a.name, .attribute, &offset, poller, &result, sink, settings, hook)) return result;
                         if (a.value.len != 0 and (rules(settings).names.severity != .off or rules(settings).references.severity != .off) and
                             !checkReferences(bounded_source, .{ .start = a.value.start + 1, .len = a.value.len - 2 }, &offset, poller, &result, sink, settings, hook)) return result;
                     }
                 },
                 .opening_name, .closing_name, .attribute_name => |name| {
+                    if (scope != .attribute_name and !checkElement(bounded_source, name, elementKind(bounded_source, name, settings), &offset, poller, &result, sink, settings, hook)) return result;
                     if (!checkName(bounded_source, name, if (scope == .attribute_name) .attribute else .element, &offset, poller, &result, sink, settings, hook)) return result;
                 },
                 .text, .attribute_value => |value| {
@@ -283,9 +295,9 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             var result = initial(settings);
             std.debug.assert(document.source.len <= support.location.max_source_len);
             if (scratch.attribute_keys.len < required.count) return unavailable(.{ .storage_exhausted = required.count }, sink, @intCast(scratch.attribute_keys.len), required.span, settings);
-            // Only name/reference checks need the forest. The default and
+            // Only content/vocabulary checks need the forest. The default and
             // encoding-only paths retain their attribute-only/no-pool traversal.
-            if (rules(settings).names.severity != .off or rules(settings).references.severity != .off)
+            if (rules(settings).names.severity != .off or rules(settings).references.severity != .off or (mode == .graphviz and (rules(settings).graphviz.unknown_element != .off or rules(settings).graphviz.invalid_attribute != .off)))
                 return runContent(document, scratch, sink, settings, hook);
             var offset: Offset = if (has_encoding) 0 else {};
             var poller: Poller = .{};
@@ -330,6 +342,8 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                 if (safety_checks) std.debug.assert(syntax.nodeInvariant(document, @intCast(id)));
                 switch (node.kind()) {
                     .element => {
+                        const owner = elementKind(source, node.name, settings);
+                        if (!checkElement(source, node.name, owner, &offset, &poller, &result, sink, settings, hook)) return result;
                         if (!checkName(source, node.name, .element, &offset, &poller, &result, sink, settings, hook)) return result;
                         const start = attribute;
                         while (attribute < document.attributes.len and @intFromEnum(document.attributes[attribute].owner) == id) : (attribute += 1) {
@@ -348,6 +362,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                                 const first = keys[index - start].first;
                                 if (!emitDuplicate(source, attr.name, document.attributes[first].name, &offset, &poller, &result, sink, settings, hook)) return result;
                             }
+                            if (!checkAttribute(source, node.name, owner, attr.name, &offset, &poller, &result, sink, settings, hook)) return result;
                             if (!checkName(source, attr.name, .attribute, &offset, &poller, &result, sink, settings, hook)) return result;
                             // The retained value includes its original quotes.
                             if (!checkReferences(source, .{ .start = attr.value.start + 1, .len = attr.value.len - 2 }, &offset, &poller, &result, sink, settings, hook)) return result;
@@ -363,6 +378,8 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             if (rules(settings).duplicate_attribute != .off) result.checks.duplicate_attribute = .complete;
             if (rules(settings).names.severity != .off) result.checks.names = .complete;
             if (rules(settings).references.severity != .off) result.checks.references = .complete;
+            if (mode == .graphviz and rules(settings).graphviz.unknown_element != .off) result.checks.graphviz_elements = .complete;
+            if (mode == .graphviz and rules(settings).graphviz.invalid_attribute != .off) result.checks.graphviz_attributes = .complete;
             if (!encodingThrough(source, @intCast(source.len), &offset, &poller, &result, sink, settings, hook)) return result;
             if (result.errors == 0) result.validity = .valid;
             return result;
@@ -416,6 +433,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         /// malformed candidates accepted as literal text cannot become findings.
         /// Numeric candidates contain no '&'; scanning past them needs no decoding.
         inline fn checkReferences(source: []const u8, span: Span, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+            if (mode == .graphviz and rules(settings).names.severity == .off and rules(settings).references.severity == .off) return true;
             const bytes = span.slice(source);
             var index: u32 = 0;
             var scan = Poller.Scan.init(index, poller.*);
@@ -465,11 +483,14 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         }
 
         inline fn prepareKeys(context: anytype, keys: []AttributeKeyScratch, start: u32) void {
+            const ignore_case = mode == .graphviz;
             // Pass a view pointer, not copied slices, through the comparator.
             // The retained path keeps its existing Document pointer directly.
             const Order = struct {
                 fn less(self: @TypeOf(context), a: AttributeKeyScratch, b: AttributeKeyScratch) bool {
-                    const order = std.mem.order(u8, self.attributes[a.index].name.slice(self.source), self.attributes[b.index].name.slice(self.source));
+                    const left = self.attributes[a.index].name.slice(self.source);
+                    const right = self.attributes[b.index].name.slice(self.source);
+                    const order = if (ignore_case) std.ascii.orderIgnoreCase(left, right) else std.mem.order(u8, left, right);
                     return if (order == .eq) a.index < b.index else order == .lt;
                 }
             };
@@ -478,9 +499,49 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             var first = keys[0].index;
             keys[first - start].first = first;
             for (keys[1..]) |key| {
-                if (!std.mem.eql(u8, context.attributes[first].name.slice(context.source), context.attributes[key.index].name.slice(context.source))) first = key.index;
+                const left = context.attributes[first].name.slice(context.source);
+                const right = context.attributes[key.index].name.slice(context.source);
+                if (!(if (ignore_case) std.ascii.eqlIgnoreCase(left, right) else std.mem.eql(u8, left, right))) first = key.index;
                 keys[key.index - start].first = first;
             }
+        }
+
+        inline fn elementKind(source: []const u8, name: Span, settings: Settings) ?graphviz.Element {
+            if (mode == .structural) return null;
+            const s = rules(settings).graphviz;
+            if (s.unknown_element == .off and s.invalid_attribute == .off) return null;
+            return graphviz.element(name.slice(source));
+        }
+        inline fn checkElement(source: []const u8, name: Span, owner: ?graphviz.Element, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+            if (mode == .structural) return true;
+            const severity = rules(settings).graphviz.unknown_element;
+            if (severity == .off or owner != null) return true;
+            if (!encodingThrough(source, name.start, offset, poller, result, sink, settings, hook)) return false;
+            return emit(result, sink, .{ .code = if (severity == .err) .unknown_element else .unknown_element_tolerated, .span = name }, settings);
+        }
+        inline fn checkAttribute(source: []const u8, owner_name: Span, owner: ?graphviz.Element, name: Span, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+            if (mode == .structural) return true;
+            const severity = rules(settings).graphviz.invalid_attribute;
+            if (severity == .off) return true;
+            // An unknown owner's attribute contract is unavailable. Do not
+            // manufacture one error per attribute as a consequence of its name.
+            const tag = owner orelse return true;
+            if (graphviz.allowsAttribute(tag, name.slice(source))) return true;
+            if (!encodingThrough(source, name.start, offset, poller, result, sink, settings, hook)) return false;
+            return emit(result, sink, .{ .code = if (severity == .err) .invalid_attribute else .invalid_attribute_tolerated, .span = name, .related = owner_name }, settings);
+        }
+        /// Scanner-produced attribute with its owner; no buffering is necessary
+        /// when duplicate checking is off. Not an unchecked public scope API.
+        pub fn runAttributeVocabularyTrusted(source: []const u8, owner: Span, name: Span, sink: diagnostic.Sink, settings: Settings, hook: Hook, poller: *Poller) Result {
+            if (mode == .structural) return .{ .validity = .valid };
+            if (rules(settings).graphviz.invalid_attribute == .off) return .{ .validity = .valid };
+            var result: Result = .{ .checks = .{ .graphviz_attributes = .incomplete } };
+            if (!poller.step(&result, hook)) return result;
+            var offset: Offset = if (has_encoding) name.start else {};
+            if (!checkAttribute(source, owner, elementKind(source, owner, settings), name, &offset, poller, &result, sink, settings, hook)) return result;
+            result.checks.graphviz_attributes = .complete;
+            if (result.errors == 0) result.validity = .valid;
+            return result;
         }
         pub fn allocated(allocator: std.mem.Allocator, document: *const syntax.Document, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
             if (!enabled(settings)) return .{ .validity = .valid };

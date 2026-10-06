@@ -69,9 +69,9 @@ pub const Buffers = struct {
     }
 };
 
-pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.Effective, comptime cancellable: bool) type {
-    const V = validation.Validator(if (fixed) |f| f.validation else null, cancellable);
-    const Local = validation.Validator(if (fixed) |f| localSettings(f.validation) else null, cancellable);
+pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.Effective, comptime cancellable: bool, comptime mode: policy.Mode) type {
+    const V = validation.Validator(if (fixed) |f| f.validating() else null, cancellable, mode);
+    const Local = validation.Validator(if (fixed) |f| localSettings(f.validating()) else null, cancellable, mode);
     return struct {
         const Self = @This();
         pub const Settings = if (fixed == null) policy.Effective else void;
@@ -116,6 +116,11 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
             // Keep the validation kernels themselves under optimizer control.
             inline fn checkScope(self: *@This(), scope: scopes.Scope, keys: []validation.AttributeKeyScratch) bool {
                 return self.merge(Local.runScopePolled(self.source, scope, .{ .attribute_keys = keys }, self.sink, if (fixed == null) localSettings(self.settings.validation) else {}, self.hook, &self.poller));
+            }
+            inline fn checkAttributeVocabulary(self: *@This(), name: Span) bool {
+                if (mode == .structural) return true;
+                if (effective(self.settings).validation.graphviz.invalid_attribute == .off) return true;
+                return self.merge(Local.runAttributeVocabularyTrusted(self.source, self.header.?.name, name, self.sink, if (fixed == null) localSettings(self.settings.validation) else {}, self.hook, &self.poller));
             }
             fn recordGap(self: *@This(), at: u32) void {
                 const first = if (self.result.completion == .incomplete) @min(self.result.completion.incomplete, at) else at;
@@ -163,6 +168,7 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                             self.buffers.append(.{ .name = t.name, .value = t.span }) catch |err|
                                 return self.storageFailure(err, .header_attributes, t.name, @as(u32, @intCast(self.buffers.attributes.items.len)) + 1, @intCast(self.buffers.attributes.capacity));
                         } else {
+                            if (!self.checkAttributeVocabulary(t.name)) return false;
                             if (!self.checkScope(.{ .attribute_name = t.name }, &.{})) return false;
                             return self.checkScope(.{ .attribute_value = .{ .start = t.span.start + 1, .len = t.span.len - 2 } }, &.{});
                         }
@@ -179,7 +185,7 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
             }
             fn finish(self: *@This()) Result {
                 const gaps = self.result.completion == .incomplete;
-                inline for (.{ "duplicate_attribute", "names", "references" }) |name| {
+                inline for (.{ "duplicate_attribute", "names", "references", "graphviz_elements", "graphviz_attributes" }) |name| {
                     if (@field(self.result.checks, name) != .not_run)
                         @field(self.result.checks, name) = if (gaps) .incomplete else .complete;
                 }
@@ -188,11 +194,14 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
             }
             fn run(self: *@This()) Result {
                 const p = effective(self.settings);
+                const v = p.validation;
                 self.result.checks = .{
                     .duplicate_attribute = if (p.validation.duplicate_attribute == .off) .not_run else .incomplete,
                     .invalid_utf8 = if (p.validation.invalid_utf8 == .off) .not_run else .incomplete,
                     .names = if (p.validation.names.severity == .off) .not_run else .incomplete,
                     .references = if (p.validation.references.severity == .off) .not_run else .incomplete,
+                    .graphviz_elements = if (mode == .structural or v.graphviz.unknown_element == .off) .not_run else .incomplete,
+                    .graphviz_attributes = if (mode == .structural or v.graphviz.invalid_attribute == .off) .not_run else .incomplete,
                 };
                 if (self.source.len > p.limits.max_source_bytes) {
                     self.result.completion = .{ .source_limit = p.limits.max_source_bytes };
@@ -206,7 +215,7 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                 const encoded = V.runScopePolled(self.source, .{ .bytes = .{ .start = 0, .len = @intCast(self.source.len) } }, .{}, self.sink, if (fixed == null) self.settings.validation else {}, self.hook, &self.poller);
                 self.result.checks.invalid_utf8 = encoded.checks.invalid_utf8;
                 if (!self.merge(encoded)) return self.result;
-                if (p.validation.duplicate_attribute == .off and p.validation.names.severity == .off and p.validation.references.severity == .off)
+                if (p.validation.duplicate_attribute == .off and p.validation.names.severity == .off and p.validation.references.severity == .off and (mode == .structural or (v.graphviz.unknown_element == .off and v.graphviz.invalid_attribute == .off)))
                     return self.finish();
                 var scanner = lexer.Scanner(backend, false, cancellable).init(self.source);
                 while (true) {
@@ -240,6 +249,7 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                                         .closing => .{ .closing_name = name },
                                         .attribute => .{ .attribute_name = name },
                                     };
+                                    if (pending.name_kind == .attribute and !self.checkAttributeVocabulary(name)) return self.result;
                                     if (!self.checkScope(scope, &.{})) return self.result;
                                 }
                             }

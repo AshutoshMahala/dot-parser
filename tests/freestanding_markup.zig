@@ -60,3 +60,9 @@ export fn check_markup_fragment(source: [*]const u8, len: usize, origin: u32, st
     const checked = P.parseAndValidateIn(input, .{ .document = storage.storage(), .scratch = frames.storage() }, scratch.storage(), markup.diagnostic.discard, .{ .cancellation = .{ .context = stop, .is_requested = stopped } }) catch return 0;
     return if (checked.documentValid()) checked.parse.counts.nodes else 0;
 }
+
+export fn check_graphviz_vocabulary(source: [*]const u8, len: usize, severity: u32) u32 {
+    const G = markup.Profile(.{ .runtime_policy = features.runtime_policy, .policy = .{ .mode = .graphviz, .validation = .{ .duplicate_attribute = .off } } });
+    const checked = G.validateSourceIn(source[0..len], .{}, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .graphviz = .{ .unknown_element = @enumFromInt(severity % 3), .invalid_attribute = @enumFromInt(severity % 3) } } } } else .{});
+    return if (checked.completion == .complete) @truncate(checked.errors +% checked.warnings) else 0;
+}

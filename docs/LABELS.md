@@ -32,10 +32,12 @@ So to check labels, bind a label checker, as shown below. Checking is then on
 automatically.
 
 The `markup` setting decides **whether** labels are checked. The label
-checker's own settings decide **how**. The built-in checker has one way today,
-`mode = .structural`: it checks that tags match and attributes are
-well-formed. It doesn't know Graphviz's list of allowed tags, and it isn't a
-browser HTML parser.
+checker's own settings decide **how**. The default `mode = .structural` checks
+that tags match and attributes are well-formed. The unreleased standalone
+[Graphviz vocabulary mode](MARKUP.md#graphviz-vocabulary) also checks tag and
+attribute names, but not full label grammar. It isn't a browser HTML parser.
+Automatic composition still processes every HTML-like value, not just Graphviz
+label contexts; use explicit selection below for label-only vocabulary checks.
 
 ## Two ways to check labels
 
@@ -206,7 +208,7 @@ The table of result fields is in
 ## Use your own checker
 
 Instead of `markup.Profile(...)`, you can bind your own label processor, for
-example one that only allows Graphviz's tags, or one for a different dialect.
+example one for a different dialect or an application-specific vocabulary.
 See [Bringing your own processor](CUSTOM_PROCESSORS.md).
 
 ## Examples
@@ -223,7 +225,8 @@ Run them with `zig build examples`. Each program is also installed in
 
 ## Not available yet
 
-- Checking labels against Graphviz's list of allowed tags
+- Complete Graphviz label grammar, attribute-value and reference checking
+- Automatically selecting Graphviz label contexts instead of every `<...>` value
 - Checking labels in small steps, or with one budget for DOT and its labels
 
 See the [roadmap](ROADMAP.md).

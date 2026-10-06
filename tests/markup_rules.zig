@@ -434,7 +434,9 @@ test "new checks finish empty input and preserve completed checks when trailing 
         defer parsed.deinit();
         const result = P.validateIn(&parsed.document.?, .{}, discard, .{});
         try equal(.complete, result.completion);
-        inline for (std.meta.fields(@TypeOf(result.checks))) |field| try equal(.complete, @field(result.checks, field.name));
+        inline for (.{ "duplicate_attribute", "invalid_utf8", "names", "references" }) |name| try equal(.complete, @field(result.checks, name));
+        try equal(.not_run, result.checks.graphviz_elements);
+        try equal(.not_run, result.checks.graphviz_attributes);
     }
     var parsed = markup.parseBorrowed(std.testing.allocator, "<a/>\xff", discard, .{});
     defer parsed.deinit();

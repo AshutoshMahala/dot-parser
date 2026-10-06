@@ -795,8 +795,12 @@ and the [processor contract](PROCESSOR_CONTRACT.md); public usage is in
   delayed entry points may still require it in the binary. Runtime selection
   cannot determine linking or install an implementation.
 - Outer selection (`none`, `passthrough`, `process`) is independent of the
-  processor's mode. Built-in markup exposes `mode = .structural`; `extended` and
-  `graphviz` remain future modes, not callable values or a compatibility ladder.
+  processor's mode. Built-in markup exposes `mode = .structural` and an
+  unreleased `.graphviz` vocabulary slice (element/per-element attribute checks,
+  ASCII case-insensitive lookup and duplicate comparison). This is not complete
+  Graphviz compatibility; content models, values, references and automatic
+  label-context selection remain unfinished. `extended` remains future work,
+  not a callable value or a compatibility ladder.
   Custom processors own their schema and need not expose this mode field.
 - Standalone, delayed and during-DOT paths use the same selected implementation.
   Standalone markup depends only on shared support, not DOT records/grammar.

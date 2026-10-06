@@ -91,7 +91,8 @@ test "markup decomposed registry preserves every existing structured identity" {
         "E.Resource.Memory.026",      "E.Validation.Attribute.006", "W.Validation.Attribute.006",
         "E.Syntax.Reference.003",     "W.Syntax.Reference.003",     "E.Validation.Encoding.003",
         "W.Validation.Encoding.003",  "E.Validation.Name.003",      "W.Validation.Name.003",
-        "E.Validation.Reference.003", "W.Validation.Reference.003",
+        "E.Validation.Reference.003", "W.Validation.Reference.003", "E.Validation.Tag.009",
+        "W.Validation.Tag.009",       "E.Validation.Attribute.009", "W.Validation.Attribute.009",
     };
     const codes = std.enums.values(markup.diagnostic.Code);
     try equal(expected.len, codes.len);

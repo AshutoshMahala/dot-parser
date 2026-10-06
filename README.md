@@ -244,6 +244,7 @@ and runs them all, and installs each one in `zig-out/bin/`.
 | [composed_markup](examples/composed_markup.zig) | check every label while parsing DOT | [Labels](docs/LABELS.md#check-every-label-while-parsing) |
 | [delayed_markup](examples/delayed_markup.zig) | check only the labels you choose | [Labels](docs/LABELS.md#check-the-labels-you-choose) |
 | [markup](examples/markup.zig) | parse and validate markup on its own | [Markup](docs/MARKUP.md) |
+| [graphviz_vocabulary](examples/graphviz_vocabulary.zig) | check Graphviz tag and attribute vocabulary (unreleased; not full label grammar) | [Vocabulary](docs/MARKUP.md#graphviz-vocabulary) |
 | [custom_processor](examples/custom_processor.zig) | plug in your own label checker | [Own processor](docs/CUSTOM_PROCESSORS.md) |
 
 ## Building and testing

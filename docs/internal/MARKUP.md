@@ -15,7 +15,7 @@ decision before becoming implementation work.
 
 | Work | Decisions or implementation still needed |
 | --- | --- |
-| Graphviz label validation | Compatibility target, vocabulary, attributes, placement and DOT context selection |
+| Graphviz label validation | Child/content rules, attribute values, references, parsing compatibility and DOT context selection |
 | Extended markup rules | A concrete consumer and a defined vocabulary/grammar |
 | Dialect-specific parsing | Void elements, case/context rules, unquoted/empty attributes and policy surface |
 | Custom name/reference catalogs | Compile-time binding and independently selectable rules |
@@ -27,8 +27,10 @@ decision before becoming implementation work.
 
 ### Graphviz and extended rules
 
-Future `graphviz` and `extended` modes belong to the markup processor, not DOT's
-processing-selection policy. Custom processors need not adopt those mode names.
+`graphviz` belongs to the markup processor, not DOT's processing-selection
+policy; `extended` remains future work. Custom processors need not adopt those
+mode names. Implemented vocabulary coverage is documented in
+[standalone markup](../MARKUP.md#graphviz-vocabulary).
 
 Graphviz checking needs tag vocabulary, attributes and parent/child placement,
 not just a whitelist. It must apply only where Graphviz interprets an ID as a
@@ -36,9 +38,14 @@ label. Context selection must distinguish `n:<p>` (port `p`),
 `label=<p>` (text `p`) and `label=<<p>x</p>>` (an element). Port-reference
 resolution belongs to later graph semantics, not markup validation.
 
-Before implementation, specify the supported Graphviz compatibility target,
-label-context selection, concrete rules, diagnostics and bounded-work/storage
-costs. The extended vocabulary needs an actual consumer and explicit tag,
+Follow Q10's specification-first approach and pinned 16.0.0 differential
+reference. Remaining slices are content/placement/whitespace and element forms;
+attribute values, quoting and the Graphviz reference catalog; then DOT label
+context selection. Verify start/end-name compatibility before changing parsing.
+Do not mistake vocabulary success for full Graphviz compatibility. Rendering,
+font/image availability and graph-level port resolution remain out of scope.
+Specify each new check's diagnostics, coverage and bounded-work/storage costs.
+The extended vocabulary needs an actual consumer and explicit tag,
 attribute and nesting rules; “more HTML” is not a complete contract.
 
 ### Dialect parsing and custom rules

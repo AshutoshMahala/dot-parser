@@ -1,6 +1,6 @@
-//! Standalone, byte-oriented markup fragments, structural slices through 4b.
+//! Standalone, byte-oriented markup fragments with optional Graphviz vocabulary.
 //! Elements, attributes, references, comments, CDATA and optional validation. Not a browser
-//! HTML parser, a complete XML processor, or Graphviz label validation.
+//! HTML parser, a complete XML processor, or complete Graphviz label validation.
 //! Raw fragment operations support explicit delayed use without depending on DOT.
 const std = @import("std");
 const support = @import("parser_support");

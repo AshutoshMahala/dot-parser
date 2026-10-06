@@ -113,7 +113,6 @@ pub fn build(b: *std.Build) void {
         .{ .name = "markup_unmetered", .message = "error: metering is disabled; use run()" },
         .{ .name = "markup_duplicate_diagnostic", .message = "error: duplicate diagnostic identity" },
         .{ .name = "markup_invalid_diagnostic", .message = "error: invalid diagnostic registry metadata" },
-        .{ .name = "markup_graphviz_mode", .message = "has no member named 'graphviz'" },
         .{ .name = "markup_extended_mode", .message = "has no member named 'extended'" },
     }) |fixture| {
         const rejected = b.addObject(.{
@@ -173,6 +172,17 @@ pub fn build(b: *std.Build) void {
     });
     examples_step.dependOn(&b.addRunArtifact(markup_example).step);
     examples_step.dependOn(&b.addInstallArtifact(markup_example, .{}).step);
+    const graphviz_example = b.addExecutable(.{
+        .name = "graphviz_vocabulary",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/graphviz_vocabulary.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "markup_parser", .module = markup }},
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(graphviz_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(graphviz_example, .{}).step);
     const delayed_example = b.addExecutable(.{
         .name = "delayed_markup",
         .root_module = b.createModule(.{

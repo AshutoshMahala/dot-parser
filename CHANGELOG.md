@@ -4,6 +4,17 @@ Notable changes to dot-parser. During `0.x`, minor versions may break
 compatibility, including diagnostic codes and enum values. Breaking changes
 are marked; no compatibility shims are kept.
 
+## Unreleased
+
+### Added
+
+- Standalone markup `.mode = .graphviz`: case-insensitive element and per-element
+  attribute vocabulary checks, independent error/warning/off policies, and
+  diagnostics on complete documents or recognizable source scopes. Duplicate
+  attribute checks in this mode also compare ASCII case-insensitively.
+  This is vocabulary coverage only; placement, values, the Graphviz reference
+  catalog and automatic DOT label-context selection remain unfinished.
+
 ## 0.4.0 — 2026-10-05
 
 Changes since 0.3.0. This is an experimental, breaking minor release.

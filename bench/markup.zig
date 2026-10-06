@@ -17,13 +17,18 @@ pub fn main(init: std.process.Init) !void {
     var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
     const writer = &output.interface;
     const args = try init.minimal.args.toSlice(allocator);
-    if (args.len > 2 or (args.len == 2 and !std.mem.eql(u8, args[1], "--rules-only") and !std.mem.eql(u8, args[1], "--validation-only") and !std.mem.eql(u8, args[1], "--scopes-only"))) return error.InvalidArguments;
+    if (args.len > 2 or (args.len == 2 and !std.mem.eql(u8, args[1], "--rules-only") and !std.mem.eql(u8, args[1], "--validation-only") and !std.mem.eql(u8, args[1], "--scopes-only") and !std.mem.eql(u8, args[1], "--graphviz-only"))) return error.InvalidArguments;
     try writer.print("Node={d} Attribute={d} KeyScratch={d} Frame={d} Diagnostic={d} fixed_session={d} bounded_session={d} runtime_session={d} ValidationResult={d}\n", .{
         @sizeOf(markup.Node),                  @sizeOf(markup.Attribute),  @sizeOf(markup.AttributeKeyScratch),
         markup.FixedParseScratch(1).byte_size, @sizeOf(markup.Diagnostic), @sizeOf(markup.Profile(.{}).Session),
         @sizeOf(markup.BoundedSession),        @sizeOf(Runtime.Session),   @sizeOf(markup.ValidationResult),
     });
     if (args.len == 2) {
+        if (std.mem.eql(u8, args[1], "--graphviz-only")) {
+            try benchGraphviz(init, writer);
+            try writer.flush();
+            return;
+        }
         if (std.mem.eql(u8, args[1], "--scopes-only")) {
             try benchScopes(init, writer);
             try writer.flush();
@@ -118,6 +123,49 @@ pub fn main(init: std.process.Init) !void {
     try benchRules(init, writer);
     try benchCancellation(init, writer);
     try writer.flush();
+}
+
+/// Post-parse vocabulary cost; no new retained fields or vocabulary scratch.
+/// Both modes include ordinary duplicate checking. Diagnostics are discarded,
+/// but their factual error counts are checked. Source/tree creation is untimed.
+fn benchGraphviz(init: std.process.Init, writer: *std.Io.Writer) !void {
+    const allocator = init.arena.allocator();
+    inline for (.{ false, true }) |invalid| {
+        const item = if (invalid) "<custom/><TABLE bad='1'/><BR SRC='x'/>" else "<TABLE BORDER='0' CELLSPACING='0'><TR><TD PORT='p'><B>text</B><BR ALIGN='LEFT'/></TD></TR></TABLE>";
+        const repetitions = 10_000;
+        const source = try allocator.alloc(u8, item.len * repetitions);
+        for (0..repetitions) |index| @memcpy(source[index * item.len ..][0..item.len], item);
+        var parsed = markup.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
+        defer parsed.deinit();
+        const document = parsed.document orelse return error.ParseFailed;
+        const keys = try allocator.alloc(markup.AttributeKeyScratch, markup.requiredValidationScratch(&document));
+        const scratch: markup.ValidationScratch = .{ .attribute_keys = keys };
+        inline for (.{ markup.Mode.structural, markup.Mode.graphviz }) |mode| inline for (.{ false, true }) |runtime| {
+            var times: [9]u64 = undefined;
+            for (0..warmups + times.len) |round| {
+                const start = std.Io.Clock.Timestamp.now(init.io, .awake);
+                var errors: u64 = 0;
+                for (0..batch) |_| errors += validateVocabulary(runtime, mode, &document, scratch);
+                const end = std.Io.Clock.Timestamp.now(init.io, .awake);
+                if (errors != (if (invalid and mode == .graphviz) @as(u64, 3 * repetitions * batch) else 0)) return error.ValidationFailed;
+                if (round >= warmups) times[round - warmups] = @intCast(@divTrunc(start.durationTo(end).raw.nanoseconds, batch));
+            }
+            std.mem.sort(u64, &times, {}, std.sort.asc(u64));
+            const ns: f64 = @floatFromInt(times[4]);
+            try writer.print("vocabulary/{s}/{s}/{s}: source={d}, {d:.3} ms, {d:.1} MB/s, scratch={d}\n", .{
+                if (invalid) "invalid" else "tables", @tagName(mode),                                  if (runtime) "runtime" else "fixed",            source.len,
+                ns / 1e6,                             @as(f64, @floatFromInt(source.len)) * 1000 / ns, keys.len * @sizeOf(markup.AttributeKeyScratch),
+            });
+        };
+    }
+}
+
+noinline fn validateVocabulary(comptime runtime: bool, comptime mode: markup.Mode, document: *const markup.Document, scratch: markup.ValidationScratch) u64 {
+    const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = mode } });
+    var patch: markup.Policy = .{};
+    const input: *volatile markup.Policy = &patch;
+    const result = P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = input.* } else .{});
+    return if (result.completion == .complete) result.errors else std.math.maxInt(u64);
 }
 
 /// Explicit tree-free source-validation cost, including lexical recognition,

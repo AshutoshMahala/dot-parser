@@ -12,6 +12,7 @@ test {
     _ = @import("markup_validation.zig");
     _ = @import("markup_budgets.zig");
     _ = @import("markup_rules.zig");
+    _ = @import("markup_graphviz.zig");
     _ = @import("markup_diagnostics.zig");
     _ = @import("markup_recovery.zig");
     _ = @import("markup_header_recovery.zig");

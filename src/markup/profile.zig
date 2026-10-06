@@ -238,8 +238,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return call("measure", api.Report, .{ allocator, source, diagnostics }, options);
         }
 
-        fn Validator(comptime v: Variant) type {
-            return validation.Validator(if (runtime_policy) null else baseline.validation, v.cancellation());
+        fn Validator(comptime v: Variant, comptime mode: policy.Mode) type {
+            return validation.Validator(if (runtime_policy) null else baseline.validating(), v.cancellation(), mode);
         }
         fn validateCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
             return validatePrepared(method, args, prepare(options));
@@ -247,10 +247,12 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         fn validatePrepared(comptime method: []const u8, args: anytype, options: Prepared) api.ValidationResult {
             const effective = options.policies;
             if (runtime_policy) switch (variantOf(effective)) {
-                inline else => |v| return @call(.auto, @field(Validator(v), method), args ++ .{ effective.validation, hook(v, options.cancellation) }),
+                inline else => |v| return switch (effective.mode) {
+                    inline else => |mode| @call(.auto, @field(Validator(v, mode), method), args ++ .{ effective.validation, hook(v, options.cancellation) }),
+                },
             };
             const v = comptime variantOf(baseline);
-            return @call(.auto, @field(Validator(v), method), args ++ .{ {}, hook(v, options.cancellation) });
+            return @call(.auto, @field(Validator(v, baseline.mode), method), args ++ .{ {}, hook(v, options.cancellation) });
         }
         /// Independent, run-to-completion validation; never changes syntax.
         /// Parse metering does not bound this pass or its sorting/callbacks.
@@ -258,7 +260,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return validateCall("run", .{ document, scratch, diagnostics }, options);
         }
         /// Allocates temporary duplicate-key scratch when needed, freed before
-        /// returning. Encoding/name/reference-only validation needs no allocation.
+        /// returning. Checks other than duplicate attributes need no allocation.
         pub fn validate(allocator: std.mem.Allocator, document: *const api.Document, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
             return validateCall("allocated", .{ allocator, document, diagnostics }, options);
         }
@@ -272,8 +274,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         pub fn validateScope(allocator: std.mem.Allocator, source: []const u8, scope: api.ValidationScope, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
             return validateCall("allocatedScope", .{ allocator, source, scope, diagnostics }, options);
         }
-        fn SourceValidator(comptime v: Variant) type {
-            return source_validation.Validator(v.backend(), if (runtime_policy) null else baseline, v.cancellation());
+        fn SourceValidator(comptime v: Variant, comptime mode: policy.Mode) type {
+            return source_validation.Validator(v.backend(), if (runtime_policy) null else baseline, v.cancellation(), mode);
         }
         fn sourceValidationCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
             return sourceValidationPrepared(method, args, prepare(options));
@@ -281,10 +283,12 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         fn sourceValidationPrepared(comptime method: []const u8, args: anytype, options: Prepared) api.ValidationResult {
             const effective = options.policies;
             if (runtime_policy) switch (variantOf(effective)) {
-                inline else => |v| return @call(.auto, @field(SourceValidator(v), method), args ++ .{ effective, hook(v, options.cancellation) }),
+                inline else => |v| return switch (effective.mode) {
+                    inline else => |mode| @call(.auto, @field(SourceValidator(v, mode), method), args ++ .{ effective, hook(v, options.cancellation) }),
+                },
             };
             const v = comptime variantOf(baseline);
-            return @call(.auto, @field(SourceValidator(v), method), args ++ .{ {}, hook(v, options.cancellation) });
+            return @call(.auto, @field(SourceValidator(v, baseline.mode), method), args ++ .{ {}, hook(v, options.cancellation) });
         }
         /// Local validation without a Document. This does not check tag balance
         /// or replace parsing; incomplete lexical regions cannot be certified.
