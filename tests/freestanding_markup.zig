@@ -66,3 +66,11 @@ export fn check_graphviz_vocabulary(source: [*]const u8, len: usize, severity: u
     const checked = G.validateSourceIn(source[0..len], .{}, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .graphviz = .{ .unknown_element = @enumFromInt(severity % 3), .invalid_attribute = @enumFromInt(severity % 3) } } } } else .{});
     return if (checked.completion == .complete) @truncate(checked.errors +% checked.warnings) else 0;
 }
+
+export fn parse_graphviz_fragment(source: [*]const u8, len: usize, mode: u32) u32 {
+    const G = markup.Profile(.{ .runtime_policy = features.runtime_policy, .policy = .{ .mode = .graphviz } });
+    var nodes: markup.FixedDocumentStorage(.{ .nodes = 16, .attributes = 16 }) = .{};
+    var frames: markup.FixedParseScratch(8) = .{};
+    const parsed = G.parseBorrowedIn(source[0..len], .{ .document = nodes.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .mode = @enumFromInt(mode % 2) } } else .{});
+    return if (parsed.outcome == .success) parsed.counts.nodes else 0;
+}

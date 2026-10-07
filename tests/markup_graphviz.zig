@@ -52,8 +52,8 @@ test "Graphviz vocabulary covers every documented element and per-element attrib
     }
 }
 
-test "vocabulary lookup ignores ASCII case but preserves storage and structural matching" {
-    const source = "<TaBlE BoRdEr='0'><Tr><tD PoRt='p'><b>text</b><bR aLiGn='LEFT'/></tD></Tr></TaBlE>";
+test "Graphviz lookup and tag matching ignore ASCII case without changing source storage" {
+    const source = "<TaBlE BoRdEr='0'><Tr><tD PoRt='p'><b>text</B><bR aLiGn='LEFT'/></Td></tR></TABLE>";
     var result = try Graphviz.parseAndValidate(std.testing.allocator, .{ .bytes = source, .origin = 0 }, discard, .{});
     defer result.deinit();
     try expect(result.documentValid());
@@ -62,7 +62,7 @@ test "vocabulary lookup ignores ASCII case but preserves storage and structural 
     try strings(source, document.source);
     var roots = document.roots();
     try strings("TaBlE", roots.next().?.name().?);
-    var mismatch = Graphviz.parseBorrowed(std.testing.allocator, "<b></B>", discard, .{});
+    var mismatch = markup.parseBorrowed(std.testing.allocator, "<b></B>", discard, .{});
     defer mismatch.deinit();
     try equal(markup.Outcome.invalid_syntax, mismatch.outcome);
     try equal(@as(usize, 20), @sizeOf(markup.Node));
@@ -87,6 +87,184 @@ test "Graphviz duplicate checking is case-insensitive with original first occurr
     }
 }
 
+test "Graphviz matching is selected once across execution variants and session resets" {
+    const source = "<TaBlE><TR><td><B>x</b></TD></tr></TABLE>";
+    const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .graphviz } });
+    inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |metering| inline for (.{ false, true }) |cancellation| {
+        const p: markup.Policy = .{ .mode = .graphviz, .scanner = backend, .execution = .{ .metering = metering, .cancellation = cancellation } };
+        const P = markup.Profile(.{ .policy = p });
+        var nodes: markup.FixedDocumentStorage(.{ .nodes = 5 }) = .{};
+        var frames: markup.FixedParseScratch(4) = .{};
+        const memory: markup.ParseMemory = .{ .document = nodes.storage(), .scratch = frames.storage() };
+        var fixed = P.Session.init(source, memory, discard, .{});
+        defer fixed.deinit();
+        var fixed_work: u32 = 0;
+        if (metering) {
+            try equal(@as(u32, 0), fixed.advance(0).work_used);
+            while (fixed.result() == null) {
+                const step = fixed.advance(1);
+                try expect(step.work_used <= 1);
+                fixed_work += step.work_used;
+            }
+        } else _ = fixed.run();
+        const expected = fixed.result().?;
+        try equal(markup.Outcome.success, expected.outcome);
+        try strings(source, expected.document.?.source);
+        var dynamic = Runtime.Session.init(source, memory, discard, .{ .policy = p });
+        defer dynamic.deinit();
+        var runtime_work: u32 = 0;
+        if (metering) {
+            while (dynamic.result() == null) runtime_work += (try dynamic.advance(1)).work_used;
+            try equal(fixed_work, runtime_work);
+        } else {
+            try std.testing.expectError(error.MeteringDisabled, dynamic.advance(1));
+            _ = dynamic.run();
+        }
+        try equal(expected.outcome, dynamic.result().?.outcome);
+        try equal(expected.counts, dynamic.result().?.counts);
+        const measured = P.measureIn(source, frames.storage(), discard, .{});
+        try equal(expected.outcome, measured.outcome);
+        try equal(expected.counts, measured.counts);
+        try equal(measured, Runtime.measureIn(source, frames.storage(), discard, .{ .policy = p }));
+        dynamic.reset(source, discard, .{ .policy = .{ .mode = .structural } });
+        try equal(markup.Outcome.invalid_syntax, dynamic.run().outcome);
+        dynamic.reset(source, discard, .{}); // inherit baseline again, not previous override
+        try equal(markup.Outcome.success, dynamic.run().outcome);
+    };
+    // Folding is ASCII-only, not Unicode normalization or typo correction.
+    for ([_][]const u8{ "<B></I>", "<é></É>", "<LONG></longer>" }) |source_bytes| {
+        var result = Graphviz.parseBorrowed(std.testing.allocator, source_bytes, discard, .{});
+        defer result.deinit();
+        try equal(markup.Outcome.invalid_syntax, result.outcome);
+    }
+}
+
+test "Graphviz recovery uses the same folded ancestor matching without publishing a repaired tree" {
+    const source = "<TABLE><TR><TD></tr></table><B>later</b>";
+    inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| {
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = .graphviz, .scanner = backend, .execution = .{ .metering = true } } });
+        var nodes: markup.FixedDocumentStorage(.{ .nodes = 5 }) = .{};
+        var frames: markup.FixedParseScratch(3) = .{};
+        var bag: markup.FixedDiagnosticBag(8) = .{};
+        var session = P.Session.init(source, .{ .document = nodes.storage(), .scratch = frames.storage() }, bag.sink(), .{});
+        defer session.deinit();
+        while (session.result() == null) {
+            const step = if (runtime) try session.advance(1) else session.advance(1);
+            try expect(step.work_used <= 1);
+        }
+        const result = session.result().?;
+        try equal(markup.Outcome.invalid_syntax, result.outcome);
+        try equal(.complete, result.completion);
+        try expect(result.document == null);
+        try equal(@as(u32, 1), result.syntax_errors);
+        try equal(@as(usize, 1), bag.items().len);
+        try equal(markup.diagnostic.Code.mismatched_tag, bag.items()[0].code);
+        try strings("tr", bag.items()[0].span.slice(source));
+        try strings("TD", bag.items()[0].related.?.slice(source));
+    };
+}
+
+test "unknown owner attributes retain incomplete coverage across scopes fragments and workspaces" {
+    const source = "<DIV onclick='x'>t</DIV>";
+    const p: markup.Policy = .{ .mode = .graphviz, .validation = .{
+        .invalid_utf8 = .err,
+        .names = .{ .severity = .err },
+        .references = .{ .severity = .err },
+        .graphviz = .{ .unknown_element = .off },
+    } };
+    const P = markup.Profile(.{ .policy = p });
+    const Runtime = markup.Profile(.{ .runtime_policy = true });
+    const input: markup.Fragment = .{ .bytes = source, .origin = 20 };
+    var zero: markup.FixedDiagnosticBag(0) = .{};
+    var owned = try P.parseAndValidate(std.testing.allocator, input, zero.sink(), .{});
+    defer owned.deinit();
+    try equal(markup.Outcome.success, owned.parse.outcome);
+    try expect(!owned.documentValid());
+    try expect(!owned.has_errors and !owned.stopped() and !owned.shouldStop(.fail_fast));
+    try equal(@as(u32, 25), owned.validation.?.completion.incomplete);
+    var pool: markup.FixedDocumentStorage(.{ .nodes = 2, .attributes = 1 }) = .{};
+    var frames: markup.FixedParseScratch(1) = .{};
+    const memory: markup.ParseMemory = .{ .document = pool.storage(), .scratch = frames.storage() };
+    const fixed = try P.parseAndValidateIn(input, memory, .{}, zero.sink(), .{});
+    try equal(owned.validation.?, fixed.validation.?);
+    var workspace = Runtime.prepare(.{ .policy = p }).initWorkspace(std.testing.allocator, .{});
+    defer workspace.deinit();
+    const reused = try workspace.parseAndValidate(input, zero.sink());
+    try equal(owned.validation.?, reused.validation.?);
+    const clean = try workspace.parseAndValidate(.{ .bytes = "<BR/>", .origin = 0 }, zero.sink());
+    try expect(clean.documentValid());
+
+    const checked = P.validateIn(&owned.parse.document.?, .{}, zero.sink(), .{});
+    try equal(@as(u32, 5), checked.completion.incomplete);
+    try equal(.unknown, checked.validity);
+    try equal(@as(u64, 0), checked.errors);
+    try equal(@as(u64, 0), checked.warnings);
+    try equal(.incomplete, checked.checks.graphviz_attributes);
+    try equal(.not_run, checked.checks.graphviz_elements);
+    try equal(.complete, checked.checks.duplicate_attribute);
+    try equal(.complete, checked.checks.invalid_utf8);
+    try equal(.complete, checked.checks.names);
+    try equal(.complete, checked.checks.references);
+    const header: markup.ValidationScope = .{ .opening_header = .{
+        .span = .{ .start = 0, .len = 17 },
+        .name = .{ .start = 1, .len = 3 },
+        .attributes = &.{.{ .name = .{ .start = 5, .len = 7 }, .value = .{ .start = 13, .len = 3 } }},
+    } };
+    try equal(checked, P.validateScopeIn(source, header, .{}, zero.sink(), .{}));
+    try equal(checked, Runtime.validateScope(std.testing.failing_allocator, source, header, zero.sink(), .{ .policy = p }));
+    inline for (.{ .scalar, .block }) |backend| inline for (.{ .off, .err }) |duplicates| inline for (.{ .collect, .fail_fast }) |on_error| {
+        var patch = p;
+        patch.scanner = backend;
+        patch.validation.duplicate_attribute = duplicates;
+        patch.on_error = on_error;
+        const expected = Runtime.validate(std.testing.failing_allocator, &owned.parse.document.?, zero.sink(), .{ .policy = patch });
+        var scratch: markup.FixedSourceValidationScratch(1) = .{};
+        try equal(expected, Runtime.validateSourceIn(source, scratch.storage(), zero.sink(), .{ .policy = patch }));
+        try equal(expected, Runtime.validateSource(std.testing.allocator, source, zero.sink(), .{ .policy = patch }));
+        try equal(@as(u32, 5), expected.completion.incomplete);
+    };
+    // An empty attribute list has no unchecked attributes; an off check makes
+    // no claim and introduces no gap. Neither case constructs a diagnostic.
+    try equal(.complete, P.validateSourceIn("<DIV/>", .{}, zero.sink(), .{}).completion);
+    var disabled = p;
+    disabled.validation.graphviz.invalid_attribute = .off;
+    const skipped = Runtime.validateIn(&owned.parse.document.?, .{}, zero.sink(), .{ .policy = disabled });
+    try equal(.complete, skipped.completion);
+    try equal(.valid, skipped.validity);
+    try equal(.not_run, skipped.checks.graphviz_attributes);
+}
+
+test "unknown owner gaps preserve independent findings and merge with lexical gaps" {
+    const P = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .graphviz, .validation = .{ .graphviz = .{ .unknown_element = .off } } } });
+    inline for (.{ .scalar, .block }) |backend| inline for (.{ .off, .err }) |duplicates| {
+        var storage: markup.FixedSourceValidationScratch(2) = .{};
+        for ([_][]const u8{
+            "<DIV a='x'><BR BAD='y'/></DIV><SPAN b='z'/>",
+            "<DIV a='x'/><BR BAD=0/><SPAN b='z'/>",
+        }) |source| {
+            var bag: markup.FixedDiagnosticBag(8) = .{};
+            const checked = P.validateSourceIn(source, storage.storage(), bag.sink(), .{ .policy = .{ .scanner = backend, .validation = .{ .duplicate_attribute = duplicates } } });
+            try equal(@as(u32, 5), checked.completion.incomplete);
+            try equal(.invalid, checked.validity);
+            try equal(@as(u64, 1), checked.errors);
+            try equal(.incomplete, checked.checks.graphviz_attributes);
+            try equal(@as(usize, 1), bag.items().len);
+            try equal(markup.diagnostic.Code.invalid_attribute, bag.items()[0].code);
+        }
+        const source = "<BR ALIGN=0/><DIV a='x'/>";
+        const checked = P.validateSourceIn(source, storage.storage(), discard, .{ .policy = .{ .scanner = backend, .validation = .{ .duplicate_attribute = duplicates } } });
+        try equal(@as(u32, 10), checked.completion.incomplete);
+    };
+    var bag: markup.FixedDiagnosticBag(8) = .{};
+    var scratch: markup.FixedSourceValidationScratch(2) = .{};
+    const duplicates = P.validateSourceIn("<DIV x='1' X='2'/>", scratch.storage(), bag.sink(), .{});
+    try equal(@as(u32, 5), duplicates.completion.incomplete);
+    try equal(.complete, duplicates.checks.duplicate_attribute);
+    try equal(.invalid, duplicates.validity);
+    try equal(@as(u64, 1), duplicates.errors);
+    try equal(markup.diagnostic.Code.duplicate_attribute, bag.items()[0].code);
+}
+
 test "independent severity controls have compile-time runtime and source-walk parity" {
     @setEvalBranchQuota(20_000);
     const source = "<custom arbitrary='1'><BR SRC='image'/><TD CLASS='x'/></custom>";
@@ -108,7 +286,8 @@ test "independent severity controls have compile-time runtime and source-walk pa
         try equal(@as(u64, if (element == .err) 1 else 0) + @as(u64, if (attribute == .err) 2 else 0), fixed.errors);
         try equal(@as(u64, if (element == .warning) 1 else 0) + @as(u64, if (attribute == .warning) 2 else 0), fixed.warnings);
         try equal(if (element == .off) .not_run else .complete, fixed.checks.graphviz_elements);
-        try equal(if (attribute == .off) .not_run else .complete, fixed.checks.graphviz_attributes);
+        try equal(if (attribute == .off) .not_run else .incomplete, fixed.checks.graphviz_attributes);
+        if (attribute != .off) try equal(@as(u32, 8), fixed.completion.incomplete);
         var local_bag: markup.FixedDiagnosticBag(16) = .{};
         var scratch: markup.FixedSourceValidationScratch(1) = .{};
         try equal(fixed, P.validateSourceIn(source, scratch.storage(), local_bag.sink(), .{}));

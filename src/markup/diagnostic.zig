@@ -149,7 +149,7 @@ pub const Code = enum {
                 .primary = .tag,
                 .sequence = Sequence.mismatch,
                 .summary = "closing tag does not match the open element",
-                .hint = "close the most recently opened element using exactly the same name, including case",
+                .hint = "close the most recently opened element using its opening name",
             },
             .unexpected_close => .{
                 .severity = .err,

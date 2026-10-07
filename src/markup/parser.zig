@@ -1,6 +1,7 @@
 //! Private event-level grammar, shared by fixed/growing/count-only consumers.
 //! No AST dependency. Bounded variants have no source-sized step, including tag-name
 //! comparison. Consumer pointers are supplied when driving, never self-stored.
+const std = @import("std");
 const support = @import("parser_support");
 const lexer = @import("lexer.zig");
 const diagnostic = @import("diagnostic.zig");
@@ -9,7 +10,7 @@ const scratch = @import("scratch.zig");
 const result = @import("result.zig");
 const Kind = @import("kind.zig").Kind;
 
-pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool) type {
+pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode) type {
     const recovery_enabled = fixed == null or fixed.?.on_error == .collect;
     const deviations_enabled = fixed == null or fixed.?.syntax.malformed_reference != .reject;
     const warnings_enabled = fixed == null or fixed.?.syntax.malformed_reference == .warn or fixed.?.unsupported == .warning;
@@ -56,6 +57,9 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         }
         fn fixes(self: *const Self) policy.Fixes {
             return if (fixed) |v| v.fixes else self.settings.fixes;
+        }
+        inline fn nameByteEqual(a: u8, b: u8) bool {
+            return if (mode == .graphviz) std.ascii.toLower(a) == std.ascii.toLower(b) else a == b;
         }
         fn unsupported(self: *const Self) policy.Unsupported {
             return if (fixed) |v| v.unsupported else self.settings.unsupported;
@@ -263,7 +267,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                     self.phase = .compare_close;
                 },
                 .compare_close => {
-                    if (self.compare_byte != self.scanner.source[self.token.name.start + self.compare_index])
+                    if (!nameByteEqual(self.compare_byte, self.scanner.source[self.token.name.start + self.compare_index]))
                         return self.invalid(stack, sink, .mismatched_tag, self.token.name, stack.top().name);
                     self.compare_index += 1;
                     self.phase = if (self.compare_index == self.token.name.len) .close else .compare_open;
@@ -286,7 +290,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                     if (!self.searchCredit(stack, sink)) return;
                     const candidate = self.recovery_state.cursor.candidate;
                     const opener = stack.frames[candidate].name;
-                    if (self.scanner.source[opener.start + self.compare_index] != self.scanner.source[self.token.name.start + self.compare_index]) {
+                    if (!nameByteEqual(self.scanner.source[opener.start + self.compare_index], self.scanner.source[self.token.name.start + self.compare_index])) {
                         self.phase = .recover_find;
                     } else {
                         self.compare_index += 1;
@@ -386,11 +390,10 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
 }
 
 test "each event attempt is charged and every rejecting sink aborts exactly once" {
-    const std = @import("std");
-    try std.testing.expect(Machine(.scalar, .{}, false, false).Settings == void);
-    try std.testing.expect(Machine(.scalar, .{}, false, false).Hook == void);
-    try std.testing.expect(@FieldType(Machine(.scalar, .{ .on_error = .fail_fast }, false, false), "recovery_state") == void);
-    try std.testing.expectEqual(@as(usize, 3 * @sizeOf(u32)), @sizeOf(@FieldType(Machine(.scalar, .{}, true, false), "recovery_state")));
+    try std.testing.expect(Machine(.scalar, .{}, false, false, .structural).Settings == void);
+    try std.testing.expect(Machine(.scalar, .{}, false, false, .structural).Hook == void);
+    try std.testing.expect(@FieldType(Machine(.scalar, .{ .on_error = .fail_fast }, false, false, .structural), "recovery_state") == void);
+    try std.testing.expectEqual(@as(usize, 3 * @sizeOf(u32)), @sizeOf(@FieldType(Machine(.scalar, .{}, true, false, .structural), "recovery_state")));
     try std.testing.expect(@FieldType(lexer.Scanner(.scalar, false, false), "frontier") == void);
     try std.testing.expect(@FieldType(lexer.Scanner(.scalar, true, true), "frontier") == u32);
     const Probe = struct {
@@ -429,7 +432,7 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
         var probe: Probe = .{ .fail_at = if (attempt == 9) null else @intCast(attempt) };
         var storage: scratch.Fixed(1) = .{};
         var stack: scratch.Stack = .{ .frames = storage.storage().frames };
-        var m = Machine(.scalar, .{}, true, false).init("<a x='1'>x<b y='2'/></a>", diagnostic.discard, {}, {});
+        var m = Machine(.scalar, .{}, true, false, .structural).init("<a x='1'>x<b y='2'/></a>", diagnostic.discard, {}, {});
         while (m.terminal == null) {
             const calls = probe.calls;
             const p = m.advance(&stack, &probe, 1);
@@ -450,7 +453,7 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
     var probe: Probe = .{};
     var storage: scratch.Fixed(4) = .{};
     var stack: scratch.Stack = .{ .frames = storage.storage().frames };
-    var m = Machine(.scalar, .{}, true, false).init("<a><b></a><c x='1'>text</c></extra>", diagnostic.discard, {}, {});
+    var m = Machine(.scalar, .{}, true, false, .structural).init("<a><b></a><c x='1'>text</c></extra>", diagnostic.discard, {}, {});
     var calls_at_abort: ?u32 = null;
     while (m.terminal == null) {
         _ = m.advance(&stack, &probe, 1);
@@ -463,7 +466,7 @@ test "each event attempt is charged and every rejecting sink aborts exactly once
     try std.testing.expectEqual(result.Completion.complete, m.terminal.?.completion);
 
     probe = .{};
-    m = Machine(.scalar, .{}, true, false).init("<a good='1' bad=0><b broken=0/></a>", diagnostic.discard, {}, {});
+    m = Machine(.scalar, .{}, true, false, .structural).init("<a good='1' bad=0><b broken=0/></a>", diagnostic.discard, {}, {});
     calls_at_abort = null;
     while (m.terminal == null) {
         const calls = probe.calls;

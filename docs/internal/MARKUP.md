@@ -41,7 +41,8 @@ resolution belongs to later graph semantics, not markup validation.
 Follow Q10's specification-first approach and pinned 16.0.0 differential
 reference. Remaining slices are content/placement/whitespace and element forms;
 attribute values, quoting and the Graphviz reference catalog; then DOT label
-context selection. Verify start/end-name compatibility before changing parsing.
+context selection. ASCII-case-insensitive start/end-name matching is implemented;
+other parsing differences still need explicit contracts and verification.
 Do not mistake vocabulary success for full Graphviz compatibility. Rendering,
 font/image availability and graph-level port resolution remain out of scope.
 Specify each new check's diagnostics, coverage and bounded-work/storage costs.

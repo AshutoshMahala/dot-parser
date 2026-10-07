@@ -173,8 +173,9 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return prepared catch unreachable;
         }
 
-        // Same bit layout as DOT: cancellation=1, metering=2, block=4.
-        const Variant = enum(u3) {
+        // Execution bits match DOT; bit 8 selects Graphviz name matching once,
+        // including for runtime-policy sessions. No per-byte mode dispatch.
+        const Variant = enum(u4) {
             plain,
             cancellable,
             metered,
@@ -183,6 +184,14 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             block_cancellable,
             block_metered,
             block_both,
+            graphviz_plain,
+            graphviz_cancellable,
+            graphviz_metered,
+            graphviz_both,
+            graphviz_block_plain,
+            graphviz_block_cancellable,
+            graphviz_block_metered,
+            graphviz_block_both,
             fn metering(v: Variant) bool {
                 return @intFromEnum(v) & 2 != 0;
             }
@@ -192,14 +201,22 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             fn backend(v: Variant) policy.ScannerBackend {
                 return if (@intFromEnum(v) & 4 != 0) .block else .scalar;
             }
+            fn mode(v: Variant) policy.Mode {
+                return if (@intFromEnum(v) & 8 != 0) .graphviz else .structural;
+            }
         };
         fn variantOf(effective: policy.Effective) Variant {
-            return @enumFromInt(@as(u3, if (effective.scanner == .block) 4 else 0) |
-                @as(u3, if (effective.execution.metering) 2 else 0) |
-                @as(u3, if (effective.execution.cancellation) 1 else 0));
+            const mode_bit: u4 = switch (effective.mode) {
+                .structural => 0,
+                .graphviz => 8,
+            };
+            return @enumFromInt(mode_bit |
+                @as(u4, if (effective.scanner == .block) 4 else 0) |
+                @as(u4, if (effective.execution.metering) 2 else 0) |
+                @as(u4, if (effective.execution.cancellation) 1 else 0));
         }
         fn Core(comptime variant: Variant) type {
-            return engine.Engine(api, variant.backend(), if (runtime_policy) null else baseline.parsing(), variant.metering(), variant.cancellation());
+            return engine.Engine(api, variant.backend(), if (runtime_policy) null else baseline.parsing(), variant.metering(), variant.cancellation(), variant.mode());
         }
         fn settings(comptime variant: Variant, effective: State) Core(variant).Settings {
             return if (runtime_policy) effective.parsing() else {};
@@ -238,8 +255,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return call("measure", api.Report, .{ allocator, source, diagnostics }, options);
         }
 
-        fn Validator(comptime v: Variant, comptime mode: policy.Mode) type {
-            return validation.Validator(if (runtime_policy) null else baseline.validating(), v.cancellation(), mode);
+        fn Validator(comptime v: Variant) type {
+            return validation.Validator(if (runtime_policy) null else baseline.validation, v.cancellation(), v.mode());
         }
         fn validateCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
             return validatePrepared(method, args, prepare(options));
@@ -247,12 +264,10 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         fn validatePrepared(comptime method: []const u8, args: anytype, options: Prepared) api.ValidationResult {
             const effective = options.policies;
             if (runtime_policy) switch (variantOf(effective)) {
-                inline else => |v| return switch (effective.mode) {
-                    inline else => |mode| @call(.auto, @field(Validator(v, mode), method), args ++ .{ effective.validation, hook(v, options.cancellation) }),
-                },
+                inline else => |v| return @call(.auto, @field(Validator(v), method), args ++ .{ effective.validation, hook(v, options.cancellation) }),
             };
             const v = comptime variantOf(baseline);
-            return @call(.auto, @field(Validator(v, baseline.mode), method), args ++ .{ {}, hook(v, options.cancellation) });
+            return @call(.auto, @field(Validator(v), method), args ++ .{ {}, hook(v, options.cancellation) });
         }
         /// Independent, run-to-completion validation; never changes syntax.
         /// Parse metering does not bound this pass or its sorting/callbacks.
@@ -274,8 +289,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         pub fn validateScope(allocator: std.mem.Allocator, source: []const u8, scope: api.ValidationScope, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
             return validateCall("allocatedScope", .{ allocator, source, scope, diagnostics }, options);
         }
-        fn SourceValidator(comptime v: Variant, comptime mode: policy.Mode) type {
-            return source_validation.Validator(v.backend(), if (runtime_policy) null else baseline, v.cancellation(), mode);
+        fn SourceValidator(comptime v: Variant) type {
+            return source_validation.Validator(v.backend(), if (runtime_policy) null else baseline, v.cancellation(), v.mode());
         }
         fn sourceValidationCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
             return sourceValidationPrepared(method, args, prepare(options));
@@ -283,12 +298,10 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         fn sourceValidationPrepared(comptime method: []const u8, args: anytype, options: Prepared) api.ValidationResult {
             const effective = options.policies;
             if (runtime_policy) switch (variantOf(effective)) {
-                inline else => |v| return switch (effective.mode) {
-                    inline else => |mode| @call(.auto, @field(SourceValidator(v, mode), method), args ++ .{ effective, hook(v, options.cancellation) }),
-                },
+                inline else => |v| return @call(.auto, @field(SourceValidator(v), method), args ++ .{ effective, hook(v, options.cancellation) }),
             };
             const v = comptime variantOf(baseline);
-            return @call(.auto, @field(SourceValidator(v, baseline.mode), method), args ++ .{ {}, hook(v, options.cancellation) });
+            return @call(.auto, @field(SourceValidator(v), method), args ++ .{ {}, hook(v, options.cancellation) });
         }
         /// Local validation without a Document. This does not check tag balance
         /// or replace parsing; incomplete lexical regions cannot be certified.
@@ -309,6 +322,14 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             block_cancellable: Core(.block_cancellable).Session,
             block_metered: Core(.block_metered).Session,
             block_both: Core(.block_both).Session,
+            graphviz_plain: Core(.graphviz_plain).Session,
+            graphviz_cancellable: Core(.graphviz_cancellable).Session,
+            graphviz_metered: Core(.graphviz_metered).Session,
+            graphviz_both: Core(.graphviz_both).Session,
+            graphviz_block_plain: Core(.graphviz_block_plain).Session,
+            graphviz_block_cancellable: Core(.graphviz_block_cancellable).Session,
+            graphviz_block_metered: Core(.graphviz_block_metered).Session,
+            graphviz_block_both: Core(.graphviz_block_both).Session,
         } else Core(variantOf(baseline)).Session;
         pub const Session = struct {
             inner: Inner,
@@ -328,8 +349,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             }
             pub fn advance(self: *@This(), budget: u32) (if (runtime_policy) error{MeteringDisabled}!api.Progress else api.Progress) {
                 if (runtime_policy) return switch (self.inner) {
-                    .plain, .cancellable, .block_plain, .block_cancellable => error.MeteringDisabled,
-                    inline .metered, .both, .block_metered, .block_both => |*s| s.advance(budget),
+                    inline else => |*s, v| if (comptime v.metering()) s.advance(budget) else error.MeteringDisabled,
                 };
                 return self.inner.advance(budget);
             }

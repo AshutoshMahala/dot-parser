@@ -797,7 +797,7 @@ and the [processor contract](PROCESSOR_CONTRACT.md); public usage is in
 - Outer selection (`none`, `passthrough`, `process`) is independent of the
   processor's mode. Built-in markup exposes `mode = .structural` and an
   unreleased `.graphviz` vocabulary slice (element/per-element attribute checks,
-  ASCII case-insensitive lookup and duplicate comparison). This is not complete
+  ASCII case-insensitive lookup, duplicate comparison and tag matching). This is not complete
   Graphviz compatibility; content models, values, references and automatic
   label-context selection remain unfinished. `extended` remains future work,
   not a callable value or a compatibility ladder.

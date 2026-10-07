@@ -70,6 +70,19 @@ pub const Result = struct {
     diagnostic_delivery: support.reporting.Delivery = .complete,
 };
 
+/// Shared routing predicate. Structural specializations never activate a
+/// vocabulary pass, regardless of the stored (possibly runtime) severities.
+pub inline fn vocabularyActive(comptime mode: policy.Mode, settings: policy.ValidationSettings) bool {
+    return mode == .graphviz and (settings.graphviz.unknown_element != .off or settings.graphviz.invalid_attribute != .off);
+}
+
+/// Internal traversal helper. Missing coverage is not a finding or a stop;
+/// retain its earliest source offset while independent checks continue.
+pub fn recordGap(result: *Result, at: u32) void {
+    const first = if (result.completion == .incomplete) @min(result.completion.incomplete, at) else at;
+    result.completion = .{ .incomplete = first };
+}
+
 /// Upper bound for an enabled duplicate check, independent of the policy.
 /// O(number of attributes), no allocation or source-byte reads.
 /// Requires Document's source-order/owner invariants, like validation and views.
@@ -138,7 +151,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         }
         fn enabled(settings: Settings) bool {
             const s = rules(settings);
-            return s.duplicate_attribute != .off or s.invalid_utf8 != .off or s.names.severity != .off or s.references.severity != .off or (mode == .graphviz and (s.graphviz.unknown_element != .off or s.graphviz.invalid_attribute != .off));
+            return s.duplicate_attribute != .off or s.invalid_utf8 != .off or s.names.severity != .off or s.references.severity != .off or vocabularyActive(mode, s);
         }
         fn requested(hook: Hook) bool {
             return if (cancellable) (if (hook) |h| h.requested() else false) else false;
@@ -217,10 +230,12 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         /// needed. Encoding is clipped to this scope, including scalar lookahead.
         pub fn runScopeTrusted(source: []const u8, scope: scopes.Scope, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
             var poller: Poller = .{};
-            return runScopePolled(source, scope, scratch, sink, settings, hook, &poller);
+            return runScopePolled(source, scope, scratch, sink, settings, hook, &poller, true);
         }
         /// Internal composition reuses one countdown across scanner and scopes.
-        pub fn runScopePolled(source: []const u8, scope: scopes.Scope, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook, poller: *Poller) Result {
+        /// The source walk supplies its own precise lexical gap; suppress only
+        /// the header-metadata fallback there, never missing vocabulary coverage.
+        pub fn runScopePolled(source: []const u8, scope: scopes.Scope, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook, poller: *Poller, comptime report_header_gap: bool) Result {
             var result = scopeInitial(scope, settings);
             if (!scopeRequested(result)) return .{ .validity = .valid };
             if (!poller.check(&result, hook)) return result;
@@ -269,11 +284,12 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             if (!encodingThrough(bounded_source, end, &offset, poller, &result, sink, settings, hook)) return result;
             const complete = scope != .opening_header or scope.opening_header.complete;
             inline for (std.meta.fields(@TypeOf(result.checks))) |field| {
+                const attributes = comptime std.mem.eql(u8, field.name, "graphviz_attributes");
                 if (@field(result.checks, field.name) != .not_run)
-                    @field(result.checks, field.name) = if (complete) .complete else .incomplete;
+                    @field(result.checks, field.name) = if (!complete or (mode == .graphviz and attributes and result.completion == .incomplete)) .incomplete else .complete;
             }
-            if (!complete) result.completion = .{ .incomplete = incomplete_offset };
-            if (result.errors == 0 and complete) result.validity = .valid;
+            if (report_header_gap and !complete) recordGap(&result, incomplete_offset);
+            if (result.errors == 0 and complete and (mode == .structural or result.completion == .complete)) result.validity = .valid;
             return result;
         }
         pub fn allocatedScope(allocator: std.mem.Allocator, source: []const u8, scope: scopes.Scope, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
@@ -297,7 +313,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             if (scratch.attribute_keys.len < required.count) return unavailable(.{ .storage_exhausted = required.count }, sink, @intCast(scratch.attribute_keys.len), required.span, settings);
             // Only content/vocabulary checks need the forest. The default and
             // encoding-only paths retain their attribute-only/no-pool traversal.
-            if (rules(settings).names.severity != .off or rules(settings).references.severity != .off or (mode == .graphviz and (rules(settings).graphviz.unknown_element != .off or rules(settings).graphviz.invalid_attribute != .off)))
+            if (rules(settings).names.severity != .off or rules(settings).references.severity != .off or vocabularyActive(mode, rules(settings)))
                 return runContent(document, scratch, sink, settings, hook);
             var offset: Offset = if (has_encoding) 0 else {};
             var poller: Poller = .{};
@@ -328,7 +344,8 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
 
         /// Monotonic forest/attribute walks; no per-reference index, node state,
         /// diagnostic queue, or closing-tag rescan. Matched closing names are
-        /// byte-identical to their opening name and are checked once per element.
+        /// identical modulo Graphviz's ASCII case folding; name validity and
+        /// vocabulary membership are therefore checked once per element.
         fn runContent(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
             std.debug.assert(document.records.len <= std.math.maxInt(u32));
             std.debug.assert(document.attributes.len <= std.math.maxInt(u32));
@@ -379,9 +396,9 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             if (rules(settings).names.severity != .off) result.checks.names = .complete;
             if (rules(settings).references.severity != .off) result.checks.references = .complete;
             if (mode == .graphviz and rules(settings).graphviz.unknown_element != .off) result.checks.graphviz_elements = .complete;
-            if (mode == .graphviz and rules(settings).graphviz.invalid_attribute != .off) result.checks.graphviz_attributes = .complete;
+            if (mode == .graphviz and rules(settings).graphviz.invalid_attribute != .off and result.completion == .complete) result.checks.graphviz_attributes = .complete;
             if (!encodingThrough(source, @intCast(source.len), &offset, &poller, &result, sink, settings, hook)) return result;
-            if (result.errors == 0) result.validity = .valid;
+            if (result.errors == 0 and (mode == .structural or result.completion == .complete)) result.validity = .valid;
             return result;
         }
 
@@ -507,9 +524,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         }
 
         inline fn elementKind(source: []const u8, name: Span, settings: Settings) ?graphviz.Element {
-            if (mode == .structural) return null;
-            const s = rules(settings).graphviz;
-            if (s.unknown_element == .off and s.invalid_attribute == .off) return null;
+            if (!vocabularyActive(mode, rules(settings))) return null;
             return graphviz.element(name.slice(source));
         }
         inline fn checkElement(source: []const u8, name: Span, owner: ?graphviz.Element, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
@@ -525,7 +540,10 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             if (severity == .off) return true;
             // An unknown owner's attribute contract is unavailable. Do not
             // manufacture one error per attribute as a consequence of its name.
-            const tag = owner orelse return true;
+            const tag = owner orelse {
+                recordGap(result, name.start);
+                return true;
+            };
             if (graphviz.allowsAttribute(tag, name.slice(source))) return true;
             if (!encodingThrough(source, name.start, offset, poller, result, sink, settings, hook)) return false;
             return emit(result, sink, .{ .code = if (severity == .err) .invalid_attribute else .invalid_attribute_tolerated, .span = name, .related = owner_name }, settings);
@@ -539,8 +557,10 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             if (!poller.step(&result, hook)) return result;
             var offset: Offset = if (has_encoding) name.start else {};
             if (!checkAttribute(source, owner, elementKind(source, owner, settings), name, &offset, poller, &result, sink, settings, hook)) return result;
-            result.checks.graphviz_attributes = .complete;
-            if (result.errors == 0) result.validity = .valid;
+            if (result.completion == .complete) {
+                result.checks.graphviz_attributes = .complete;
+                if (result.errors == 0) result.validity = .valid;
+            }
             return result;
         }
         pub fn allocated(allocator: std.mem.Allocator, document: *const syntax.Document, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {

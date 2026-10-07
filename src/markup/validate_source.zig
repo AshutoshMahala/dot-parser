@@ -70,8 +70,8 @@ pub const Buffers = struct {
 };
 
 pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.Effective, comptime cancellable: bool, comptime mode: policy.Mode) type {
-    const V = validation.Validator(if (fixed) |f| f.validating() else null, cancellable, mode);
-    const Local = validation.Validator(if (fixed) |f| localSettings(f.validating()) else null, cancellable, mode);
+    const V = validation.Validator(if (fixed) |f| f.validation else null, cancellable, mode);
+    const Local = validation.Validator(if (fixed) |f| localSettings(f.validation) else null, cancellable, mode);
     return struct {
         const Self = @This();
         pub const Settings = if (fixed == null) policy.Effective else void;
@@ -88,6 +88,9 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
             buffers: Buffers,
             header: ?struct { start: u32, name: Span } = null,
             poller: V.Poller = .{},
+            // Structural mode has only lexical gaps. Graphviz also has missing
+            // owner contracts; those must not taint independent local checks.
+            lexical_gap: if (mode == .graphviz) bool else void = if (mode == .graphviz) false else {},
 
             fn poll(self: *@This()) bool {
                 return self.poller.step(&self.result, self.hook);
@@ -99,10 +102,10 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                 if (checked.diagnostic_delivery == .failed) self.result.diagnostic_delivery = .failed;
                 switch (checked.completion) {
                     .complete => return true,
-                    // The source walk owns gap locations: an incomplete header
-                    // can be followed by a separately checked value prefix.
-                    .incomplete => {
-                        std.debug.assert(self.result.completion == .incomplete);
+                    .incomplete => |at| {
+                        // Header gaps are recorded by the scanner; local checks
+                        // report only independent missing vocabulary coverage.
+                        validation.recordGap(&self.result, at);
                         return true;
                     },
                     else => {
@@ -115,7 +118,7 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
             // wrapper around the shared poller regresses dense short scopes.
             // Keep the validation kernels themselves under optimizer control.
             inline fn checkScope(self: *@This(), scope: scopes.Scope, keys: []validation.AttributeKeyScratch) bool {
-                return self.merge(Local.runScopePolled(self.source, scope, .{ .attribute_keys = keys }, self.sink, if (fixed == null) localSettings(self.settings.validation) else {}, self.hook, &self.poller));
+                return self.merge(Local.runScopePolled(self.source, scope, .{ .attribute_keys = keys }, self.sink, if (fixed == null) localSettings(self.settings.validation) else {}, self.hook, &self.poller, false));
             }
             inline fn checkAttributeVocabulary(self: *@This(), name: Span) bool {
                 if (mode == .structural) return true;
@@ -123,8 +126,8 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                 return self.merge(Local.runAttributeVocabularyTrusted(self.source, self.header.?.name, name, self.sink, if (fixed == null) localSettings(self.settings.validation) else {}, self.hook, &self.poller));
             }
             fn recordGap(self: *@This(), at: u32) void {
-                const first = if (self.result.completion == .incomplete) @min(self.result.completion.incomplete, at) else at;
-                self.result.completion = .{ .incomplete = first };
+                if (mode == .graphviz) self.lexical_gap = true;
+                validation.recordGap(&self.result, at);
             }
             fn storageFailure(self: *@This(), err: anyerror, resource: diagnostic.Resource, at: Span, required: u32, available: u32) bool {
                 const finding: diagnostic.Diagnostic = if (err == error.OutOfMemory)
@@ -185,9 +188,11 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
             }
             fn finish(self: *@This()) Result {
                 const gaps = self.result.completion == .incomplete;
+                const lexical_gap = if (mode == .graphviz) self.lexical_gap else gaps;
                 inline for (.{ "duplicate_attribute", "names", "references", "graphviz_elements", "graphviz_attributes" }) |name| {
+                    const attributes = comptime std.mem.eql(u8, name, "graphviz_attributes");
                     if (@field(self.result.checks, name) != .not_run)
-                        @field(self.result.checks, name) = if (gaps) .incomplete else .complete;
+                        @field(self.result.checks, name) = if (lexical_gap or (attributes and gaps)) .incomplete else .complete;
                 }
                 if (!gaps and self.result.errors == 0) self.result.validity = .valid;
                 return self.result;
@@ -212,10 +217,10 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                 }
                 // Encoding has no lexical prerequisites, so even a terminal
                 // malformed header cannot hide invalid bytes elsewhere.
-                const encoded = V.runScopePolled(self.source, .{ .bytes = .{ .start = 0, .len = @intCast(self.source.len) } }, .{}, self.sink, if (fixed == null) self.settings.validation else {}, self.hook, &self.poller);
+                const encoded = V.runScopePolled(self.source, .{ .bytes = .{ .start = 0, .len = @intCast(self.source.len) } }, .{}, self.sink, if (fixed == null) self.settings.validation else {}, self.hook, &self.poller, false);
                 self.result.checks.invalid_utf8 = encoded.checks.invalid_utf8;
                 if (!self.merge(encoded)) return self.result;
-                if (p.validation.duplicate_attribute == .off and p.validation.names.severity == .off and p.validation.references.severity == .off and (mode == .structural or (v.graphviz.unknown_element == .off and v.graphviz.invalid_attribute == .off)))
+                if (p.validation.duplicate_attribute == .off and p.validation.names.severity == .off and p.validation.references.severity == .off and !validation.vocabularyActive(mode, v))
                     return self.finish();
                 var scanner = lexer.Scanner(backend, false, cancellable).init(self.source);
                 while (true) {

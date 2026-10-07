@@ -5,6 +5,33 @@ const gpa = std.testing.allocator;
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 
+test "composed Graphviz matching and unknown-owner coverage follow the child policy" {
+    inline for (.{ false, true }) |runtime| {
+        const Child = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = .graphviz, .validation = .{ .graphviz = .{ .unknown_element = .off } } } });
+        const P = dot.Profile(.{ .policy = .{ .on_error = .fail_fast }, .processors = .{ .markup = Child } });
+        var zero: P.FixedDiagnosticBag(0) = .{};
+        var valid = try P.parseAndValidate(gpa, "graph { a [label=<<b>bold</B>>]; }", zero.sink(), .{});
+        defer valid.deinit(gpa);
+        try expect(valid.documentValid());
+        var gap = try P.parseAndValidate(gpa, "graph { a [label=<<DIV onclick='x'>t</DIV>>]; b [label=<<b>next</B>>]; }", zero.sink(), .{});
+        defer gap.deinit(gpa);
+        try expect(gap.dot.documentValid());
+        try expect(!gap.documentValid());
+        try expect(gap.markup.complete and !gap.markup.has_errors and gap.markup.stop == null);
+        try equal(@as(u32, 2), gap.markup.visited);
+        try equal(@as(u32, 1), gap.markup.valid);
+        try equal(@as(u32, 0), gap.markup.rejected);
+        try equal(@as(u32, 1), gap.markup.unprocessed);
+        if (runtime) {
+            var bag: P.FixedDiagnosticBag(8) = .{};
+            var structural = try P.parseAndValidate(gpa, "graph { a [label=<<b>bold</B>>]; }", bag.sink(), .{ .markup = .{ .policy = .{ .mode = .structural } } });
+            defer structural.deinit(gpa);
+            try expect(!structural.documentValid());
+            try expect(structural.markup.has_errors);
+        }
+    }
+}
+
 test "DOT presets preserve bound processing and unbound passthrough defaults" {
     const Child = markup.Profile(.{ .policy = .{ .mode = .structural } });
     const Bound = dot.Profile(.{ .processors = .{ .markup = Child } });

@@ -29,7 +29,7 @@ The built-in grammar is an XML-like subset of HTML:
 | Input | Handling |
 | --- | --- |
 | Plain text, several top-level elements, empty input | Supported |
-| Elements `<a>...</a>` and self-closing `<br/>` | Supported. Closing tags must match exactly, including case. |
+| Elements `<a>...</a>` and self-closing `<br/>` | Supported. Structural mode matches closing tags exactly; Graphviz mode ignores ASCII case. |
 | Quoted attributes `<font color="red">` | Supported, kept in order, including duplicates |
 | References `&amp;`, `&#65;`, `&#x41;` | Checked for correct form and kept as written, not expanded |
 | Comments `<!-- -->` and `<![CDATA[ ]]>` | Supported, kept as their own nodes |
@@ -157,11 +157,22 @@ The vocabulary follows the [documented Graphviz label grammar](https://graphviz.
 | `IMG` | `SCALE`, `SRC` |
 | `TR`, `I`, `B`, `U`, `O`, `SUB`, `SUP`, `S`, `HR`, `VR` | No attributes |
 
-Vocabulary lookup and duplicate-attribute comparison are ASCII case-insensitive.
+Vocabulary lookup, duplicate-attribute comparison and opening/closing tag matching
+are ASCII case-insensitive. Recovery uses that same matching rule. Structural
+mode remains byte-exact; neither mode normalizes non-ASCII names or guesses typos.
 Spelling, attribute order, values and duplicates remain retained as written.
-Opening/closing names still have to match exactly, including case. An unknown
-element gets one vocabulary finding; its attribute vocabulary is unavailable and skipped,
-but recognized descendants and independent checks are still checked.
+An unknown element gets one vocabulary finding when that check is enabled;
+its attribute vocabulary is unavailable and skipped, but recognized descendants
+and independent checks are still checked.
+
+When attribute checking is enabled, attributes on an unknown element leave
+`graphviz_attributes` incomplete and `completion.incomplete` at the first unchecked
+attribute name (or an earlier coverage gap). This is not an additional diagnostic
+or a reason to stop. Without other errors, validity is `unknown` and
+`documentValid()` is false—even when
+`unknown_element = .off`. Independent completed checks still report `complete`.
+An unknown element with no attributes introduces no attribute-coverage gap;
+an off attribute check remains `not_run`.
 
 `validation.checks.graphviz_elements` and `graphviz_attributes` report coverage
 of these two checks. `documentValid()` means valid under the implemented,
@@ -181,10 +192,10 @@ Lookup adds bounded comparisons per element/attribute, no retained fields and
 no allocation of its own. Tree validation walks nodes and attributes once;
 duplicate checking keeps its existing sorting/scratch costs. Source validation
 needs no header buffer when duplicate checking is off. Fixed structural profiles
-compile out vocabulary checks. Validation remains unmetered; cancellation and
-diagnostic-stop behavior are unchanged. Runtime-enabled profiles compile both
-modes and select one before traversal; this has a binary-size cost and should
-be benchmarked separately from fixed profiles.
+compile out vocabulary checks and case folding. Validation remains unmetered;
+cancellation and diagnostic-stop behavior are unchanged. Runtime-enabled profiles
+compile both modes and select one before parsing/validation; this has a binary-size
+cost and should be benchmarked separately from fixed profiles.
 
 For DOT, select label values explicitly using the [delayed path](LABELS.md).
 Automatic composition still processes **every** HTML-like operand and does not
@@ -382,7 +393,7 @@ Every setting:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `.structural` | `.structural` or `.graphviz` (currently vocabulary checks only; see [coverage](#graphviz-vocabulary)) |
+| `mode` | `.structural` | `.structural` or `.graphviz` (vocabulary checks and ASCII-case-insensitive tag matching; see [coverage](#graphviz-vocabulary)) |
 | `limits.max_source_bytes` | 4 GiB | Largest input accepted |
 | `limits.max_nodes` | no limit | Elements, text runs, comments and CDATA sections |
 | `limits.max_attributes` | no limit | Attributes in total |

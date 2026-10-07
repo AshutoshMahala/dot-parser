@@ -11,7 +11,9 @@ are marked; no compatibility shims are kept.
 - Standalone markup `.mode = .graphviz`: case-insensitive element and per-element
   attribute vocabulary checks, independent error/warning/off policies, and
   diagnostics on complete documents or recognizable source scopes. Duplicate
-  attribute checks in this mode also compare ASCII case-insensitively.
+  attribute checks and opening/closing tag matching in this mode also compare
+  ASCII case-insensitively. Structural mode remains byte-exact. Skipped attributes
+  on unknown elements report incomplete coverage, not successful validation.
   This is vocabulary coverage only; placement, values, the Graphviz reference
   catalog and automatic DOT label-context selection remain unfinished.
 

@@ -2,8 +2,8 @@
 const std = @import("std");
 pub const RuleSeverity = enum { err, warning, off };
 pub const ScannerBackend = enum { scalar, block };
-/// Graphviz currently adds vocabulary checks only, not complete label grammar.
-/// Extended remains unimplemented. Neither mode changes the structural parser.
+/// Graphviz adds vocabulary checks and ASCII-case-insensitive tag matching,
+/// not complete label grammar. Extended remains unimplemented.
 pub const Mode = enum { structural, graphviz };
 pub const Acceptance = enum { reject, warn, accept };
 pub const OnError = @import("parser_support").execution.OnError;
@@ -71,11 +71,6 @@ pub const Effective = struct {
 
     pub fn parsing(self: Effective) ParseSettings {
         return .{ .limits = self.limits, .syntax = self.syntax, .fixes = self.diagnostics.fixes, .unsupported = self.diagnostics.unsupported, .on_error = self.on_error };
-    }
-    pub fn validating(self: Effective) ValidationSettings {
-        var selected = self.validation;
-        if (self.mode == .structural) selected.graphviz = .{ .unknown_element = .off, .invalid_attribute = .off };
-        return selected;
     }
 };
 pub const ParseSettings = struct { limits: Limits = .{}, syntax: SyntaxSettings = .{}, fixes: Fixes = .all, unsupported: Unsupported = .err, on_error: OnError = .collect };
