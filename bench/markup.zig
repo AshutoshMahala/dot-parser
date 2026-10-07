@@ -3,8 +3,10 @@
 //! measured separately; reserved bytes are not process RSS or allocator overhead.
 const std = @import("std");
 const markup = @import("markup_parser");
+// Keep structural baselines stable; --graphviz-only measures vocabulary separately.
+const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
 fn RuntimeFor(comptime backend: markup.ScannerBackend) type {
-    return markup.Profile(.{ .runtime_policy = true, .policy = .{ .scanner = backend } });
+    return markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .scanner = backend } });
 }
 const Runtime = RuntimeFor(.scalar);
 const batch = 16;
@@ -67,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
             const repetitions = if (comptime std.mem.eql(u8, name, "prose") or std.mem.startsWith(u8, name, "long_")) 5_000 else 50_000;
             for (0..repetitions) |_| try source.appendSlice(allocator, item);
         }
-        const measured = markup.measure(allocator, source.items, markup.diagnostic.discard, .{});
+        const measured = Structural.measure(allocator, source.items, markup.diagnostic.discard, .{});
         if (measured.outcome != .success) return error.MeasureFailed;
         const memory: markup.ParseMemory = .{
             .document = .{ .nodes = try allocator.alloc(markup.Node, measured.counts.nodes), .attributes = try allocator.alloc(markup.Attribute, measured.counts.attributes) },
@@ -80,7 +82,10 @@ pub fn main(init: std.process.Init) !void {
             inline for (.{ "fixed", "runtime_baseline", "runtime_override", "count_only", "cancellable" }) |mode| {
                 var times: [9]u64 = undefined;
                 var patch: markup.Policy = if (comptime std.mem.eql(u8, mode, "runtime_override")) markup.presets.standard else .{};
-                if (comptime std.mem.eql(u8, mode, "runtime_override")) patch.scanner = backend;
+                if (comptime std.mem.eql(u8, mode, "runtime_override")) {
+                    patch.mode = .structural;
+                    patch.scanner = backend;
+                }
                 const opaque_patch: *volatile markup.Policy = &patch;
                 var stop: u8 = 0;
                 for (0..warmups + times.len) |round| {
@@ -101,7 +106,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (comptime std.mem.eql(u8, name, "attributes") or std.mem.eql(u8, name, "duplicates")) {
-            const parsed = markup.parseBorrowedIn(source.items, memory, markup.diagnostic.discard, .{});
+            const parsed = Structural.parseBorrowedIn(source.items, memory, markup.diagnostic.discard, .{});
             const document = parsed.document orelse return error.ParseFailed;
             const capacity = markup.requiredValidationScratch(&document);
             const scratch: markup.ValidationScratch = .{ .attribute_keys = try allocator.alloc(markup.AttributeKeyScratch, capacity) };
@@ -135,7 +140,7 @@ fn benchGraphviz(init: std.process.Init, writer: *std.Io.Writer) !void {
         const repetitions = 10_000;
         const source = try allocator.alloc(u8, item.len * repetitions);
         for (0..repetitions) |index| @memcpy(source[index * item.len ..][0..item.len], item);
-        var parsed = markup.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
+        var parsed = Structural.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
         defer parsed.deinit();
         const document = parsed.document orelse return error.ParseFailed;
         const keys = try allocator.alloc(markup.AttributeKeyScratch, markup.requiredValidationScratch(&document));
@@ -207,7 +212,7 @@ fn benchScopes(init: std.process.Init, writer: *std.Io.Writer) !void {
     }
 }
 noinline fn sourceScopes(comptime backend: markup.ScannerBackend, comptime runtime: bool, source: []const u8, scratch: markup.SourceValidationScratch) markup.ValidationResult {
-    const p: markup.Policy = .{ .scanner = backend, .validation = .{ .names = .{ .severity = .err }, .references = .{ .severity = .err } } };
+    const p: markup.Policy = .{ .mode = .structural, .scanner = backend, .validation = .{ .names = .{ .severity = .err }, .references = .{ .severity = .err } } };
     const P = markup.Profile(.{ .runtime_policy = runtime, .policy = p });
     var patch: markup.Policy = .{};
     const input: *volatile markup.Policy = &patch;
@@ -230,11 +235,11 @@ fn benchCancellation(init: std.process.Init, writer: *std.Io.Writer) !void {
             source[0] = '<';
             @memcpy(source[source.len - 2 ..], "/>");
         }
-        var parsed = markup.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
+        var parsed = Structural.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
         defer parsed.deinit();
         const document = parsed.document orelse return error.ParseFailed;
         inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |cancellable| {
-            const patch: markup.Policy = .{ .validation = .{
+            const patch: markup.Policy = .{ .mode = .structural, .validation = .{
                 .duplicate_attribute = .off,
                 .invalid_utf8 = if (dense or comptime std.mem.eql(u8, fixture, "encoding")) .err else .off,
                 .names = .{ .severity = if (names or dense) .err else .off },
@@ -266,7 +271,7 @@ noinline fn countPoll(context: ?*anyopaque) bool {
     return false;
 }
 noinline fn validateWithHook(comptime runtime: bool, comptime cancellable: bool, comptime patch: markup.Policy, document: *const markup.Document, calls: *u64) bool {
-    const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else patch });
+    const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{ .mode = .structural } else patch });
     var input = patch;
     const opaque_patch: *volatile markup.Policy = &input;
     const hook: markup.Cancellation = .{ .context = calls, .is_requested = countPoll };
@@ -290,7 +295,7 @@ fn benchRules(init: std.process.Init, writer: *std.Io.Writer) !void {
         const repetitions = 50_000;
         const source = try allocator.alloc(u8, item.len * repetitions);
         for (0..repetitions) |index| @memcpy(source[index * item.len ..][0..item.len], item);
-        const Reader = markup.Profile(.{ .policy = .{ .syntax = .{ .malformed_reference = .accept } } });
+        const Reader = markup.Profile(.{ .policy = .{ .mode = .structural, .syntax = .{ .malformed_reference = .accept } } });
         var parsed = Reader.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
         defer parsed.deinit();
         const document = parsed.document orelse return error.ParseFailed;
@@ -298,7 +303,7 @@ fn benchRules(init: std.process.Init, writer: *std.Io.Writer) !void {
         const references = comptime std.mem.eql(u8, fixture, "references");
         const keys = try allocator.alloc(markup.AttributeKeyScratch, if (combined) markup.requiredValidationScratch(&document) else 0);
         const scratch: markup.ValidationScratch = .{ .attribute_keys = keys };
-        const patch: markup.Policy = .{ .validation = .{
+        const patch: markup.Policy = .{ .mode = .structural, .validation = .{
             .names = .{ .severity = if (references) .off else .warning },
             .references = .{ .severity = if (combined or references) .warning else .off },
             .invalid_utf8 = if (combined) .warning else .off,
@@ -346,7 +351,7 @@ fn benchEncoding(init: std.process.Init, writer: *std.Io.Writer) !void {
         const repetitions = 50_000;
         const source = try allocator.alloc(u8, item.len * repetitions);
         for (0..repetitions) |index| @memcpy(source[index * item.len ..][0..item.len], item);
-        var parsed = markup.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
+        var parsed = Structural.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
         defer parsed.deinit();
         const document = parsed.document orelse return error.ParseFailed;
         const combined = comptime std.mem.eql(u8, fixture, "combined");
@@ -373,7 +378,7 @@ fn benchEncoding(init: std.process.Init, writer: *std.Io.Writer) !void {
 }
 
 noinline fn validateEncoding(comptime runtime: bool, comptime combined: bool, document: *const markup.Document, scratch: markup.ValidationScratch) u64 {
-    const policy: markup.Policy = .{ .validation = .{ .invalid_utf8 = .warning, .duplicate_attribute = if (combined) .warning else .off } };
+    const policy: markup.Policy = .{ .mode = .structural, .validation = .{ .invalid_utf8 = .warning, .duplicate_attribute = if (combined) .warning else .off } };
     var patch = policy;
     const opaque_patch: *volatile markup.Policy = &patch;
     const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else policy });
@@ -382,15 +387,15 @@ noinline fn validateEncoding(comptime runtime: bool, comptime combined: bool, do
 }
 
 noinline fn validateFixed(document: *const markup.Document, scratch: markup.ValidationScratch) u64 {
-    const r = markup.validateIn(document, scratch, markup.diagnostic.discard, .{});
+    const r = Structural.validateIn(document, scratch, markup.diagnostic.discard, .{});
     return if (r.completion == .complete) r.errors else std.math.maxInt(u64);
 }
 noinline fn parseFixed(comptime backend: markup.ScannerBackend, source: []const u8, memory: markup.ParseMemory) markup.Counts {
-    const r = markup.Profile(.{ .policy = .{ .scanner = backend } }).parseBorrowedIn(source, memory, markup.diagnostic.discard, .{});
+    const r = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend } }).parseBorrowedIn(source, memory, markup.diagnostic.discard, .{});
     return if (r.outcome == .success) r.counts else .{};
 }
 noinline fn countOnly(comptime backend: markup.ScannerBackend, source: []const u8, frames: markup.ParseScratch) markup.Counts {
-    const r = markup.Profile(.{ .policy = .{ .scanner = backend } }).measureIn(source, frames, markup.diagnostic.discard, .{});
+    const r = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend } }).measureIn(source, frames, markup.diagnostic.discard, .{});
     return if (r.outcome == .success) r.counts else .{};
 }
 noinline fn parseRuntime(comptime backend: markup.ScannerBackend, source: []const u8, memory: markup.ParseMemory, patch: markup.Policy) markup.Counts {
@@ -403,7 +408,7 @@ noinline fn requested(context: ?*anyopaque) bool {
     return flag.* != 0;
 }
 noinline fn parseCancellable(comptime backend: markup.ScannerBackend, source: []const u8, memory: markup.ParseMemory, stop: *u8) markup.Counts {
-    const P = markup.Profile(.{ .policy = .{ .scanner = backend, .execution = .{ .cancellation = true } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend, .execution = .{ .cancellation = true } } });
     const r = P.parseBorrowedIn(source, memory, markup.diagnostic.discard, .{ .cancellation = .{ .context = stop, .is_requested = requested } });
     return if (r.outcome == .success) r.counts else .{};
 }

@@ -1,6 +1,8 @@
 //! Resource budgets bound adversarial shapes independently of diagnostic severity.
 const std = @import("std");
 const markup = @import("markup_parser");
+// These fixtures exercise vocabulary-independent structural behavior.
+const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
 const equal = std.testing.expectEqual;
 const expect = std.testing.expect;
 const discard = markup.diagnostic.discard;
@@ -16,10 +18,10 @@ test "16 MiB invalid-byte floods retain at most 1024 diagnostics, including alte
             while (index < source.len) : (index += 2) source[index] = 'x';
         }
         var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
-        const parsed = markup.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
+        const parsed = Structural.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
         try equal(markup.Outcome.success, parsed.outcome);
         const document = parsed.document.?;
-        const P = markup.Profile(.{ .runtime_policy = alternating, .policy = .{ .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err } } });
+        const P = markup.Profile(.{ .runtime_policy = alternating, .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err } } });
         // Track only diagnostic allocations, not the caller's input buffer.
         var tracked = std.testing.FailingAllocator.init(std.testing.allocator, .{});
         var bag = markup.GrowableDiagnosticBag.init(tracked.allocator(), .{});
@@ -39,7 +41,7 @@ test "16 MiB invalid-byte floods retain at most 1024 diagnostics, including alte
         bag.deinit();
         try equal(tracked.allocated_bytes, tracked.freed_bytes);
         // Wide factual counts remain available with a non-retaining destination.
-        const prefix = markup.parseBorrowedIn(source[0..70_000], .{ .document = output.storage() }, discard, .{});
+        const prefix = Structural.parseBorrowedIn(source[0..70_000], .{ .document = output.storage() }, discard, .{});
         const complete = P.validateIn(&prefix.document.?, .{}, discard, .{});
         try equal(.complete, complete.completion);
         try equal(@as(u64, if (alternating) 35_000 else 70_000), complete.errors);
@@ -50,11 +52,11 @@ test "default bag bounds duplicate floods without mutating the completed tree" {
     const source = "<a " ++ "x='0' " ** 2049 ++ "/>";
     var output: markup.FixedDocumentStorage(.{ .nodes = 1, .attributes = 2049 }) = .{};
     var scratch: markup.FixedValidationScratch(2049) = .{};
-    const parsed = markup.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
+    const parsed = Structural.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
     const document = parsed.document.?;
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
     defer bag.deinit();
-    const checked = markup.validateIn(&document, scratch.storage(), bag.sink(), .{});
+    const checked = Structural.validateIn(&document, scratch.storage(), bag.sink(), .{});
     try equal(markup.reporting.StopReason.requested, checked.completion.diagnostic_stopped);
     try equal(.incomplete, checked.checks.duplicate_attribute);
     try equal(@as(u64, 1024), checked.errors);
@@ -62,14 +64,14 @@ test "default bag bounds duplicate floods without mutating the completed tree" {
     try equal(@as(usize, 2049), document.attributes.len);
     var unlimited = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{ .max_entries = .unlimited });
     defer unlimited.deinit();
-    const complete = markup.validateIn(&document, scratch.storage(), unlimited.sink(), .{});
+    const complete = Structural.validateIn(&document, scratch.storage(), unlimited.sink(), .{});
     try equal(.complete, complete.completion);
     try equal(@as(u64, 2048), complete.errors);
     try equal(@as(usize, 2048), unlimited.items().len);
 }
 
 test "default bag bounds tolerated-reference floods and latched sessions do no more work" {
-    const P = markup.Profile(.{ .policy = .{ .syntax = .{ .malformed_reference = .warn }, .execution = .{ .metering = true } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .syntax = .{ .malformed_reference = .warn }, .execution = .{ .metering = true } } });
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
     defer bag.deinit();
     var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
@@ -93,6 +95,7 @@ test "untrusted is a complete resource-only preset with runtime inheritance and 
     }
     const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = markup.presets.untrusted });
     const HostileBaseline = markup.Profile(.{ .runtime_policy = true, .policy = .{
+        .mode = .structural,
         .scanner = .block,
         .syntax = .{ .malformed_reference = .accept },
         .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err },
@@ -125,7 +128,7 @@ test "untrusted source preflight rejects without reading or allocating; exact li
     defer owned.deinit();
     try equal(expected, owned.outcome);
     try expect(owned.document == null);
-    const Dynamic = markup.Profile(.{ .runtime_policy = true });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     try equal(expected, Dynamic.measureIn(unreadable, .{}, discard, .{ .policy = markup.presets.untrusted }).outcome);
     const source = try std.testing.allocator.alloc(u8, max);
     defer std.testing.allocator.free(source);
@@ -142,7 +145,7 @@ fn repeated(prefix: []const u8, item: []const u8, count: usize, suffix: []const 
 }
 
 test "untrusted count and nesting budgets accept exact boundaries and reject the next item" {
-    const Dynamic = markup.Profile(.{ .runtime_policy = true });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     const max_nodes = Untrusted.baseline.limits.max_nodes;
     const nodes = try repeated("", "<a/>", max_nodes + 1, "");
     defer std.testing.allocator.free(nodes);

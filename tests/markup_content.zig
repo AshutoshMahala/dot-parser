@@ -70,7 +70,8 @@ test "comments and CDATA retain leaf identity, raw delimiters and exact bodies" 
     try expect(roots.next() == null);
     var keys: markup.FixedValidationScratch(2) = .{};
     var doc = parsed.document.?;
-    const checked = markup.validateIn(&doc, keys.storage(), discard, .{});
+    const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
+    const checked = Structural.validateIn(&doc, keys.storage(), discard, .{});
     try equal(@as(u32, 1), checked.errors);
 }
 

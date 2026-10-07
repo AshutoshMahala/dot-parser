@@ -6,7 +6,13 @@ pub fn main(init: std.process.Init) !void {
     const source = "Hello &amp; <widget name='demo' name=\"retained too\"><B>world</B><br/></widget><!-- retained --><![CDATA[<raw>&text]]>!";
     // This profile bounds parsing; the default bag independently caps findings at 1024.
     // Bound input acquisition before parsing too; this example uses a fixed string.
-    const Reader = markup.Profile(.{ .policy = markup.presets.untrusted });
+    const Reader = markup.Profile(.{
+        .policy = blk: {
+            var policy = markup.presets.untrusted;
+            policy.mode = .structural; // Custom vocabulary, with the same resource limits.
+            break :blk policy;
+        },
+    });
     var bag = markup.GrowableDiagnosticBag.init(init.arena.allocator(), .{});
     defer bag.deinit();
     var parsed = Reader.parseBorrowed(init.arena.allocator(), source, bag.sink(), .{});
@@ -25,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
         // Parsing retains every occurrence; later validation leaves that tree intact.
         // UTF-8 is opt-in and checks the entire source, including comments/CDATA.
         // Name rules and reference catalogs are independent of structural syntax.
-        const Checked = markup.Profile(.{ .policy = .{ .validation = .{
+        const Checked = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
             .invalid_utf8 = .err,
             .names = .{ .rule = .xml_1_0, .severity = .err },
             .references = .{ .catalog = .xml_predefined, .severity = .warning },

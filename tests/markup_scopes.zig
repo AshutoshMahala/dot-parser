@@ -1,5 +1,7 @@
 const std = @import("std");
 const markup = @import("markup_parser");
+// These fixtures exercise vocabulary-independent structural behavior.
+const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const discard = markup.diagnostic.discard;
@@ -7,7 +9,7 @@ const Span = markup.location.Span;
 fn span(source: []const u8, needle: []const u8) Span {
     return .{ .start = @intCast(std.mem.indexOf(u8, source, needle).?), .len = @intCast(needle.len) };
 }
-const All = markup.Profile(.{ .policy = .{ .validation = .{
+const All = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
     .invalid_utf8 = .err,
     .names = .{ .severity = .err },
     .references = .{ .severity = .err },
@@ -27,7 +29,7 @@ test "local attribute value validation is independent of outer syntax and exclud
     try equal(markup.diagnostic.Code.unknown_reference, bag.items()[0].code);
     try equal(markup.diagnostic.Code.invalid_utf8, bag.items()[1].code);
     try equal(span(source, "&bogus;").start + 7, bag.items()[1].span.start);
-    const P = markup.Profile(.{ .policy = .{ .validation = .{ .invalid_utf8 = .err } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .invalid_utf8 = .err } } });
     var truncated: markup.FixedDiagnosticBag(8) = .{};
     // A local boundary cannot borrow continuation bytes from an adjacent scope.
     const r = P.validateScopeIn("\xc3\xa9", .{ .bytes = .{ .start = 0, .len = 1 } }, .{}, truncated.sink(), .{});
@@ -52,7 +54,7 @@ test "headers names and content can be validated without a tree" {
     try equal(markup.diagnostic.Code.unknown_reference, bag.items()[0].code);
     try equal(markup.diagnostic.Code.duplicate_attribute, bag.items()[1].code);
     try equal(attributes[0].name, bag.items()[1].related.?);
-    const Names = markup.Profile(.{ .policy = .{ .validation = .{ .names = .{ .severity = .err } } } });
+    const Names = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .names = .{ .severity = .err } } } });
     inline for (.{ "opening_name", "closing_name", "attribute_name" }) |kind| {
         var names: markup.FixedDiagnosticBag(4) = .{};
         const r = Names.validateScopeIn("·", @unionInit(markup.ValidationScope, kind, .{ .start = 0, .len = 2 }), .{}, names.sink(), .{});
@@ -66,13 +68,13 @@ test "headers names and content can be validated without a tree" {
 
 test "source scopes report duplicate attributes despite closing tag errors with policy parity" {
     const source = "<x a='1' a='2'>&bogus;</wrong>";
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     try equal(markup.Outcome.invalid_syntax, parsed.outcome);
     try expect(parsed.document == null);
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |cancellable| {
-        const p: markup.Policy = .{ .scanner = backend, .validation = .{ .references = .{ .severity = .err } }, .execution = .{ .cancellation = cancellable } };
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{ .validation = .{ .duplicate_attribute = .off } } else p });
+        const p: markup.Policy = .{ .mode = .structural, .scanner = backend, .validation = .{ .references = .{ .severity = .err } }, .execution = .{ .cancellation = cancellable } };
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off } } else p });
         const options: P.Options = if (runtime) .{ .policy = .{ .scanner = backend, .validation = .{ .duplicate_attribute = .err, .references = .{ .severity = .err } }, .execution = .{ .cancellation = cancellable } } } else .{};
         var scratch: markup.FixedSourceValidationScratch(2) = .{};
         var bag: markup.FixedDiagnosticBag(8) = .{};
@@ -90,7 +92,7 @@ test "source scopes report duplicate attributes despite closing tag errors with 
 }
 
 test "partial header validation survives missing delimiters and safely resumes other scopes" {
-    const P = markup.Profile(.{ .policy = .{ .validation = .{ .references = .{ .severity = .err } } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .references = .{ .severity = .err } } } });
     for ([_][]const u8{
         "<x a='1' a='2'>", "<x a='1' a='2'></x", "<x a='1' a='2'", "<x a='1' a='2' </x>",
     }, 0..) |source, index| {
@@ -108,7 +110,7 @@ test "partial header validation survives missing delimiters and safely resumes o
     try equal(span(source, "0").start, recovered.completion.incomplete);
     try equal(@as(u64, 3), recovered.errors);
     try equal(.incomplete, recovered.checks.duplicate_attribute);
-    const Fast = markup.Profile(.{ .policy = .{ .on_error = .fail_fast } });
+    const Fast = markup.Profile(.{ .policy = .{ .mode = .structural, .on_error = .fail_fast } });
     const fast = Fast.validateSourceIn(source, scratch.storage(), discard, .{});
     try equal(.error_stopped, fast.completion);
     try equal(@as(u64, 1), fast.errors);
@@ -127,7 +129,7 @@ test "encoding remains independent of terminal syntax while local coverage stays
     try equal(.invalid, r.validity);
     try equal(@as(u64, 1), r.errors);
     var scratch: markup.FixedSourceValidationScratch(1) = .{};
-    const empty = markup.validateSourceIn("<x bad='unfinished", scratch.storage(), discard, .{});
+    const empty = Structural.validateSourceIn("<x bad='unfinished", scratch.storage(), discard, .{});
     try equal(@as(u32, "<x bad='unfinished".len), empty.completion.incomplete);
     try equal(.unknown, empty.validity);
 }
@@ -136,17 +138,17 @@ test "source scope buffers are explicit reusable bounded and optional" {
     const source = "<a x='1' x='2'/><b y='1' y='2'/>";
     var attrs: [2]markup.ScopeAttribute = undefined;
     var keys: [2]markup.AttributeKeyScratch = undefined;
-    const good = markup.validateSourceIn(source, .{ .attributes = &attrs, .attribute_keys = &keys }, discard, .{});
+    const good = Structural.validateSourceIn(source, .{ .attributes = &attrs, .attribute_keys = &keys }, discard, .{});
     try equal(.complete, good.completion);
     try equal(@as(u64, 2), good.errors);
     inline for (.{ false, true }) |key_shortage| {
         var bag: markup.FixedDiagnosticBag(4) = .{};
-        const bad = markup.validateSourceIn(source, .{ .attributes = attrs[0..if (key_shortage) 2 else 1], .attribute_keys = keys[0..if (key_shortage) 1 else 2] }, bag.sink(), .{});
+        const bad = Structural.validateSourceIn(source, .{ .attributes = attrs[0..if (key_shortage) 2 else 1], .attribute_keys = keys[0..if (key_shortage) 1 else 2] }, bag.sink(), .{});
         try equal(@as(u32, 2), bad.completion.storage_exhausted);
         try equal(.unknown, bad.validity);
         try equal(if (key_shortage) markup.diagnostic.Resource.attribute_keys else .header_attributes, bag.items()[0].details.capacity.resource);
     }
-    const P = markup.Profile(.{ .policy = .{ .validation = .{ .duplicate_attribute = .off, .names = .{ .severity = .err }, .references = .{ .severity = .err } } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .names = .{ .severity = .err }, .references = .{ .severity = .err } } } });
     const no_alloc = P.validateSource(std.testing.failing_allocator, "<x a='&bogus;' b='2'></bad>", discard, .{});
     try equal(.complete, no_alloc.completion);
     try equal(@as(u64, 1), no_alloc.errors);
@@ -159,7 +161,7 @@ test "scope validation stops immediately for diagnostic stops failures and cance
     const source = "<x a='1' a='2'/><y b='1' b='2'/>";
     var scratch: markup.FixedSourceValidationScratch(2) = .{};
     var bag: markup.FixedDiagnosticBag(1) = .{};
-    const stopped = markup.validateSourceIn(source, scratch.storage(), bag.sink(), .{});
+    const stopped = Structural.validateSourceIn(source, scratch.storage(), bag.sink(), .{});
     try equal(markup.reporting.StopReason.requested, stopped.completion.diagnostic_stopped);
     try equal(@as(u64, 1), stopped.errors);
     try equal(.invalid, stopped.validity);
@@ -169,7 +171,7 @@ test "scope validation stops immediately for diagnostic stops failures and cance
             return error.DiagnosticSinkFailure;
         }
     };
-    const failed = markup.validateSourceIn(source, scratch.storage(), .{ .context = null, .emit_fn = Reject.emit }, .{});
+    const failed = Structural.validateSourceIn(source, scratch.storage(), .{ .context = null, .emit_fn = Reject.emit }, .{});
     try equal(markup.reporting.StopReason.failure, failed.completion.diagnostic_stopped);
     try equal(.failed, failed.diagnostic_delivery);
     try equal(@as(u64, 1), failed.errors);
@@ -178,7 +180,7 @@ test "scope validation stops immediately for diagnostic stops failures and cance
             return true;
         }
     };
-    const P = markup.Profile(.{ .policy = .{ .execution = .{ .cancellation = true } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .execution = .{ .cancellation = true } } });
     const cancelled = P.validateSourceIn(source, .{}, discard, .{ .cancellation = .{ .context = null, .is_requested = Stop.poll } });
     try equal(.cancelled, cancelled.completion);
     try equal(.unknown, cancelled.validity);
@@ -186,7 +188,7 @@ test "scope validation stops immediately for diagnostic stops failures and cance
 }
 
 test "source validation honors source limits before dereferencing descriptors" {
-    const P = markup.Profile(.{ .policy = .{ .limits = .{ .max_source_bytes = 3 } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .limits = .{ .max_source_bytes = 3 } } });
     const unreadable = @as([*]const u8, @ptrFromInt(1))[0..4];
     const r = P.validateSourceIn(unreadable, .{}, discard, .{});
     try equal(@as(u32, 3), r.completion.source_limit);
@@ -195,7 +197,7 @@ test "source validation honors source limits before dereferencing descriptors" {
 
 fn allocatedScopes(allocator: std.mem.Allocator) !void {
     const source = "<x a='1' a='2'/><x a='1' b='2' c='3' d='4' e='5' f='6' a='7'>";
-    const r = markup.validateSource(allocator, source, discard, .{});
+    const r = Structural.validateSource(allocator, source, discard, .{});
     if (r.completion == .out_of_memory) return error.OutOfMemory;
     try equal(.complete, r.completion);
     try equal(@as(u64, 2), r.errors);
@@ -212,7 +214,7 @@ test "scope scanning is invariant across every source truncation and backend" {
         const a = All.validateSource(std.testing.allocator, source[0..end], scalar.sink(), .{});
         inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |cancellable| {
             block.reset();
-            const B = markup.Profile(.{ .policy = .{ .scanner = backend, .execution = .{ .cancellation = cancellable }, .validation = .{ .invalid_utf8 = .err, .names = .{ .severity = .err }, .references = .{ .severity = .err } } } });
+            const B = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend, .execution = .{ .cancellation = cancellable }, .validation = .{ .invalid_utf8 = .err, .names = .{ .severity = .err }, .references = .{ .severity = .err } } } });
             const b = B.validateSource(std.testing.allocator, source[0..end], block.sink(), .{});
             try std.testing.expectEqualDeep(a, b);
             try std.testing.expectEqualSlices(markup.Diagnostic, scalar.items(), block.items());
@@ -223,7 +225,7 @@ test "scope scanning is invariant across every source truncation and backend" {
     // an out-of-range or misordered local view to the shared validation rules.
     var random = std.Random.DefaultPrng.init(0x53434f504553);
     var bytes: [source.len]u8 = undefined;
-    const Block = markup.Profile(.{ .policy = .{ .scanner = .block, .execution = .{ .cancellation = true }, .validation = .{
+    const Block = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = .block, .execution = .{ .cancellation = true }, .validation = .{
         .invalid_utf8 = .err,
         .names = .{ .severity = .err },
         .references = .{ .severity = .err },
@@ -249,7 +251,7 @@ fn allocatedHeaderScope(allocator: std.mem.Allocator) !void {
         .{ .name = .{ .start = 3, .len = 1 }, .value = .{ .start = 5, .len = 3 } },
         .{ .name = .{ .start = 9, .len = 1 }, .value = .{ .start = 11, .len = 3 } },
     };
-    const r = markup.validateScope(allocator, source, .{ .opening_header = .{ .span = .{ .start = 0, .len = source.len }, .name = .{ .start = 1, .len = 1 }, .attributes = &attributes } }, discard, .{});
+    const r = Structural.validateScope(allocator, source, .{ .opening_header = .{ .span = .{ .start = 0, .len = source.len }, .name = .{ .start = 1, .len = 1 }, .attributes = &attributes } }, discard, .{});
     if (r.completion == .out_of_memory) return error.OutOfMemory;
     try equal(.complete, r.completion);
     try equal(@as(u64, 1), r.errors);
@@ -262,7 +264,7 @@ test "standalone header scope allocation is optional and failure safe" {
 }
 
 test "a broken attribute value does not hide its name or completed references in its prefix" {
-    const P = markup.Profile(.{ .policy = .{ .validation = .{ .names = .{ .severity = .err }, .references = .{ .severity = .err } } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .names = .{ .severity = .err }, .references = .{ .severity = .err } } } });
     const source = "<x a='1' a='&bogus;";
     var bag: markup.FixedDiagnosticBag(8) = .{};
     const r = P.validateSource(std.testing.allocator, source, bag.sink(), .{});
@@ -280,7 +282,7 @@ test "a broken attribute value does not hide its name or completed references in
 }
 
 test "automatic name checking excludes closers but explicit closing scopes remain checkable" {
-    const P = markup.Profile(.{ .policy = .{ .validation = .{ .names = .{ .severity = .err } } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .names = .{ .severity = .err } } } });
     const source = "<x></\xff";
     const automatic = P.validateSource(std.testing.allocator, source, discard, .{});
     try expect(automatic.completion == .incomplete);
@@ -301,7 +303,7 @@ test "source validation shares cancellation countdown across dense scopes and he
     };
     const source = "<a x='1' y='2'/>" ** 10000;
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| inline for (.{ .off, .err }) |duplicate| {
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .scanner = backend, .execution = .{ .cancellation = true }, .validation = .{
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = .structural, .scanner = backend, .execution = .{ .cancellation = true }, .validation = .{
             .duplicate_attribute = duplicate,
             .names = .{ .severity = .err },
             .references = .{ .severity = .err },
@@ -329,8 +331,10 @@ test "source validation shares cancellation countdown across dense scopes and he
 
 test "scope severities have fixed runtime and disabled-check parity" {
     inline for (.{ .err, .warning, .off }) |severity| inline for (.{ false, true }) |runtime| {
-        const p: markup.Policy = .{ .validation = .{ .duplicate_attribute = severity, .references = .{ .severity = severity } } };
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else p });
+        const p: markup.Policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = severity, .references = .{ .severity = severity } } };
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{
+            .mode = .structural,
+        } else p });
         var scratch: markup.FixedSourceValidationScratch(2) = .{};
         const r = P.validateSourceIn("<x a='1' a='2'>&bogus;</wrong>", scratch.storage(), discard, if (runtime) .{ .policy = p } else .{});
         try equal(.complete, r.completion);
@@ -342,13 +346,13 @@ test "scope severities have fixed runtime and disabled-check parity" {
 }
 
 test "source scopes and retained validation share diagnostic kernels" {
-    const P = markup.Profile(.{ .policy = .{ .validation = .{ .names = .{ .severity = .err }, .references = .{ .severity = .err } } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .names = .{ .severity = .err }, .references = .{ .severity = .err } } } });
     for ([_][]const u8{
         "<x a='1' a='2' a='3'/>",
         "<x b='&bogus;' a='2' b='3' c='4' d='5' e='6' a='7' b='8' f='9'/>",
         "<x \xff='&\xff;' a='&bogus;'/>text &unknown;<!--&not_checked;-->",
     }) |input| {
-        var parsed = markup.parseBorrowed(std.testing.allocator, input, discard, .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, input, discard, .{});
         defer parsed.deinit();
         const document = parsed.document.?;
         var retained: markup.FixedDiagnosticBag(32) = .{};
@@ -374,13 +378,15 @@ fn expectInvalidScope(comptime P: type, source: []const u8, scope: markup.Valida
 test "public scope metadata is checked with fixed runtime and disabled content policies" {
     const source = "<x a='1' b='2'/>";
     inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |enabled| {
-        const p: markup.Policy = .{ .validation = .{
+        const p: markup.Policy = .{ .mode = .structural, .validation = .{
             .duplicate_attribute = if (enabled) .err else .off,
             .invalid_utf8 = if (enabled) .err else .off,
             .names = .{ .severity = if (enabled) .err else .off },
             .references = .{ .severity = if (enabled) .err else .off },
         } };
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else p });
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{
+            .mode = .structural,
+        } else p });
         const options: P.Options = if (runtime) .{ .policy = p } else .{};
         inline for (.{ "opening_name", "closing_name", "attribute_name", "attribute_value", "text", "bytes" }) |kind| {
             for ([_]Span{
@@ -451,7 +457,7 @@ test "public metadata audit honors cancellation even with content checks off" {
             return self.calls == 3;
         }
     };
-    const P = markup.Profile(.{ .policy = .{ .validation = .{ .duplicate_attribute = .off }, .execution = .{ .cancellation = true } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off }, .execution = .{ .cancellation = true } } });
     var stop: Stop = .{};
     const r = P.validateScope(std.testing.failing_allocator, &source, .{ .opening_header = .{
         .span = .{ .start = 0, .len = source.len },
@@ -467,8 +473,10 @@ test "public metadata audit honors cancellation even with content checks off" {
 test "incomplete offsets retain the earliest lexical gap despite later checks" {
     const source = "ok<a bad=0/><b other=1/><c x='1' x='2'>&bogus;</c>\xff";
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| {
-        const p: markup.Policy = .{ .scanner = backend, .validation = .{ .invalid_utf8 = .err, .references = .{ .severity = .err } } };
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else p });
+        const p: markup.Policy = .{ .mode = .structural, .scanner = backend, .validation = .{ .invalid_utf8 = .err, .references = .{ .severity = .err } } };
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{
+            .mode = .structural,
+        } else p });
         var bag: markup.FixedDiagnosticBag(8) = .{};
         const r = P.validateSource(std.testing.allocator, source, bag.sink(), if (runtime) .{ .policy = p } else .{});
         try equal(span(source, "0").start, r.completion.incomplete);
@@ -494,7 +502,7 @@ test "incomplete offsets retain the earliest lexical gap despite later checks" {
     try equal(span(terminal, "0").start, later.completion.incomplete);
     // A later operational stop keeps its cause instead of returning the gap.
     var stopped_bag: markup.FixedDiagnosticBag(1) = .{};
-    const stopped = markup.validateSource(std.testing.allocator, "<a bad=0/><b x='1' x='2'/>", stopped_bag.sink(), .{});
+    const stopped = Structural.validateSource(std.testing.allocator, "<a bad=0/><b x='1' x='2'/>", stopped_bag.sink(), .{});
     try equal(markup.reporting.StopReason.requested, stopped.completion.diagnostic_stopped);
     try equal(@as(usize, 32), @sizeOf(markup.ValidationResult));
 }
@@ -511,11 +519,11 @@ test "incomplete header scope offsets identify unavailable values or the prefix 
         .attributes = &attrs,
         .complete = false,
     };
-    const missing = markup.validateScope(std.testing.allocator, source, .{ .opening_header = header }, discard, .{});
+    const missing = Structural.validateScope(std.testing.allocator, source, .{ .opening_header = header }, discard, .{});
     try equal(@as(u32, @intCast(attrs[1].name.endOffset())), missing.completion.incomplete);
     try equal(.unknown, missing.validity);
     header.attributes = attrs[0..1];
     header.span.len = @intCast(attrs[0].value.endOffset() - header.span.start);
-    const prefix = markup.validateScopeIn(source, .{ .opening_header = header }, .{}, discard, .{});
+    const prefix = Structural.validateScopeIn(source, .{ .opening_header = header }, .{}, discard, .{});
     try equal(@as(u32, @intCast(header.span.endOffset())), prefix.completion.incomplete);
 }

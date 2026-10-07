@@ -1,6 +1,8 @@
 //! Public standalone diagnostics: no DOT dependency, allocator or OS in rendering.
 const std = @import("std");
 const markup = @import("markup_parser");
+// These fixtures exercise vocabulary-independent structural behavior.
+const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
 
 test "file names escape terminal controls without truncating valid paths" {
     const finding: markup.Diagnostic = .{ .code = .unexpected_close, .span = .{ .start = 0, .len = 1 } };
@@ -117,7 +119,7 @@ test "markup decomposed registry preserves every existing structured identity" {
 test "markup boxed diagnostics annotate the opener and closing name in the shared style" {
     const source = "<a>\n</b>";
     var bag: markup.FixedDiagnosticBag(4) = .{};
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
     defer parsed.deinit();
     try equal(markup.Outcome.invalid_syntax, parsed.outcome);
     var storage: [4096]u8 = undefined;
@@ -137,9 +139,9 @@ test "markup boxed diagnostics annotate the opener and closing name in the share
 test "markup duplicate attributes have primary and related labels on one line" {
     const source = "<a x='1' x='2'/>";
     var bag: markup.FixedDiagnosticBag(4) = .{};
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
     defer parsed.deinit();
-    const result = markup.validate(std.testing.allocator, &parsed.document.?, bag.sink(), .{});
+    const result = Structural.validate(std.testing.allocator, &parsed.document.?, bag.sink(), .{});
     try equal(@as(u64, 1), result.errors);
     var storage: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&storage);
@@ -205,9 +207,9 @@ test "markup repair filtering has compile-time runtime and scanner parity" {
     inline for (.{ .scalar, .block }) |backend| {
         inline for (.{ .reject, .warn }) |acceptance| {
             inline for (.{ .all, .machine_applicable, .off }) |mode| {
-                const policy: markup.Policy = .{ .scanner = backend, .syntax = .{ .malformed_reference = acceptance }, .diagnostics = .{ .fixes = mode } };
+                const policy: markup.Policy = .{ .mode = .structural, .scanner = backend, .syntax = .{ .malformed_reference = acceptance }, .diagnostics = .{ .fixes = mode } };
                 const Fixed = markup.Profile(.{ .policy = policy });
-                const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .diagnostics = .{ .fixes = .off } } });
+                const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .diagnostics = .{ .fixes = .off } } });
                 var a: markup.FixedDiagnosticBag(4) = .{};
                 var b: markup.FixedDiagnosticBag(4) = .{};
                 const ra = Fixed.measure(std.testing.allocator, "&amp", a.sink(), .{});
@@ -237,7 +239,7 @@ test "markup fixes add no diagnostic layout cost and never guess unrelated repai
     try equal(@as(usize, 36), @sizeOf(markup.Diagnostic));
     for ([_][]const u8{ "&", "&#", "&#x", "&#0;", "<a></b>", "<a>", "</a>" }) |source| {
         var bag: markup.FixedDiagnosticBag(4) = .{};
-        _ = markup.measure(std.testing.allocator, source, bag.sink(), .{});
+        _ = Structural.measure(std.testing.allocator, source, bag.sink(), .{});
         try expect(bag.items().len >= 1);
         for (bag.items()) |finding| try expect(finding.suggestedFix() == null);
     }
@@ -246,7 +248,7 @@ test "markup fixes add no diagnostic layout cost and never guess unrelated repai
 }
 
 test "markup repair filtering leaves sink stop and failure outcomes unchanged" {
-    const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .syntax = .{ .malformed_reference = .warn } } });
+    const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .syntax = .{ .malformed_reference = .warn } } });
     for ([_]markup.reporting.Fixes{ .all, .machine_applicable, .off }) |mode| {
         var stopped: markup.FixedDiagnosticBag(1) = .{};
         const stopped_result = Runtime.measure(std.testing.allocator, "&amp<a/>", stopped.sink(), .{ .policy = .{ .diagnostics = .{ .fixes = mode } } });
@@ -281,10 +283,10 @@ test "low-level markup lexing exposes a possible repair without changing input" 
 }
 
 test "semicolon repair eligibility uses numeric character validity in text and attributes" {
-    const Runtime = markup.Profile(.{ .runtime_policy = true });
+    const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     const values = [_]u32{ 0, 1, 4, 5, 8, 9, 10, 11, 12, 13, 14, 31, 32, 127, 160, 0xd7ff, 0xd800, 0xdfff, 0xe000, 0xfffd, 0xfffe, 0xffff, 0x10000, 0x10ffff, 0x110000, 0xffffffff };
     inline for (.{ .scalar, .block }) |backend| {
-        const Fixed = markup.Profile(.{ .policy = .{ .scanner = backend } });
+        const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend } });
         inline for (.{ "&#{d}", "&#x{x}" }) |format| {
             for (values) |value| {
                 const valid = value == 9 or value == 10 or value == 13 or
@@ -323,7 +325,7 @@ test "semicolon repair eligibility uses numeric character validity in text and a
 }
 
 test "named repairs do not inherit an earlier forbidden numeric value" {
-    const P = markup.Profile(.{ .policy = .{ .syntax = .{ .malformed_reference = .warn } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .syntax = .{ .malformed_reference = .warn } } });
     var bag: markup.FixedDiagnosticBag(8) = .{};
     const source = "&#5 &amp <a v='&#x4 &copy'/>";
     try equal(.success, P.measure(std.testing.allocator, source, bag.sink(), .{}).outcome);
@@ -342,7 +344,7 @@ test "markup attribute and reference hints describe the actual repair" {
     };
     for (cases) |case| {
         var bag: markup.FixedDiagnosticBag(4) = .{};
-        _ = markup.measure(std.testing.allocator, case.source, bag.sink(), .{});
+        _ = Structural.measure(std.testing.allocator, case.source, bag.sink(), .{});
         try equal(@as(usize, 1), bag.items().len);
         var storage: [4096]u8 = undefined;
         var writer = std.Io.Writer.fixed(&storage);
@@ -354,7 +356,7 @@ test "markup attribute and reference hints describe the actual repair" {
 }
 
 test "markup catalog hints suggest numeric spellings without expanding the catalog" {
-    const P = markup.Profile(.{ .policy = .{ .validation = .{ .references = .{ .catalog = .xml_predefined, .severity = .err } } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .references = .{ .catalog = .xml_predefined, .severity = .err } } } });
     for ([_][]const u8{ "&nbsp;", "&copy;", "&mdash;" }, [_][]const u8{ "&#160;", "&#169;", "&#8212;" }) |source, replacement| {
         var bag: markup.FixedDiagnosticBag(4) = .{};
         var parsed = P.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
@@ -379,7 +381,7 @@ test "markup catalog hints suggest numeric spellings without expanding the catal
 test "markup mismatches name both tags in compact and boxed rendering" {
     const source = "<server>\n</servr>";
     var bag: markup.FixedDiagnosticBag(4) = .{};
-    _ = markup.measure(std.testing.allocator, source, bag.sink(), .{});
+    _ = Structural.measure(std.testing.allocator, source, bag.sink(), .{});
     var storage: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&storage);
     try markup.console.render(bag.items()[0], .{ .source = source, .source_name = "input.xml" }, &writer);

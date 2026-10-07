@@ -13,7 +13,8 @@ The package has two independent modules:
 - **`dot_parser`** parses DOT.
 - **`markup_parser`** parses HTML-like markup, such as Graphviz's
   `label=<<b>Hi</b>>` labels. It can check labels while DOT is parsed, or work
-  on its own with no DOT at all.
+  on its own with no DOT at all. It defaults to Graphviz vocabulary checks;
+  select [structural mode](docs/MARKUP.md) for custom markup vocabulary.
 
 > **Status: experimental (0.x).** It works and is well tested, but names may
 > still change between versions. Breaking changes are listed in the

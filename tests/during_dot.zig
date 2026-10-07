@@ -5,6 +5,25 @@ const gpa = std.testing.allocator;
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 
+test "default bound markup checks Graphviz vocabulary without changing DOT-only defaults" {
+    const Bound = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
+    var valid = try Bound.parseAndValidate(gpa, "graph { a [label=<<b>bold</B>>]; }", Bound.DiagnosticSink.discard, .{});
+    defer valid.deinit(gpa);
+    try expect(valid.documentValid());
+    const source = "graph { a [label=<<custom/>>]; }";
+    var bag: Bound.FixedDiagnosticBag(8) = .{};
+    var checked = try Bound.parseAndValidate(gpa, source, bag.sink(), .{});
+    defer checked.deinit(gpa);
+    try expect(checked.dot.documentValid());
+    try expect(!checked.documentValid());
+    try equal(@as(u32, 1), checked.markup.rejected);
+    try equal(@as(usize, 1), bag.items().len);
+    try equal(markup.diagnostic.Code.unknown_element, bag.items()[0].markup.code);
+    var outer = dot.parseAndValidate(gpa, source, dot.diagnostic.discard, .{});
+    defer outer.deinit(gpa);
+    try expect(outer.documentValid());
+}
+
 test "composed Graphviz matching and unknown-owner coverage follow the child policy" {
     inline for (.{ false, true }) |runtime| {
         const Child = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = .graphviz, .validation = .{ .graphviz = .{ .unknown_element = .off } } } });
@@ -58,7 +77,7 @@ test "runtime DOT presets inherit compiled markup handling including explicit ch
         const P = dot.Profile(.{
             .runtime_policy = true,
             .policy = .{ .markup = selection },
-            .processors = .{ .markup = markup.Profile(.{}) },
+            .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) },
         });
         const mode = selection orelse .process;
         for ([_]dot.Policy{ dot.presets.standard, dot.presets.lenient }) |preset| {
@@ -149,7 +168,7 @@ test "runtime activation does not reset the independently configured markup poli
 }
 
 test "one composed call and one bag retain independent outer and inner findings" {
-    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
+    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) } });
     const source = "digraph { a -- b [label=<<b x='1' x='2'>text</wrong>>]; c [label=<<i>ok</i>>]; }";
     var bag = P.GrowableDiagnosticBag.init(gpa, .{});
     defer bag.deinit();
@@ -189,7 +208,7 @@ test "one composed call and one bag retain independent outer and inner findings"
 
 test "all HTML operand positions and concatenations are processed once on both backends" {
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |controlled| {
-        const Inner = markup.Profile(.{ .policy = .{ .scanner = backend, .execution = .{ .cancellation = controlled } } });
+        const Inner = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend, .execution = .{ .cancellation = controlled } } });
         const P = dot.Profile(.{ .policy = .{ .scanner = backend, .execution = .{ .cancellation = controlled } }, .processors = .{ .markup = Inner } });
         const source = "digraph <name> { <a>:<port>:<n> -> <b>; subgraph <s> { <x>; } <key>=<value>; a [<attr>=<<b/>>+\"quoted\"+<<i/>>]; }";
         var checked = try P.parseAndValidate(gpa, source, P.DiagnosticSink.discard, .{});
@@ -202,7 +221,7 @@ test "all HTML operand positions and concatenations are processed once on both b
 
 test "outer and inner fail-fast are independent and a child stops outer parsing immediately" {
     inline for (.{ dot.OnError.collect, .fail_fast }) |outer| inline for (.{ markup.OnError.collect, .fail_fast }) |inner| {
-        const P = dot.Profile(.{ .policy = .{ .on_error = outer }, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .on_error = inner } }) } });
+        const P = dot.Profile(.{ .policy = .{ .on_error = outer }, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural, .on_error = inner } }) } });
         var bag: P.FixedDiagnosticBag(32) = .{};
         var checked = try P.parseAndValidate(gpa, "digraph { a [label=<<a x='1' x='2'><b></c>>]; b [label=<<i/>>]; }", bag.sink(), .{});
         defer checked.deinit(gpa);
@@ -222,7 +241,7 @@ test "outer and inner fail-fast are independent and a child stops outer parsing 
 }
 
 test "one bag capacity stops child then outer without delivering anything else" {
-    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
+    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) } });
     const source = "digraph { a [label=<<a x='1' x='2'><b></c>>]; b -- c; }";
     inline for (.{ 0, 1, 2 }) |capacity| {
         var bag: P.FixedDiagnosticBag(capacity) = .{};
@@ -240,7 +259,7 @@ test "shared diagnostic stops have the same cause for outer and child emitters" 
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |controlled| {
         const P = dot.Profile(.{
             .policy = .{ .scanner = backend, .execution = .{ .cancellation = controlled } },
-            .processors = .{ .markup = markup.Profile(.{ .policy = .{ .scanner = backend } }) },
+            .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend } }) },
         });
         const Destination = struct {
             reason: dot.reporting.StopReason,
@@ -285,7 +304,7 @@ test "shared diagnostic stops have the same cause for outer and child emitters" 
 
 test "unsupported child severity never turns passthrough into a validation success" {
     inline for (.{ dot.reporting.Unsupported.err, .warning, .silent }) |severity| {
-        const P = dot.Profile(.{ .policy = .{ .on_error = .fail_fast }, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .diagnostics = .{ .unsupported = severity } } }) } });
+        const P = dot.Profile(.{ .policy = .{ .on_error = .fail_fast }, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural, .diagnostics = .{ .unsupported = severity } } }) } });
         var bag: P.FixedDiagnosticBag(16) = .{};
         var checked = try P.parseAndValidate(gpa, "digraph { a [x=<<?pi?>>]; b [x=<<i/>>]; }", bag.sink(), .{});
         defer checked.deinit(gpa);
@@ -297,7 +316,7 @@ test "unsupported child severity never turns passthrough into a validation succe
 }
 
 test "runtime policies preflight before any processing and own their independent options" {
-    const P = dot.Profile(.{ .runtime_policy = true, .processors = .{ .markup = markup.Profile(.{ .runtime_policy = true }) } });
+    const P = dot.Profile(.{ .runtime_policy = true, .processors = .{ .markup = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } }) } });
     var bag: P.FixedDiagnosticBag(32) = .{};
     try std.testing.expectError(error.GraphOperatorMismatchNotApplicable, P.parseAndValidate(gpa, "digraph { a [x=<<b></a>>]; }", bag.sink(), .{
         .dot = .{ .policy = .{ .validation = .{ .graph = .{ .treated_as = .generic, .operator_mismatch = .err } } } },
@@ -312,14 +331,14 @@ test "runtime policies preflight before any processing and own their independent
 }
 
 test "outer none never invokes a child and outer recovery still finds later inner errors" {
-    const P = dot.Profile(.{ .policy = .{ .markup = .none }, .processors = .{ .markup = markup.Profile(.{}) } });
+    const P = dot.Profile(.{ .policy = .{ .markup = .none }, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) } });
     var bag: P.FixedDiagnosticBag(16) = .{};
     var checked = try P.parseAndValidate(gpa, "digraph { a [x=<<b/> >]; }", bag.sink(), .{});
     defer checked.deinit(gpa);
     try equal(@as(u32, 0), checked.markup.visited);
     try expect(!checked.documentValid());
     for (bag.items()) |item| try expect(item == .dot);
-    const Collect = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
+    const Collect = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) } });
     var bag2: Collect.FixedDiagnosticBag(32) = .{};
     var recovered = try Collect.parseAndValidate(gpa, "digraph { a [x=]; b [x=<<b></wrong>>]; }", bag2.sink(), .{});
     defer recovered.deinit(gpa);
@@ -330,7 +349,7 @@ test "outer none never invokes a child and outer recovery still finds later inne
 
 test "a consumer processor runs before a document exists without runtime discovery" {
     const Consumer = struct {
-        const Base = markup.Profile(.{});
+        const Base = markup.Profile(.{ .policy = .{ .mode = .structural } });
         pub const Policies = Base.Policies;
         pub const Options = Base.Options;
         pub const Diagnostic = markup.Diagnostic;
@@ -394,7 +413,7 @@ test "a consumer processor runs before a document exists without runtime discove
 }
 
 test "passthrough adds no child allocations and incomplete boundaries never reach the child" {
-    const P = dot.Profile(.{ .policy = .{ .markup = .passthrough }, .processors = .{ .markup = markup.Profile(.{}) } });
+    const P = dot.Profile(.{ .policy = .{ .markup = .passthrough }, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) } });
     const source = "graph { a [label=<<b><i/></b>>]; }";
     var plain_allocator = std.testing.FailingAllocator.init(gpa, .{});
     var composed_allocator = std.testing.FailingAllocator.init(gpa, .{});
@@ -404,7 +423,7 @@ test "passthrough adds no child allocations and incomplete boundaries never reac
     defer composed.deinit(composed_allocator.allocator());
     try equal(plain_allocator.allocated_bytes, composed_allocator.allocated_bytes);
     try equal(plain_allocator.allocations, composed_allocator.allocations);
-    const Active = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
+    const Active = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) } });
     var incomplete = try Active.parseAndValidate(gpa, "graph { a [label=<<b>", Active.DiagnosticSink.discard, .{});
     defer incomplete.deinit(gpa);
     try equal(@as(u32, 0), incomplete.markup.visited);
@@ -413,7 +432,7 @@ test "passthrough adds no child allocations and incomplete boundaries never reac
 }
 
 test "no HTML allocates no child buffers and repeated operands reuse one workspace" {
-    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
+    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) } });
     var plain_allocator = std.testing.FailingAllocator.init(gpa, .{});
     var composed_allocator = std.testing.FailingAllocator.init(gpa, .{});
     var plain = dot.parseAndValidate(plain_allocator.allocator(), "graph { a; b; }", dot.diagnostic.discard, .{});
@@ -437,7 +456,7 @@ test "no HTML allocates no child buffers and repeated operands reuse one workspa
 }
 
 test "child policy limits continue in a collecting parent and cancellation stops the batch" {
-    const Limited = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .limits = .{ .max_nodes = 1 } } }) } });
+    const Limited = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural, .limits = .{ .max_nodes = 1 } } }) } });
     var limited = try Limited.parseAndValidate(gpa, "digraph { a [x=<<b><i/></b>>]; b [x=<<i/>>]; }", Limited.DiagnosticSink.discard, .{});
     defer limited.deinit(gpa);
     try equal(@as(u32, 2), limited.markup.visited);
@@ -448,7 +467,7 @@ test "child policy limits continue in a collecting parent and cancellation stops
             return true;
         }
     };
-    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .execution = .{ .cancellation = true } } }) } });
+    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural, .execution = .{ .cancellation = true } } }) } });
     var checked = try P.parseAndValidate(gpa, "digraph { a [x=<<b/>>]; b [x=<<i/>>]; }", P.DiagnosticSink.discard, .{ .markup = .{ .cancellation = .{ .context = null, .is_requested = Stop.poll } } });
     defer checked.deinit(gpa);
     try equal(dot.ParseOutcome.processor_stopped, checked.dot.outcome);
@@ -458,7 +477,7 @@ test "child policy limits continue in a collecting parent and cancellation stops
 }
 
 test "streaming failure is terminal and explicit omission does not suppress findings" {
-    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
+    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) } });
     const Failing = struct {
         calls: u32 = 0,
         fn emit(raw: ?*anyopaque, _: P.Diagnostic) dot.reporting.SinkError!dot.reporting.Action {
@@ -482,7 +501,7 @@ test "streaming failure is terminal and explicit omission does not suppress find
 }
 
 fn allocationCase(allocator: std.mem.Allocator) !void {
-    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
+    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) } });
     const Track = struct {
         oom: bool = false,
         fn emit(raw: ?*anyopaque, item: P.Diagnostic) dot.reporting.SinkError!dot.reporting.Action {
@@ -505,7 +524,7 @@ test "every composed allocation failure frees active child and outer storage" {
 }
 
 test "mixed rendering keeps original fix coordinates and works with incomplete source" {
-    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
+    const P = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) } });
     const source = "digraph {\n a [label=<<b>&amp</b>>];\n a -- b;\n}";
     var bag: P.FixedDiagnosticBag(16) = .{};
     var checked = try P.parseAndValidate(gpa, source, bag.sink(), .{});
@@ -543,7 +562,7 @@ test "mixed rendering keeps original fix coordinates and works with incomplete s
 test "composed and standalone renderers agree on list locations and summaries" {
     const P = dot.Profile(.{
         .policy = .{ .validation = .{ .digraph = .{ .operator_mismatch = .warning } } },
-        .processors = .{ .markup = markup.Profile(.{}) },
+        .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) },
     });
     const source = "digraph {\n a [label=<<b x='1' x='2'/> + <i y='1' y='2'/>>];\n a -- b;\n b -- c;\n}";
     var bag: P.FixedDiagnosticBag(16) = .{};
@@ -599,8 +618,8 @@ test "during-DOT scanner and plain-profile parity cover boundaries and recovery"
         const block_policy: dot.Policy = .{ .on_error = on_error, .scanner = .block, .execution = .{ .cancellation = controlled } };
         const PlainScalar = dot.Profile(.{ .policy = scalar_policy });
         const PlainBlock = dot.Profile(.{ .policy = block_policy });
-        const Scalar = dot.Profile(.{ .policy = scalar_policy, .processors = .{ .markup = markup.Profile(.{}) } });
-        const Block = dot.Profile(.{ .policy = block_policy, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .scanner = .block } }) } });
+        const Scalar = dot.Profile(.{ .policy = scalar_policy, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural } }) } });
+        const Block = dot.Profile(.{ .policy = block_policy, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = .block } }) } });
         const seeds = [_][]const u8{
             "digraph <g> { a [label=<<b x='1' x='2'>&amp;</b>>+\"text\"+<<i/>>]; a -- b; c [x=<<x>text</wrong>>]; }",
             "digraph <g> { a [label=<<b x='1'>&amp;</b>>+\"text\"+<<i/>>]; a -> b; }",

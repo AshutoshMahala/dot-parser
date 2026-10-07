@@ -32,10 +32,12 @@ So to check labels, bind a label checker, as shown below. Checking is then on
 automatically.
 
 The `markup` setting decides **whether** labels are checked. The label
-checker's own settings decide **how**. The default `mode = .structural` checks
-that tags match and attributes are well-formed. The unreleased standalone
-[Graphviz vocabulary mode](MARKUP.md#graphviz-vocabulary) also checks tag and
-attribute names, but not full label grammar. It isn't a browser HTML parser.
+checker's own settings decide **how**. The default `mode = .graphviz` checks
+structure with ASCII-case-insensitive tag matching and
+[Graphviz tag and attribute vocabulary](MARKUP.md#graphviz-vocabulary)
+(unreleased), but not full label grammar. Select
+`markup.Profile(.{ .policy = .{ .mode = .structural } })` for custom vocabulary
+and byte-exact tag matching. Neither mode is a browser HTML parser.
 Automatic composition still processes every HTML-like value, not just Graphviz
 label contexts; use explicit selection below for label-only vocabulary checks.
 
@@ -102,11 +104,11 @@ Errors inside labels look like any other error, at their place in the DOT file:
 
 ```text
 ┌─ Error 1: repeated attribute name on one element
-│ example.dot:1:36
+│ example.dot:1:39
 │
-│ 1 │ digraph { a [label=<<b title='one' title='two'>Hello</b>>]; …
-│   │                        ──┬──       ^^^^^ same name as the earlier attribute
-│   │                          └──── first attribute with this name
+│ 1 │ digraph { a [label=<<FONT COLOR='red' COLOR='blue'>Hello</FO…
+│   │                           ──┬──       ^^^^^ same name as the earlier attribute
+│   │                             └──── first attribute with this name
 │
 │ Hint: keep one attribute with the intended value, or change the duplicate-attribute policy
 └─ E1 ─ [markup_parser:E.Validation.Attribute.006]

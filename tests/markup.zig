@@ -1,6 +1,8 @@
 //! Standalone consumer tests: deliberately no DOT import or build dependency.
 const std = @import("std");
 const markup = @import("markup_parser");
+// These fixtures exercise vocabulary-independent structural behavior.
+const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
@@ -23,9 +25,9 @@ test "structural mode is explicit, standalone and identical at both binding time
     const Default = markup.Profile(.{});
     const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural } });
     const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
-    try equal(markup.Mode.structural, Default.baseline.mode);
-    try equal(markup.Mode.structural, markup.presets.standard.mode.?);
-    try equal(markup.Mode.structural, markup.presets.untrusted.mode.?);
+    try equal(markup.Mode.graphviz, Default.baseline.mode);
+    try equal(markup.Mode.graphviz, markup.presets.standard.mode.?);
+    try equal(markup.Mode.graphviz, markup.presets.untrusted.mode.?);
     try equal(markup.PolicyValidation.valid, Fixed.validatePolicy(.{ .mode = .structural }));
     try equal(markup.PolicyValidation.valid, Runtime.validatePolicy(.{ .mode = .structural }));
     const prepared = try Runtime.Policies.prepare(.{ .policy = .{ .validation = .{ .duplicate_attribute = .off } } });
@@ -104,14 +106,14 @@ test "oversized descriptors are rejected before any byte access and remain latch
     try equal(expected, stopped.outcome.?);
     try equal(@as(u32, 0), stopped.source_frontier);
     try equal(@as(u32, 0), session.advance(1).work_used);
-    try equal(expected, markup.measureIn(source, .{}, discard, .{}).outcome);
+    try equal(expected, Structural.measureIn(source, .{}, discard, .{}).outcome);
 }
 
 test "source-shaped forest, borrowed text, arbitrary names and child traversal" {
     const source = "before<widget> hi <b/> after </widget><x></x>tail";
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
     defer bag.deinit();
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
     defer parsed.deinit();
     try expect(parsed.outcome == .success);
     try equal(@as(usize, 0), bag.items().len);
@@ -149,7 +151,7 @@ test "empty/text fragments, raw high bytes, exact case, names and encoding signa
         "<\xff>\xc0\xaf</\xff>", "\xef\xbb\xbf<a/>",   "x\xef\xbb\xbf", "<B></B>",
     };
     for (valid) |source| {
-        var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
         defer parsed.deinit();
         try expect(parsed.outcome == .success);
     }
@@ -160,7 +162,7 @@ test "empty/text fragments, raw high bytes, exact case, names and encoding signa
     };
     for (invalid) |source| {
         var bag: markup.FixedDiagnosticBag(16) = .{};
-        var parsed = markup.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
         defer parsed.deinit();
         try expect(parsed.outcome == .invalid_syntax);
         try expect(parsed.document == null);
@@ -168,7 +170,7 @@ test "empty/text fragments, raw high bytes, exact case, names and encoding signa
         try expect(bag.items()[0].span.endOffset() <= source.len);
     }
     for ([_][]const u8{ "\xff\xfe<\x00", "\xfe\xff\x00<", "\x00\x00\xfe\xff", "\xff\xfe\x00\x00" }) |source| {
-        var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
         defer parsed.deinit();
         try equal(markup.Outcome{ .unsupported_feature = .encoding }, parsed.outcome);
     }
@@ -180,7 +182,7 @@ test "later slices are recognized as unsupported, not silently accepted" {
         .{ .source = "<?xml version='1.0'?>", .feature = .processing_instructions },
     };
     for (cases) |case| {
-        var parsed = markup.parseBorrowed(std.testing.allocator, case.source, discard, .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, case.source, discard, .{});
         defer parsed.deinit();
         try equal(markup.Outcome{ .unsupported_feature = case.feature }, parsed.outcome);
         try expect(parsed.document == null);
@@ -189,32 +191,32 @@ test "later slices are recognized as unsupported, not silently accepted" {
 
 test "fixed storage and count-only processing share allocator results and source offsets" {
     const source = "<a>x<b/>y<c>z</c></a><d/>";
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     var nodes: markup.FixedDocumentStorage(.{ .nodes = 8 }) = .{};
     var frames: markup.FixedParseScratch(2) = .{};
-    const fixed = markup.parseBorrowedIn(source, .{ .document = nodes.storage(), .scratch = frames.storage() }, discard, .{});
+    const fixed = Structural.parseBorrowedIn(source, .{ .document = nodes.storage(), .scratch = frames.storage() }, discard, .{});
     try equal(markup.Outcome.success, fixed.outcome);
     try equal(parsed.counts, fixed.counts);
     try std.testing.expectEqualDeep(parsed.document.?.records, fixed.document.?.records);
-    const measured = markup.measureIn(source, frames.storage(), discard, .{});
+    const measured = Structural.measureIn(source, frames.storage(), discard, .{});
     try equal(parsed.counts, measured.counts);
-    const owned_measure = markup.measure(std.testing.allocator, source, discard, .{});
+    const owned_measure = Structural.measure(std.testing.allocator, source, discard, .{});
     try equal(measured, owned_measure);
     try equal(@as(usize, 24), @TypeOf(frames).byte_size);
     // A self-closing element counts toward depth, but needs no persistent frame.
-    const leaf = markup.measureIn("<a/>", .{}, discard, .{});
+    const leaf = Structural.measureIn("<a/>", .{}, discard, .{});
     try equal(markup.Counts{ .nodes = 1, .elements = 1, .max_depth = 1 }, leaf.counts);
     try equal(markup.Outcome.success, leaf.outcome);
 }
 
 test "policy limits and storage exhaustion are separate and never publish a partial tree" {
-    const Dynamic = markup.Profile(.{ .runtime_policy = true });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     var nodes: markup.FixedDocumentStorage(.{ .nodes = 2 }) = .{};
     var frames: markup.FixedParseScratch(1) = .{};
     const memory: markup.ParseMemory = .{ .document = nodes.storage(), .scratch = frames.storage() };
-    try equal(markup.Outcome{ .storage_exhausted = .node_pool }, markup.parseBorrowedIn("<a/><b/><c/>", memory, discard, .{}).outcome);
-    try equal(markup.Outcome{ .storage_exhausted = .nesting_frames }, markup.parseBorrowedIn("<a><b></b></a>", memory, discard, .{}).outcome);
+    try equal(markup.Outcome{ .storage_exhausted = .node_pool }, Structural.parseBorrowedIn("<a/><b/><c/>", memory, discard, .{}).outcome);
+    try equal(markup.Outcome{ .storage_exhausted = .nesting_frames }, Structural.parseBorrowedIn("<a><b></b></a>", memory, discard, .{}).outcome);
     inline for (.{ "max_source_bytes", "max_nesting", "max_nodes" }) |name| {
         var patch: markup.Policy = .{};
         @field(patch.limits, name) = 0;
@@ -222,16 +224,16 @@ test "policy limits and storage exhaustion are separate and never publish a part
         try expect(r.outcome == .resource_limit);
         try expect(r.document == null);
     }
-    const Fixed = markup.Profile(.{ .policy = .{ .limits = .{ .max_nesting = 1, .max_nodes = 2 } } });
+    const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural, .limits = .{ .max_nesting = 1, .max_nodes = 2 } } });
     const limited = Fixed.parseBorrowedIn("<a><b/></a>", memory, discard, .{});
     try equal(markup.Outcome{ .resource_limit = .{ .resource = .nesting_depth, .limit = 1 } }, limited.outcome);
-    try equal(markup.Outcome.success, markup.parseBorrowedIn("<a/>", memory, discard, .{}).outcome);
+    try equal(markup.Outcome.success, Structural.parseBorrowedIn("<a/>", memory, discard, .{}).outcome);
     try equal(markup.Outcome.success, Dynamic.parseBorrowedIn("", .{}, discard, .{ .policy = .{ .limits = .{ .max_nodes = 0, .max_nesting = 0, .max_source_bytes = 0 } } }).outcome);
 }
 
 test "all budget partitions preserve records, diagnostics, counts, work and terminal state" {
     for ([_][]const u8{ "<long-name><b/>hello</long-name>", "<a>\r\nx</a>tail", "<a><b></a>", "<a x='1'>", "<a", "", "\xef\xbb\xbf<a/>" }) |source| {
-        var reference = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+        var reference = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
         defer reference.deinit();
         var total: ?u64 = null;
         for ([_]u32{ 1, 2, 7, 128 }) |budget| {
@@ -274,15 +276,15 @@ test "all budget partitions preserve records, diagnostics, counts, work and term
 }
 
 test "fixed/runtime settings agree, patches inherit, resets use the compiled baseline" {
-    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .limits = .{ .max_nodes = 2 } } });
-    const Fixed = markup.Profile(.{ .policy = .{ .limits = .{ .max_nodes = 2 } } });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .limits = .{ .max_nodes = 2 } } });
+    const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural, .limits = .{ .max_nodes = 2 } } });
     try equal(markup.PolicyValidation.valid, Fixed.validatePolicy(.{}));
     try equal(markup.PolicyValidation.valid, Dynamic.validatePolicy(.{ .limits = .{ .max_nodes = 0 } }));
     var nodes: markup.FixedDocumentStorage(.{ .nodes = 4 }) = .{};
     var frames: markup.FixedParseScratch(4) = .{};
     const memory: markup.ParseMemory = .{ .document = nodes.storage(), .scratch = frames.storage() };
     inline for (.{ false, true }) |metering| inline for (.{ false, true }) |cancellation| {
-        const P = markup.Profile(.{ .policy = .{ .limits = .{ .max_nodes = 2 }, .execution = .{ .metering = metering, .cancellation = cancellation } } });
+        const P = markup.Profile(.{ .policy = .{ .mode = .structural, .limits = .{ .max_nodes = 2 }, .execution = .{ .metering = metering, .cancellation = cancellation } } });
         var dynamic = Dynamic.Session.init("<a/><b/><c/>", memory, discard, .{ .policy = .{ .execution = .{ .metering = metering, .cancellation = cancellation } } });
         if (metering) {
             while ((try dynamic.advance(1)).outcome == null) {}
@@ -315,7 +317,7 @@ const Stop = struct {
 
 test "runtime cancellation policy controls supplied hooks across operations and reset" {
     inline for (.{ false, true }) |baseline| inline for (.{ false, true }) |metered| {
-        const P = markup.Profile(.{ .runtime_policy = true, .policy = .{ .execution = .{ .cancellation = baseline, .metering = metered } } });
+        const P = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .execution = .{ .cancellation = baseline, .metering = metered } } });
         var nodes: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
         const memory: markup.ParseMemory = .{ .document = nodes.storage() };
         var stop: Stop = .{ .after = 0 };
@@ -358,12 +360,12 @@ test "runtime cancellation policy controls supplied hooks across operations and 
             session.deinit();
         }
     };
-    const Active = markup.Profile(.{ .policy = .{ .execution = .{ .cancellation = true } } });
+    const Active = markup.Profile(.{ .policy = .{ .mode = .structural, .execution = .{ .cancellation = true } } });
     try equal(markup.Outcome.success, Active.measureIn("<a/>", .{}, discard, .{}).outcome);
 }
 
 test "cancellation before each step, zero budget, relocation and terminal idempotence" {
-    const P = markup.Profile(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .execution = .{ .metering = true, .cancellation = true } } });
     for (0..120) |after| {
         var nodes: markup.FixedDocumentStorage(.{ .nodes = 4 }) = .{};
         var frames: markup.FixedParseScratch(2) = .{};
@@ -389,7 +391,7 @@ test "cancellation before each step, zero budget, relocation and terminal idempo
 }
 
 test "explicit fail-fast syntax cause survives stopped, empty, or failing diagnostic destinations" {
-    const P = markup.Profile(.{ .policy = .{ .on_error = .fail_fast } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .on_error = .fail_fast } });
     const Reject = struct {
         fn emit(_: ?*anyopaque, _: markup.Diagnostic) markup.reporting.SinkError!markup.reporting.Action {
             return error.DiagnosticSinkFailure;
@@ -413,7 +415,7 @@ test "explicit fail-fast syntax cause survives stopped, empty, or failing diagno
 }
 
 fn allocationCase(allocator: std.mem.Allocator, source: []const u8) !void {
-    var parsed = markup.parseBorrowed(allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(allocator, source, discard, .{});
     defer parsed.deinit();
     if (parsed.outcome == .out_of_memory) return error.OutOfMemory;
     try expect(parsed.outcome == .success or parsed.outcome == .invalid_syntax);
@@ -434,7 +436,7 @@ test "owned results trim in place or retain visible slack without allocation or 
             .fail_index = 1,
             .resize_fail_index = if (refuse_resize) 0 else std.math.maxInt(usize),
         });
-        var parsed = markup.parseBorrowed(tracked.allocator(), "<a/>", discard, .{});
+        var parsed = Structural.parseBorrowed(tracked.allocator(), "<a/>", discard, .{});
         try equal(markup.Outcome.success, parsed.outcome);
         try equal(@as(usize, 1), tracked.allocations);
         try expect(!tracked.has_induced_failure);
@@ -451,7 +453,7 @@ test "owned results trim in place or retain visible slack without allocation or 
         try equal(tracked.allocated_bytes, tracked.freed_bytes);
     }
     for ([_][]const u8{ "", "<a>" }) |source| {
-        var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
         defer parsed.deinit();
         try equal(@as(usize, 0), parsed.retainedBytes());
     }
@@ -464,7 +466,7 @@ fn comparePartition(source: []const u8) !void {
     var bf: markup.FixedParseScratch(64) = .{};
     var ab: markup.FixedDiagnosticBag(1) = .{};
     var bb: markup.FixedDiagnosticBag(1) = .{};
-    const direct = markup.parseBorrowedIn(source, .{ .document = a.storage(), .scratch = af.storage() }, ab.sink(), .{});
+    const direct = Structural.parseBorrowedIn(source, .{ .document = a.storage(), .scratch = af.storage() }, ab.sink(), .{});
     var session = markup.BoundedSession.init(source, .{ .document = b.storage(), .scratch = bf.storage() }, bb.sink(), .{});
     var work: u64 = 0;
     while (session.result() == null) {
@@ -514,7 +516,7 @@ test "long names and text resume in linear work with constant continuation" {
 
 test "quoted attributes preserve order, duplicate occurrences, quotes, bytes and ownership" {
     const source = "text<a x = '1' X=\"\" x='two>\"' ns:é = '\xff\t\r\n'><b y=\"'\\\"/><c/></a><d x='3'/>tail";
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     try equal(markup.Outcome.success, parsed.outcome);
     try equal(markup.Counts{ .nodes = 6, .elements = 4, .attributes = 6, .max_depth = 2 }, parsed.counts);
@@ -550,11 +552,11 @@ test "quoted attributes preserve order, duplicate occurrences, quotes, bytes and
     try expect(d_attributes.next() == null);
     var tail_attributes = roots.next().?.attributes();
     try expect(tail_attributes.next() == null);
-    const measured = markup.measure(std.testing.allocator, source, discard, .{});
+    const measured = Structural.measure(std.testing.allocator, source, discard, .{});
     try equal(parsed.counts, measured.counts);
     var output: markup.FixedDocumentStorage(.{ .nodes = 6, .attributes = 6 }) = .{};
     var frames: markup.FixedParseScratch(1) = .{};
-    const fixed = markup.parseBorrowedIn(source, .{ .document = output.storage(), .scratch = frames.storage() }, discard, .{});
+    const fixed = Structural.parseBorrowedIn(source, .{ .document = output.storage(), .scratch = frames.storage() }, discard, .{});
     try equal(markup.Outcome.success, fixed.outcome);
     try std.testing.expectEqualDeep(doc.records, fixed.document.?.records);
     try std.testing.expectEqualDeep(doc.attributes, fixed.document.?.attributes);
@@ -571,7 +573,7 @@ test "attribute token stream, grammar boundaries and precise truncation expectat
         if (kind == .attribute) try expect(item.token.span.len >= 2);
     }
     for ([_][]const u8{ "<a x/>", "<a x=>", "<a x=no/>", "<a x='1'y='2'/>", "<a x='<'/>", "<a x='\x00'/>", "<a x='1'/ >", "<a x='1' = '2'/>", "</a x='1'>", "<a x='1' 1y='2'/>", "<a x='1'//>" }) |invalid| {
-        var parsed = markup.parseBorrowed(std.testing.allocator, invalid, discard, .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, invalid, discard, .{});
         defer parsed.deinit();
         try equal(markup.Outcome.invalid_syntax, parsed.outcome);
         try expect(parsed.document == null);
@@ -585,7 +587,7 @@ test "attribute token stream, grammar boundaries and precise truncation expectat
         .{ .source = "<a x='v'/", .expected = .closing_angle },
     }) |case| {
         var bag: markup.FixedDiagnosticBag(1) = .{};
-        var parsed = markup.parseBorrowed(std.testing.allocator, case.source, bag.sink(), .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, case.source, bag.sink(), .{});
         defer parsed.deinit();
         try equal(markup.Outcome.invalid_syntax, parsed.outcome);
         try equal(case.expected, bag.items()[0].details.expected);
@@ -597,9 +599,9 @@ test "attribute capacities, policy parity and self-closing headers without nesti
     const source = "<a x='1' y='2'/>";
     var output: markup.FixedDocumentStorage(.{ .nodes = 1, .attributes = 2 }) = .{};
     const memory: markup.ParseMemory = .{ .document = output.storage() };
-    const Dynamic = markup.Profile(.{ .runtime_policy = true });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     inline for (.{ 0, 1, 2 }) |limit| {
-        const Fixed = markup.Profile(.{ .policy = .{ .limits = .{ .max_attributes = limit } } });
+        const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural, .limits = .{ .max_attributes = limit } } });
         const a = Fixed.parseBorrowedIn(source, memory, discard, .{});
         const b = Dynamic.parseBorrowedIn(source, memory, discard, .{ .policy = .{ .limits = .{ .max_attributes = limit } } });
         try equal(a.outcome, b.outcome);
@@ -612,17 +614,17 @@ test "attribute capacities, policy parity and self-closing headers without nesti
         } else try equal(markup.Outcome.success, a.outcome);
     }
     var small: markup.FixedDocumentStorage(.{ .nodes = 1, .attributes = 1 }) = .{};
-    const exhausted = markup.parseBorrowedIn(source, .{ .document = small.storage() }, discard, .{});
+    const exhausted = Structural.parseBorrowedIn(source, .{ .document = small.storage() }, discard, .{});
     try equal(markup.Outcome{ .storage_exhausted = .attribute_pool }, exhausted.outcome);
     try equal(@as(u32, 1), exhausted.counts.attributes);
     try expect(exhausted.document == null);
-    try equal(markup.Outcome.success, markup.measureIn(source, .{}, discard, .{}).outcome);
-    try equal(markup.Outcome{ .storage_exhausted = .nesting_frames }, markup.parseBorrowedIn("<a x='1'></a>", memory, discard, .{}).outcome);
+    try equal(markup.Outcome.success, Structural.measureIn(source, .{}, discard, .{}).outcome);
+    try equal(markup.Outcome{ .storage_exhausted = .nesting_frames }, Structural.parseBorrowedIn("<a x='1'></a>", memory, discard, .{}).outcome);
 }
 
 test "independent duplicate validation, case-sensitive scope, first occurrence and policy parity" {
     const source = "<a z='1' a='2' z='3' a='4' Z='5' z='6'><b z='7' z='8'/></a><a z='9'/>";
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     try equal(markup.Outcome.success, parsed.outcome);
     const doc = parsed.document.?;
@@ -630,9 +632,9 @@ test "independent duplicate validation, case-sensitive scope, first occurrence a
     var scratch: markup.FixedValidationScratch(6) = .{};
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
     defer bag.deinit();
-    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .validation = .{ .duplicate_attribute = .off } } });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off } } });
     inline for (.{ .err, .warning, .off }) |severity| {
-        const Fixed = markup.Profile(.{ .policy = .{ .validation = .{ .duplicate_attribute = severity } } });
+        const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = severity } } });
         bag.reset();
         const checked = Fixed.validateIn(&doc, scratch.storage(), bag.sink(), .{});
         try expect(checked.completion == .complete);
@@ -653,23 +655,23 @@ test "independent duplicate validation, case-sensitive scope, first occurrence a
         try equal(checked, Fixed.validate(std.testing.allocator, &doc, discard, .{}));
         try equal(@as(usize, 9), doc.attributes.len);
     }
-    const Off = markup.Profile(.{ .policy = .{ .validation = .{ .duplicate_attribute = .off } } });
+    const Off = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off } } });
     try expect(Off.validate(std.testing.failing_allocator, &doc, discard, .{}).completion == .complete);
     try expect(Dynamic.validateIn(&doc, .{}, discard, .{}).checks.duplicate_attribute == .not_run);
-    try expect(markup.validateIn(&doc, .{}, discard, .{}).completion == .storage_exhausted);
-    try expect(markup.validate(std.testing.failing_allocator, &doc, discard, .{}).completion == .out_of_memory);
+    try expect(Structural.validateIn(&doc, .{}, discard, .{}).completion == .storage_exhausted);
+    try expect(Structural.validate(std.testing.failing_allocator, &doc, discard, .{}).completion == .out_of_memory);
     // Parsing under a validation-error policy still retains the complete syntax.
     try strings(source, doc.source);
 }
 
 test "validation stops immediately on diagnostic backpressure with truthful partial results" {
-    var parsed = markup.parseBorrowed(std.testing.allocator, "<a x='1' x='2' x='3'/><b y='4' y='5'/>", discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, "<a x='1' x='2' x='3'/><b y='4' y='5'/>", discard, .{});
     defer parsed.deinit();
     const doc = parsed.document.?;
     var scratch: markup.FixedValidationScratch(3) = .{};
     var one: markup.FixedDiagnosticBag(1) = .{};
     var zero: markup.FixedDiagnosticBag(0) = .{};
-    const Warning = markup.Profile(.{ .policy = .{ .validation = .{ .duplicate_attribute = .warning } } });
+    const Warning = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .warning } } });
     const stopped = Warning.validateIn(&doc, scratch.storage(), one.sink(), .{});
     try equal(@as(u32, 1), stopped.warnings);
     try equal(.unknown, stopped.validity);
@@ -677,17 +679,17 @@ test "validation stops immediately on diagnostic backpressure with truthful part
     try expect(stopped.completion == .diagnostic_stopped);
     try equal(markup.reporting.StopReason.requested, stopped.completion.diagnostic_stopped);
     try equal(markup.reporting.Delivery.complete, stopped.diagnostic_delivery);
-    const failed = markup.validateIn(&doc, scratch.storage(), zero.sink(), .{});
+    const failed = Structural.validateIn(&doc, scratch.storage(), zero.sink(), .{});
     try equal(.invalid, failed.validity);
     try equal(@as(u32, 1), failed.errors);
     try equal(markup.reporting.StopReason.capacity, failed.completion.diagnostic_stopped);
     try equal(markup.reporting.Delivery.failed, failed.diagnostic_delivery);
     var failed_bag = markup.GrowableDiagnosticBag.init(std.testing.failing_allocator, .{});
     defer failed_bag.deinit();
-    const oom = markup.validateIn(&doc, scratch.storage(), failed_bag.sink(), .{});
+    const oom = Structural.validateIn(&doc, scratch.storage(), failed_bag.sink(), .{});
     try equal(markup.reporting.StopReason.out_of_memory, oom.completion.diagnostic_stopped);
     try equal(@as(u32, 1), oom.errors);
-    const Dynamic = markup.Profile(.{ .runtime_policy = true });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     var stop: Stop = .{ .after = 0 };
     try expect(Dynamic.validateIn(&doc, scratch.storage(), discard, .{ .cancellation = stop.hook() }).completion == .complete);
     try equal(@as(u32, 0), stop.polls);
@@ -697,12 +699,12 @@ test "validation stops immediately on diagnostic backpressure with truthful part
 }
 
 fn attributeAllocationCase(allocator: std.mem.Allocator) !void {
-    var parsed = markup.parseBorrowed(allocator, "<a x='1' x='2'><b y='3'/></a>", discard, .{});
+    var parsed = Structural.parseBorrowed(allocator, "<a x='1' x='2'><b y='3'/></a>", discard, .{});
     defer parsed.deinit();
     if (parsed.outcome == .out_of_memory) return error.OutOfMemory;
     try equal(markup.Outcome.success, parsed.outcome);
     const doc = parsed.document.?;
-    const checked = markup.validate(allocator, &doc, discard, .{});
+    const checked = Structural.validate(allocator, &doc, discard, .{});
     if (checked.completion == .out_of_memory) return error.OutOfMemory;
     try equal(.invalid, checked.validity);
 }
@@ -717,7 +719,7 @@ test "attribute allocation failures, validation scratch and long values are safe
     @memcpy(source[6 + len ..], "'/>");
     try comparePartition(source);
     for (0..130) |after| {
-        const P = markup.Profile(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
+        const P = markup.Profile(.{ .policy = .{ .mode = .structural, .execution = .{ .metering = true, .cancellation = true } } });
         var output: markup.FixedDocumentStorage(.{ .nodes = 1, .attributes = 1 }) = .{};
         var stop: Stop = .{ .after = @intCast(after) };
         var session = P.Session.init(source, .{ .document = output.storage() }, discard, .{ .cancellation = stop.hook() });
@@ -729,7 +731,7 @@ test "attribute allocation failures, validation scratch and long values are safe
 
 test "sparse attribute capacity accounting includes retained slack in both owned pools" {
     var tracked = std.testing.FailingAllocator.init(std.testing.allocator, .{ .resize_fail_index = 0 });
-    var parsed = markup.parseBorrowed(tracked.allocator(), "<a x='1' y='2'/>", discard, .{});
+    var parsed = Structural.parseBorrowed(tracked.allocator(), "<a x='1' y='2'/>", discard, .{});
     try equal(markup.Outcome.success, parsed.outcome);
     try equal(@as(usize, 2), tracked.allocations);
     try equal(tracked.allocated_bytes - tracked.freed_bytes, parsed.retainedBytes());
@@ -759,11 +761,11 @@ test "duplicate validator agrees with a simple reference across random lists and
             }
             try source.appendSlice(std.testing.allocator, "/>");
         }
-        var parsed = markup.parseBorrowed(std.testing.allocator, source.items, discard, .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, source.items, discard, .{});
         defer parsed.deinit();
         try equal(markup.Outcome.success, parsed.outcome);
         const doc = parsed.document.?;
-        const checked = markup.validate(std.testing.allocator, &doc, bag.sink(), .{});
+        const checked = Structural.validate(std.testing.allocator, &doc, bag.sink(), .{});
         try expect(checked.completion == .complete);
         var duplicates: u32 = 0;
         for (doc.attributes, 0..) |attribute, index| {
@@ -784,7 +786,7 @@ test "duplicate validator agrees with a simple reference across random lists and
 
 test "validation resource diagnostics identify the first largest attribute owner" {
     const source = "prefix<small x='1'/><large z='1' z='2' y='3'/><tie x='1' x='2' x='3'/>";
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     try equal(markup.Outcome.success, parsed.outcome);
     const doc = parsed.document.?;
@@ -792,7 +794,7 @@ test "validation resource diagnostics identify the first largest attribute owner
     const expected: markup.location.Span = .{ .start = @intCast(std.mem.indexOf(u8, source, "large").?), .len = 5 };
     var keys: markup.FixedValidationScratch(2) = .{};
     var bag: markup.FixedDiagnosticBag(1) = .{};
-    const fixed = markup.validateIn(&doc, keys.storage(), bag.sink(), .{});
+    const fixed = Structural.validateIn(&doc, keys.storage(), bag.sink(), .{});
     try equal(@as(u32, 3), fixed.completion.storage_exhausted);
     try equal(.unknown, fixed.validity);
     try equal(.incomplete, fixed.checks.duplicate_attribute);
@@ -801,20 +803,20 @@ test "validation resource diagnostics identify the first largest attribute owner
     try equal(@as(u32, 2), bag.items()[0].details.capacity.limit);
     try equal(.attribute_keys, bag.items()[0].details.capacity.resource);
     bag.reset();
-    const allocated = markup.validate(std.testing.failing_allocator, &doc, bag.sink(), .{});
+    const allocated = Structural.validate(std.testing.failing_allocator, &doc, bag.sink(), .{});
     try expect(allocated.completion == .out_of_memory);
     try equal(.unknown, allocated.validity);
     try equal(expected, bag.items()[0].span);
     var zero: markup.FixedDiagnosticBag(0) = .{};
-    const rejected = markup.validate(std.testing.failing_allocator, &doc, zero.sink(), .{});
+    const rejected = Structural.validate(std.testing.failing_allocator, &doc, zero.sink(), .{});
     try expect(rejected.completion == .out_of_memory);
     try equal(.failed, rejected.diagnostic_delivery);
     for ([_][]const u8{ "", "text", "<a/>", "<a x='1'/><b x='2'/>" }) |small| {
-        var r = markup.parseBorrowed(std.testing.allocator, small, discard, .{});
+        var r = Structural.parseBorrowed(std.testing.allocator, small, discard, .{});
         defer r.deinit();
         const document = r.document.?;
         try equal(@as(u32, 0), markup.requiredValidationScratch(&document));
-        const checked = markup.validate(std.testing.failing_allocator, &document, discard, .{});
+        const checked = Structural.validate(std.testing.failing_allocator, &document, discard, .{});
         try expect(checked.completion == .complete);
         try equal(.valid, checked.validity);
     }
@@ -826,13 +828,13 @@ test "linear duplicate scattering preserves source order across large scrambled 
     try source.appendSlice(std.testing.allocator, "<a");
     for (0..128) |_| try source.appendSlice(std.testing.allocator, " z='1' a='2' m='3'");
     try source.appendSlice(std.testing.allocator, "/><b z='4' a='5' z='6'/>");
-    var parsed = markup.parseBorrowed(std.testing.allocator, source.items, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source.items, discard, .{});
     defer parsed.deinit();
     const doc = parsed.document.?;
     var scratch: markup.FixedValidationScratch(384) = .{};
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
     defer bag.deinit();
-    const checked = markup.validateIn(&doc, scratch.storage(), bag.sink(), .{});
+    const checked = Structural.validateIn(&doc, scratch.storage(), bag.sink(), .{});
     try equal(.invalid, checked.validity);
     try equal(@as(u32, 382), checked.errors);
     try equal(@as(usize, 382), bag.items().len);

@@ -795,9 +795,11 @@ and the [processor contract](PROCESSOR_CONTRACT.md); public usage is in
   delayed entry points may still require it in the binary. Runtime selection
   cannot determine linking or install an implementation.
 - Outer selection (`none`, `passthrough`, `process`) is independent of the
-  processor's mode. Built-in markup exposes `mode = .structural` and an
-  unreleased `.graphviz` vocabulary slice (element/per-element attribute checks,
-  ASCII case-insensitive lookup, duplicate comparison and tag matching). This is not complete
+  processor's mode. Built-in markup defaults to `mode = .graphviz`, including
+  root APIs and the `standard`/`untrusted` presets; `.structural` is explicit
+  opt-in for custom vocabulary and byte-exact tag matching. The unreleased
+  `.graphviz` vocabulary slice provides element/per-element attribute checks,
+  ASCII case-insensitive lookup, duplicate comparison and tag matching. This is not complete
   Graphviz compatibility; content models, values, references and automatic
   label-context selection remain unfinished. `extended` remains future work,
   not a callable value or a compatibility ladder.

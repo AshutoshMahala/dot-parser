@@ -1,6 +1,8 @@
 const std = @import("std");
 const dot = @import("dot_parser");
 const markup = @import("markup_parser");
+// These fixtures exercise vocabulary-independent structural behavior.
+const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
@@ -49,7 +51,7 @@ test "delayed selected operands keep outer validity independent and continue aft
     var parts = try dot.identifier.parts(doc.source, doc.attributes[0].value);
     var bag = markup.GrowableDiagnosticBag.init(allocator, .{});
     defer bag.deinit();
-    const ready = markup.prepare(.{});
+    const ready = Structural.prepare(.{});
     var count: u32 = 0;
     while (parts.next()) |part| {
         if (part.form != .html) continue;
@@ -74,7 +76,9 @@ test "fragment parsing validates recognizable scopes after syntax rejection with
     const source = "prefix <a x='1' x='2'>&bogus;</wrong> suffix";
     const input = try markup.Fragment.fromSource(source, span(source, "<a x='1' x='2'>&bogus;</wrong>"));
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| {
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else .{ .scanner = backend, .validation = .{ .references = .{ .severity = .err } } } });
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{
+            .mode = .structural,
+        } else .{ .mode = .structural, .scanner = backend, .validation = .{ .references = .{ .severity = .err } } } });
         const options: P.Options = if (runtime) .{ .policy = .{ .scanner = backend, .validation = .{ .references = .{ .severity = .err } } } } else .{};
         const ready = P.prepare(options);
         var bag: markup.FixedDiagnosticBag(16) = .{};
@@ -100,7 +104,7 @@ test "fragment parsing validates recognizable scopes after syntax rejection with
 
 test "fragment fixes related spans EOF and coverage gaps map once while resource counts do not" {
     const input = try markup.Fragment.init("<a>&amp</b>", 100);
-    const P = markup.Profile(.{ .policy = .{ .diagnostics = .{ .fixes = .all } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .diagnostics = .{ .fixes = .all } } });
     var bag: markup.FixedDiagnosticBag(16) = .{};
     var r = try P.parseAndValidate(allocator, input, bag.sink(), .{});
     defer r.deinit();
@@ -110,11 +114,11 @@ test "fragment fixes related spans EOF and coverage gaps map once while resource
         try expect(d.span.start >= 100 and d.span.endOffset() <= 111);
         if (d.related) |related| try expect(related.start >= 100);
     }
-    var unfinished = try markup.parseAndValidate(allocator, try markup.Fragment.init("<a x='1'", 73), discard, .{});
+    var unfinished = try Structural.parseAndValidate(allocator, try markup.Fragment.init("<a x='1'", 73), discard, .{});
     defer unfinished.deinit();
     try equal(@as(u32, 81), unfinished.validation.?.completion.incomplete);
     var storage: markup.FixedDocumentStorage(.{ .nodes = 1, .attributes = 2 }) = .{};
-    const stopped = try markup.parseAndValidateIn(try markup.Fragment.init("<a x='1' x='2'/>", 100), .{ .document = storage.storage() }, .{}, discard, .{});
+    const stopped = try Structural.parseAndValidateIn(try markup.Fragment.init("<a x='1' x='2'/>", 100), .{ .document = storage.storage() }, .{}, discard, .{});
     try expect(stopped.stopped());
     try equal(@as(u32, 2), stopped.validation.?.completion.storage_exhausted);
 }
@@ -142,7 +146,7 @@ test "terminal diagnostic acknowledgment survives parsing and forbids a second f
         }
     };
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| inline for (.{ .fail_fast, .collect }) |recovery| {
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .scanner = backend, .on_error = recovery, .execution = .{ .metering = true } } });
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = .structural, .scanner = backend, .on_error = recovery, .execution = .{ .metering = true } } });
         for ([_][]const u8{ "<a x='1' x='2'><", "<a x='1' x='2'></b>" }, 0..) |source, i| {
             inline for (.{ .stop, .failure, .capacity, .oom }) |mode| {
                 const reason: markup.reporting.StopReason = switch (@as(@FieldType(Destination, "mode"), mode)) {
@@ -192,7 +196,7 @@ test "terminal diagnostic acknowledgment survives parsing and forbids a second f
             }
         }
     };
-    const Fast = markup.Profile(.{ .policy = .{ .on_error = .fail_fast } });
+    const Fast = markup.Profile(.{ .policy = .{ .mode = .structural, .on_error = .fail_fast } });
     var full: markup.FixedDiagnosticBag(1) = .{};
     var once = try Fast.parseAndValidate(allocator, try markup.Fragment.init("<a x='1' x='2'></b>", 0), full.sink(), .{});
     defer once.deinit();
@@ -203,7 +207,7 @@ test "terminal diagnostic acknowledgment survives parsing and forbids a second f
 
 test "fragment route does not duplicate an element name finding when syntax elsewhere fails" {
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| {
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .scanner = backend, .validation = .{ .names = .{ .severity = .err } } } });
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = .structural, .scanner = backend, .validation = .{ .names = .{ .severity = .err } } } });
         for ([_][]const u8{ "<a×></a×>", "<a×></a×></x>" }) |source| {
             var bag: markup.FixedDiagnosticBag(8) = .{};
             var checked = try P.parseAndValidate(allocator, try markup.Fragment.init(source, 30), bag.sink(), .{});
@@ -222,36 +226,36 @@ test "fragment route does not duplicate an element name finding when syntax else
 test "operational parse stops skip validation and validation stops keep committed inner tree" {
     const input = try markup.Fragment.init("<a x='1' x='2'/>", 10);
     var full: markup.FixedDiagnosticBag(1) = .{};
-    var checked = try markup.parseAndValidate(allocator, input, full.sink(), .{});
+    var checked = try Structural.parseAndValidate(allocator, input, full.sink(), .{});
     defer checked.deinit();
     try expect(checked.stopped() and checked.parse.document != null);
     try equal(.diagnostic_stopped, std.meta.activeTag(checked.validation.?.completion));
     var fail_bag = markup.GrowableDiagnosticBag.init(std.testing.failing_allocator, .{});
     defer fail_bag.deinit();
-    var delivery = try markup.parseAndValidate(allocator, input, fail_bag.sink(), .{});
+    var delivery = try Structural.parseAndValidate(allocator, input, fail_bag.sink(), .{});
     defer delivery.deinit();
     try expect(delivery.stopped());
     try equal(.failed, delivery.validation.?.diagnostic_delivery);
     var bad: markup.FixedDiagnosticBag(1) = .{};
-    var rejected = try markup.parseAndValidate(allocator, try markup.Fragment.init("<a x=1/>", 10), bad.sink(), .{});
+    var rejected = try Structural.parseAndValidate(allocator, try markup.Fragment.init("<a x=1/>", 10), bad.sink(), .{});
     defer rejected.deinit();
     try expect(rejected.stopped() and rejected.validation == null);
-    var oom = try markup.parseAndValidate(std.testing.failing_allocator, input, discard, .{});
+    var oom = try Structural.parseAndValidate(std.testing.failing_allocator, input, discard, .{});
     defer oom.deinit();
     try expect(oom.stopped() and oom.validation == null);
-    const limited = try markup.parseAndValidateIn(input, .{}, .{}, discard, .{});
+    const limited = try Structural.parseAndValidateIn(input, .{}, .{}, discard, .{});
     try expect(limited.stopped() and limited.validation == null);
-    const Cancel = markup.Profile(.{ .policy = .{ .execution = .{ .cancellation = true } } });
+    const Cancel = markup.Profile(.{ .policy = .{ .mode = .structural, .execution = .{ .cancellation = true } } });
     var cancelled = try Cancel.parseAndValidate(allocator, input, discard, .{ .cancellation = .{ .context = null, .is_requested = requested } });
     defer cancelled.deinit();
     try equal(markup.Outcome.cancelled, cancelled.parse.outcome);
     try expect(cancelled.validation == null);
-    const Limits = markup.Profile(.{ .policy = .{ .limits = .{ .max_nodes = 0 } } });
+    const Limits = markup.Profile(.{ .policy = .{ .mode = .structural, .limits = .{ .max_nodes = 0 } } });
     var limit = try Limits.parseAndValidate(allocator, input, discard, .{});
     defer limit.deinit();
     try expect(!limit.stopped() and limit.validation == null and limit.has_errors);
     try expect(limit.shouldStop(.fail_fast) and !limit.shouldStop(.collect));
-    try std.testing.expectError(error.InvalidFragment, markup.parseAndValidate(allocator, .{ .bytes = "xx", .origin = std.math.maxInt(u32) }, discard, .{}));
+    try std.testing.expectError(error.InvalidFragment, Structural.parseAndValidate(allocator, .{ .bytes = "xx", .origin = std.math.maxInt(u32) }, discard, .{}));
 }
 
 test "origin sink supports caller-driven bounded parsing and rejects malformed local diagnostic ranges" {
@@ -278,7 +282,7 @@ test "origin sink supports caller-driven bounded parsing and rejects malformed l
 
 fn allocations(a: std.mem.Allocator) !void {
     for ([_][]const u8{ "<a x='1' x='2'><b/></wrong>", "<a x='1' x='2'><b/></a>" }) |source| {
-        var result = try markup.parseAndValidate(a, try markup.Fragment.init(source, 90), discard, .{});
+        var result = try Structural.parseAndValidate(a, try markup.Fragment.init(source, 90), discard, .{});
         defer result.deinit();
         if (result.parse.outcome == .out_of_memory or (result.validation != null and result.validation.?.completion == .out_of_memory)) return error.OutOfMemory;
         try equal(@as(u64, 1), result.validation.?.errors);
@@ -298,7 +302,7 @@ test "fragment validation cancellation preserves the parsed document" {
             return self.calls > self.stop_after;
         }
     };
-    const P = markup.Profile(.{ .runtime_policy = true });
+    const P = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     const input = try markup.Fragment.init("<a x='1' x='2'/>", 90);
     var probe: Probe = .{};
     const hook: markup.Cancellation = .{ .context = &probe, .is_requested = Probe.poll };
@@ -331,7 +335,7 @@ test "operand traversal handles every truncation without unchecked rejected inpu
     const edge = try markup.Fragment.init("x", std.math.maxInt(u32) - 1);
     const eof = try edge.child(.{ .start = 1, .len = 0 });
     try equal(std.math.maxInt(u32), eof.origin);
-    var empty = try markup.parseAndValidate(allocator, eof, discard, .{});
+    var empty = try Structural.parseAndValidate(allocator, eof, discard, .{});
     defer empty.deinit();
     try expect(empty.documentValid());
 }
@@ -367,7 +371,7 @@ fn StringReader(comptime runtime: bool) type {
     };
 }
 test "nested policies support DOT to markup to consumer string and an independent sibling string" {
-    const M = markup.Profile(.{ .runtime_policy = true });
+    const M = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     const S = StringReader(true);
     const Inner = dot.processor.PolicySet(.{ .parser = M, .string = S });
     const Root = dot.processor.PolicySet(.{ .dot = dot.Profile(.{}), .markup = Inner, .string = S });
@@ -389,9 +393,9 @@ test "nested policies support DOT to markup to consumer string and an independen
     try equal(span(source, "!"), (try S.first(fragment, state.string)).?);
     try std.testing.expectError(error.InvalidByte, Root.prepare(.{ .markup = .{ .string = .{ .policy = .{ .reject = 0 } } } }));
     try std.testing.expectError(error.InvalidSpan, fragment.child(.{ .start = 1000, .len = 1 }));
-    const Fixed = dot.processor.PolicySet(.{ .dot = dot.Profile(.{}), .markup = dot.processor.PolicySet(.{ .parser = markup.Profile(.{}), .string = StringReader(false) }), .string = StringReader(false) });
+    const Fixed = dot.processor.PolicySet(.{ .dot = dot.Profile(.{}), .markup = dot.processor.PolicySet(.{ .parser = markup.Profile(.{ .policy = .{ .mode = .structural } }), .string = StringReader(false) }), .string = StringReader(false) });
     try equal(@as(usize, 0), @sizeOf(Fixed.State));
     try equal(@as(usize, 0), @sizeOf(Fixed.Options));
-    try equal(@as(usize, 0), @sizeOf(markup.Profile(.{}).Prepared));
+    try equal(@as(usize, 0), @sizeOf(markup.Profile(.{ .policy = .{ .mode = .structural } }).Prepared));
     _ = try Fixed.prepare(.{});
 }

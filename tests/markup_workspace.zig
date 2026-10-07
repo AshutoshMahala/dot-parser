@@ -22,13 +22,16 @@ const inputs = [_][]const u8{
 test "all fragment storage paths agree across resets origins backends and policy variants" {
     inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |controlled| inline for (.{ .collect, .fail_fast }) |on_error| {
         const patch: markup.Policy = .{
+            .mode = .structural,
             .scanner = scanner,
             .on_error = on_error,
             .execution = .{ .cancellation = controlled },
             .diagnostics = .{ .unsupported = .silent },
             .validation = .{ .invalid_utf8 = .err },
         };
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else patch });
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{
+            .mode = .structural,
+        } else patch });
         const ready = P.prepare(if (runtime) .{ .policy = patch } else .{});
         var workspace = ready.initWorkspace(gpa, .{});
         defer workspace.deinit();
@@ -61,7 +64,7 @@ test "all fragment storage paths agree across resets origins backends and policy
 test "warm workspace makes no allocator calls for repeated trees or source fallback" {
     var tracked = std.testing.FailingAllocator.init(gpa, .{});
     var nesting = std.testing.FailingAllocator.init(gpa, .{});
-    const P = markup.Profile(.{});
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural } });
     var workspace = P.prepare(.{}).initWorkspace(tracked.allocator(), .{ .scratch_allocator = nesting.allocator() });
     try equal(@as(usize, 0), tracked.allocated_bytes + nesting.allocated_bytes);
     try equal(@as(usize, 0), workspace.reservedBytes());
@@ -94,7 +97,7 @@ test "workspace resets after sink stop cancellation and local limits" {
             return self.stop;
         }
     };
-    const P = markup.Profile(.{ .policy = .{ .execution = .{ .cancellation = true }, .limits = .{ .max_nodes = 2 } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .execution = .{ .cancellation = true }, .limits = .{ .max_nodes = 2 } } });
     var cancellation: Cancellation = .{};
     var workspace = P.prepare(.{ .cancellation = .{ .context = &cancellation, .is_requested = Cancellation.poll } }).initWorkspace(gpa, .{});
     defer workspace.deinit();
@@ -114,7 +117,7 @@ test "workspace resets after sink stop cancellation and local limits" {
 }
 
 fn allocationCase(allocator: std.mem.Allocator) !void {
-    const P = markup.Profile(.{});
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural } });
     var workspace = P.prepare(.{}).initWorkspace(allocator, .{});
     defer workspace.deinit();
     for (inputs) |bytes| {
@@ -129,7 +132,7 @@ test "all workspace growth failures release retained buffers exactly once" {
 
 test "a reusable workspace survives failed growth and rejects bad origins before processing" {
     var tracked = std.testing.FailingAllocator.init(gpa, .{});
-    const P = markup.Profile(.{});
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural } });
     var workspace = P.prepare(.{}).initWorkspace(tracked.allocator(), .{});
     defer workspace.deinit();
     const first = try workspace.parseAndValidate(.{ .bytes = "<a/>", .origin = 0 }, markup.diagnostic.discard);

@@ -60,7 +60,7 @@ pub const Limits = struct {
     max_attributes: u32 = std.math.maxInt(u32),
 };
 pub const Effective = struct {
-    mode: Mode = .structural,
+    mode: Mode = .graphviz,
     scanner: ScannerBackend = .scalar,
     on_error: OnError = .collect,
     diagnostics: struct { fixes: Fixes = .all, unsupported: Unsupported = .err } = .{},
@@ -115,7 +115,7 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
 
 pub const presets = struct {
     pub const standard: Policy = .{
-        .mode = .structural,
+        .mode = defaults.mode,
         .scanner = .scalar,
         .on_error = .collect,
         .diagnostics = .{ .fixes = .all, .unsupported = .err },

@@ -26,8 +26,9 @@ other's rules.
 - **More ways to check.** DOT's `markup` setting already chooses whether labels
   are checked: `none` (report `<...>` as unsupported), `passthrough` (keep it
   unchecked) or `process` (check it with the bound label checker). How they are
-  checked is the checker's `mode`: `.structural` remains the default;
-  unreleased `.graphviz` supplies tag and per-element attribute vocabulary checks.
+  checked is the checker's `mode`: unreleased `.graphviz` is now the default,
+  supplying tag and per-element attribute vocabulary checks. `.structural`
+  remains available explicitly for custom vocabulary and byte-exact tag matching.
   `extended` remains planned. Graphviz child/content rules, attribute values and
   references remain unfinished, as does automatic selection of Graphviz label
   contexts. For example, an HTML-like port `n:<p>` has the value

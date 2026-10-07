@@ -3,11 +3,8 @@ const std = @import("std");
 const markup = @import("markup_parser");
 
 pub fn main(init: std.process.Init) !void {
-    const Labels = markup.Profile(.{ .policy = blk: {
-        var policy = markup.presets.untrusted;
-        policy.mode = .graphviz;
-        break :blk policy;
-    } });
+    // Graphviz is the default mode; this preset also bounds resource use.
+    const Labels = markup.Profile(.{ .policy = markup.presets.untrusted });
     const source = "<TABLE BORDER=\"0\"><TR><TD PORT=\"p\"><B>Hello</B><BR/>world</TD></TR></TABLE>";
     const allocator = init.arena.allocator();
     var bag = markup.GrowableDiagnosticBag.init(allocator, .{});

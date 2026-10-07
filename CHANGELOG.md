@@ -6,6 +6,15 @@ are marked; no compatibility shims are kept.
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** markup now defaults to `.graphviz`, including root entry points,
+  `Profile(.{})`, the `standard`/`untrusted` presets, and default bound markup
+  processors. Tag matching ignores ASCII case; validation checks Graphviz tag
+  and attribute vocabulary. Select `.mode = .structural` explicitly to retain
+  vocabulary-free validation and byte-exact tag matching. DOT-only passthrough
+  behavior is unchanged.
+
 ### Added
 
 - Standalone markup `.mode = .graphviz`: case-insensitive element and per-element

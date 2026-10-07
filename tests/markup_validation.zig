@@ -1,10 +1,12 @@
 //! Independent encoding checks; no DOT dependency or implicit parse-time pass.
 const std = @import("std");
 const markup = @import("markup_parser");
+// These fixtures exercise vocabulary-independent structural behavior.
+const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
 const equal = std.testing.expectEqual;
 const expect = std.testing.expect;
 const discard = markup.diagnostic.discard;
-const Encoding = markup.Profile(.{ .policy = .{ .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err } } });
+const Encoding = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err } } });
 
 test "UTF-8 is opt-in, independent of parsing, and covers every raw source context" {
     const source = "\xef\xbb\xbf<\xff \xff='\xff'>\xff<!--\xff--><![CDATA[\xff]]></\xff>\xff";
@@ -13,7 +15,7 @@ test "UTF-8 is opt-in, independent of parsing, and covers every raw source conte
     try equal(markup.Outcome.success, parsed.outcome);
     const document = parsed.document.?;
     const retained = parsed.retainedBytes();
-    const default = markup.validateIn(&document, .{}, discard, .{});
+    const default = Structural.validateIn(&document, .{}, discard, .{});
     try equal(.valid, default.validity);
     try equal(.not_run, default.checks.invalid_utf8);
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
@@ -40,13 +42,13 @@ test "UTF-8 is opt-in, independent of parsing, and covers every raw source conte
     try equal(@as(usize, 20), @sizeOf(markup.Node));
     try equal(@as(usize, 20), @sizeOf(markup.Attribute));
     try equal(@as(usize, 36), @sizeOf(markup.Diagnostic));
-    try equal(@sizeOf(markup.Profile(.{}).Session), @sizeOf(Encoding.Session));
+    try equal(@sizeOf(markup.Profile(.{ .policy = .{ .mode = .structural } }).Session), @sizeOf(Encoding.Session));
 }
 
 test "UTF-8 valid boundaries and bytewise recovery do not reinterpret content" {
     // Noncharacters are valid UTF-8: this check is not XML Char/Name validation.
     for ([_][]const u8{ "", "\xef\xbb\xbf", "ASCII", "\xc2\x80\xdf\xbf\xe0\xa0\x80\xed\x9f\xbf\xef\xbf\xbf\xf0\x90\x80\x80\xf4\x8f\xbf\xbf" }) |source| {
-        var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
         defer parsed.deinit();
         const document = parsed.document.?;
         const result = Encoding.validateIn(&document, .{}, discard, .{});
@@ -60,7 +62,7 @@ test "UTF-8 valid boundaries and bytewise recovery do not reinterpret content" {
         source[0] = 'x'; // Do not accidentally construct a leading UTF-16 signature.
         @memcpy(source[1..][0..bad.len], bad);
         @memcpy(source[1 + bad.len ..][0..4], "éok");
-        var parsed = markup.parseBorrowed(std.testing.allocator, source[0 .. bad.len + 5], discard, .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, source[0 .. bad.len + 5], discard, .{});
         defer parsed.deinit();
         const document = parsed.document.?;
         var bag: markup.FixedDiagnosticBag(32) = .{};
@@ -72,7 +74,7 @@ test "UTF-8 valid boundaries and bytewise recovery do not reinterpret content" {
             try equal(source[offset], finding.details.byte);
         }
         // A truly truncated final sequence behaves identically, without suffix.
-        var tail = markup.parseBorrowed(std.testing.allocator, source[0 .. bad.len + 1], discard, .{});
+        var tail = Structural.parseBorrowed(std.testing.allocator, source[0 .. bad.len + 1], discard, .{});
         defer tail.deinit();
         try equal(result, Encoding.validateIn(&tail.document.?, .{}, discard, .{}));
     }
@@ -80,14 +82,14 @@ test "UTF-8 valid boundaries and bytewise recovery do not reinterpret content" {
 
 test "combined check policies have fixed-runtime parity and globally source-ordered findings" {
     const source = "\xff<a \xff='1' \xff='2' z='\xff' z='4'/>\xff";
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     const document = parsed.document.?;
     var scratch: markup.FixedValidationScratch(4) = .{};
-    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .validation = .{ .invalid_utf8 = .warning } } });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .validation = .{ .invalid_utf8 = .warning } } });
     inline for (.{ .err, .warning, .off }) |duplicate| {
         inline for (.{ .err, .warning, .off }) |encoding| {
-            const patch: markup.Policy = .{ .validation = .{ .duplicate_attribute = duplicate, .invalid_utf8 = encoding } };
+            const patch: markup.Policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = duplicate, .invalid_utf8 = encoding } };
             const Fixed = markup.Profile(.{ .policy = patch });
             var bag: markup.FixedDiagnosticBag(16) = .{};
             const checked = Fixed.validateIn(&document, scratch.storage(), bag.sink(), .{});
@@ -122,8 +124,8 @@ test "combined check policies have fixed-runtime parity and globally source-orde
 }
 
 test "encoding and duplicate findings continue independently but sink stop ends the prefix" {
-    const Both = markup.Profile(.{ .policy = .{ .validation = .{ .invalid_utf8 = .err } } });
-    var parsed = markup.parseBorrowed(std.testing.allocator, "\xff<a x='1' x='2'/>\xff", discard, .{});
+    const Both = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .invalid_utf8 = .err } } });
+    var parsed = Structural.parseBorrowed(std.testing.allocator, "\xff<a x='1' x='2'/>\xff", discard, .{});
     defer parsed.deinit();
     const document = parsed.document.?;
     var scratch: markup.FixedValidationScratch(2) = .{};
@@ -156,8 +158,8 @@ test "encoding and duplicate findings continue independently but sink stop ends 
 }
 
 test "resource preflight precedes checks, but encoding alone never needs duplicate scratch" {
-    const Both = markup.Profile(.{ .policy = .{ .validation = .{ .invalid_utf8 = .err } } });
-    var parsed = markup.parseBorrowed(std.testing.allocator, "\xff<a x='1' x='2'/>", discard, .{});
+    const Both = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .invalid_utf8 = .err } } });
+    var parsed = Structural.parseBorrowed(std.testing.allocator, "\xff<a x='1' x='2'/>", discard, .{});
     defer parsed.deinit();
     const document = parsed.document.?;
     var bag: markup.FixedDiagnosticBag(4) = .{};
@@ -177,7 +179,7 @@ test "resource preflight precedes checks, but encoding alone never needs duplica
     try equal(capacity.checks, oom.checks);
     try equal(.complete, Encoding.validate(std.testing.failing_allocator, &document, discard, .{}).completion);
     // No enabled checks: even cancellation and the document are not inspected.
-    const Off = markup.Profile(.{ .policy = .{ .validation = .{ .duplicate_attribute = .off }, .execution = .{ .cancellation = true } } });
+    const Off = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off }, .execution = .{ .cancellation = true } } });
     var stop: Stop = .{ .after = 0 };
     try equal(.valid, Off.validate(std.testing.failing_allocator, &document, discard, .{ .cancellation = stop.hook() }).validity);
     try equal(@as(u32, 0), stop.polls);
@@ -197,16 +199,16 @@ const Stop = struct {
 };
 
 test "UTF-8 chunk cancellation preserves known invalidity" {
-    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .warning } } });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .warning } } });
     const source = "\xff" ++ "東京" ** 1000;
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     const document = parsed.document.?;
     var inactive: Stop = .{ .after = 0 };
     try equal(.complete, Dynamic.validateIn(&document, .{}, discard, .{ .cancellation = inactive.hook() }).completion);
     try equal(@as(u32, 0), inactive.polls);
     inline for (.{ .err, .warning }) |severity| {
-        const Fixed = markup.Profile(.{ .policy = .{ .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = severity }, .execution = .{ .cancellation = true } } });
+        const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = severity }, .execution = .{ .cancellation = true } } });
         for ([_]u32{ 0, 1, 2, 10, 50 }) |after| {
             var stop: Stop = .{ .after = after };
             const checked = Fixed.validateIn(&document, .{}, discard, .{ .cancellation = stop.hook() });
@@ -222,7 +224,7 @@ test "UTF-8 chunk cancellation preserves known invalidity" {
 }
 
 test "encoding chunk boundaries preserve whole scalars and immediate sink stops" {
-    const P = markup.Profile(.{ .policy = .{ .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err }, .execution = .{ .cancellation = true } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err }, .execution = .{ .cancellation = true } } });
     inline for (.{ "x", "é", "東", "😀" }) |scalar| {
         inline for (.{ 61, 62, 63, 64, 65 }) |padding| {
             const source = "x" ** padding ++ scalar ++ "\xff" ++ "x" ** 256;
@@ -273,7 +275,7 @@ test "random raw bytes agree with a UTF-8 oracle across scalar and bounded block
             }
         }
         inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |cancellable| {
-            const P = markup.Profile(.{ .policy = .{ .scanner = backend, .execution = .{ .metering = true, .cancellation = cancellable }, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err } } });
+            const P = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend, .execution = .{ .metering = true, .cancellation = cancellable }, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err } } });
             var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
             var session = P.Session.init(source[0..len], .{ .document = output.storage() }, discard, .{});
             while (session.result() == null) _ = session.advance(1);

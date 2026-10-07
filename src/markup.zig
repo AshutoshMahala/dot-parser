@@ -1,4 +1,5 @@
-//! Standalone, byte-oriented markup fragments with optional Graphviz vocabulary.
+//! Standalone, byte-oriented markup fragments with Graphviz vocabulary by default.
+//! Select structural mode explicitly for vocabulary-free, byte-exact tag matching.
 //! Elements, attributes, references, comments, CDATA and optional validation. Not a browser
 //! HTML parser, a complete XML processor, or complete Graphviz label validation.
 //! Raw fragment operations support explicit delayed use without depending on DOT.

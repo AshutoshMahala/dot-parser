@@ -7,6 +7,64 @@ const strings = std.testing.expectEqualStrings;
 const discard = markup.diagnostic.discard;
 const Graphviz = markup.Profile(.{ .policy = .{ .mode = .graphviz } });
 
+test "default markup entry points use Graphviz matching and vocabulary" {
+    const Default = markup.Profile(.{});
+    try equal(markup.Mode.graphviz, Default.baseline.mode);
+    const source = "<FONT COLOR='red'><b>bold</B></font>";
+    var result = try markup.parseAndValidate(std.testing.allocator, .{ .bytes = source, .origin = 0 }, discard, .{});
+    defer result.deinit();
+    try expect(result.documentValid());
+    try expect(result.parse.document.?.source.ptr == source.ptr);
+    try equal(.complete, result.validation.?.checks.graphviz_elements);
+    try equal(.complete, result.validation.?.checks.graphviz_attributes);
+    try equal(result.validation.?, Default.validate(std.testing.allocator, &result.parse.document.?, discard, .{}));
+    try equal(result.validation.?, markup.validateSource(std.testing.allocator, source, discard, .{}));
+
+    var nodes: markup.FixedDocumentStorage(.{ .nodes = 3, .attributes = 1 }) = .{};
+    var frames: markup.FixedParseScratch(2) = .{};
+    const memory: markup.ParseMemory = .{ .document = nodes.storage(), .scratch = frames.storage() };
+    inline for (.{ Default.Session, markup.BoundedSession }) |Session| {
+        var session = Session.init(source, memory, discard, .{});
+        defer session.deinit();
+        try equal(markup.Outcome.success, session.run().outcome);
+    }
+    try equal(markup.Outcome.success, markup.measureIn(source, frames.storage(), discard, .{}).outcome);
+
+    for ([_]struct { bytes: []const u8, code: markup.diagnostic.Code }{
+        .{ .bytes = "<custom/>", .code = .unknown_element },
+        .{ .bytes = "<B class='x'/>", .code = .invalid_attribute },
+        .{ .bytes = "<FONT COLOR='red' color='blue'/>", .code = .duplicate_attribute },
+    }) |case| {
+        var bag: markup.FixedDiagnosticBag(8) = .{};
+        var rejected = try markup.parseAndValidate(std.testing.allocator, .{ .bytes = case.bytes, .origin = 0 }, bag.sink(), .{});
+        defer rejected.deinit();
+        try equal(markup.Outcome.success, rejected.parse.outcome);
+        try expect(!rejected.documentValid());
+        try equal(@as(usize, 1), bag.items().len);
+        try equal(case.code, bag.items()[0].code);
+    }
+}
+
+test "runtime structural override is local and complete presets restore Graphviz" {
+    const Runtime = markup.Profile(.{ .runtime_policy = true });
+    const input: markup.Fragment = .{ .bytes = "<custom own='value'/>", .origin = 0 };
+    var structural = try Runtime.parseAndValidate(std.testing.allocator, input, discard, .{ .policy = .{ .mode = .structural } });
+    defer structural.deinit();
+    try expect(structural.documentValid());
+    try equal(.not_run, structural.validation.?.checks.graphviz_elements);
+    var default = try Runtime.parseAndValidate(std.testing.allocator, input, discard, .{});
+    defer default.deinit();
+    try expect(!default.documentValid());
+    const Structural = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
+    inline for (.{ markup.presets.standard, markup.presets.untrusted }) |preset| {
+        const resolved = try Structural.Policies.prepare(.{ .policy = preset });
+        try equal(markup.Mode.graphviz, resolved.mode);
+        var reset = try Structural.parseAndValidate(std.testing.allocator, input, discard, .{ .policy = preset });
+        defer reset.deinit();
+        try expect(!reset.documentValid());
+    }
+}
+
 test "Graphviz vocabulary covers every documented element and per-element attribute" {
     const table = "ALIGN BGCOLOR BORDER CELLBORDER CELLPADDING CELLSPACING COLOR COLUMNS FIXEDSIZE GRADIENTANGLE HEIGHT HREF ID PORT ROWS SIDES STYLE TARGET TITLE TOOLTIP VALIGN WIDTH";
     const cell = "ALIGN BALIGN BGCOLOR BORDER CELLPADDING CELLSPACING COLOR COLSPAN FIXEDSIZE GRADIENTANGLE HEIGHT HREF ID PORT ROWSPAN SIDES STYLE TARGET TITLE TOOLTIP VALIGN WIDTH";
@@ -62,7 +120,8 @@ test "Graphviz lookup and tag matching ignore ASCII case without changing source
     try strings(source, document.source);
     var roots = document.roots();
     try strings("TaBlE", roots.next().?.name().?);
-    var mismatch = markup.parseBorrowed(std.testing.allocator, "<b></B>", discard, .{});
+    const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
+    var mismatch = Structural.parseBorrowed(std.testing.allocator, "<b></B>", discard, .{});
     defer mismatch.deinit();
     try equal(markup.Outcome.invalid_syntax, mismatch.outcome);
     try equal(@as(usize, 20), @sizeOf(markup.Node));
@@ -77,7 +136,8 @@ test "Graphviz duplicate checking is case-insensitive with original first occurr
     var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     var scratch: markup.FixedValidationScratch(3) = .{};
-    try equal(.valid, markup.validateIn(&parsed.document.?, scratch.storage(), discard, .{}).validity);
+    const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
+    try equal(.valid, Structural.validateIn(&parsed.document.?, scratch.storage(), discard, .{}).validity);
     var bag: markup.FixedDiagnosticBag(8) = .{};
     const result = Graphviz.validateIn(&parsed.document.?, scratch.storage(), bag.sink(), .{});
     try equal(@as(u64, 2), result.errors);
@@ -304,12 +364,12 @@ test "mode and nested patches inherit independently and complete presets reset t
     try equal(.off, inherited.validation.graphviz.invalid_attribute);
     inline for (.{ markup.presets.standard, markup.presets.untrusted }) |preset| {
         const reset = try Runtime.Policies.prepare(.{ .policy = preset });
-        try equal(.structural, reset.mode);
+        try equal(.graphviz, reset.mode);
         try equal(.err, reset.validation.graphviz.unknown_element);
         try equal(.err, reset.validation.graphviz.invalid_attribute);
     }
     try equal(.valid, Runtime.validatePolicy(.{ .mode = .graphviz }));
-    const Structural = markup.Profile(.{ .policy = .{ .validation = .{ .graphviz = .{ .unknown_element = .err, .invalid_attribute = .err } } } });
+    const Structural = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .graphviz = .{ .unknown_element = .err, .invalid_attribute = .err } } } });
     const checked = Structural.validateSourceIn("<custom/>", .{}, discard, .{});
     try equal(.valid, checked.validity);
     try equal(.not_run, checked.checks.graphviz_elements);

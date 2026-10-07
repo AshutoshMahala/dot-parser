@@ -5,7 +5,7 @@ const markup = @import("markup_parser");
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
-    const source = "digraph { a [label=<<b title='one' title='two'>Hello</b>> + \" literal \" + <<i>world</i>>]; }";
+    const source = "digraph { a [label=<<FONT COLOR='red' COLOR='blue'>Hello</FONT>> + \" literal \" + <<i>world</i>>]; }";
     const outer_on_error: dot.OnError = .collect;
     const Outer = dot.Profile(.{ .policy = .{ .on_error = outer_on_error, .limits = .{ .max_nesting = 64, .max_statements = 1000, .max_attributes = 1000 } } });
     const Inner = markup.Profile(.{ .policy = markup.presets.untrusted });

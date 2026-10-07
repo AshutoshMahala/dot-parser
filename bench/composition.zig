@@ -81,7 +81,7 @@ pub fn main(init: std.process.Init) !void {
         const valid = comptime !std.mem.eql(u8, fixture, "invalid");
         const visited: u32 = comptime if (std.mem.eql(u8, fixture, "plain")) 0 else if (std.mem.eql(u8, fixture, "large_first")) 1 else count;
         inline for (.{ .scalar, .block }) |scanner| {
-            const P = dot.Profile(.{ .policy = .{ .scanner = scanner }, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .scanner = scanner } }) } });
+            const P = dot.Profile(.{ .policy = .{ .scanner = scanner }, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = scanner } }) } });
             var tracking: Tracking = .{ .backing = init.gpa };
             try run(P, tracking.allocator(), source.items, valid, visited);
             if (tracking.live != 0) return error.Leak;

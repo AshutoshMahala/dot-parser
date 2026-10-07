@@ -36,9 +36,15 @@ The built-in grammar is an XML-like subset of HTML:
 | Unquoted attributes, `<br>` with no closing tag | Errors. This is XML-style, not browser HTML. |
 | `<?...?>`, `<!DOCTYPE>`, UTF-16/32 input | Not supported |
 
-In the default `.structural` mode, tag names can be anything. The optional
-[Graphviz vocabulary mode](#graphviz-vocabulary) restricts tag and attribute names. Text,
-whitespace and non-ASCII bytes are kept exactly as written.
+The default `.graphviz` mode matches tags ignoring ASCII case and validates
+[Graphviz tag and attribute vocabulary](#graphviz-vocabulary). For custom
+vocabulary with byte-exact tag matching, select structural mode explicitly:
+
+```zig
+const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
+```
+
+Text, whitespace and non-ASCII bytes are kept exactly as written in either mode.
 
 The parser is meant as a general base that different HTML-like dialects can
 build on. Graphviz labels are its first and most important use, not its only
@@ -51,7 +57,7 @@ const markup = @import("markup_parser");
 
 var bag = markup.GrowableDiagnosticBag.init(allocator, .{});
 defer bag.deinit();
-var parsed = markup.parseBorrowed(allocator, "Hello <b class='x'>world</b>!", bag.sink(), .{});
+var parsed = markup.parseBorrowed(allocator, "Hello <b>world</b>!", bag.sink(), .{});
 defer parsed.deinit();
 
 if (parsed.document) |document| {
@@ -88,7 +94,9 @@ tree, never your source or bag.
 
 ## Validate
 
-Parsing checks structure: tags match and attributes are well-formed.
+Parsing checks structure: tags match and attributes are well-formed. Even in
+Graphviz mode, `parseBorrowed` does not run vocabulary checks; use
+`parseAndValidate` for both steps, or validate the document separately.
 Validation is a separate step with these checks, each `.err`, `.warning` or
 `.off`:
 
@@ -125,8 +133,10 @@ const checked = Strict.validate(allocator, &document, bag.sink(), .{});
 
 ## Graphviz vocabulary
 
-**Unreleased, vocabulary slice only.** Select it explicitly; structural mode
-and the parsing grammar are unchanged:
+**Unreleased, vocabulary slice only.** Graphviz is the default for root entry
+points, `markup.Profile(.{})`, and the `standard`/`untrusted` presets. It also
+applies when that profile is bound as a DOT processor. These are the default
+vocabulary settings, shown explicitly:
 
 ```zig
 const Labels = markup.Profile(.{ .policy = .{
@@ -145,7 +155,17 @@ defer result.deinit();
 
 Both checks accept `.err`, `.warning` or `.off`, including runtime patches when
 `runtime_policy = true`. They are inactive in `.structural`, regardless of their
-stored settings. Complete `standard`/`untrusted` presets select `.structural`.
+stored settings. Complete `standard`/`untrusted` presets select `.graphviz`,
+including when applied over a structural baseline. To keep the untrusted
+resource limits with custom vocabulary, copy the preset and change its mode:
+
+```zig
+const Custom = markup.Profile(.{ .policy = blk: {
+    var policy = markup.presets.untrusted;
+    policy.mode = .structural;
+    break :blk policy;
+} });
+```
 
 The vocabulary follows the [documented Graphviz label grammar](https://graphviz.org/doc/info/shapes.html#html):
 
@@ -393,7 +413,7 @@ Every setting:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `.structural` | `.structural` or `.graphviz` (vocabulary checks and ASCII-case-insensitive tag matching; see [coverage](#graphviz-vocabulary)) |
+| `mode` | `.graphviz` | `.structural` or `.graphviz` (vocabulary checks and ASCII-case-insensitive tag matching; see [coverage](#graphviz-vocabulary)) |
 | `limits.max_source_bytes` | 4 GiB | Largest input accepted |
 | `limits.max_nodes` | no limit | Elements, text runs, comments and CDATA sections |
 | `limits.max_attributes` | no limit | Attributes in total |

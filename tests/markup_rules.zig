@@ -1,26 +1,28 @@
 //! Optional name rules and reference catalogs must not define the base grammar.
 const std = @import("std");
 const markup = @import("markup_parser");
+// These fixtures exercise vocabulary-independent structural behavior.
+const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
 const equal = std.testing.expectEqual;
 const expect = std.testing.expect;
 const discard = markup.diagnostic.discard;
-const Names = markup.Profile(.{ .policy = .{ .validation = .{
+const Names = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
     .duplicate_attribute = .off,
     .names = .{ .rule = .xml_1_0, .severity = .err },
 } } });
-const References = markup.Profile(.{ .policy = .{ .validation = .{
+const References = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
     .duplicate_attribute = .off,
     .references = .{ .catalog = .xml_predefined, .severity = .err },
 } } });
 
 test "name rules and catalogs are independent, opt-in, and do not change retained storage" {
     const source = "<\xff custom='&nbsp;'>\xff</\xff>";
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     try equal(markup.Outcome.success, parsed.outcome);
     const doc = parsed.document.?;
     const bytes = parsed.retainedBytes();
-    const ordinary = markup.validateIn(&doc, .{}, discard, .{});
+    const ordinary = Structural.validateIn(&doc, .{}, discard, .{});
     try equal(.valid, ordinary.validity);
     try equal(.not_run, ordinary.checks.names);
     try equal(.not_run, ordinary.checks.references);
@@ -39,22 +41,22 @@ test "name rules and catalogs are independent, opt-in, and do not change retaine
     try equal(@as(usize, 20), @sizeOf(markup.Node));
     try equal(@as(usize, 20), @sizeOf(markup.Attribute));
     try equal(@as(usize, 36), @sizeOf(markup.Diagnostic));
-    try equal(@sizeOf(markup.Profile(.{}).Session), @sizeOf(Names.Session));
+    try equal(@sizeOf(markup.Profile(.{ .policy = .{ .mode = .structural } }).Session), @sizeOf(Names.Session));
 }
 
 test "XML names accept Unicode ranges and literal colons without normalization or namespaces" {
     const source = "<東京 café='yes' a:b:c='yes' a·='yes' a\u{0300}='yes'><\u{10000}/><\u{effff}/></東京>";
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     const checked = Names.validateIn(&parsed.document.?, .{}, discard, .{});
     try equal(.complete, checked.completion);
     try equal(.valid, checked.validity);
     try equal(@as(u64, 0), checked.errors);
     // No normalization makes canonically equivalent attribute spellings duplicates.
-    var distinct = markup.parseBorrowed(std.testing.allocator, "<x é='1' e\u{0301}='2'/>", discard, .{});
+    var distinct = Structural.parseBorrowed(std.testing.allocator, "<x é='1' e\u{0301}='2'/>", discard, .{});
     defer distinct.deinit();
     var keys: markup.FixedValidationScratch(2) = .{};
-    const All = markup.Profile(.{ .policy = .{ .validation = .{ .names = .{ .severity = .err } } } });
+    const All = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .names = .{ .severity = .err } } } });
     try equal(.valid, All.validateIn(&distinct.document.?, keys.storage(), discard, .{}).validity);
 }
 
@@ -72,7 +74,7 @@ test "invalid names report only their first bad code point with whole-name conte
         var source: [64]u8 = undefined;
         const input = try std.fmt.bufPrint(&source, "<{s}/>", .{case.name});
         var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
-        const parsed = markup.parseBorrowedIn(input, .{ .document = output.storage() }, discard, .{});
+        const parsed = Structural.parseBorrowedIn(input, .{ .document = output.storage() }, discard, .{});
         try equal(markup.Outcome.success, parsed.outcome);
         var bag: markup.FixedDiagnosticBag(8) = .{};
         const checked = Names.validateIn(&parsed.document.?, .{}, bag.sink(), .{});
@@ -91,7 +93,7 @@ test "reference lookup is case-sensitive and confined to actual named references
     const source = "<!--&unknown;&\xff;--><![CDATA[&unknown;&\xff;]]>" ++
         "<arbitrary x='&amp;&lt;&gt;&quot;&apos;&#160;&#x1f600;&amp;nbsp;' y='&AMP;'/>" ++
         "&nbsp;&custom;&東京;";
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     var bag: markup.FixedDiagnosticBag(16) = .{};
     const checked = References.validateIn(&parsed.document.?, .{}, bag.sink(), .{});
@@ -105,7 +107,7 @@ test "reference lookup is case-sensitive and confined to actual named references
 }
 
 test "accepted malformed reference candidates stay literal during later name and catalog checks" {
-    const Tolerant = markup.Profile(.{ .policy = .{ .syntax = .{ .malformed_reference = .accept }, .validation = .{
+    const Tolerant = markup.Profile(.{ .policy = .{ .mode = .structural, .syntax = .{ .malformed_reference = .accept }, .validation = .{
         .duplicate_attribute = .off,
         .names = .{ .severity = .err },
         .references = .{ .severity = .warning },
@@ -133,14 +135,14 @@ test "accepted malformed reference candidates stay literal during later name and
 
 test "name catalog encoding and duplicate policies compose with source-order and fixed-runtime parity" {
     const source = "\xff<\xff \xff='&\xff;' \xff='&missing;' a\u{037e}='&amp;'/>&nope;\xff";
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     const doc = parsed.document.?;
     var scratch: markup.FixedValidationScratch(3) = .{};
-    const Dynamic = markup.Profile(.{ .runtime_policy = true });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     inline for (.{ .off, .warning, .err }) |names| {
         inline for (.{ .off, .warning, .err }) |refs| {
-            const patch: markup.Policy = .{ .validation = .{
+            const patch: markup.Policy = .{ .mode = .structural, .validation = .{
                 .invalid_utf8 = .warning,
                 .names = .{ .severity = names },
                 .references = .{ .severity = refs },
@@ -180,9 +182,9 @@ fn order(code: markup.diagnostic.Code) u8 {
 }
 
 test "name errors do not inherit encoding severity; whole-source encoding still checks closing names" {
-    var parsed = markup.parseBorrowed(std.testing.allocator, "<\xff></\xff>\xff", discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, "<\xff></\xff>\xff", discard, .{});
     defer parsed.deinit();
-    const P = markup.Profile(.{ .policy = .{ .validation = .{
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
         .duplicate_attribute = .off,
         .names = .{ .severity = .err },
         .invalid_utf8 = .warning,
@@ -197,7 +199,7 @@ test "name errors do not inherit encoding severity; whole-source encoding still 
 }
 
 test "nested patches inherit independently and complete presets reset the new checks" {
-    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .validation = .{
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .validation = .{
         .names = .{ .rule = .xml_1_0, .severity = .err },
         .references = .{ .catalog = .xml_predefined, .severity = .warning },
     } } });
@@ -222,11 +224,11 @@ test "nested patches inherit independently and complete presets reset the new ch
 }
 
 test "new checks preserve stop failure scratch preflight and incomplete statuses" {
-    const P = markup.Profile(.{ .policy = .{ .validation = .{
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
         .names = .{ .severity = .err },
         .references = .{ .severity = .warning },
     } } });
-    var parsed = markup.parseBorrowed(std.testing.allocator, "<\xff x='&unknown;' x='2'/>", discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, "<\xff x='&unknown;' x='2'/>", discard, .{});
     defer parsed.deinit();
     const doc = parsed.document.?;
     var bag: markup.FixedDiagnosticBag(8) = .{};
@@ -272,13 +274,13 @@ const Stop = struct {
 };
 
 test "new checks poll inside long names and reference scans with fixed-runtime cancellation parity" {
-    const patch: markup.Policy = .{ .syntax = .{ .malformed_reference = .accept }, .validation = .{
+    const patch: markup.Policy = .{ .mode = .structural, .syntax = .{ .malformed_reference = .accept }, .validation = .{
         .duplicate_attribute = .off,
         .names = .{ .severity = .err },
         .references = .{ .severity = .err },
     }, .execution = .{ .cancellation = true } };
     const P = markup.Profile(.{ .policy = patch });
-    const Dynamic = markup.Profile(.{ .runtime_policy = true });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     for ([_][]const u8{
         "<" ++ "東京" ** 1000 ++ "/>",
         "<\xff/>" ++ "x" ** 10_000,
@@ -302,7 +304,7 @@ test "new checks poll inside long names and reference scans with fixed-runtime c
 
 test "chunk polling crosses reference boundaries without changing findings" {
     inline for (.{ false, true }) |runtime| {
-        const patch: markup.Policy = .{ .syntax = .{ .malformed_reference = .accept }, .validation = .{
+        const patch: markup.Policy = .{ .mode = .structural, .syntax = .{ .malformed_reference = .accept }, .validation = .{
             .duplicate_attribute = .off,
             .names = .{ .severity = .warning },
             .references = .{ .severity = .warning },
@@ -329,7 +331,7 @@ test "long plain text reference checking polls per chunk, not per byte" {
     const source = "x" ** 100_000;
     inline for (.{ false, true }) |runtime| {
         inline for (.{ false, true }) |enabled| {
-            const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .validation = .{
+            const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = .structural, .validation = .{
                 .duplicate_attribute = .off,
                 .references = .{ .severity = .err },
             }, .execution = .{ .cancellation = enabled } } });
@@ -346,15 +348,15 @@ test "long plain text reference checking polls per chunk, not per byte" {
 
 test "dense markup shares polling work across short scans with fixed-runtime parity" {
     const source = "<a x='1' y='2'/>" ** 10_000;
-    const patch: markup.Policy = .{ .validation = .{
+    const patch: markup.Policy = .{ .mode = .structural, .validation = .{
         .duplicate_attribute = .off,
         .invalid_utf8 = .err,
         .names = .{ .severity = .err },
         .references = .{ .severity = .err },
     }, .execution = .{ .cancellation = true } };
     const P = markup.Profile(.{ .policy = patch });
-    const Dynamic = markup.Profile(.{ .runtime_policy = true });
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     var never: Stop = .{ .after = std.math.maxInt(u32) };
     const checked = P.validateIn(&parsed.document.?, .{}, discard, .{ .cancellation = never.hook() });
@@ -377,12 +379,12 @@ test "dense markup shares polling work across short scans with fixed-runtime par
 
 test "encoding revisits stay cancellable after a completed reference scan" {
     const source = "x" ** 10_000;
-    const P = markup.Profile(.{ .policy = .{ .validation = .{
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
         .duplicate_attribute = .off,
         .invalid_utf8 = .err,
         .references = .{ .severity = .err },
     }, .execution = .{ .cancellation = true } } });
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     // Reference traversal takes fewer than 160 polls. An absolute-source
     // high-water mark would then miss cancellation inside the encoding revisit.
@@ -396,7 +398,7 @@ test "encoding revisits stay cancellable after a completed reference scan" {
 
 test "bounded scalar and block parses produce identical later name and reference findings" {
     const source = "<!--&unknown;--><\xff x='&amp;&unknown;' y='&\xff;'>&bad&next;<![CDATA[&no;]]></\xff>";
-    const patch: markup.Policy = .{ .syntax = .{ .malformed_reference = .warn }, .validation = .{
+    const patch: markup.Policy = .{ .mode = .structural, .syntax = .{ .malformed_reference = .warn }, .validation = .{
         .names = .{ .severity = .err },
         .references = .{ .severity = .warning },
         .invalid_utf8 = .err,
@@ -424,13 +426,13 @@ test "bounded scalar and block parses produce identical later name and reference
 }
 
 test "new checks finish empty input and preserve completed checks when trailing encoding stops" {
-    const P = markup.Profile(.{ .policy = .{ .validation = .{
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
         .names = .{ .severity = .err },
         .references = .{ .severity = .err },
         .invalid_utf8 = .err,
     } } });
     for ([_][]const u8{ "", "\xef\xbb\xbf" }) |source| {
-        var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
         defer parsed.deinit();
         const result = P.validateIn(&parsed.document.?, .{}, discard, .{});
         try equal(.complete, result.completion);
@@ -438,7 +440,7 @@ test "new checks finish empty input and preserve completed checks when trailing 
         try equal(.not_run, result.checks.graphviz_elements);
         try equal(.not_run, result.checks.graphviz_attributes);
     }
-    var parsed = markup.parseBorrowed(std.testing.allocator, "<a/>\xff", discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, "<a/>\xff", discard, .{});
     defer parsed.deinit();
     var bag: markup.FixedDiagnosticBag(1) = .{};
     const checked = P.validateIn(&parsed.document.?, .{}, bag.sink(), .{});
@@ -451,7 +453,7 @@ test "new checks finish empty input and preserve completed checks when trailing 
 
 test "new validation floods obey the default diagnostic cap without allocating scratch" {
     const source = "&missing;" ** 2048;
-    var parsed = markup.parseBorrowed(std.testing.allocator, source, discard, .{});
+    var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
     defer bag.deinit();
@@ -464,7 +466,7 @@ test "new validation floods obey the default diagnostic cap without allocating s
 }
 
 test "random mixed reference contexts have predictable findings and immutable source" {
-    const P = markup.Profile(.{ .policy = .{ .syntax = .{ .malformed_reference = .accept }, .validation = .{
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .syntax = .{ .malformed_reference = .accept }, .validation = .{
         .duplicate_attribute = .off,
         .names = .{ .severity = .err },
         .references = .{ .severity = .warning },

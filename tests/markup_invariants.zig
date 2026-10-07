@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
         _ = children.next(); // Must assert on the first step, not a later OOB read.
         std.process.exit(1);
     }
-    const P = markup.Profile(.{ .policy = .{ .validation = .{
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
         .duplicate_attribute = .off,
         .names = .{ .severity = .err },
         .references = .{ .severity = .err },

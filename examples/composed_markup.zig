@@ -11,7 +11,7 @@ const Parser = dot.Profile(.{
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
-    const source = "digraph { a [label=<<b title='one' title='two'>Hello</b>>]; a -- b; }";
+    const source = "digraph { a [label=<<FONT COLOR='red' COLOR='blue'>Hello</FONT>>]; a -- b; }";
     var bag = Parser.GrowableDiagnosticBag.init(allocator, .{});
     defer bag.deinit();
     var result = try Parser.parseAndValidate(allocator, source, bag.sink(), .{});

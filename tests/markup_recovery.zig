@@ -15,6 +15,7 @@ test "collect is the markup recovery default and presets expose the same two cho
 }
 
 test "structural recovery reports independent findings without publishing a tree" {
+    const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
     const Case = struct { source: []const u8, errors: u32 };
     for ([_]Case{
         .{ .source = "<a><b></a><c/>", .errors = 1 },
@@ -28,7 +29,7 @@ test "structural recovery reports independent findings without publishing a tree
         .{ .source = "&; <x a='&;'> &bad </x></extra>", .errors = 4 },
     }) |case| {
         var bag: markup.FixedDiagnosticBag(32) = .{};
-        var parsed = markup.parseBorrowed(std.testing.allocator, case.source, bag.sink(), .{});
+        var parsed = Structural.parseBorrowed(std.testing.allocator, case.source, bag.sink(), .{});
         defer parsed.deinit();
         try equal(markup.Outcome.invalid_syntax, parsed.outcome);
         try equal(markup.Completion.complete, parsed.completion);
@@ -39,14 +40,14 @@ test "structural recovery reports independent findings without publishing a tree
         var frames: markup.FixedParseScratch(8) = .{};
         var nodes: markup.FixedDocumentStorage(.{ .nodes = 16, .attributes = 8 }) = .{};
         var fixed_bag: markup.FixedDiagnosticBag(32) = .{};
-        const fixed = markup.parseBorrowedIn(case.source, .{ .document = nodes.storage(), .scratch = frames.storage() }, fixed_bag.sink(), .{});
+        const fixed = Structural.parseBorrowedIn(case.source, .{ .document = nodes.storage(), .scratch = frames.storage() }, fixed_bag.sink(), .{});
         try equal(parsed.outcome, fixed.outcome);
         try equal(parsed.completion, fixed.completion);
         try equal(parsed.syntax_errors, fixed.syntax_errors);
         try equal(parsed.counts, fixed.counts);
         try expect(fixed.document == null);
         try std.testing.expectEqualSlices(markup.Diagnostic, bag.items(), fixed_bag.items());
-        const measured = markup.measureIn(case.source, frames.storage(), discard, .{});
+        const measured = Structural.measureIn(case.source, frames.storage(), discard, .{});
         try equal(parsed.counts, measured.counts);
         try equal(parsed.syntax_errors, measured.syntax_errors);
         try equal(parsed.completion, measured.completion);

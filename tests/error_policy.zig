@@ -2,6 +2,8 @@
 const std = @import("std");
 const dot = @import("dot_parser");
 const markup = @import("markup_parser");
+// These fixtures exercise vocabulary-independent structural behavior.
+const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const allocator = std.testing.allocator;
@@ -16,7 +18,7 @@ test "error handling and unsupported types are shared without legacy aliases" {
 
 test "validation obeys on_error independently of warning reporting and sink retention" {
     const text = "<x a='1' a='2' a='3'/><y b='1' b='2'/>";
-    var parsed = markup.parseBorrowed(allocator, text, markup.diagnostic.discard, .{});
+    var parsed = Structural.parseBorrowed(allocator, text, markup.diagnostic.discard, .{});
     defer parsed.deinit();
     var attributes: [3]markup.ScopeAttribute = undefined;
     for (&attributes, parsed.document.?.attributes[0..3]) |*target, a| target.* = .{ .name = a.name, .value = a.value };
@@ -26,8 +28,8 @@ test "validation obeys on_error independently of warning reporting and sink rete
         .attributes = &attributes,
     } };
     inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |runtime| inline for (.{ .fail_fast, .collect }) |mode| inline for (.{ .err, .warning }) |severity| {
-        const patch: markup.Policy = .{ .scanner = scanner, .on_error = mode, .validation = .{ .duplicate_attribute = severity } };
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{ .on_error = if (mode == .collect) .fail_fast else .collect } else patch });
+        const patch: markup.Policy = .{ .mode = .structural, .scanner = scanner, .on_error = mode, .validation = .{ .duplicate_attribute = severity } };
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{ .mode = .structural, .on_error = if (mode == .collect) .fail_fast else .collect } else patch });
         const options: P.Options = if (runtime) .{ .policy = patch } else .{};
         var scratch: markup.FixedSourceValidationScratch(3) = .{};
         const doc = P.validateIn(&parsed.document.?, .{ .attribute_keys = &scratch.keys }, markup.diagnostic.discard, options);
@@ -52,7 +54,7 @@ test "validation obeys on_error independently of warning reporting and sink rete
 }
 
 test "fail-fast syntax ends the combined child but explicit local validation is independent" {
-    const P = markup.Profile(.{ .policy = .{ .on_error = .fail_fast } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .on_error = .fail_fast } });
     const text = "<p q=1/><x a='1' a='2'/>";
     var bag: markup.FixedDiagnosticBag(8) = .{};
     var child = try P.parseAndValidate(allocator, try markup.Fragment.init(text, 50), bag.sink(), .{});
@@ -69,7 +71,7 @@ test "fail-fast syntax ends the combined child but explicit local validation is 
 
 test "each parent child on_error combination respects its own operation boundary" {
     inline for (.{ .fail_fast, .collect }) |outer| inline for (.{ .fail_fast, .collect }) |inner| {
-        const P = markup.Profile(.{ .policy = .{ .on_error = inner } });
+        const P = markup.Profile(.{ .policy = .{ .mode = .structural, .on_error = inner } });
         const ready = P.prepare(.{});
         var bag: markup.FixedDiagnosticBag(16) = .{};
         var visited: u32 = 0;
@@ -88,8 +90,8 @@ test "each parent child on_error combination respects its own operation boundary
 
 test "unsupported markup is never silently accepted or automatically a batch stop" {
     inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |runtime| inline for (.{ .fail_fast, .collect }) |mode| inline for (.{ .err, .warning, .silent }) |unsupported| {
-        const patch: markup.Policy = .{ .scanner = scanner, .on_error = mode, .diagnostics = .{ .unsupported = unsupported } };
-        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{ .diagnostics = .{ .unsupported = .silent } } else patch });
+        const patch: markup.Policy = .{ .mode = .structural, .scanner = scanner, .on_error = mode, .diagnostics = .{ .unsupported = unsupported } };
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{ .mode = .structural, .diagnostics = .{ .unsupported = .silent } } else patch });
         const options: P.Options = if (runtime) .{ .policy = patch } else .{};
         for ([_][]const u8{ "<?pi?>", "<!DOCTYPE x>", "\xff\xfe<a/>" }) |text| {
             var bag: markup.FixedDiagnosticBag(8) = .{};
@@ -138,7 +140,7 @@ test "DOT unsupported reporting is separate from passthrough and continuation" {
 }
 
 test "actual destination stops still end both levels including terminal unsupported findings" {
-    const M = markup.Profile(.{ .policy = .{ .diagnostics = .{ .unsupported = .warning } } });
+    const M = markup.Profile(.{ .policy = .{ .mode = .structural, .diagnostics = .{ .unsupported = .warning } } });
     var bag: markup.FixedDiagnosticBag(1) = .{};
     var child = try M.parseAndValidate(allocator, try markup.Fragment.init("<?pi?>", 0), bag.sink(), .{});
     defer child.deinit();
@@ -154,7 +156,7 @@ test "actual destination stops still end both levels including terminal unsuppor
 
 test "unsupported warnings do not erase earlier syntax errors in a child" {
     inline for (.{ .warning, .silent }) |unsupported| {
-        const P = markup.Profile(.{ .policy = .{ .diagnostics = .{ .unsupported = unsupported } } });
+        const P = markup.Profile(.{ .policy = .{ .mode = .structural, .diagnostics = .{ .unsupported = unsupported } } });
         var child = try P.parseAndValidate(allocator, try markup.Fragment.init("</extra><?pi?>", 0), markup.diagnostic.discard, .{});
         defer child.deinit();
         try equal(@as(u32, 1), child.parse.syntax_errors);
@@ -194,9 +196,9 @@ test "DOT non-error unsupported input stays partition invariant with fail-fast" 
 
 test "fail-fast applies to every markup validation finding and sink stop wins" {
     inline for ([_]@FieldType(markup.Policy, "validation"){ .{ .invalid_utf8 = .err, .duplicate_attribute = .off }, .{ .names = .{ .severity = .err }, .duplicate_attribute = .off }, .{ .references = .{ .severity = .err }, .duplicate_attribute = .off } }) |rules| {
-        const P = markup.Profile(.{ .policy = .{ .on_error = .fail_fast, .validation = rules } });
+        const P = markup.Profile(.{ .policy = .{ .mode = .structural, .on_error = .fail_fast, .validation = rules } });
         const text = "<a\xff/><a\xff/>&unknown;&absent;";
-        var parsed = markup.parseBorrowed(allocator, text, markup.diagnostic.discard, .{});
+        var parsed = Structural.parseBorrowed(allocator, text, markup.diagnostic.discard, .{});
         defer parsed.deinit();
         var bag: markup.FixedDiagnosticBag(8) = .{};
         const checked = P.validateIn(&parsed.document.?, .{}, bag.sink(), .{});
