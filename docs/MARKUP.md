@@ -267,9 +267,9 @@ recognized structure. Set `on_error = .fail_fast` to stop at the first error.
 
 ## Partial results for editors
 
-**Unreleased, first slice:** keep the recognized prefix when parsing cannot
-produce a complete document. This works with both scanners, allocating/fixed
-storage, runtime policies, sessions and reusable workspaces:
+An editor can use the recognized part of a document for an outline while the
+user is still typing. Enable partial retention to keep that part after a parse
+failure; by default, failures return no document:
 
 ```zig
 const Editor = markup.Profile(.{ .policy = .{
@@ -279,60 +279,48 @@ const Editor = markup.Profile(.{ .policy = .{
 var parsed = Editor.parseBorrowed(allocator, "<root><done/><child x='unfinished", bag.sink(), .{});
 defer parsed.deinit();
 if (parsed.document) |document| {
-    _ = document.state; // .partial here; same Document type as successful parsing
-    _ = document.unrepresented(); // remaining source span, not a restart point
+    _ = document.state; // .partial here; the Document type is unchanged
     var roots = document.roots();
     while (roots.next()) |node| {
-        _ = node.state(); // .complete or .partial
-        _ = node.scopeComplete();
-        _ = node.subtreeComplete();
-        _ = node.headerComplete(); // element header only; null for leaves
+        _ = node.state(); // .partial for this unfinished <root>
+        _ = node.children(); // <done/> is available inside unfinished <root>
+        _ = node.attributes(); // completed attributes are available too
+        _ = node.subtreeComplete(); // false: this element isn't fully represented
+        _ = node.headerComplete(); // true for <root>; null for text/comments/CDATA
     }
+    _ = document.unrepresented(); // source range not represented by the tree
 }
 ```
 
-`scopeComplete()` describes this scope's own representation; `subtreeComplete()`
-also requires its retained children to be complete. In this prefix-only slice,
-both queries have the same answer: an unfinished descendant also leaves its
-ancestors unfinished. They concern this standalone markup tree, not hypothetical
-or unrequested embedded parsers. `Completeness.not_processed` is reserved for
-unstarted scopes; this slice publishes no document before parsing begins, rather
-than manufacturing unprocessed nodes.
+Use `subtreeComplete()` when you need an element and all its children to be
+complete. `scopeComplete()` checks just the current scope. They currently agree,
+because an unfinished child also leaves its ancestors unfinished. Neither says
+the markup is valid. `.not_processed` is reserved and isn't returned yet.
 
-The first error freezes output. With `.collect`, parsing can still continue for
-diagnostics, but later recovered nodes are **not retained yet**. Thus parsing
-can report `completion == .complete` while `document.state == .partial`.
-Completed attributes/children remain accessible even inside an unfinished
-element. Missing quotes/comments/CDATA stay raw in the unrepresented tail;
-no closing delimiter or guessed suffix structure is invented. An empty tail
-can still accompany a missing closing tag at EOF. Whitespace between the last
-retained construct and the failure may be included in the tail.
+**Only the prefix before the first failure is retained.** `.collect` can keep
+finding errors, but it doesn't add later nodes to the tree. A finished scan
+(`parsed.completion == .complete`) can therefore still have a partial document.
+Missing quotes, comments and closing tags are never guessed or repaired.
 
-Use node views for partial trees. In the compact `document.records` pool,
-`subtree_end == 0` marks an unfinished element; its raw span covers the opening
-header recognized so far. `node.record()`, `span()`, `raw()` and traversal resolve
-that marker to the retained prefix boundary in O(1). An expanded span is the
-observed source region, **not** evidence of a closing tag. Check the node's state.
+Use `unrepresented()` to find the remaining raw text, not as a place to restart
+parsing. It may include whitespace already scanned, or be empty when only a
+closing tag is missing at EOF. Use node views for traversal; see the
+[raw-record rules](#building-a-document-yourself) if you access the pools directly.
 
-Retention does not change outcomes, diagnostics, recovery, limits or validity.
-Cancelled, diagnostic-stopped and exhausted operations may return a safe prefix
-if parsing had begun. Preflight failures and cancellation before parsing begins
-still return no document. Finalizing a prefix neither allocates nor walks the
-open stack; node/attribute records remain 20 bytes, and ordinary ownership rules
-are unchanged. Growing pools keep their capacity on failure until disposal or
-workspace reuse. Both presets reset partial retention to off.
+This works with both scanners, fixed or growing storage, sessions, workspaces
+and runtime policies. Cancellation, unsupported input or exhausted limits/storage
+can leave a prefix too. A stop before parsing begins returns no document.
+Outcomes and diagnostics don't change, and both presets turn retention off.
+Keep the source and storage alive under the usual [ownership rules](#checking-many-fragments);
+[memory costs](PERFORMANCE.md#type-sizes) are documented separately.
 
-`validate[In]` on a partial document checks retained local facts, not the raw
-suffix, and reports incomplete coverage (or its actual stop). It never certifies
-the partial document. `parseAndValidate` retains its existing behavior: after a
-collecting syntax failure, source-scope validation may inspect later trustworthy
-regions even though those regions are not retained. `documentValid()` stays false.
-No automatic validation starts after an operational stop or fail-fast rejection.
+`validate[In]` checks the retained tree and reports missing coverage or the reason
+it stopped. `parseAndValidate` may also check later source regions after a
+recoverable syntax error; `documentValid()` remains false for a partial document.
+It does not start validation after an operational stop or fail-fast rejection.
 
-DOT partial trees, retaining later recovered regions, and retained inner trees
-in automatic DOT composition remain future slices. Binding an opt-in markup
-profile to DOT still checks and discards each child tree; it does not add a
-per-identifier tree collection or change DOT's completeness.
+This feature is currently for standalone markup. DOT doesn't return partial
+trees, and automatic label checking doesn't retain the inner markup trees.
 
 See [markup_partial.zig](../examples/markup_partial.zig) for a runnable example.
 
@@ -532,9 +520,16 @@ hand, you must keep the parser's rules:
 - each element's attributes are in source order, grouped together, and inside
   that element
 
-Validation reports findings on a well-formed document. It doesn't repair or
-certify a malformed one. Debug and `ReleaseSafe` builds catch some mistakes
-with assertions.
+Validation assumes these storage rules hold; it doesn't repair or certify
+caller-built pools. Debug and `ReleaseSafe` builds catch some mistakes with
+assertions.
+
+For a partial document, `records` uses `subtree_end == 0` to mark an unfinished
+element. Every such element's retained subtree ends at `records.len`, and its
+raw span covers the opening header recognized so far. `NodeView.record()`,
+`span()`, `raw()` and child/root traversal resolve that marker in O(1), extending
+the observed span to `document.retained_end`. This does not imply a closing tag;
+check the node's state. Prefer these views to interpreting raw partial records.
 
 ## Examples
 

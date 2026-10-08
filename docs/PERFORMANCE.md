@@ -96,8 +96,7 @@ comment retention off, no comment records are allocated. With it on, each
 comment takes 12 bytes, plus spare room in growing lists unless you give exact
 sizes or fixed buffers. The comment text itself is never copied.
 
-The benchmark programs also print these sizes, the same in Fast and Safe
-builds:
+Additional type sizes, the same in Fast and Safe builds:
 
 | Type | Size (bytes) |
 | --- | ---: |
@@ -106,11 +105,20 @@ builds:
 | Markup nesting frame / attribute-key scratch entry | 12 / 8 |
 | Markup diagnostic / validation result | 36 / 32 |
 | Markup session: default / bounded / run-time settings | 432 / 440 / 504 |
+| Markup `Document` | 56 |
+| Markup node / attribute view | 64 / 64 |
+| Markup root/child iterator / attribute iterator | 64 / 64 |
 
 Partial markup retention (unreleased) adds 8 bytes to a run-time-policy session;
-default fixed-policy and bounded session sizes are unchanged. Node and attribute
-records remain 20 bytes. Retaining a failed prefix reuses those pools without a
-new allocation; an owned failed result keeps the pools alive until `deinit()`.
+default fixed-policy and bounded session sizes are unchanged. `Document` grew
+from 48 to 56 bytes, so views and iterators that contain it also grew by 8 bytes.
+This metadata cost applies even with retention off. Copying a view copies only
+that metadata, not the source or tree, and requires no heap allocation.
+
+Node and attribute records remain 20 bytes. Retaining a failed prefix reuses
+those pools without a new allocation or a walk of the open-element stack.
+Growing pools keep their spare capacity after failure; an owned result holds
+them until `deinit()`, while a workspace keeps them for reuse.
 
 ## Scanners
 

@@ -158,13 +158,18 @@ pub const NodeView = struct {
     }
 };
 
+/// Check unfinished metadata before NodeView expands its observed interval.
+inline fn markerValid(document: *const Document, raw: Node) bool {
+    return raw.subtree_end != 0 or (document.state == .partial and raw.name.len != 0 and
+        document.retained_end <= document.source.len and raw.span.endOffset() <= document.retained_end);
+}
+
 /// Local node metadata precondition, checked during content validation in safety
 /// builds. O(1), without source-byte scans or scratch. Does not audit ancestor
 /// containment or certify caller-built forests; Document's contract still applies.
 pub fn nodeInvariant(document: *const Document, index: u32) bool {
     const raw = document.records[index];
-    if (raw.subtree_end == 0 and (document.state != .partial or raw.name.len == 0 or
-        document.retained_end > document.source.len or raw.span.endOffset() > document.retained_end)) return false;
+    if (!markerValid(document, raw)) return false;
     const node = (document.node(@enumFromInt(index)) orelse return false).record();
     if (node.span.len == 0 or node.span.endOffset() > document.source.len or
         node.subtree_end <= index or node.subtree_end > document.records.len) return false;
@@ -190,8 +195,7 @@ pub fn attributeInvariant(document: *const Document, index: u32) bool {
     const owner = @intFromEnum(attribute.owner);
     if (owner >= document.records.len) return false;
     const raw = document.records[owner];
-    if (raw.subtree_end == 0 and (document.state != .partial or raw.name.len == 0 or
-        document.retained_end > document.source.len or raw.span.endOffset() > document.retained_end)) return false;
+    if (!markerValid(document, raw)) return false;
     const node = document.node(attribute.owner).?.record();
     if (node.name.len == 0 or node.span.endOffset() > document.source.len or
         node.name.start < node.span.start or node.name.endOffset() > node.span.endOffset() or
@@ -404,6 +408,29 @@ test "attribute metadata precondition rejects interleaved owners and invalid spa
     attributes = original;
     nodes[1].name.len = 0;
     try std.testing.expect(!attributeInvariant(&doc, 1));
+}
+
+test "node and attribute invariants share unfinished-marker checks" {
+    const source = "<a x='1'>";
+    const original: Node = .{ .span = .{ .start = 0, .len = source.len }, .name = .{ .start = 1, .len = 1 }, .subtree_end = 0 };
+    var nodes = [_]Node{original};
+    const attributes = [_]Attribute{.{ .owner = @enumFromInt(0), .name = .{ .start = 3, .len = 1 }, .value = .{ .start = 5, .len = 3 } }};
+    const baseline: Document = .{ .source = source, .records = &nodes, .attributes = &attributes, .state = .partial, .retained_end = source.len };
+    try std.testing.expect(nodeInvariant(&baseline, 0));
+    try std.testing.expect(attributeInvariant(&baseline, 0));
+    for (0..4) |case| {
+        var document = baseline;
+        nodes[0] = original;
+        switch (case) {
+            0 => document.state = .complete,
+            1 => nodes[0].name.len = 0,
+            2 => document.retained_end += 1,
+            3 => nodes[0].span.len += 1,
+            else => unreachable,
+        }
+        try std.testing.expect(!nodeInvariant(&document, 0));
+        try std.testing.expect(!attributeInvariant(&document, 0));
+    }
 }
 
 test "node metadata rejects invalid leaf discriminators and out-of-bounds spans" {

@@ -71,11 +71,16 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         fn retainingPartial(self: *const Self) bool {
             return if (fixed) |v| v.retain_partial else self.settings.retain_partial;
         }
+        inline fn retaining(self: *const Self) bool {
+            return partial_enabled and self.retainingPartial() and self.writing();
+        }
         fn retainThrough(self: *const Self, sink: anytype, end: u64) void {
-            if (partial_enabled and self.retainingPartial() and self.writing()) sink.retainThrough(@intCast(end));
+            if (self.retaining()) sink.retainThrough(@intCast(end));
         }
         fn abortOutput(self: *Self, sink: anytype) void {
             if (!self.began) return;
+            // Recovery has already stopped writing: freeze the previous prefix
+            // based on the policy, not the still-writing predicate above.
             if (partial_enabled and self.retainingPartial()) sink.freezePrefix() else sink.abort();
             self.began = false;
         }
@@ -267,7 +272,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                         self.phase = .attribute;
                     },
                     .head_end => {
-                        if (partial_enabled and self.retainingPartial() and self.writing()) {
+                        if (self.retaining()) {
                             sink.header(self.head.handle, @intCast(self.token.span.endOffset()));
                             self.retainThrough(sink, self.token.span.endOffset());
                         }
@@ -326,7 +331,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 },
                 .open => {
                     const handle = if (self.writing()) sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err) else 0;
-                    if (partial_enabled and self.retainingPartial() and self.writing() and self.token.kind == .open) sink.unfinished(handle);
+                    if (self.retaining() and self.token.kind == .open) sink.unfinished(handle);
                     self.retainThrough(sink, self.token.span.endOffset());
                     if (self.token.kind == .open) stack.top().handle = handle;
                     self.counts.nodes += 1;
@@ -354,7 +359,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 },
                 .open_head => {
                     const handle = if (self.writing()) sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err) else 0;
-                    if (partial_enabled and self.retainingPartial() and self.writing()) sink.unfinished(handle);
+                    if (self.retaining()) sink.unfinished(handle);
                     self.retainThrough(sink, self.token.span.endOffset());
                     self.head = .{ .name = self.token.name, .handle = handle };
                     self.counts.nodes += 1;

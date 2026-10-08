@@ -271,6 +271,113 @@ test "partial prefixes survive sink stops and source limits never fabricate a st
     try expect(limited.document == null);
 }
 
+fn expectPrefix(document: markup.Document, end: u32, nodes: u32, attributes: u32) !void {
+    try audit(document);
+    try equal(markup.Completeness.partial, document.state);
+    try expect(!document.scopeComplete() and !document.subtreeComplete());
+    try equal(end, document.retained_end);
+    try equal(nodes, document.nodeCount());
+    try equal(@as(usize, attributes), document.attributes.len);
+    try equal(end, document.unrepresented().?.start);
+    try strings(document.source[end..], document.unrepresented().?.slice(document.source));
+}
+
+test "in-parse policy limits retain exact prefixes in fixed runtime and metered profiles" {
+    const Case = struct {
+        source: []const u8,
+        policy: markup.Policy,
+        resource: markup.diagnostic.Resource,
+        limit: u32,
+        end: u32,
+        nodes: u32,
+        attributes: u32 = 0,
+    };
+    const cases = [_]Case{
+        .{ .source = "<a><b/><c/>", .policy = .{ .limits = .{ .max_nodes = 2 } }, .resource = .nodes, .limit = 2, .end = 7, .nodes = 2 },
+        .{ .source = "<a x='1' y='2'/>", .policy = .{ .limits = .{ .max_attributes = 1 } }, .resource = .attributes, .limit = 1, .end = 8, .nodes = 1, .attributes = 1 },
+        .{ .source = "<a><b/></a>", .policy = .{ .limits = .{ .max_nesting = 1 } }, .resource = .nesting_depth, .limit = 1, .end = 3, .nodes = 1 },
+    };
+    const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .execution = .{ .metering = true } } });
+    inline for (.{ .scalar, .block }) |scanner| inline for (cases) |case| {
+        const settings = comptime blk: {
+            var policy = case.policy;
+            policy.mode = .structural;
+            policy.scanner = scanner;
+            policy.retention.partial = true;
+            break :blk policy;
+        };
+        const P = markup.Profile(.{ .policy = settings });
+        var bag: markup.FixedDiagnosticBag(4) = .{};
+        var parsed = P.parseBorrowed(allocator, case.source, bag.sink(), .{});
+        defer parsed.deinit();
+        try equal(markup.Outcome{ .resource_limit = .{ .resource = case.resource, .limit = case.limit } }, parsed.outcome);
+        try equal(markup.Completion.incomplete, parsed.completion);
+        try equal(@as(u32, 0), parsed.syntax_errors);
+        try equal(@as(usize, 1), bag.items().len);
+        try equal(markup.diagnostic.Code.capacity_exhausted, bag.items()[0].code);
+        try expectPrefix(parsed.document.?, case.end, case.nodes, case.attributes);
+
+        var pools: markup.FixedDocumentStorage(.{ .nodes = 8, .attributes = 4 }) = .{};
+        var frames: markup.FixedParseScratch(4) = .{};
+        const memory: markup.ParseMemory = .{ .document = pools.storage(), .scratch = frames.storage() };
+        const fixed = P.parseBorrowedIn(case.source, memory, discard, .{});
+        try deep(parsed.document, fixed.document);
+        try deep(parsed.outcome, fixed.outcome);
+        var session = Runtime.Session.init(case.source, memory, discard, .{ .policy = settings });
+        defer session.deinit();
+        var steps: u32 = 0;
+        while (session.result() == null) {
+            try expect((try session.advance(1)).work_used <= 1);
+            steps += 1;
+            try expect(steps < 1000);
+        }
+        try deep(parsed.outcome, session.result().?.outcome);
+        try deep(parsed.document, session.result().?.document);
+
+        var disabled = settings;
+        disabled.retention.partial = false;
+        const off = Runtime.parseBorrowedIn(case.source, memory, discard, .{ .policy = disabled });
+        try deep(parsed.outcome, off.outcome);
+        try deep(parsed.counts, off.counts);
+        try expect(off.document == null);
+    };
+}
+
+test "unsupported input retains earlier nodes regardless of reporting or error policy" {
+    const Runtime = markup.Profile(.{ .runtime_policy = true });
+    const cases = [_]struct { source: []const u8, feature: markup.diagnostic.Feature }{
+        .{ .source = "<a><b/><?pi?></a>", .feature = .processing_instructions },
+        .{ .source = "<a><b/><!DOCTYPE a></a>", .feature = .declarations },
+    };
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ .collect, .fail_fast }) |on_error| inline for (.{ .silent, .warning, .err }) |unsupported| {
+        const settings: markup.Policy = .{ .mode = .structural, .scanner = scanner, .on_error = on_error, .diagnostics = .{ .unsupported = unsupported }, .retention = .{ .partial = true } };
+        const P = markup.Profile(.{ .policy = settings });
+        for (cases) |case| {
+            var bag: markup.FixedDiagnosticBag(4) = .{};
+            var parsed = P.parseBorrowed(allocator, case.source, bag.sink(), .{});
+            defer parsed.deinit();
+            try equal(markup.Outcome{ .unsupported_feature = case.feature }, parsed.outcome);
+            try equal(markup.Completion.incomplete, parsed.completion);
+            try equal(@as(u32, 0), parsed.syntax_errors);
+            try equal(@as(u32, if (unsupported == .warning) 1 else 0), parsed.warnings);
+            try equal(@as(usize, if (unsupported == .silent) 0 else 1), bag.items().len);
+            if (unsupported != .silent) {
+                try equal(if (unsupported == .warning) markup.diagnostic.Code.unsupported_feature_warning else .unsupported_feature, bag.items()[0].code);
+                try equal(@as(u32, 7), bag.items()[0].span.start);
+            }
+            try expectPrefix(parsed.document.?, 7, 2, 0);
+            try expect(parsed.document.?.node(@enumFromInt(0)).?.headerComplete().?);
+            try expect(parsed.document.?.node(@enumFromInt(1)).?.subtreeComplete());
+
+            var pools: markup.FixedDocumentStorage(.{ .nodes = 8 }) = .{};
+            var frames: markup.FixedParseScratch(4) = .{};
+            const dynamic = Runtime.parseBorrowedIn(case.source, .{ .document = pools.storage(), .scratch = frames.storage() }, discard, .{ .policy = settings });
+            try deep(parsed.outcome, dynamic.outcome);
+            try deep(parsed.document, dynamic.document);
+        }
+    };
+}
+
 test "partial parser and validation differential over generated byte inputs" {
     const Block = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = .block, .retention = .{ .partial = true } } });
     const Checks = markup.Profile(.{ .policy = .{ .validation = .{ .invalid_utf8 = .err, .names = .{ .severity = .err }, .references = .{ .severity = .err } } } });
