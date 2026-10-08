@@ -89,12 +89,12 @@ source, document buffers, nesting space or diagnostics, which you supply
 separately. Use `@sizeOf` on your own profile and target rather than copying
 these numbers.
 
-Opt-in comment retention adds a collection descriptor to the shared document
-and fixed-storage views. This increases the default fixed session by 32 bytes
-even with retention off; the ordinary scanner layouts and per-statement records
-are unchanged. Retention off allocates no comment records. Enabled retention
-uses 12 bytes per comment plus allocator growth slack, unless exact capacities
-or fixed pools are supplied. Source bytes are never copied.
+Keeping comments (unreleased) makes the document and storage types a little
+larger even when it is off, so the default fixed session is 32 bytes bigger
+than in 0.4.0. Scanner sizes and per-statement records are unchanged. With
+comment retention off, no comment records are allocated. With it on, each
+comment takes 12 bytes, plus spare room in growing lists unless you give exact
+sizes or fixed buffers. The comment text itself is never copied.
 
 The benchmark programs also print these sizes, the same in Fast and Safe
 builds:
@@ -313,6 +313,27 @@ the parts it can recognise, without building a tree. This is the
 Don't compare these with full-document validation times; they do different
 work.
 
+### Graphviz vocabulary checks
+
+> **Unreleased.** No numbers are recorded yet.
+
+- Each element and attribute is looked up with a few short comparisons. The
+  checks keep nothing extra in the document and allocate nothing themselves.
+- Validating a document still walks its elements and attributes once.
+  Duplicate checking costs what it did before.
+- `validateSource` needs no buffer for tags when duplicate checking is off.
+- A profile fixed at compile time to structural mode leaves the Graphviz checks
+  and case-insensitive matching out of the program. A profile with run-time
+  settings includes both modes, which makes the program larger, so benchmark
+  it separately.
+- Validation still can't run in small steps. Cancelling and stopping work as
+  before.
+
+Measure them with
+`zig build bench-markup -Doptimize=ReleaseFast -- --graphviz-only`. It times the
+checks after parsing, with fixed and run-time settings and with valid and
+invalid input. Parsing and storing diagnostics aren't included.
+
 ## DOT with label checking
 
 The [composition benchmark](../bench/composition.zig) uses a DOT profile with
@@ -419,4 +440,5 @@ zig build check-benches  # only checks that they compile
 Repeat everything with `-Doptimize=ReleaseSafe`. Repeat the first four with
 `-Dlexer=block` too; the others already cover both scanners where it matters.
 Run each one five times and take the median. `bench-markup` also accepts
-`-- --rules-only` and `-- --validation-only` for shorter runs.
+`-- --rules-only`, `-- --validation-only` and `-- --graphviz-only` for shorter
+runs.

@@ -203,54 +203,68 @@ your program, so they are left to you:
 
 ## Comments
 
-DOT comment retention is opt-in and does not run a comment processor or linter:
+> **Unreleased.** Not in 0.4.0.
+
+Comments are skipped by default. To keep them, turn on comment retention. The
+parser then records where each comment is; it doesn't interpret or check them.
 
 ```zig
 const Parser = dot.Profile(.{ .policy = .{
     .retention = .{ .comments = true },
-    .limits = .{ .max_comments = 1000 }, // optional retained-record limit
+    .limits = .{ .max_comments = 1000 }, // optional cap on kept comments
 } });
 var parsed = Parser.parseBorrowed(allocator, source, bag.sink(), .{});
 defer parsed.deinit(allocator);
 if (parsed.document) |document| {
     for (document.comments.?) |comment| {
         _ = comment.kind; // .slash_line, .block, or .hash_line
-        _ = comment.span; // u32 byte start and length in document.source
-        _ = comment.raw(document.source); // includes delimiters
-        _ = comment.body(document.source); // excludes delimiters, otherwise unchanged
-        _ = comment.span.locate(document.source); // physical line and byte column
+        _ = comment.span; // byte start and length in document.source
+        _ = comment.raw(document.source); // with `//`, `/* */` or `#`
+        _ = comment.body(document.source); // without them, otherwise unchanged
+        _ = comment.span.locate(document.source); // line and byte column
     }
 }
 ```
 
-`document.comments == null` means retention was off; a present empty slice means
-it was enabled and no comments were found. Records are in source order, separate
-from statements. Valid documents include comments before/after the graph, inside
-headers and attribute lists, and between concatenated operands. Nothing is copied,
-decoded, trimmed or attached to a neighboring statement. Line-comment spans exclude
-the terminating CR/LF; block-comment spans include `/*` and `*/`. `#` does not remap
-line numbers. Comment-like bytes inside strings or HTML-like identifiers are not
-DOT comments; markup's `<!-- ... -->` nodes remain the markup parser's concern.
+- `document.comments` is `null` when retention is off, and an empty list when
+  it is on but the file has no comments.
+- Comments are listed in source order, separately from statements. They aren't
+  attached to the statement next to them.
+- Every comment is kept, wherever it is: before or after the graph, inside a
+  header or attribute list, or between the parts of a joined name like
+  `"a" /* note */ + "b"`.
+- Nothing is copied, decoded or trimmed. A line comment's span stops before the
+  line break; a block comment's span includes `/*` and `*/`. A `#` line is just
+  a comment; it doesn't change line numbers.
+- Text that only looks like a comment, inside quotes or an HTML-like value, is
+  not a DOT comment. `<!-- ... -->` inside a label belongs to the markup parser.
 
-Set the same policy in a runtime-enabled profile's per-call `.policy`, or in
-the `.dot.policy` options of a runtime-enabled composed profile. `standard` and
-`lenient` presets reset retention to off. `parseAndValidate` retains comments
-when requested but adds no comment-specific checks.
+**Settings.** With run-time settings, pass the same `.retention` in a call's
+`.policy`, or in `.dot.policy` when checking labels. The `standard` and
+`lenient` presets turn retention off. `parseAndValidate` keeps comments when
+asked, but doesn't check them.
 
-Retained comments follow the document's lifetime and success contract: syntax
-rejection, cancellation or storage failure does not publish a partial document
-or a partial comment collection. Unterminated block comments remain syntax errors.
+**When parsing fails**, there is no document, so there are no comments either.
+An unclosed `/*` is still a syntax error.
 
-For low-level token access, use `dot.lexer.WithComments(.scalar)` or `(.block)`.
-It exposes `comment_slash_line`, `comment_block` and `comment_hash_line` token
-tags; `token.comment()` returns a `dot.Comment`, or `null` for other tokens.
-Both scanners emit each complete comment exactly once, including during lexical
-recovery. Comments can be emitted before an enclosing concatenated identifier
-finishes, so **the combined token stream is not ordered by span start and spans
-can overlap**. Filtering out comment tokens preserves the ordinary token stream.
-The comment subsequence itself is source-ordered. Incomplete comments are reported
-as lexical failures, not valid comment tokens. Ordinary `Lexer`/`For` still skip
-comments. This is not a lossless whitespace/separator token stream.
+[Comment storage](MEMORY.md#comment-storage) covers sizing.
+
+### Comments from the lexer
+
+If you work with tokens directly, `dot.lexer.WithComments(.scalar)` (or
+`(.block)`) also returns comments, as `comment_slash_line`, `comment_block` and
+`comment_hash_line` tokens. `token.comment()` gives a `dot.Comment` for those,
+and `null` for any other token. The ordinary `Lexer` and `For` still skip
+comments.
+
+- Each complete comment comes out exactly once, even while the lexer recovers
+  from an error. An unclosed comment is reported as an error, not a token.
+- A comment inside a joined name, like `"a" /* note */ + "b"`, comes out
+  before the name's token. So the full token list **isn't sorted by position,
+  and spans can overlap**. The comments on their own are in order, and
+  skipping the comment tokens gives exactly the ordinary token list.
+- This doesn't return whitespace or separators, so you can't rebuild the file
+  exactly from the tokens.
 
 ## Lifetimes
 

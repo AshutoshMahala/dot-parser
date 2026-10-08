@@ -395,6 +395,8 @@ The full list, with summaries and hints, is in
 | `E/W.Validation.Encoding.003` | Invalid UTF-8 (optional check) |
 | `E/W.Validation.Name.003` | A name that breaks the selected name rule (optional check) |
 | `E/W.Validation.Reference.003` | A reference missing from the selected list, like `&nbsp;` (optional check) |
+| `E/W.Validation.Tag.009` | An element Graphviz doesn't know (Graphviz mode, unreleased) |
+| `E/W.Validation.Attribute.009` | An attribute not allowed on that Graphviz element, like `COLOR` on `<B>` (Graphviz mode, unreleased) |
 | `E/W.Profile.Feature.009` | Something the parser doesn't handle, like `<?...?>` or UTF-16 input |
 | `E.Resource.Capacity.026` | A limit or fixed buffer was full |
 | `E.Resource.Memory.026` | The allocator ran out of memory |

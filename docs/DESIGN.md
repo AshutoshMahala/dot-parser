@@ -350,8 +350,8 @@ Tags: R-MOD-011
 DOT always finds where a `<...>` value ends with Graphviz's own rule (count `<`
 and `>`). Unless a label checker is bound, it keeps the value as written and
 doesn't look inside. Checking the inside is the job of a separate module,
-`markup_parser`. Its built-in grammar is XML-like: exact,
-case-sensitive tag matching, quoted attributes, and no entity expansion.
+`markup_parser`. Its built-in grammar is XML-like: closing tags must match,
+attributes must be quoted, and entities aren't expanded.
 
 **Why:** DOT users who never check labels pay nothing, and markup users don't
 need DOT. The parser is meant to be a general base that several HTML-like
@@ -363,8 +363,9 @@ positions exact.
 ### Optional rules never leak between dialects
 
 Checks such as UTF-8, XML 1.0 names and the list of known references are
-separate choices, all off by default except duplicate attributes. Turning one on
-never turns on another. A whole processor can be
+separate choices. Each is off by default, except duplicate attributes and, in
+Graphviz mode, the Graphviz vocabulary checks. Turning one on never turns on
+another. A whole processor can be
 [replaced with your own](CUSTOM_PROCESSORS.md) at compile time.
 
 **Why:** a dialect that reuses the parser must not inherit restrictions from a
@@ -373,6 +374,30 @@ different dialect just because they share code. A dialect that needs different
 compile-time dialect rule. Switching a check off can never make rejected input
 parse. Such dialect rules are proposed, not built. See
 the [roadmap](ROADMAP.md#markup).
+
+### Graphviz is the default dialect
+
+> **Unreleased.** In 0.4.0 the default is `.structural`.
+
+The built-in markup parser has two modes. `.graphviz`, the default, checks
+Graphviz's tags and attributes and matches tag names ignoring ASCII case.
+`.structural` checks only the grammar and matches tag names exactly.
+
+**Why:**
+
+- Graphviz labels are the parser's first and most important use, so the default
+  should catch the mistakes people actually make in them, such as an unknown
+  tag or `COLOR` on `<B>`.
+- Graphviz itself treats element and attribute names as case-insensitive, so
+  Graphviz mode does the same. Structural mode stays exact, because other
+  dialects, like XML, are case-sensitive.
+- Other dialects choose `.structural`, and get none of Graphviz's rules. That
+  keeps the previous decision intact: only the default changed, and no dialect
+  inherits another's rules by accident.
+- The vocabulary is a first step. Passing it doesn't mean Graphviz will accept
+  the label, and the docs never present it that way. Checking which tags may
+  contain which, attribute values and references is
+  [planned](ROADMAP.md#markup).
 
 ### Markup recovery never guesses a tree
 

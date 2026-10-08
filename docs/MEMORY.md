@@ -129,20 +129,23 @@ half-filled document.
 
 ## Comment storage
 
-With DOT `.retention.comments = true`, comments use their own pool:
-`DocumentStorage.comments`, `DocumentCapacities.comments`, or
-`FixedDocumentStorage(.{ .comments = 100 })`. `measure`/`measureIn` count
-exact comment capacity under the same policy; when retention is off the count
-is zero. `limits.max_comments` bounds the retained count separately from
-statement/attribute limits. A full fixed pool reports `comment_pool`; a policy
-limit reports `comments`. Neither silently drops records.
+> **Unreleased.** Not in 0.4.0.
 
-Each record is 12 bytes on the tested targets (kind plus two u32 span fields),
-not a copy of the text. Growing pools can reserve extra capacity; exact hints
-or fixed storage avoid growth. Disabled retention makes no comment allocation
-unless the caller explicitly reserves comment capacity. The non-generic
-document/storage descriptors still have a collection field; current fixed-size
-metadata costs are listed in [Performance](PERFORMANCE.md#type-sizes).
+When you [keep comments](READING_DOCUMENTS.md#comments)
+(`.retention = .{ .comments = true }`), they go in a buffer of their own. Size
+it like the others: `.comments` in `FixedDocumentStorage(...)`,
+`DocumentCapacities` or `DocumentStorage`. `measure` and `measureIn` count it
+for you; with comment retention off, the count is zero.
+
+- `limits.max_comments` caps how many comments are kept, separately from the
+  other limits.
+- A full fixed buffer reports `comment_pool`, and hitting the limit reports
+  `comments`. Comments are never dropped silently.
+- Each comment takes 12 bytes: its kind and its position. The text isn't
+  copied.
+- With retention off, no comment memory is used unless you reserve some
+  yourself. The document and storage types are still slightly larger; see
+  [type sizes](PERFORMANCE.md#type-sizes).
 
 ## Reusing buffers
 

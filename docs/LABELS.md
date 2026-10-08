@@ -32,14 +32,18 @@ So to check labels, bind a label checker, as shown below. Checking is then on
 automatically.
 
 The `markup` setting decides **whether** labels are checked. The label
-checker's own settings decide **how**. The default `mode = .graphviz` checks
-structure with ASCII-case-insensitive tag matching and
-[Graphviz tag and attribute vocabulary](MARKUP.md#graphviz-vocabulary)
-(unreleased), but not full label grammar. Select
-`markup.Profile(.{ .policy = .{ .mode = .structural } })` for custom vocabulary
-and byte-exact tag matching. Neither mode is a browser HTML parser.
-Automatic composition still processes every HTML-like value, not just Graphviz
-label contexts; use explicit selection below for label-only vocabulary checks.
+checker's own settings decide **how**, through its [mode](MARKUP.md#two-modes):
+
+- In 0.4.0 the built-in checker uses `.structural`: tags must match and
+  attributes must be well-formed.
+- On `main` (**unreleased**) it defaults to `.graphviz`, which also checks
+  [Graphviz's tags and attributes](MARKUP.md#graphviz-vocabulary) and matches
+  tag names ignoring ASCII case. It doesn't yet check all of Graphviz's label
+  rules.
+
+Neither mode is a browser HTML parser. Checking every label while parsing
+covers **every** `<...>` value, not only labels. To check only labels, pick
+them yourself, as shown [below](#check-the-labels-you-choose).
 
 ## Two ways to check labels
 

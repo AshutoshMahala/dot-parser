@@ -71,6 +71,7 @@ The markup parser follows the same shape under `src/markup/`.
 | `console.zig` | DOT wording for the console renderer |
 | `identifier*.zig` | Decoding names, and splitting joined names into parts |
 | `composition.zig` | Checking HTML-like values with a markup processor during parsing |
+| `comment.zig` | Kept comments: their kind and position (unreleased) |
 
 ### `src/markup/`: the markup parser
 
@@ -87,6 +88,7 @@ The markup parser follows the same shape under `src/markup/`.
 | `policy.zig`, `profile.zig` | Settings and the public functions |
 | `result.zig`, `fragment_result.zig` | Result types |
 | `diagnostic.zig`, `console.zig` | Codes, details and console wording |
+| `graphviz.zig` | Graphviz's tag and attribute vocabulary, for Graphviz mode (unreleased) |
 
 ## Dependency rules
 

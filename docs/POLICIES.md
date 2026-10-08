@@ -207,6 +207,16 @@ _ = kind;
 Under `.generic` and `.auto` there is no "wrong" operator, so setting
 `operator_mismatch` or `operator_reading` for `graph` is a configuration error.
 
+### Keeping comments
+
+> **Unreleased.** Not in 0.4.0.
+
+Comments are skipped by default. `.retention = .{ .comments = true }` keeps
+every DOT comment as a record of its kind and position, without interpreting
+it. `limits.max_comments` caps how many are kept. Both presets turn retention
+off. See [comments](READING_DOCUMENTS.md#comments) and
+[comment storage](MEMORY.md#comment-storage).
+
 ### Limits and other settings
 
 | Setting | Default | Meaning |
@@ -214,6 +224,8 @@ Under `.generic` and `.auto` there is no "wrong" operator, so setting
 | `limits.max_statements` | no limit | Most statements allowed |
 | `limits.max_attributes` | no limit | Most `key=value` pairs allowed, including `key = value` statements |
 | `limits.max_nesting` | no limit | Deepest subgraph nesting allowed (the document is level 0) |
+| `limits.max_comments` | no limit | Most comments kept when comment retention is on (unreleased) |
+| `retention.comments` | `false` | Keep comments in the document (unreleased). See [keeping comments](#keeping-comments). |
 | `on_error` | `.collect` | Keep looking after an error, or `.fail_fast` to stop at the first. See [errors](ERRORS.md#keep-going-or-stop-at-the-first-error). |
 | `scanner` | `.scalar` | Which text scanner to use. See [scanners](EXECUTION.md#two-scanners). |
 | `execution.metering` | `false` | Allow parsing in small steps. See [EXECUTION.md](EXECUTION.md). |
@@ -322,10 +334,6 @@ a run-time patch. The processor keeps its own settings, separate from DOT's.
 
 ## All DOT settings
 
-Comment retention is a DOT storage policy, independent of processing and
-validation: `.retention = .{ .comments = true }` preserves all recognized DOT
-comments as raw kind/span records. See [comments](READING_DOCUMENTS.md#comments).
-
 Every field of `dot.Policy`, with its default and where it is explained:
 
 | Setting | Values | Default | See |
@@ -352,8 +360,8 @@ Every field of `dot.Policy`, with its default and where it is explained:
 | `limits.max_nesting` | a number | no limit | [Limits](#limits-and-other-settings) |
 | `on_error` | `.collect`, `.fail_fast` | `.collect` | [Errors](ERRORS.md#keep-going-or-stop-at-the-first-error) |
 | `scanner` | `.scalar`, `.block` | `.scalar` | [Two scanners](EXECUTION.md#two-scanners) |
-| `retention.comments` | `true`, `false` | `false` | [Retaining comments](READING_DOCUMENTS.md#comments) |
-| `limits.max_comments` | `u32` | maximum `u32` | Bounds retained comments when retention is enabled; not a source-byte or work limit |
+| `retention.comments` | `true`, `false` | `false` | [Keeping comments](#keeping-comments) (unreleased) |
+| `limits.max_comments` | a number | no limit | [Keeping comments](#keeping-comments) (unreleased) |
 | `execution.metering` | `true`, `false` | `false` | [Parsing in small steps](EXECUTION.md) |
 | `execution.cancellation` | `true`, `false` | `false` | [Cancelling](EXECUTION.md#cancelling) |
 | `markup` | `.none`, `.passthrough`, `.process` | `.process` with a bound processor, otherwise `.passthrough` | [Checking HTML-like labels](LABELS.md#what-happens-by-default) |

@@ -11,8 +11,9 @@ You need Zig 0.16.0.
 zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#v0.4.0
 ```
 
-This guide targets 0.4.0. Use `#main` instead of `#v0.4.0` only if you want
-the development branch.
+This installs the latest release, 0.4.0. The docs follow the `main` branch:
+anything marked **Unreleased** isn't in 0.4.0 yet. To use those features, use
+`#main` instead of `#v0.4.0`.
 
 In your `build.zig`, import the `dot_parser` module into your program:
 
