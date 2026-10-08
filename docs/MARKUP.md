@@ -249,9 +249,9 @@ By default the parser keeps going after an error to find more:
 | A bad attribute, like a missing `=` | Reports it and skips to the end of the tag |
 | An unclosed quote, comment or CDATA | Stops; there is no safe place to continue |
 
-It never invents tags or repairs the source. By default, failures publish no
-tree. Opt into [partial-prefix retention](#partial-results-for-editors) to keep
-recognized structure. Set `on_error = .fail_fast` to stop at the first error.
+It never invents tags or repairs the source. By default, a failed parse returns
+no tree. To keep the part that was recognised, turn on
+[partial results](#partial-results-for-editors) (unreleased). Set `on_error = .fail_fast` to stop at the first error.
 
 | `parsed.outcome` | Meaning |
 | --- | --- |
@@ -266,6 +266,8 @@ recognized structure. Set `on_error = .fail_fast` to stop at the first error.
 | `sink_failure` | An internal step failed to accept parser output |
 
 ## Partial results for editors
+
+> **Unreleased.** Not in 0.4.0.
 
 An editor can use the recognized part of a document for an outline while the
 user is still typing. Enable partial retention to keep that part after a parse
@@ -311,7 +313,7 @@ This works with both scanners, fixed or growing storage, sessions, workspaces
 and runtime policies. Cancellation, unsupported input or exhausted limits/storage
 can leave a prefix too. A stop before parsing begins returns no document.
 Outcomes and diagnostics don't change, and both presets turn retention off.
-Keep the source and storage alive under the usual [ownership rules](#checking-many-fragments);
+Keep the source and storage alive under the usual [ownership rules](MEMORY.md#two-rules);
 [memory costs](PERFORMANCE.md#type-sizes) are documented separately.
 
 `validate[In]` checks the retained tree and reports missing coverage or the reason
@@ -424,7 +426,7 @@ All three calls return results with the same fields:
 
 | Field | Meaning |
 | --- | --- |
-| `checked.parse` | The parse result. Has a document on success, or a partial prefix after failure when retention is enabled and parsing began. Inspect the document's state. |
+| `checked.parse` | The parse result. It has a document if parsing succeeded. With [partial results](#partial-results-for-editors) on (unreleased), it can also have a partial document after a failure; check `document.state`. |
 | `checked.validation` | Validation of the document if parsing succeeded. If parsing failed and errors are being collected, validation of the parts that could be recognised. `null` after a fail-fast syntax error, unsupported input, or a stop. |
 | `checked.documentValid()` | Parsed completely and validated with no errors |
 | `checked.has_errors` | Errors were found, including a limit being reached or unsupported input reported as an error. `false` doesn't prove the input is valid or was fully checked. |
@@ -490,7 +492,7 @@ Every setting:
 | `limits.max_attributes` | no limit | Attributes in total |
 | `limits.max_nesting` | no limit | Deepest element nesting (top-level elements are depth 1) |
 | `on_error` | `.collect` | Keep looking after an error, or `.fail_fast` |
-| `retention.partial` | `false` | Retain a safe partial prefix after failure; does not change error handling or acceptance |
+| `retention.partial` | `false` | Keep the part recognised before a failure (unreleased). Doesn't change error handling or what is accepted. See [partial results](#partial-results-for-editors). |
 | `syntax.malformed_reference` | `.reject` | `.warn` or `.accept` treat a broken `&` reference as plain text |
 | `scanner` | `.scalar` | `.block` reads with vector instructions; same results |
 | `diagnostics.fixes` | `.all` | Which suggested fixes to include: `.all`, `.machine_applicable` or `.off` |
@@ -524,12 +526,13 @@ Validation assumes these storage rules hold; it doesn't repair or certify
 caller-built pools. Debug and `ReleaseSafe` builds catch some mistakes with
 assertions.
 
-For a partial document, `records` uses `subtree_end == 0` to mark an unfinished
-element. Every such element's retained subtree ends at `records.len`, and its
-raw span covers the opening header recognized so far. `NodeView.record()`,
-`span()`, `raw()` and child/root traversal resolve that marker in O(1), extending
-the observed span to `document.retained_end`. This does not imply a closing tag;
-check the node's state. Prefer these views to interpreting raw partial records.
+In a partial document (unreleased), `subtree_end == 0` marks an unfinished
+element. Its kept children run to the end of `records`, and its raw span covers
+only the part of its opening tag read so far. The node views handle this for
+you: `NodeView.record()`, `span()`, `raw()` and child and root traversal treat
+the element as running to `document.retained_end`. That doesn't mean a closing
+tag was found; check the node's state. Use the views rather than reading
+partial records directly.
 
 ## Examples
 

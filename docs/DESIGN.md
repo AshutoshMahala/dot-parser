@@ -206,17 +206,20 @@ syntax error, and an empty bag can't be mistaken for success.
 
 Tags: R-FUNC-005, R-DIAG-003
 
-### Collect errors by default; never return a partial document
+### Collect errors by default; no partial document unless you ask
 
 After a syntax error the parser skips to the next `;` or `}` and keeps looking.
 It stops where there is no safe place to continue, such as an unclosed quote
-or comment. It never returns a half-built document. `.fail_fast` is available,
-and removes the recovery code when chosen at compile time.
+or comment. By default a failed parse returns no document at all. DOT never
+returns a half-built document; markup can keep the part it recognised, but
+only when you ask (see [partial markup documents for editors](#partial-markup-documents-for-editors)).
+`.fail_fast` is available, and removes the recovery code when chosen at compile
+time.
 
 **Why:** seeing every problem at once is much more useful in an editor or CI.
-A partial document could look valid to code that doesn't check carefully. An
-unclosed quote has already swallowed the rest of the file, so there is nowhere
-safe to resume.
+A partial document could look valid to code that doesn't check carefully, so
+it is never the default. An unclosed quote has already swallowed the rest of
+the file, so there is nowhere safe to resume.
 
 Tags: R-FUNC-007
 
@@ -402,12 +405,34 @@ Graphviz's tags and attributes and matches tag names ignoring ASCII case.
 ### Markup recovery never guesses a tree
 
 After an error the markup parser keeps looking for more problems, but it never
-invents closing tags and never returns a repaired or partial tree. Searching
-back for a matching open tag is capped by the input length.
+invents closing tags and never returns a repaired tree. Searching back for a
+matching open tag is capped by the input length.
 
 **Why:** a guessed tree could quietly differ from what the author meant, and
 code downstream might trust it. The cap stops hostile input from causing
 quadratic work.
+
+### Partial markup documents for editors
+
+> **Unreleased.** Not in 0.4.0.
+
+With `retention.partial = true`, a markup parse that fails still returns the
+part it recognised before the first error. The document and every node say
+whether they are complete or partial, and `unrepresented()` gives the text the
+tree doesn't cover. It is off by default, and DOT doesn't offer it.
+
+**Why:**
+
+- Editors need it. While someone is typing, the markup is unfinished most of
+  the time, and an outline or highlighting still needs the part that is done.
+- Only the part before the first error is kept. After an error, the parser's
+  idea of the structure is a guess, and a guessed tree is what the previous
+  decision rules out.
+- It is opt-in and clearly marked, because a partial tree could pass for a
+  complete one. The parse outcome still reports the failure, and
+  `documentValid()` is always false for a partial document.
+- Keeping it needs no extra scanning or allocation: the parser hands back what
+  it had already built.
 
 ### Two ways to check labels, both reporting in DOT positions
 

@@ -17,13 +17,14 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
-- Opt-in markup partial-prefix retention (`retention.partial`) with the same
-  `Document` type, explicit local completeness, safe traversal of unfinished
-  elements, retained attributes and an unrepresented-tail span. Works with both
-  scanners, fixed/growing storage, runtime policies, sessions and workspaces.
-  Validation of a partial tree reports missing coverage. This first slice freezes
-  output at the first error; retention after recovery and DOT partial trees remain
-  future work. Default failure behavior and node/attribute sizes are unchanged.
+- Partial markup documents for editors (`retention.partial`, off by default). A
+  failed parse can return the part recognised before the first error, as an
+  ordinary `Document`. The document and each node say whether they are complete,
+  and `unrepresented()` gives the text the tree doesn't cover. Works with both
+  scanners, fixed and growing storage, run-time settings, sessions and
+  workspaces. Validating a partial document reports what it couldn't check, and
+  `documentValid()` is false. Keeping later recovered parts, and partial DOT
+  documents, are future work. Node and attribute sizes are unchanged.
 
 - Opt-in DOT comment retention (`retention.comments`) for `//`, `/* ... */`
   and `#`, with source-ordered kind/span records, borrowed raw/body views,

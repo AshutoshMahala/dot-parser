@@ -121,9 +121,9 @@ A cancelled parse ends with `outcome == .cancelled`, no document, and no
 diagnostic. If the parse had already finished, a late cancel doesn't replace
 its result.
 
-Markup's opt-in [partial retention](MARKUP.md#partial-results-for-editors) can
-instead preserve the prefix recognized before cancellation; no source scan,
-allocation or stack-finalization walk is performed to salvage it.
+With markup's [partial results](MARKUP.md#partial-results-for-editors) turned on
+(unreleased), a cancelled parse can instead return the part recognised before
+the cancel. Keeping it costs no extra scanning or allocation.
 
 The same `.cancellation` option works on the one-call functions
 (`parseAndValidate` and others) when the profile turns cancellation on.

@@ -179,6 +179,10 @@ var frames: markup.FixedParseScratch(8) = .{}; // deepest element nesting
 To check many fragments without allocating each time, reuse one
 [workspace](MARKUP.md#checking-many-fragments).
 
+With [partial results](MARKUP.md#partial-results-for-editors) on (unreleased),
+a markup parse that runs out of buffer space can still return the part it
+recognised. DOT never does.
+
 ## Threads
 
 - Separate parses are independent. You can parse different files on different
