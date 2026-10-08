@@ -161,7 +161,9 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
     return struct {
         const Self = @This();
 
-        const Action = enum { begin, begin_subgraph, end_subgraph, subgraph_statement, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, comment, commit };
+        // Preserve commit's original ordinal before optional comment dispatch.
+        // This order affects generated hot-path code; benchmark before changing it.
+        const Action = enum { begin, begin_subgraph, end_subgraph, subgraph_statement, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit, comment };
         const Work = struct {
             token: lex.Token = undefined,
             action: Action = undefined,
