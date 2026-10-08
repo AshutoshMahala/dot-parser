@@ -58,7 +58,7 @@ pub fn Engine(comptime api: type, comptime backend: policy.ScannerBackend, compt
             defer stack.deinit();
             var machine = Machine.init(source, diagnostics, settings, hook);
             const report = machine.run(&stack, &builder);
-            if (report.outcome == .success) builder.trimCapacity() else builder.deinit();
+            if (report.outcome == .success) builder.trimCapacity() else if (builder.document() == null) builder.deinit();
             return .{
                 .outcome = report.outcome,
                 .completion = report.completion,

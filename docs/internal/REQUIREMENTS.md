@@ -179,7 +179,8 @@ public setting. The shared enum is `OnError`; no legacy aliases remain.
 Under `.collect`, the parser may record a recoverable syntax diagnostic,
 synchronize at a safe grammar boundary, and continue collecting problems up to
 caller-provided diagnostic and work limits. Recovery must be best-effort and
-must not publish a partial tree (a future partial-tree API needs its own contract). Unterminated
+must not publish a partial tree by default. Opt-in markup prefix retention follows
+the contract below; DOT still publishes only complete syntax. Unterminated
 quoted or HTML-like input, lost delimiter balance, and exhausted input may be
 unrecoverable even when recovery is enabled.
 
@@ -187,6 +188,22 @@ The caller may configure documented diagnostic classes as abort, report-and-
 continue, or ignore. Critical internal failures, memory-safety conditions, and
 violated parser invariants cannot be ignored. Recovery machinery should be
 compile-time excludable when its code-size cost is material.
+
+**Partial representation contract (2026-10-07):** use the same Document type,
+with completeness local to each parser/scope and independent of validity or EOF
+completion. `scopeComplete()` checks the scope itself; `subtreeComplete()` also
+requires its requested inner scopes. Processing not requested is separate from
+requested-but-not-processed; neither certifies unchecked contents. Complete DOT
+can contain partial markup, unless an inner stop prevents DOT itself finishing.
+Retention is opt-in and independent of `.collect`/`.fail_fast`. Preserve complete
+constructs, unfinished containers and unavailable ranges without guessing repairs.
+Traversal/indices must remain safe, source borrowed, failure reasons unchanged,
+and salvaging a result must not require allocation or an unmetered stack walk.
+The first implementation retains standalone markup's prefix at the first error
+or operational stop. Recovery may continue diagnostics, but later nodes are not
+retained yet. Direct partial-document validation checks retained facts and reports
+missing coverage; existing source/scope validation remains independent. Later
+recovered regions and DOT/composed retention are separate upcoming slices.
 
 **Current implementation:** DOT `Policy.on_error` offers `.fail_fast` and
 default `.collect`. The latter continues diagnostics after aborting staged output;

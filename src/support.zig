@@ -1,6 +1,7 @@
 //! Language-independent primitives shared by independently importable parsers.
 //! No grammar, retained document or OS dependency. Presentation is optional.
 pub const location = @import("common/location.zig");
+pub const Completeness = @import("common/completeness.zig").Completeness;
 pub const reporting = @import("common/reporting.zig");
 pub const execution = @import("common/execution.zig");
 pub const processor = @import("common/processor.zig");

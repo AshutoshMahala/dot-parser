@@ -12,6 +12,7 @@ const Kind = @import("kind.zig").Kind;
 
 pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode) type {
     const recovery_enabled = fixed == null or fixed.?.on_error == .collect;
+    const partial_enabled = fixed == null or fixed.?.retain_partial;
     const deviations_enabled = fixed == null or fixed.?.syntax.malformed_reference != .reject;
     const warnings_enabled = fixed == null or fixed.?.syntax.malformed_reference == .warn or fixed.?.unsupported == .warning;
     return struct {
@@ -67,11 +68,23 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         fn writing(self: *const Self) bool {
             return !recovery_enabled or self.recovery_state.errors == 0;
         }
+        fn retainingPartial(self: *const Self) bool {
+            return if (fixed) |v| v.retain_partial else self.settings.retain_partial;
+        }
+        fn retainThrough(self: *const Self, sink: anytype, end: u64) void {
+            if (partial_enabled and self.retainingPartial() and self.writing()) sink.retainThrough(@intCast(end));
+        }
+        fn abortOutput(self: *Self, sink: anytype) void {
+            if (!self.began) return;
+            if (partial_enabled and self.retainingPartial()) sink.freezePrefix() else sink.abort();
+            self.began = false;
+        }
         fn syntaxErrors(self: *const Self) u32 {
             if (self.terminal) |report| return report.syntax_errors;
             return if (recovery_enabled) self.recovery_state.errors else 0;
         }
-        /// Abort retained output once; keep only grammar/scratch for diagnostics.
+        /// Freeze an opted-in prefix or abort output once; continue grammar and
+        /// scratch for diagnostics without publishing later recovered nodes.
         /// Ordinary findings continue, but sink stop/failure terminates immediately.
         fn recoverSyntax(self: *Self, stack: *scratch.Stack, sink: anytype, finding: diagnostic.Diagnostic) bool {
             if (!recovery_enabled or (if (fixed) |v| v.on_error else self.settings.on_error) == .fail_fast) {
@@ -79,10 +92,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 return false;
             }
             self.recovery_state.errors += 1;
-            if (self.began) {
-                sink.abort();
-                self.began = false;
-            }
+            self.abortOutput(sink);
             const action = self.diagnostics.emit(finding.withFixes(self.fixes())) catch |err| {
                 self.finish(stack, sink, .{ .diagnostic_stopped = .fromError(err) }, null);
                 self.terminal.?.diagnostic_delivery = .failed;
@@ -142,7 +152,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 };
                 if (action == .stop) diagnostic_stop = .requested;
             }
-            if (self.began and outcome != .success) sink.abort();
+            if (outcome != .success) self.abortOutput(sink);
             stack.len = 0;
             self.terminal = .{
                 .outcome = outcome,
@@ -257,6 +267,10 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                         self.phase = .attribute;
                     },
                     .head_end => {
+                        if (partial_enabled and self.retainingPartial() and self.writing()) {
+                            sink.header(self.head.handle, @intCast(self.token.span.endOffset()));
+                            self.retainThrough(sink, self.token.span.endOffset());
+                        }
                         stack.push(self.head) catch |err| return self.failure(stack, sink, err);
                         self.phase = .scan;
                     },
@@ -312,6 +326,8 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 },
                 .open => {
                     const handle = if (self.writing()) sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err) else 0;
+                    if (partial_enabled and self.retainingPartial() and self.writing() and self.token.kind == .open) sink.unfinished(handle);
+                    self.retainThrough(sink, self.token.span.endOffset());
                     if (self.token.kind == .open) stack.top().handle = handle;
                     self.counts.nodes += 1;
                     self.counts.elements += 1;
@@ -326,16 +342,20 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                         else => unreachable,
                     };
                     if (self.writing()) sink.leaf(kind, self.token.span) catch |err| return self.failure(stack, sink, err);
+                    self.retainThrough(sink, self.token.span.endOffset());
                     self.counts.nodes += 1;
                     self.phase = .scan;
                 },
                 .attribute => {
                     if (self.writing()) sink.attribute(self.head.handle, self.token.name, self.token.span) catch |err| return self.failure(stack, sink, err);
+                    self.retainThrough(sink, self.token.span.endOffset());
                     self.counts.attributes += 1;
                     self.phase = .scan;
                 },
                 .open_head => {
                     const handle = if (self.writing()) sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err) else 0;
+                    if (partial_enabled and self.retainingPartial() and self.writing()) sink.unfinished(handle);
+                    self.retainThrough(sink, self.token.span.endOffset());
                     self.head = .{ .name = self.token.name, .handle = handle };
                     self.counts.nodes += 1;
                     self.counts.elements += 1;
@@ -344,10 +364,12 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 },
                 .empty_close => {
                     if (self.writing()) sink.close(self.head.handle, @as(u32, @intCast(self.token.span.endOffset()))) catch |err| return self.failure(stack, sink, err);
+                    self.retainThrough(sink, self.token.span.endOffset());
                     self.phase = .scan;
                 },
                 .close => {
                     if (self.writing()) sink.close(stack.top().handle, @as(u32, @intCast(self.token.span.endOffset()))) catch |err| return self.failure(stack, sink, err);
+                    self.retainThrough(sink, self.token.span.endOffset());
                     stack.len -= 1;
                     self.phase = .scan;
                 },

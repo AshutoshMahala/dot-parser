@@ -1,4 +1,4 @@
-//! Independent policy checks over completed syntax or checked local scopes.
+//! Independent policy checks over retained syntax or checked local scopes.
 //! Never rewrites input; document and local traversal share the same kernels.
 //! Scratch is reused per element. Heap sorting has deterministic O(A log A)
 //! comparisons, with raw or ASCII-case-folded names; no hash-collision worst case.
@@ -170,7 +170,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             return result;
         }
         pub fn run(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
-            if (!enabled(settings)) return .{ .validity = .valid };
+            if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
             const required = if (rules(settings).duplicate_attribute != .off) requirement(document) else Requirement{};
@@ -307,7 +307,33 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             defer allocator.free(keys);
             return runScopeTrusted(source, scope, .{ .attribute_keys = keys }, sink, settings, hook);
         }
-        fn runSized(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook, required: Requirement) Result {
+        inline fn runSized(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook, required: Requirement) Result {
+            // Validate retained local facts only; encoding must not inspect
+            // an unrepresented suffix and claim tree-wide coverage.
+            var prefix = document.*;
+            if (document.state != .complete) prefix.source = document.source[0..document.retained_end];
+            return retainedCoverage(document, runRetained(&prefix, scratch, sink, settings, hook, required));
+        }
+        fn retainedCoverage(document: *const syntax.Document, checked: Result) Result {
+            if (document.state == .complete) return checked;
+            var result = checked;
+            // Do not replace an operational stop or fail-fast outcome with a gap.
+            switch (result.completion) {
+                .complete, .incomplete => recordGap(&result, document.retained_end),
+                else => {},
+            }
+            inline for (std.meta.fields(@TypeOf(result.checks))) |field| {
+                // Encoding is independent of syntax if every source byte was read.
+                const all_bytes = comptime std.mem.eql(u8, field.name, "invalid_utf8");
+                if (@field(result.checks, field.name) == .complete and !(all_bytes and document.retained_end == document.source.len))
+                    @field(result.checks, field.name) = .incomplete;
+            }
+            if (result.validity == .valid) result.validity = .unknown;
+            return result;
+        }
+        // Keep the sink and encoding-only policy visible through the partial
+        // routing wrapper; an extra call boundary inhibits their specialization.
+        inline fn runRetained(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook, required: Requirement) Result {
             var result = initial(settings);
             std.debug.assert(document.source.len <= support.location.max_source_len);
             if (scratch.attribute_keys.len < required.count) return unavailable(.{ .storage_exhausted = required.count }, sink, @intCast(scratch.attribute_keys.len), required.span, settings);
@@ -564,7 +590,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             return result;
         }
         pub fn allocated(allocator: std.mem.Allocator, document: *const syntax.Document, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
-            if (!enabled(settings)) return .{ .validity = .valid };
+            if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
             if (rules(settings).duplicate_attribute == .off) return runSized(document, .{}, sink, settings, hook, .{});
@@ -575,7 +601,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             return runSized(document, .{ .attribute_keys = keys }, sink, settings, hook, required);
         }
         pub fn reusing(allocator: std.mem.Allocator, document: *const syntax.Document, keys: *std.ArrayList(AttributeKeyScratch), sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
-            if (!enabled(settings)) return .{ .validity = .valid };
+            if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
             if (rules(settings).duplicate_attribute == .off) return runSized(document, .{}, sink, settings, hook, .{});

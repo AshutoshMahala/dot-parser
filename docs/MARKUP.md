@@ -249,8 +249,9 @@ By default the parser keeps going after an error to find more:
 | A bad attribute, like a missing `=` | Reports it and skips to the end of the tag |
 | An unclosed quote, comment or CDATA | Stops; there is no safe place to continue |
 
-It never invents tags or hands back a repaired or partial tree. Set
-`on_error = .fail_fast` to stop at the first error.
+It never invents tags or repairs the source. By default, failures publish no
+tree. Opt into [partial-prefix retention](#partial-results-for-editors) to keep
+recognized structure. Set `on_error = .fail_fast` to stop at the first error.
 
 | `parsed.outcome` | Meaning |
 | --- | --- |
@@ -263,6 +264,77 @@ It never invents tags or hands back a repaired or partial tree. Set
 | `cancelled` | You cancelled it |
 | `diagnostic_stopped` | The bag asked to stop, for example because it was full |
 | `sink_failure` | An internal step failed to accept parser output |
+
+## Partial results for editors
+
+**Unreleased, first slice:** keep the recognized prefix when parsing cannot
+produce a complete document. This works with both scanners, allocating/fixed
+storage, runtime policies, sessions and reusable workspaces:
+
+```zig
+const Editor = markup.Profile(.{ .policy = .{
+    .mode = .structural,
+    .retention = .{ .partial = true },
+} });
+var parsed = Editor.parseBorrowed(allocator, "<root><done/><child x='unfinished", bag.sink(), .{});
+defer parsed.deinit();
+if (parsed.document) |document| {
+    _ = document.state; // .partial here; same Document type as successful parsing
+    _ = document.unrepresented(); // remaining source span, not a restart point
+    var roots = document.roots();
+    while (roots.next()) |node| {
+        _ = node.state(); // .complete or .partial
+        _ = node.scopeComplete();
+        _ = node.subtreeComplete();
+        _ = node.headerComplete(); // element header only; null for leaves
+    }
+}
+```
+
+`scopeComplete()` describes this scope's own representation; `subtreeComplete()`
+also requires its retained children to be complete. In this prefix-only slice,
+both queries have the same answer: an unfinished descendant also leaves its
+ancestors unfinished. They concern this standalone markup tree, not hypothetical
+or unrequested embedded parsers. `Completeness.not_processed` is reserved for
+unstarted scopes; this slice publishes no document before parsing begins, rather
+than manufacturing unprocessed nodes.
+
+The first error freezes output. With `.collect`, parsing can still continue for
+diagnostics, but later recovered nodes are **not retained yet**. Thus parsing
+can report `completion == .complete` while `document.state == .partial`.
+Completed attributes/children remain accessible even inside an unfinished
+element. Missing quotes/comments/CDATA stay raw in the unrepresented tail;
+no closing delimiter or guessed suffix structure is invented. An empty tail
+can still accompany a missing closing tag at EOF. Whitespace between the last
+retained construct and the failure may be included in the tail.
+
+Use node views for partial trees. In the compact `document.records` pool,
+`subtree_end == 0` marks an unfinished element; its raw span covers the opening
+header recognized so far. `node.record()`, `span()`, `raw()` and traversal resolve
+that marker to the retained prefix boundary in O(1). An expanded span is the
+observed source region, **not** evidence of a closing tag. Check the node's state.
+
+Retention does not change outcomes, diagnostics, recovery, limits or validity.
+Cancelled, diagnostic-stopped and exhausted operations may return a safe prefix
+if parsing had begun. Preflight failures and cancellation before parsing begins
+still return no document. Finalizing a prefix neither allocates nor walks the
+open stack; node/attribute records remain 20 bytes, and ordinary ownership rules
+are unchanged. Growing pools keep their capacity on failure until disposal or
+workspace reuse. Both presets reset partial retention to off.
+
+`validate[In]` on a partial document checks retained local facts, not the raw
+suffix, and reports incomplete coverage (or its actual stop). It never certifies
+the partial document. `parseAndValidate` retains its existing behavior: after a
+collecting syntax failure, source-scope validation may inspect later trustworthy
+regions even though those regions are not retained. `documentValid()` stays false.
+No automatic validation starts after an operational stop or fail-fast rejection.
+
+DOT partial trees, retaining later recovered regions, and retained inner trees
+in automatic DOT composition remain future slices. Binding an opt-in markup
+profile to DOT still checks and discards each child tree; it does not add a
+per-identifier tree collection or change DOT's completeness.
+
+See [markup_partial.zig](../examples/markup_partial.zig) for a runnable example.
 
 ## Checking a fragment that failed to parse
 
@@ -364,7 +436,7 @@ All three calls return results with the same fields:
 
 | Field | Meaning |
 | --- | --- |
-| `checked.parse` | The parse result. It has a document only if parsing succeeded. |
+| `checked.parse` | The parse result. Has a document on success, or a partial prefix after failure when retention is enabled and parsing began. Inspect the document's state. |
 | `checked.validation` | Validation of the document if parsing succeeded. If parsing failed and errors are being collected, validation of the parts that could be recognised. `null` after a fail-fast syntax error, unsupported input, or a stop. |
 | `checked.documentValid()` | Parsed completely and validated with no errors |
 | `checked.has_errors` | Errors were found, including a limit being reached or unsupported input reported as an error. `false` doesn't prove the input is valid or was fully checked. |
@@ -430,6 +502,7 @@ Every setting:
 | `limits.max_attributes` | no limit | Attributes in total |
 | `limits.max_nesting` | no limit | Deepest element nesting (top-level elements are depth 1) |
 | `on_error` | `.collect` | Keep looking after an error, or `.fail_fast` |
+| `retention.partial` | `false` | Retain a safe partial prefix after failure; does not change error handling or acceptance |
 | `syntax.malformed_reference` | `.reject` | `.warn` or `.accept` treat a broken `&` reference as plain text |
 | `scanner` | `.scalar` | `.block` reads with vector instructions; same results |
 | `diagnostics.fixes` | `.all` | Which suggested fixes to include: `.all`, `.machine_applicable` or `.off` |

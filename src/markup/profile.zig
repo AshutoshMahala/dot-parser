@@ -237,7 +237,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         }
 
         /// Retains source-shaped records with the caller allocator. Source stays
-        /// borrowed; dispose the result explicitly. No partial document escapes.
+        /// borrowed; dispose the result explicitly. Partial-prefix output is
+        /// published on failure only with retention.partial enabled.
         pub fn parseBorrowed(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: ParseOptions) api.ParseResult {
             const opts: Options = if (runtime_policy) .{ .policy = options.policy, .cancellation = options.cancellation } else .{ .cancellation = options.cancellation };
             return call("parseBorrowed", api.ParseResult, .{ allocator, source, diagnostics, api.ParseResources{ .scratch_allocator = options.scratch_allocator } }, opts);

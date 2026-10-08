@@ -43,6 +43,9 @@ other's rules.
 - **A built-in string processor** for checking quoted values inside markup.
   Today you can prepare its settings with `PolicySet` and keep positions with
   `fragment.child`, but your code must run it.
+- **Partial trees beyond a prefix.** Unreleased markup can already opt into
+  retaining the recognized prefix after a failure. Keeping later safely recovered
+  regions, DOT partial trees and per-inner-scope composed coverage remain work to do.
 
 ## Checking labels inside DOT
 

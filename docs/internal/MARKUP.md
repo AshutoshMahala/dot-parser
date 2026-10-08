@@ -20,7 +20,8 @@ decision before becoming implementation work.
 | Dialect-specific parsing | Void elements, case/context rules, unquoted/empty attributes and policy surface |
 | Custom name/reference catalogs | Compile-time binding and independently selectable rules |
 | Bounded validation | Credit accounting, resumable checks and DOT validation cancellation |
-| Partial trees, summaries and public events | Opt-in representation, ownership, coverage and costs; proposals remain deferred |
+| Partial trees | Retain later safely recovered regions, distinguish locally closed scopes with partial descendants, then DOT/composed retention |
+| Summaries and public events | Representation, ownership, coverage and costs; proposals remain deferred |
 | Encoding adapters | UTF-16/32 conversion, provenance, error policy and source mapping |
 | Composed execution | Shared budgets, fixed memory and recursive/string scheduling; see [processor design](PROCESSOR_CONTRACT.md#remaining-design) |
 | Packaging | Whether markup should ever have a separate package/version lifecycle |
@@ -83,10 +84,15 @@ benefit; do not add copying or mandatory queues in anticipation of it.
 
 ### Recovery and acceptance
 
-Partial-tree publication remains deferred. Before adding it, define an opt-in
-representation for incomplete/invalid regions, consumer-visible validity,
-ownership and traversal guarantees. Do not silently weaken complete-document
-results or present skipped input as accepted.
+Extend the implemented opt-in markup prefix to retain later safely recovered
+regions, with explicit gaps and correct local-versus-subtree completeness.
+Keep a single Document type, safe traversal, borrowed source and separate
+validity/operational outcomes. Per-scope `.not_processed` must not mean that
+processing was never requested. Add DOT and composed coverage without conflating
+an inner failure with outer structural incompleteness or implying child trees
+are retained by today's reused workspace. No guessed delimiter or typo repair.
+The current public slice is documented under
+[partial results](../MARKUP.md#partial-results-for-editors).
 
 New dialect grammar will need its own safe synchronization boundaries, especially
 around void elements and unquoted/empty attributes. Preserve the distinction

@@ -50,6 +50,7 @@ pub const ParseScratch = scratch.Storage;
 pub const FixedParseScratch = scratch.Fixed;
 pub const Outcome = results.Outcome;
 pub const Completion = results.Completion;
+pub const Completeness = support.Completeness;
 pub const Counts = results.Counts;
 pub const Report = results.Report;
 pub const Progress = results.Progress;
@@ -80,6 +81,8 @@ pub const FixedParseResult = struct {
     counts: Counts,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
+    /// Complete on success. With retention.partial, failures after parsing began
+    /// can publish a safe prefix; inspect state, not just optional presence.
     document: ?Document,
 };
 pub const ParseResult = struct {
@@ -91,6 +94,7 @@ pub const ParseResult = struct {
     counts: Counts,
     accepted_deviations: u32 = 0,
     warnings: u32 = 0,
+    /// Same completeness contract as FixedParseResult; this result owns pools.
     document: ?Document,
     _allocator: std.mem.Allocator,
     _nodes: std.ArrayList(Node),

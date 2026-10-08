@@ -2,6 +2,7 @@
 //! child arrays. No decoding, parent lookup table, normalization or validation.
 const std = @import("std");
 const Span = @import("parser_support").location.Span;
+const Completeness = @import("parser_support").Completeness;
 pub const NodeId = enum(u32) { _ };
 pub const Kind = @import("kind.zig").Kind;
 pub const Node = struct {
@@ -9,7 +10,9 @@ pub const Node = struct {
     /// Element name span. For leaves, len is zero and start encodes Kind;
     /// it is then a discriminator, not a source span. Use kind()/NodeView.content().
     name: Span,
-    /// First index after this node and all its descendants.
+    /// First index after this node and all its descendants. In partial documents,
+    /// zero marks an unfinished element. NodeView.record()/children() resolve
+    /// that marker to the retained prefix boundary without repairing source.
     subtree_end: u32,
     pub fn kind(self: Node) Kind {
         if (self.name.len != 0) return .element;
@@ -41,7 +44,7 @@ pub fn Fixed(comptime capacity: Capacities) type {
     };
 }
 
-/// Non-owning completed view. Source and backing records must remain alive and
+/// Non-owning view. Source and backing records must remain alive and
 /// unchanged. No deinit: disposal belongs to the owning result or caller storage.
 /// This is a trusted parser representation, not an unchecked document builder.
 /// Manually constructed views must uphold the same invariants: bounded source
@@ -49,11 +52,30 @@ pub fn Fixed(comptime capacity: Capacities) type {
 /// and attributes in source order with
 /// nondecreasing owners referring to elements. Each owner's attributes occupy
 /// one contiguous range; names/quoted values refer into that owner's source span.
+/// Partial-prefix records may use subtree_end == 0 for unfinished elements;
+/// all their retained descendants extend to records.len. Their raw span covers
+/// the recognized opening header; NodeView expands it to the observed prefix.
 /// Validation checks policy findings, not general correctness of these pools.
 pub const Document = struct {
     source: []const u8,
     records: []const Node,
     attributes: []const Attribute,
+    state: Completeness = .complete,
+    /// Exclusive retained prefix boundary when partial. Not a scanner cursor,
+    /// first diagnostic position, or a promise that validation stopped here.
+    retained_end: u32 = 0,
+    pub fn scopeComplete(self: Document) bool {
+        return self.state == .complete;
+    }
+    /// This standalone tree only. No claim about unrequested embedded parsers.
+    pub fn subtreeComplete(self: Document) bool {
+        return self.scopeComplete();
+    }
+    /// Unrepresented tail, possibly zero-length for a missing closer at EOF.
+    pub fn unrepresented(self: Document) ?Span {
+        if (self.state == .complete) return null;
+        return .{ .start = self.retained_end, .len = @intCast(self.source.len - self.retained_end) };
+    }
     pub fn nodeCount(self: Document) u32 {
         return @intCast(self.records.len);
     }
@@ -69,7 +91,30 @@ pub const NodeView = struct {
     document: Document,
     id: NodeId,
     pub fn record(self: NodeView) Node {
-        return self.document.records[@intFromEnum(self.id)];
+        var node = self.document.records[@intFromEnum(self.id)];
+        if (node.subtree_end == 0) {
+            std.debug.assert(self.document.state == .partial and node.name.len != 0);
+            node.subtree_end = self.document.nodeCount();
+            node.span.len = self.document.retained_end - node.span.start;
+        }
+        return node;
+    }
+    pub fn state(self: NodeView) Completeness {
+        return if (self.document.records[@intFromEnum(self.id)].subtree_end == 0) .partial else .complete;
+    }
+    pub fn scopeComplete(self: NodeView) bool {
+        return self.state() == .complete;
+    }
+    /// In a retained prefix, a closed element has no unfinished descendants.
+    pub fn subtreeComplete(self: NodeView) bool {
+        return self.scopeComplete();
+    }
+    /// Header completeness is independent of the element's missing closer.
+    /// Leaves do not have an opening header.
+    pub fn headerComplete(self: NodeView) ?bool {
+        const node = self.document.records[@intFromEnum(self.id)];
+        if (node.kind() != .element) return null;
+        return node.subtree_end != 0 or node.span.slice(self.document.source)[node.span.len - 1] == '>';
     }
     pub fn kind(self: NodeView) Kind {
         return self.record().kind();
@@ -117,7 +162,10 @@ pub const NodeView = struct {
 /// builds. O(1), without source-byte scans or scratch. Does not audit ancestor
 /// containment or certify caller-built forests; Document's contract still applies.
 pub fn nodeInvariant(document: *const Document, index: u32) bool {
-    const node = document.records[index];
+    const raw = document.records[index];
+    if (raw.subtree_end == 0 and (document.state != .partial or raw.name.len == 0 or
+        document.retained_end > document.source.len or raw.span.endOffset() > document.retained_end)) return false;
+    const node = (document.node(@enumFromInt(index)) orelse return false).record();
     if (node.span.len == 0 or node.span.endOffset() > document.source.len or
         node.subtree_end <= index or node.subtree_end > document.records.len) return false;
     if (index > 0 and document.records[index - 1].span.start >= node.span.start) return false;
@@ -141,7 +189,10 @@ pub fn attributeInvariant(document: *const Document, index: u32) bool {
     const attribute = document.attributes[index];
     const owner = @intFromEnum(attribute.owner);
     if (owner >= document.records.len) return false;
-    const node = document.records[owner];
+    const raw = document.records[owner];
+    if (raw.subtree_end == 0 and (document.state != .partial or raw.name.len == 0 or
+        document.retained_end > document.source.len or raw.span.endOffset() > document.retained_end)) return false;
+    const node = document.node(attribute.owner).?.record();
     if (node.name.len == 0 or node.span.endOffset() > document.source.len or
         node.name.start < node.span.start or node.name.endOffset() > node.span.endOffset() or
         attribute.name.len == 0 or attribute.name.start < node.name.endOffset() or
@@ -197,7 +248,7 @@ pub const Iterator = struct {
         std.debug.assert(self.next_index <= self.end and self.end <= self.document.records.len);
         if (self.next_index == self.end) return null;
         const id: NodeId = @enumFromInt(self.next_index);
-        const subtree_end = self.document.records[self.next_index].subtree_end;
+        const subtree_end = self.document.node(id).?.record().subtree_end;
         // Fail at the corrupt interval, before leaving this iterator's boundary
         // or looping forever. These are preconditions, not a document audit.
         std.debug.assert(subtree_end > self.next_index and subtree_end <= self.end);
@@ -212,7 +263,8 @@ pub const Builder = struct {
     list: std.ArrayList(Node) = .empty,
     attributes: std.ArrayList(Attribute) = .empty,
     allocator: ?std.mem.Allocator = null,
-    committed: bool = false,
+    publication: ?Completeness = null,
+    retained_end: u32 = 0,
     pub const Error = error{ OutOfMemory, NodeStorageExhausted, AttributeStorageExhausted };
 
     pub fn fixed(source: []const u8, storage: Storage) Builder {
@@ -249,8 +301,23 @@ pub const Builder = struct {
         node.span.len = end - node.span.start;
         node.subtree_end = @intCast(self.list.items.len);
     }
+    /// These hooks are called only by partial-retention specializations. No
+    /// sidecar pool, source copy, or allocation is needed on the failure path.
+    pub fn unfinished(self: *Builder, handle: u32) void {
+        self.list.items[handle].subtree_end = 0;
+    }
+    pub fn header(self: *Builder, handle: u32, end: u32) void {
+        const node = &self.list.items[handle];
+        node.span.len = end - node.span.start;
+    }
+    pub fn retainThrough(self: *Builder, end: u32) void {
+        self.retained_end = end;
+    }
+    pub fn freezePrefix(self: *Builder) void {
+        self.publication = .partial;
+    }
     pub fn commit(self: *Builder) Error!void {
-        self.committed = true;
+        self.publication = .complete;
     }
     /// Best-effort finalization of owned output, outside bounded execution.
     /// Never allocate/copy or fail a successful parse just to discard slack.
@@ -265,10 +332,12 @@ pub const Builder = struct {
     pub fn abort(self: *Builder) void {
         self.list.clearRetainingCapacity();
         self.attributes.clearRetainingCapacity();
-        self.committed = false;
+        self.publication = null;
+        self.retained_end = 0;
     }
     pub fn document(self: *const Builder) ?Document {
-        return if (self.committed) .{ .source = self.source, .records = self.list.items, .attributes = self.attributes.items } else null;
+        const state = self.publication orelse return null;
+        return .{ .source = self.source, .records = self.list.items, .attributes = self.attributes.items, .state = state, .retained_end = if (state == .complete) @intCast(self.source.len) else self.retained_end };
     }
     pub fn deinit(self: *Builder) void {
         if (self.allocator) |a| {
@@ -291,6 +360,10 @@ pub const Counter = struct {
     pub fn close(_: *Counter, _: u32, _: u32) Error!void {}
     pub fn commit(_: *Counter) Error!void {}
     pub fn abort(_: *Counter) void {}
+    pub fn unfinished(_: *Counter, _: u32) void {}
+    pub fn header(_: *Counter, _: u32, _: u32) void {}
+    pub fn retainThrough(_: *Counter, _: u32) void {}
+    pub fn freezePrefix(_: *Counter) void {}
 };
 
 test "attribute metadata precondition rejects interleaved owners and invalid spans" {

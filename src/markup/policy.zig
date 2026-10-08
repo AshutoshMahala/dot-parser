@@ -32,6 +32,7 @@ pub const Policy = struct {
     mode: ?Mode = null,
     scanner: ?ScannerBackend = null,
     on_error: ?OnError = null,
+    retention: struct { partial: ?bool = null } = .{},
     diagnostics: struct { fixes: ?Fixes = null, unsupported: ?Unsupported = null } = .{},
     syntax: struct { malformed_reference: ?Acceptance = null } = .{},
     limits: struct {
@@ -60,6 +61,7 @@ pub const Limits = struct {
     max_attributes: u32 = std.math.maxInt(u32),
 };
 pub const Effective = struct {
+    retention: struct { partial: bool = false } = .{},
     mode: Mode = .graphviz,
     scanner: ScannerBackend = .scalar,
     on_error: OnError = .collect,
@@ -70,10 +72,10 @@ pub const Effective = struct {
     execution: struct { metering: bool = false, cancellation: bool = false } = .{},
 
     pub fn parsing(self: Effective) ParseSettings {
-        return .{ .limits = self.limits, .syntax = self.syntax, .fixes = self.diagnostics.fixes, .unsupported = self.diagnostics.unsupported, .on_error = self.on_error };
+        return .{ .retain_partial = self.retention.partial, .limits = self.limits, .syntax = self.syntax, .fixes = self.diagnostics.fixes, .unsupported = self.diagnostics.unsupported, .on_error = self.on_error };
     }
 };
-pub const ParseSettings = struct { limits: Limits = .{}, syntax: SyntaxSettings = .{}, fixes: Fixes = .all, unsupported: Unsupported = .err, on_error: OnError = .collect };
+pub const ParseSettings = struct { retain_partial: bool = false, limits: Limits = .{}, syntax: SyntaxSettings = .{}, fixes: Fixes = .all, unsupported: Unsupported = .err, on_error: OnError = .collect };
 pub const Config = struct { policy: Policy = .{}, runtime_policy: bool = false };
 pub const defaults: Effective = .{};
 pub const Check = enum { valid };
@@ -87,6 +89,7 @@ pub fn check(_: Effective, _: Policy) Check {
 
 pub fn resolve(base: Effective, patch: Policy) Effective {
     var result = base;
+    if (patch.retention.partial) |value| result.retention.partial = value;
     if (patch.mode) |value| result.mode = value;
     if (patch.scanner) |value| result.scanner = value;
     if (patch.on_error) |value| {
@@ -115,6 +118,7 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
 
 pub const presets = struct {
     pub const standard: Policy = .{
+        .retention = .{ .partial = false },
         .mode = defaults.mode,
         .scanner = .scalar,
         .on_error = .collect,

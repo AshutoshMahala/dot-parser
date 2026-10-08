@@ -105,7 +105,12 @@ builds:
 | Markup node / attribute | 20 / 20 |
 | Markup nesting frame / attribute-key scratch entry | 12 / 8 |
 | Markup diagnostic / validation result | 36 / 32 |
-| Markup session: default / bounded / run-time settings | 432 / 440 / 496 |
+| Markup session: default / bounded / run-time settings | 432 / 440 / 504 |
+
+Partial markup retention (unreleased) adds 8 bytes to a run-time-policy session;
+default fixed-policy and bounded session sizes are unchanged. Node and attribute
+records remain 20 bytes. Retaining a failed prefix reuses those pools without a
+new allocation; an owned failed result keeps the pools alive until `deinit()`.
 
 ## Scanners
 

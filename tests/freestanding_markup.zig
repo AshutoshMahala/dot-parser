@@ -1,6 +1,21 @@
 //! Consumed independently: no DOT, allocator, renderer, OS or processor registry.
 const markup = @import("markup_parser");
 const features = @import("policy_features");
+
+export fn partial_markup(source: [*]const u8, len: usize, enabled: bool) u32 {
+    const Partial = markup.Profile(.{ .runtime_policy = features.runtime_policy, .policy = .{ .retention = .{ .partial = true } } });
+    var nodes: markup.FixedDocumentStorage(.{ .nodes = 16, .attributes = 16 }) = .{};
+    var frames: markup.FixedParseScratch(8) = .{};
+    var keys: markup.FixedValidationScratch(16) = .{};
+    const options: Partial.Options = if (features.runtime_policy) .{ .policy = .{ .retention = .{ .partial = enabled } } } else .{};
+    const parsed = Partial.parseBorrowedIn(source[0..len], .{ .document = nodes.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, options);
+    const document = parsed.document orelse return 0;
+    var result: u32 = @intFromBool(document.subtreeComplete());
+    var roots = document.roots();
+    while (roots.next()) |node| result +%= node.span().len +% @intFromBool(node.scopeComplete());
+    const checked = Partial.validateIn(&document, keys.storage(), markup.diagnostic.discard, options);
+    return result +% @as(u32, @truncate(checked.errors));
+}
 comptime {
     if (@sizeOf(markup.Diagnostic) != 36) @compileError("review markup diagnostic retention cost");
     if (@sizeOf(markup.Node) != 20 or @sizeOf(markup.Attribute) != 20 or markup.FixedParseScratch(1).byte_size != 12 or markup.FixedValidationScratch(1).byte_size != 8)

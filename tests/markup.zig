@@ -19,6 +19,7 @@ test {
     _ = @import("markup_recovery.zig");
     _ = @import("markup_header_recovery.zig");
     _ = @import("markup_scopes.zig");
+    _ = @import("markup_partial.zig");
 }
 
 test "structural mode is explicit, standalone and identical at both binding times" {

@@ -871,11 +871,25 @@ not implicit numeric conversion or a promised `.string.non_ascii` API.
 
 **Diagnostics, scheduling and independent outcomes**
 
+**Partial results decided 2026-10-07; first markup prefix slice implemented.**
+Keep one Document type with local representation state, safe views and explicit
+unrepresented source ranges. Local completeness and recursive completeness differ
+from validity and operation completion; unrequested inner processing differs
+from pending processing. An inner failure alone does not make the outer syntax
+partial. `retention.partial` is default-off and independent of `on_error`, with
+compile-time/runtime parity. No guessed delimiters or typo healing. Prefix
+retention reuses node/attribute storage and freezes at the first failure without
+an allocation or stack walk; direct validation reports missing coverage. Ordinary
+successful parsing remains the default contract. Later recovered regions,
+per-inner-scope scheduling state and DOT/composed partial retention remain work
+in [the markup plan](MARKUP.md#recovery-and-acceptance).
+
 Boundaries, local checks and enclosing structure have different prerequisites.
 Reliable headers/values remain checkable after enclosing syntax failure through
-the scope APIs; unavailable coverage is incomplete, not valid. No partial tree,
-guessed delimiter or typo repair follows. Public scope metadata is checked in
-all builds; incomplete coverage identifies the earliest gap, not a resume cursor.
+the scope APIs; unavailable coverage is incomplete, not valid. This independent
+validation does not itself retain trees or guess repairs. Public scope metadata
+is checked in all builds; incomplete coverage identifies the earliest gap, not a
+resume cursor.
 
 Parent and child `on_error` choices are independent. The child returns under its
 own choice; the parent then decides whether to visit the next fragment. Ordinary

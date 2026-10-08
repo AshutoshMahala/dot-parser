@@ -172,6 +172,17 @@ pub fn build(b: *std.Build) void {
     });
     examples_step.dependOn(&b.addRunArtifact(markup_example).step);
     examples_step.dependOn(&b.addInstallArtifact(markup_example, .{}).step);
+    const partial_example = b.addExecutable(.{
+        .name = "markup_partial",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/markup_partial.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "markup_parser", .module = markup }},
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(partial_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(partial_example, .{}).step);
     const graphviz_example = b.addExecutable(.{
         .name = "graphviz_vocabulary",
         .root_module = b.createModule(.{

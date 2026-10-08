@@ -47,8 +47,8 @@ So `digraph { a -- b }` parses fine (`result.outcome == .success`), but
 validation rejects it (`result.documentValid() == false`). You still get the
 document in this case, so tools can show or fix the problem.
 
-If parsing fails, there is **no document at all**. The library never hands
-back a half-built document.
+If DOT parsing fails, there is **no document at all**. Markup also follows this
+default, with an explicit [partial-retention option](MARKUP.md#partial-results-for-editors).
 
 You can also run the steps on their own: `dot.parseBorrowed` parses, and
 `dot.validate(&document, sink, .{})` validates.
@@ -329,6 +329,8 @@ all. That only changes the reporting; the outcome stays `.unsupported_feature`.
 
 Everything above applies to the markup parser too, with these differences:
 
+- **Partial results.** `retention.partial` can preserve a safe prefix on failure.
+  Its document state, parse outcome and validation coverage stay separate.
 - **Names.** Use `markup.GrowableDiagnosticBag`, `markup.FixedDiagnosticBag`,
   `markup.DiagnosticSink` and `markup.console`.
 - **Outcomes.** Markup parse outcomes have their own names, such as
