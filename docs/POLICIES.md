@@ -322,6 +322,10 @@ a run-time patch. The processor keeps its own settings, separate from DOT's.
 
 ## All DOT settings
 
+Comment retention is a DOT storage policy, independent of processing and
+validation: `.retention = .{ .comments = true }` preserves all recognized DOT
+comments as raw kind/span records. See [comments](READING_DOCUMENTS.md#comments).
+
 Every field of `dot.Policy`, with its default and where it is explained:
 
 | Setting | Values | Default | See |
@@ -348,6 +352,8 @@ Every field of `dot.Policy`, with its default and where it is explained:
 | `limits.max_nesting` | a number | no limit | [Limits](#limits-and-other-settings) |
 | `on_error` | `.collect`, `.fail_fast` | `.collect` | [Errors](ERRORS.md#keep-going-or-stop-at-the-first-error) |
 | `scanner` | `.scalar`, `.block` | `.scalar` | [Two scanners](EXECUTION.md#two-scanners) |
+| `retention.comments` | `true`, `false` | `false` | [Retaining comments](READING_DOCUMENTS.md#comments) |
+| `limits.max_comments` | `u32` | maximum `u32` | Bounds retained comments when retention is enabled; not a source-byte or work limit |
 | `execution.metering` | `true`, `false` | `false` | [Parsing in small steps](EXECUTION.md) |
 | `execution.cancellation` | `true`, `false` | `false` | [Cancelling](EXECUTION.md#cancelling) |
 | `markup` | `.none`, `.passthrough`, `.process` | `.process` with a bound processor, otherwise `.passthrough` | [Checking HTML-like labels](LABELS.md#what-happens-by-default) |

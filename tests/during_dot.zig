@@ -5,6 +5,20 @@ const gpa = std.testing.allocator;
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 
+test "comment retention composes with markup without treating embedded comment-like bytes as DOT trivia" {
+    const Parser = dot.Profile(.{ .policy = .{ .retention = .{ .comments = true } }, .processors = .{ .markup = markup.Profile(.{}) } });
+    const source = "/*before*/graph{a[label=<<B><!-- markup -->// # /* literal */</B>>/*between*/+\"tail\"]}#after";
+    var result = try Parser.parseAndValidate(gpa, source, Parser.DiagnosticSink.discard, .{});
+    defer result.deinit(gpa);
+    try expect(result.documentValid());
+    const document = &result.dot.document.?;
+    try equal(@as(usize, 3), document.comments.?.len);
+    try equal(@as(u32, 1), result.markup.visited);
+    for (document.comments.?, [_][]const u8{ "/*before*/", "/*between*/", "#after" }) |comment, raw| {
+        try std.testing.expectEqualStrings(raw, comment.raw(source));
+    }
+}
+
 test "default bound markup checks Graphviz vocabulary without changing DOT-only defaults" {
     const Bound = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
     var valid = try Bound.parseAndValidate(gpa, "graph { a [label=<<b>bold</B>>]; }", Bound.DiagnosticSink.discard, .{});

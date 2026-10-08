@@ -1,8 +1,9 @@
 # Performance
 
-How fast the parsers are and how much memory they use. Everything here was
-measured on the development version (commit `fd36194`, 2026-10-05), on one
-machine, with made-up test files. Use the numbers as a rough guide: your files,
+How fast the parsers are and how much memory they use. Throughput and allocation
+tables were measured on the development version (commit `fd36194`, 2026-10-05);
+[type sizes](#type-sizes) were checked separately on 2026-10-07. Measurements use
+one machine and made-up test files. Use the numbers as a rough guide: your files,
 hardware and settings will give different results.
 [How these were measured](#how-these-were-measured) has the details.
 
@@ -70,15 +71,15 @@ for the source, diagnostics, sessions and nesting space separately.
 ## Type sizes
 
 `@sizeOf` values for the development version on this machine (aarch64 macOS,
-Zig 0.16.0), checked 2026-10-05. They are the size of each value itself, not
+Zig 0.16.0), checked 2026-10-07. They are the size of each value itself, not
 memory used while parsing, and they can differ on other targets or Zig
 versions. A [layout test](../tests/layouts.zig) checks this table in all four
 build modes.
 
 | Type | Debug / Safe | Fast / ReleaseSmall |
 | --- | ---: | ---: |
-| `dot.Profile(.{}).Session` | 1,088 bytes | 1,080 bytes |
-| DOT session with metering and cancellation | 1,152 bytes | 1,144 bytes |
+| `dot.Profile(.{}).Session` | 1,120 bytes | 1,112 bytes |
+| DOT session with metering and cancellation | 1,184 bytes | 1,176 bytes |
 | `dot.lexer.For(.scalar)` | 64 bytes | 56 bytes |
 | `dot.lexer.For(.block)` | 152 bytes | 152 bytes |
 
@@ -88,12 +89,19 @@ source, document buffers, nesting space or diagnostics, which you supply
 separately. Use `@sizeOf` on your own profile and target rather than copying
 these numbers.
 
+Opt-in comment retention adds a collection descriptor to the shared document
+and fixed-storage views. This increases the default fixed session by 32 bytes
+even with retention off; the ordinary scanner layouts and per-statement records
+are unchanged. Retention off allocates no comment records. Enabled retention
+uses 12 bytes per comment plus allocator growth slack, unless exact capacities
+or fixed pools are supplied. Source bytes are never copied.
+
 The benchmark programs also print these sizes, the same in Fast and Safe
 builds:
 
 | Type | Size (bytes) |
 | --- | ---: |
-| DOT session with run-time settings | 1,304 |
+| DOT session with run-time settings | 1,352 |
 | Markup node / attribute | 20 / 20 |
 | Markup nesting frame / attribute-key scratch entry | 12 / 8 |
 | Markup diagnostic / validation result | 36 / 32 |

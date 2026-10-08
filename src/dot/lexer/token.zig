@@ -13,6 +13,15 @@ pub const Token = struct {
     /// bits fit the token's padding; policy enforcement never rescans an ID.
     flags: Flags = .{},
 
+    pub fn comment(self: Token) ?@import("../comment.zig").Comment {
+        return .{ .span = self.span, .kind = switch (self.tag) {
+            .comment_slash_line => .slash_line,
+            .comment_block => .block,
+            .comment_hash_line => .hash_line,
+            else => return null,
+        } };
+    }
+
     pub const Flags = packed struct(u8) {
         has_html: bool = false,
         concatenated: bool = false,
@@ -38,6 +47,9 @@ pub const Token = struct {
         right_bracket,
         equals,
         comma,
+        comment_slash_line,
+        comment_block,
+        comment_hash_line,
     };
 };
 

@@ -127,6 +127,23 @@ The parse stops with `outcome == .storage_failure` (reason `.pool_exhausted`),
 and a diagnostic names the buffer that filled up and its size. You never get a
 half-filled document.
 
+## Comment storage
+
+With DOT `.retention.comments = true`, comments use their own pool:
+`DocumentStorage.comments`, `DocumentCapacities.comments`, or
+`FixedDocumentStorage(.{ .comments = 100 })`. `measure`/`measureIn` count
+exact comment capacity under the same policy; when retention is off the count
+is zero. `limits.max_comments` bounds the retained count separately from
+statement/attribute limits. A full fixed pool reports `comment_pool`; a policy
+limit reports `comments`. Neither silently drops records.
+
+Each record is 12 bytes on the tested targets (kind plus two u32 span fields),
+not a copy of the text. Growing pools can reserve extra capacity; exact hints
+or fixed storage avoid growth. Disabled retention makes no comment allocation
+unless the caller explicitly reserves comment capacity. The non-generic
+document/storage descriptors still have a collection field; current fixed-size
+metadata costs are listed in [Performance](PERFORMANCE.md#type-sizes).
+
 ## Reusing buffers
 
 You can parse again into the same buffers. Doing so makes any document from the

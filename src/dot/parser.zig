@@ -157,10 +157,11 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
     const recovery_enabled = if (fixed) |value| value.on_error == .collect or (value.markup == .none and value.unsupported != .err) else true;
     const deviations_enabled = if (fixed) |value| value.syntax.acceptsDeviations() else true;
     const operators_enabled = if (fixed) |value| value.syntax.acceptsOperators() else true;
+    const comments_enabled = if (fixed) |value| value.retention.comments else true;
     return struct {
         const Self = @This();
 
-        const Action = enum { begin, begin_subgraph, end_subgraph, subgraph_statement, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit };
+        const Action = enum { begin, begin_subgraph, end_subgraph, subgraph_statement, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, comment, commit };
         const Work = struct {
             token: lex.Token = undefined,
             action: Action = undefined,
@@ -186,6 +187,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         scratch: ?*scratch_impl.Stack = null,
         statements: usize = 0,
         attributes: usize = 0,
+        comments_count: if (comments_enabled) u32 else void = if (comments_enabled) 0 else {},
         attribute_key: location.Span = undefined,
         attribute_target: syntax_event.AttributeTarget = .graph,
         open_bracket_span: ?location.Span = null,
@@ -307,6 +309,10 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         fn onError(self: *const Self) policy.OnError {
             return if (fixed) |value| value.on_error else self.settings.on_error;
         }
+
+        fn retainComments(self: *const Self) bool {
+            return if (fixed) |value| value.retention.comments else self.settings.retention.comments;
+        }
         fn unsupported(self: *const Self) policy.Unsupported {
             return if (fixed) |value| value.unsupported else self.settings.unsupported;
         }
@@ -399,6 +405,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         pub fn runToCompletion(self: *Self) Result {
+            self.tokens.setRetainComments(self.retainComments());
             self.tokens.setNumeralCheck(self.numeralSeverity() != .off);
             if (metered) {
                 while (true) {
@@ -479,6 +486,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
 
         fn drive(self: *Self, comptime bounded: bool, budget: usize) usize {
             if (self.terminal != null) return 0;
+            self.tokens.setRetainComments(self.retainComments());
             self.tokens.setNumeralCheck(self.numeralSeverity() != .off);
             var remaining = if (bounded) budget else {};
             while (true) {
@@ -548,8 +556,9 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// The sink's one terminal abort, if it has begun and not yet
         /// received one.
         fn abortEvents(self: *Self, reason: syntax_event.AbortReason) void {
-            if (self.begun and !self.aborted) self.events.abortDocument(reason);
-            self.aborted = self.aborted or self.begun;
+            const started = self.begun or (comments_enabled and self.comments_count != 0);
+            if (started and !self.aborted) self.events.abortDocument(reason);
+            self.aborted = self.aborted or started;
         }
 
         fn progress(self: *const Self, used: usize) Progress {
@@ -564,6 +573,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn transition(self: *Self, token: lex.Token) Done {
+            if (comments_enabled and token.comment() != null) return self.schedule(.comment, token);
             if (audited) self.audit.grammar += 1;
             const markup = if (fixed) |value| value.markup else self.settings.markup;
             if (markup == .none and token.flags.has_html and self.state != .recovering) {
@@ -1106,9 +1116,24 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 return null;
             }
             switch (action) {
+                .comment => {
+                    if (comptime !comments_enabled) unreachable;
+                    if (self.comments_count >= self.limit("max_comments")) return self.fail(.{
+                        .code = .resource_capacity_exhausted,
+                        .span = token.span,
+                        .details = .{ .capacity = .{ .resource = .comments, .limit = self.limit("max_comments") } },
+                    });
+                    self.comments_count += 1;
+                    // Private sinks without this optional method only use
+                    // scanners that never emit comments.
+                    if (comptime @hasDecl(@typeInfo(EventsPtr).pointer.child, "comment")) {
+                        self.events.comment(token.comment().?) catch |err| return self.sinkFailure(err);
+                    } else unreachable;
+                },
                 .begin => {
                     self.begun = true;
                     self.events.beginDocument(.{
+                        .retain_comments = self.retainComments(),
                         .kind = self.kind,
                         .strict = self.strict,
                         .keyword_span = self.keyword_span,
@@ -1205,7 +1230,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     self.work.completed_pairs += 1;
                 },
                 .attribute => self.work.completed_pairs += 1,
-                .begin, .begin_subgraph, .end_subgraph, .commit, .edge_link, .ported_reference => {},
+                .begin, .begin_subgraph, .end_subgraph, .commit, .edge_link, .ported_reference, .comment => {},
             };
             return null;
         }
@@ -1613,6 +1638,7 @@ fn statementEndExpected(brackets: bool) std.enums.EnumFieldStruct(diagnostic.Syn
 /// must not depend on lexer types (dependency direction).
 fn tokenItem(tag: lex.Token.Tag) diagnostic.SyntaxItem {
     return switch (tag) {
+        .comment_slash_line, .comment_block, .comment_hash_line => unreachable,
         .keyword_graph => .graph_keyword,
         .keyword_digraph => .digraph_keyword,
         .keyword_strict => .strict_keyword,

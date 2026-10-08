@@ -222,6 +222,7 @@ pub fn build(b: *std.Build) void {
         "fixed_buffer",
         "diagnostics_demo",
         "identifiers",
+        "comments",
         "attributes",
         "bounded",
         "edge_chains",

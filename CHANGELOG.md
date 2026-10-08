@@ -17,6 +17,13 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Opt-in DOT comment retention (`retention.comments`) for `//`, `/* ... */`
+  and `#`, with source-ordered kind/span records, borrowed raw/body views,
+  fixed/growing pools, exact sizing and `limits.max_comments`. Standalone
+  `lexer.WithComments` exposes comment tokens without splitting concatenated
+  identifiers. Comments remain passthrough data, not statements or processors;
+  default retention stays off.
+
 - Standalone markup `.mode = .graphviz`: case-insensitive element and per-element
   attribute vocabulary checks, independent error/warning/off policies, and
   diagnostics on complete documents or recognizable source scopes. Duplicate

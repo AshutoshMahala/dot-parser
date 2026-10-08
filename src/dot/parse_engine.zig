@@ -33,7 +33,7 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
         };
 
         fn DriverFor(comptime Sink: type) type {
-            return parser_impl.MachineWithProcessor(Sink, metering, false, cancellable, lexer_impl.scannerFor(backend), fixed, Processor);
+            return parser_impl.MachineWithProcessor(Sink, metering, false, cancellable, lexer_impl.scannerForComments(backend, if (fixed) |p| p.retention.comments else null), fixed, Processor);
         }
 
         fn drive(source: []const u8, events: anytype, diagnostics: DiagnosticSink, scratch: *scratch_impl.Stack, options: Options) parser_impl.Result {

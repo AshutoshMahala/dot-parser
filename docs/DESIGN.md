@@ -461,7 +461,7 @@ Tags: R-PERF-004
 ## Deliberately left out
 
 - Layout, rendering, and giving meaning to attribute values
-- Keeping comments and formatting for exact reformatting
+- Full whitespace/separator retention and exact reformatting (comment retention is opt-in)
 - Threads inside the library
 - Running, including or fetching anything named in the input
 - Re-parsing only the changed part of a file

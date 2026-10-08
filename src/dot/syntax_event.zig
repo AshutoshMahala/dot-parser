@@ -8,6 +8,16 @@
 //!
 //! ## Event vocabulary and ordering
 //!
+//! Opt-in comment retention adds a separate optional `comment(Comment)` sink
+//! method. Complete comments arrive in lexical encounter order, including
+//! before `beginDocument` and after the graph's `}` but before commit. These
+//! are trivia records, not statements; quoted-concatenation lookahead may emit
+//! them before the enclosing identifier's statement. No comment follows abort
+//! or commit. A pre-header comment failure/cancellation aborts staged storage
+//! even though no document header was completed. The no-comment lifecycle below
+//! applies to the ordinary statement events. Storage sizing counts comments
+//! under the same retention policy; it does not retain them.
+//!
 //! The sink lifecycle begins only once the parser has recognized a complete
 //! supported document header — `[strict] (graph|digraph) [name] {` — so
 //! `beginDocument` carries the whole header (kind, strict, name). A parse
@@ -122,6 +132,7 @@ pub const EdgeOperator = enum {
 };
 
 pub const BeginDocument = struct {
+    retain_comments: bool = false,
     kind: GraphKind,
     /// True when the document carries the `strict` modifier. Retained as
     /// written; strict's duplicate-edge semantics are semantic resolution,

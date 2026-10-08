@@ -1410,7 +1410,9 @@ Unless later promoted to requirements, the parser core will not:
 - Open files or allocate from an OS heap on behalf of the caller.
 - Require floating-point arithmetic.
 - Automatically normalize the AST into a consumer's node/edge structures.
-- Promise lossless source formatting or comment preservation.
+- Promise full lossless formatting or whitespace/separator token retention.
+  DOT comment kind/span retention is supported as an opt-in borrowed pool;
+  it does not run content processors or assign comments to neighboring syntax.
 - Spawn threads or require a threading runtime in the parser core.
 - Provide incremental editor re-parsing in version 1.
 

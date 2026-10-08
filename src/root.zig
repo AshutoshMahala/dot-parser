@@ -80,6 +80,7 @@ pub const lexer = struct {
     pub const Lexer = lexer_impl.Lexer;
     /// Low-level fixed-backend lexer. Parsing selects through Policy.scanner.
     pub const For = lexer_impl.For;
+    pub const WithComments = lexer_impl.WithComments;
 };
 /// Explicit raw-identifier decoding into caller storage or a writer.
 pub const identifier = @import("dot/identifier.zig");
@@ -117,6 +118,8 @@ pub const ScopeView = syntax_impl.ScopeView;
 pub const Subgraph = syntax_impl.Subgraph;
 pub const Traversal = syntax_impl.Traversal;
 pub const Document = syntax_impl.Document;
+pub const Comment = @import("dot/comment.zig").Comment;
+pub const CommentKind = @import("dot/comment.zig").Kind;
 pub const Statement = syntax_impl.Statement;
 pub const StatementId = syntax_impl.StatementId;
 pub const ScopedStatement = syntax_impl.ScopedStatement;

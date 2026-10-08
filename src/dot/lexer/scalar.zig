@@ -10,8 +10,8 @@
 //! `{`, `}`, `;`, `:`, `[`, `]`, `=`, `,`; the
 //! edge operators `--` and `->`; whitespace (space, tab, LF, CRLF, CR);
 //! and comments (`//`, `/* ... */`, and `#` through the physical line end).
-//! Comments are skipped without retention. See docs/SUPPORTED_SYNTAX.md for
-//! the comment and physical-location compatibility policy.
+//! Comments are skipped by default; ScannerWithComments exposes them.
+//! See docs/SUPPORTED_SYNTAX.md for the comment and physical-location policy.
 //!
 //! Guarantees:
 //! - Spans borrow from the caller's source; no allocation ever (R-MEM-001).
@@ -40,6 +40,10 @@ const keywordTag = types.keywordTag;
 pub const Lexer = Scanner(false, false, true);
 
 pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool) type {
+    return ScannerWithComments(metered, audited, numeral_check, false);
+}
+
+pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool) type {
     return struct {
         const Self = @This();
         const State = enum {
@@ -83,6 +87,11 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
         found: ?u8 = null,
         initial: u8 = 0,
         ready_tag: Token.Tag = .eof,
+        comment_state: if (comments == false) void else struct {
+            span: location.Span = .{ .start = 0, .len = 0 },
+            frontier: u32 = 0,
+        } = if (comments == false) {} else .{},
+        retain_comments: if (comments == null) bool else void = if (comments == null) false else {},
         /// Set when the token just produced is a numeral that runs directly
         /// into a letter or dot (`1e3`, `1.2.3`): the byte it runs into.
         /// The token stream is unchanged (Graphviz splits identically);
@@ -105,6 +114,25 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
 
         pub fn setNumeralCheck(self: *Self, enabled: bool) void {
             if (numeral_check == null) self.check_numerals = enabled;
+        }
+
+        pub fn setRetainComments(self: *Self, enabled: bool) void {
+            if (comments == null) self.retain_comments = enabled;
+        }
+
+        fn keepsComments(self: *const Self) bool {
+            return comments orelse self.retain_comments;
+        }
+
+        fn finishComment(self: *Self, end: u32) bool {
+            if (comptime comments == false) return false;
+            if (!self.keepsComments() or end <= self.comment_state.frontier) return false;
+            // Quoted concatenation lookahead can revisit trailing trivia.
+            // Publish each completed comment only once, without a queue.
+            self.comment_state = .{ .span = .{ .start = self.opener, .len = end - self.opener }, .frontier = end };
+            self.ready_tag = if (self.source[self.opener] == '#') .comment_hash_line else if (self.source[self.opener + 1] == '/') .comment_slash_line else .comment_block;
+            self.state = .trivia;
+            return true;
         }
 
         fn checksNumerals(self: *const Self) bool {
@@ -294,6 +322,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     if (byte) |b| switch (b) {
                         ' ', '\t', '\r', '\n' => self.consume(),
                         '#' => {
+                            if (comptime comments != false) self.opener = self.cursor;
                             self.consume();
                             continuation = .line_comment;
                         },
@@ -320,8 +349,14 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                 .line_comment => {
                     if (byte) |b| {
                         self.consume();
-                        if (b == '\r' or b == '\n') continuation = .trivia;
-                    } else return self.afterTrivia(null);
+                        if (b == '\r' or b == '\n') {
+                            if (self.finishComment(self.cursor - 1)) return .ready;
+                            continuation = .trivia;
+                        }
+                    } else {
+                        if (self.finishComment(self.cursor)) return .ready;
+                        return self.afterTrivia(null);
+                    }
                 },
                 .block_comment, .block_star => {
                     const b = byte orelse {
@@ -332,6 +367,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
                     };
                     const closed = state == .block_star and b == '/';
                     self.consume();
+                    if (closed and self.finishComment(self.cursor)) return .ready;
                     continuation = if (closed) .trivia else if (b == '*') .block_star else .block_comment;
                 },
                 .bare => {
@@ -567,6 +603,10 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
 
         fn readyResult(self: *const Self) Result {
             if (self.terminal != .none) return self.terminalResult();
+            if (comptime comments != false) switch (self.ready_tag) {
+                .comment_slash_line, .comment_block, .comment_hash_line => return .{ .token = .{ .tag = self.ready_tag, .span = self.comment_state.span } },
+                else => {},
+            };
             return .{ .token = .{
                 .tag = self.ready_tag,
                 .span = .{ .start = self.anchor, .len = self.cursor - self.anchor },

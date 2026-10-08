@@ -177,7 +177,8 @@ It reports what the file says. It does not work out what the file means:
 - It doesn't expand `a -> { b c }` into two edges, merge repeated subgraphs,
   or build a list of unique nodes.
 - It doesn't read files. You pass it bytes.
-- It doesn't keep comments, so it can't reformat a file on its own.
+- It can [retain comments](docs/READING_DOCUMENTS.md#comments) on request, but
+  doesn't preserve whitespace/separators as tokens or reformat files itself.
 
 You can do all of these on top of the parsed document.
 [Why it works this way](docs/DESIGN.md) explains these choices.
@@ -232,6 +233,7 @@ and runs them all, and installs each one in `zig-out/bin/`.
 | [quick_start](examples/quick_start.zig) | parse, show problems, and list edges | [Getting started](docs/GETTING_STARTED.md) |
 | [parse_undigraph](examples/parse_undigraph.zig) | print every kind of statement | [Getting started](docs/GETTING_STARTED.md) |
 | [identifiers](examples/identifiers.zig) | get the real value of a quoted or joined name | [Reading](docs/READING_DOCUMENTS.md#names-spelling-versus-value) |
+| [comments](examples/comments.zig) | retain comment kinds, raw bytes and source locations | [Reading comments](docs/READING_DOCUMENTS.md#comments) |
 | [attributes](examples/attributes.zig) | read attribute lists, defaults and assignments | [Reading](docs/READING_DOCUMENTS.md#attributes) |
 | [edge_chains](examples/edge_chains.zig) | walk chains like `a -> b -> c` | [Reading](docs/READING_DOCUMENTS.md#edges) |
 | [ports](examples/ports.zig) | read ports like `a:out:n` | [Reading](docs/READING_DOCUMENTS.md#nodes-and-ports) |

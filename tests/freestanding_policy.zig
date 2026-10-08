@@ -1,6 +1,23 @@
 //! Consumed code-generation probe; no host runtime, allocator or renderer.
 const dot = @import("dot_parser");
 const features = @import("policy_features");
+
+export fn retained_comment_bytes(source: [*]const u8, len: usize, choice: u8) u32 {
+    const P = dot.Profile(.{ .runtime_policy = features.runtime_policy, .policy = .{ .retention = .{ .comments = true } } });
+    var pools: dot.FixedDocumentStorage(.{ .comments = 8, .statements = 8, .nodes = 8 }) = .{};
+    const result = if (features.runtime_policy)
+        P.parseBorrowedIn(source[0..len], .{ .document = pools.storage() }, dot.diagnostic.discard, .{ .policy = .{
+            .retention = .{ .comments = choice & 1 != 0 },
+            .scanner = if (choice & 2 != 0) .block else .scalar,
+            .limits = .{ .max_comments = choice },
+        } }) catch return 0
+    else
+        P.parseBorrowedIn(source[0..len], .{ .document = pools.storage() }, dot.diagnostic.discard, .{});
+    const document = result.document orelse return 0;
+    var total: u32 = 0;
+    for (document.comments orelse return 0) |comment| total += @intCast(comment.body(document.source).len);
+    return total;
+}
 const Profile = dot.Profile(.{
     .runtime_policy = features.runtime_policy,
     .policy = .{ .validation = .{ .graph = .{ .treated_as = .auto } } },

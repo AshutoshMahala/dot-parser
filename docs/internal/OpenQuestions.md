@@ -198,9 +198,16 @@ least two vertical slices exercise it. *(Embodied: `src/root.zig` façade,
 
 **Q3 — Must the AST preserve comments, exact quoting, whitespace, and
 separators for lossless source reproduction?**
-Not in version 1. Trivia and source preservation are the slice-7 tooling
-representation; compact ranges keep the door open without paying for it now.
-*(Embodied: `location.Range` design; non-goals §14.)*
+Full whitespace/separator retention and lossless formatting remain later tooling
+work. DOT comment retention is now an explicit exception: opt-in
+`retention.comments`, default off, retains `//`, `/* ... */`, and `#` as
+source-ordered kind/span records in a separate pool, without processing contents
+or attaching them to statements. Source bytes remain borrowed. This includes
+pre/post-graph comments and concatenation trivia. Retention is runtime-overridable;
+`limits.max_comments` bounds it. Low-level `lexer.WithComments` exposes tokens,
+but comment tokens may precede the completion of an enclosing concatenated ID.
+No partial document/comment collection is published on syntax failure.
+*(Embodied: `src/dot/comment.zig`, both scanners, syntax storage and policy.)*
 
 **Q4 — Does validation reject a mismatched edge operator immediately, or may
 a tolerant parsing mode retain it and report a diagnostic?**

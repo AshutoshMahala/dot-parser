@@ -53,6 +53,25 @@ pub fn For(comptime selected: policy.ScannerBackend) type {
     return scannerFor(selected)(false, false, true);
 }
 
+/// Includes comment tokens without splitting concatenated identifiers.
+/// Comments are reported once as encountered, possibly before an enclosing
+/// identifier finishes; token spans may overlap and need not be start-ordered.
+pub fn WithComments(comptime selected: policy.ScannerBackend) type {
+    return scannerForComments(selected, true)(false, false, true);
+}
+
+pub fn scannerForComments(comptime selected: policy.ScannerBackend, comptime comments: ?bool) fn (comptime bool, comptime bool, comptime ?bool) type {
+    if (comments == false) return scannerFor(selected);
+    return struct {
+        fn scanner(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool) type {
+            return switch (selected) {
+                .scalar => scalar.ScannerWithComments(metered, audited, numeral_check, comments),
+                .block => block.ScannerWithComments(metered, audited, numeral_check, comments),
+            };
+        }
+    }.scanner;
+}
+
 /// Ordinary lexing with the library-default backend.
 pub const Lexer = For(policy.defaults.scanner);
 

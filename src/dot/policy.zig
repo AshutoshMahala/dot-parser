@@ -26,6 +26,7 @@ pub const Policy = struct {
     scanner: ?ScannerBackend = null,
     execution: Execution = .{},
     markup: ?MarkupMode = null,
+    retention: struct { comments: ?bool = null } = .{},
     diagnostics: struct { fixes: ?Fixes = null, unsupported: ?Unsupported = null } = .{},
 
     pub const Syntax = struct {
@@ -40,6 +41,8 @@ pub const Policy = struct {
     pub const Limits = struct {
         /// Active subgraph depth; root is zero. Independent of scratch capacity.
         max_nesting: ?u32 = null,
+        /// Retained comments; ignored when comment retention is disabled.
+        max_comments: ?u32 = null,
         /// Source statements across every scope, not expanded edges or work.
         max_statements: ?usize = null,
         /// Key/value pairs, including assignments; not a lexical-work limit.
@@ -113,6 +116,7 @@ pub const ValidationSettings = struct {
 };
 
 pub const ParseSettings = struct {
+    retention: struct { comments: bool = false } = .{},
     unsupported: Unsupported = .err,
     markup: MarkupMode = .passthrough,
     fixes: Fixes = .all,
@@ -120,6 +124,7 @@ pub const ParseSettings = struct {
     syntax: SyntaxSettings = .{},
     limits: struct {
         max_nesting: u32 = @import("std").math.maxInt(u32),
+        max_comments: u32 = @import("std").math.maxInt(u32),
         max_statements: usize = @import("std").math.maxInt(usize),
         max_attributes: usize = @import("std").math.maxInt(usize),
     } = .{},
@@ -160,6 +165,7 @@ pub const defaults: Effective = .{};
 /// syntax without resetting other choices.
 pub const presets = struct {
     pub const standard: Policy = .{
+        .retention = .{ .comments = false },
         .diagnostics = .{ .fixes = .all, .unsupported = .err },
         .syntax = .{
             .empty_statement = .reject,
@@ -180,6 +186,7 @@ pub const presets = struct {
         },
         .limits = .{
             .max_nesting = defaults.parsing.limits.max_nesting,
+            .max_comments = defaults.parsing.limits.max_comments,
             .max_statements = defaults.parsing.limits.max_statements,
             .max_attributes = defaults.parsing.limits.max_attributes,
         },
@@ -227,6 +234,7 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
             },
         },
         .parsing = .{
+            .retention = .{ .comments = input.retention.comments orelse baseline.parsing.retention.comments },
             .unsupported = input.diagnostics.unsupported orelse baseline.parsing.unsupported,
             .markup = input.markup orelse baseline.parsing.markup,
             .fixes = input.diagnostics.fixes orelse baseline.parsing.fixes,
@@ -241,6 +249,7 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
             },
             .limits = .{
                 .max_nesting = input.limits.max_nesting orelse baseline.parsing.limits.max_nesting,
+                .max_comments = input.limits.max_comments orelse baseline.parsing.limits.max_comments,
                 .max_statements = input.limits.max_statements orelse baseline.parsing.limits.max_statements,
                 .max_attributes = input.limits.max_attributes orelse baseline.parsing.limits.max_attributes,
             },

@@ -109,6 +109,10 @@ fn findEscaped(backslash_in: u64, prev_escaped: *bool) u64 {
 }
 
 pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool) type {
+    return ScannerWithComments(metered, audited, numeral_check, false);
+}
+
+pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool) type {
     return struct {
         const Self = @This();
         const Mode = enum { trivia, line_comment, block_comment, quoted, html, ident, numeral, dash_gap };
@@ -138,6 +142,8 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
         flags: Token.Flags = .{},
         /// The most recently completed token.
         ready: Token = undefined,
+        comment_frontier: if (comments == false) void else u32 = if (comments == false) {} else 0,
+        retain_comments: if (comments == null) bool else void = if (comments == null) false else {},
         terminal: Terminal = .none,
         terminal_len: u32 = 0,
         found: ?u8 = null,
@@ -159,6 +165,19 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
 
         pub fn setNumeralCheck(self: *Self, enabled: bool) void {
             if (numeral_check == null) self.check_numerals = enabled;
+        }
+
+        pub fn setRetainComments(self: *Self, enabled: bool) void {
+            if (comments == null) self.retain_comments = enabled;
+        }
+
+        fn finishComment(self: *Self, end: u32) ?Result {
+            if (comptime comments == false) return null;
+            if (!(comments orelse self.retain_comments) or end <= self.comment_frontier) return null;
+            self.comment_frontier = end;
+            const tag: Token.Tag = if (self.source[self.opener] == '#') .comment_hash_line else if (self.source[self.opener + 1] == '/') .comment_slash_line else .comment_block;
+            self.ready = .{ .tag = tag, .span = .{ .start = self.opener, .len = end - self.opener } };
+            return .{ .token = self.ready };
         }
 
         fn checksNumerals(self: *const Self) bool {
@@ -412,6 +431,10 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
         }
 
         fn atEnd(self: *Self) ?Result {
+            if (comments != false and self.mode == .line_comment) {
+                self.mode = .trivia;
+                if (self.finishComment(self.cursor)) |result| return result;
+            }
             switch (self.mode) {
                 .trivia, .line_comment => switch (self.trivia) {
                     .after_part => return self.finishString(),
@@ -443,6 +466,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
             // of a quoted concatenation. In ordinary mode the comment opener
             // is also the anchor, so an unterminated comment rests there.
             if (b == '#') {
+                if (comptime comments != false) self.opener = self.cursor;
                 if (self.trivia == .ordinary) self.anchor = self.here();
                 self.advanceTo(self.cursor + 1);
                 self.mode = .line_comment;
@@ -621,11 +645,11 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
 
         fn stepLineComment(self: *Self) ?Result {
             if (self.findFirst(self.masks.newline_byte)) |p| {
-                // The terminator byte belongs to the comment; a CRLF's LF is
-                // then plain whitespace, exactly as the scalar scanner has it.
+                // Consume the terminator, but exclude it from a retained span.
+                // A CRLF's LF is then plain whitespace, as in the scalar scanner.
                 self.advanceTo(p + 1);
                 self.mode = .trivia;
-                return null;
+                return self.finishComment(p);
             }
             self.advanceTo(self.blockEnd());
             return null;
@@ -639,7 +663,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
             {
                 self.advanceTo(self.cursor + 1);
                 self.mode = .trivia;
-                return null;
+                return self.finishComment(self.cursor);
             }
             var close = self.masks.star & (self.masks.slash >> 1);
             // The opener's '*' can never close the comment (`/*/`); when the
@@ -652,7 +676,7 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
             if (self.findFirst(close)) |p| {
                 self.advanceTo(p + 2);
                 self.mode = .trivia;
-                return null;
+                return self.finishComment(self.cursor);
             }
             self.advanceTo(self.blockEnd());
             return null;

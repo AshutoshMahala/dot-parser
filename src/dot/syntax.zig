@@ -17,6 +17,7 @@
 //! - node references inline bare ranges or index the qualified-occurrence pool,
 //! - scope records retain parent IDs and body intervals, never copied descendants,
 //! - `order` records all statements in source preorder as compact typed indices,
+//! - optional `comments` retain kind/span records, never statement identities,
 //! - statement indices are `Index` (u32) with checked overflow; the width is
 //!   a single declaration so a future embedded profile can shrink it,
 //! - retained positions are compact 8-byte `location.Range`s — offset and
@@ -46,6 +47,7 @@ const syntax_event = @import("syntax_event.zig");
 const identifier = @import("identifier.zig");
 
 pub const GraphKind = syntax_event.GraphKind;
+pub const Comment = @import("comment.zig").Comment;
 pub const EdgeOperator = syntax_event.EdgeOperator;
 
 /// Statement index width. One declaration so profiles can shrink it for
@@ -505,6 +507,9 @@ pub const Document = struct {
     /// Storing it here makes document/source pairings unforgeable for consumers
     /// such as validation.
     source: []const u8,
+    /// Null means retention was disabled; a present empty slice means no comments.
+    /// Complete DOT comments in source order, separate from statement order.
+    comments: ?[]const Comment = null,
     kind: GraphKind,
     /// True when the document carries the `strict` modifier (retained as
     /// written; its duplicate-edge semantics are semantic resolution).
@@ -683,12 +688,13 @@ pub const Document = struct {
 };
 
 /// Free an allocator-owned document produced by `Builder.toDocument`
-/// (bulk release, R-MEM-005: twelve pool releases, no per-node walk).
+/// (bulk release, R-MEM-005: pool releases, no per-node walk).
 ///
 /// Package-internal on purpose: `Document` itself is a non-owning view, so
 /// a fixed-storage document — whose pools belong to the caller — can never
 /// meet a free operation. Public ownership lives on the façade result types.
 pub fn deinitOwnedDocument(document: *Document, allocator: std.mem.Allocator) void {
+    if (document.comments) |comments| allocator.free(comments);
     allocator.free(document.order);
     allocator.free(document.nodes);
     allocator.free(document.edge_chains);
@@ -736,6 +742,8 @@ pub const Builder = struct {
     strict: bool = false,
     keyword: location.Range = .{ .start = 0, .len = 0 },
     name: ?location.Range = null,
+    comments: std.ArrayList(Comment) = .empty,
+    retain_comments: bool = false,
     order: std.ArrayList(StatementId) = .empty,
     nodes: std.ArrayList(NodeStatement) = .empty,
     edge_chains: std.ArrayList(EdgeChainStatement) = .empty,
@@ -783,6 +791,7 @@ pub const Builder = struct {
     ) Error!Builder {
         var builder = init(allocator, source);
         errdefer builder.deinit();
+        try builder.comments.ensureTotalCapacityPrecise(allocator, capacities.comments);
         try builder.order.ensureTotalCapacityPrecise(allocator, capacities.statements);
         try builder.nodes.ensureTotalCapacityPrecise(allocator, capacities.nodes);
         try builder.edge_chains.ensureTotalCapacityPrecise(allocator, capacities.edge_chains);
@@ -800,6 +809,7 @@ pub const Builder = struct {
 
     /// Safe to call in every phase; releases whatever the builder holds.
     pub fn deinit(self: *Builder) void {
+        self.comments.deinit(self.allocator);
         self.order.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
         self.edge_chains.deinit(self.allocator);
@@ -821,6 +831,8 @@ pub const Builder = struct {
     pub fn reset(self: *Builder, source: []const u8) void {
         self.source = source;
         self.failure_info = null;
+        self.comments.clearRetainingCapacity();
+        self.retain_comments = false;
         self.order.clearRetainingCapacity();
         self.nodes.clearRetainingCapacity();
         self.edge_chains.clearRetainingCapacity();
@@ -847,6 +859,7 @@ pub const Builder = struct {
     pub fn toDocument(self: *Builder) Error!Document {
         std.debug.assert(self.phase == .committed);
         errdefer {
+            self.comments.clearAndFree(self.allocator);
             self.order.clearAndFree(self.allocator);
             self.nodes.clearAndFree(self.allocator);
             self.edge_chains.clearAndFree(self.allocator);
@@ -865,6 +878,8 @@ pub const Builder = struct {
             self.pending_attributes = 0;
             self.phase = .terminal;
         }
+        const comments = try self.comments.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(comments);
         const order = try self.order.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(order);
         const nodes = try self.nodes.toOwnedSlice(self.allocator);
@@ -895,6 +910,7 @@ pub const Builder = struct {
             .strict = self.strict,
             .keyword = self.keyword,
             .name = self.name,
+            .comments = if (self.retain_comments) comments else null,
             .order = order,
             .nodes = nodes,
             .edge_chains = edge_chains,
@@ -912,9 +928,16 @@ pub const Builder = struct {
 
     // --- syntax-event sink contract -------------------------------------
 
+    pub fn comment(self: *Builder, value: Comment) Error!void {
+        std.debug.assert(self.phase == .idle or self.phase == .building);
+        try self.reserve(&self.comments, value.span);
+        self.comments.appendAssumeCapacity(value);
+    }
+
     pub fn beginDocument(self: *Builder, event: syntax_event.BeginDocument) Error!void {
         std.debug.assert(self.phase == .idle);
         self.phase = .building;
+        self.retain_comments = event.retain_comments;
         self.kind = event.kind;
         self.strict = event.strict;
         self.keyword = self.range(event.keyword_span);
@@ -1098,6 +1121,7 @@ pub const Builder = struct {
         _ = reason;
         // Release staged state (the event contract's abort semantics).
         // Terminal until `reset`; the lists stay valid so `deinit` is safe.
+        self.comments.clearAndFree(self.allocator);
         self.order.clearAndFree(self.allocator);
         self.nodes.clearAndFree(self.allocator);
         self.edge_chains.clearAndFree(self.allocator);
@@ -1137,6 +1161,7 @@ fn checkedIndex(length: usize, total: usize) error{StatementIndexOverflow}!Index
 /// Pool element counts: hard limits for fixed storage, initial reservations
 /// for allocator-backed storage. Zero means no initial space in that pool.
 pub const Capacities = struct {
+    comments: u32 = 0,
     /// Source statements, including standalone scopes but not endpoint scopes.
     statements: usize = 0,
     nodes: usize = 0,
@@ -1167,6 +1192,7 @@ pub const Capacities = struct {
 /// `pool_exhausted` naming that pool. Size the pools with `measure` /
 /// `measureIn`, or with `FixedDocumentStorage` for compile-time budgets.
 pub const DocumentStorage = struct {
+    comments: []Comment = &.{},
     statement_ids: []StatementId = &.{},
     nodes: []NodeStatement = &.{},
     edge_chains: []EdgeChainStatement = &.{},
@@ -1188,7 +1214,7 @@ pub const DocumentStorage = struct {
 /// static, or heap via `allocator.create`). Budget with `byte_size`.
 pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
     comptime {
-        for ([_]usize{ capacities.statements, capacities.nodes, capacities.edges, capacities.scoped_edges, capacities.scoped_edge_links, capacities.edge_links, capacities.edge_chains, capacities.ported_references, capacities.subgraphs, capacities.attributes, capacities.assignments, capacities.attribute_statements }) |capacity| {
+        for ([_]usize{ capacities.comments, capacities.statements, capacities.nodes, capacities.edges, capacities.scoped_edges, capacities.scoped_edge_links, capacities.edge_links, capacities.edge_chains, capacities.ported_references, capacities.subgraphs, capacities.attributes, capacities.assignments, capacities.attribute_statements }) |capacity| {
             if (capacity > std.math.maxInt(Index)) {
                 @compileError("FixedDocumentStorage: capacity exceeds the statement index width (" ++
                     @typeName(Index) ++ ")");
@@ -1200,6 +1226,7 @@ pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
         /// e.g. `comptime assert(Storage.byte_size <= ram_budget)`.
         pub const byte_size = @sizeOf(@This());
 
+        comments: [capacities.comments]Comment = undefined,
         statement_ids: [capacities.statements]StatementId = undefined,
         nodes: [capacities.nodes]NodeStatement = undefined,
         edge_chains: [capacities.edge_chains]EdgeChainStatement = undefined,
@@ -1215,6 +1242,7 @@ pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
 
         pub fn storage(self: *@This()) DocumentStorage {
             return .{
+                .comments = &self.comments,
                 .statement_ids = &self.statement_ids,
                 .nodes = &self.nodes,
                 .edge_chains = &self.edge_chains,
@@ -1244,6 +1272,10 @@ pub const CountingSink = struct {
     phase: enum { idle, building, committed, terminal } = .idle,
 
     pub const Error = error{};
+
+    pub fn comment(self: *CountingSink, _: Comment) Error!void {
+        self.counts.comments += 1;
+    }
 
     pub fn beginDocument(self: *CountingSink, _: syntax_event.BeginDocument) Error!void {
         std.debug.assert(self.phase == .idle);
@@ -1348,6 +1380,8 @@ pub const FixedBuilder = struct {
     strict: bool = false,
     keyword: location.Range = .{ .start = 0, .len = 0 },
     name: ?location.Range = null,
+    comments_len: u32 = 0,
+    retain_comments: bool = false,
     order_len: usize = 0,
     nodes_len: usize = 0,
     edge_chains_len: usize = 0,
@@ -1389,6 +1423,8 @@ pub const FixedBuilder = struct {
     pub fn reset(self: *FixedBuilder, source: []const u8) void {
         self.source = source;
         self.failure_info = null;
+        self.comments_len = 0;
+        self.retain_comments = false;
         self.order_len = 0;
         self.nodes_len = 0;
         self.edge_chains_len = 0;
@@ -1421,6 +1457,7 @@ pub const FixedBuilder = struct {
             .strict = self.strict,
             .keyword = self.keyword,
             .name = self.name,
+            .comments = if (self.retain_comments) self.storage.comments[0..self.comments_len] else null,
             .order = self.storage.statement_ids[0..self.order_len],
             .nodes = self.storage.nodes[0..self.nodes_len],
             .edge_chains = self.storage.edge_chains[0..self.edge_chains_len],
@@ -1438,9 +1475,17 @@ pub const FixedBuilder = struct {
 
     // --- syntax-event sink contract -------------------------------------
 
+    pub fn comment(self: *FixedBuilder, value: Comment) Error!void {
+        std.debug.assert(self.phase == .idle or self.phase == .building);
+        try self.checkPool(self.comments_len, self.storage.comments.len, .comment_pool, value.span);
+        self.storage.comments[self.comments_len] = value;
+        self.comments_len += 1;
+    }
+
     pub fn beginDocument(self: *FixedBuilder, event: syntax_event.BeginDocument) Error!void {
         std.debug.assert(self.phase == .idle);
         self.phase = .building;
+        self.retain_comments = event.retain_comments;
         self.kind = event.kind;
         self.strict = event.strict;
         self.keyword = self.range(event.keyword_span);
@@ -1645,6 +1690,8 @@ pub const FixedBuilder = struct {
         _ = reason;
         // Nothing to free — the pools are the caller's. Lengths reset so no
         // stale view escapes; terminal until `reset`.
+        self.comments_len = 0;
+        self.retain_comments = false;
         self.order_len = 0;
         self.nodes_len = 0;
         self.edge_chains_len = 0;

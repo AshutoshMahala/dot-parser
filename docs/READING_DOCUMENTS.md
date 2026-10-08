@@ -201,6 +201,57 @@ your program, so they are left to you:
   `nodeReferences(.recursive)`.
 - **What does a port mean?** Look at the node's shape or label.
 
+## Comments
+
+DOT comment retention is opt-in and does not run a comment processor or linter:
+
+```zig
+const Parser = dot.Profile(.{ .policy = .{
+    .retention = .{ .comments = true },
+    .limits = .{ .max_comments = 1000 }, // optional retained-record limit
+} });
+var parsed = Parser.parseBorrowed(allocator, source, bag.sink(), .{});
+defer parsed.deinit(allocator);
+if (parsed.document) |document| {
+    for (document.comments.?) |comment| {
+        _ = comment.kind; // .slash_line, .block, or .hash_line
+        _ = comment.span; // u32 byte start and length in document.source
+        _ = comment.raw(document.source); // includes delimiters
+        _ = comment.body(document.source); // excludes delimiters, otherwise unchanged
+        _ = comment.span.locate(document.source); // physical line and byte column
+    }
+}
+```
+
+`document.comments == null` means retention was off; a present empty slice means
+it was enabled and no comments were found. Records are in source order, separate
+from statements. Valid documents include comments before/after the graph, inside
+headers and attribute lists, and between concatenated operands. Nothing is copied,
+decoded, trimmed or attached to a neighboring statement. Line-comment spans exclude
+the terminating CR/LF; block-comment spans include `/*` and `*/`. `#` does not remap
+line numbers. Comment-like bytes inside strings or HTML-like identifiers are not
+DOT comments; markup's `<!-- ... -->` nodes remain the markup parser's concern.
+
+Set the same policy in a runtime-enabled profile's per-call `.policy`, or in
+the `.dot.policy` options of a runtime-enabled composed profile. `standard` and
+`lenient` presets reset retention to off. `parseAndValidate` retains comments
+when requested but adds no comment-specific checks.
+
+Retained comments follow the document's lifetime and success contract: syntax
+rejection, cancellation or storage failure does not publish a partial document
+or a partial comment collection. Unterminated block comments remain syntax errors.
+
+For low-level token access, use `dot.lexer.WithComments(.scalar)` or `(.block)`.
+It exposes `comment_slash_line`, `comment_block` and `comment_hash_line` token
+tags; `token.comment()` returns a `dot.Comment`, or `null` for other tokens.
+Both scanners emit each complete comment exactly once, including during lexical
+recovery. Comments can be emitted before an enclosing concatenated identifier
+finishes, so **the combined token stream is not ordered by span start and spans
+can overlap**. Filtering out comment tokens preserves the ordinary token stream.
+The comment subsequence itself is source-ordered. Incomplete comments are reported
+as lexical failures, not valid comment tokens. Ordinary `Lexer`/`For` still skip
+comments. This is not a lossless whitespace/separator token stream.
+
 ## Lifetimes
 
 - Keep the source text alive and unchanged while you use the document or any

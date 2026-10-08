@@ -614,6 +614,8 @@ pub const Capacity = struct {
         /// The 4 GiB retained source-range domain.
         source_range,
         attributes,
+        comments,
+        comment_pool,
         attribute_pool,
         assignment_pool,
         attribute_statement_pool,
@@ -639,6 +641,8 @@ pub const Capacity = struct {
                 .statement_index => "statement index",
                 .source_range => "source range",
                 .attributes => "attribute",
+                .comments => "comment",
+                .comment_pool => "comment pool",
                 .attribute_pool => "attribute pool",
                 .assignment_pool => "assignment pool",
                 .attribute_statement_pool => "attribute statement pool",
