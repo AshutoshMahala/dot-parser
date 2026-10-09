@@ -80,8 +80,8 @@ pub fn main(init: std.process.Init) !void {
         try source.appendSlice(init.gpa, "}");
         const valid = comptime !std.mem.eql(u8, fixture, "invalid");
         const visited: u32 = comptime if (std.mem.eql(u8, fixture, "plain")) 0 else if (std.mem.eql(u8, fixture, "large_first")) 1 else count;
-        inline for (.{ .scalar, .block }) |scanner| {
-            const P = dot.Profile(.{ .policy = .{ .scanner = scanner }, .processors = .{ .markup = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = scanner } }) } });
+        inline for (.{ false, true }) |runtime| inline for (.{ .scalar, .block }) |scanner| {
+            const P = dot.Profile(.{ .runtime_policy = runtime, .policy = .{ .scanner = scanner }, .processors = .{ .markup = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = .structural, .scanner = scanner } }) } });
             var tracking: Tracking = .{ .backing = init.gpa };
             try run(P, tracking.allocator(), source.items, valid, visited);
             if (tracking.live != 0) return error.Leak;
@@ -94,10 +94,10 @@ pub fn main(init: std.process.Init) !void {
             }
             std.mem.sort(u64, &times, {}, std.sort.asc(u64));
             const ns: f64 = @floatFromInt(times[times.len / 2]);
-            try writer.print("{s}/{s}: bytes={d} alloc={d} resize={d} remap={d} peak={d} median={d:.3}ms {d:.1}MB/s\n", .{
-                fixture, @tagName(scanner), source.items.len, tracking.allocs, tracking.resizes, tracking.remaps, tracking.peak, ns / 1e6, @as(f64, @floatFromInt(source.items.len)) * 1000 / ns,
+            try writer.print("{s}/{s}/{s}: bytes={d} alloc={d} resize={d} remap={d} peak={d} median={d:.3}ms {d:.1}MB/s\n", .{
+                fixture, if (runtime) "runtime" else "fixed", @tagName(scanner), source.items.len, tracking.allocs, tracking.resizes, tracking.remaps, tracking.peak, ns / 1e6, @as(f64, @floatFromInt(source.items.len)) * 1000 / ns,
             });
-        }
+        };
     }
     try writer.flush();
 }

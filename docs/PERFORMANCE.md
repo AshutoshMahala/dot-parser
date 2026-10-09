@@ -390,6 +390,9 @@ the markup parser bound as its
 validating, and freeing the result. Both parsers use the scanner shown.
 Diagnostics are thrown away.
 
+The benchmark covers both fixed and runtime policies for both parsers, labelled
+`fixed` and `runtime` in its output. The recorded table below uses fixed policies.
+
 - `plain`: 1,000 nodes and no labels. The label checker is bound but has
   nothing to do.
 - `labels`: 1,000 labels of `<b x='1' y='2'>t</b>`.

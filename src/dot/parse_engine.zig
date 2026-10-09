@@ -84,7 +84,12 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
             var scratch: scratch_impl.Stack = .{ .allocator = resources.scratch_allocator orelse allocator };
             defer scratch.deinit();
 
-            const result = drive(source, &builder, diagnostics, &scratch, options);
+            // Keep the ordinary runtime-policy composition loop independent of
+            // the caller's child/result bookkeeping. Inlining it into that
+            // wrapper extends live ranges across every token (notably in
+            // ReleaseSafe). This is one direct call per parse, not per token;
+            // fixed policies, DOT-only and cancellable paths keep auto inlining.
+            const result = @call(if (Processor != void and fixed == null and !cancellable) .never_inline else .auto, drive, .{ source, &builder, diagnostics, &scratch, options });
             var output = publicResult(ParseResult, result);
             if (result.outcome == .sink_failure) {
                 output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, result.outcome.sink_failure, builder.failure_info, result.diagnostic_delivery, &output.diagnostic_stop);
