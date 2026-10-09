@@ -12,11 +12,12 @@ test "documented current DOT layouts match native aarch64 macOS and build mode" 
     // layouts with runtime safety enabled. Pin both sets instead of weakening
     // the guard to a ceiling or assuming a build-mode-independent ABI.
     const expected: struct { session: usize, controlled: usize, scalar: usize } = switch (builtin.mode) {
-        .Debug, .ReleaseSafe => .{ .session = 1120, .controlled = 1184, .scalar = 64 },
-        .ReleaseFast, .ReleaseSmall => .{ .session = 1112, .controlled = 1176, .scalar = 56 },
+        .Debug, .ReleaseSafe => .{ .session = 1128, .controlled = 1192, .scalar = 64 },
+        .ReleaseFast, .ReleaseSmall => .{ .session = 1120, .controlled = 1184, .scalar = 56 },
     };
     try std.testing.expectEqual(expected.session, @sizeOf(dot.Profile(.{}).Session));
     try std.testing.expectEqual(expected.controlled, @sizeOf(Controlled.Session));
     try std.testing.expectEqual(expected.scalar, @sizeOf(dot.lexer.For(.scalar)));
     try std.testing.expectEqual(@as(usize, 152), @sizeOf(dot.lexer.For(.block)));
+    try std.testing.expectEqual(@as(usize, 1408), @sizeOf(dot.Profile(.{ .runtime_policy = true }).Session));
 }

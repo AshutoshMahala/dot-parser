@@ -395,6 +395,11 @@ test "a consumer processor runs before a document exists without runtime discove
         }
     };
     const P = dot.Profile(.{ .processors = .{ .markup = Consumer } });
+    const Dynamic = dot.Profile(.{ .runtime_policy = true, .processors = .{ .markup = Consumer } });
+    try std.testing.expectError(error.MarkupRetentionUnsupported, Dynamic.parseAndValidate(gpa, "graph {}", Dynamic.DiagnosticSink.discard, .{
+        .dot = .{ .policy = .{ .retention = .{ .markup = true } } },
+    }));
+    try std.testing.expectError(error.MarkupRetentionUnsupported, Dynamic.Policies.prepare(.{ .dot = .{ .policy = .{ .retention = .{ .markup = true } } } }));
     try expect(!@hasDecl(P, "Session")); // never disguise unbounded child work as advance()
     var calls: u32 = 0;
     var lifecycle = [2]u32{ 0, 0 };

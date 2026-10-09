@@ -1,5 +1,9 @@
 const std = @import("std");
 test {
+    _ = @import("composed_partial.zig");
+    _ = @import("composed_delayed.zig");
+}
+test {
     _ = @import("during_dot.zig");
     _ = @import("markup_workspace.zig");
 }

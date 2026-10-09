@@ -248,8 +248,10 @@ and runs them all, and installs each one in `zig-out/bin/`.
 | [bounded](examples/bounded.zig) | parse in small steps, and cancel | [Small steps](docs/EXECUTION.md) |
 | [composed_markup](examples/composed_markup.zig) | check every label while parsing DOT | [Labels](docs/LABELS.md#check-every-label-while-parsing) |
 | [delayed_markup](examples/delayed_markup.zig) | check only the labels you choose | [Labels](docs/LABELS.md#check-the-labels-you-choose) |
+| [attached_markup](examples/attached_markup.zig) | attach delayed label trees to the DOT result (unreleased) | [Attached delayed processing](docs/LABELS.md#attach-delayed-results) |
 | [markup](examples/markup.zig) | parse and validate markup on its own | [Markup](docs/MARKUP.md) |
 | [markup_partial](examples/markup_partial.zig) | retain a safe markup prefix for editors (unreleased) | [Partial results](docs/MARKUP.md#partial-results-for-editors) |
+| [partial_documents](examples/partial_documents.zig) | retain DOT prefixes and independently complete/partial label trees (unreleased) | [Editor label trees](docs/LABELS.md#retaining-label-trees-for-editors) |
 | [graphviz_vocabulary](examples/graphviz_vocabulary.zig) | check Graphviz tags and attributes (unreleased; not the full label rules) | [Vocabulary](docs/MARKUP.md#graphviz-vocabulary) |
 | [custom_processor](examples/custom_processor.zig) | plug in your own label checker | [Own processor](docs/CUSTOM_PROCESSORS.md) |
 

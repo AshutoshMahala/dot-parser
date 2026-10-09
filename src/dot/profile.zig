@@ -125,7 +125,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return parseResolved(.parseBorrowed, api.ParseResult, .{ allocator, source, diagnostics, resources }, effective, options.cancellation);
         }
         /// Allocation-free parsing into caller pools and nesting scratch. Nothing
-        /// grows; storage exhaustion fails without publishing a partial document.
+        /// grows; opt-in partial retention can publish a prefix after exhaustion.
         pub fn parseBorrowedIn(source: []const u8, memory: api.ParseMemory, diagnostics: api.DiagnosticSink, options: FixedParseOptions) Checked(api.FixedParseResult) {
             const effective = if (runtime_policy) try settings(options) else settings(options);
             return parseResolved(.parseBorrowedIn, api.FixedParseResult, .{ source, memory, diagnostics }, effective, options.cancellation);
@@ -153,7 +153,10 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         pub fn parseAndValidate(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: CheckOptions) Checked(api.CheckResult) {
             const effective = if (runtime_policy) try settings(options) else settings(options);
             var parsed = parseResolved(.parseBorrowed, api.ParseResult, .{ allocator, source, diagnostics, options.parse }, effective, options.cancellation);
-            if (parsed.document == null) return .{
+            if (parsed.document == null or parsed.diagnostic_stop != null or parsed.diagnostic_delivery == .failed or
+                (parsed.outcome != .success and !(parsed.outcome == .invalid_syntax and (if (runtime_policy) effective.parsing.on_error else baseline.parsing.on_error) == .collect))) return .{
+                .document = parsed.document,
+                ._allocation_lengths = parsed._allocation_lengths,
                 .outcome = parsed.outcome,
                 .completion = parsed.completion,
                 .syntax_errors = parsed.syntax_errors,
@@ -165,6 +168,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             const checked = validateResolved(&parsed.document.?, diagnostics, validationSettings(effective), options.validation);
             return .{
                 .document = parsed.document,
+                ._allocation_lengths = parsed._allocation_lengths,
                 .outcome = parsed.outcome,
                 .completion = parsed.completion,
                 .syntax_errors = parsed.syntax_errors,
@@ -244,14 +248,14 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             pub fn reset(self: *Self, source: []const u8, diagnostics: api.DiagnosticSink, options: FixedParseOptions) Checked(void) {
                 const effective = if (runtime_policy) try settings(options) else settings(options);
                 const memory: api.ParseMemory = if (runtime_policy) switch (self.driver) {
-                    inline else => |*driver| .{ .document = driver.builder.storage, .scratch = .{ .frames = driver.scratch.frames } },
-                } else .{ .document = self.driver.builder.storage, .scratch = .{ .frames = self.driver.scratch.frames } };
+                    inline else => |*driver| driver.parseMemory(),
+                } else self.driver.parseMemory();
                 _ = self.cancel();
                 self.* = initResolved(source, memory, diagnostics, effective, options.cancellation);
             }
 
             /// Separate, unbudgeted analysis using the latched validation policy.
-            /// No result until a document has been committed successfully.
+            /// No result until terminal. Opt-in retention can publish a prefix.
             pub fn validate(self: *const Self, diagnostics: api.DiagnosticSink, scratch: api.ValidationScratch) ?api.ValidationResult {
                 const parsed = self.result() orelse return null;
                 const doc = &(parsed.document orelse return null);

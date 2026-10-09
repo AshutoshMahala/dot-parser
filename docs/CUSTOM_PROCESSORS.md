@@ -32,7 +32,9 @@ one bag for DOT and your diagnostics, `result.dot`, `result.markup`, and
 
 Binding your processor turns checking on: DOT's `markup` setting defaults to
 `.process`. If a caller sets `markup = .passthrough` or `.none`, DOT doesn't run
-your processor at all. See [turning checking on or off](LABELS.md#turning-checking-on-or-off).
+your processor during parsing. With `.passthrough` and child retention, explicit
+[attached delayed processing](LABELS.md#attach-delayed-results) can run it later.
+See [turning checking on or off](LABELS.md#turning-checking-on-or-off).
 Your processor's own settings don't need a `mode` field; that is just how the
 built-in markup parser describes what it checks.
 
@@ -75,9 +77,27 @@ The compiler checks that your processor type declares all of these:
    next value only after you return.
 4. **Never turn unsupported input into success.** Reporting it quietly is fine;
    treating it as checked is not.
-5. **Don't keep results.** DOT reads each result straight away and then calls
-   you again for the next value. A result only needs to stay valid until the
-   next call or `deinit()`.
+5. **Match the selected ownership path.** Workspace results only need to stay
+   valid until the next call or workspace `deinit()`. Optional owned results
+   must instead stay valid independently until their own `deinit()`.
+
+### Optional owned results
+
+> **Unreleased.** Required for DOT's `retention.markup`, including attached
+> delayed processing; workspace-only processors remain supported without it.
+
+Expose `CheckResult` and
+`Prepared.parseAndValidate(allocator, fragment, sink, resources) InputError!CheckResult`.
+The result has the same error/stop members as the workspace result plus
+`deinit()` (without an allocator argument). It owns independent buffers but may
+borrow the unchanged source. DOT transfers this ownership into its result and
+deinitializes each child exactly once. Do not return workspace-backed views
+through this path. Source-coordinate and sink-stop rules are unchanged.
+
+An optional `subtreeComplete()` reports representation independently of validity.
+Without it, composition conservatively uses `documentValid()` for completeness.
+Delayed processing calls `prepare` again with its own per-call options, before
+starting the batch; it never swaps the compile-time-bound processor.
 
 ## A starting point
 

@@ -11,6 +11,13 @@ pub fn Result(comptime api: type, comptime fixed: bool) type {
         /// filtering. False is NOT proof of validity/completeness.
         has_errors: bool,
 
+        pub fn scopeComplete(self: *const @This()) bool {
+            return if (self.parse.document) |doc| doc.scopeComplete() else false;
+        }
+        pub fn subtreeComplete(self: *const @This()) bool {
+            return if (self.parse.document) |doc| doc.subtreeComplete() else false;
+        }
+
         pub fn documentValid(self: *const @This()) bool {
             const checked = self.validation orelse return false;
             return self.parse.outcome == .success and self.parse.completion == .complete and

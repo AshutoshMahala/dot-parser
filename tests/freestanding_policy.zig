@@ -2,6 +2,25 @@
 const dot = @import("dot_parser");
 const features = @import("policy_features");
 
+export fn partial_scope_count(source: [*]const u8, len: usize, choice: u8) u32 {
+    const P = dot.Profile(.{ .runtime_policy = features.runtime_policy, .policy = .{ .retention = .{ .partial = true } } });
+    var pools: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .subgraphs = 8 }) = .{};
+    var stack: dot.FixedParseScratch(.{ .nesting = 8 }) = .{};
+    const result = if (features.runtime_policy)
+        P.parseBorrowedIn(source[0..len], .{ .document = pools.storage(), .scratch = stack.storage() }, dot.diagnostic.discard, .{ .policy = .{ .retention = .{ .partial = choice & 1 != 0 } } }) catch return 0
+    else
+        P.parseBorrowedIn(source[0..len], .{ .document = pools.storage(), .scratch = stack.storage() }, dot.diagnostic.discard, .{});
+    const document = result.document orelse return 0;
+    var scopes = document.scope(.root).?.subgraphs(.direct);
+    var count: u32 = 0;
+    while (scopes.next()) |_| count += 1;
+    const validation = if (features.runtime_policy)
+        P.validate(&document, dot.diagnostic.discard, .{}) catch return 0
+    else
+        P.validate(&document, dot.diagnostic.discard, .{});
+    return count + @intFromBool(validation.documentValid());
+}
+
 export fn retained_comment_bytes(source: [*]const u8, len: usize, choice: u8) u32 {
     const P = dot.Profile(.{ .runtime_policy = features.runtime_policy, .policy = .{ .retention = .{ .comments = true } } });
     var pools: dot.FixedDocumentStorage(.{ .comments = 8, .statements = 8, .nodes = 8 }) = .{};

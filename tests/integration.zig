@@ -6,6 +6,7 @@ const dot = @import("dot_parser");
 
 test {
     _ = @import("comments.zig");
+    _ = @import("dot_partial.zig");
     _ = @import("attributes.zig");
     _ = @import("sessions.zig");
     _ = @import("edge_chains.zig");

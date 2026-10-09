@@ -6,6 +6,57 @@ the file says, in the order it says it. This page shows how to read each part.
 All the reading functions are cheap and allocate nothing. They return small
 values that point into your source text.
 
+## Partial results for editors
+
+> **Unreleased.** Default parsing still returns no document on failure.
+
+To keep a safe prefix of an unfinished DOT file:
+
+```zig
+const Editor = dot.Profile(.{ .policy = .{
+    .retention = .{ .partial = true },
+} });
+var result = Editor.parseAndValidate(allocator, source, bag.sink(), .{});
+defer result.deinit(allocator);
+if (result.document) |*document| {
+    _ = document.state;             // .complete or .partial
+    _ = document.scopeComplete();   // DOT representation only, not validity
+    _ = document.unrepresented();   // remaining raw source range, or null
+    var scopes = document.subgraphs();
+    while (scopes.next()) |scope| {
+        _ = scope.state();
+        _ = scope.sourceRange();
+    }
+}
+```
+
+The same `Document` type and traversal functions work for both states. Completed
+statements and opened subgraphs remain available; unfinished subgraphs are
+marked partial. A pending ordinary statement is not published until its event
+is complete. Raw pools can contain already-read attributes, references or links
+whose unfinished owner is not yet a statement; use statement and scope views
+for an outline. An unfinished raw subgraph has `subtree_end == 0`; views supply
+safe prefix bounds without walking the stack at failure time.
+
+Retention freezes at the first failure. `.collect` may continue diagnostics,
+but later recovered statements are not added. Unterminated quotes/comments leave
+the ambiguous tail raw; no closing delimiter or name is guessed. The returned
+tail is not a safe restart point, and can be empty at EOF when a closer is
+missing. A failure before a supported graph header has begun returns no document.
+
+This works with fixed/growing storage, both scanners, sessions, cancellation,
+limits and runtime policy. Results become readable only when the operation is
+terminal, not while a session is paused. Runtime overrides use the same
+`retention.partial` leaf. `measure` still returns counts only on success.
+
+Completeness does not imply validity. A fully represented graph can fail
+validation; a partial graph is never `documentValid()`. Direct validation checks
+retained facts and returns `coverage = .{ .incomplete = first_unrepresented_byte }`.
+Automatic validation does that after a `.collect` syntax failure, but never
+after an operational stop or `.fail_fast` rejection. It does not validate later
+unretained DOT statements. See [memory costs](MEMORY.md#partial-result-storage)
+and [retaining composed label trees](LABELS.md#retaining-label-trees-for-editors).
+
 ## The document header
 
 | Field | Meaning |
@@ -244,7 +295,8 @@ if (parsed.document) |document| {
 `lenient` presets turn retention off. `parseAndValidate` keeps comments when
 asked, but doesn't check them.
 
-**When parsing fails**, there is no document, so there are no comments either.
+**When parsing fails**, there is no document by default. With `retention.partial`
+also enabled, complete comments in the retained prefix remain available.
 An unclosed `/*` is still a syntax error.
 
 [Comment storage](MEMORY.md#comment-storage) covers sizing.

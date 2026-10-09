@@ -181,7 +181,39 @@ To check many fragments without allocating each time, reuse one
 
 With [partial results](MARKUP.md#partial-results-for-editors) on (unreleased),
 a markup parse that runs out of buffer space can still return the part it
-recognised. DOT never does.
+recognised. DOT offers the same opt-in prefix contract.
+
+## Partial-result storage
+
+With DOT `retention.partial` on (unreleased), growing parses allocate a small
+ownership record before parsing: 13 allocation lengths (104 bytes on a 64-bit
+target). They retain existing pool capacities, including unused growth space,
+on success or failure, instead of trimming them at handoff. The result owns
+that record and the pools; `deinit(allocator)` frees both. Fixed-storage parsing
+needs no ownership allocation. Neither path allocates or walks nesting to
+salvage a failure. Transactional bookkeeping is compiled out of fixed profiles
+with partial retention off.
+
+DOT documents gain 8 bytes of completeness/frontier metadata on the tested
+64-bit target, including in ordinary profiles; allocator-owned results also
+carry one optional ownership pointer. Node, edge and subgraph record sizes are
+unchanged. A retained prefix may include initialized pool entries whose owner
+statement was unfinished; its public statement/scope views remain safe.
+
+Composed `retention.markup` keeps a growable, source-ordered result list and each
+child's owned buffers. It therefore holds the sum of retained child capacities,
+not merely the largest child's workspace. No child-result list is allocated
+when retention is off, and fixed profiles without it compile out that storage.
+All source stays borrowed. The composed `deinit(allocator)` frees the complete
+ownership tree; child entries are views, not independently owned copies.
+
+Attached delayed processing allocates a source-ordered span queue only when
+`requestMarkup` selects operands (8 bytes per entry plus growable capacity).
+It is released when drained; after a stop it retains pending envelopes until
+parent deinitialization. Child buffers still cost the sum of retained trees.
+The delayed queue/state is compiled out of fixed proactive-only profiles and
+profiles without child retention; enabling retention alone allocates no queue.
+Use the same allocator throughout the parent result's lifetime.
 
 ## Threads
 

@@ -226,6 +226,8 @@ off. See [comments](READING_DOCUMENTS.md#comments) and
 | `limits.max_nesting` | no limit | Deepest subgraph nesting allowed (the document is level 0) |
 | `limits.max_comments` | no limit | Most comments kept when comment retention is on (unreleased) |
 | `retention.comments` | `false` | Keep comments in the document (unreleased). See [keeping comments](#keeping-comments). |
+| `retention.partial` | `false` | Keep a safe DOT prefix on failure (unreleased). See [partial results](READING_DOCUMENTS.md#partial-results-for-editors). |
+| `retention.markup` | `false` | Keep processed child results in a composed parse (unreleased). See [retained label trees](LABELS.md#retaining-label-trees-for-editors). |
 | `on_error` | `.collect` | Keep looking after an error, or `.fail_fast` to stop at the first. See [errors](ERRORS.md#keep-going-or-stop-at-the-first-error). |
 | `scanner` | `.scalar` | Which text scanner to use. See [scanners](EXECUTION.md#two-scanners). |
 | `execution.metering` | `false` | Allow parsing in small steps. See [EXECUTION.md](EXECUTION.md). |
@@ -361,6 +363,8 @@ Every field of `dot.Policy`, with its default and where it is explained:
 | `on_error` | `.collect`, `.fail_fast` | `.collect` | [Errors](ERRORS.md#keep-going-or-stop-at-the-first-error) |
 | `scanner` | `.scalar`, `.block` | `.scalar` | [Two scanners](EXECUTION.md#two-scanners) |
 | `retention.comments` | `true`, `false` | `false` | [Keeping comments](#keeping-comments) (unreleased) |
+| `retention.partial` | `true`, `false` | `false` | [Partial DOT results](READING_DOCUMENTS.md#partial-results-for-editors) (unreleased) |
+| `retention.markup` | `true`, `false` | `false` | [Retained child results](LABELS.md#retaining-label-trees-for-editors) (unreleased) |
 | `limits.max_comments` | a number | no limit | [Keeping comments](#keeping-comments) (unreleased) |
 | `execution.metering` | `true`, `false` | `false` | [Parsing in small steps](EXECUTION.md) |
 | `execution.cancellation` | `true`, `false` | `false` | [Cancelling](EXECUTION.md#cancelling) |

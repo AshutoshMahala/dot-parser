@@ -179,8 +179,8 @@ public setting. The shared enum is `OnError`; no legacy aliases remain.
 Under `.collect`, the parser may record a recoverable syntax diagnostic,
 synchronize at a safe grammar boundary, and continue collecting problems up to
 caller-provided diagnostic and work limits. Recovery must be best-effort and
-must not publish a partial tree by default. Opt-in markup prefix retention follows
-the contract below; DOT still publishes only complete syntax. Unterminated
+must not publish a partial tree by default. Opt-in DOT/markup prefix retention
+follows the contract below. Unterminated
 quoted or HTML-like input, lost delimiter balance, and exhausted input may be
 unrecoverable even when recovery is enabled.
 
@@ -199,15 +199,21 @@ Retention is opt-in and independent of `.collect`/`.fail_fast`. Preserve complet
 constructs, unfinished containers and unavailable ranges without guessing repairs.
 Traversal/indices must remain safe, source borrowed, failure reasons unchanged,
 and salvaging a result must not require allocation or an unmetered stack walk.
-The first implementation retains standalone markup's prefix at the first error
+The implemented slice retains DOT/markup prefixes at the first error
 or operational stop. Recovery may continue diagnostics, but later nodes are not
 retained yet. Direct partial-document validation checks retained facts and reports
-missing coverage; existing source/scope validation remains independent. Later
-recovered regions and DOT/composed retention are separate upcoming slices.
+missing coverage; existing markup source/scope validation remains independent.
+Composed `retention.markup` separately retains owning child results with original
+operand coordinates; ordinary composition continues to reuse child workspace.
+Attached delayed selection marks requested operands pending, processes one
+explicit source-ordered batch and updates that same result's completeness.
+Coverage describes the selected set, not unselected identifiers. No implicit
+retry after stops, source copying or runtime replacement of the bound processor.
+Later recovered regions and resumable per-scope scheduling remain future slices.
 
 **Current implementation:** DOT `Policy.on_error` offers `.fail_fast` and
 default `.collect`. The latter continues diagnostics after aborting staged output;
-it never publishes a partial document or turns rejected syntax into success.
+partial retention freezes the prefix without turning rejected syntax into success.
 Excluded HTML-like body identifiers can also recover: unsupported-only recovery
 remains `unsupported_feature`, while completed recovery with a syntax error yields
 `invalid_syntax`. Both parsers expose `completion` and factual u32 `syntax_errors`
@@ -287,8 +293,8 @@ must be identified as unavailable, not passed; unsafe continuation after lost
 boundaries or exhausted shared resources is not required. Observed cancellation
 stops the composed operation; current hooks are component-specific, not a shared
 interrupt guarantee for an uncancellable child. A completed DOT syntax result
-can remain available when inner validation fails; this does not authorize a partial DOT document or
-claim success for all requested stages. Continuing independent validation does
+can remain available when inner validation fails; this neither enables partial
+DOT retention nor claims success for all requested stages. Continuing independent validation does
 not require parallel execution, a bag per component, or retained per-fragment
 results. Existing DOT validation has continuation and bounded bag retention.
 Automatic one-shot HTML-operand scheduling is implemented; recursively scheduled
@@ -1627,6 +1633,13 @@ they cannot silently rot; what an example teaches is treated as a
 compatibility surface, because examples are what consumers copy.
 
 ## 20. Amendments
+
+- 2026-10-08 — **R-FUNC-007:** extend opt-in prefix retention to DOT fixed/growing
+  parsing and sessions. Preserve safe unfinished subgraph views, explicit
+  validation coverage and allocation-free salvage. Composition can independently
+  retain owning child results with original operand spans, without making inner
+  syntax failure imply outer structural incompleteness. Later recovered regions
+  and combined resumable/fixed-memory processing remain future work.
 
 - 2026-10-03 — Documentation consolidation only: retain all requirement IDs and
   intended constraints, reconcile delivered policy/markup/one-shot integration,

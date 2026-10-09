@@ -52,7 +52,7 @@ them yourself, as shown [below](#check-the-labels-you-choose).
 | How | Add a label checker to your DOT profile | Parse DOT, then pass selected values to the markup parser |
 | Which values | Every `<...>` value in the file | Only the ones your code picks, such as `label` |
 | Diagnostics | One bag for DOT and labels together | Your choice of bag, separate from DOT's |
-| Label trees | Checked, then discarded | Kept, if you want them |
+| Label trees | Discarded by default; opt-in retention is unreleased | Kept, if you want them |
 | Memory | Allocator | Allocator or fixed buffers |
 | Best for | "Is this whole file OK?" | Tools that need control or the parsed labels |
 
@@ -99,6 +99,8 @@ If checking is off (`.passthrough` or `.none`), `documentValid()` only reflects
 the DOT and says nothing about the labels. `result.markup.requested` is then
 `false`, and `result.markup.allValid()` is also `false`, because nothing was
 checked. Look at `requested` before relying on `allValid()`.
+With retention enabled, [explicit delayed selection](#attach-delayed-results)
+can later request checking and update this same result.
 
 Each label is checked as soon as the parser has read the whole value, before it
 reads any further. A value cut off by the end of the file isn't checked.
@@ -166,7 +168,148 @@ Good to know:
 - This mode runs to completion. It can't run in [small steps](EXECUTION.md) yet.
 - The checker reuses one set of buffers for all labels. That avoids thousands
   of small allocations, but the buffers stay as big as the largest label until
-  the parse ends.
+  the parse ends. Opt-in retained label trees instead own separate buffers.
+
+### Retaining label trees for editors
+
+> **Unreleased.** Processing and retention are separate choices.
+
+```zig
+const Editor = dot.Profile(.{
+    .policy = .{ .retention = .{ .partial = true, .markup = true } },
+    .processors = .{ .markup = markup.Profile(.{ .policy = .{
+        .retention = .{ .partial = true },
+    } }) },
+});
+var bag = Editor.GrowableDiagnosticBag.init(allocator, .{});
+defer bag.deinit();
+var result = try Editor.parseAndValidate(allocator, source, bag.sink(), .{});
+defer result.deinit(allocator); // frees DOT and every retained child
+for (result.markupResults() orelse &.{}) |child| {
+    _ = child.envelope; // outer <...> operand, in DOT coordinates
+    _ = child.input;    // inner bytes plus their original-source origin
+    _ = child.result.parse.document; // child-local records; may be partial/null
+    _ = child.result.validation;
+}
+```
+
+| Setting | Controls |
+| --- | --- |
+| DOT `retention.partial` | Whether a failed outer parse keeps its DOT prefix |
+| DOT `retention.markup` | Whether processed child results survive the call |
+| Child `retention.partial` | Whether a failed child keeps its markup prefix |
+
+All default off and are independently runtime-overridable when their profile
+enables runtime policy. Child retention never turns processing on. With
+`.passthrough`, explicit delayed selection can activate it; `.none` does not
+allow attached processing. It requires a bound processor.
+
+`markupResults()` is null when retention is inactive, otherwise a source-ordered
+slice (possibly empty). Each raw HTML operand of a concatenation gets its own
+entry. Entries remain useful even if DOT later fails or recovery encounters a
+value outside the retained DOT prefix, so map them by source spans, not assumed
+statement handles. Child records index `child.input.bytes`; add `input.origin`
+for original-file positions. Diagnostics already use original-file positions.
+Do not independently deinitialize child entries: the composed result owns them.
+
+`result.scopeComplete()` checks the DOT representation. `subtreeComplete()`
+also requires complete representations of all requested children.
+`result.state()` uses the shared completeness enum, including `.not_processed`
+when requested child work is pending and no representation is already partial.
+`result.markup.representation` describes children alone. Check `requested`
+first. These describe representation independently of validation and
+`markup.complete` scheduling coverage.
+An invalid label can therefore leave DOT complete but the subtree partial.
+A repeated attribute can invalidate a complete tree without making it partial.
+Unrequested processing is neutral for completeness, not a claim of validation.
+
+Retaining children uses memory proportional to all retained child trees, rather
+than one reused workspace. It does not copy source bytes. This remains a
+synchronous allocator-backed API, with no combined work budget or fixed-buffer
+composition yet. Custom processors may opt into this path by providing an owning
+`CheckResult` and `Prepared.parseAndValidate`, with `result.deinit()` and the
+same result/representation contract as the built-in child. A child result can
+provide `subtreeComplete()` independently of validity; otherwise composition
+conservatively treats a non-valid custom result as incomplete. Existing
+workspace-only processors still work with retention off; unsupported retention
+is rejected by policy preparation before parsing (`MarkupRetentionUnsupported`
+for runtime policy, a compile error for a fixed baseline).
+
+Run [partial_documents.zig](../examples/partial_documents.zig) for both a complete
+DOT document with partial markup and an unfinished outer subgraph.
+
+### Attach delayed results
+
+> **Unreleased.** Use this when delayed children should belong to the same result
+> and contribute to its completeness. Standalone delayed calls remain independent.
+
+```zig
+const Editor = dot.Profile(.{
+    .policy = .{ .markup = .passthrough, .retention = .{ .markup = true } },
+    .processors = .{ .markup = markup.Profile(.{ .policy = .{
+        .retention = .{ .partial = true },
+    } }) },
+});
+var bag = Editor.GrowableDiagnosticBag.init(allocator, .{});
+defer bag.deinit();
+var result = try Editor.parseAndValidate(allocator, source, bag.sink(), .{});
+defer result.deinit(allocator);
+if (result.dot.document) |document| {
+    for (document.attributes) |attribute| {
+        if (std.mem.eql(u8, document.text(attribute.key), "label"))
+            try result.requestMarkup(allocator, attribute.value);
+    }
+}
+// Selected HTML operands are now pending; no child has run yet.
+try Editor.processPendingMarkup(allocator, &result, bag.sink(), .{});
+// Read owned child results with result.markupResults().
+```
+
+`requestMarkup` takes one raw identifier-expression span, including the outer
+`<...>` delimiters. It checks bounds and spelling, extracts each HTML operand of
+a concatenation, and ignores non-HTML operands. It does not decode, copy source,
+or prove that a caller-built span belongs to the DOT grammar; use document spans.
+For a partial DOT document, selections must lie inside its retained prefix.
+Make selections in source order without overlap. Duplicate/backward selections
+return `SelectionOutOfOrder`; invalid ranges/spellings and allocation failures
+leave the existing selection unchanged.
+
+| Stage | Outer representation | Child representation / coverage |
+| --- | --- | --- |
+| Passthrough, no selection | Unchanged | Not requested; neutral for subtree completeness |
+| Selected, not run | Unchanged | `.not_processed`; `pendingMarkup()` lists envelopes |
+| All selected trees complete | Unchanged | `.complete`, even if validation rejected a tree |
+| Any selected tree missing/partial | Unchanged | `.partial` |
+| Stopped before later children | Unchanged | Remaining operands stay pending; coverage is incomplete |
+
+`markup.selection == .selected_operands` makes the scope of the report explicit:
+`markup.allValid()` certifies only the selected set, not every HTML-like ID in
+the file. `visited`, `valid`, `rejected`, and `unprocessed` count attempted
+children; unattempted envelopes are in `pendingMarkup()`. Pending work prevents
+`documentValid()` and `subtreeComplete()` from succeeding. A partial DOT tree
+stays partial even when all selected children succeed.
+
+This first API processes one synchronous batch. Starting it closes selection;
+further selection or processing returns `SelectionClosed`, with no duplicate
+diagnostics or implicit retry. Empty selection is a no-op. Parent `on_error`
+is latched from the DOT operation. Child runtime policies and cancellation,
+when enabled, are passed freshly as `.markup` options to `processPendingMarkup`;
+child resources use `.markup_resources`. They are prepared before starting work.
+An earlier outer operational/fail-fast stop cannot be bypassed with this call.
+During the batch, parent fail-fast, child operational stops and sink stops leave
+unattempted children pending; collecting parents continue after ordinary child
+errors. These outcomes are in `markup.stop` and individual results, without
+rewriting the already-finished DOT outcome.
+`markup.diagnostic_delivery` and `markup.diagnostic_stop` preserve the child
+stage's sink acknowledgment, including a failed retention-storage finding.
+
+Use the same allocator for parsing, selection, processing and deinitialization.
+The borrowed source must stay alive and unchanged. The pending-span queue is
+allocated only on selection and released when drained; children own separate
+buffers. This is not resumable processing or a shared work budget. Diagnostic
+delivery follows operation order: outer findings first, then selected children
+in source order, without sorting the bag globally. Run
+[attached_markup.zig](../examples/attached_markup.zig) for the complete example.
 
 ## Check the labels you choose
 

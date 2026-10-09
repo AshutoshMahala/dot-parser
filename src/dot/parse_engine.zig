@@ -8,6 +8,7 @@ const lexer_impl = @import("lexer/lexer.zig");
 const policy = @import("policy.zig");
 const diagnostic = @import("diagnostic.zig");
 const location = @import("parser_support").location;
+const partial = @import("partial.zig");
 
 pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptime metering: bool, comptime cancellable: bool, comptime backend: policy.ScannerBackend) type {
     return EngineWithProcessor(api, fixed, metering, cancellable, backend, void);
@@ -15,6 +16,9 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
 
 pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSettings, comptime metering: bool, comptime cancellable: bool, comptime backend: policy.ScannerBackend, comptime Processor: type) type {
     return struct {
+        const partial_capable = if (fixed) |p| p.retention.partial else true;
+        const OwnedBuilder = if (partial_capable) partial.Builder(syntax_impl.Builder) else syntax_impl.Builder;
+        const FixedBuilder = if (partial_capable) partial.Builder(syntax_impl.FixedBuilder) else syntax_impl.FixedBuilder;
         pub const cancellation_enabled = cancellable;
         const ParseResult = api.ParseResult;
         const FixedParseResult = api.FixedParseResult;
@@ -31,6 +35,13 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
             parsing: if (fixed == null) policy.ParseSettings else void,
             cancellation: if (cancellable) ?api.Cancellation else void,
         };
+
+        fn keepPartial(options: Options) bool {
+            return if (fixed) |p| p.retention.partial else options.parsing.retention.partial;
+        }
+        fn initFixed(source: []const u8, storage: syntax_impl.DocumentStorage, options: Options) FixedBuilder {
+            return if (partial_capable) FixedBuilder.init(source, storage, keepPartial(options)) else FixedBuilder.init(source, storage);
+        }
 
         fn DriverFor(comptime Sink: type) type {
             return parser_impl.MachineWithProcessor(Sink, metering, false, cancellable, lexer_impl.scannerForComments(backend, if (fixed) |p| p.retention.comments else null), fixed, Processor);
@@ -57,7 +68,10 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
             resources: api.ParseResources,
             options: Options,
         ) ParseResult {
-            var builder = syntax_impl.Builder.initCapacity(allocator, source, resources.document_capacities) catch |err| {
+            var builder = (if (partial_capable)
+                OwnedBuilder.initCapacity(allocator, source, resources.document_capacities, keepPartial(options))
+            else
+                OwnedBuilder.initCapacity(allocator, source, resources.document_capacities)) catch |err| {
                 var stop: ?diagnostic.StopReason = null;
                 const delivery = emitStorageDiagnostic(diagnostics, err, null, .complete, &stop);
                 return .{
@@ -75,13 +89,17 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
             if (result.outcome == .sink_failure) {
                 output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, result.outcome.sink_failure, builder.failure_info, result.diagnostic_delivery, &output.diagnostic_stop);
             }
-            if (result.outcome != .success) return output;
+            if (result.outcome != .success and !(partial_capable and builder.frozen)) return output;
             output.document = builder.toDocument() catch |err| {
                 output.outcome = .{ .storage_failure = storageFailure(err) };
                 output.completion = .incomplete;
                 output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, err, builder.failure_info, result.diagnostic_delivery, &output.diagnostic_stop);
                 return output;
             };
+            if (partial_capable and builder.enabled) {
+                output._allocation_lengths = builder.allocation_lengths;
+                builder.allocation_lengths = null;
+            }
             return output;
         }
 
@@ -162,16 +180,16 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
 
         pub const Session = struct {
             const Self = @This();
-            const Driver = DriverFor(*syntax_impl.FixedBuilder);
+            const Driver = DriverFor(*FixedBuilder);
 
-            builder: syntax_impl.FixedBuilder,
+            builder: FixedBuilder,
             scratch: scratch_impl.Stack,
             machine: Driver,
             terminal: ?FixedParseResult = null,
 
             pub fn init(source: []const u8, memory: ParseMemory, diagnostics: DiagnosticSink, options: Options) Self {
                 return .{
-                    .builder = syntax_impl.FixedBuilder.init(source, memory.document),
+                    .builder = initFixed(source, memory.document, options),
                     .scratch = .{ .frames = memory.scratch.frames },
                     .machine = .{
                         .tokens = @FieldType(Driver, "tokens").init(source),
@@ -183,6 +201,10 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
                         .cancellation = options.cancellation,
                     },
                 };
+            }
+
+            pub fn parseMemory(self: *const Self) ParseMemory {
+                return .{ .document = if (partial_capable) self.builder.base.storage else self.builder.storage, .scratch = .{ .frames = self.scratch.frames } };
             }
 
             /// At most `budget` scan/grammar/dispatch steps. Zero may observe
@@ -219,7 +241,7 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
                 return self.terminal.?;
             }
 
-            /// Null until terminal; a document exists exactly on successful commit.
+            /// Null until terminal; failures may retain a prefix when requested.
             /// Repeated reads return the same borrowed view, without consuming it.
             pub fn result(self: *const Self) ?FixedParseResult {
                 return self.terminal;
@@ -254,7 +276,7 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
                 else
                     parsed.diagnostic_delivery;
                 self.terminal = .{
-                    .document = if (parsed.outcome == .success) self.builder.toDocument() else null,
+                    .document = if (parsed.outcome == .success or (partial_capable and self.builder.frozen)) self.builder.toDocument() else null,
                     .outcome = outcome,
                     .completion = parsed.completion,
                     .syntax_errors = parsed.syntax_errors,
@@ -272,14 +294,14 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
             diagnostics: diagnostic.Sink,
             options: Options,
         ) FixedParseResult {
-            var builder = syntax_impl.FixedBuilder.init(source, memory.document);
+            var builder = initFixed(source, memory.document, options);
             var scratch: scratch_impl.Stack = .{ .frames = memory.scratch.frames };
             const result = drive(source, &builder, diagnostics, &scratch, options);
             var output = publicResult(FixedParseResult, result);
             if (result.outcome == .sink_failure) {
                 output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, result.outcome.sink_failure, builder.failure_info, result.diagnostic_delivery, &output.diagnostic_stop);
             }
-            if (result.outcome == .success) output.document = builder.toDocument();
+            if (result.outcome == .success or (partial_capable and builder.frozen)) output.document = builder.toDocument();
             return output;
         }
 

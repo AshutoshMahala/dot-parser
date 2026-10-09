@@ -71,15 +71,15 @@ for the source, diagnostics, sessions and nesting space separately.
 ## Type sizes
 
 `@sizeOf` values for the development version on this machine (aarch64 macOS,
-Zig 0.16.0), checked 2026-10-07. They are the size of each value itself, not
+Zig 0.16.0), checked 2026-10-08. They are the size of each value itself, not
 memory used while parsing, and they can differ on other targets or Zig
 versions. A [layout test](../tests/layouts.zig) checks this table in all four
 build modes.
 
 | Type | Debug / Safe | Fast / ReleaseSmall |
 | --- | ---: | ---: |
-| `dot.Profile(.{}).Session` | 1,120 bytes | 1,112 bytes |
-| DOT session with metering and cancellation | 1,184 bytes | 1,176 bytes |
+| `dot.Profile(.{}).Session` | 1,128 bytes | 1,120 bytes |
+| DOT session with metering and cancellation | 1,192 bytes | 1,184 bytes |
 | `dot.lexer.For(.scalar)` | 64 bytes | 56 bytes |
 | `dot.lexer.For(.block)` | 152 bytes | 152 bytes |
 
@@ -90,8 +90,8 @@ separately. Use `@sizeOf` on your own profile and target rather than copying
 these numbers.
 
 Keeping comments (unreleased) makes the document and storage types a little
-larger even when it is off, so the default fixed session is 32 bytes bigger
-than in 0.4.0. Scanner sizes and per-statement records are unchanged. With
+larger even when it is off. With the additional DOT completeness metadata, the
+default fixed session is now 40 bytes bigger than in 0.4.0. Scanner sizes and per-statement records are unchanged. With
 comment retention off, no comment records are allocated. With it on, each
 comment takes 12 bytes, plus spare room in growing lists unless you give exact
 sizes or fixed buffers. The comment text itself is never copied.
@@ -100,7 +100,7 @@ Additional type sizes, the same in Fast and Safe builds:
 
 | Type | Size (bytes) |
 | --- | ---: |
-| DOT session with run-time settings | 1,352 |
+| DOT session with run-time settings | 1,408 |
 | Markup node / attribute | 20 / 20 |
 | Markup nesting frame / attribute-key scratch entry | 12 / 8 |
 | Markup diagnostic / validation result | 36 / 32 |
@@ -119,6 +119,40 @@ Node and attribute records remain 20 bytes. Retaining a failed prefix reuses
 those pools without a new allocation or a walk of the open-element stack.
 Growing pools keep their spare capacity after failure; an owned result holds
 them until `deinit()`, while a workspace keeps them for reuse.
+
+DOT prefix retention and composed child retention (unreleased) have separate
+[storage costs](MEMORY.md#partial-result-storage). The default DOT session grew
+by 8 bytes for completeness metadata; runtime sessions grew by 56 bytes because
+they must also support the opt-in builder. Default node/edge pool allocations are
+unchanged. No child-result array is allocated unless composition retention is on.
+
+## Development check: opt-in DOT prefix retention
+
+Checked 2026-10-08 against `2c22869` on the same machine, Zig 0.16.0, with an
+identical parse-plus-validation harness and three alternating repetitions.
+This is a targeted development check, not a replacement for the 0.4.0 baseline.
+
+With retention **off**, six 100,000-statement workloads (nodes, edges,
+identifiers, flat subgraphs, subgraph endpoints and minified) gave geometric-mean
+throughput changes of **−1.0% to +0.5%** across scalar/block, fixed/growing and
+ReleaseFast/ReleaseSafe combinations. Allocator-requested heap use was unchanged.
+Individual workload changes vary more than that aggregate.
+
+With `retention.partial` **on**, compared with the same development build with
+it off, the scalar ReleaseFast check measured:
+
+| Workload | Fixed-pool throughput change | Growing-pool throughput change |
+| --- | ---: | ---: |
+| Nodes | −6.0% | −2.5% |
+| Edges | −5.3% | −6.9% |
+| Subgraph endpoints | −7.9% | −8.9% |
+
+Fixed-pool heap usage was unchanged. Growing-pool peak live allocation was
+104 bytes higher for ownership metadata. Successful growing results retained
+26–34% more capacity in these cases, because the opt-in path does not trim pools
+at handoff; this is sustained retained memory, not a comparable peak increase.
+Exact capacity hints or fixed pools avoid that growth slack. Retaining composed
+child trees has an additional input-dependent cost; these numbers are DOT-only.
 
 ## Scanners
 

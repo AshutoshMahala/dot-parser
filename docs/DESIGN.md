@@ -210,9 +210,9 @@ Tags: R-FUNC-005, R-DIAG-003
 
 After a syntax error the parser skips to the next `;` or `}` and keeps looking.
 It stops where there is no safe place to continue, such as an unclosed quote
-or comment. By default a failed parse returns no document at all. DOT never
-returns a half-built document; markup can keep the part it recognised, but
-only when you ask (see [partial markup documents for editors](#partial-markup-documents-for-editors)).
+or comment. By default a failed parse returns no document at all. DOT and markup
+can keep a safe prefix, but only when you ask (unreleased; see
+[partial documents for editors](#partial-markup-documents-for-editors)).
 `.fail_fast` is available, and removes the recovery code when chosen at compile
 time.
 
@@ -341,8 +341,9 @@ now; the `Document` is the public result.
 **Why:** one grammar can then feed every builder: allocator-backed, fixed
 buffers, and the counting pass behind `measure`. A consumer might act before a
 later error is found, so it needs an abort signal to throw away staged work.
-That is how a partial document is never published. The interface stays private
-until its shape settles.
+That is how ordinary parsing avoids publishing a partial document. The opt-in
+partial builder instead freezes safe retained data at abort. The interface stays
+private until its shape settles.
 
 Tags: R-MOD-011
 
@@ -416,10 +417,11 @@ quadratic work.
 
 > **Unreleased.** Not in 0.4.0.
 
-With `retention.partial = true`, a markup parse that fails still returns the
+With `retention.partial = true`, a markup parse that fails can still return the
 part it recognised before the first error. The document and every node say
 whether they are complete or partial, and `unrepresented()` gives the text the
-tree doesn't cover. It is off by default, and DOT doesn't offer it.
+tree doesn't cover. DOT offers the same prefix contract, with completeness on
+document/subgraph views. Composed child-tree retention is a separate choice.
 
 **Why:**
 
@@ -431,8 +433,9 @@ tree doesn't cover. It is off by default, and DOT doesn't offer it.
 - It is opt-in and clearly marked, because a partial tree could pass for a
   complete one. The parse outcome still reports the failure, and
   `documentValid()` is always false for a partial document.
-- Keeping it needs no extra scanning or allocation: the parser hands back what
-  it had already built.
+- Salvaging it needs no extra scanning or allocation: the parser hands back what
+  it had already built. DOT preallocates constant-size ownership metadata when
+  growing partial retention is requested; see [memory costs](MEMORY.md#partial-result-storage).
 
 ### Two ways to check labels, both reporting in DOT positions
 

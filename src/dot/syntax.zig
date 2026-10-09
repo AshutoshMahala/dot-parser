@@ -49,6 +49,7 @@ const identifier = @import("identifier.zig");
 pub const GraphKind = syntax_event.GraphKind;
 pub const Comment = @import("comment.zig").Comment;
 pub const EdgeOperator = syntax_event.EdgeOperator;
+pub const Completeness = @import("parser_support").Completeness;
 
 /// Statement index width. One declaration so profiles can shrink it for
 /// small targets (R-MEM-006); overflow is checked in the builder.
@@ -217,6 +218,17 @@ pub const ScopeView = struct {
     document: *const Document,
     id: ScopeId,
 
+    pub fn state(self: ScopeView) Completeness {
+        if (self.id == .root) return self.document.state;
+        return if (self.document.subgraph_records[@intFromEnum(self.id) - 1].subtree_end == 0) .partial else .complete;
+    }
+    pub fn scopeComplete(self: ScopeView) bool {
+        return self.state() == .complete;
+    }
+    pub fn subtreeComplete(self: ScopeView) bool {
+        return self.scopeComplete();
+    }
+
     pub fn parent(self: ScopeView) ?ScopeId {
         return if (self.id == .root) null else self.record().parent;
     }
@@ -224,10 +236,10 @@ pub const ScopeView = struct {
         return if (self.id == .root) self.document.name else self.record().name;
     }
     pub fn sourceRange(self: ScopeView) ?location.Range {
-        return if (self.id == .root) location.Range{ .start = 0, .len = @intCast(self.document.source.len) } else self.record().source;
+        return if (self.id == .root) location.Range{ .start = 0, .len = if (self.document.state == .partial) self.document.retained_end else @intCast(self.document.source.len) } else self.record().source;
     }
     fn record(self: ScopeView) Subgraph {
-        return self.document.subgraph_records[@intFromEnum(self.id) - 1];
+        return self.document.subgraphRecord(@intFromEnum(self.id) - 1);
     }
     pub fn statements(self: ScopeView, traversal: Traversal) ScopedStatementIterator {
         const body = if (self.id == .root) StatementRange{ .start = 0, .len = @intCast(self.document.order.len) } else self.record().body;
@@ -237,8 +249,9 @@ pub const ScopeView = struct {
         return .{ .document = self.document, .index = @intFromEnum(self.id), .end = if (self.id == .root) self.document.subgraph_records.len else self.record().subtree_end, .traversal = traversal };
     }
     pub fn edges(self: ScopeView, traversal: Traversal) ScopedEdgeIterator {
-        const start = if (self.id == .root) 0 else self.record().source.start;
-        const end = if (self.id == .root) self.document.source.len else @as(usize, self.record().source.start) + self.record().source.len;
+        const range = self.sourceRange().?;
+        const start = range.start;
+        const end: usize = @intCast(range.endOffset());
         var edges_it = self.document.edgeIterator();
         edges_it.seek(start);
         return .{ .edges = edges_it, .scope_id = self.id, .current_scope = self.id, .scope_cursor = @intFromEnum(self.id), .end = end, .traversal = traversal };
@@ -270,7 +283,7 @@ pub const ScopedStatementIterator = struct {
     pub fn next(self: *ScopedStatementIterator) ?Statement {
         if (self.traversal == .direct) {
             while (self.scope_cursor < self.scope_end) {
-                const child = self.document.subgraph_records[self.scope_cursor];
+                const child = self.document.subgraphRecord(self.scope_cursor);
                 if (child.body.start > self.index) break;
                 self.index = @max(self.index, @as(usize, child.body.start) + child.body.len);
                 self.scope_cursor = child.subtree_end;
@@ -291,7 +304,7 @@ pub const ChildScopeIterator = struct {
     pub fn next(self: *ChildScopeIterator) ?ScopeView {
         if (self.index >= self.end) return null;
         const id: ScopeId = @enumFromInt(self.index + 1);
-        self.index = if (self.traversal == .direct) self.document.subgraph_records[self.index].subtree_end else self.index + 1;
+        self.index = if (self.traversal == .direct) self.document.subgraphRecord(self.index).subtree_end else self.index + 1;
         return self.document.scope(id);
     }
 };
@@ -334,12 +347,12 @@ pub const ScopedEdgeIterator = struct {
             if (offset >= self.end) break;
             if (self.traversal == .recursive) return edge;
             while (self.current_scope != self.scope_id) {
-                const record = records[@intFromEnum(self.current_scope) - 1];
+                const record = self.edges.document.subgraphRecord(@intFromEnum(self.current_scope) - 1);
                 if (offset < @as(usize, record.source.start) + record.source.len) break;
                 self.current_scope = record.parent;
             }
             while (self.scope_cursor < records.len) {
-                const record = records[self.scope_cursor];
+                const record = self.edges.document.subgraphRecord(self.scope_cursor);
                 if (record.source.start > offset) break;
                 self.scope_cursor += 1;
                 if (offset < @as(usize, record.source.start) + record.source.len)
@@ -400,12 +413,12 @@ pub const StatementIterator = struct {
     pub fn nextScoped(self: *StatementIterator) ?ScopedStatement {
         if (self.index == self.document.order.len) return null;
         while (self.current_scope != .root) {
-            const record = self.document.subgraph_records[@intFromEnum(self.current_scope) - 1];
+            const record = self.document.subgraphRecord(@intFromEnum(self.current_scope) - 1);
             if (self.index < @as(usize, record.body.start) + record.body.len) break;
             self.current_scope = record.parent;
         }
         while (self.scope_cursor < self.document.subgraph_records.len) {
-            const record = self.document.subgraph_records[self.scope_cursor];
+            const record = self.document.subgraphRecord(self.scope_cursor);
             if (record.body.start > self.index) break;
             self.scope_cursor += 1;
             if (self.index < @as(usize, record.body.start) + record.body.len)
@@ -492,10 +505,28 @@ pub const EdgeIterator = struct {
     }
 };
 
-/// The frozen, borrowed syntax document of one committed document. Immutable
+/// A frozen, borrowed syntax document: complete, or an opt-in retained prefix. Immutable
 /// after `Builder.toDocument`; safe to read concurrently while its memory and
 /// the borrowed source stay alive (R-CON-003).
 pub const Document = struct {
+    pub fn scopeComplete(self: Document) bool {
+        return self.state == .complete;
+    }
+    pub fn subtreeComplete(self: Document) bool {
+        return self.scopeComplete();
+    }
+    pub fn unrepresented(self: Document) ?location.Range {
+        return if (self.state == .complete) null else .{ .start = self.retained_end, .len = @intCast(self.source.len - self.retained_end) };
+    }
+    fn subgraphRecord(self: *const Document, index: usize) Subgraph {
+        var value = self.subgraph_records[index];
+        if (value.subtree_end == 0 and self.state == .partial) {
+            value.subtree_end = @intCast(self.subgraph_records.len);
+            value.body.len = @intCast(self.order.len - value.body.start);
+            value.source.len = self.retained_end - value.source.start;
+        }
+        return value;
+    }
     /// Use an interpretation prepared for this document, not another document.
     /// Policy selects the meaning; auto derives its final kind from syntax.
     pub fn effectiveKind(self: *const Document, interpretation: anytype) @import("policy.zig").GraphKind {
@@ -533,6 +564,9 @@ pub const Document = struct {
     attributes: []const Attribute = &.{},
     assignments: []const Assignment = &.{},
     attribute_statements: []const AttributeStatement = &.{},
+    /// Local DOT representation, independent of validation and child processors.
+    state: Completeness = .complete,
+    retained_end: u32 = 0,
 
     /// O(1) checked scope lookup. Root is zero; subgraph IDs are one-based
     /// occurrences in opening/source order, independent of names.
@@ -573,7 +607,7 @@ pub const Document = struct {
         // its last descendant, so this walk visits exactly the top-level
         // scopes; a body length already includes its nested bodies.
         while (index < self.subgraph_records.len) {
-            const record = self.subgraph_records[index];
+            const record = self.subgraphRecord(index);
             nested += record.body.len;
             index = @max(record.subtree_end, index + 1);
         }

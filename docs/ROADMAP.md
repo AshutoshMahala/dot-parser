@@ -43,10 +43,10 @@ other's rules.
 - **A built-in string processor** for checking quoted values inside markup.
   Today you can prepare its settings with `PolicySet` and keep positions with
   `fragment.child`, but your code must run it.
-- **More of a partial document.** Unreleased markup can already keep the part
-  recognised before the first error. Still to do: keeping later parts the parser
-  recovered safely, partial documents for DOT, and reporting which parts of each
-  label were checked when checking labels inside DOT.
+- **More of a partial document.** Unreleased DOT and markup retain safe prefixes,
+  and composition can retain independently complete/partial child results.
+  Still to do: keeping later safely recovered regions with explicit gaps, and
+  per-scope pending-work maps for resumable nested processing.
 
 ## Checking labels inside DOT
 

@@ -47,10 +47,11 @@ So `digraph { a -- b }` parses fine (`result.outcome == .success`), but
 validation rejects it (`result.documentValid() == false`). You still get the
 document in this case, so tools can show or fix the problem.
 
-If parsing fails, there is **no document at all**. The library never hands back
-a half-built document unless you ask: markup can keep the part it recognised,
-for editors (see [partial results](MARKUP.md#partial-results-for-editors),
-unreleased). DOT never does.
+If parsing fails, there is **no document by default**. Both parsers can keep a
+safe prefix when requested, for editors (unreleased): see
+[partial DOT results](READING_DOCUMENTS.md#partial-results-for-editors) and
+[partial markup results](MARKUP.md#partial-results-for-editors). Document presence
+alone is no longer a success test when retention is enabled.
 
 You can also run the steps on their own: `dot.parseBorrowed` parses, and
 `dot.validate(&document, sink, .{})` validates.
@@ -83,6 +84,11 @@ Results also carry a few counts and flags:
 **An empty bag doesn't mean success.** Some outcomes, like `.cancelled`, have
 no diagnostic. Always check the outcome or `documentValid()`.
 
+For [attached delayed markup](LABELS.md#attach-delayed-results), `result.dot`
+continues to describe the finished DOT stage. Inspect `result.markup.stop`,
+`diagnostic_delivery`, `diagnostic_stop`, and the retained child results for the
+later stage; `result.documentValid()` combines the requested stages.
+
 ## DOT validation results
 
 When parsing succeeds, `result.validation` holds the validation result.
@@ -90,12 +96,13 @@ When parsing succeeds, `result.validation` holds the validation result.
 
 | Outcome | Meaning |
 | --- | --- |
-| `.completed` | Every check ran. It reports `document_valid`, `violations` (errors) and `warnings`. |
+| `.completed` | The retained-facts pass finished. It reports `document_valid`, `violations` (errors) and `warnings`; inspect `coverage` for missing source. |
 | `.error_stopped` | Stopped at the first error because of `.fail_fast`. |
 | `.diagnostic_stopped` | The diagnostic destination asked to stop, for example because the bag was full. |
 | `.insufficient_scratch` | A check needed a scratch array that was too small, so no checks ran. See [optional checks](POLICIES.md#optional-checks). |
 
-Only `.completed` with `document_valid` makes `documentValid()` true. In every
+Only `.completed` with `document_valid` and complete representation coverage
+makes `documentValid()` true. In every
 other case the document is still available, but it was not fully checked.
 
 ## Keep going, or stop at the first error
@@ -155,7 +162,7 @@ sinks:
 depends on which step was running:
 
 - **During parsing**, `result.outcome` becomes `.diagnostic_stopped` and there
-  is no document.
+  is no document by default; opt-in retention can preserve a partial prefix.
 - **During validation**, parsing has already succeeded, so `result.outcome`
   stays `.success` and the document is available. The stop shows up in
   `result.validation.?.outcome`, which is `.diagnostic_stopped`.

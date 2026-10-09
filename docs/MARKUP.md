@@ -321,8 +321,9 @@ it stopped. `parseAndValidate` may also check later source regions after a
 recoverable syntax error; `documentValid()` remains false for a partial document.
 It does not start validation after an operational stop or fail-fast rejection.
 
-This feature is currently for standalone markup. DOT doesn't return partial
-trees, and automatic label checking doesn't retain the inner markup trees.
+DOT also offers [prefix retention](READING_DOCUMENTS.md#partial-results-for-editors).
+Automatic label checking can [retain child trees](LABELS.md#retaining-label-trees-for-editors)
+separately from retaining the outer DOT prefix (both unreleased).
 
 See [markup_partial.zig](../examples/markup_partial.zig) for a runnable example.
 

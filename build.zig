@@ -216,6 +216,28 @@ pub fn build(b: *std.Build) void {
     });
     examples_step.dependOn(&b.addRunArtifact(composed_example).step);
     examples_step.dependOn(&b.addInstallArtifact(composed_example, .{}).step);
+    const editor_example = b.addExecutable(.{
+        .name = "partial_documents",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/partial_documents.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(editor_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(editor_example, .{}).step);
+    const attached_example = b.addExecutable(.{
+        .name = "attached_markup",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/attached_markup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    examples_step.dependOn(&b.addRunArtifact(attached_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(attached_example, .{}).step);
     const custom_processor_example = b.addExecutable(.{
         .name = "custom_processor",
         .root_module = b.createModule(.{

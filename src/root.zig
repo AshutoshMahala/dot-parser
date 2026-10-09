@@ -197,7 +197,7 @@ pub const ParseOutcome = union(enum) {
     processor_stopped,
     /// A cancellation-enabled operation or a session was cancelled.
     cancelled,
-    /// Diagnostic destination stopped unfinished work. No partial document.
+    /// Diagnostic destination stopped unfinished work. Retention is policy-selected.
     diagnostic_stopped: diagnostic.StopReason,
     /// The input is not accepted by the selected syntax policy.
     invalid_syntax,
@@ -212,11 +212,27 @@ pub const ParseOutcome = union(enum) {
 
 /// Completion of parsing/recovery, not a claim of valid or supported input.
 pub const Completion = parser_impl.Completion;
+pub const Completeness = @import("parser_support").Completeness;
+const partial_impl = @import("dot/partial.zig");
 
-/// Result of `parseBorrowed`. The document is present exactly when
-/// `outcome == .success` and is owned by the caller.
+fn releaseDocument(document: *Document, allocator: std.mem.Allocator, lengths: ?*partial_impl.AllocationLengths) void {
+    const owned = lengths orelse return syntax_impl.deinitOwnedDocument(document, allocator);
+    inline for (partial_impl.pools, 0..) |field, i| {
+        const value = @field(document, partial_impl.documentField(field));
+        if (comptime std.mem.eql(u8, field, "comments")) {
+            if (value) |slice| allocator.free(slice.ptr[0..owned[i]]);
+        } else allocator.free(value.ptr[0..owned[i]]);
+    }
+    allocator.destroy(owned);
+    document.* = undefined;
+}
+
+/// Result of `parseBorrowed`. Successful parses publish a complete document;
+/// opt-in partial retention may publish a safe prefix on failure. The caller
+/// owns its pools, not source bytes. Presence alone is not a success check.
 pub const ParseResult = struct {
     document: ?Document = null,
+    _allocation_lengths: ?*partial_impl.AllocationLengths = null,
     outcome: ParseOutcome,
     completion: Completion = .incomplete,
     /// Discovered syntax rejections, including undelivered findings. Preserved
@@ -232,7 +248,7 @@ pub const ParseResult = struct {
     warnings: u32 = 0,
 
     pub fn deinit(self: *ParseResult, allocator: std.mem.Allocator) void {
-        if (self.document) |*document| syntax_impl.deinitOwnedDocument(document, allocator);
+        if (self.document) |*document| releaseDocument(document, allocator, self._allocation_lengths);
         self.* = undefined;
     }
 };
@@ -311,10 +327,12 @@ pub const measure = DefaultProfile.measure;
 pub const measureIn = DefaultProfile.measureIn;
 pub const CheckOptions = DefaultProfile.CheckOptions;
 
-/// Result of `parseAndValidate`. `validation` is present exactly when
-/// parsing succeeded (a document exists to validate).
+/// Result of `parseAndValidate`. Validation follows successful parsing, or
+/// retained-prefix syntax failure with collect. Operational/fail-fast stops
+/// never automatically start another stage.
 pub const CheckResult = struct {
     document: ?Document = null,
+    _allocation_lengths: ?*partial_impl.AllocationLengths = null,
     outcome: ParseOutcome,
     /// Parse/recovery completion only; validation has its own result.
     completion: Completion = .incomplete,
@@ -330,12 +348,13 @@ pub const CheckResult = struct {
 
     /// The document parsed completely AND validation found no violations.
     pub fn documentValid(self: *const CheckResult) bool {
+        if (self.outcome != .success or self.document == null or !self.document.?.scopeComplete()) return false;
         const validation = self.validation orelse return false;
         return validation.documentValid();
     }
 
     pub fn deinit(self: *CheckResult, allocator: std.mem.Allocator) void {
-        if (self.document) |*document| syntax_impl.deinitOwnedDocument(document, allocator);
+        if (self.document) |*document| releaseDocument(document, allocator, self._allocation_lengths);
         self.* = undefined;
     }
 };

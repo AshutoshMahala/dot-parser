@@ -1225,6 +1225,15 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     return self.finish(.success);
                 },
             }
+            if (comptime @hasDecl(@typeInfo(EventsPtr).pointer.child, "retainThrough")) {
+                // Statement callbacks use lookahead; it must not become part of
+                // the represented prefix before its own grammar action runs.
+                const end = switch (action) {
+                    .begin, .begin_subgraph, .end_subgraph, .comment, .attribute, .assignment => token.span.endOffset(),
+                    else => token.span.start,
+                };
+                self.events.retainThrough(@intCast(end));
+            }
             if (metered) switch (action) {
                 .node, .edge, .edge_chain, .attribute_statement, .subgraph_statement => self.work.completed_statements += 1,
                 .assignment => {

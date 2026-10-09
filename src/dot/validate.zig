@@ -64,6 +64,9 @@ pub const Outcome = union(enum) {
 
 pub const Result = struct {
     outcome: Outcome,
+    /// Representation coverage, independent of whether the retained-facts pass
+    /// finished. Incomplete carries the first byte outside the retained prefix.
+    coverage: union(enum) { complete, incomplete: u32 } = .complete,
     /// Delivery is separate from completion: accepted-stop can have complete
     /// delivery while validation remains incomplete.
     diagnostic_delivery: diagnostic.Delivery,
@@ -72,6 +75,7 @@ pub const Result = struct {
 
     /// True only for a completed pass that found no violations.
     pub fn documentValid(self: *const Result) bool {
+        if (self.coverage != .complete) return false;
         return switch (self.outcome) {
             .completed => |completed| completed.document_valid,
             .insufficient_scratch => false,
@@ -93,6 +97,24 @@ pub const Result = struct {
 /// One validator, specialized for a fixed policy or supplied one resolved
 /// runtime policy. Disabled fixed checks have neither stream state nor code.
 pub fn validate(
+    comptime fixed: ?policy.ValidationSettings,
+    document: *const syntax.Document,
+    diagnostics: diagnostic.Sink,
+    runtime: if (fixed == null) policy.ValidationSettings else void,
+    scratch: Scratch,
+) Result {
+    if (!document.scopeComplete()) {
+        var prefix = document.*;
+        prefix.source = prefix.source[0..prefix.retained_end];
+        var result = validateRetained(fixed, &prefix, diagnostics, runtime, scratch);
+        result.coverage = .{ .incomplete = document.retained_end };
+        if (result.outcome == .completed) result.outcome.completed.document_valid = false;
+        return result;
+    }
+    return validateRetained(fixed, document, diagnostics, runtime, scratch);
+}
+
+fn validateRetained(
     comptime fixed: ?policy.ValidationSettings,
     document: *const syntax.Document,
     diagnostics: diagnostic.Sink,

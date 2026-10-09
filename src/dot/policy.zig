@@ -26,7 +26,14 @@ pub const Policy = struct {
     scanner: ?ScannerBackend = null,
     execution: Execution = .{},
     markup: ?MarkupMode = null,
-    retention: struct { comments: ?bool = null } = .{},
+    retention: struct {
+        /// Keep complete comment kind/span records, without processing contents.
+        comments: ?bool = null,
+        /// Publish a safe prefix on failure; never changes syntax acceptance.
+        partial: ?bool = null,
+        /// Keep owned child results during processing or explicit delayed work.
+        markup: ?bool = null,
+    } = .{},
     diagnostics: struct { fixes: ?Fixes = null, unsupported: ?Unsupported = null } = .{},
 
     pub const Syntax = struct {
@@ -116,7 +123,7 @@ pub const ValidationSettings = struct {
 };
 
 pub const ParseSettings = struct {
-    retention: struct { comments: bool = false } = .{},
+    retention: struct { comments: bool = false, partial: bool = false, markup: bool = false } = .{},
     unsupported: Unsupported = .err,
     markup: MarkupMode = .passthrough,
     fixes: Fixes = .all,
@@ -165,7 +172,7 @@ pub const defaults: Effective = .{};
 /// syntax without resetting other choices.
 pub const presets = struct {
     pub const standard: Policy = .{
-        .retention = .{ .comments = false },
+        .retention = .{ .comments = false, .partial = false, .markup = false },
         .diagnostics = .{ .fixes = .all, .unsupported = .err },
         .syntax = .{
             .empty_statement = .reject,
@@ -234,7 +241,11 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
             },
         },
         .parsing = .{
-            .retention = .{ .comments = input.retention.comments orelse baseline.parsing.retention.comments },
+            .retention = .{
+                .comments = input.retention.comments orelse baseline.parsing.retention.comments,
+                .partial = input.retention.partial orelse baseline.parsing.retention.partial,
+                .markup = input.retention.markup orelse baseline.parsing.retention.markup,
+            },
             .unsupported = input.diagnostics.unsupported orelse baseline.parsing.unsupported,
             .markup = input.markup orelse baseline.parsing.markup,
             .fixes = input.diagnostics.fixes orelse baseline.parsing.fixes,
@@ -268,18 +279,21 @@ pub const Error = error{
     GraphOperatorMismatchNotApplicable,
     GraphOperatorReadingNotApplicable,
     MarkupProcessorRequired,
+    MarkupRetentionUnsupported,
 };
 
 pub const Issue = enum {
     graph_operator_mismatch_not_applicable,
     graph_operator_reading_not_applicable,
     markup_processor_required,
+    markup_retention_unsupported,
 
     pub fn asError(self: Issue) Error {
         return switch (self) {
             .graph_operator_mismatch_not_applicable => error.GraphOperatorMismatchNotApplicable,
             .graph_operator_reading_not_applicable => error.GraphOperatorReadingNotApplicable,
             .markup_processor_required => error.MarkupProcessorRequired,
+            .markup_retention_unsupported => error.MarkupRetentionUnsupported,
         };
     }
 };
@@ -300,7 +314,7 @@ fn checkWithProcessor(comptime markup_bound: bool, effective: Effective, input: 
         if (input.validation.graph.operator_reading != null)
             return .{ .invalid = .graph_operator_reading_not_applicable };
     }
-    if (!markup_bound and effective.parsing.markup == .process)
+    if (!markup_bound and (effective.parsing.markup == .process or effective.parsing.retention.markup))
         return .{ .invalid = .markup_processor_required };
     return .valid;
 }
@@ -308,7 +322,7 @@ fn checkWithProcessor(comptime markup_bound: bool, effective: Effective, input: 
 /// Binding capabilities are compile-time facts, never runtime policy leaves.
 /// A bound child defaults to processing; explicit none/passthrough still win.
 /// Presets inherit this choice. Standalone DOT never promises unbound work.
-pub fn Schema(comptime markup_bound: bool) type {
+pub fn Schema(comptime markup_bound: bool, comptime retention_supported: bool) type {
     if (!markup_bound) return @This();
     const Base = @This();
     return struct {
@@ -323,7 +337,11 @@ pub fn Schema(comptime markup_bound: bool) type {
         };
 
         pub fn check(effective: Base.Effective, input: Base.Policy) Base.Check {
-            return checkWithProcessor(markup_bound, effective, input);
+            const result = checkWithProcessor(markup_bound, effective, input);
+            if (result == .invalid) return result;
+            if (!retention_supported and effective.parsing.retention.markup)
+                return .{ .invalid = .markup_retention_unsupported };
+            return .valid;
         }
     };
 }

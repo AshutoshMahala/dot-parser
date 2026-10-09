@@ -182,7 +182,8 @@ Adjacent bracket groups are flattened into one ordered pair sequence, preserving
 written duplicate keys but not group boundaries or empty-list presence. Node,
 edge and attribute statements reference a shared pair pool; assignments have a
 separate pool. The private event seam streams pairs before their owner statement;
-abort discards staged data and no partial document escapes. Both storage paths
+abort discards staged data by default; opt-in prefix retention preserves safe
+staged facts with explicit incomplete coverage. Both storage paths
 have explicit capacities for all attribute-slice pools (six at that slice;
 eight after Q31's chain support; nine with Q32; ten with Q33). `max_attributes` counts all pairs,
 including assignments, but does not bound lexical work. Defaults, effective-value
@@ -206,7 +207,8 @@ or attaching them to statements. Source bytes remain borrowed. This includes
 pre/post-graph comments and concatenation trivia. Retention is runtime-overridable;
 `limits.max_comments` bounds it. Low-level `lexer.WithComments` exposes tokens,
 but comment tokens may precede the completion of an enclosing concatenated ID.
-No partial document/comment collection is published on syntax failure.
+With `retention.partial` also enabled, complete comments in the frozen prefix
+remain available on syntax failure; unterminated comments are not invented.
 *(Embodied: `src/dot/comment.zig`, both scanners, syntax storage and policy.)*
 
 **Q4 — Does validation reject a mismatched edge operator immediately, or may
@@ -871,17 +873,22 @@ not implicit numeric conversion or a promised `.string.non_ascii` API.
 
 **Diagnostics, scheduling and independent outcomes**
 
-**Partial results decided 2026-10-07; first markup prefix slice implemented.**
+**Partial results decided 2026-10-07; DOT/markup prefixes and composed retention implemented.**
 Keep one Document type with local representation state, safe views and explicit
 unrepresented source ranges. Local completeness and recursive completeness differ
 from validity and operation completion; unrequested inner processing differs
 from pending processing. An inner failure alone does not make the outer syntax
 partial. `retention.partial` is default-off and independent of `on_error`, with
 compile-time/runtime parity. No guessed delimiters or typo healing. Prefix
-retention reuses node/attribute storage and freezes at the first failure without
-an allocation or stack walk; direct validation reports missing coverage. Ordinary
-successful parsing remains the default contract. Later recovered regions,
-per-inner-scope scheduling state and DOT/composed partial retention remain work
+retention reuses syntax storage and freezes at the first failure without
+an allocation or stack walk; growing DOT operations reserve constant ownership
+metadata before parsing. Direct validation reports missing coverage. Composed
+`retention.markup` retains owned child results separately from both parsers'
+partial-retention choices. Ordinary successful parsing remains the default
+contract. Attached delayed processing now supports an explicit source-ordered
+selection and one batch on the same composed result; pending operands are visible
+and selected-set coverage is distinct from proactive all-operand coverage.
+Later recovered regions and resumable per-inner-scope scheduling remain work
 in [the markup plan](MARKUP.md#recovery-and-acceptance).
 
 Boundaries, local checks and enclosing structure have different prerequisites.
