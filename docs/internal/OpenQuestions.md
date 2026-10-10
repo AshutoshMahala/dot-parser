@@ -640,8 +640,12 @@ not a label's port declaration. `restrictions.subgraphs` reports each named or
 anonymous subgraph occurrence, including edge endpoints. Neither resolves a
 graph or a port. Repeated keys compare logical identifier bytes within
 one owner's adjacent attribute lists; separate statements/defaults are not
-resolved or merged. One 16-byte caller scratch entry per attribute enables
-deterministic sorting and exact comparisons without decoded string allocation.
+resolved or merged. `requiredValidationScratch` calculates the exact number of
+16-byte caller scratch entries from retained metadata. One working list is
+reused across owners; nested subgraph edges may need compact ordering metadata.
+The requirement never exceeds the total attribute count and empty/singleton
+lists require none. At most eight keys use bounded direct comparisons; larger
+lists use deterministic heap sort. Exact comparisons allocate no decoded strings.
 Insufficient scratch is a separate incomplete outcome, preflighted before any
 check/write; it is not a failed policy check or a valid document. These optional
 validation passes are currently unbudgeted and uncancellable even when parsing

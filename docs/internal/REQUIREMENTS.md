@@ -418,7 +418,11 @@ subtree patch changes only its supplied leaves.
 Numeral policy applies during parsing; the other checks inspect a committed
 document without mutation. Repeated keys compare decoded identifier bytes within
 one statement's combined lists, using explicit caller scratch and bounded
-heap-sort comparisons, not an unbounded quadratic scan or hidden allocation.
+direct comparisons for at most eight keys and heap sort for larger lists,
+never an unbounded quadratic scan or hidden allocation. Post-parse metadata
+sizing and per-owner scratch reuse must preserve source-ordered findings,
+including nested subgraph-edge owners. Required scratch is no greater than
+one 16-byte entry per retained attribute; empty/singleton lists require none.
 Scratch exhaustion is incomplete validation, never valid acceptance. UTF-8
 checks the whole source with bytewise error recovery. Kind restrictions use the
 effective kind; port restrictions count written qualified node references and

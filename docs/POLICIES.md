@@ -146,13 +146,12 @@ const Lint = dot.Profile(.{ .policy = .{ .validation = .{
 ```
 
 `repeated_attribute` compares decoded values, so `x` and `"x"` count as the
-same key. It needs a small scratch array, one entry per attribute in the
-document, that you provide:
+same key. Supply temporary scratch sized from the retained document:
 
 ```zig
 const Checks = dot.Profile(.{ .policy = .{ .validation = .{ .repeated_attribute = .warning } } });
 
-const keys = try allocator.alloc(dot.AttributeKeyScratch, document.attributes.len);
+const keys = try allocator.alloc(dot.AttributeKeyScratch, dot.requiredValidationScratch(&document));
 defer allocator.free(keys);
 const checked = Checks.validate(&document, bag.sink(), .{
     .scratch = .{ .attribute_keys = keys },
@@ -161,8 +160,24 @@ const checked = Checks.validate(&document, bag.sink(), .{
 
 With `parseAndValidate`, pass the same array as
 `.{ .validation = .{ .attribute_keys = keys } }`. Use `measure` to learn the
-attribute count before parsing. If the array is too small, validation reports
-`.insufficient_scratch` and checks nothing.
+total attribute count before parsing when you need a safe upper bound for that
+single call. After parsing, `requiredValidationScratch` calculates the exact
+requirement from retained metadata without scanning source bytes or allocating.
+It returns a number of 16-byte `AttributeKeyScratch` entries, never more than
+the document's attribute count.
+
+Validation reuses scratch across attribute owners. Ordinary statements need
+only enough entries for the largest combined attribute list. Nested subgraph
+edges may also need compact ordering metadata so findings remain in source
+order. Empty and singleton lists need no scratch; a document containing only
+those lists returns zero. Separate statements/defaults never share duplicate
+key semantics. Lists of up to eight keys use bounded direct comparisons;
+larger lists use heap sort. Hashes accelerate comparisons but exact decoded
+bytes decide equality. The retained source and document are never modified.
+
+If the array is too small, validation reports `.insufficient_scratch` with the
+exact required entry count before checking anything or writing scratch. An
+`.off` policy skips both sizing and duplicate checking.
 
 ### Graph kinds and edge operators
 

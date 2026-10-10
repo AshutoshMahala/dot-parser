@@ -11,7 +11,7 @@ const Settings = policy.ValidationSettings;
 const none = std.math.maxInt(u32);
 
 /// Temporary only. Contents are unspecified after validation and may be reused.
-/// One element per Document.attributes entry when repeated_attribute is enabled.
+/// Size with requiredScratch; a working group is reused across attribute owners.
 pub const AttributeKeyScratch = struct {
     hash: u64,
     index: u32,
@@ -19,9 +19,85 @@ pub const AttributeKeyScratch = struct {
 };
 
 pub const Scratch = struct {
+    /// Size with requiredValidationScratch when repeated_attribute is enabled.
     /// Must not alias source, document pools, or diagnostic storage.
     attribute_keys: []AttributeKeyScratch = &.{},
 };
+
+fn attributeRange(document: *const syntax.Document, id: syntax.StatementId) syntax.AttributeRange {
+    return switch (id) {
+        .node => |i| document.nodes[i].attributes,
+        .edge => |i| document.edges[i].attributes,
+        .edge_chain => |i| document.edge_chains[i].first.attributes,
+        .scoped_edge => |i| document.scoped_edges[i].first.attributes,
+        .attribute_statement => |i| document.attribute_statements[i].attributes,
+        .assignment, .subgraph => .{},
+    };
+}
+
+pub const DuplicatePlan = struct {
+    largest: u32 = 0,
+    extra: u32 = 0,
+    order: enum { statements, nodes, edges, edge_chains, attribute_statements, bitmap, ranges } = .statements,
+    pub fn required(self: DuplicatePlan) u32 {
+        return self.largest + self.extra;
+    }
+};
+
+/// Pure metadata pass. No source scan, allocation, or document mutation.
+pub fn duplicatePlan(document: *const syntax.Document) DuplicatePlan {
+    var plan: DuplicatePlan = .{};
+    if (document.attributes.len < 2) return plan;
+    if (document.scoped_edges.len == 0) {
+        // These pools commit in attribute-source order. Ignore assignments and
+        // empty/singleton lists: they cannot contain a duplicate key. A single
+        // relevant pool can also bypass statement dispatch during validation.
+        var active_pools: u32 = 0;
+        inline for (.{ "nodes", "edges", "edge_chains", "attribute_statements" }) |name| {
+            var active = false;
+            for (@field(document, name)) |record| {
+                const range = if (comptime std.mem.eql(u8, name, "edge_chains")) record.first.attributes else record.attributes;
+                if (range.len < 2) continue;
+                plan.largest = @max(plan.largest, range.len);
+                active = true;
+            }
+            if (active) {
+                active_pools += 1;
+                plan.order = if (active_pools == 1) @field(@FieldType(DuplicatePlan, "order"), name) else .statements;
+            }
+        }
+        return plan;
+    }
+    var previous: u32 = 0;
+    var groups: u32 = 0;
+    var ordered = true;
+    for (document.order) |id| {
+        const range = attributeRange(document, id);
+        if (range.len < 2) continue;
+        plan.largest = @max(plan.largest, range.len);
+        groups += 1;
+        if (range.start < previous) ordered = false;
+        previous = range.start;
+    }
+    if (!ordered) {
+        // Scoped-edge owners precede their descendants in statement order,
+        // while their trailing attributes follow those descendants. Mark both
+        // endpoints of each nontrivial group to traverse in lexical order.
+        const words: u32 = @intCast(document.attributes.len / 64 + @intFromBool(document.attributes.len % 64 != 0));
+        plan.extra = @min(words, groups);
+        plan.order = if (words <= groups) .bitmap else .ranges;
+        // For a few very large groups, explicit ranges are smaller than a bitmap.
+        // groups >= 2; each non-largest group has >= 2 entries, hence
+        // largest + groups <= total attributes. Scratch never exceeds the old
+        // full-document requirement, even on the adversarial single-big-owner case.
+        std.debug.assert(plan.required() <= document.attributes.len);
+    }
+    return plan;
+}
+
+pub fn requiredScratch(document: *const syntax.Document) u32 {
+    return duplicatePlan(document).required();
+}
 
 pub const Operators = struct {
     edges: syntax.EdgeIterator,
@@ -109,53 +185,132 @@ pub const Encoding = struct {
 pub const RepeatedAttributes = struct {
     document: *const syntax.Document,
     entries: []AttributeKeyScratch,
+    metadata: []AttributeKeyScratch = &.{},
+    plan: DuplicatePlan = .{},
     severity: policy.RuleSeverity,
     index: u32 = 0,
+    count: u32 = 0,
+    statement_index: u32 = 0,
+    metadata_index: u32 = 0,
 
-    pub fn init(document: *const syntax.Document, settings: Settings, scratch: Scratch) RepeatedAttributes {
+    pub fn init(document: *const syntax.Document, settings: Settings, scratch: Scratch, plan: DuplicatePlan) RepeatedAttributes {
         if (settings.repeated_attribute == .off) return .{ .document = document, .entries = &.{}, .severity = .off };
-        const entries = scratch.attribute_keys[0..document.attributes.len]; // preflighted by validate
-        for (document.attributes, entries, 0..) |attribute, *entry, index| {
-            entry.* = .{ .hash = identifier.hashAssumeValid(attribute.key.slice(document.source)), .index = @intCast(index), .first = none };
-        }
-        // Each owner's adjacent [...] groups form one range. A chain owns its
-        // attributes once; separate statements/defaults/scopes never merge.
-        for (document.order) |id| {
-            const range: syntax.AttributeRange = switch (document.statement(id).?) {
-                .node => |node| node.attributes,
-                .edge => |edge| edge.attributes,
-                .edge_chain => |chain| chain.first.attributes,
-                .attribute_statement => |statement| statement.attributes,
-                .assignment, .subgraph => continue,
+        const entries = scratch.attribute_keys[0..plan.largest];
+        const metadata = scratch.attribute_keys[plan.largest..plan.required()];
+        if (plan.order == .bitmap or plan.order == .ranges) {
+            if (plan.order == .bitmap) for (metadata) |*entry| {
+                entry.hash = 0;
             };
-            if (range.len < 2) continue;
-            const group = entries[range.start..][0..range.len];
-            std.sort.heap(AttributeKeyScratch, group, document, keyLessThan);
-            var first: u32 = group[0].index;
-            for (group[1..], group[0 .. group.len - 1]) |*entry, previous| {
-                if (entry.hash == previous.hash and equalKeys(document, first, entry.index)) {
-                    entry.first = first;
-                } else first = entry.index;
+            var written: u32 = 0;
+            for (document.order) |id| {
+                const range = attributeRange(document, id);
+                if (range.len < 2) continue;
+                if (plan.order == .bitmap) {
+                    const end = range.start + range.len - 1;
+                    metadata[range.start / 64].hash |= @as(u64, 1) << @as(u6, @intCast(range.start % 64));
+                    metadata[end / 64].hash |= @as(u64, 1) << @as(u6, @intCast(end % 64));
+                } else {
+                    metadata[written] = .{ .hash = 0, .index = range.start, .first = range.len };
+                    written += 1;
+                }
             }
-            // Restore source order without changing document pools. Fingerprints
-            // accelerate comparisons but never establish equality on their own.
-            std.sort.heap(AttributeKeyScratch, group, {}, indexLessThan);
+            if (plan.order == .ranges) std.sort.heap(AttributeKeyScratch, metadata, {}, indexLessThan);
         }
-        return .{ .document = document, .entries = entries, .severity = settings.repeated_attribute };
+        return .{ .document = document, .entries = entries, .metadata = metadata, .plan = plan, .severity = settings.repeated_attribute };
     }
 
     pub fn next(self: *RepeatedAttributes) ?D {
-        while (self.index < self.entries.len) {
-            const entry = self.entries[self.index];
-            self.index += 1;
-            if (entry.first == none) continue;
-            return .{
-                .code = severityCode(self.severity, .validation_repeated_attribute, .validation_repeated_attribute_tolerated),
-                .span = self.document.attributes[entry.index].key,
-                .details = .{ .repeated_attribute = self.document.attributes[entry.first].key },
-            };
+        if (self.entries.len == 0) return null;
+        while (true) {
+            while (self.index < self.count) {
+                const entry = self.entries[self.index];
+                self.index += 1;
+                if (entry.first == none) continue;
+                return .{
+                    .code = severityCode(self.severity, .validation_repeated_attribute, .validation_repeated_attribute_tolerated),
+                    .span = self.document.attributes[entry.index].key,
+                    .details = .{ .repeated_attribute = self.document.attributes[entry.first].key },
+                };
+            }
+            const range = self.nextRange() orelse return null;
+            self.prepare(range);
+        }
+    }
+
+    fn nextMark(self: *RepeatedAttributes) ?u32 {
+        while (self.metadata_index < self.metadata.len) {
+            const bits = &self.metadata[self.metadata_index].hash;
+            if (bits.* == 0) {
+                self.metadata_index += 1;
+                continue;
+            }
+            const at = self.metadata_index * 64 + @as(u32, @intCast(@ctz(bits.*)));
+            bits.* &= bits.* - 1;
+            return at;
         }
         return null;
+    }
+
+    fn nextRange(self: *RepeatedAttributes) ?syntax.AttributeRange {
+        switch (self.plan.order) {
+            .statements => while (self.statement_index < self.document.order.len) {
+                const range = attributeRange(self.document, self.document.order[self.statement_index]);
+                self.statement_index += 1;
+                if (range.len >= 2) return range;
+            },
+            inline .nodes, .edges, .edge_chains, .attribute_statements => |pool| {
+                const records = @field(self.document, @tagName(pool));
+                while (self.statement_index < records.len) {
+                    const record = records[self.statement_index];
+                    self.statement_index += 1;
+                    const range = if (comptime pool == .edge_chains) record.first.attributes else record.attributes;
+                    if (range.len >= 2) return range;
+                }
+            },
+            .bitmap => {
+                const start = self.nextMark() orelse return null;
+                const end = self.nextMark().?;
+                return .{ .start = start, .len = end - start + 1 };
+            },
+            .ranges => {
+                if (self.metadata_index == self.metadata.len) return null;
+                const range = self.metadata[self.metadata_index];
+                self.metadata_index += 1;
+                return .{ .start = range.index, .len = range.first };
+            },
+        }
+        return null;
+    }
+
+    fn prepare(self: *RepeatedAttributes, range: syntax.AttributeRange) void {
+        const group = self.entries[0..range.len];
+        const attributes = self.document.attributes[range.start..][0..range.len];
+        for (group, attributes, range.start..) |*entry, attribute, index| {
+            entry.* = .{ .hash = identifier.hashAssumeValid(attribute.key.slice(self.document.source)), .index = @intCast(index), .first = none };
+        }
+        // Bound quadratic comparisons to eight keys. Source order is already
+        // correct; first matching predecessor is the original occurrence.
+        if (group.len <= 8) {
+            for (group, 0..) |*entry, i| {
+                for (group[0..i]) |previous| {
+                    if (entry.hash == previous.hash and equalKeys(self.document, previous.index, entry.index)) {
+                        entry.first = previous.index;
+                        break;
+                    }
+                }
+            }
+            self.index = 0;
+            self.count = range.len;
+            return;
+        }
+        std.sort.heap(AttributeKeyScratch, group, self.document, keyLessThan);
+        var first = group[0].index;
+        for (group[1..], group[0 .. group.len - 1]) |*entry, previous| {
+            if (entry.hash == previous.hash and equalKeys(self.document, first, entry.index)) entry.first = first else first = entry.index;
+        }
+        std.sort.heap(AttributeKeyScratch, group, {}, indexLessThan);
+        self.index = 0;
+        self.count = range.len;
     }
 
     fn keyLessThan(document: *const syntax.Document, a: AttributeKeyScratch, b: AttributeKeyScratch) bool {

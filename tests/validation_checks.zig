@@ -306,3 +306,145 @@ test "duplicate equality agrees with explicit decoding across spellings and chun
         }
     }
 }
+
+// Independent oracle: decode each key and compare earlier occurrences in its
+// source owner, then sort findings by source location. This deliberately uses
+// neither the validator's hashes nor its scratch/order representation.
+fn checkReusableDuplicateScratch(source: []const u8) !void {
+    const Lint = dot.Profile(.{ .policy = .{
+        .retention = .{ .partial = true },
+        .validation = .{ .repeated_attribute = .warning },
+    } });
+    var parsed = Lint.parseBorrowed(std.testing.allocator, source, dot.diagnostic.discard, .{});
+    defer parsed.deinit(std.testing.allocator);
+    try expect(parsed.document != null);
+    const document = &parsed.document.?;
+    var expected: std.ArrayList(dot.Diagnostic) = .empty;
+    defer expected.deinit(std.testing.allocator);
+    for (document.order) |id| {
+        const range = switch (document.statement(id).?) {
+            .node => |node| node.attributes,
+            .edge => |edge| edge.attributes,
+            .edge_chain => |chain| chain.first.attributes,
+            .attribute_statement => |statement| statement.attributes,
+            .assignment, .subgraph => continue,
+        };
+        const attributes = document.attributeSlice(range).?;
+        for (attributes, 0..) |attribute, i| {
+            var current_bytes: [64]u8 = undefined;
+            const current = try dot.identifier.decodeInto(attribute.key.slice(source), &current_bytes);
+            for (attributes[0..i]) |previous| {
+                var previous_bytes: [64]u8 = undefined;
+                const value = try dot.identifier.decodeInto(previous.key.slice(source), &previous_bytes);
+                if (!std.mem.eql(u8, current, value)) continue;
+                try expected.append(std.testing.allocator, .{
+                    .code = .validation_repeated_attribute_tolerated,
+                    .span = attribute.key,
+                    .details = .{ .repeated_attribute = previous.key },
+                });
+                break;
+            }
+        }
+    }
+    std.mem.sort(dot.Diagnostic, expected.items, {}, struct {
+        fn less(_: void, a: dot.Diagnostic, b: dot.Diagnostic) bool {
+            return a.span.start < b.span.start;
+        }
+    }.less);
+
+    const required = dot.requiredValidationScratch(document);
+    try expect(required <= document.attributes.len);
+    const keys = try std.testing.allocator.alloc(dot.AttributeKeyScratch, required);
+    defer std.testing.allocator.free(keys);
+    var bag: dot.FixedDiagnosticBag(512) = .{};
+    const checked = Lint.validate(document, bag.sink(), .{ .scratch = .{ .attribute_keys = keys } });
+    try expect(checked.outcome == .completed);
+    try equal(@as(u64, @intCast(expected.items.len)), checked.warningCount());
+    try equal(document.scopeComplete(), checked.documentValid());
+    try deep(expected.items, bag.items());
+
+    // The prior whole-document capacity remains a valid upper bound. It must
+    // produce identical results to exact sizing, including retained prefixes.
+    const full = try std.testing.allocator.alloc(dot.AttributeKeyScratch, document.attributes.len);
+    defer std.testing.allocator.free(full);
+    var repeated: dot.FixedDiagnosticBag(512) = .{};
+    const repeated_result = Lint.validate(document, repeated.sink(), .{ .scratch = .{ .attribute_keys = full } });
+    try deep(checked, repeated_result);
+    try deep(bag.items(), repeated.items());
+    var runtime_bag: dot.FixedDiagnosticBag(512) = .{};
+    const runtime_result = try Runtime.validate(document, runtime_bag.sink(), .{
+        .policy = .{ .validation = .{ .repeated_attribute = .warning } },
+        .scratch = .{ .attribute_keys = keys },
+    });
+    try deep(checked, runtime_result);
+    try deep(bag.items(), runtime_bag.items());
+
+    if (required != 0) {
+        const sentinel: dot.AttributeKeyScratch = .{ .hash = 77, .index = 88, .first = 99 };
+        @memset(keys, sentinel);
+        const short = Lint.validate(document, dot.diagnostic.discard, .{ .scratch = .{ .attribute_keys = keys[0 .. required - 1] } });
+        try expect(short.outcome == .insufficient_scratch);
+        try equal(required, short.outcome.insufficient_scratch.required_attribute_keys);
+        for (keys) |key| try deep(sentinel, key);
+    }
+    if (expected.items.len != 0) {
+        var stopped: dot.FixedDiagnosticBag(1) = .{};
+        const result = Lint.validate(document, stopped.sink(), .{ .scratch = .{ .attribute_keys = keys } });
+        try expect(result.outcome == .diagnostic_stopped);
+        try deep(expected.items[0], stopped.items()[0]);
+        const Fast = dot.Profile(.{ .policy = .{ .on_error = .fail_fast, .validation = .{ .repeated_attribute = .err } } });
+        var first: dot.FixedDiagnosticBag(8) = .{};
+        const fast = Fast.validate(document, first.sink(), .{ .scratch = .{ .attribute_keys = keys } });
+        try expect(fast.outcome == .error_stopped);
+        try equal(@as(u64, 1), fast.outcome.error_stopped.violations);
+        try equal(@as(usize, 1), first.items().len);
+        var finding = expected.items[0];
+        finding.code = .validation_repeated_attribute;
+        try deep(finding, first.items()[0]);
+    }
+}
+
+test "exact duplicate scratch reuses owners and skips empty and singleton lists" {
+    const cases = [_]struct { source: []const u8, entries: u32 }{
+        .{ .source = "digraph {}", .entries = 0 },
+        .{ .source = "digraph { a; a[]; a[x=1]; node[x=2]; a->b[x=3]; a->b->c[x=4]; }", .entries = 0 },
+        .{ .source = "digraph { a[x=1][x=2]; b[y=1 y=2]; }", .entries = 2 },
+        .{ .source = "digraph { a->b[x=1 x=2]; b->c[y=1 y=2]; }", .entries = 2 },
+        .{ .source = "digraph { a->b->c[x=1 x=2]; d->e->f[y=1 y=2]; }", .entries = 2 },
+        .{ .source = "digraph { node[x=1 x=2]; edge[y=1 y=2]; }", .entries = 2 },
+        .{ .source = "digraph { a[x=1 x=2]; a->b[y=1 y=2]; node[z=1 z=2]; }", .entries = 2 },
+        .{ .source = "digraph { a->{b[x=1 x=2]}[y=1 y=2]; }", .entries = 3 },
+    };
+    for (cases) |case| {
+        var parsed = dot.parseBorrowed(std.testing.allocator, case.source, dot.diagnostic.discard, .{});
+        defer parsed.deinit(std.testing.allocator);
+        try expect(parsed.outcome == .success);
+        try equal(case.entries, dot.requiredValidationScratch(&parsed.document.?));
+        try checkReusableDuplicateScratch(case.source);
+    }
+}
+
+test "reused duplicate scratch preserves lexical order across scoped edges and partial trees" {
+    const fragments = [_][]const u8{
+        "a;",                          "a[x=1];",                      "a[x=1][\"x\"=2 x=3];",                                                            "node[x=1 x=2];",                "a->b->c[x=1 x=2];",
+        "{a[x=1 x=2]} -> b[y=1 y=2];", "a -> {b[x=1 x=2]} [y=1 y=2];", "a -> { b -> { c[x=1 x=2] } [y=1 y=2]; d[q=1 q=2] } -> { e[r=1 r=2] } [z=1 z=2];", "a[\"a\"+\"b\"=1 ab=2 <ab>=3];", "a[\xff=1 \"\xff\"=2];",
+    };
+    for (fragments) |left| for (fragments) |right| {
+        var bytes: [2048]u8 = undefined;
+        const source = try std.fmt.bufPrint(&bytes, "digraph {{ {s} {s} }}", .{ left, right });
+        try checkReusableDuplicateScratch(source);
+    };
+    // Cross short-list and bitmap-word boundaries, then force the sparse range
+    // representation with a few owners whose combined list is much larger.
+    for ([_]u32{ 2, 3, 7, 8, 9, 31, 32, 33, 63, 64, 65, 127, 128, 129, 400 }) |size| {
+        var bytes: [8192]u8 = undefined;
+        var source = std.Io.Writer.fixed(&bytes);
+        try source.writeAll("digraph { a -> { b[x=1 x=2]; c -> {d[y=1 y=2]} [q=1 q=2] } [");
+        for (0..size) |i| {
+            if (i % 2 == 0) try source.print("k{d}=1 ", .{i % 8}) else try source.print("\"k{d}\"=1 ", .{i % 8});
+        }
+        try source.writeAll("]; e[z=1 z=2]; }");
+        try checkReusableDuplicateScratch(source.buffered());
+        try checkReusableDuplicateScratch(source.buffered()[0 .. source.buffered().len - 1]);
+    }
+}

@@ -28,6 +28,7 @@ const policy = @import("policy.zig");
 const checks = @import("validation_checks.zig");
 pub const Scratch = checks.Scratch;
 pub const AttributeKeyScratch = checks.AttributeKeyScratch;
+pub const requiredScratch = checks.requiredScratch;
 
 /// How the pass ended. An incomplete-but-valid pass is unrepresentable.
 /// Scratch preflight is implemented; bounded/cancellable validation is not.
@@ -124,7 +125,8 @@ fn validateRetained(
     const settings = if (fixed) |value| value else runtime;
     // Preflight before running any check or touching scratch. Exhaustion must
     // never masquerade as a completed, valid pass, even with a discard sink.
-    if (settings.repeated_attribute != .off and scratch.attribute_keys.len < document.attributes.len) {
+    const plan: checks.DuplicatePlan = if (settings.repeated_attribute != .off) checks.duplicatePlan(document) else .{};
+    if (scratch.attribute_keys.len < plan.required()) {
         var delivery: diagnostic.Delivery = .complete;
         var stop: ?diagnostic.StopReason = null;
         const action = diagnostics.emit(.{
@@ -139,7 +141,7 @@ fn validateRetained(
         if (action == .stop) stop = .requested;
         return .{
             .outcome = .{ .insufficient_scratch = .{
-                .required_attribute_keys = @intCast(document.attributes.len),
+                .required_attribute_keys = plan.required(),
                 .provided_attribute_keys = scratch.attribute_keys.len,
             } },
             .diagnostic_delivery = delivery,
@@ -152,7 +154,10 @@ fn validateRetained(
     var cursors: Cursors = undefined;
     var pending: [fields.len]?diagnostic.Diagnostic = undefined;
     inline for (fields, 0..) |field, index| {
-        @field(cursors, field.name) = field.type.init(document, settings, scratch);
+        @field(cursors, field.name) = if (field.type == checks.RepeatedAttributes)
+            field.type.init(document, settings, scratch, plan)
+        else
+            field.type.init(document, settings, scratch);
         pending[index] = @field(cursors, field.name).next();
     }
     var errors: u64 = 0;

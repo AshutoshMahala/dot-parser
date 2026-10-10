@@ -150,6 +150,11 @@ pub const ValidateOptions = DefaultProfile.Options;
 pub const ValidationResult = validate_impl.Result;
 pub const ValidationScratch = validate_impl.Scratch;
 pub const AttributeKeyScratch = validate_impl.AttributeKeyScratch;
+/// Exact number of temporary AttributeKeyScratch entries for repeated-key
+/// validation of retained syntax. No allocation or source-byte scan. Returns
+/// zero when every retained owner has fewer than two attributes; the caller
+/// needs no scratch when its repeated_attribute policy is off either way.
+pub const requiredValidationScratch = validate_impl.requiredScratch;
 
 pub const DocumentCapacities = syntax_impl.Capacities;
 pub const DocumentStorage = syntax_impl.DocumentStorage;

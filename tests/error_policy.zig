@@ -220,7 +220,7 @@ test "DOT terminal validation resource failures preserve sink acknowledgment" {
     const P = dot.Profile(.{ .policy = .{ .validation = .{ .repeated_attribute = .err } } });
     inline for (.{ 0, 1 }) |capacity| {
         var bag: dot.FixedDiagnosticBag(capacity) = .{};
-        var result = P.parseAndValidate(allocator, "graph { a[x=1]; }", bag.sink(), .{});
+        var result = P.parseAndValidate(allocator, "graph { a[x=1 x=2]; }", bag.sink(), .{});
         defer result.deinit(allocator);
         try expect(result.outcome == .success and result.document != null);
         try expect(result.validation.?.outcome == .insufficient_scratch);
