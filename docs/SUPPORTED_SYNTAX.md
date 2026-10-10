@@ -26,12 +26,16 @@ few places where it differs from Graphviz on purpose are listed
 | Optional semicolons | `a -> b b -> c` | Supported, as in Graphviz |
 | Comments | `//`, `/* */`, `#` | Supported, skipped |
 | HTML-like value | `label=<<b>hi</b>>` | Supported, kept as written. See [checking HTML-like labels](LABELS.md). |
-| Leading byte order mark | UTF-8 BOM | Skipped, as Graphviz does |
+| Leading byte order mark | UTF-8 BOM; opt-in UTF-16/32 | Skipped without removing source bytes. See [source encodings](ENCODINGS.md). |
 | Empty statement | `a;;` | Rejected by default. [Lenient](POLICIES.md#lenient-syntax) accepts it. |
 | Long operator | `a --> b`, `a --- b` | Rejected by default. Lenient reads it as `->` / `--`. |
 | Lone dash | `a - b` | Rejected by default. Lenient reads it from the graph kind. |
 
 ## Names
+
+This page describes the default UTF-8/raw-byte path. Opt-in native UTF-16/32
+readers recognize the same grammar using code units and retain original byte
+spans; see [source encodings](ENCODINGS.md).
 
 DOT calls names *IDs*. Every form below works anywhere a name can go: graph
 and subgraph names, nodes, both parts of a port, and attribute keys and values.

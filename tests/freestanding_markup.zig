@@ -2,6 +2,16 @@
 const markup = @import("markup_parser");
 const features = @import("policy_features");
 
+export fn native_markup(source: [*]const u8, len: usize) u32 {
+    const Native = markup.Profile(.{ .source_encodings = &.{ .utf16, .utf32 } });
+    var nodes: markup.FixedDocumentStorage(.{ .nodes = 16, .attributes = 16 }) = .{};
+    var frames: markup.FixedParseScratch(8) = .{};
+    var scratch: markup.FixedSourceValidationScratch(16) = .{};
+    const input = markup.Fragment.init(source[0..len], 0) catch return 0;
+    const result = Native.parseAndValidateIn(input, .{ .document = nodes.storage(), .scratch = frames.storage() }, scratch.storage(), markup.diagnostic.discard, .{}) catch return 0;
+    return if (result.documentValid()) result.parse.counts.nodes else 0;
+}
+
 export fn partial_markup(source: [*]const u8, len: usize, enabled: bool) u32 {
     const Partial = markup.Profile(.{ .runtime_policy = features.runtime_policy, .policy = .{ .retention = .{ .partial = true } } });
     var nodes: markup.FixedDocumentStorage(.{ .nodes = 16, .attributes = 16 }) = .{};

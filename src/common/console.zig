@@ -21,6 +21,8 @@ pub const RenderOptions = struct {
     /// show annotated source excerpts; when null (or when a span does not
     /// fit the given bytes), boxes fall back to compact location lines.
     source: ?[]const u8 = null,
+    /// Encoding of the original source, not of the renderer output (UTF-8).
+    source_encoding: @import("encoding.zig").Actual = .utf8,
     /// `.unicode` draws a box and preserves printable UTF-8 source text;
     /// `.ascii` uses plain framing and escapes all non-ASCII source bytes.
     style: Style = .unicode,
@@ -43,6 +45,7 @@ pub const RenderOptions = struct {
 /// may omit that table and use the cursor. Without source bytes show the offset.
 pub const Positions = struct {
     source: ?[]const u8,
+    source_encoding: @import("encoding.zig").Actual = .utf8,
     style: RenderOptions.Style = .unicode,
     cursor: location.PositionCursor = .{},
     resolved: []const location.Location = &.{},
@@ -56,7 +59,30 @@ pub const Positions = struct {
 
     /// Bounded, safely escaped inline source text, using the renderer's style.
     pub fn writeSource(self: *const Positions, bytes: []const u8, writer: anytype) !void {
-        try source_text.writeInline(bytes, self.style, writer);
+        if (self.source_encoding == .utf8 or self.source_encoding == .ascii) {
+            try source_text.writeInline(bytes, self.style, writer);
+            return;
+        }
+        // Bounded inline conversion only, never an allocation or source copy.
+        var buffer: [source_text.max_bytes + 4]u8 = undefined;
+        switch (self.source_encoding) {
+            inline else => |actual| {
+                const E = @import("encoding.zig").Reader(actual);
+                var at: usize = 0;
+                var used: usize = 0;
+                while (at < bytes.len and used < source_text.max_bytes) {
+                    const decoded = E.decode(bytes, at) catch {
+                        try writer.writeAll("<invalid encoding>");
+                        return;
+                    };
+                    const len = std.unicode.utf8Encode(decoded.scalar, buffer[used..][0..4]) catch unreachable;
+                    used += len;
+                    at += decoded.len;
+                }
+                try source_text.writeInline(buffer[0..used], self.style, writer);
+                if (at < bytes.len and used <= source_text.max_bytes) try writer.writeAll("...");
+            },
+        }
     }
 
     pub fn locate(self: *Positions, offset: u32) ?location.Location {
@@ -70,7 +96,7 @@ pub const Positions = struct {
             if (at.byte_offset == offset) return at;
             if (at.byte_offset < offset) low = mid + 1 else high = mid;
         }
-        return self.cursor.locate(source, offset);
+        return if (self.source_encoding == .utf8 or self.source_encoding == .ascii) self.cursor.locate(source, offset) else location.locateEncoded(source, offset, self.source_encoding);
     }
 
     /// `line:column`, or `offset N` without a source.
@@ -382,17 +408,20 @@ fn severityTitle(severity: Severity) []const u8 {
 
 /// Resolve collected, in-bounds offsets with one forward source walk. Both
 /// homogeneous and composed lists use this path; scratch remains caller-owned.
-fn resolveLocations(entries: []location.Location, source: []const u8) []const location.Location {
+fn resolveLocations(entries: []location.Location, source: []const u8, source_encoding: @import("encoding.zig").Actual) []const location.Location {
     std.sort.heap(location.Location, entries, {}, struct {
         fn less(_: void, a: location.Location, b: location.Location) bool {
             return a.byte_offset < b.byte_offset;
         }
     }.less);
     var cursor: location.PositionCursor = .{};
+    var native: location.EncodedPositionCursor = .{};
     var unique: usize = 0;
     for (entries) |entry| {
         if (unique != 0 and entries[unique - 1].byte_offset == entry.byte_offset) continue;
-        entries[unique] = cursor.locate(source, entry.byte_offset);
+        entries[unique] = if (source_encoding == .utf8 or source_encoding == .ascii) cursor.locate(source, entry.byte_offset) else switch (source_encoding) {
+            inline else => |actual| native.locate(actual, source, entry.byte_offset),
+        };
         unique += 1;
     }
     return entries[0..unique];
@@ -458,7 +487,7 @@ pub fn Renderer(comptime Adapter: type) type {
             return std.math.mul(usize, diagnostics.len, max_secondary + 2);
         }
 
-        fn prepareLocations(diagnostics: []const Diagnostic, source: ?[]const u8, scratch: []location.Location) error{LocationScratchTooSmall}![]const location.Location {
+        fn prepareLocations(diagnostics: []const Diagnostic, source: ?[]const u8, source_encoding: @import("encoding.zig").Actual, scratch: []location.Location) error{LocationScratchTooSmall}![]const location.Location {
             const bytes = source orelse return &.{};
             var count: usize = 0;
             for (diagnostics) |d| {
@@ -466,7 +495,7 @@ pub fn Renderer(comptime Adapter: type) type {
                 for (Adapter.annotations(d).slice()) |annotation| try addLocation(annotation.span.start, bytes, scratch, &count);
                 if (Adapter.fix(d)) |fix| try addLocation(fix.span.start, bytes, scratch, &count);
             }
-            return resolveLocations(scratch[0..count], bytes);
+            return resolveLocations(scratch[0..count], bytes, source_encoding);
         }
 
         /// Render one diagnostic as compact log-style text, e.g.:
@@ -486,7 +515,7 @@ pub fn Renderer(comptime Adapter: type) type {
         /// `writer` is anything with `print`, e.g. a `*std.Io.Writer`.
         pub fn render(d: Diagnostic, options: RenderOptions, writer: anytype) !void {
             var scratch: [max_secondary + 2]location.Location = undefined;
-            var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(&.{d}, options.source, &scratch) };
+            var positions: Positions = .{ .source = options.source, .source_encoding = options.source_encoding, .style = options.style, .resolved = try prepareLocations(&.{d}, options.source, options.source_encoding, &scratch) };
             try renderWith(d, options, &positions, writer);
         }
 
@@ -495,7 +524,7 @@ pub fn Renderer(comptime Adapter: type) type {
         /// when source is present; too-small scratch fails before any output.
         /// Scratch must not alias source/items and is never retained.
         pub fn renderList(diagnostics: []const Diagnostic, options: RenderOptions, location_scratch: []location.Location, writer: anytype) !void {
-            var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(diagnostics, options.source, location_scratch) };
+            var positions: Positions = .{ .source = options.source, .source_encoding = options.source_encoding, .style = options.style, .resolved = try prepareLocations(diagnostics, options.source, options.source_encoding, location_scratch) };
             for (diagnostics) |d| try renderWith(d, options, &positions, writer);
         }
 
@@ -545,7 +574,7 @@ pub fn Renderer(comptime Adapter: type) type {
             writer: anytype,
         ) !void {
             var scratch: [max_secondary + 2]location.Location = undefined;
-            var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(&.{d}, options.source, &scratch) };
+            var positions: Positions = .{ .source = options.source, .source_encoding = options.source_encoding, .style = options.style, .resolved = try prepareLocations(&.{d}, options.source, options.source_encoding, &scratch) };
             try renderBoxedWith(d, number, options, &positions, writer);
         }
 
@@ -634,7 +663,7 @@ pub fn Renderer(comptime Adapter: type) type {
             writer: anytype,
         ) !void {
             var summary: Summary = .{};
-            var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(diagnostics, options.source, location_scratch) };
+            var positions: Positions = .{ .source = options.source, .source_encoding = options.source_encoding, .style = options.style, .resolved = try prepareLocations(diagnostics, options.source, options.source_encoding, location_scratch) };
             for (diagnostics, 0..) |d, index| {
                 if (index != 0) try writer.writeAll("\n");
                 try renderBoxedWith(d, index + 1, options, &positions, writer);
@@ -652,6 +681,9 @@ pub fn Renderer(comptime Adapter: type) type {
         /// to compact lines: no source given, or a span that does not fit it (a
         /// mismatched source must degrade, never crash the renderer).
         fn excerptSource(d: Diagnostic, options: RenderOptions) ?[]const u8 {
+            // Until native excerpt windows are mapped by code unit, use correct
+            // compact locations rather than misrender raw UTF-16/32 as UTF-8.
+            if (options.source_encoding != .utf8 and options.source_encoding != .ascii) return null;
             const source = options.source orelse return null;
             if (!spanFits(d.span, source)) return null;
             for (Adapter.annotations(d).slice()) |annotation| {
@@ -958,7 +990,7 @@ pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
         pub fn locationCapacity(items: []const Item) error{Overflow}!usize {
             return std.math.mul(usize, items.len, max_locations);
         }
-        fn prepareLocations(items: []const Item, source: ?[]const u8, scratch: []location.Location) error{LocationScratchTooSmall}![]const location.Location {
+        fn prepareLocations(items: []const Item, source: ?[]const u8, source_encoding: @import("encoding.zig").Actual, scratch: []location.Location) error{LocationScratchTooSmall}![]const location.Location {
             const bytes = source orelse return &.{};
             var count: usize = 0;
             for (items) |item| switch (item) {
@@ -969,7 +1001,7 @@ pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
                     if (Adapter.fix(d)) |fix| try addLocation(fix.span.start, bytes, scratch, &count);
                 },
             };
-            return resolveLocations(scratch[0..count], bytes);
+            return resolveLocations(scratch[0..count], bytes, source_encoding);
         }
         pub fn render(item: Item, options: RenderOptions, writer: anytype) !void {
             switch (item) {
@@ -982,13 +1014,13 @@ pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
             }
         }
         pub fn renderList(items: []const Item, options: RenderOptions, scratch: []location.Location, writer: anytype) !void {
-            var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(items, options.source, scratch) };
+            var positions: Positions = .{ .source = options.source, .source_encoding = options.source_encoding, .style = options.style, .resolved = try prepareLocations(items, options.source, options.source_encoding, scratch) };
             for (items) |item| switch (item) {
                 inline else => |d, tag| try Renderer(@field(adapters, @tagName(tag))).renderWith(d, options, &positions, writer),
             };
         }
         pub fn renderBoxedList(items: []const Item, omitted: u64, options: RenderOptions, scratch: []location.Location, writer: anytype) !void {
-            var positions: Positions = .{ .source = options.source, .style = options.style, .resolved = try prepareLocations(items, options.source, scratch) };
+            var positions: Positions = .{ .source = options.source, .source_encoding = options.source_encoding, .style = options.style, .resolved = try prepareLocations(items, options.source, options.source_encoding, scratch) };
             var summary: Summary = .{};
             for (items, 0..) |item, index| {
                 if (index != 0) try writer.writeAll("\n");

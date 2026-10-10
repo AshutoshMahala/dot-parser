@@ -15,6 +15,30 @@ pub fn element(name: []const u8) ?Element {
     return null;
 }
 
+pub fn elementEncoded(comptime actual: @import("parser_support").encoding.Actual, name: []const u8) ?Element {
+    const enc = @import("parser_support").encoding.Reader(actual);
+    if (enc.width == 1) return element(name);
+    if (name.len > 5 * enc.width) return null;
+    inline for (std.meta.fields(Element)) |field| {
+        if (enc.asciiEqual(name, field.name, true)) return @enumFromInt(field.value);
+    }
+    return null;
+}
+
+pub fn allowsAttributeEncoded(comptime actual: @import("parser_support").encoding.Actual, owner: Element, name: []const u8) bool {
+    const enc = @import("parser_support").encoding.Reader(actual);
+    if (enc.width == 1) return allowsAttribute(owner, name);
+    if (name.len % enc.width != 0 or name.len > 13 * enc.width) return false;
+    // Vocabulary names are bounded ASCII; no source-wide conversion or buffer.
+    var ascii: [13]u8 = undefined;
+    for (0..name.len / enc.width) |i| {
+        const unit = enc.unit(name, i * enc.width);
+        if (unit >= 128) return false;
+        ascii[i] = @intCast(unit);
+    }
+    return allowsAttribute(owner, ascii[0 .. name.len / enc.width]);
+}
+
 pub fn allowsAttribute(owner: Element, name: []const u8) bool {
     // Longest documented attribute is GRADIENTANGLE. No unbounded name scans.
     if (name.len > 13) return false;

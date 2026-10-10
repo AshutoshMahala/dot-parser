@@ -58,6 +58,8 @@ pub fn Fixed(comptime capacity: Capacities) type {
 /// Validation checks policy findings, not general correctness of these pools.
 pub const Document = struct {
     source: []const u8,
+    /// One encoding for this source. Views borrow original encoded bytes.
+    source_info: @import("parser_support").encoding.Info = .{},
     records: []const Node,
     attributes: []const Attribute,
     state: Completeness = .complete,
@@ -114,7 +116,11 @@ pub const NodeView = struct {
     pub fn headerComplete(self: NodeView) ?bool {
         const node = self.document.records[@intFromEnum(self.id)];
         if (node.kind() != .element) return null;
-        return node.subtree_end != 0 or node.span.slice(self.document.source)[node.span.len - 1] == '>';
+        if (node.subtree_end != 0) return true;
+        const raw_header = node.span.slice(self.document.source);
+        switch (self.document.source_info.encoding) {
+            inline else => |actual| return @import("parser_support").encoding.Reader(actual).unit(raw_header, raw_header.len - self.document.source_info.unitBytes()) == '>',
+        }
     }
     pub fn kind(self: NodeView) Kind {
         return self.record().kind();
@@ -129,11 +135,12 @@ pub const NodeView = struct {
     /// Never decodes references; elements have no single leaf body.
     pub fn content(self: NodeView) ?[]const u8 {
         const bytes = self.raw();
+        const width: usize = self.document.source_info.unitBytes();
         return switch (self.kind()) {
             .element => null,
             .text => bytes,
-            .comment => bytes[4 .. bytes.len - 3],
-            .cdata => bytes[9 .. bytes.len - 3],
+            .comment => bytes[4 * width .. bytes.len - 3 * width],
+            .cdata => bytes[9 * width .. bytes.len - 3 * width],
         };
     }
     pub fn name(self: NodeView) ?[]const u8 {
@@ -168,10 +175,11 @@ inline fn markerValid(document: *const Document, raw: Node) bool {
 /// builds. O(1), without source-byte scans or scratch. Does not audit ancestor
 /// containment or certify caller-built forests; Document's contract still applies.
 pub fn nodeInvariant(document: *const Document, index: u32) bool {
+    const width: usize = document.source_info.unitBytes();
     const raw = document.records[index];
     if (!markerValid(document, raw)) return false;
     const node = (document.node(@enumFromInt(index)) orelse return false).record();
-    if (node.span.len == 0 or node.span.endOffset() > document.source.len or
+    if (node.span.len == 0 or node.span.start % width != 0 or node.span.len % width != 0 or node.span.endOffset() > document.source.len or
         node.subtree_end <= index or node.subtree_end > document.records.len) return false;
     if (index > 0 and document.records[index - 1].span.start >= node.span.start) return false;
     if (node.name.len != 0)
@@ -181,8 +189,8 @@ pub fn nodeInvariant(document: *const Document, index: u32) bool {
     // precondition failure, never silently interpreted as a text leaf.
     return switch (node.name.start) {
         @intFromEnum(Kind.text) => true,
-        @intFromEnum(Kind.comment) => node.span.len >= 7,
-        @intFromEnum(Kind.cdata) => node.span.len >= 12,
+        @intFromEnum(Kind.comment) => node.span.len >= 7 * width,
+        @intFromEnum(Kind.cdata) => node.span.len >= 12 * width,
         else => false,
     };
 }
@@ -200,7 +208,7 @@ pub fn attributeInvariant(document: *const Document, index: u32) bool {
     if (node.name.len == 0 or node.span.endOffset() > document.source.len or
         node.name.start < node.span.start or node.name.endOffset() > node.span.endOffset() or
         attribute.name.len == 0 or attribute.name.start < node.name.endOffset() or
-        attribute.name.endOffset() > attribute.value.start or attribute.value.len < 2 or
+        attribute.name.endOffset() > attribute.value.start or attribute.value.len < 2 * @as(usize, document.source_info.unitBytes()) or
         attribute.value.endOffset() > node.span.endOffset()) return false;
     if (index > 0) {
         const previous = document.attributes[index - 1];
@@ -230,7 +238,8 @@ pub const AttributeView = struct {
     /// Only removes delimiters. No entity decoding, unescaping or whitespace folding.
     pub fn value(self: AttributeView) []const u8 {
         const raw_value = self.rawValue();
-        return raw_value[1 .. raw_value.len - 1];
+        const width: usize = self.document.source_info.unitBytes();
+        return raw_value[width .. raw_value.len - width];
     }
 };
 pub const AttributeIterator = struct {

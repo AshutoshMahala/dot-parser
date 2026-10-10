@@ -1,5 +1,6 @@
 const std = @import("std");
 test {
+    _ = @import("source_encodings.zig");
     _ = @import("composed_partial.zig");
     _ = @import("composed_delayed.zig");
 }

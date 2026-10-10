@@ -47,6 +47,7 @@ pub const Result = struct {
         incomplete: u32,
         /// Invalid caller-supplied scope metadata, not invalid document content.
         invalid_scope,
+        unsupported_encoding: support.encoding.Actual,
         source_limit: u32,
         /// Required entries; a lower bound if a source walk stopped at capacity.
         storage_exhausted: u32,
@@ -123,10 +124,15 @@ fn requirement(document: *const syntax.Document) Requirement {
 }
 
 pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellable: bool, comptime mode: policy.Mode) type {
+    return ValidatorForEncoding(.utf8, fixed, cancellable, mode);
+}
+
+pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime fixed: ?policy.ValidationSettings, comptime cancellable: bool, comptime mode: policy.Mode) type {
+    const enc = support.encoding.Reader(actual);
     return struct {
         pub const Settings = if (fixed == null) policy.ValidationSettings else void;
         pub const Hook = if (cancellable) ?support.execution.Cancellation else void;
-        const has_encoding = if (fixed) |s| s.invalid_utf8 != .off else true;
+        const has_encoding = actual == .utf8 and (if (fixed) |s| s.invalid_utf8 != .off else true);
         const Offset = if (has_encoding) u32 else void;
         /// One countdown shared by the traversal and all content scans. Charge
         /// bytes examined (including revisits by another check) and record steps,
@@ -142,7 +148,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             const s = rules(settings);
             return .{ .checks = .{
                 .duplicate_attribute = if (s.duplicate_attribute == .off) .not_run else .incomplete,
-                .invalid_utf8 = if (s.invalid_utf8 == .off) .not_run else .incomplete,
+                .invalid_utf8 = if (!has_encoding or s.invalid_utf8 == .off) .not_run else .incomplete,
                 .names = if (s.names.severity == .off) .not_run else .incomplete,
                 .references = if (s.references.severity == .off) .not_run else .incomplete,
                 .graphviz_elements = if (mode == .structural or s.graphviz.unknown_element == .off) .not_run else .incomplete,
@@ -151,7 +157,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
         }
         fn enabled(settings: Settings) bool {
             const s = rules(settings);
-            return s.duplicate_attribute != .off or s.invalid_utf8 != .off or s.names.severity != .off or s.references.severity != .off or vocabularyActive(mode, s);
+            return s.duplicate_attribute != .off or (has_encoding and s.invalid_utf8 != .off) or s.names.severity != .off or s.references.severity != .off or vocabularyActive(mode, s);
         }
         fn requested(hook: Hook) bool {
             return if (cancellable) (if (hook) |h| h.requested() else false) else false;
@@ -170,6 +176,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             return result;
         }
         pub fn run(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
+            if (document.source_info.encoding != actual) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
@@ -216,7 +223,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             var result = scopeInitial(scope, settings);
             if (cancelled(&result, hook)) return result;
             var poller: Poller = .{};
-            if (!scopes.metadataValid(source, scope, MetadataProgress{ .result = &result, .poller = &poller, .hook = hook }))
+            if (!scopes.metadataValidForEncoding(actual, source, scope, MetadataProgress{ .result = &result, .poller = &poller, .hook = hook }))
                 return if (result.completion == .cancelled) result else invalid;
             return null;
         }
@@ -240,7 +247,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             if (!scopeRequested(result)) return .{ .validity = .valid };
             if (!poller.check(&result, hook)) return result;
             const range = scope.span();
-            if (safety_checks) std.debug.assert(scopes.metadataValid(source, scope, {}));
+            if (safety_checks) std.debug.assert(scopes.metadataValidForEncoding(actual, source, scope, {}));
             const end: u32 = @intCast(range.endOffset());
             var incomplete_offset = end;
             const bounded_source = source[0..end];
@@ -268,7 +275,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                         if (!checkAttribute(bounded_source, h.name, owner, a.name, &offset, poller, &result, sink, settings, hook)) return result;
                         if (!checkName(bounded_source, a.name, .attribute, &offset, poller, &result, sink, settings, hook)) return result;
                         if (a.value.len != 0 and (rules(settings).names.severity != .off or rules(settings).references.severity != .off) and
-                            !checkReferences(bounded_source, .{ .start = a.value.start + 1, .len = a.value.len - 2 }, &offset, poller, &result, sink, settings, hook)) return result;
+                            !checkReferences(bounded_source, .{ .start = a.value.start + enc.width, .len = a.value.len - 2 * enc.width }, &offset, poller, &result, sink, settings, hook)) return result;
                     }
                 },
                 .opening_name, .closing_name, .attribute_name => |name| {
@@ -408,7 +415,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                             if (!checkAttribute(source, node.name, owner, attr.name, &offset, &poller, &result, sink, settings, hook)) return result;
                             if (!checkName(source, attr.name, .attribute, &offset, &poller, &result, sink, settings, hook)) return result;
                             // The retained value includes its original quotes.
-                            if (!checkReferences(source, .{ .start = attr.value.start + 1, .len = attr.value.len - 2 }, &offset, &poller, &result, sink, settings, hook)) return result;
+                            if (!checkReferences(source, .{ .start = attr.value.start + enc.width, .len = attr.value.len - 2 * enc.width }, &offset, &poller, &result, sink, settings, hook)) return result;
                         }
                     },
                     .text => if (!checkReferences(source, node.span, &offset, &poller, &result, sink, settings, hook)) return result,
@@ -440,15 +447,15 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             var scan = Poller.Scan.init(index, poller.*);
             while (index < bytes.len) {
                 if (!scan.check(index, result, hook)) return false;
-                const byte = bytes[index];
-                var width: u3 = 1;
+                const byte = enc.byteAt(bytes, index);
+                var width: u3 = enc.width;
                 var point: u21 = byte;
                 var problem: ?diagnostic.NameProblem = null;
                 if (byte >= 0x80) {
-                    if (support.utf8.decode(bytes[index..])) |decoded| {
+                    if (enc.decode(bytes, index)) |decoded| {
                         width = decoded.len;
                         point = decoded.scalar;
-                    } else {
+                    } else |_| {
                         problem = .invalid_utf8;
                     }
                 }
@@ -462,7 +469,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                     const code: diagnostic.Code = if (selected.severity == .err) .invalid_name else .invalid_name_tolerated;
                     return emit(result, sink, .{
                         .code = code,
-                        .span = .{ .start = at, .len = if (reason == .invalid_utf8) 1 else width },
+                        .span = .{ .start = at, .len = if (reason == .invalid_utf8) enc.width else width },
                         .related = name,
                         .details = .{ .name = .{ .context = context, .problem = reason } },
                     }, settings);
@@ -482,28 +489,31 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             var scan = Poller.Scan.init(index, poller.*);
             while (index < bytes.len) {
                 if (!scan.check(index, result, hook)) return false;
-                const end = scan.end(@intCast(bytes.len));
-                const relative = std.mem.indexOfScalar(u8, bytes[index..end], '&') orelse {
-                    index = end;
+                const limit = scan.end(@intCast(bytes.len));
+                // A polling window may end inside a native code unit. Include
+                // the whole unit; the source scope is already aligned.
+                const end = @min(bytes.len, ((@as(usize, limit) + enc.width - 1) / enc.width) * enc.width);
+                const relative = enc.indexAscii(bytes[index..end], '&') orelse {
+                    index = @intCast(end);
                     continue;
                 };
                 index += @intCast(relative);
                 const amp = index;
-                index += 1;
-                if (index == bytes.len or !lexical.isNameStart(bytes[index])) continue;
+                index += enc.width;
+                if (index == bytes.len or !lexical.isNameStart(enc.byteAt(bytes, index))) continue;
                 const begin = index;
-                index += 1;
-                while (index < bytes.len and lexical.isNameContinue(bytes[index])) : (index += 1) {
+                index += enc.width;
+                while (index < bytes.len and lexical.isNameContinue(enc.byteAt(bytes, index))) : (index += enc.width) {
                     if (!scan.check(index, result, hook)) return false;
                 }
-                if (index == bytes.len or bytes[index] != ';') continue;
+                if (index == bytes.len or enc.byteAt(bytes, index) != ';') continue;
                 const name: Span = .{ .start = span.start + begin, .len = index - begin };
-                index += 1; // ';'
+                index += enc.width; // ';'
                 // Nested name/encoding scans share and may exhaust the budget.
                 // Flush before calling them, then reload their remainder below.
                 scan.flush(index, poller);
                 const selected = rules(settings).references;
-                if (selected.severity != .off and !definitions.knownReference(selected.catalog, name.slice(source))) {
+                if (selected.severity != .off and !definitions.knownReferenceEncoded(actual, selected.catalog, name.slice(source))) {
                     // Catalog finding starts at '&', before any name finding.
                     const at = span.start + amp;
                     if (!encodingThrough(source, at, offset, poller, result, sink, settings, hook)) return false;
@@ -533,7 +543,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                 fn less(self: @TypeOf(context), a: AttributeKeyScratch, b: AttributeKeyScratch) bool {
                     const left = self.attributes[a.index].name.slice(self.source);
                     const right = self.attributes[b.index].name.slice(self.source);
-                    const order = if (ignore_case) std.ascii.orderIgnoreCase(left, right) else std.mem.order(u8, left, right);
+                    const order = if (enc.width == 1) (if (ignore_case) std.ascii.orderIgnoreCase(left, right) else std.mem.order(u8, left, right)) else enc.orderUnits(left, right, ignore_case);
                     return if (order == .eq) a.index < b.index else order == .lt;
                 }
             };
@@ -544,14 +554,14 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             for (keys[1..]) |key| {
                 const left = context.attributes[first].name.slice(context.source);
                 const right = context.attributes[key.index].name.slice(context.source);
-                if (!(if (ignore_case) std.ascii.eqlIgnoreCase(left, right) else std.mem.eql(u8, left, right))) first = key.index;
+                if (!(if (enc.width == 1) (if (ignore_case) std.ascii.eqlIgnoreCase(left, right) else std.mem.eql(u8, left, right)) else enc.orderUnits(left, right, ignore_case) == .eq)) first = key.index;
                 keys[key.index - start].first = first;
             }
         }
 
         inline fn elementKind(source: []const u8, name: Span, settings: Settings) ?graphviz.Element {
             if (!vocabularyActive(mode, rules(settings))) return null;
-            return graphviz.element(name.slice(source));
+            return graphviz.elementEncoded(actual, name.slice(source));
         }
         inline fn checkElement(source: []const u8, name: Span, owner: ?graphviz.Element, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
             if (mode == .structural) return true;
@@ -570,7 +580,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
                 recordGap(result, name.start);
                 return true;
             };
-            if (graphviz.allowsAttribute(tag, name.slice(source))) return true;
+            if (graphviz.allowsAttributeEncoded(actual, tag, name.slice(source))) return true;
             if (!encodingThrough(source, name.start, offset, poller, result, sink, settings, hook)) return false;
             return emit(result, sink, .{ .code = if (severity == .err) .invalid_attribute else .invalid_attribute_tolerated, .span = name, .related = owner_name }, settings);
         }
@@ -590,6 +600,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             return result;
         }
         pub fn allocated(allocator: std.mem.Allocator, document: *const syntax.Document, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
+            if (document.source_info.encoding != actual) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
@@ -601,6 +612,7 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
             return runSized(document, .{ .attribute_keys = keys }, sink, settings, hook, required);
         }
         pub fn reusing(allocator: std.mem.Allocator, document: *const syntax.Document, keys: *std.ArrayList(AttributeKeyScratch), sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
+            if (document.source_info.encoding != actual) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;

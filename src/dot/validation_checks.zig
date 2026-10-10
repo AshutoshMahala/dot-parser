@@ -182,149 +182,155 @@ pub const Encoding = struct {
     }
 };
 
-pub const RepeatedAttributes = struct {
-    document: *const syntax.Document,
-    entries: []AttributeKeyScratch,
-    metadata: []AttributeKeyScratch = &.{},
-    plan: DuplicatePlan = .{},
-    severity: policy.RuleSeverity,
-    index: u32 = 0,
-    count: u32 = 0,
-    statement_index: u32 = 0,
-    metadata_index: u32 = 0,
+pub const RepeatedAttributes = RepeatedAttributesForEncoding(.utf8);
 
-    pub fn init(document: *const syntax.Document, settings: Settings, scratch: Scratch, plan: DuplicatePlan) RepeatedAttributes {
-        if (settings.repeated_attribute == .off) return .{ .document = document, .entries = &.{}, .severity = .off };
-        const entries = scratch.attribute_keys[0..plan.largest];
-        const metadata = scratch.attribute_keys[plan.largest..plan.required()];
-        if (plan.order == .bitmap or plan.order == .ranges) {
-            if (plan.order == .bitmap) for (metadata) |*entry| {
-                entry.hash = 0;
-            };
-            var written: u32 = 0;
-            for (document.order) |id| {
-                const range = attributeRange(document, id);
-                if (range.len < 2) continue;
-                if (plan.order == .bitmap) {
-                    const end = range.start + range.len - 1;
-                    metadata[range.start / 64].hash |= @as(u64, 1) << @as(u6, @intCast(range.start % 64));
-                    metadata[end / 64].hash |= @as(u64, 1) << @as(u6, @intCast(end % 64));
-                } else {
-                    metadata[written] = .{ .hash = 0, .index = range.start, .first = range.len };
-                    written += 1;
-                }
-            }
-            if (plan.order == .ranges) std.sort.heap(AttributeKeyScratch, metadata, {}, indexLessThan);
-        }
-        return .{ .document = document, .entries = entries, .metadata = metadata, .plan = plan, .severity = settings.repeated_attribute };
-    }
+pub fn RepeatedAttributesForEncoding(comptime actual: @import("parser_support").encoding.Actual) type {
+    const values = @import("identifier_value.zig").ForEncoding(actual);
+    return struct {
+        const Self = @This();
+        document: *const syntax.Document,
+        entries: []AttributeKeyScratch,
+        metadata: []AttributeKeyScratch = &.{},
+        plan: DuplicatePlan = .{},
+        severity: policy.RuleSeverity,
+        index: u32 = 0,
+        count: u32 = 0,
+        statement_index: u32 = 0,
+        metadata_index: u32 = 0,
 
-    pub fn next(self: *RepeatedAttributes) ?D {
-        if (self.entries.len == 0) return null;
-        while (true) {
-            while (self.index < self.count) {
-                const entry = self.entries[self.index];
-                self.index += 1;
-                if (entry.first == none) continue;
-                return .{
-                    .code = severityCode(self.severity, .validation_repeated_attribute, .validation_repeated_attribute_tolerated),
-                    .span = self.document.attributes[entry.index].key,
-                    .details = .{ .repeated_attribute = self.document.attributes[entry.first].key },
+        pub fn init(document: *const syntax.Document, settings: Settings, scratch: Scratch, plan: DuplicatePlan) Self {
+            if (settings.repeated_attribute == .off) return .{ .document = document, .entries = &.{}, .severity = .off };
+            const entries = scratch.attribute_keys[0..plan.largest];
+            const metadata = scratch.attribute_keys[plan.largest..plan.required()];
+            if (plan.order == .bitmap or plan.order == .ranges) {
+                if (plan.order == .bitmap) for (metadata) |*entry| {
+                    entry.hash = 0;
                 };
-            }
-            const range = self.nextRange() orelse return null;
-            self.prepare(range);
-        }
-    }
-
-    fn nextMark(self: *RepeatedAttributes) ?u32 {
-        while (self.metadata_index < self.metadata.len) {
-            const bits = &self.metadata[self.metadata_index].hash;
-            if (bits.* == 0) {
-                self.metadata_index += 1;
-                continue;
-            }
-            const at = self.metadata_index * 64 + @as(u32, @intCast(@ctz(bits.*)));
-            bits.* &= bits.* - 1;
-            return at;
-        }
-        return null;
-    }
-
-    fn nextRange(self: *RepeatedAttributes) ?syntax.AttributeRange {
-        switch (self.plan.order) {
-            .statements => while (self.statement_index < self.document.order.len) {
-                const range = attributeRange(self.document, self.document.order[self.statement_index]);
-                self.statement_index += 1;
-                if (range.len >= 2) return range;
-            },
-            inline .nodes, .edges, .edge_chains, .attribute_statements => |pool| {
-                const records = @field(self.document, @tagName(pool));
-                while (self.statement_index < records.len) {
-                    const record = records[self.statement_index];
-                    self.statement_index += 1;
-                    const range = if (comptime pool == .edge_chains) record.first.attributes else record.attributes;
-                    if (range.len >= 2) return range;
-                }
-            },
-            .bitmap => {
-                const start = self.nextMark() orelse return null;
-                const end = self.nextMark().?;
-                return .{ .start = start, .len = end - start + 1 };
-            },
-            .ranges => {
-                if (self.metadata_index == self.metadata.len) return null;
-                const range = self.metadata[self.metadata_index];
-                self.metadata_index += 1;
-                return .{ .start = range.index, .len = range.first };
-            },
-        }
-        return null;
-    }
-
-    fn prepare(self: *RepeatedAttributes, range: syntax.AttributeRange) void {
-        const group = self.entries[0..range.len];
-        const attributes = self.document.attributes[range.start..][0..range.len];
-        for (group, attributes, range.start..) |*entry, attribute, index| {
-            entry.* = .{ .hash = identifier.hashAssumeValid(attribute.key.slice(self.document.source)), .index = @intCast(index), .first = none };
-        }
-        // Bound quadratic comparisons to eight keys. Source order is already
-        // correct; first matching predecessor is the original occurrence.
-        if (group.len <= 8) {
-            for (group, 0..) |*entry, i| {
-                for (group[0..i]) |previous| {
-                    if (entry.hash == previous.hash and equalKeys(self.document, previous.index, entry.index)) {
-                        entry.first = previous.index;
-                        break;
+                var written: u32 = 0;
+                for (document.order) |id| {
+                    const range = attributeRange(document, id);
+                    if (range.len < 2) continue;
+                    if (plan.order == .bitmap) {
+                        const end = range.start + range.len - 1;
+                        metadata[range.start / 64].hash |= @as(u64, 1) << @as(u6, @intCast(range.start % 64));
+                        metadata[end / 64].hash |= @as(u64, 1) << @as(u6, @intCast(end % 64));
+                    } else {
+                        metadata[written] = .{ .hash = 0, .index = range.start, .first = range.len };
+                        written += 1;
                     }
                 }
+                if (plan.order == .ranges) std.sort.heap(AttributeKeyScratch, metadata, {}, indexLessThan);
             }
+            return .{ .document = document, .entries = entries, .metadata = metadata, .plan = plan, .severity = settings.repeated_attribute };
+        }
+
+        pub fn next(self: *Self) ?D {
+            if (self.entries.len == 0) return null;
+            while (true) {
+                while (self.index < self.count) {
+                    const entry = self.entries[self.index];
+                    self.index += 1;
+                    if (entry.first == none) continue;
+                    return .{
+                        .code = severityCode(self.severity, .validation_repeated_attribute, .validation_repeated_attribute_tolerated),
+                        .span = self.document.attributes[entry.index].key,
+                        .details = .{ .repeated_attribute = self.document.attributes[entry.first].key },
+                    };
+                }
+                const range = self.nextRange() orelse return null;
+                self.prepare(range);
+            }
+        }
+
+        fn nextMark(self: *Self) ?u32 {
+            while (self.metadata_index < self.metadata.len) {
+                const bits = &self.metadata[self.metadata_index].hash;
+                if (bits.* == 0) {
+                    self.metadata_index += 1;
+                    continue;
+                }
+                const at = self.metadata_index * 64 + @as(u32, @intCast(@ctz(bits.*)));
+                bits.* &= bits.* - 1;
+                return at;
+            }
+            return null;
+        }
+
+        fn nextRange(self: *Self) ?syntax.AttributeRange {
+            switch (self.plan.order) {
+                .statements => while (self.statement_index < self.document.order.len) {
+                    const range = attributeRange(self.document, self.document.order[self.statement_index]);
+                    self.statement_index += 1;
+                    if (range.len >= 2) return range;
+                },
+                inline .nodes, .edges, .edge_chains, .attribute_statements => |pool| {
+                    const records = @field(self.document, @tagName(pool));
+                    while (self.statement_index < records.len) {
+                        const record = records[self.statement_index];
+                        self.statement_index += 1;
+                        const range = if (comptime pool == .edge_chains) record.first.attributes else record.attributes;
+                        if (range.len >= 2) return range;
+                    }
+                },
+                .bitmap => {
+                    const start = self.nextMark() orelse return null;
+                    const end = self.nextMark().?;
+                    return .{ .start = start, .len = end - start + 1 };
+                },
+                .ranges => {
+                    if (self.metadata_index == self.metadata.len) return null;
+                    const range = self.metadata[self.metadata_index];
+                    self.metadata_index += 1;
+                    return .{ .start = range.index, .len = range.first };
+                },
+            }
+            return null;
+        }
+
+        fn prepare(self: *Self, range: syntax.AttributeRange) void {
+            const group = self.entries[0..range.len];
+            const attributes = self.document.attributes[range.start..][0..range.len];
+            for (group, attributes, range.start..) |*entry, attribute, index| {
+                entry.* = .{ .hash = values.hashAssumeValid(attribute.key.slice(self.document.source)), .index = @intCast(index), .first = none };
+            }
+            // Bound quadratic comparisons to eight keys. Source order is already
+            // correct; first matching predecessor is the original occurrence.
+            if (group.len <= 8) {
+                for (group, 0..) |*entry, i| {
+                    for (group[0..i]) |previous| {
+                        if (entry.hash == previous.hash and equalKeys(self.document, previous.index, entry.index)) {
+                            entry.first = previous.index;
+                            break;
+                        }
+                    }
+                }
+                self.index = 0;
+                self.count = range.len;
+                return;
+            }
+            std.sort.heap(AttributeKeyScratch, group, self.document, keyLessThan);
+            var first = group[0].index;
+            for (group[1..], group[0 .. group.len - 1]) |*entry, previous| {
+                if (entry.hash == previous.hash and equalKeys(self.document, first, entry.index)) entry.first = first else first = entry.index;
+            }
+            std.sort.heap(AttributeKeyScratch, group, {}, indexLessThan);
             self.index = 0;
             self.count = range.len;
-            return;
         }
-        std.sort.heap(AttributeKeyScratch, group, self.document, keyLessThan);
-        var first = group[0].index;
-        for (group[1..], group[0 .. group.len - 1]) |*entry, previous| {
-            if (entry.hash == previous.hash and equalKeys(self.document, first, entry.index)) entry.first = first else first = entry.index;
-        }
-        std.sort.heap(AttributeKeyScratch, group, {}, indexLessThan);
-        self.index = 0;
-        self.count = range.len;
-    }
 
-    fn keyLessThan(document: *const syntax.Document, a: AttributeKeyScratch, b: AttributeKeyScratch) bool {
-        if (a.hash != b.hash) return a.hash < b.hash;
-        const order = identifier.orderAssumeValid(document.attributes[a.index].key.slice(document.source), document.attributes[b.index].key.slice(document.source));
-        return if (order == .eq) a.index < b.index else order == .lt;
-    }
-    fn equalKeys(document: *const syntax.Document, a: u32, b: u32) bool {
-        return identifier.orderAssumeValid(document.attributes[a].key.slice(document.source), document.attributes[b].key.slice(document.source)) == .eq;
-    }
-    fn indexLessThan(_: void, a: AttributeKeyScratch, b: AttributeKeyScratch) bool {
-        return a.index < b.index;
-    }
-};
+        fn keyLessThan(document: *const syntax.Document, a: AttributeKeyScratch, b: AttributeKeyScratch) bool {
+            if (a.hash != b.hash) return a.hash < b.hash;
+            const order = values.orderAssumeValid(document.attributes[a.index].key.slice(document.source), document.attributes[b.index].key.slice(document.source));
+            return if (order == .eq) a.index < b.index else order == .lt;
+        }
+        fn equalKeys(document: *const syntax.Document, a: u32, b: u32) bool {
+            return values.orderAssumeValid(document.attributes[a].key.slice(document.source), document.attributes[b].key.slice(document.source)) == .eq;
+        }
+        fn indexLessThan(_: void, a: AttributeKeyScratch, b: AttributeKeyScratch) bool {
+            return a.index < b.index;
+        }
+    };
+}
 
 pub const Ports = struct {
     values: []const syntax.PortedReference,
@@ -343,21 +349,27 @@ pub const Ports = struct {
     }
 };
 
-pub const Subgraphs = struct {
-    document: *const syntax.Document,
-    severity: policy.RuleSeverity,
-    index: u32 = 0,
+pub const Subgraphs = SubgraphsForEncoding(.utf8);
 
-    pub fn init(document: *const syntax.Document, settings: Settings, _: Scratch) Subgraphs {
-        return .{ .document = document, .severity = settings.restrictions.subgraphs };
-    }
-    pub fn next(self: *Subgraphs) ?D {
-        if (self.severity == .off or self.index == self.document.subgraph_records.len) return null;
-        const source = self.document.subgraph_records[self.index].source;
-        self.index += 1;
-        return restricted(self.severity, .{ .start = source.start, .len = if (self.document.source[source.start] == '{') 1 else 8 }, .subgraph);
-    }
-};
+pub fn SubgraphsForEncoding(comptime actual: @import("parser_support").encoding.Actual) type {
+    const enc = @import("parser_support").encoding.Reader(actual);
+    return struct {
+        const Self = @This();
+        document: *const syntax.Document,
+        severity: policy.RuleSeverity,
+        index: u32 = 0,
+
+        pub fn init(document: *const syntax.Document, settings: Settings, _: Scratch) Self {
+            return .{ .document = document, .severity = settings.restrictions.subgraphs };
+        }
+        pub fn next(self: *Self) ?D {
+            if (self.severity == .off or self.index == self.document.subgraph_records.len) return null;
+            const source = self.document.subgraph_records[self.index].source;
+            self.index += 1;
+            return restricted(self.severity, .{ .start = source.start, .len = if (enc.byteAt(self.document.source, source.start) == '{') enc.width else 8 * @as(u32, enc.width) }, .subgraph);
+        }
+    };
+}
 
 pub const GraphKinds = struct {
     document: *const syntax.Document,

@@ -15,6 +15,10 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
 }
 
 pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSettings, comptime metering: bool, comptime cancellable: bool, comptime backend: policy.ScannerBackend, comptime Processor: type) type {
+    return EngineWithEncoding(.utf8, api, fixed, metering, cancellable, backend, Processor);
+}
+
+pub fn EngineWithEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime fixed: ?policy.ParseSettings, comptime metering: bool, comptime cancellable: bool, comptime backend: policy.ScannerBackend, comptime Processor: type) type {
     return struct {
         const partial_capable = if (fixed) |p| p.retention.partial else true;
         const OwnedBuilder = if (partial_capable) partial.Builder(syntax_impl.Builder) else syntax_impl.Builder;
@@ -44,7 +48,7 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
         }
 
         fn DriverFor(comptime Sink: type) type {
-            return parser_impl.MachineWithProcessor(Sink, metering, false, cancellable, lexer_impl.scannerForComments(backend, if (fixed) |p| p.retention.comments else null), fixed, Processor);
+            return parser_impl.MachineWithProcessor(Sink, metering, false, cancellable, lexer_impl.scannerForEncoding(actual, backend, if (fixed) |p| p.retention.comments else null), fixed, Processor);
         }
 
         fn drive(source: []const u8, events: anytype, diagnostics: DiagnosticSink, scratch: *scratch_impl.Stack, options: Options) parser_impl.Result {
@@ -101,6 +105,7 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
                 output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, err, builder.failure_info, result.diagnostic_delivery, &output.diagnostic_stop);
                 return output;
             };
+            output.document.?.source_info = @import("parser_support").encoding.Reader(actual).sourceInfo(source);
             if (partial_capable and builder.enabled) {
                 output._allocation_lengths = builder.allocation_lengths;
                 builder.allocation_lengths = null;
@@ -290,6 +295,8 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
                     .diagnostic_delivery = delivery,
                     .diagnostic_stop = stop,
                 };
+                if (self.terminal.?.document) |*document|
+                    document.source_info = @import("parser_support").encoding.Reader(actual).sourceInfo(document.source);
             }
         };
 
@@ -306,7 +313,10 @@ pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSett
             if (result.outcome == .sink_failure) {
                 output.diagnostic_delivery = emitStorageDiagnostic(diagnostics, result.outcome.sink_failure, builder.failure_info, result.diagnostic_delivery, &output.diagnostic_stop);
             }
-            if (result.outcome == .success or (partial_capable and builder.frozen)) output.document = builder.toDocument();
+            if (result.outcome == .success or (partial_capable and builder.frozen)) {
+                output.document = builder.toDocument();
+                output.document.?.source_info = @import("parser_support").encoding.Reader(actual).sourceInfo(source);
+            }
             return output;
         }
 

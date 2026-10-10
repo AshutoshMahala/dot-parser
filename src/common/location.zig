@@ -110,6 +110,56 @@ pub const PositionCursor = struct {
     }
 };
 
+/// Native-source location lookup. Byte columns count original physical bytes,
+/// not Unicode scalars/code units; CR/LF are recognized as whole code units.
+pub const EncodedPositionCursor = struct {
+    position: Location = .start,
+    after_cr: bool = false,
+    pub fn locate(self: *@This(), comptime actual: @import("encoding.zig").Actual, source: []const u8, offset: u32) Location {
+        const E = @import("encoding.zig").Reader(actual);
+        if (offset < self.position.byte_offset) self.* = .{};
+        // A renderer may receive a truncated source or an unaligned diagnostic.
+        // Walk only complete units; preserve the final physical byte offset.
+        var at: usize = self.position.byte_offset;
+        while (at < offset and source.len - at >= E.width and offset - at >= E.width) {
+            const code = E.unit(source, at);
+            at += E.width;
+            self.position.byte_offset = @intCast(at);
+            switch (code) {
+                '\r' => {
+                    self.position.line += 1;
+                    self.position.byte_column = 1;
+                    self.after_cr = true;
+                },
+                '\n' => {
+                    if (!self.after_cr) {
+                        self.position.line += 1;
+                        self.position.byte_column = 1;
+                    }
+                    self.after_cr = false;
+                },
+                else => {
+                    self.position.byte_column += E.width;
+                    self.after_cr = false;
+                },
+            }
+        }
+        const tail = offset - self.position.byte_offset;
+        var result = self.position;
+        result.byte_offset = offset;
+        result.byte_column += tail;
+        return result;
+    }
+};
+
+pub fn locateEncoded(source: []const u8, offset: u32, actual: @import("encoding.zig").Actual) Location {
+    if (actual == .utf8 or actual == .ascii) return locate(source, offset);
+    var cursor: EncodedPositionCursor = .{};
+    switch (actual) {
+        inline else => |selected| return cursor.locate(selected, source, offset),
+    }
+}
+
 /// The position of `byte_offset` given the position `high` of a later
 /// offset: lines are counted back over `source[byte_offset..high]` and the
 /// column from the line start. Same terminator policy as `Tracker`: LF,

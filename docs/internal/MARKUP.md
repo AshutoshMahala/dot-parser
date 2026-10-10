@@ -22,7 +22,7 @@ decision before becoming implementation work.
 | Bounded validation | Credit accounting, resumable checks and DOT validation cancellation |
 | Partial trees | Retain later safely recovered regions, distinguish locally closed scopes with partial descendants, and add per-scope pending-work maps |
 | Summaries and public events | Representation, ownership, coverage and costs; proposals remain deferred |
-| Encoding adapters | UTF-16/32 conversion, provenance, error policy and source mapping |
+| Native encoding execution | Resumable admission/session dispatch, diagnostic admission and native excerpt windows |
 | Composed execution | Shared budgets, fixed memory and recursive/string scheduling; see [processor design](PROCESSOR_CONTRACT.md#remaining-design) |
 | Packaging | Whether markup should ever have a separate package/version lifecycle |
 
@@ -113,22 +113,23 @@ reach angle-counter depth 2. Decide whether a separate `max_elements` limit is
 useful, and define summary layouts, caching owners/lifetimes and public event
 consumers separately. Count-only measurement does not supply a public event API.
 
-### Encoding adapters
+### Native source encodings
 
-UTF-16/32 adapters need a conversion policy and API. Future UTF-8 working buffers
-must preserve original encoding, byte order and BOM provenance once per input,
-including whether it was detected or supplied. Converted bytes cannot reveal
-their old encoding; unknown provenance stays unknown.
+Compile-time capabilities, inheritance/union, BOM/explicit selection and the
+initial one-shot native paths are implemented; see [source encodings](../ENCODINGS.md).
+Do not retain a UTF-8 conversion/source-map requirement for native parsing.
 
-Original bytes or a live source handle are needed for exact reproduction.
-Replacement, normalization and discarded information must be reported rather
-than called lossless. Conversion error policy, metadata and ownership APIs remain
-open. Original-file diagnostics/fixes require a source map; a constant fragment
-origin is not sufficient. Without a map, identify working-buffer coordinates.
+Remaining work: resumable/cancellable admission under an explicit work budget,
+native Session dispatch, source excerpt windows with physical-byte annotation
+mapping, and an encoding-admission diagnostic contract before exposing repaired
+or partial native input. Currently admission errors precede tree creation.
+Preserve original bytes and compact per-document provenance; keep disabled
+readers out of dispatch and measure default UTF-8 regressions separately.
 
-Account separately for conversion CPU, output-buffer size, original-buffer
-lifetime, mapping storage/rescans and dual-buffer peak memory. Bound original
-and converted sizes. Unchanged raw-byte paths must not acquire these costs.
+Any future explicit transform must state buffer ownership, replacement/loss,
+original/working size bounds, mapping and CPU/memory costs. Such a transform is
+not required to recognize UTF-16/32 grammar and must not become a hidden pass on
+the default raw-byte path.
 
 ### Composition and release choices
 

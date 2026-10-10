@@ -8,9 +8,10 @@ Every operation tells you two things, kept separate on purpose:
    error or a warning, where it is, and often a suggested fix. Diagnostics go
    to a destination you choose, usually a *bag*.
 
-The library never prints, never panics on bad input, and never reports bad
-input through Zig's `error` values. Zig errors only appear for things like
-an invalid configuration or a buffer you passed being too small.
+The library never prints or panics on bad input. Grammar and validation findings
+use diagnostics, not Zig errors. Zig errors cover API/configuration failures and
+the opt-in native facade's [encoding admission checks](ENCODINGS.md#bom-or-explicit-byte-order),
+which run before grammar processing or tree creation.
 
 Both parsers report problems this way, with the same bags, sinks, renderer and
 fixes. The examples here use DOT; for markup, write `markup.` instead of

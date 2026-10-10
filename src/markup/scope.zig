@@ -47,26 +47,32 @@ pub const Scope = union(enum) {
 /// invariant check, or a statically bound cancellable public-call context.
 /// It runs once per attribute; no source-content scan or allocation is added.
 pub fn metadataValid(source: []const u8, scope: Scope, progress: anytype) bool {
+    return metadataValidForEncoding(.utf8, source, scope, progress);
+}
+
+pub fn metadataValidForEncoding(comptime actual: @import("parser_support").encoding.Actual, source: []const u8, scope: Scope, progress: anytype) bool {
+    const enc = @import("parser_support").encoding.Reader(actual);
     const range = scope.span();
-    if (source.len > max_source_len or range.endOffset() > source.len) return false;
+    if (source.len > max_source_len or range.endOffset() > source.len or range.start % enc.width != 0 or range.len % enc.width != 0) return false;
     switch (scope) {
         .opening_header => |h| {
-            if (h.attributes.len > std.math.maxInt(u32) or h.name.len == 0 or
+            if (h.attributes.len > std.math.maxInt(u32) or h.name.len == 0 or h.name.start % enc.width != 0 or h.name.len % enc.width != 0 or
                 h.name.start < range.start or h.name.endOffset() > range.endOffset()) return false;
             var previous = h.name.endOffset();
             for (h.attributes) |a| {
                 if (@TypeOf(progress) != void) if (!progress.proceed()) return false;
-                if (a.name.len == 0 or a.name.start < previous or a.name.endOffset() > range.endOffset() or
+                if (a.name.len == 0 or a.name.start % enc.width != 0 or a.name.len % enc.width != 0 or a.value.start % enc.width != 0 or a.value.len % enc.width != 0 or a.name.start < previous or a.name.endOffset() > range.endOffset() or
                     a.value.endOffset() > source.len) return false;
                 if (a.value.len == 0) {
                     if (h.complete) return false;
                     previous = a.name.endOffset();
                     continue;
                 }
-                if (a.value.len < 2 or a.value.start < a.name.endOffset() or
+                if (a.value.len < 2 * enc.width or a.value.start < a.name.endOffset() or
                     a.value.endOffset() > range.endOffset()) return false;
                 const value = a.value.slice(source); // Bounds checked before either read.
-                if ((value[0] != '\'' and value[0] != '"') or value[value.len - 1] != value[0]) return false;
+                const quote = enc.unit(value, 0);
+                if ((quote != '\'' and quote != '"') or enc.unit(value, value.len - enc.width) != quote) return false;
                 previous = a.value.endOffset();
             }
         },

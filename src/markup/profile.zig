@@ -9,9 +9,30 @@ const syntax = @import("syntax.zig");
 const scratch_impl = @import("scratch.zig");
 
 pub fn Profile(comptime api: type, comptime config: policy.Config) type {
+    const caps = @import("parser_support").encoding.Capabilities.from(config.source_encodings);
+    if (@as(u4, @bitCast(caps)) == 2) return ProfileForEncoding(.utf8, api, config);
+    return @import("source_profile.zig").Profile(api, config, caps);
+}
+
+pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime config: policy.Config) type {
+    return ProfileForInputEncoding(actual, api, config, true);
+}
+
+fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime config: policy.Config, comptime strip_bom: bool) type {
+    @setEvalBranchQuota(10000);
     const Binding = @import("parser_support").processor.PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
     return struct {
         const Self = @This();
+        pub const declared_source_encodings = config.source_encodings;
+        pub const source_capabilities = @import("parser_support").encoding.Capabilities.from(config.source_encodings);
+        pub fn withSourceEncodings(comptime capabilities: @import("parser_support").encoding.Capabilities) type {
+            var bound = config;
+            bound.source_encodings = capabilities.list();
+            return api.Profile(bound);
+        }
+        pub fn forSourceEncoding(comptime selected: @import("parser_support").encoding.Actual) type {
+            return ProfileForInputEncoding(selected, api, config, false);
+        }
         pub const Policies = Binding;
         pub const Diagnostic = api.Diagnostic;
         pub const DiagnosticSink = api.DiagnosticSink;
@@ -216,7 +237,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
                 @as(u4, if (effective.execution.cancellation) 1 else 0));
         }
         fn Core(comptime variant: Variant) type {
-            return engine.Engine(api, variant.backend(), if (runtime_policy) null else baseline.parsing(), variant.metering(), variant.cancellation(), variant.mode());
+            return engine.EngineWithInputEncoding(actual, api, variant.backend(), if (runtime_policy) null else baseline.parsing(), variant.metering(), variant.cancellation(), variant.mode(), strip_bom);
         }
         fn settings(comptime variant: Variant, effective: State) Core(variant).Settings {
             return if (runtime_policy) effective.parsing() else {};
@@ -257,7 +278,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
         }
 
         fn Validator(comptime v: Variant) type {
-            return validation.Validator(if (runtime_policy) null else baseline.validation, v.cancellation(), v.mode());
+            return validation.ValidatorForEncoding(actual, if (runtime_policy) null else baseline.validation, v.cancellation(), v.mode());
         }
         fn validateCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
             return validatePrepared(method, args, prepare(options));
@@ -291,7 +312,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return validateCall("allocatedScope", .{ allocator, source, scope, diagnostics }, options);
         }
         fn SourceValidator(comptime v: Variant) type {
-            return source_validation.Validator(v.backend(), if (runtime_policy) null else baseline, v.cancellation(), v.mode());
+            return source_validation.ValidatorForInputEncoding(actual, v.backend(), if (runtime_policy) null else baseline, v.cancellation(), v.mode(), strip_bom);
         }
         fn sourceValidationCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
             return sourceValidationPrepared(method, args, prepare(options));

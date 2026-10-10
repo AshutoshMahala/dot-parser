@@ -538,6 +538,8 @@ pub const Document = struct {
     /// Storing it here makes document/source pairings unforgeable for consumers
     /// such as validation.
     source: []const u8,
+    /// One encoding for this source. All ranges remain original byte offsets.
+    source_info: @import("parser_support").encoding.Info = .{},
     /// Null means retention was disabled; a present empty slice means no comments.
     /// Complete DOT comments in source order, separate from statement order.
     comments: ?[]const Comment = null,
@@ -567,6 +569,11 @@ pub const Document = struct {
     /// Local DOT representation, independent of validation and child processors.
     state: Completeness = .complete,
     retained_end: u32 = 0,
+
+    /// Borrowed comment payload, removing delimiters in this source's encoding.
+    pub fn commentBody(self: *const Document, comment: Comment) []const u8 {
+        return comment.bodyEncoded(self.source, self.source_info.encoding);
+    }
 
     /// O(1) checked scope lookup. Root is zero; subgraph IDs are one-based
     /// occurrences in opening/source order, independent of names.
@@ -712,12 +719,16 @@ pub const Document = struct {
     /// on error. Range must lie within this document; non-identifier spelling
     /// is rejected. No caching, normalization, or numeric conversion occurs.
     pub fn decodeIdentifier(self: *const Document, range: location.Range, output: []u8) identifier.DecodeError![]const u8 {
-        return identifier.decodeInto(self.text(range), output);
+        switch (self.source_info.encoding) {
+            inline else => |actual| return identifier.ForEncoding(actual).decodeInto(self.text(range), output),
+        }
     }
 
     /// Stream a decoded identifier. A writer failure may leave partial output.
     pub fn writeIdentifier(self: *const Document, range: location.Range, writer: anytype) !void {
-        try identifier.writeDecoded(self.text(range), writer);
+        switch (self.source_info.encoding) {
+            inline else => |actual| try identifier.ForEncoding(actual).writeDecoded(self.text(range), writer),
+        }
     }
 };
 

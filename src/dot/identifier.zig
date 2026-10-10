@@ -8,6 +8,7 @@
 const std = @import("std");
 const lex = @import("lexer/lexer.zig");
 const Chunks = @import("identifier_value.zig").Chunks;
+const encoding = @import("parser_support").encoding;
 
 pub const DecodeError = error{ InvalidIdentifier, NoSpaceLeft, OverlappingBuffers };
 pub const Form = enum { bare, numeral, quoted, html, concatenation };
@@ -91,6 +92,88 @@ fn validate(raw: []const u8) error{InvalidIdentifier}!lex.Token {
         result.token.span.start != 0 or result.token.span.len != raw.len)
         return error.InvalidIdentifier;
     return result.token;
+}
+
+/// Native spelling helpers. Values are explicitly decoded to UTF-8; raw tree
+/// ranges and operand parts continue to refer to the original source bytes.
+pub fn ForEncoding(comptime actual: encoding.Actual) type {
+    if (actual == .utf8) return struct {
+        pub const parts = @import("identifier.zig").parts;
+        pub const form = @import("identifier.zig").form;
+        pub const decodedLen = @import("identifier.zig").decodedLen;
+        pub const decodeInto = @import("identifier.zig").decodeInto;
+        pub const writeDecoded = @import("identifier.zig").writeDecoded;
+    };
+    return struct {
+        const E = encoding.Reader(actual);
+        const Values = @import("identifier_value.zig").ForEncoding(actual);
+        pub const Parts = @import("identifier_parts.zig").ForEncoding(actual).Parts;
+        fn checked(raw: []const u8) error{InvalidIdentifier}!lex.Token {
+            if (raw.len % E.width != 0) return error.InvalidIdentifier;
+            @import("parser_support").source_dispatch.check(actual, raw) catch return error.InvalidIdentifier;
+            var scanner = lex.scalar.ScannerWithEncoding(actual, false, false, true, false).initRaw(raw);
+            const result = scanner.next();
+            if (result != .token or result.token.tag != .identifier or result.token.span.start != 0 or result.token.span.len != raw.len)
+                return error.InvalidIdentifier;
+            return result.token;
+        }
+        pub fn parts(source: []const u8, range: @import("parser_support").location.Span) error{ InvalidSpan, InvalidIdentifier }!@This().Parts {
+            if (range.start % E.width != 0 or range.len % E.width != 0) return error.InvalidSpan;
+            const input = @import("parser_support").processor.Fragment.fromSource(source, range) catch return error.InvalidSpan;
+            const token = try checked(input.bytes);
+            return .{ .input = input, .compound = token.flags.concatenated };
+        }
+        pub fn form(raw: []const u8) error{InvalidIdentifier}!Form {
+            const token = try checked(raw);
+            if (token.flags.concatenated) return .concatenation;
+            return switch (E.byteAt(raw, 0)) {
+                '<' => .html,
+                '"' => .quoted,
+                '-', '.', '0'...'9' => .numeral,
+                else => .bare,
+            };
+        }
+        pub fn decodedLen(raw: []const u8) error{InvalidIdentifier}!usize {
+            _ = try checked(raw);
+            var chunks: Values.Chunks = .{ .raw = raw };
+            var len: usize = 0;
+            while (chunks.next()) |chunk| {
+                var at: usize = 0;
+                while (at < chunk.len) {
+                    const scalar = E.decode(chunk, at) catch return error.InvalidIdentifier;
+                    at += scalar.len;
+                    len += std.unicode.utf8CodepointSequenceLength(scalar.scalar) catch return error.InvalidIdentifier;
+                }
+            }
+            return len;
+        }
+        pub fn decodeInto(raw: []const u8, output: []u8) DecodeError![]const u8 {
+            const len = try @This().decodedLen(raw);
+            if (len > output.len) return error.NoSpaceLeft;
+            if (len != 0) {
+                const a = @intFromPtr(raw.ptr);
+                const b = @intFromPtr(output.ptr);
+                if (if (a <= b) b - a < raw.len else a - b < len) return error.OverlappingBuffers;
+            }
+            var writer = std.Io.Writer.fixed(output[0..len]);
+            @This().writeDecoded(raw, &writer) catch unreachable; // Sized and checked above.
+            return output[0..len];
+        }
+        pub fn writeDecoded(raw: []const u8, writer: anytype) !void {
+            _ = try @This().decodedLen(raw); // Validate before the first write.
+            var chunks: Values.Chunks = .{ .raw = raw };
+            var out: [4]u8 = undefined;
+            while (chunks.next()) |chunk| {
+                var at: usize = 0;
+                while (at < chunk.len) {
+                    const scalar = E.decode(chunk, at) catch unreachable;
+                    at += scalar.len;
+                    const len = std.unicode.utf8Encode(scalar.scalar, &out) catch unreachable;
+                    try writer.writeAll(out[0..len]);
+                }
+            }
+        }
+    };
 }
 
 test "decode preserves numeral identity and only removes DOT lexical escapes" {

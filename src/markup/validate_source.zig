@@ -70,8 +70,17 @@ pub const Buffers = struct {
 };
 
 pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.Effective, comptime cancellable: bool, comptime mode: policy.Mode) type {
-    const V = validation.Validator(if (fixed) |f| f.validation else null, cancellable, mode);
-    const Local = validation.Validator(if (fixed) |f| localSettings(f.validation) else null, cancellable, mode);
+    return ValidatorForEncoding(.utf8, backend, fixed, cancellable, mode);
+}
+
+pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime backend: policy.ScannerBackend, comptime fixed: ?policy.Effective, comptime cancellable: bool, comptime mode: policy.Mode) type {
+    return ValidatorForInputEncoding(actual, backend, fixed, cancellable, mode, true);
+}
+
+pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, comptime backend: policy.ScannerBackend, comptime fixed: ?policy.Effective, comptime cancellable: bool, comptime mode: policy.Mode, comptime strip_bom: bool) type {
+    const enc = support.encoding.Reader(actual);
+    const V = validation.ValidatorForEncoding(actual, if (fixed) |f| f.validation else null, cancellable, mode);
+    const Local = validation.ValidatorForEncoding(actual, if (fixed) |f| localSettings(f.validation) else null, cancellable, mode);
     return struct {
         const Self = @This();
         pub const Settings = if (fixed == null) policy.Effective else void;
@@ -173,7 +182,7 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                         } else {
                             if (!self.checkAttributeVocabulary(t.name)) return false;
                             if (!self.checkScope(.{ .attribute_name = t.name }, &.{})) return false;
-                            return self.checkScope(.{ .attribute_value = .{ .start = t.span.start + 1, .len = t.span.len - 2 } }, &.{});
+                            return self.checkScope(.{ .attribute_value = .{ .start = t.span.start + enc.width, .len = t.span.len - 2 * enc.width } }, &.{});
                         }
                     },
                     .head_end, .empty_end => return self.flush(@intCast(t.span.endOffset()), true),
@@ -222,7 +231,8 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                 if (!self.merge(encoded)) return self.result;
                 if (p.validation.duplicate_attribute == .off and p.validation.names.severity == .off and p.validation.references.severity == .off and !validation.vocabularyActive(mode, v))
                     return self.finish();
-                var scanner = lexer.Scanner(backend, false, cancellable).init(self.source);
+                const Scanner = lexer.ScannerWithEncoding(actual, backend, false, cancellable);
+                var scanner = if (strip_bom) Scanner.init(self.source) else Scanner.initContent(self.source);
                 while (true) {
                     if (!self.poll()) return self.result;
                     if (!scanner.stepReady()) continue;
@@ -258,7 +268,7 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
                                     if (!self.checkScope(scope, &.{})) return self.result;
                                 }
                             }
-                            if (!self.flush(scanner.offset, false)) return self.result;
+                            if (!self.flush(scanner.offset * enc.width, false)) return self.result;
                             if (pending.content) |content| {
                                 if (!self.checkScope(if (pending.content_kind == .text) .{ .text = content } else .{ .attribute_value = content }, &.{})) return self.result;
                             }

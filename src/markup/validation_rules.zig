@@ -46,6 +46,14 @@ pub fn knownReference(catalog: policy.ReferenceCatalog, name: []const u8) bool {
     };
 }
 
+pub fn knownReferenceEncoded(comptime actual: @import("parser_support").encoding.Actual, catalog: policy.ReferenceCatalog, name: []const u8) bool {
+    const enc = @import("parser_support").encoding.Reader(actual);
+    if (enc.width == 1) return knownReference(catalog, name);
+    return switch (catalog) {
+        .xml_predefined => enc.asciiEqual(name, "lt", false) or enc.asciiEqual(name, "gt", false) or enc.asciiEqual(name, "amp", false) or enc.asciiEqual(name, "apos", false) or enc.asciiEqual(name, "quot", false),
+    };
+}
+
 test "XML name ranges use Fifth Edition boundaries, not Unicode letter categories" {
     const ranges = [_][2]u21{
         .{ 0xc0, 0xd6 },     .{ 0xd8, 0xf6 },     .{ 0xf8, 0x2ff },    .{ 0x370, 0x37d },

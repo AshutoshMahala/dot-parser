@@ -107,9 +107,9 @@ New DOT statements or operators are outside inner-processor composition.
 
 ### Source transforms and retained summaries
 
-Decoded/concatenated maps, UTF-16/32 conversion maps, summary caches and public
+Decoded/concatenated maps, optional explicit conversion maps, summary caches and public
 events still need explicit representations and lifetimes. Follow the
-[encoding constraints](MARKUP.md#encoding-adapters) and
+[encoding constraints](MARKUP.md#native-source-encodings) and
 [summary proposal](MARKUP.md#optional-summaries-and-retention); raw-fragment offset
 rebasing is not a replacement for those designs. Do not impose their storage or
 rescan costs on callers that use only contiguous raw bytes.

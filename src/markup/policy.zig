@@ -76,7 +76,12 @@ pub const Effective = struct {
     }
 };
 pub const ParseSettings = struct { retain_partial: bool = false, limits: Limits = .{}, syntax: SyntaxSettings = .{}, fixes: Fixes = .all, unsupported: Unsupported = .err, on_error: OnError = .collect };
-pub const Config = struct { policy: Policy = .{}, runtime_policy: bool = false };
+pub const Config = struct {
+    policy: Policy = .{},
+    runtime_policy: bool = false,
+    /// Compile-time input readers, not a runtime policy patch.
+    source_encodings: ?[]const @import("parser_support").encoding.Encoding = null,
+};
 pub const defaults: Effective = .{};
 pub const Check = enum { valid };
 pub const Error = error{};

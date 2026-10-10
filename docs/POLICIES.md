@@ -32,15 +32,16 @@ explains the shared parts and DOT's own settings. Markup's own settings are in
 
 ## Profile options
 
-`dot.Profile(...)` takes three options:
+`dot.Profile(...)` takes these options:
 
 | Option | Meaning |
 | --- | --- |
 | `.policy` | The compiled settings. Every field is listed in [all DOT settings](#all-dot-settings). |
 | `.runtime_policy` | `true` lets each call pass a `.policy` patch. Default `false`. See [changing settings at run time](#changing-settings-at-run-time). |
+| `.source_encodings` | Compile-time source readers. Omitted means UTF-8; empty means ASCII-only. See [source encodings](ENCODINGS.md). |
 | `.processors.markup` | DOT only. A processor that checks HTML-like `<...>` values during parsing. See [adding a label processor](#adding-a-label-processor). |
 
-`markup.Profile(...)` takes `.policy` and `.runtime_policy` in the same way.
+`markup.Profile(...)` takes `.policy`, `.runtime_policy` and `.source_encodings` in the same way.
 
 ## Presets
 

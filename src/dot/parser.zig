@@ -154,6 +154,9 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
         syntax_event.assertSyntaxSink(info.pointer.child);
     }
+    const Scanner = ScannerOf(metered, audited, if (fixed) |v| v.ambiguous_numeral != .off else null);
+    const actual = if (@hasDecl(Scanner, "source_encoding")) Scanner.source_encoding else @import("parser_support").encoding.Actual.utf8;
+    const enc = @import("parser_support").encoding.Reader(actual);
     const recovery_enabled = if (fixed) |value| value.on_error == .collect or (value.markup == .none and value.unsupported != .err) else true;
     const deviations_enabled = if (fixed) |value| value.syntax.acceptsDeviations() else true;
     const operators_enabled = if (fixed) |value| value.syntax.acceptsOperators() else true;
@@ -387,8 +390,8 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
 
         fn readOperator(self: *Self, token: lex.Token) ?syntax_event.EdgeOperator {
             const operator: syntax_event.EdgeOperator = if (token.tag == .edge_undirected) .undirected else .directed;
-            if (operators_enabled and token.span.len != 2) {
-                const bare = token.span.len == 1;
+            if (operators_enabled and token.span.len != 2 * enc.width) {
+                const bare = token.span.len == enc.width;
                 if (self.acceptDeviation(if (bare) self.syntax().bare_dash.acceptance else self.syntax().long_operator, .{
                     .code = .syntax_operator_accepted,
                     .span = token.span,
@@ -1160,8 +1163,8 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     self.events.endSubgraph(.{ .close = token.span, .entry = frame.entry }) catch |err| return self.sinkFailure(err);
                     _ = stack.pop();
                     if (self.suspect_close == null) {
-                        if (leadingIndent(self.tokens.source, token.span)) |close_indent| {
-                            if (lineIndent(self.tokens.source, self.open_brace_span.?)) |open_indent| {
+                        if (leadingIndentEncoded(actual, self.tokens.source, token.span)) |close_indent| {
+                            if (lineIndentEncoded(actual, self.tokens.source, self.open_brace_span.?)) |open_indent| {
                                 if (close_indent < open_indent) self.suspect_close = token.span;
                             }
                         }
@@ -1383,10 +1386,10 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     // taken the '=' as an assignment, so the two bytes are
                     // adjacent on one line.
                     const offset = d.span.start;
-                    if (byte != '>' or offset == 0 or self.tokens.source[offset - 1] != '=' or !self.kindKnown()) return null;
+                    if (byte != '>' or offset < enc.width or enc.byteAt(self.tokens.source, offset - enc.width) != '=' or !self.kindKnown()) return null;
                     var span = d.span;
-                    span.start -= 1;
-                    span.len = 2;
+                    span.start -= enc.width;
+                    span.len = 2 * enc.width;
                     return .{ .span = span, .edit = .{ .replace = self.kindOperator() }, .applicability = .maybe };
                 },
                 .unterminated => |construct| {
@@ -1435,7 +1438,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             if (at_eof) return false;
             if (self.tokens.terminal != .none) return switch (self.tokens.terminal) {
                 .oversize, .none, .eof, .block, .quote, .html_unterminated => false,
-                .concat => self.tokens.opener < self.tokens.source.len,
+                .concat => self.tokens.opener < enc.units(self.tokens.source),
                 // Failures inside a quoted token have no safe restart point.
                 // The scanners would otherwise abandon the rest of the source.
                 .invalid, .operator, .operator_long, .operator_spaced, .numeral => self.tokens.opener == self.tokens.anchor,
@@ -1734,38 +1737,43 @@ const max_indent_scan = 128;
 
 /// The indentation of `span`'s line when `span` is the first non-blank
 /// text on it: the number of leading spaces and tabs. Null otherwise.
-fn leadingIndent(source: []const u8, span: location.Span) ?usize {
+fn leadingIndentEncoded(comptime actual: @import("parser_support").encoding.Actual, source: []const u8, span: location.Span) ?usize {
+    const enc = @import("parser_support").encoding.Reader(actual);
     // Walk back from the span: the first non-blank byte settles it at once,
     // so a brace deep inside a dense line costs one byte read, and only a
     // genuinely indented one pays for its indentation (bounded).
     var start: usize = span.start;
     while (start > 0) {
-        const byte = source[start - 1];
+        const byte = enc.byteAt(source, start - enc.width);
         if (byte == '\n' or byte == '\r') break;
         if (byte != ' ' and byte != '\t') return null;
         if (span.start - start >= max_indent_scan) return null;
-        start -= 1;
+        start -= enc.width;
     }
-    return span.start - start;
+    return (span.start - start) / enc.width;
 }
 
 /// The offset where `offset`'s line begins, or null when that is more than
 /// `max_indent_scan` bytes back. Same terminators as `location`: LF, CR.
-fn lineStart(source: []const u8, offset: usize) ?usize {
+fn lineStartEncoded(comptime actual: @import("parser_support").encoding.Actual, source: []const u8, offset: usize) ?usize {
+    const enc = @import("parser_support").encoding.Reader(actual);
     var start = offset;
-    while (start > 0 and source[start - 1] != '\n' and source[start - 1] != '\r') {
+    while (start > 0 and enc.byteAt(source, start - enc.width) != '\n' and enc.byteAt(source, start - enc.width) != '\r') {
         if (offset - start >= max_indent_scan) return null;
-        start -= 1;
+        start -= enc.width;
     }
     return start;
 }
 
 /// The indentation of `span`'s line (its first non-blank column), whatever
 /// precedes `span` on that line. Null when the prefix exceeds the bound.
-fn lineIndent(source: []const u8, span: location.Span) ?usize {
-    const line_start = lineStart(source, span.start) orelse return null;
+fn lineIndentEncoded(comptime actual: @import("parser_support").encoding.Actual, source: []const u8, span: location.Span) ?usize {
+    const enc = @import("parser_support").encoding.Reader(actual);
+    const line_start = lineStartEncoded(actual, source, span.start) orelse return null;
     var indent: usize = 0;
-    for (source[line_start..span.start]) |byte| {
+    var at = line_start;
+    while (at < span.start) : (at += enc.width) {
+        const byte = enc.byteAt(source, at);
         if (byte != ' ' and byte != '\t') break;
         indent += 1;
     }

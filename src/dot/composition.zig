@@ -11,6 +11,12 @@ const lex = @import("lexer/lexer.zig");
 const Parts = @import("identifier_parts.zig").Parts;
 
 pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Child: type) type {
+    return ProfileForEncoding(.utf8, api, config, Child);
+}
+
+pub fn ProfileForEncoding(comptime actual: support.encoding.Actual, comptime api: type, comptime config: policy.Config, comptime Child: type) type {
+    const enc = support.encoding.Reader(actual);
+    const EncodedParts = @import("identifier_parts.zig").ForEncoding(actual).Parts;
     comptime {
         for (.{ "Policies", "Prepared", "Options", "Diagnostic", "DiagnosticSink", "Workspace", "ParseResources", "InputError", "prepare" }) |member| {
             if (!@hasDecl(Child, member)) @compileError("bound markup processor is missing " ++ member);
@@ -27,8 +33,16 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
     const can_process = config.runtime_policy or Binding.baseline.parsing.markup == .process;
     const can_retain = child_owns and (config.runtime_policy or Binding.baseline.parsing.retention.markup);
     const can_delay = can_retain and (config.runtime_policy or Binding.baseline.parsing.markup == .passthrough);
+    // Reader-independent ownership types. Native workers share these types,
+    // without erased payloads, pointer casts or duplicate retained pools.
+    const Canonical = if (actual == .utf8) void else ProfileForEncoding(.utf8, api, config, Child.forSourceEncoding(.utf8));
     return struct {
         const Self = @This();
+        pub const declared_source_encodings = config.source_encodings;
+        pub const source_capabilities = @import("parser_support").encoding.Capabilities.bound(
+            @import("parser_support").encoding.Capabilities.from(config.source_encodings),
+            if (@hasDecl(Child, "declared_source_encodings")) Child.declared_source_encodings else null,
+        );
         pub const baseline = Binding.baseline;
         pub const runtime_policy = config.runtime_policy;
         pub const Policies = support.processor.PolicySet(.{ .dot = Outer, .markup = Child }).Policies;
@@ -36,7 +50,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
 
         /// Only this compiled composition pays for the tagged union. No payload
         /// is erased or truncated; a flat bag slot fits the largest bound type.
-        pub const Diagnostic = union(enum) {
+        pub const Diagnostic = if (actual != .utf8) Canonical.Diagnostic else union(enum) {
             dot: api.Diagnostic,
             markup: Child.Diagnostic,
 
@@ -76,7 +90,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
             InvalidIdentifier,
             OutOfMemory,
         };
-        pub const MarkupReport = struct {
+        pub const MarkupReport = if (actual != .utf8) Canonical.MarkupReport else struct {
             /// False until proactive processing or explicit delayed selection.
             /// No child checking was requested;
             /// zero findings must not be mistaken for validated markup.
@@ -103,14 +117,14 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
                 return self.requested and self.complete and self.stop == null and self.valid == self.visited;
             }
         };
-        pub const MarkupResult = if (can_retain) struct {
+        pub const MarkupResult = if (actual != .utf8) Canonical.MarkupResult else if (can_retain) struct {
             /// Whole raw DOT operand (including its outer angle brackets).
             envelope: support.location.Span,
             /// Original-source origin; child records index input.bytes locally.
             input: support.processor.Fragment,
             result: Child.CheckResult,
         } else void;
-        const Delayed = struct {
+        const Delayed = if (actual != .utf8) Canonical.Delayed else struct {
             mode: policy.MarkupMode,
             enabled: bool,
             on_error: api.OnError,
@@ -119,7 +133,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
             selection_end: u32 = 0,
             closed: bool = false,
         };
-        pub const CheckResult = struct {
+        pub const CheckResult = if (actual != .utf8) Canonical.CheckResult else struct {
             dot: api.CheckResult,
             markup: MarkupReport,
             _markup_results: if (can_retain) std.ArrayList(MarkupResult) else void = if (can_retain) .empty else {},
@@ -141,9 +155,19 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
                 if (!can_delay) return error.MarkupNotPassthrough;
                 try self.checkDelayed();
                 const document = self.dot.document orelse return error.DocumentUnavailable;
+                switch (document.source_info.encoding) {
+                    inline else => |selected| {
+                        const caps = Self.source_capabilities;
+                        if (comptime !caps.allows(selected)) return error.InvalidIdentifier;
+                        return requestMarkupEncoded(selected, self, allocator, range);
+                    },
+                }
+            }
+            fn requestMarkupEncoded(comptime selected: support.encoding.Actual, self: *@This(), allocator: std.mem.Allocator, range: support.location.Span) SelectionError!void {
+                const document = self.dot.document orelse return error.DocumentUnavailable;
                 const limit = if (document.scopeComplete()) document.source.len else document.retained_end;
                 if (range.start > limit or range.len > limit - range.start) return error.InvalidSpan;
-                var parts = try @import("identifier.zig").parts(document.source, range);
+                var parts = try @import("identifier.zig").ForEncoding(selected).parts(document.source, range);
                 if (range.start < self._delayed.selection_end) return error.SelectionOutOfOrder;
                 const first = parts;
                 var count: u32 = 0;
@@ -272,7 +296,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
             /// grammar replay. The DOT scanner already established all bounds.
             pub fn processIdentifier(self: *@This(), source: []const u8, token: lex.Token, on_error: api.OnError) ?Stop {
                 if (!can_process) return null;
-                var parts: Parts = .{
+                var parts: EncodedParts = .{
                     .input = .{ .bytes = token.span.slice(source), .origin = token.span.start },
                     .compound = token.flags.concatenated,
                 };
@@ -383,8 +407,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
                 // Admission validated the envelope; the borrowed source must
                 // remain unchanged for the whole result lifetime.
                 const input: support.processor.Fragment = .{
-                    .bytes = document.source[envelope.start + 1 ..][0 .. envelope.len - 2],
-                    .origin = envelope.start + 1,
+                    .bytes = document.source[envelope.start + enc.width ..][0 .. envelope.len - 2 * enc.width],
+                    .origin = envelope.start + enc.width,
                 };
                 const visited = context.report.visited;
                 const stop = context.processRetained(envelope, input, result._delayed.on_error);
@@ -395,7 +419,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
         }
 
         fn parse(comptime backend: api.ScannerBackend, comptime cancellable: bool, allocator: std.mem.Allocator, source: []const u8, context: *Context, effective: Binding.State, options: DotOptions) api.ParseResult {
-            const Core = engine.EngineWithProcessor(api, if (runtime_policy) null else baseline.parsing, false, cancellable, backend, *Context);
+            const Core = engine.EngineWithEncoding(actual, api, if (runtime_policy) null else baseline.parsing, false, cancellable, backend, *Context);
             return Core.parseBorrowed(allocator, source, context.dotSink(), options.parse, .{
                 .processor = context,
                 .parsing = if (runtime_policy) effective.parsing else {},
@@ -440,7 +464,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Chil
             const collect = (if (runtime_policy) effective.parsing.on_error else baseline.parsing.on_error) == .collect;
             const checked: ?api.ValidationResult = if (parsed.document != null and parsed.diagnostic_stop == null and parsed.diagnostic_delivery == .complete and
                 (parsed.outcome == .success or (parsed.outcome == .invalid_syntax and collect)))
-                validation.validate(if (runtime_policy) null else baseline.validation, &parsed.document.?, context.dotSink(), if (runtime_policy) effective.validation else {}, options.dot.validation)
+                validation.validateForEncoding(actual, if (runtime_policy) null else baseline.validation, &parsed.document.?, context.dotSink(), if (runtime_policy) effective.validation else {}, options.dot.validation)
             else
                 null;
             return .{

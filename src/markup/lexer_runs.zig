@@ -2,6 +2,7 @@
 //! Vectors never read outside source. Bounded block calls use <=64-byte windows;
 //! plain calls scan the whole run. Boundaries stay with the scalar state machine.
 const std = @import("std");
+const encoding = @import("parser_support").encoding;
 const Backend = @import("policy.zig").ScannerBackend;
 pub const Mode = enum { text, name, single_value, double_value, space, comment, cdata };
 pub const Run = struct {
@@ -103,6 +104,37 @@ fn scalarTail(comptime mode: Mode, source: []const u8, start: u32, from: u32, li
     var consumed = from;
     while (consumed < limit) : (consumed += 1) {
         if (!goodByte(mode, source[start + consumed])) return .{ .consumed = consumed, .examined = consumed + 1 };
+    }
+    return .{ .consumed = consumed, .examined = consumed };
+}
+
+/// UTF-8 keeps the existing run implementation. Native readers classify code
+/// units without transcoding retained input. Projection is bounded stack scratch,
+/// not a source-sized working buffer; returned counts are code units.
+pub fn prefixEncoded(comptime actual: encoding.Actual, comptime backend: Backend, comptime bounded: bool, comptime mode: Mode, source: []const u8, start: u32) Run {
+    if (actual == .utf8) return prefix(backend, bounded, mode, source, start);
+    const R = encoding.Reader(actual);
+    const remaining: u32 = @intCast(R.units(source) - start);
+    const limit = if (backend == .block and bounded) @min(remaining, 64) else remaining;
+    var consumed: u32 = 0;
+    if (backend == .scalar) {
+        while (consumed < limit) : (consumed += 1) {
+            const byte = R.scanByte(source, start + consumed);
+            if ((actual == .ascii and byte >= 128) or !goodByte(mode, byte))
+                return .{ .consumed = consumed, .examined = consumed + 1 };
+        }
+        return .{ .consumed = consumed, .examined = consumed };
+    }
+    while (consumed < limit) {
+        var projected: [64]u8 = undefined;
+        const len: u32 = @min(limit - consumed, projected.len);
+        for (projected[0..len], 0..) |*byte, i| {
+            const value = R.scanByte(source, start + consumed + i);
+            byte.* = if (actual == .ascii and value >= 128) 0 else value;
+        }
+        const found = prefix(.block, true, mode, projected[0..len], 0);
+        if (found.consumed != len) return .{ .consumed = consumed + found.consumed, .examined = consumed + found.examined };
+        consumed += len;
     }
     return .{ .consumed = consumed, .examined = consumed };
 }

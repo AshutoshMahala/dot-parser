@@ -3,6 +3,7 @@
 const runs = @import("lexer_runs.zig");
 const policy = @import("policy.zig");
 const support = @import("parser_support");
+const encoding = support.encoding;
 const Span = support.location.Span;
 const diagnostic = @import("diagnostic.zig");
 const result = @import("result.zig");
@@ -71,8 +72,14 @@ fn referenceCharacter(value: u32) bool {
 }
 
 pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, comptime bounded: bool) type {
+    return ScannerWithEncoding(.utf8, backend, metered, bounded);
+}
+
+pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime backend: policy.ScannerBackend, comptime metered: bool, comptime bounded: bool) type {
+    const enc = encoding.Reader(actual);
     return struct {
         const Self = @This();
+        pub const source_encoding = actual;
         source: []const u8,
         offset: u32 = 0,
         frontier: if (metered) u32 else void = if (metered) 0 else {},
@@ -106,10 +113,17 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
             }
             return scanner;
         }
+        /// Bound child bytes are content in their parent's selected encoding,
+        /// not a new file whose leading U+FEFF should be discarded as framing.
+        pub fn initContent(source: []const u8) Self {
+            var scanner = init(source);
+            if (!scanner.done) scanner.state = .content;
+            return scanner;
+        }
         fn problem(self: *Self, code: diagnostic.Code, at: u32, details: diagnostic.Details) bool {
             const r: ScanResult = .{ .problem = .{
                 .outcome = .invalid_syntax,
-                .diagnostic = .{ .code = code, .span = .{ .start = at, .len = if (at < self.source.len) 1 else 0 }, .details = details },
+                .diagnostic = .{ .code = code, .span = .{ .start = at, .len = if (at < enc.units(self.source)) 1 else 0 }, .details = details },
             } };
             self.done = true;
             self.ready = r;
@@ -118,7 +132,7 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
         fn unsupported(self: *Self, feature: diagnostic.Feature, at: u32) bool {
             // Only lexical classification here. Policy-bound parsing decides
             // whether a user-facing diagnostic should be constructed at all.
-            self.ready = .{ .unsupported = .{ .feature = feature, .span = .{ .start = at, .len = if (at < self.source.len) 1 else 0 } } };
+            self.ready = .{ .unsupported = .{ .feature = feature, .span = .{ .start = at, .len = if (at < enc.units(self.source)) 1 else 0 } } };
             self.done = true;
             return true;
         }
@@ -162,7 +176,7 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
             } else if (self.state == .text or (in_reference and self.reference_context == .text)) {
                 pending.content = .{ .start = self.start, .len = self.offset - self.start };
             }
-            return pending;
+            return enc.scaled(PendingScopes, pending);
         }
 
         /// One byte per recovery step, no rescanning, tokens, values or fixes.
@@ -171,8 +185,9 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
         /// than guess whether it belongs to a malformed terminator or value.
         pub fn recoverHeaderStep(self: *Self, cursor: *HeaderRecovery) HeaderBoundary {
             const at = self.offset;
-            if (at == self.source.len) return .blocked;
-            const byte = self.source[at];
+            if (at == enc.units(self.source)) return .blocked;
+            const byte = enc.scanByte(self.source, at);
+            if (actual == .ascii and byte >= 128) return .blocked;
             if (metered) self.frontier = @max(self.frontier, at + 1);
             if (byte == '<' or (byte < 0x20 and !whitespace(byte))) return .blocked;
             switch (cursor.*) {
@@ -251,22 +266,22 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
             }
             if (bounded) {
                 if (backend == .block and self.skipRun()) return false;
-                return self.stepByte();
+                return self.stepNative();
             }
             while (true) {
                 _ = self.skipRun();
-                if (self.stepByte()) return true;
+                if (self.stepNative()) return true;
             }
         }
 
         fn skipRun(self: *Self) bool {
             const run = switch (self.state) {
-                .text => runs.prefix(backend, bounded, .text, self.source, self.offset),
-                .name, .attribute_name, .reference_name => runs.prefix(backend, bounded, .name, self.source, self.offset),
-                .value => if (self.quote == '"') runs.prefix(backend, bounded, .double_value, self.source, self.offset) else runs.prefix(backend, bounded, .single_value, self.source, self.offset),
-                .after_name, .before_equal, .before_value, .attributes => runs.prefix(backend, bounded, .space, self.source, self.offset),
-                .comment => runs.prefix(backend, bounded, .comment, self.source, self.offset),
-                .cdata => runs.prefix(backend, bounded, .cdata, self.source, self.offset),
+                .text => runs.prefixEncoded(actual, backend, bounded, .text, self.source, self.offset),
+                .name, .attribute_name, .reference_name => runs.prefixEncoded(actual, backend, bounded, .name, self.source, self.offset),
+                .value => if (self.quote == '"') runs.prefixEncoded(actual, backend, bounded, .double_value, self.source, self.offset) else runs.prefixEncoded(actual, backend, bounded, .single_value, self.source, self.offset),
+                .after_name, .before_equal, .before_value, .attributes => runs.prefixEncoded(actual, backend, bounded, .space, self.source, self.offset),
+                .comment => runs.prefixEncoded(actual, backend, bounded, .comment, self.source, self.offset),
+                .cdata => runs.prefixEncoded(actual, backend, bounded, .cdata, self.source, self.offset),
                 else => return false,
             };
             if (metered) self.frontier = @max(self.frontier, self.offset + run.examined);
@@ -274,28 +289,39 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
             return run.consumed != 0;
         }
 
+        fn stepNative(self: *Self) bool {
+            const ready = self.stepByte();
+            if (ready) self.ready = enc.scaled(ScanResult, self.ready);
+            return ready;
+        }
         fn stepByte(self: *Self) bool {
-            if (self.state == .prefix) {
-                if (self.marker_index < 4 and self.marker_index < self.source.len) {
-                    self.prefix[self.marker_index] = self.source[self.marker_index];
-                    self.marker_index += 1;
-                    if (metered) self.frontier = self.marker_index;
-                } else self.state = .prefix_done;
-                return false;
-            }
-            if (self.state == .prefix_done) {
-                const p = self.prefix;
-                if ((self.marker_index >= 2 and ((p[0] == 0xff and p[1] == 0xfe) or (p[0] == 0xfe and p[1] == 0xff))) or
-                    (self.marker_index == 4 and p[0] == 0 and p[1] == 0 and p[2] == 0xfe and p[3] == 0xff))
-                    return self.unsupported(.encoding, 0);
-                // A leading UTF-8 signature is not fragment text. Other occurrences
-                // are ordinary bytes. Borrowed source and physical offsets stay intact.
-                if (self.marker_index >= 3 and p[0] == 0xef and p[1] == 0xbb and p[2] == 0xbf) self.offset = 3;
+            if (actual == .utf8) {
+                if (self.state == .prefix) {
+                    if (self.marker_index < 4 and self.marker_index < self.source.len) {
+                        self.prefix[self.marker_index] = self.source[self.marker_index];
+                        self.marker_index += 1;
+                        if (metered) self.frontier = self.marker_index;
+                    } else self.state = .prefix_done;
+                    return false;
+                }
+                if (self.state == .prefix_done) {
+                    const p = self.prefix;
+                    if ((self.marker_index >= 2 and ((p[0] == 0xff and p[1] == 0xfe) or (p[0] == 0xfe and p[1] == 0xff))) or
+                        (self.marker_index == 4 and p[0] == 0 and p[1] == 0 and p[2] == 0xfe and p[3] == 0xff))
+                        return self.unsupported(.encoding, 0);
+                    // A leading UTF-8 signature is not fragment text. Other occurrences
+                    // are ordinary bytes. Borrowed source and physical offsets stay intact.
+                    if (self.marker_index >= 3 and p[0] == 0xef and p[1] == 0xbb and p[2] == 0xbf) self.offset = 3;
+                    self.state = .content;
+                    return false;
+                }
+            } else if (self.state == .prefix) {
+                self.offset = enc.bomLength(self.source) / enc.width;
                 self.state = .content;
                 return false;
             }
             const at = self.offset;
-            if (at == self.source.len) {
+            if (at == enc.units(self.source)) {
                 switch (self.state) {
                     .reference_start => return self.malformedReference(.missing_name),
                     .reference_number_start, .reference_hex_start => return self.malformedReference(.missing_digits),
@@ -324,7 +350,7 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
                     } }),
                 }
             }
-            const byte = self.source[at];
+            const byte = enc.scanByte(self.source, at);
             if (metered) self.frontier = @max(self.frontier, at + 1);
             if (byte < 0x20 and !whitespace(byte)) return self.problem(.invalid_byte, at, .{ .byte = byte });
             // Text runs need no dispatch through tag/reference continuation

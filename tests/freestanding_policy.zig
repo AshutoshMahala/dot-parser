@@ -1,5 +1,15 @@
 //! Consumed code-generation probe; no host runtime, allocator or renderer.
 const dot = @import("dot_parser");
+
+export fn native_dot(source: [*]const u8, len: usize) u32 {
+    const Native = dot.Profile(.{ .source_encodings = &.{ .utf16, .utf32 } });
+    var nodes: dot.FixedDocumentStorage(.{ .nodes = 16, .edges = 16, .statements = 32, .attributes = 16 }) = .{};
+    var frames: dot.FixedParseScratch(.{ .nesting = 8 }) = .{};
+    const result = Native.parseBorrowedIn(source[0..len], .{ .document = nodes.storage(), .scratch = frames.storage() }, dot.diagnostic.discard, .{}) catch return 0;
+    const doc = result.document orelse return 0;
+    const checked = Native.validate(&doc, dot.diagnostic.discard, .{}) catch return 0;
+    return if (checked.documentValid()) @intCast(doc.statementCount()) else 0;
+}
 const features = @import("policy_features");
 
 export fn partial_scope_count(source: [*]const u8, len: usize, choice: u8) u32 {

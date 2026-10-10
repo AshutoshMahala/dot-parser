@@ -36,7 +36,8 @@ The built-in grammar is an XML-like subset of HTML:
 | References `&amp;`, `&#65;`, `&#x41;` | Checked for correct form and kept as written, not expanded |
 | Comments `<!-- -->` and `<![CDATA[ ]]>` | Supported, kept as their own nodes |
 | Unquoted attributes, `<br>` with no closing tag | Errors. This is XML-style, not browser HTML. |
-| `<?...?>`, `<!DOCTYPE>`, UTF-16/32 input | Not supported |
+| `<?...?>`, `<!DOCTYPE>` | Not supported |
+| UTF-16/32 input | Opt-in native one-shot profiles; see [source encodings](ENCODINGS.md) |
 
 ### Two modes
 

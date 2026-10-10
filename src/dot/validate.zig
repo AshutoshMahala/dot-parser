@@ -33,6 +33,8 @@ pub const requiredScratch = checks.requiredScratch;
 /// How the pass ended. An incomplete-but-valid pass is unrepresentable.
 /// Scratch preflight is implemented; bounded/cancellable validation is not.
 pub const Outcome = union(enum) {
+    /// This validator specialization cannot read the document's encoding.
+    unsupported_encoding: @import("parser_support").encoding.Actual,
     /// The operation's first reported error, not a destination stop. Other
     /// source-order cursors may already have discovered pending findings.
     error_stopped: struct { violations: u64, warnings: u64 },
@@ -79,7 +81,7 @@ pub const Result = struct {
         if (self.coverage != .complete) return false;
         return switch (self.outcome) {
             .completed => |completed| completed.document_valid,
-            .insufficient_scratch => false,
+            .insufficient_scratch, .unsupported_encoding => false,
             .diagnostic_stopped => false,
             .error_stopped => false,
         };
@@ -88,7 +90,7 @@ pub const Result = struct {
     pub fn warningCount(self: Result) u64 {
         return switch (self.outcome) {
             .completed => |completed| completed.warnings,
-            .insufficient_scratch => 0,
+            .insufficient_scratch, .unsupported_encoding => 0,
             .diagnostic_stopped => |stopped| stopped.warnings,
             .error_stopped => |stopped| stopped.warnings,
         };
@@ -104,18 +106,24 @@ pub fn validate(
     runtime: if (fixed == null) policy.ValidationSettings else void,
     scratch: Scratch,
 ) Result {
+    return validateForEncoding(.utf8, fixed, document, diagnostics, runtime, scratch);
+}
+
+pub fn validateForEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime fixed: ?policy.ValidationSettings, document: *const syntax.Document, diagnostics: diagnostic.Sink, runtime: if (fixed == null) policy.ValidationSettings else void, scratch: Scratch) Result {
+    if (document.source_info.encoding != actual) return .{ .outcome = .{ .unsupported_encoding = document.source_info.encoding }, .diagnostic_delivery = .complete };
     if (!document.scopeComplete()) {
         var prefix = document.*;
         prefix.source = prefix.source[0..prefix.retained_end];
-        var result = validateRetained(fixed, &prefix, diagnostics, runtime, scratch);
+        var result = validateRetained(actual, fixed, &prefix, diagnostics, runtime, scratch);
         result.coverage = .{ .incomplete = document.retained_end };
         if (result.outcome == .completed) result.outcome.completed.document_valid = false;
         return result;
     }
-    return validateRetained(fixed, document, diagnostics, runtime, scratch);
+    return validateRetained(actual, fixed, document, diagnostics, runtime, scratch);
 }
 
 fn validateRetained(
+    comptime actual: @import("parser_support").encoding.Actual,
     comptime fixed: ?policy.ValidationSettings,
     document: *const syntax.Document,
     diagnostics: diagnostic.Sink,
@@ -149,12 +157,12 @@ fn validateRetained(
         };
     }
 
-    const Cursors = cursorTypes(fixed);
+    const Cursors = cursorTypes(actual, fixed);
     const fields = @typeInfo(Cursors).@"struct".fields;
     var cursors: Cursors = undefined;
     var pending: [fields.len]?diagnostic.Diagnostic = undefined;
     inline for (fields, 0..) |field, index| {
-        @field(cursors, field.name) = if (field.type == checks.RepeatedAttributes)
+        @field(cursors, field.name) = if (field.type == checks.RepeatedAttributesForEncoding(actual))
             field.type.init(document, settings, scratch, plan)
         else
             field.type.init(document, settings, scratch);
@@ -216,17 +224,17 @@ fn stoppedResult(reason: diagnostic.StopReason, delivery: diagnostic.Delivery, e
 
 /// Ties use this fixed rule order: kind, operator, encoding, repeated key,
 /// port, subgraph. Filtering a stream never changes the remaining order.
-fn cursorTypes(comptime fixed: ?policy.ValidationSettings) type {
+fn cursorTypes(comptime actual: @import("parser_support").encoding.Actual, comptime fixed: ?policy.ValidationSettings) type {
     const enabled: [6]bool = if (fixed) |s| .{
         s.restrictions.graph_kinds.undigraph != .off or s.restrictions.graph_kinds.digraph != .off or s.restrictions.graph_kinds.generic != .off,
         s.digraph.operator_mismatch != .off or
             ((s.graph.treated_as != .auto and s.graph.treated_as != .generic) and s.graph.operators.operator_mismatch != .off),
-        s.invalid_utf8 != .off,
+        actual == .utf8 and s.invalid_utf8 != .off,
         s.repeated_attribute != .off,
         s.restrictions.ports != .off,
         s.restrictions.subgraphs != .off,
-    } else .{true} ** 6;
-    const all = .{ checks.GraphKinds, checks.Operators, checks.Encoding, checks.RepeatedAttributes, checks.Ports, checks.Subgraphs };
+    } else .{ true, true, actual == .utf8, true, true, true };
+    const all = .{ checks.GraphKinds, checks.Operators, checks.Encoding, checks.RepeatedAttributesForEncoding(actual), checks.Ports, checks.SubgraphsForEncoding(actual) };
     comptime var types: [all.len]type = undefined;
     comptime var count: usize = 0;
     inline for (all, enabled) |T, include| {

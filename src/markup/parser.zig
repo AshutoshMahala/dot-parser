@@ -11,6 +11,17 @@ const result = @import("result.zig");
 const Kind = @import("kind.zig").Kind;
 
 pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode) type {
+    return MachineWithEncoding(.utf8, backend, fixed, metered, cancellable, mode);
+}
+
+pub fn MachineWithEncoding(comptime actual: support.encoding.Actual, comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode) type {
+    return MachineWithInputEncoding(actual, backend, fixed, metered, cancellable, mode, true);
+}
+
+pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode, comptime strip_bom: bool) type {
+    const enc = support.encoding.Reader(actual);
+    const Scanner = lexer.ScannerWithEncoding(actual, backend, metered, metered or cancellable);
+    const Unit = if (enc.width == 1) u8 else u32;
     const recovery_enabled = fixed == null or fixed.?.on_error == .collect;
     const partial_enabled = fixed == null or fixed.?.retain_partial;
     const deviations_enabled = fixed == null or fixed.?.syntax.malformed_reference != .reject;
@@ -19,7 +30,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         const Self = @This();
         pub const Settings = if (fixed == null) policy.ParseSettings else void;
         pub const Hook = if (cancellable) ?support.execution.Cancellation else void;
-        scanner: lexer.Scanner(backend, metered, metered or cancellable),
+        scanner: Scanner,
         diagnostics: diagnostic.Sink,
         settings: Settings,
         hook: Hook,
@@ -29,7 +40,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         /// nesting frame: self-closing tags still need no persistent scratch.
         head: scratch.Frame = undefined,
         compare_index: u32 = 0,
-        compare_byte: u8 = 0,
+        compare_byte: Unit = 0,
         began: bool = false,
         counts: result.Counts = .{},
         deviations: if (deviations_enabled) u32 else void = if (deviations_enabled) 0 else {},
@@ -44,7 +55,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         terminal: ?result.Report = null,
 
         pub fn init(source: []const u8, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) Self {
-            var self: Self = .{ .scanner = .init(source), .diagnostics = diagnostics, .settings = settings, .hook = hook };
+            var self: Self = .{ .scanner = if (strip_bom) Scanner.init(source) else Scanner.initContent(source), .diagnostics = diagnostics, .settings = settings, .hook = hook };
             // One source-sized allowance across ALL ancestor searches, including
             // length probes and byte comparisons. Even unmetered recovery is O(n).
             if (recovery_enabled) self.recovery_state.remaining = @intCast(@min(source.len, support.location.max_source_len));
@@ -59,8 +70,11 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         fn fixes(self: *const Self) policy.Fixes {
             return if (fixed) |v| v.fixes else self.settings.fixes;
         }
-        inline fn nameByteEqual(a: u8, b: u8) bool {
-            return if (mode == .graphviz) std.ascii.toLower(a) == std.ascii.toLower(b) else a == b;
+        inline fn nameByteEqual(a: Unit, b: Unit) bool {
+            if (enc.width == 1) return if (mode == .graphviz) std.ascii.toLower(a) == std.ascii.toLower(b) else a == b;
+            const l = if (mode == .graphviz and a < 128) @as(u32, std.ascii.toLower(@intCast(a))) else a;
+            const r = if (mode == .graphviz and b < 128) @as(u32, std.ascii.toLower(@intCast(b))) else b;
+            return l == r;
         }
         fn unsupported(self: *const Self) policy.Unsupported {
             return if (fixed) |v| v.unsupported else self.settings.unsupported;
@@ -173,7 +187,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
         fn capacity(self: *Self, stack: *scratch.Stack, sink: anytype, resource: diagnostic.Resource, limit: u32, storage: bool) void {
             self.finish(stack, sink, if (storage) .{ .storage_exhausted = resource } else .{ .resource_limit = .{ .resource = resource, .limit = limit } }, .{
                 .code = .capacity_exhausted,
-                .span = .{ .start = self.scanner.offset, .len = 0 },
+                .span = .{ .start = self.scanner.offset * enc.width, .len = 0 },
                 .details = .{ .capacity = .{ .resource = resource, .limit = limit } },
             });
         }
@@ -182,7 +196,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 error.NodeStorageExhausted => self.capacity(stack, sink, .node_pool, self.counts.nodes, true),
                 error.AttributeStorageExhausted => self.capacity(stack, sink, .attribute_pool, self.counts.attributes, true),
                 error.NestingStorageExhausted => self.capacity(stack, sink, .nesting_frames, stack.len, true),
-                error.OutOfMemory => self.finish(stack, sink, .out_of_memory, .{ .code = .out_of_memory, .span = .{ .start = self.scanner.offset, .len = 0 } }),
+                error.OutOfMemory => self.finish(stack, sink, .out_of_memory, .{ .code = .out_of_memory, .span = .{ .start = self.scanner.offset * enc.width, .len = 0 } }),
                 else => self.finish(stack, sink, .sink_failure, null),
             }
         }
@@ -282,13 +296,13 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                     .empty_end => self.phase = .empty_close,
                 },
                 .compare_open => {
-                    self.compare_byte = self.scanner.source[stack.top().name.start + self.compare_index];
+                    self.compare_byte = @intCast(enc.unit(self.scanner.source, stack.top().name.start + self.compare_index));
                     self.phase = .compare_close;
                 },
                 .compare_close => {
-                    if (!nameByteEqual(self.compare_byte, self.scanner.source[self.token.name.start + self.compare_index]))
+                    if (!nameByteEqual(self.compare_byte, @intCast(enc.unit(self.scanner.source, self.token.name.start + self.compare_index))))
                         return self.invalid(stack, sink, .mismatched_tag, self.token.name, stack.top().name);
-                    self.compare_index += 1;
+                    self.compare_index += enc.width;
                     self.phase = if (self.compare_index == self.token.name.len) .close else .compare_open;
                 },
                 .recover_find => {
@@ -309,10 +323,10 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                     if (!self.searchCredit(stack, sink)) return;
                     const candidate = self.recovery_state.cursor.candidate;
                     const opener = stack.frames[candidate].name;
-                    if (!nameByteEqual(self.scanner.source[opener.start + self.compare_index], self.scanner.source[self.token.name.start + self.compare_index])) {
+                    if (!nameByteEqual(@intCast(enc.unit(self.scanner.source, opener.start + self.compare_index)), @intCast(enc.unit(self.scanner.source, self.token.name.start + self.compare_index)))) {
                         self.phase = .recover_find;
                     } else {
-                        self.compare_index += 1;
+                        self.compare_index += enc.width;
                         if (self.compare_index == self.token.name.len) {
                             // Traversal only: no synthetic close events or records.
                             // The mismatch already explains the abandoned frames.
@@ -411,7 +425,7 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
                 used += 1;
                 self.step(stack, sink);
             }
-            return .{ .outcome = if (self.terminal) |r| r.outcome else null, .work_used = used, .source_frontier = self.scanner.frontier, .counts = self.counts, .accepted_deviations = if (deviations_enabled) self.deviations else 0, .warnings = if (warnings_enabled) self.warnings else 0, .syntax_errors = self.syntaxErrors() };
+            return .{ .outcome = if (self.terminal) |r| r.outcome else null, .work_used = used, .source_frontier = self.scanner.frontier * enc.width, .counts = self.counts, .accepted_deviations = if (deviations_enabled) self.deviations else 0, .warnings = if (warnings_enabled) self.warnings else 0, .syntax_errors = self.syntaxErrors() };
         }
     };
 }

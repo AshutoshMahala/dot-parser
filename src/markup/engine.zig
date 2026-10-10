@@ -8,7 +8,15 @@ const diagnostic = @import("diagnostic.zig");
 const results = @import("result.zig");
 
 pub fn Engine(comptime api: type, comptime backend: policy.ScannerBackend, comptime fixed_settings: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode) type {
-    const Machine = parser.Machine(backend, fixed_settings, metered, cancellable, mode);
+    return EngineWithEncoding(.utf8, api, backend, fixed_settings, metered, cancellable, mode);
+}
+
+pub fn EngineWithEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime backend: policy.ScannerBackend, comptime fixed_settings: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode) type {
+    return EngineWithInputEncoding(actual, api, backend, fixed_settings, metered, cancellable, mode, true);
+}
+
+pub fn EngineWithInputEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime backend: policy.ScannerBackend, comptime fixed_settings: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode, comptime strip_bom: bool) type {
+    const Machine = parser.MachineWithInputEncoding(actual, backend, fixed_settings, metered, cancellable, mode, strip_bom);
     return struct {
         pub const Settings = Machine.Settings;
         pub const Hook = Machine.Hook;
@@ -46,7 +54,12 @@ pub fn Engine(comptime api: type, comptime backend: policy.ScannerBackend, compt
         };
 
         fn fixedResult(report: results.Report, builder: *const syntax.Builder) api.FixedParseResult {
-            return .{ .outcome = report.outcome, .completion = report.completion, .syntax_errors = report.syntax_errors, .diagnostic_delivery = report.diagnostic_delivery, .diagnostic_stop = report.diagnostic_stop, .counts = report.counts, .accepted_deviations = report.accepted_deviations, .warnings = report.warnings, .document = builder.document() };
+            return .{ .outcome = report.outcome, .completion = report.completion, .syntax_errors = report.syntax_errors, .diagnostic_delivery = report.diagnostic_delivery, .diagnostic_stop = report.diagnostic_stop, .counts = report.counts, .accepted_deviations = report.accepted_deviations, .warnings = report.warnings, .document = encodedDocument(builder) };
+        }
+        fn encodedDocument(builder: *const syntax.Builder) ?syntax.Document {
+            var document = builder.document() orelse return null;
+            document.source_info = if (strip_bom) @import("parser_support").encoding.Reader(actual).sourceInfo(builder.source) else .{ .encoding = actual, .provenance = .inherited };
+            return document;
         }
         pub fn parseBorrowedIn(source: []const u8, memory: api.ParseMemory, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) api.FixedParseResult {
             var session = Session.init(source, memory, diagnostics, settings, hook);
@@ -68,7 +81,7 @@ pub fn Engine(comptime api: type, comptime backend: policy.ScannerBackend, compt
                 .counts = report.counts,
                 .accepted_deviations = report.accepted_deviations,
                 .warnings = report.warnings,
-                .document = builder.document(),
+                .document = encodedDocument(&builder),
                 ._allocator = allocator,
                 ._nodes = builder.list,
                 ._attributes = builder.attributes,

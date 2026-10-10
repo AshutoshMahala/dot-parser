@@ -349,6 +349,9 @@ pub fn Schema(comptime markup_bound: bool, comptime retention_supported: bool) t
 pub const Config = struct {
     policy: Policy = .{},
     runtime_policy: bool = false,
+    /// Compiled input readers. Omission defaults to UTF-8 standalone and
+    /// inherits when bound. An explicit empty list selects ASCII-only.
+    source_encodings: ?[]const @import("parser_support").encoding.Encoding = null,
     /// Compile-time implementations; never part of a runtime policy patch.
     /// Binding markup defaults its outer handling to process unless overridden.
     processors: struct { markup: ?type = null } = .{},

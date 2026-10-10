@@ -938,7 +938,7 @@ need not leave a document.
 | Profile/API redesign | Deferred discussion; workspace reuse did not decide it |
 | Summary index / caching / public events | Optional proposals; ownership, layout, budgets and event contract unresolved |
 | Partial-tree publication | Deferred; current parse results remain complete-document-only |
-| UTF-16/32 adapters | Provenance constraints agreed; conversion errors, mapping, metadata and storage APIs open |
+| Native encoding execution | Initial one-shot paths implemented; resumable admission/session dispatch and native excerpts remain |
 | Packaging/versioning | Open; an independent module does not decide separate packages/version numbers |
 | Cross-parser boundary survey | Optional follow-up, not a gate on delivered recognition |
 
@@ -1016,15 +1016,24 @@ source-scope path runs encoding before local checks; it is not globally sorted. 
 does not share processor-owned policies/diagnostics or imply XML name/character
 conformance. Optional markup names and known-reference checks are implemented in
 slice 4b with independent selection/severity; further catalogs remain open (Q40).
-**Future UTF-16/32 adapters (requirement clarified 2026-09-27; not implemented):**
-use UTF-8 working bytes while retaining original encoding, byte order and BOM
-provenance once per source. Keep original bytes/a live source handle for exact
-reproduction, and explicit offset mapping for original-file diagnostics/fixes.
-Unknown provenance stays unknown; converted bytes alone cannot recover it. Do not
-hide replacement or normalization as lossless conversion. Metadata/API shape,
-malformed-input handling, mapping storage versus rescanning and all buffer/work
-costs remain design decisions; current raw-byte behavior stays unchanged. See
-[the encoding contract](MARKUP.md#encoding-adapters).
+**Native source readers (decided/initial slice implemented 2026-10-10):**
+compile-time `source_encodings` selects ASCII/UTF-8/16/32 capabilities. Omission
+means UTF-8; explicit empty means ASCII-only. Explicit outer/inner selections
+form a union; omitted bound children inherit instead of adding their standalone
+UTF-8 default. Select one actual encoding for the buffer by BOM or explicit byte
+order and pass it through raw child scopes. Mixed encodings need a separate
+framing contract; they do not follow from the union.
+
+Native grammar readers borrow the untouched original buffer and retain physical
+byte spans. Record actual encoding, byte order, BOM and selection provenance once
+per document, not per token. No source-wide conversion/map is introduced. The
+initial one-shot facade prechecks ASCII/native code units and reports admission
+failures as typed input errors before tree creation; UTF-8 validation stays
+optional. Fixed storage, workspaces and proactive/delayed markup are supported;
+resumable native admission/session dispatch and native source excerpts remain
+unfinished. See [source encodings](../ENCODINGS.md) for the available contract.
+Future explicit transforms need their own loss, ownership, mapping and work
+contracts; native parsing does not silently normalize or replace source data.
 *(Embodied: `src/dot/lexer/`, `src/dot/validation_checks.zig`,
 [supported syntax](../SUPPORTED_SYNTAX.md); R-PORT-006.)*
 

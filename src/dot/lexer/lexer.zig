@@ -72,6 +72,18 @@ pub fn scannerForComments(comptime selected: policy.ScannerBackend, comptime com
     }.scanner;
 }
 
+pub fn scannerForEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime selected: policy.ScannerBackend, comptime comments: ?bool) fn (comptime bool, comptime bool, comptime ?bool) type {
+    if (actual == .utf8) return scannerForComments(selected, comments);
+    return struct {
+        fn scanner(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool) type {
+            return switch (selected) {
+                .scalar => scalar.ScannerWithEncoding(actual, metered, audited, numeral_check, comments),
+                .block => block.ScannerWithEncoding(actual, metered, audited, numeral_check, comments),
+            };
+        }
+    }.scanner;
+}
+
 /// Ordinary lexing with the library-default backend.
 pub const Lexer = For(policy.defaults.scanner);
 

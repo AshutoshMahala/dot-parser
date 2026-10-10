@@ -25,6 +25,7 @@
 //!   none/passthrough policy. Passthrough makes no inner-markup validity claim.
 
 const std = @import("std");
+const encoding = @import("parser_support").encoding;
 const location = @import("parser_support").location;
 const diagnostic = @import("../diagnostic.zig");
 
@@ -44,8 +45,14 @@ pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_
 }
 
 pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool) type {
+    return ScannerWithEncoding(.utf8, metered, audited, numeral_check, comments);
+}
+
+pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool) type {
+    const enc = encoding.Reader(actual);
     return struct {
         const Self = @This();
+        pub const source_encoding = actual;
         const State = enum {
             trivia,
             slash,
@@ -108,7 +115,7 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
             // A leading UTF-8 byte order mark is not content; Graphviz's
             // scanner ignores it and so does this one. Offsets keep counting
             // it, so every later position stays honest.
-            if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) self.cursor = 3;
+            self.cursor = enc.bomLength(source) / enc.width;
             return self;
         }
 
@@ -130,7 +137,7 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
             // Quoted concatenation lookahead can revisit trailing trivia.
             // Publish each completed comment only once, without a queue.
             self.comment_state = .{ .span = .{ .start = self.opener, .len = end - self.opener }, .frontier = end };
-            self.ready_tag = if (self.source[self.opener] == '#') .comment_hash_line else if (self.source[self.opener + 1] == '/') .comment_slash_line else .comment_block;
+            self.ready_tag = if (enc.scanByte(self.source, self.opener) == '#') .comment_hash_line else if (enc.scanByte(self.source, self.opener + 1) == '/') .comment_slash_line else .comment_block;
             self.state = .trivia;
             return true;
         }
@@ -164,9 +171,9 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
             const anchor = self.anchor;
             const start = self.opener;
             const target: u32 = switch (self.terminal) {
-                .block, .quote, .html_unterminated => @intCast(self.source.len),
+                .block, .quote, .html_unterminated => @intCast(enc.units(self.source)),
                 .concat => start,
-                .invalid, .operator, .operator_long, .operator_spaced, .numeral => if (start == anchor) start + self.terminal_len else @intCast(self.source.len),
+                .invalid, .operator, .operator_long, .operator_spaced, .numeral => if (start == anchor) start + self.terminal_len else @intCast(enc.units(self.source)),
                 .none, .eof, .oversize => unreachable,
             };
             // `fail` left the cursor at the token anchor.
@@ -188,11 +195,11 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
             self.ambiguous_numeral = null;
             // No fix: the repair would quote the whole run (`"1e3"`), and
             // the scanner has not seen where the following token ends.
-            return .{
+            return enc.scaled(diagnostic.Diagnostic, .{
                 .code = .syntax_ambiguous_numeral,
                 .span = .{ .start = self.anchor, .len = self.cursor - self.anchor },
                 .details = .{ .ambiguous_numeral = byte },
-            };
+            });
         }
 
         pub fn next(self: *Self) Result {
@@ -210,7 +217,7 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
                 .details = .{ .capacity = .{ .resource = .source_range, .limit = location.max_source_len } },
             };
             const span: location.Span = .{ .start = self.opener, .len = self.terminal_len };
-            return .{
+            return enc.scaled(diagnostic.Diagnostic, .{
                 .code = switch (self.terminal) {
                     .invalid => .syntax_invalid_byte,
                     .operator, .operator_long, .operator_spaced => .syntax_invalid_operator,
@@ -237,7 +244,7 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
                 // document kind, which the parser supplies.
                 .fix = switch (self.terminal) {
                     .html_unterminated => if (self.content.html_depth == 1) .{
-                        .span = .{ .start = @intCast(self.source.len), .len = 0 },
+                        .span = .{ .start = @intCast(enc.units(self.source)), .len = 0 },
                         .edit = .{ .insert_before = .html_close },
                         .applicability = .maybe,
                     } else null,
@@ -248,7 +255,7 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
                     },
                     else => null,
                 },
-            };
+            });
         }
 
         // null means yield, never EOF. EOF remains an ordinary terminal token.
@@ -294,16 +301,16 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
 
         /// The byte offset the scanner is at.
         pub fn here(self: *const Self) u32 {
-            return self.cursor;
+            return self.cursor * enc.width;
         }
 
         // Sole source-byte fetch site. Keyword classification uses cached bytes.
         fn examine(self: *Self) ?u8 {
             if (audited) self.examinations += 1;
             const offset = self.cursor;
-            if (offset >= self.source.len) return null;
-            if (metered) self.source_frontier = @max(self.source_frontier, @as(usize, offset) + 1);
-            return self.source[offset];
+            if (offset >= enc.units(self.source)) return null;
+            if (metered) self.source_frontier = @max(self.source_frontier, (@as(usize, offset) + 1) * enc.width);
+            return enc.scanByte(self.source, offset);
         }
 
         fn consume(self: *Self) void {
@@ -316,6 +323,9 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
         inline fn microstep(self: *Self, comptime state: State) State {
             var continuation = state;
             const byte = self.examine();
+            if (actual == .ascii) if (byte) |value| {
+                if (value >= 128) return self.fail(.invalid, self.cursor, 1, value);
+            };
             switch (state) {
                 .ready => unreachable,
                 .trivia => {
@@ -491,7 +501,7 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
                 },
                 .quoted, .escape => {
                     const b = byte orelse return self.fail(.quote, self.opener, 1, null);
-                    if (b == 0) return self.fail(.invalid, self.here(), 1, b);
+                    if (b == 0) return self.fail(.invalid, self.cursor, 1, b);
                     self.consume();
                     if (state == .escape) {
                         continuation = .quoted;
@@ -521,7 +531,7 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
                     return continuation;
                 },
                 .after_plus => {
-                    if (byte != '"' and byte != '<') return self.fail(.concat, self.here(), if (byte == null) 0 else 1, byte);
+                    if (byte != '"' and byte != '<') return self.fail(.concat, self.cursor, if (byte == null) 0 else 1, byte);
                     self.opener = self.cursor;
                     self.consume();
                     if (byte == '<') {
@@ -574,7 +584,7 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
                     self.content = .{ .html_depth = 1 };
                     continuation = .html;
                 },
-                else => return self.fail(.invalid, self.here(), 1, b),
+                else => return self.fail(.invalid, self.cursor, 1, b),
             }
             self.consume();
             return continuation;
@@ -604,12 +614,12 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
         fn readyResult(self: *const Self) Result {
             if (self.terminal != .none) return self.terminalResult();
             if (comptime comments != false) switch (self.ready_tag) {
-                .comment_slash_line, .comment_block, .comment_hash_line => return .{ .token = .{ .tag = self.ready_tag, .span = self.comment_state.span } },
+                .comment_slash_line, .comment_block, .comment_hash_line => return .{ .token = .{ .tag = self.ready_tag, .span = enc.scaled(location.Span, self.comment_state.span) } },
                 else => {},
             };
             return .{ .token = .{
                 .tag = self.ready_tag,
-                .span = .{ .start = self.anchor, .len = self.cursor - self.anchor },
+                .span = .{ .start = self.anchor * enc.width, .len = (self.cursor - self.anchor) * enc.width },
                 .flags = self.flags,
             } };
         }
@@ -626,7 +636,7 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
         fn terminalResult(self: *const Self) Result {
             if (self.terminal == .eof) return .{ .token = .{
                 .tag = .eof,
-                .span = .{ .start = self.cursor, .len = 0 },
+                .span = .{ .start = self.cursor * enc.width, .len = 0 },
             } };
             return .failure;
         }

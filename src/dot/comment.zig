@@ -14,11 +14,16 @@ pub const Comment = struct {
 
     /// No trimming, newline normalization, decoding or allocation.
     pub fn body(self: Comment, source: []const u8) []const u8 {
+        return self.bodyEncoded(source, .utf8);
+    }
+
+    pub fn bodyEncoded(self: Comment, source: []const u8, actual: @import("parser_support").encoding.Actual) []const u8 {
         const bytes = self.raw(source);
+        const width: usize = (@import("parser_support").encoding.Info{ .encoding = actual }).unitBytes();
         return switch (self.kind) {
-            .slash_line => bytes[2..],
-            .block => bytes[2 .. bytes.len - 2],
-            .hash_line => bytes[1..],
+            .slash_line => bytes[2 * width ..],
+            .block => bytes[2 * width .. bytes.len - 2 * width],
+            .hash_line => bytes[width..],
         };
     }
 };

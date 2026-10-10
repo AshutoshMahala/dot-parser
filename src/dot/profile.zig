@@ -22,9 +22,26 @@ pub fn CheckOptionsFor(comptime api: type, comptime Binding: type) type {
 }
 
 pub fn Profile(comptime api: type, comptime config: policy.Config) type {
-    if (config.processors.markup) |Child| return @import("composition.zig").Profile(api, config, Child);
+    const enc = @import("parser_support").encoding;
+    const caps = enc.Capabilities.bound(enc.Capabilities.from(config.source_encodings), if (config.processors.markup) |Child| (if (@hasDecl(Child, "declared_source_encodings")) Child.declared_source_encodings else null) else null);
+    if (@as(u4, @bitCast(caps)) == 2) return ProfileForEncoding(.utf8, api, config);
+    return @import("source_profile.zig").Profile(api, config, caps);
+}
+
+pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime config: policy.Config) type {
+    if (config.processors.markup) |Child| {
+        const encodings = @import("parser_support").encoding;
+        const capabilities = encodings.Capabilities.bound(encodings.Capabilities.from(config.source_encodings), if (@hasDecl(Child, "declared_source_encodings")) Child.declared_source_encodings else null);
+        const rebind = @hasDecl(Child, "withSourceEncodings") and
+            (!@hasDecl(Child, "source_capabilities") or @as(u4, @bitCast(Child.source_capabilities)) != @as(u4, @bitCast(capabilities)));
+        const Bound = if (rebind) Child.withSourceEncodings(capabilities) else Child;
+        const EncodedChild = if (@hasDecl(Bound, "forSourceEncoding")) Bound.forSourceEncoding(actual) else if (actual == .utf8) Bound else @compileError("bound processor does not support native source encoding");
+        return @import("composition.zig").ProfileForEncoding(actual, api, config, EncodedChild);
+    }
     const Binding = @import("parser_support").processor.PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
     return struct {
+        pub const declared_source_encodings = config.source_encodings;
+        pub const source_capabilities = @import("parser_support").encoding.Capabilities.from(config.source_encodings);
         pub const Policies = Binding;
         pub const baseline = Binding.baseline;
         pub const runtime_policy = config.runtime_policy;
@@ -92,7 +109,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
                 @as(u3, if (effective.execution.cancellation) 1 else 0));
         }
         fn EngineFor(comptime variant: Variant) type {
-            return engine.Engine(api, if (runtime_policy) null else baseline.parsing, variant.metered(), variant.cancellable(), variant.backend());
+            return engine.EngineWithEncoding(actual, api, if (runtime_policy) null else baseline.parsing, variant.metered(), variant.cancellable(), variant.backend(), void);
         }
         const FixedEngine = EngineFor(variantOf(baseline));
 
@@ -148,7 +165,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
             return validateResolved(document, diagnostics, validationSettings(effective), options.scratch);
         }
         fn validateResolved(document: *const api.Document, diagnostics: api.DiagnosticSink, effective: ValidationState, scratch: api.ValidationScratch) api.ValidationResult {
-            return validation.validate(if (runtime_policy) null else baseline.validation, document, diagnostics, effective, scratch);
+            return validation.validateForEncoding(actual, if (runtime_policy) null else baseline.validation, document, diagnostics, effective, scratch);
         }
         pub fn parseAndValidate(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: CheckOptions) Checked(api.CheckResult) {
             const effective = if (runtime_policy) try settings(options) else settings(options);

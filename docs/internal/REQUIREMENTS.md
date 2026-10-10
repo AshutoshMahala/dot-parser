@@ -949,25 +949,31 @@ attribute payloads as raw byte slices. Version 1 does not require Unicode
 normalization or transcoding in the parser. Encoding validation is a separable
 policy or pass so users who do not request it do not link its tables or code.
 
-UTF-8 and Latin-1 are ASCII-compatible and can share the byte-oriented lexer.
-An optional UTF-8 validator may reject or report invalid sequences without
-changing stored lexemes. Latin-1 interpretation or transcoding may be added
-later over the same raw bytes. UTF-16/32 are not input encodings of the byte lexer;
-support would require an explicit decoding source adapter, with clearly defined
-mapping between original and decoded source offsets.
+UTF-8 and Latin-1 remain ASCII-compatible raw-byte inputs on the default path.
+Optional UTF-8 validation does not change retained lexemes. Source-reader
+capabilities are compile-time profile configuration: omission means UTF-8,
+explicit empty means ASCII-only, and UTF-16/32 readers are opt-in. Enabling a
+reader is not enabling a string processor or mandatory UTF-8 validation.
 
-**Future-adapter provenance requirement (2026-09-27; not implemented):** UTF-8
-working bytes must not erase original encoding, byte order or BOM information.
-Keep that metadata once per source/input context, with explicit caller-supplied
-or detected provenance; do not infer an original encoding from converted bytes.
-Original bytes or a live source handle are needed for exact reproduction;
-metadata alone is not a lossless source copy. Conversion failures, replacement
-or other information loss must be explicit. Original-file diagnostics/fixes
-require an explicit mapping from working byte offsets; a constant base offset
-is insufficient. Without a mapping, expose working-buffer coordinates honestly.
-Conversion buffers, mapping storage/rescans and dual-buffer peak memory have
-documented, caller-controlled costs. This does not change current raw-byte parsing
-or mandate transcoding/storage on callers who do not select the future adapter.
+**Native source decision (2026-10-10):** recognize structural ASCII code units
+without transcoding the source. A BOM or explicit input encoding selects one
+reader/byte order for the entire buffer; a union of capabilities does not permit
+mixed encodings within it. Explicit outer/inner selections form a union; omitted
+inner selections inherit the outer capabilities when bound and default to UTF-8
+standalone. Actual encoding is inherited by raw child operands.
+
+Retain original bytes, physical byte offsets and one compact encoding/BOM/
+provenance record per document. No conversion buffer or source map belongs on
+the native path. ASCII-only applies even inside comments and quoted content.
+Native malformed code units must not be mistaken for complete successful input.
+The first implementation provides unmetered admission plus one-shot processing;
+resumable admission/dispatch and native excerpt windows remain unfinished. The
+current API/cost boundaries are in [source encodings](../ENCODINGS.md).
+
+Optional future transforms must still preserve provenance, bound source/output
+sizes, state replacement/normalization losses, and provide explicit mappings
+when decoded working offsets differ from original offsets. Native support does
+not require or authorize such transformations.
 
 Physical line derivation treats LF, CRLF, and standalone CR according to one
 documented policy; byte offsets are what is stored. Canonical byte column counts

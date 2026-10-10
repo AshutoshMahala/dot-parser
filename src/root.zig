@@ -50,6 +50,9 @@ pub const MarkupMode = policy_impl.MarkupMode;
 pub const Fixes = policy_impl.Fixes;
 pub const OnError = policy_impl.OnError;
 pub const Unsupported = policy_impl.Unsupported;
+pub const encoding = @import("parser_support").encoding;
+pub const SourceEncoding = encoding.Encoding;
+pub const InputEncoding = encoding.Actual;
 const DefaultProfile = Profile(.{});
 
 /// Policy-bound parsing, execution, validation and interpretation. Runtime
