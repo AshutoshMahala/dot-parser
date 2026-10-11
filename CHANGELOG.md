@@ -8,6 +8,15 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- **Breaking:** explicit `.encoding` is authoritative; only its matching BOM is
+  framing, and `ConflictingBom` is removed from native input-error sets.
+  Autodetection still prefers the longest BOM; BOM-less native-only input needs
+  an explicit reader/byte order, without NUL heuristics or parser retries.
+- **Breaking:** shared `Completeness` adds `.empty`. Composed `state()` returns
+  it when no outer DOT tree was returned, not for a complete zero-statement graph.
+- Collecting compositions allow delayed markup after DOT validation's
+  `.insufficient_scratch`, without changing the unfinished validation report.
+  Fail-fast and diagnostic-sink stops still prevent further work.
 - DOT scope entry and scoped-edge promotion reserve every required pool before
   changing live syntax. Partial retention no longer snapshots or rolls back
   those events; runtime policies still support enabling retention per operation.

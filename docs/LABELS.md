@@ -216,6 +216,9 @@ Do not independently deinitialize child entries: the composed result owns them.
 also requires complete representations of all requested children.
 `result.state()` uses the shared completeness enum, including `.not_processed`
 when requested child work is pending and no representation is already partial.
+It returns `.empty` when no outer DOT tree was returned, rather than implying
+that a partial tree exists. A complete zero-statement `graph {}` is `.complete`,
+not `.empty`. Inspect the DOT outcome separately for a failed parse's reason.
 `result.markup.representation` describes children alone. Check `requested`
 first. These describe representation independently of validation and
 `markup.complete` scheduling coverage.
@@ -296,6 +299,22 @@ is latched from the DOT operation. Child runtime policies and cancellation,
 when enabled, are passed freshly as `.markup` options to `processPendingMarkup`;
 child resources use `.markup_resources`. They are prepared before starting work.
 An earlier outer operational/fail-fast stop cannot be bypassed with this call.
+One exception to the earlier-stage gate is DOT validation's
+`.insufficient_scratch`: under `.collect`, selection and delayed child processing
+can proceed using their own storage if diagnostic delivery was complete and no
+sink stop occurred. This is a caller-supplied validation scratch shortfall, not
+an out-of-memory or parsing-storage failure. The complete DOT tree stays available.
+Under `.fail_fast`, the same resource finding prevents further composition work.
+
+Child processing never retries DOT validation or replaces its report. After
+children finish, the composition can be representation-complete while
+`result.dot.documentValid()` and `result.documentValid()` remain `false`. These
+helpers are booleans meaning "proven valid", not enum-valued validation states.
+Inspect `result.dot.validation.?.outcome` for `.insufficient_scratch`, including
+the required/provided sizes; rerun DOT validation explicitly with sufficient
+scratch if desired. `result.scopeComplete()` remains `true` for the complete
+outer tree throughout pending child work and the validation shortfall.
+
 During the batch, parent fail-fast, child operational stops and sink stops leave
 unattempted children pending; collecting parents continue after ordinary child
 errors. These outcomes are in `markup.stop` and individual results, without

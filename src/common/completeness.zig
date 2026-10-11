@@ -7,4 +7,8 @@ pub const Completeness = enum {
     not_processed,
     partial,
     complete,
+    /// No scope tree was returned. This is not a complete zero-node document,
+    /// pending child work, or a retained partial tree; inspect the parse outcome
+    /// separately for the reason representation is unavailable.
+    empty,
 };

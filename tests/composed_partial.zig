@@ -8,6 +8,30 @@ const strings = std.testing.expectEqualStrings;
 const Child = markup.Profile(.{ .policy = .{ .mode = .structural, .retention = .{ .partial = true } } });
 const P = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true, .markup = true } }, .processors = .{ .markup = Child } });
 
+test "composed empty representation means no outer tree not a zero-statement graph" {
+    inline for (.{ false, true }) |retain| {
+        const R = dot.Profile(.{ .policy = .{ .retention = .{ .partial = retain } }, .processors = .{ .markup = Child } });
+        var no_header = try R.parseAndValidate(gpa, "not_a_graph", R.DiagnosticSink.discard, .{});
+        defer no_header.deinit(gpa);
+        try expect(no_header.dot.document == null);
+        try equal(dot.Completeness.empty, no_header.state());
+        try expect(!no_header.scopeComplete() and !no_header.subtreeComplete() and !no_header.documentValid());
+
+        var unfinished = try R.parseAndValidate(gpa, "graph { a;", R.DiagnosticSink.discard, .{});
+        defer unfinished.deinit(gpa);
+        try equal(if (retain) dot.Completeness.partial else .empty, unfinished.state());
+        try equal(retain, unfinished.dot.document != null);
+        try expect(!unfinished.scopeComplete() and !unfinished.documentValid());
+
+        var zero = try R.parseAndValidate(gpa, "graph {}", R.DiagnosticSink.discard, .{});
+        defer zero.deinit(gpa);
+        try expect(zero.dot.document != null);
+        try equal(dot.Completeness.complete, zero.state());
+        try equal(@as(usize, 0), zero.dot.document.?.statementCount());
+        try expect(zero.scopeComplete() and zero.subtreeComplete() and zero.documentValid());
+    }
+}
+
 test "composed partial child leaves outer syntax complete and retains independent trees" {
     const source = "graph { a [label=<<root><done/></wrong>>+\"tail\"+<<ok/>>]; }";
     var checked = try P.parseAndValidate(gpa, source, P.DiagnosticSink.discard, .{});

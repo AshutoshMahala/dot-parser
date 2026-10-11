@@ -34,9 +34,15 @@ path. Other selections add an input-error union and `.encoding` call option.
 
 ## BOM or explicit byte order
 
-A leading BOM selects UTF-8, UTF-16LE/BE or UTF-32LE/BE. UTF-32 signatures are
-tested before UTF-16 signatures. It is skipped as framing but remains in the
-borrowed source and occupies its original offsets.
+An explicit `.encoding` is authoritative. Only a BOM matching that reader is
+skipped as framing; bytes resembling another encoding's BOM remain content in
+the selected reader. The bytes remain in the borrowed source and occupy their
+original offsets. For example, explicit UTF-16LE treats `ff fe 00 00` as its
+two-byte BOM followed by NUL, not a UTF-32LE BOM. Grammar NUL rules still apply.
+
+Without explicit selection, a leading BOM selects UTF-8, UTF-16LE/BE or
+UTF-32LE/BE. UTF-32 signatures are tested before UTF-16 signatures. A BOM for a
+compiled-out reader returns `UnsupportedEncoding`, without trying a shorter BOM.
 
 Without a BOM, use an explicit encoding for native input:
 
@@ -50,7 +56,16 @@ defer parsed.deinit(allocator);
 Other choices are `.ascii`, `.utf8`, `.utf16le`, `.utf32le` and `.utf32be`.
 There is no host-endian guess. Without either selection, UTF-8 is preferred if
 enabled, otherwise ASCII if enabled; a native-only profile returns
-`error.EncodingRequired`. A contradictory BOM returns `error.ConflictingBom`.
+`error.EncodingRequired`. No NUL-pattern heuristic or retry with another reader
+is performed. Explicit selection cannot enable a compiled-out reader.
+
+| Selection order | Result |
+| --- | --- |
+| Explicit `.encoding` | Use that reader; recognize only its matching BOM |
+| Otherwise, leading BOM | Use the longest matching signature |
+| Otherwise, UTF-8 compiled | Use the existing UTF-8/raw-byte reader |
+| Otherwise, ASCII compiled | Use the ASCII reader |
+| Otherwise | `EncodingRequired`; provide native encoding and byte order |
 
 Native input must contain complete, valid code units: no unpaired UTF-16
 surrogates or invalid UTF-32 scalars. The initial one-shot API checks this in an

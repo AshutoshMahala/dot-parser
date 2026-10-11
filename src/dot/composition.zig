@@ -206,10 +206,17 @@ pub fn ProfileForEncoding(comptime actual: support.encoding.Actual, comptime api
                     .invalid_syntax => if (self._delayed.on_error == .fail_fast) return error.CompositionStopped,
                     else => return error.CompositionStopped,
                 }
-                if (self.dot.validation) |v| switch (v.outcome) {
-                    .completed => {},
-                    else => return error.CompositionStopped,
-                };
+                if (self.dot.validation) |v| {
+                    if (v.diagnostic_stop != null or v.diagnostic_delivery != .complete) return error.CompositionStopped;
+                    switch (v.outcome) {
+                        .completed => {},
+                        // A caller-supplied validation scratch shortfall leaves
+                        // the DOT tree available. Collecting parents may run an
+                        // independent child stage; DOT validation stays unfinished.
+                        .insufficient_scratch => if (self._delayed.on_error == .fail_fast) return error.CompositionStopped,
+                        else => return error.CompositionStopped,
+                    }
+                }
             }
             pub fn scopeComplete(self: *const @This()) bool {
                 return if (self.dot.document) |doc| doc.scopeComplete() else false;
@@ -218,6 +225,7 @@ pub fn ProfileForEncoding(comptime actual: support.encoding.Actual, comptime api
                 return self.scopeComplete() and (!self.markup.requested or self.markup.representation == .complete);
             }
             pub fn state(self: *const @This()) support.Completeness {
+                if (self.dot.document == null) return .empty;
                 if (!self.scopeComplete()) return .partial;
                 return if (self.markup.requested) self.markup.representation else .complete;
             }

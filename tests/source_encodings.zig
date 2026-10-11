@@ -351,8 +351,62 @@ test "native selection requires byte order and rejects malformed units" {
     try std.testing.expectError(error.TruncatedCodeUnit, D.parseBorrowed(gpa, "\xff\xfe\x00\x00x", bag.sink(), .{}));
     try std.testing.expectError(error.InvalidEncoding, D.parseBorrowed(gpa, "\xff\xfe\x00\x00\x00\xd8\x00\x00", bag.sink(), .{}));
     const U = dot.Profile(.{ .source_encodings = &.{ .utf16, .utf32 } });
-    try std.testing.expectError(error.ConflictingBom, U.parseBorrowed(gpa, "\xff\xfe\x00\x00", bag.sink(), .{ .encoding = .utf16le }));
+    // Explicit UTF-16LE sees its own two-byte BOM followed by NUL, not a
+    // conflicting UTF-32LE signature. NUL is a grammar failure, not framing.
+    var narrow = try U.parseBorrowed(gpa, "\xff\xfe\x00\x00", bag.sink(), .{ .encoding = .utf16le });
+    defer narrow.deinit(gpa);
+    try std.testing.expectEqual(dot.ParseOutcome.invalid_syntax, narrow.outcome);
     try std.testing.expectError(error.InvalidEncoding, U.parseBorrowed(gpa, "\xfe\xff\xd8\x00", bag.sink(), .{}));
+}
+
+test "explicit native markup preserves leading text that resembles another BOM" {
+    inline for (.{ .scalar, .block }) |scanner| {
+        const M = markup.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .policy = .{ .mode = .structural, .scanner = scanner } });
+        inline for (.{
+            .{ dot.InputEncoding.utf16le, "\u{bbef}\u{4ebf}<x/>" },
+            .{ dot.InputEncoding.utf32le, "\u{ffeff}<x/>" },
+        }) |case| {
+            var buffer: [128]u8 = undefined;
+            const source = encode(case[0], case[1], &buffer, false);
+            var result = try M.parseAndValidate(gpa, try markup.Fragment.init(source, 0), markup.diagnostic.discard, .{ .encoding = case[0] });
+            defer result.deinit();
+            try std.testing.expect(result.documentValid());
+            const document = result.parse.document.?;
+            try std.testing.expectEqual(case[0], document.source_info.encoding);
+            try std.testing.expectEqual(.explicit, document.source_info.provenance);
+            try std.testing.expect(!document.source_info.has_bom);
+            try std.testing.expectEqual(source.ptr, document.source.ptr);
+            var roots = document.roots();
+            const text = roots.next().?;
+            try std.testing.expectEqual(@as(u32, 0), text.span().start);
+            try std.testing.expectEqualSlices(u8, source[0..4], text.content().?);
+        }
+    }
+}
+
+test "native delayed markup proceeds independently of outer validation scratch" {
+    const P = dot.Profile(.{
+        .source_encodings = &.{ .utf16, .utf32 },
+        .policy = .{ .markup = .passthrough, .retention = .{ .markup = true }, .validation = .{ .repeated_attribute = .warning } },
+        .processors = .{ .markup = markup.Profile(.{}) },
+    });
+    inline for (.{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        var buffer: [512]u8 = undefined;
+        const source = encode(actual, "graph { a [label=<<B>ok</B>> color=red]; }", &buffer, true);
+        var result = try P.parseAndValidate(gpa, source, P.DiagnosticSink.discard, .{});
+        defer result.deinit(gpa);
+        try std.testing.expect(result.scopeComplete() and !result.dot.documentValid());
+        const outer_validation = result.dot.validation.?;
+        try std.testing.expect(outer_validation.outcome == .insufficient_scratch);
+        try result.requestMarkup(gpa, result.dot.document.?.attributes[0].value);
+        try std.testing.expectEqual(dot.Completeness.not_processed, result.state());
+        try P.processPendingMarkup(gpa, &result, P.DiagnosticSink.discard, .{});
+        try std.testing.expect(result.subtreeComplete() and result.markup.allValid());
+        try std.testing.expectEqual(dot.Completeness.complete, result.state());
+        try std.testing.expect(!result.dot.documentValid() and !result.documentValid());
+        try std.testing.expectEqualDeep(outer_validation, result.dot.validation.?);
+        try std.testing.expectEqual(actual, result.markupResults().?[0].result.parse.document.?.source_info.encoding);
+    }
 }
 
 test "native scanner backends agree on malformed ASCII syntax and block boundaries" {

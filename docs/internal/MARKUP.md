@@ -131,12 +131,11 @@ processor workers consume already-admitted fragments and do not expose standalon
 parser/session methods. A worker may be a leaf; encoding factory hooks belong to
 the factory, and diagnostic/owning-result types remain shared across encodings.
 
-Remaining decisions from the encoding/prefix review:
-
-- Explicit reader precedence when valid leading text resembles a different BOM.
-- Recovery allowance measured in physical bytes versus logical code units.
-- Composition representation state when no DOT document exists.
-- Whether delayed child work can proceed after a DOT validation scratch shortfall.
+Remaining decision from the encoding/prefix review: recovery allowance measured
+in physical bytes versus logical code units. The budget has not changed.
+Settled selection and composition contracts are documented in
+[source encodings](../ENCODINGS.md#bom-or-explicit-byte-order) and
+[attached delayed results](../LABELS.md#attach-delayed-results).
 
 Runtime-policy retention-off throughput and reader pull-in from generic document
 helpers require separately measured performance work; no stable-parity claim is

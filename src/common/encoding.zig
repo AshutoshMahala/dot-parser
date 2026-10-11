@@ -97,7 +97,6 @@ pub const Capabilities = packed struct(u4) {
 pub const InputError = error{
     UnsupportedEncoding,
     EncodingRequired,
-    ConflictingBom,
     SourceTooLarge,
     TruncatedCodeUnit,
     InvalidEncoding,
@@ -120,18 +119,22 @@ pub fn bom(source: []const u8) ?Info {
     return null;
 }
 
-/// Select one actual encoding for the entire buffer. Native input without a
-/// signature needs explicit byte order; no host-endian or content guessing.
+/// Select one actual encoding for the entire buffer. Explicit selection is
+/// authoritative: only that reader's matching BOM is framing. Otherwise detect
+/// the longest BOM, then use an enabled byte reader. BOM-less native input needs
+/// explicit byte order; no host-endian guessing, NUL heuristic or parse retries.
 pub fn select(comptime capabilities: Capabilities, source: []const u8, explicit: ?Actual) InputError!Info {
     if (source.len > std.math.maxInt(u32)) return error.SourceTooLarge;
-    const detected = bom(source);
+    const detected = if (explicit == null) bom(source) else null;
     const actual = explicit orelse if (detected) |value| value.encoding else if (capabilities.utf8) Actual.utf8 else if (capabilities.ascii) Actual.ascii else return error.EncodingRequired;
     if (!capabilities.allows(actual)) return error.UnsupportedEncoding;
-    if (detected) |value| if (value.encoding != actual) return error.ConflictingBom;
+    const has_bom = if (explicit != null) switch (actual) {
+        inline else => |selected| Reader(selected).bomLength(source) != 0,
+    } else detected != null;
     const info: Info = .{
         .encoding = actual,
         .provenance = if (explicit != null) .explicit else if (detected != null) .bom else .default,
-        .has_bom = detected != null,
+        .has_bom = has_bom,
     };
     const width: u3 = switch (actual) {
         .ascii, .utf8 => 1,
@@ -312,10 +315,45 @@ test "encoding selection uses longest BOM and preserves provenance" {
     try std.testing.expectEqual(Actual.utf32le, (try select(all, "\xff\xfe\x00\x00", null)).encoding);
     try std.testing.expectEqual(@as(u3, 4), (try select(all, "\xff\xfe\x00\x00", null)).bomBytes());
     try std.testing.expectEqual(Provenance.explicit, (try select(all, "a\x00", .utf16le)).provenance);
-    try std.testing.expectError(error.ConflictingBom, select(all, "\xfe\xff", .utf16le));
+    const explicit = try select(all, "\xfe\xff", .utf16le);
+    try std.testing.expectEqual(Actual.utf16le, explicit.encoding);
+    try std.testing.expectEqual(Provenance.explicit, explicit.provenance);
+    try std.testing.expect(!explicit.has_bom);
     try std.testing.expectError(error.EncodingRequired, select(comptime Capabilities.from(&.{.utf32}), "", null));
     try std.testing.expectError(error.TruncatedCodeUnit, select(all, "a", .utf16le));
     try std.testing.expectError(error.UnsupportedEncoding, select(comptime Capabilities.from(&.{}), "\xef\xbb\xbf", null));
+}
+
+test "explicit encoding recognizes only its own BOM without reader fallback" {
+    const all = comptime Capabilities.from(&.{ .ascii, .utf8, .utf16, .utf32 });
+    const overlap = "\xff\xfe\x00\x00";
+    const narrow = try select(all, overlap, .utf16le);
+    try std.testing.expectEqual(Actual.utf16le, narrow.encoding);
+    try std.testing.expectEqual(@as(u3, 2), narrow.bomBytes());
+    const wide = try select(all, overlap, null);
+    try std.testing.expectEqual(Actual.utf32le, wide.encoding);
+    try std.testing.expectEqual(@as(u3, 4), wide.bomBytes());
+    const narrow_only = comptime Capabilities.from(&.{.utf16});
+    try std.testing.expectError(error.UnsupportedEncoding, select(narrow_only, overlap, null));
+    try std.testing.expectEqual(narrow, try select(narrow_only, overlap, .utf16le));
+
+    // These prefixes are text in the explicitly selected reader, even though
+    // generic detection would interpret them as another reader's signature.
+    inline for (.{
+        .{ Actual.utf16le, "\xef\xbb\xbf\x4e" },
+        .{ Actual.utf32le, "\xff\xfe\x0f\x00" },
+        .{ Actual.utf8, "\xff\xfe" },
+        .{ Actual.ascii, "\xef\xbb\xbf" },
+    }) |case| {
+        const info = try select(all, case[1], case[0]);
+        try std.testing.expectEqual(case[0], info.encoding);
+        try std.testing.expectEqual(Provenance.explicit, info.provenance);
+        try std.testing.expectEqual(@as(u3, 0), info.bomBytes());
+    }
+    try std.testing.expectEqual(Actual.utf8, (try select(all, "abc", null)).encoding);
+    try std.testing.expectEqual(Actual.ascii, (try select(comptime Capabilities.from(&.{}), "abc", null)).encoding);
+    try std.testing.expectError(error.EncodingRequired, select(narrow_only, "g\x00", null));
+    try std.testing.expectError(error.UnsupportedEncoding, select(narrow_only, "abc", .utf8));
 }
 
 test "native readers decode boundaries without reading incomplete units" {

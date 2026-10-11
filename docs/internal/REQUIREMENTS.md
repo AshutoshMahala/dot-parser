@@ -193,8 +193,12 @@ compile-time excludable when its code-size cost is material.
 with completeness local to each parser/scope and independent of validity or EOF
 completion. `scopeComplete()` checks the scope itself; `subtreeComplete()` also
 requires its requested inner scopes. Processing not requested is separate from
-requested-but-not-processed; neither certifies unchecked contents. Complete DOT
-can contain partial markup, unless an inner stop prevents DOT itself finishing.
+requested-but-not-processed; neither certifies unchecked contents. Composition
+reports `.empty` when the DOT document is absent, rather than implying a retained
+partial tree exists. A complete zero-statement graph stays
+`.complete`; parse outcomes and validation reports remain separate.
+Complete DOT can contain partial markup, unless an inner stop prevents DOT itself
+finishing.
 Retention is opt-in and independent of `.collect`/`.fail_fast`. Preserve complete
 constructs, unfinished containers and unavailable ranges without guessing repairs.
 Traversal/indices must remain safe, source borrowed, failure reasons unchanged,
@@ -962,8 +966,11 @@ explicit empty means ASCII-only, and UTF-16/32 readers are opt-in. Enabling a
 reader is not enabling a string processor or mandatory UTF-8 validation.
 
 **Native source decision (2026-10-10):** recognize structural ASCII code units
-without transcoding the source. A BOM or explicit input encoding selects one
-reader/byte order for the entire buffer; a union of capabilities does not permit
+without transcoding the source. Explicit input encoding is authoritative and
+recognizes only that reader's matching BOM. Without it, select the longest BOM,
+then an enabled UTF-8/ASCII reader; BOM-less native-only input needs explicit byte
+order. Do not guess from NULs or retry parsers. One reader/byte order applies to
+the entire buffer; a union of capabilities does not permit
 mixed encodings within it. Explicit outer/inner selections form a union; omitted
 inner selections inherit the outer capabilities when bound and default to UTF-8
 standalone. Actual encoding is inherited by raw child operands.
@@ -975,6 +982,14 @@ Native malformed code units must not be mistaken for complete successful input.
 The first implementation provides unmetered admission plus one-shot processing;
 resumable admission/dispatch and native excerpt windows remain unfinished. The
 current API/cost boundaries are in [source encodings](../ENCODINGS.md).
+
+**Delayed validation independence (2026-10-10):** DOT validation scratch
+preflight failure does not discard its complete tree. Collecting parents may
+select/process delayed children with independent storage, retaining the original
+`.insufficient_scratch` result and false validity helpers until an explicit
+validation retry. Fail-fast, cancellation, sink stops and actual parsing-storage
+failures still prevent later composition work. No stage silently retries or
+claims validation completed; representation completeness is independent.
 
 Optional future transforms must still preserve provenance, bound source/output
 sizes, state replacement/normalization losses, and provide explicit mappings

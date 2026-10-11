@@ -1020,8 +1020,11 @@ slice 4b with independent selection/severity; further catalogs remain open (Q40)
 compile-time `source_encodings` selects ASCII/UTF-8/16/32 capabilities. Omission
 means UTF-8; explicit empty means ASCII-only. Explicit outer/inner selections
 form a union; omitted bound children inherit instead of adding their standalone
-UTF-8 default. Select one actual encoding for the buffer by BOM or explicit byte
-order and pass it through raw child scopes. Mixed encodings need a separate
+UTF-8 default. Explicit encoding/byte order is authoritative: recognize only its
+matching BOM. Otherwise use the longest leading BOM, then an enabled UTF-8/ASCII
+reader; native-only BOM-less input requires explicit selection. No NUL heuristic
+or parser retry chooses a reader. Pass the one actual encoding through raw child
+scopes. Mixed encodings need a separate
 framing contract; they do not follow from the union.
 
 Native grammar readers borrow the untouched original buffer and retain physical

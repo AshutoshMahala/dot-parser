@@ -14,6 +14,77 @@ fn span(source: []const u8, raw: []const u8) dot.location.Span {
     return .{ .start = @intCast(std.mem.indexOf(u8, source, raw).?), .len = @intCast(raw.len) };
 }
 
+test "collect allows delayed markup after scratch shortfall without certifying outer validation" {
+    const source = "graph { a [x=<<b/>> y=<<i/>>]; }";
+    inline for (.{ false, true }) |runtime| inline for (.{ .scalar, .block }) |backend| inline for (.{ .collect, .fail_fast }) |parent| {
+        const baseline: dot.Policy = .{
+            .scanner = backend,
+            .markup = .passthrough,
+            .retention = .{ .markup = true },
+            .on_error = if (runtime) (if (parent == .collect) .fail_fast else .collect) else parent,
+            .validation = .{ .repeated_attribute = .warning },
+        };
+        const R = dot.Profile(.{ .runtime_policy = runtime, .policy = baseline, .processors = .{ .markup = Child } });
+        var bag: R.FixedDiagnosticBag(8) = .{};
+        var result = try R.parseAndValidate(gpa, source, bag.sink(), .{
+            .dot = if (runtime) .{ .policy = .{ .on_error = parent } } else .{},
+        });
+        defer result.deinit(gpa);
+        try equal(dot.ParseOutcome.success, result.dot.outcome);
+        try expect(result.scopeComplete() and !result.dot.documentValid() and !result.documentValid());
+        try equal(dot.Completeness.complete, result.state());
+        const outer_validation = result.dot.validation.?;
+        try expect(outer_validation.outcome == .insufficient_scratch);
+        try equal(@as(u32, 2), outer_validation.outcome.insufficient_scratch.required_attribute_keys);
+        try equal(@as(usize, 0), outer_validation.outcome.insufficient_scratch.provided_attribute_keys);
+        try equal(@as(usize, 1), bag.items().len);
+        try expect(result.dot.diagnostic_stop == null);
+        const before = result.dot.document.?.nodes.ptr;
+        const first = result.dot.document.?.attributes[0].value;
+        if (parent == .fail_fast) {
+            try std.testing.expectError(error.CompositionStopped, result.requestMarkup(gpa, first));
+            try std.testing.expectError(error.CompositionStopped, R.processPendingMarkup(gpa, &result, bag.sink(), .{}));
+            try expect(!result.markup.requested and result.pendingMarkup().len == 0);
+            continue;
+        }
+        for (result.dot.document.?.attributes) |attribute| try result.requestMarkup(gpa, attribute.value);
+        try equal(dot.Completeness.not_processed, result.state());
+        try expect(result.scopeComplete() and !result.subtreeComplete());
+        try R.processPendingMarkup(gpa, &result, bag.sink(), .{});
+        try expect(result.scopeComplete() and result.subtreeComplete() and result.markup.allValid());
+        try equal(dot.Completeness.complete, result.state());
+        try equal(@as(u32, 2), result.markup.visited);
+        try equal(@as(usize, 2), result.markupResults().?.len);
+        try equal(@as(usize, 1), bag.items().len); // no repeated capacity diagnostic
+        try equal(before, result.dot.document.?.nodes.ptr);
+        try std.testing.expectEqualDeep(outer_validation, result.dot.validation.?);
+        try expect(!result.dot.documentValid() and !result.documentValid());
+
+        // The caller can explicitly retry DOT validation with sufficient scratch.
+        // Processing children did not implicitly retry or replace the old report.
+        const Outer = dot.Profile(.{ .policy = .{ .scanner = backend, .validation = .{ .repeated_attribute = .warning } } });
+        var keys: [2]dot.AttributeKeyScratch = undefined;
+        result.dot.validation = Outer.validate(&result.dot.document.?, dot.diagnostic.discard, .{ .scratch = .{ .attribute_keys = &keys } });
+        try expect(result.dot.documentValid() and result.documentValid());
+    };
+}
+
+test "validation scratch shortfall cannot bypass a diagnostic sink stop" {
+    const R = dot.Profile(.{
+        .policy = .{ .markup = .passthrough, .retention = .{ .markup = true }, .validation = .{ .repeated_attribute = .warning } },
+        .processors = .{ .markup = Child },
+    });
+    const source = "graph { a [x=<<b/>> y=red]; }";
+    var bag: R.FixedDiagnosticBag(0) = .{};
+    var result = try R.parseAndValidate(gpa, source, bag.sink(), .{});
+    defer result.deinit(gpa);
+    try expect(result.scopeComplete() and result.dot.validation.?.outcome == .insufficient_scratch);
+    try equal(dot.reporting.StopReason.capacity, result.dot.diagnostic_stop.?);
+    try std.testing.expectError(error.CompositionStopped, result.requestMarkup(gpa, result.dot.document.?.attributes[0].value));
+    try std.testing.expectError(error.CompositionStopped, R.processPendingMarkup(gpa, &result, R.DiagnosticSink.discard, .{}));
+    try expect(!result.markup.requested and result.markupResults() == null);
+}
+
 test "delayed selection attaches independent child trees and marks pending work" {
     const source = "graph { a [label=<<ok/>>+\"tail\"+<<r><i/></wrong>> other=<<unchecked/>>]; }";
     var bag: P.FixedDiagnosticBag(16) = .{};
