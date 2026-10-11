@@ -156,6 +156,61 @@ at handoff; this is sustained retained memory, not a comparable peak increase.
 Exact capacity hints or fixed pools avoid that growth slack. Retaining composed
 child trees has an additional input-dependent cost; these numbers are DOT-only.
 
+## Development check: runtime-policy prefix adapter
+
+Checked 2026-10-10 against `5053e52`, on the same Apple M4 Pro and Zig 0.16.0.
+The retained change makes scope entry and scoped-edge promotion failure-atomic:
+all required pools are reserved/checked before live records change. This removes
+the partial adapter's per-event snapshot/rollback work without disabling runtime
+partial retention or compiling a second grammar for retention-off operations.
+
+This check used parse-only operations over 14 generated workloads of roughly
+100,000 statements, scalar/block scanners and fixed/growing pools. Each binary
+had two warm-ups and nine timed parses per row, with three alternating process
+repetitions; the table shows medians of those process medians. Growing parses
+used the C allocator and excluded result destruction from timing. These are
+development comparisons, not replacements for the release baseline above.
+
+Runtime policies, retention off, **ReleaseFast** (decimal MB/s):
+
+| Workload | Scanner | Pools | Before → after, ms | Before → after, MB/s |
+| --- | --- | --- | ---: | ---: |
+| Edges | scalar | fixed | 4.639 → 4.300 | 383.2 → 413.5 |
+| Edges | scalar | growing | 4.994 → 4.535 | 356.0 → 392.0 |
+| Edges | block | fixed | 6.942 → 6.408 | 256.1 → 277.4 |
+| Edges | block | growing | 7.567 → 7.115 | 234.9 → 249.9 |
+| Subgraph endpoints | scalar | fixed | 3.772 → 3.379 | 212.1 → 236.8 |
+| Subgraph endpoints | scalar | growing | 4.235 → 3.900 | 188.9 → 205.1 |
+| Subgraph endpoints | block | fixed | 4.961 → 4.557 | 161.3 → 175.6 |
+| Subgraph endpoints | block | growing | 5.423 → 5.167 | 147.5 → 154.8 |
+
+Across all 14 workloads, runtime-profile geometric-mean throughput improved
+3.5–5.4%, depending on scanner/storage. Compile-time-policy geometric means were
+within −0.4% to +1.5%. Runtime retention-on edge/subgraph rows improved 7.6–14.7%
+in throughput, with the same retained-prefix and failure contracts.
+
+**ReleaseSafe is not a uniform win:** runtime-profile geometric means ranged
+from approximately unchanged to 1.4% lower throughput. The node-only block /
+growing row was about 9% lower; other individual rows moved in both directions.
+The ReleaseFast recovery must not be described as resolving every build-mode
+regression. Extra immediate-dispatch/forced-inlining experiments were not kept:
+they helped some rows but introduced larger node-only regressions elsewhere.
+
+Allocator-requested peak/live bytes and raw allocation requests were unchanged across
+every measured row, both with retention off and with retention on. For example,
+growing edges retained 4,400,000 bytes and peaked at 5,892,592 requested bytes;
+subgraph endpoints retained 4,666,800 and peaked at 5,887,788. These are allocator
+observations, not process RSS or memory internal to `realloc`. Public result and
+session sizes are unchanged. The representative runtime benchmark executable
+shrank slightly (1,028,960 → 1,027,952 bytes in ReleaseFast). A separate direct
+builder bypass recovered speed but grew it to 1,325,328 bytes, so it was not kept.
+
+The [policy benchmark](../bench/policies.zig) now exercises nodes, edges and
+subgraph endpoints with fixed policies, runtime baselines/overrides and runtime
+partial retention: `zig build bench-policy -Doptimize=ReleaseFast` (or
+`ReleaseSafe`). It uses smaller repeated-name synthetic fixtures rather than
+the generated corpus used for the table.
+
 ## Scanners
 
 The [lexer benchmark](../bench/lexer.zig) times the DOT scanner on its own, in

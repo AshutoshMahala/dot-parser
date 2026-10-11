@@ -1062,7 +1062,7 @@ pub const Builder = struct {
 
     pub fn edgeLink(self: *Builder, event: syntax_event.EdgeLink) Error!void {
         if (self.scope_state.scoped_owner != null) {
-            try appendScopedLink(self, .{ .node = try self.reference(event.right, event.right_port) }, event.operator, event.operator_span);
+            try appendScopedLink(self, .{ .node = try self.reference(event.right, event.right_port) }, event.operator, event.operator_span, false);
             return;
         }
         std.debug.assert(self.phase == .building);
@@ -1574,7 +1574,7 @@ pub const FixedBuilder = struct {
 
     pub fn edgeLink(self: *FixedBuilder, event: syntax_event.EdgeLink) Error!void {
         if (self.scope_state.scoped_owner != null) {
-            try appendScopedLink(self, .{ .node = try self.reference(event.right, event.right_port) }, event.operator, event.operator_span);
+            try appendScopedLink(self, .{ .node = try self.reference(event.right, event.right_port) }, event.operator, event.operator_span, false);
             return;
         }
         std.debug.assert(self.phase == .building);
@@ -1831,14 +1831,26 @@ fn poolItems(self: anytype, comptime pool: Pool) []pool.Element() {
     if (@TypeOf(self.*) == Builder) return @field(self, @tagName(pool)).items;
     return @field(self.storage, pool.storageName())[0..poolLen(self, pool)];
 }
-fn appendPool(self: anytype, comptime pool: Pool, value: pool.Element(), at: location.Span) @TypeOf(self.*).Error!Index {
+/// Reserve/check without changing live lengths or records. Multi-pool events
+/// prepare every append before publishing any of them; capacity may grow on a
+/// later failure, but previously retained syntax stays unchanged.
+fn preparePool(self: anytype, comptime pool: Pool, at: location.Span) @TypeOf(self.*).Error!void {
     const length = poolLen(self, pool);
-    const index = try self.statementIndex(length, at);
+    _ = try self.statementIndex(length, at);
     if (@TypeOf(self.*) == Builder) {
         try self.reserve(&@field(self, @tagName(pool)), at);
-        @field(self, @tagName(pool)).appendAssumeCapacity(value);
     } else {
         try self.checkPool(length, @field(self.storage, pool.storageName()).len, pool.resource(), at);
+    }
+}
+/// Only after preparePool succeeded for this pool in the current event. No
+/// fallible allocation, capacity check or index check remains after mutation.
+fn appendPrepared(self: anytype, comptime pool: Pool, value: pool.Element()) Index {
+    const length = poolLen(self, pool);
+    const index: Index = @intCast(length);
+    if (@TypeOf(self.*) == Builder) {
+        @field(self, @tagName(pool)).appendAssumeCapacity(value);
+    } else {
         @field(self.storage, pool.storageName())[length] = value;
         @field(self, @tagName(pool) ++ "_len") += 1;
     }
@@ -1847,24 +1859,29 @@ fn appendPool(self: anytype, comptime pool: Pool, value: pool.Element(), at: loc
 fn endpoint(self: anytype, span: location.Span, port: ?u32, scope: ?u32) @TypeOf(self.*).Error!Endpoint {
     return if (scope) |id| .{ .subgraph = @enumFromInt(id) } else .{ .node = try self.reference(span, port) };
 }
-fn promoteEdge(self: anytype, event: syntax_event.EdgeStatement) @TypeOf(self.*).Error!void {
+fn promoteEdge(self: anytype, event: syntax_event.EdgeStatement, comptime prepared: bool) @TypeOf(self.*).Error!void {
     if (self.scope_state.scoped_owner != null) return;
     const value: ScopedEdgeStatement = .{
         .first = .{ .left = try endpoint(self, event.left, event.left_port, event.left_scope), .right = try endpoint(self, event.right, event.right_port, event.right_scope), .operator = event.operator, .operator_range = self.range(event.operator_span), .attributes = .{ .start = unfinished_attributes, .len = 0 } },
         .prefix = .{ .start = @intCast(self.pending_links), .len = @intCast(poolLen(self, .edge_links) - self.pending_links) },
     };
-    const index = try appendPool(self, .scoped_edges, value, event.operator_span);
+    if (!prepared) {
+        try preparePool(self, .scoped_edges, event.operator_span);
+        if (self.scope_state.reserved_order == null) try preparePool(self, .order, event.left);
+    }
+    const index = appendPrepared(self, .scoped_edges, value);
     if (self.scope_state.reserved_order == null)
-        self.scope_state.reserved_order = try appendPool(self, .order, .{ .scoped_edge = index }, event.left);
+        self.scope_state.reserved_order = appendPrepared(self, .order, .{ .scoped_edge = index });
     self.scope_state.scoped_owner = index;
     poolItems(self, .order)[self.scope_state.reserved_order.?] = .{ .scoped_edge = index };
     self.pending_links = poolLen(self, .edge_links);
 }
-fn appendScopedLink(self: anytype, right: Endpoint, operator: EdgeOperator, at: location.Span) @TypeOf(self.*).Error!void {
+fn appendScopedLink(self: anytype, right: Endpoint, operator: EdgeOperator, at: location.Span, comptime prepared: bool) @TypeOf(self.*).Error!void {
     const owner_index = self.scope_state.scoped_owner.?;
     const owner = poolItems(self, .scoped_edges)[owner_index];
     const left = if (owner.last_link != no_link) poolItems(self, .scoped_edge_links)[owner.last_link].right else if (owner.prefix.len != 0) Endpoint{ .node = poolItems(self, .edge_links)[owner.prefix.start + owner.prefix.len - 1].right } else owner.first.right;
-    const index = try appendPool(self, .scoped_edge_links, .{ .left = left, .right = right, .operator = operator, .operator_range = self.range(at), .owner = owner_index }, at);
+    if (!prepared) try preparePool(self, .scoped_edge_links, at);
+    const index = appendPrepared(self, .scoped_edge_links, .{ .left = left, .right = right, .operator = operator, .operator_range = self.range(at), .owner = owner_index });
     const updated = &poolItems(self, .scoped_edges)[owner_index];
     if (owner.last_link == no_link) updated.first_link = index else poolItems(self, .scoped_edge_links)[owner.last_link].next = index;
     updated.last_link = index;
@@ -1874,8 +1891,20 @@ fn beginScope(self: anytype, event: syntax_event.BeginSubgraph) @TypeOf(self.*).
     std.debug.assert(self.phase == .building and self.pendingRange().len == 0);
     const index = try self.statementIndex(poolLen(self, .subgraphs), event.start);
     const id = index + 1;
+    // Scope entry can also promote an edge and append its continuation. Check
+    // all affected pools in event order before replacing owners/link pointers.
     if (event.role == .left) {
-        self.scope_state.reserved_order = try appendPool(self, .order, .{ .subgraph = index }, event.start);
+        try preparePool(self, .order, event.start);
+    } else {
+        if (self.scope_state.scoped_owner == null) {
+            try preparePool(self, .scoped_edges, event.edge.?.operator_span);
+            if (self.scope_state.reserved_order == null) try preparePool(self, .order, event.edge.?.left);
+        }
+        if (event.role == .link) try preparePool(self, .scoped_edge_links, event.link_operator_span.?);
+    }
+    try preparePool(self, .subgraphs, event.start);
+    if (event.role == .left) {
+        self.scope_state.reserved_order = appendPrepared(self, .order, .{ .subgraph = index });
     } else {
         var edge = event.edge.?;
         if (event.role == .right) {
@@ -1883,17 +1912,17 @@ fn beginScope(self: anytype, event: syntax_event.BeginSubgraph) @TypeOf(self.*).
             edge.right = event.start;
             edge.right_port = null;
         }
-        try promoteEdge(self, edge);
+        try promoteEdge(self, edge, true);
         if (event.role == .link)
-            try appendScopedLink(self, .{ .subgraph = @enumFromInt(id) }, event.link_operator.?, event.link_operator_span.?);
+            try appendScopedLink(self, .{ .subgraph = @enumFromInt(id) }, event.link_operator.?, event.link_operator_span.?, true);
     }
     const entry: syntax_event.ScopeEntry = .{ .id = id, .state = self.scope_state };
-    _ = try appendPool(self, .subgraphs, .{
+    _ = appendPrepared(self, .subgraphs, .{
         .parent = self.current_scope,
         .name = if (event.name) |name| self.range(name) else null,
         .source = self.range(event.start),
         .body = .{ .start = @intCast(poolLen(self, .order)), .len = 0 },
-    }, event.start);
+    });
     self.current_scope = @enumFromInt(id);
     self.scope_state = .{};
     self.pending_links = poolLen(self, .edge_links);
@@ -1914,7 +1943,7 @@ fn endScope(self: anytype, event: syntax_event.EndSubgraph) @TypeOf(self.*).Erro
 }
 fn finishScopedEdge(self: anytype, event: syntax_event.EdgeStatement) @TypeOf(self.*).Error!void {
     std.debug.assert(self.phase == .building);
-    try promoteEdge(self, event);
+    try promoteEdge(self, event, false);
     poolItems(self, .scoped_edges)[self.scope_state.scoped_owner.?].first.attributes = self.pendingRange();
     self.scope_state = .{};
     self.pending_links = poolLen(self, .edge_links);
@@ -1966,6 +1995,103 @@ test "link index overflow is reported before accessing a fixed pool" {
     builder.abortDocument(.sink_failure);
     try expectEqual(@as(usize, 0), builder.edge_links_len);
     try expectEqual(@as(usize, 0), builder.pending_links);
+}
+
+test "scope entry checks every pool before changing live records" {
+    const capacities: Capacities = .{ .statements = 8, .subgraphs = 4, .scoped_edges = 4, .scoped_edge_links = 4 };
+    const Pools = FixedDocumentStorage(capacities);
+    const at: location.Span = .{ .start = 7, .len = 1 };
+    const edge: syntax_event.EdgeStatement = .{ .left = at, .right = at, .operator = .undirected, .operator_span = at };
+    inline for ([_]syntax_event.ScopeRole{ .left, .right, .link }) |role| inline for ([_]Pool{ .order, .subgraphs, .scoped_edges, .scoped_edge_links }) |limited| {
+        const used = switch (role) {
+            .left => limited == .order or limited == .subgraphs,
+            .right => limited != .scoped_edge_links,
+            .link => limited == .subgraphs or limited == .scoped_edge_links,
+        };
+        if (comptime used) {
+            var pools: Pools = .{};
+            var saved_pools: Pools = .{};
+            var builder = FixedBuilder.init("graph { {} -- {} -- {} }", pools.storage());
+            try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } });
+            const entry: syntax_event.BeginSubgraph = .{ .start = at, .name = null, .role = role, .edge = edge, .link_operator = .undirected, .link_operator_span = at };
+            if (role == .link) {
+                const first = try builder.beginSubgraph(.{ .start = at, .name = null, .role = .right, .edge = edge });
+                try builder.endSubgraph(.{ .entry = first, .close = at });
+                const second = try builder.beginSubgraph(entry);
+                try builder.endSubgraph(.{ .entry = second, .close = at });
+            }
+            const before = builder;
+            const saved = saved_pools.storage();
+            inline for ([_]Pool{ .order, .subgraphs, .scoped_edges, .scoped_edge_links }) |pool| {
+                @memcpy(@field(saved, pool.storageName())[0..poolLen(&builder, pool)], poolItems(&builder, pool));
+            }
+            @field(builder.storage, limited.storageName()) = @field(builder.storage, limited.storageName())[0..poolLen(&builder, limited)];
+            try std.testing.expectError(error.PoolExhausted, builder.beginSubgraph(entry));
+            try expectEqual(limited.resource(), builder.failure_info.?.capacity.?.resource);
+            try std.testing.expectEqualDeep(before.scope_state, builder.scope_state);
+            try expectEqual(before.current_scope, builder.current_scope);
+            try expectEqual(before.pending_links, builder.pending_links);
+            try expectEqual(before.pending_attributes, builder.pending_attributes);
+            inline for ([_]Pool{ .order, .subgraphs, .scoped_edges, .scoped_edge_links }) |pool| {
+                try expectEqual(poolLen(&before, pool), poolLen(&builder, pool));
+                try std.testing.expectEqualDeep(@field(saved, pool.storageName())[0..poolLen(&before, pool)], poolItems(&builder, pool));
+            }
+        }
+    };
+}
+
+test "scoped edge promotion does not publish its owner when order is full" {
+    inline for (.{ "edgeStatement", "edgeChainStatement" }) |method| {
+        var pools: FixedDocumentStorage(.{ .statements = 1, .subgraphs = 1, .scoped_edges = 1 }) = .{};
+        const at: location.Span = .{ .start = 7, .len = 1 };
+        var builder = FixedBuilder.init("graph { {} -- a }", pools.storage());
+        try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } });
+        const entry = try builder.beginSubgraph(.{ .start = at, .name = null });
+        try builder.endSubgraph(.{ .entry = entry, .close = at });
+        try builder.subgraphStatement(entry.id);
+        const before = builder;
+        try std.testing.expectError(error.PoolExhausted, @call(.auto, @field(FixedBuilder, method), .{ &builder, syntax_event.EdgeStatement{
+            .left = at,
+            .right = at,
+            .left_scope = entry.id,
+            .operator = .undirected,
+            .operator_span = at,
+        } }));
+        try expectEqual(before.scoped_edges_len, builder.scoped_edges_len);
+        try expectEqual(before.order_len, builder.order_len);
+        try std.testing.expectEqualDeep(before.scope_state, builder.scope_state);
+        try expectEqual(StatementId{ .subgraph = 0 }, builder.storage.statement_ids[0]);
+    }
+}
+
+fn scopeAllocationProbe(allocator: std.mem.Allocator, role: syntax_event.ScopeRole) !void {
+    const at: location.Span = .{ .start = 7, .len = 1 };
+    const edge: syntax_event.EdgeStatement = .{ .left = at, .right = at, .operator = .undirected, .operator_span = at };
+    var builder = Builder.init(allocator, "graph { {} -- {} }");
+    defer builder.deinit();
+    try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } });
+    if (role == .link) {
+        const entry = try builder.beginSubgraph(.{ .start = at, .name = null, .role = .right, .edge = edge });
+        try builder.endSubgraph(.{ .entry = entry, .close = at });
+    }
+    const before = builder;
+    const owner = if (before.scope_state.scoped_owner) |id| before.scoped_edges.items[id] else null;
+    _ = builder.beginSubgraph(.{ .start = at, .name = null, .role = role, .edge = edge, .link_operator = .undirected, .link_operator_span = at }) catch |err| {
+        inline for (.{ .order, .subgraphs, .scoped_edges, .scoped_edge_links }) |pool| {
+            try expectEqual(poolLen(&before, pool), poolLen(&builder, pool));
+        }
+        try std.testing.expectEqualDeep(before.scope_state, builder.scope_state);
+        try expectEqual(before.current_scope, builder.current_scope);
+        try expectEqual(before.pending_links, builder.pending_links);
+        try expectEqual(before.pending_attributes, builder.pending_attributes);
+        if (owner) |value| try std.testing.expectEqualDeep(value, builder.scoped_edges.items[before.scope_state.scoped_owner.?]);
+        return err;
+    };
+}
+
+test "scope entry leaves live state unchanged at every allocation failure" {
+    for ([_]syntax_event.ScopeRole{ .left, .right, .link }) |role|
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, scopeAllocationProbe, .{role});
 }
 
 // Test-only import: unit tests below drive the builder directly through the

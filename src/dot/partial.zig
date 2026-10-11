@@ -1,9 +1,8 @@
-//! Opt-in transactional adapter around the ordinary builders. A failed event
-//! restores its touched records in constant work; freezing never walks nesting.
+//! Opt-in prefix tracking around failure-atomic builders. A failed event leaves
+//! live syntax unchanged; freezing never snapshots pools or walks nesting.
 const std = @import("std");
 const syntax = @import("syntax.zig");
 const event = @import("syntax_event.zig");
-const no_link = std.math.maxInt(u32);
 
 pub const pools = .{ "comments", "order", "nodes", "edges", "edge_chains", "scoped_edges", "scoped_edge_links", "edge_links", "ported_references", "subgraphs", "attributes", "assignments", "attribute_statements" };
 pub const AllocationLengths = [pools.len]usize;
@@ -13,9 +12,6 @@ comptime {
 }
 pub fn documentField(comptime field: []const u8) []const u8 {
     return if (std.mem.eql(u8, field, "subgraphs")) "subgraph_records" else field;
-}
-fn storageField(comptime field: []const u8) []const u8 {
-    return if (std.mem.eql(u8, field, "order")) "statement_ids" else field;
 }
 
 pub fn Builder(comptime Base: type) type {
@@ -46,69 +42,8 @@ pub fn Builder(comptime Base: type) type {
                 self.base.deinit();
             }
         }
-        fn items(self: *Self, comptime field: []const u8) []Element(field) {
-            if (owned) return @field(self.base, field).items;
-            return @field(self.base.storage, storageField(field))[0..@field(self.base, field ++ "_len")];
-        }
-        fn Element(comptime field: []const u8) type {
-            return @typeInfo(@FieldType(syntax.DocumentStorage, storageField(field))).pointer.child;
-        }
-        fn length(self: *Self, comptime field: []const u8, len: usize) void {
-            if (owned) @field(self.base, field).items.len = len else @field(self.base, field ++ "_len") = @intCast(len);
-        }
-        const Snapshot = struct {
-            lengths: [transactional_pools.len]u32,
-            scope: event.ScopeState,
-            current: syntax.ScopeId,
-            pending_links: usize,
-            pending_attributes: usize,
-            order: ?syntax.StatementId,
-            owner: ?syntax.ScopedEdgeStatement,
-            next: u32,
-        };
-        // Ordinary appends reserve/check all their storage before mutation.
-        // Only scope entry and edge promotion can fail after changing live
-        // records; journal exactly their pools, not every event/pool.
-        const transactional_pools = .{ "order", "subgraphs", "scoped_edges", "scoped_edge_links" };
-        fn snapshot(self: *Self) Snapshot {
-            var result: Snapshot = .{
-                .lengths = undefined,
-                .scope = self.base.scope_state,
-                .current = self.base.current_scope,
-                .pending_links = self.base.pending_links,
-                .pending_attributes = self.base.pending_attributes,
-                .order = if (self.base.scope_state.reserved_order) |id| self.items("order")[id] else null,
-                .owner = if (self.base.scope_state.scoped_owner) |id| self.items("scoped_edges")[id] else null,
-                .next = no_link,
-            };
-            inline for (transactional_pools, 0..) |field, i| result.lengths[i] = @intCast(self.items(field).len);
-            if (result.owner) |owner| if (owner.last_link != no_link) {
-                result.next = self.items("scoped_edge_links")[owner.last_link].next;
-            };
-            return result;
-        }
-        fn restore(self: *Self, saved: Snapshot) void {
-            inline for (transactional_pools, 0..) |field, i| self.length(field, saved.lengths[i]);
-            if (saved.order) |value| self.items("order")[saved.scope.reserved_order.?] = value;
-            if (saved.owner) |value| {
-                self.items("scoped_edges")[saved.scope.scoped_owner.?] = value;
-                if (value.last_link != no_link) self.items("scoped_edge_links")[value.last_link].next = saved.next;
-            }
-            self.base.scope_state = saved.scope;
-            self.base.current_scope = saved.current;
-            self.base.pending_links = saved.pending_links;
-            self.base.pending_attributes = saved.pending_attributes;
-        }
         fn call(self: *Self, comptime name: []const u8, args: anytype) @typeInfo(@TypeOf(@field(Base, name))).@"fn".return_type.? {
-            const rollback = self.enabled and if (comptime std.mem.eql(u8, name, "beginSubgraph"))
-                true
-            else if (comptime std.mem.eql(u8, name, "edgeStatement") or std.mem.eql(u8, name, "edgeChainStatement"))
-                self.base.scope_state.scoped_owner == null and (args[0].left_scope != null or args[0].right_scope != null)
-            else
-                false;
-            const saved = if (rollback) self.snapshot() else undefined;
             const value = @call(.auto, @field(Base, name), .{&self.base} ++ args) catch |err| {
-                if (rollback) self.restore(saved);
                 self.failure_info = self.base.failure_info;
                 return err;
             };

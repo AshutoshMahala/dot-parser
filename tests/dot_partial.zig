@@ -211,7 +211,7 @@ test "DOT partial sessions safely freeze at every work boundary and reset" {
     }
 }
 
-test "DOT partial rollback handles exhaustion of every fixed pool" {
+test "DOT partial failure-atomic events handle exhaustion of every fixed pool" {
     inline for (@typeInfo(dot.DocumentCapacities).@"struct".fields) |field| {
         for ([_][]const u8{ source, "digraph { a:p -> b -> c -> {d} -> e -> {f} -> {g} -> h; }" }) |bytes| for (0..5) |limit| {
             var pools: Pools = .{};

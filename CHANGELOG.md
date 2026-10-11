@@ -8,6 +8,9 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- DOT scope entry and scoped-edge promotion reserve every required pool before
+  changing live syntax. Partial retention no longer snapshots or rolls back
+  those events; runtime policies still support enabling retention per operation.
 - **Breaking:** `Document.effectiveKind` and `Interpretation.effectiveKind`
   return an optional graph kind. An unfinished `.auto` graph with no retained
   directed edge has an unknown final kind; validation does not report an
