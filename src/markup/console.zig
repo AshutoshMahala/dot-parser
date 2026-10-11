@@ -103,7 +103,7 @@ pub const Adapter = struct {
         } else if (d.details == .reference and d.details.reference == .invalid_character) {
             try writer.writeAll("use a permitted character value, such as '&#32;' for a space");
         } else if (d.details == .capacity and d.details.capacity.resource == .recovery_work) {
-            try writer.writeAll("fix the reported tag mismatches before continuing; the source-sized recovery search budget is exhausted");
+            try writer.writeAll("fix the reported tag mismatches before continuing; the source-code-unit recovery search budget is exhausted");
         } else if (d.code == .unknown_reference or d.code == .unknown_reference_tolerated) {
             if (positions.slice(d.span)) |name| {
                 var buffer: [7]u8 = undefined;

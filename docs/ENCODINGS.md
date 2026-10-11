@@ -81,6 +81,13 @@ optional and defaults to off; enabling native readers does not make UTF-8
 validation mandatory. That check is `.not_run` for native markup input rather
 than pretending native bytes were checked as UTF-8.
 
+Markup's recovery-search allowance counts source code units, not physical
+bytes: one credit per UTF-8/ASCII byte, UTF-16 unit or UTF-32 unit. Ancestor
+probes and name code-unit comparisons each spend one credit. This preserves
+UTF-8 behavior without giving wider encodings extra search work for equivalent
+ASCII markup. It does not change physical-byte spans/limits, session stepping
+or cancellation polling; see [parse failures](MARKUP.md#when-parsing-fails).
+
 ## DOT and markup together
 
 ```zig

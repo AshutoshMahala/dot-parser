@@ -197,6 +197,46 @@ fn encode(comptime actual: dot.InputEncoding, text: []const u8, buffer: []u8, bo
     return buffer[0..at];
 }
 
+test "markup recovery allowance uses source code units across native readers and policies" {
+    const text = "<aa>" ** 40 ++ "</ab>" ** 40;
+    inline for (.{ false, true }) |runtime| inline for (.{ .scalar, .block }) |scanner| {
+        const M = markup.Profile(.{
+            .source_encodings = &.{ .ascii, .utf8, .utf16, .utf32 },
+            .runtime_policy = runtime,
+            .policy = .{ .mode = .structural, .scanner = scanner, .on_error = if (runtime) .fail_fast else .collect },
+        });
+        inline for (.{ .ascii, .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+            const E = dot.encoding.Reader(actual);
+            for ([_]bool{ false, true }) |with_bom| {
+                var buffer: [text.len * 4 + 4]u8 = undefined;
+                const source = encode(actual, text, &buffer, with_bom);
+                var bag: markup.FixedDiagnosticBag(32) = .{};
+                const options: M.ParseOptions = if (runtime)
+                    .{ .encoding = actual, .policy = .{ .mode = .structural, .scanner = scanner, .on_error = .collect } }
+                else
+                    .{ .encoding = actual };
+                var parsed = try M.parseBorrowed(gpa, source, bag.sink(), options);
+                defer parsed.deinit();
+                const credits: u32 = @intCast(E.units(source));
+                try std.testing.expectEqual(markup.Outcome{ .resource_limit = .{ .resource = .recovery_work, .limit = credits } }, parsed.outcome);
+                try std.testing.expectEqual(markup.Completion.incomplete, parsed.completion);
+                // Four mismatches exhaust the same logical allowance in every
+                // encoding. BOM code units count too, without altering this case.
+                try std.testing.expectEqual(@as(u32, 4), parsed.syntax_errors);
+                try std.testing.expectEqual(@as(u32, 40), parsed.counts.elements);
+                try std.testing.expect(parsed.document == null);
+                try std.testing.expectEqual(@as(usize, 5), bag.items().len);
+                const exhausted = bag.items()[4];
+                try std.testing.expectEqual(.recovery_work, exhausted.details.capacity.resource);
+                try std.testing.expectEqual(credits, exhausted.details.capacity.limit);
+                // Accounting units must not leak into physical-byte locations.
+                const framing: u32 = if (with_bom) E.bomLength(source) else 0;
+                try std.testing.expectEqual(@as(u32, @intCast(framing + (40 * 4 + 4 * 5) * E.width)), exhausted.span.start);
+            }
+        }
+    };
+}
+
 test "native DOT and markup preserve source bytes, offsets and encoding" {
     inline for (.{ .scalar, .block }) |scanner| {
         const D = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .policy = .{ .scanner = scanner } });

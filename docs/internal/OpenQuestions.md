@@ -1035,6 +1035,11 @@ failures as typed input errors before tree creation; UTF-8 validation stays
 optional. Fixed storage, workspaces and proactive/delayed markup are supported;
 resumable native admission/session dispatch and native source excerpts remain
 unfinished. See [source encodings](../ENCODINGS.md) for the available contract.
+Markup ancestor-search recovery uses a shared 1x source-code-unit allowance:
+one credit per ancestor probe or name code-unit comparison, never replenished
+by an error or pause. UTF-8 is unchanged; native readers supply the logical unit
+count, and `.recovery_work.limit` reports credits rather than physical bytes.
+This bounds search work without changing execution stepping or cancellation.
 Future explicit transforms need their own loss, ownership, mapping and work
 contracts; native parsing does not silently normalize or replace source data.
 *(Embodied: `src/dot/lexer/`, `src/dot/validation_checks.zig`,

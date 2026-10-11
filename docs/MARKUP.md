@@ -254,12 +254,23 @@ It never invents tags or repairs the source. By default, a failed parse returns
 no tree. To keep the part that was recognised, turn on
 [partial results](#partial-results-for-editors) (unreleased). Set `on_error = .fail_fast` to stop at the first error.
 
+Ancestor searches share a total recovery allowance of **one credit per source
+code unit**, including any leading BOM units. The encoding reader supplies that
+count: physical bytes for UTF-8/ASCII, bytes divided by two for UTF-16 and by four
+for UTF-32. Each ancestor name-length probe or code-unit comparison spends one
+credit. This is a work bound, not a character count or diagnostic limit; it is
+not replenished after an error or pause. Exhaustion returns
+`resource_limit.resource = .recovery_work`, with `limit` in credits and
+`completion = .incomplete`. UTF-8 accounting is unchanged. Native code-unit
+accounting is unreleased; the allowance is independent of session
+`advance(budget)` and cancellation checks.
+
 | `parsed.outcome` | Meaning |
 | --- | --- |
 | `success` | Parsed completely |
 | `invalid_syntax` | The markup is malformed |
 | `unsupported_feature` | Uses something the parser doesn't handle, like `<?...?>` |
-| `resource_limit` | A limit in your settings was reached |
+| `resource_limit` | A configured limit or the recovery-search allowance was reached |
 | `storage_exhausted` | A fixed buffer was too small |
 | `out_of_memory` | The allocator ran out of memory |
 | `cancelled` | You cancelled it |

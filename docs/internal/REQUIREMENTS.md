@@ -983,6 +983,16 @@ The first implementation provides unmetered admission plus one-shot processing;
 resumable admission/dispatch and native excerpt windows remain unfinished. The
 current API/cost boundaries are in [source encodings](../ENCODINGS.md).
 
+**Markup recovery-work decision (2026-10-11):** the total ancestor-search
+allowance is one credit per source code unit, supplied by the encoding reader.
+Each ancestor length probe or name code-unit comparison spends one credit.
+The allowance is shared across the parse and never replenished by errors or
+pause/resume. UTF-8 remains unchanged; UTF-16/32 use bytes divided by two/four.
+Exhaustion reports `.recovery_work` with its limit in credits and incomplete
+processing. This does not change physical-byte source limits, spans, execution
+microsteps or cancellation polling. It counts work units, not Unicode scalars
+or grapheme clusters; a larger multiplier is not part of this decision.
+
 **Delayed validation independence (2026-10-10):** DOT validation scratch
 preflight failure does not discard its complete tree. Collecting parents may
 select/process delayed children with independent storage, retaining the original

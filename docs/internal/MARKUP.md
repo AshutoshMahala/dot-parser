@@ -131,8 +131,6 @@ processor workers consume already-admitted fragments and do not expose standalon
 parser/session methods. A worker may be a leaf; encoding factory hooks belong to
 the factory, and diagnostic/owning-result types remain shared across encodings.
 
-Remaining decision from the encoding/prefix review: recovery allowance measured
-in physical bytes versus logical code units. The budget has not changed.
 Settled selection and composition contracts are documented in
 [source encodings](../ENCODINGS.md#bom-or-explicit-byte-order) and
 [attached delayed results](../LABELS.md#attach-delayed-results).

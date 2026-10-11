@@ -8,6 +8,10 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- Markup recovery's shared ancestor-search allowance counts source code units,
+  preserving UTF-8 behavior and normalizing native UTF-16/32 search work.
+  `.recovery_work` limits report credits, not native source bytes; execution
+  stepping and cancellation polling are unchanged.
 - **Breaking:** explicit `.encoding` is authoritative; only its matching BOM is
   framing, and `ConflictingBom` is removed from native input-error sets.
   Autodetection still prefers the longest BOM; BOM-less native-only input needs

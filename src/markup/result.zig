@@ -4,6 +4,8 @@ pub const Outcome = union(enum) {
     success,
     invalid_syntax,
     unsupported_feature: diagnostic.Feature,
+    /// recovery_work reports search credits (source code units); source_bytes
+    /// remains a physical-byte limit. Other resources retain their own units.
     resource_limit: struct { resource: diagnostic.Resource, limit: u32 },
     storage_exhausted: diagnostic.Resource,
     out_of_memory,

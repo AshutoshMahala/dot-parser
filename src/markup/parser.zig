@@ -56,10 +56,15 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
 
         pub fn init(source: []const u8, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) Self {
             var self: Self = .{ .scanner = if (strip_bom) Scanner.init(source) else Scanner.initContent(source), .diagnostics = diagnostics, .settings = settings, .hook = hook };
-            // One source-sized allowance across ALL ancestor searches, including
-            // length probes and byte comparisons. Even unmetered recovery is O(n).
-            if (recovery_enabled) self.recovery_state.remaining = @intCast(@min(source.len, support.location.max_source_len));
+            // One credit per source code unit, shared across ALL ancestor
+            // searches. Each length probe or code-unit comparison costs one;
+            // wider encodings must not grant extra search work for the same
+            // ASCII input. Even unmetered recovery is O(n).
+            if (recovery_enabled) self.recovery_state.remaining = searchAllowance(source);
             return self;
+        }
+        fn searchAllowance(source: []const u8) u32 {
+            return @intCast(@min(enc.units(source), support.location.max_source_len));
         }
         fn limits(self: *const Self) policy.Limits {
             return if (fixed) |v| v.limits else self.settings.limits;
@@ -126,7 +131,7 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
         fn searchCredit(self: *Self, stack: *scratch.Stack, sink: anytype) bool {
             if (!recovery_enabled) unreachable;
             if (self.recovery_state.remaining == 0) {
-                self.capacity(stack, sink, .recovery_work, @intCast(self.scanner.source.len), false);
+                self.capacity(stack, sink, .recovery_work, searchAllowance(self.scanner.source), false);
                 return false;
             }
             self.recovery_state.remaining -= 1;
@@ -428,6 +433,84 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
             return .{ .outcome = if (self.terminal) |r| r.outcome else null, .work_used = used, .source_frontier = self.scanner.frontier * enc.width, .counts = self.counts, .accepted_deviations = if (deviations_enabled) self.deviations else 0, .warnings = if (warnings_enabled) self.warnings else 0, .syntax_errors = self.syntaxErrors() };
         }
     };
+}
+
+test "code-unit recovery allowance survives partitioning and cancellation in every reader" {
+    const text = "<aa>" ** 40 ++ "</ab>" ** 40;
+    const Request = struct {
+        stop: bool = false,
+        polls: u32 = 0,
+        fn poll(context: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.polls += 1;
+            return self.stop;
+        }
+    };
+    var reference: ?result.Report = null;
+    inline for (.{ .ascii, .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        const E = support.encoding.Reader(actual);
+        var buffer: [text.len * E.width]u8 = undefined;
+        for (text, 0..) |byte, index| switch (E.width) {
+            1 => buffer[index] = byte,
+            2 => std.mem.writeInt(u16, buffer[index * 2 ..][0..2], byte, E.endian),
+            4 => std.mem.writeInt(u32, buffer[index * 4 ..][0..4], byte, E.endian),
+            else => unreachable,
+        };
+        inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| {
+            const M = MachineWithEncoding(actual, backend, if (runtime) null else .{}, true, true, .structural);
+            var reference_work: ?u64 = null;
+            for ([_]u32{ 1, 7, 256 }) |budget| {
+                var storage: scratch.Fixed(40) = .{};
+                var stack: scratch.Stack = .{ .frames = storage.storage().frames };
+                var counter: @import("syntax.zig").Counter = .{};
+                var machine = M.init(&buffer, diagnostic.discard, if (runtime) .{} else {}, null);
+                try std.testing.expectEqual(@as(u32, text.len), machine.recovery_state.remaining);
+                var work: u64 = 0;
+                while (machine.terminal == null) {
+                    const remaining = machine.recovery_state.remaining;
+                    try std.testing.expectEqual(@as(u32, 0), machine.advance(&stack, &counter, 0).work_used);
+                    try std.testing.expectEqual(remaining, machine.recovery_state.remaining);
+                    const progress = machine.advance(&stack, &counter, budget);
+                    try std.testing.expect(progress.work_used <= budget);
+                    work += progress.work_used;
+                    try std.testing.expect(work < text.len * 10);
+                }
+                const report = machine.terminal.?;
+                try std.testing.expectEqual(result.Outcome{ .resource_limit = .{ .resource = .recovery_work, .limit = text.len } }, report.outcome);
+                try std.testing.expectEqual(@as(u32, 4), report.syntax_errors);
+                try std.testing.expectEqual(result.Completion.incomplete, report.completion);
+                if (reference) |prior| try std.testing.expectEqualDeep(prior, report) else reference = report;
+                if (reference_work) |prior| try std.testing.expectEqual(prior, work) else reference_work = work;
+            }
+
+            var storage: scratch.Fixed(40) = .{};
+            var stack: scratch.Stack = .{ .frames = storage.storage().frames };
+            var counter: @import("syntax.zig").Counter = .{};
+            var request: Request = .{};
+            var machine = M.init(&buffer, diagnostic.discard, if (runtime) .{} else {}, .{ .context = &request, .is_requested = Request.poll });
+            var work: u64 = 0;
+            while (machine.syntaxErrors() == 0) {
+                work += machine.advance(&stack, &counter, 1).work_used;
+                try std.testing.expect(work < text.len * 10);
+                try std.testing.expect(machine.terminal == null);
+            }
+            _ = machine.advance(&stack, &counter, 1); // spend an ancestor-search credit
+            const remaining = machine.recovery_state.remaining;
+            try std.testing.expectEqual(@as(u32, text.len - 1), remaining);
+            const polls = request.polls;
+            request.stop = true;
+            const progress = machine.advance(&stack, &counter, 0);
+            try std.testing.expectEqual(@as(u32, 0), progress.work_used);
+            try std.testing.expectEqual(polls + 1, request.polls);
+            try std.testing.expectEqual(remaining, machine.recovery_state.remaining);
+            const report = machine.terminal.?;
+            try std.testing.expectEqual(result.Outcome.cancelled, report.outcome);
+            try std.testing.expectEqual(@as(u32, 1), report.syntax_errors);
+            try std.testing.expectEqual(result.Completion.incomplete, report.completion);
+            try std.testing.expectEqualDeep(report, machine.run(&stack, &counter));
+            try std.testing.expectEqual(polls + 1, request.polls);
+        };
+    }
 }
 
 test "each event attempt is charged and every rejecting sink aborts exactly once" {
