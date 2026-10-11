@@ -189,12 +189,13 @@ Across all 14 workloads, runtime-profile geometric-mean throughput improved
 within −0.4% to +1.5%. Runtime retention-on edge/subgraph rows improved 7.6–14.7%
 in throughput, with the same retained-prefix and failure contracts.
 
-**ReleaseSafe is not a uniform win:** runtime-profile geometric means ranged
-from approximately unchanged to 1.4% lower throughput. The node-only block /
-growing row was about 9% lower; other individual rows moved in both directions.
+**The initial ReleaseSafe measurements were mixed:** runtime-profile geometric
+means ranged from approximately unchanged to 1.4% lower throughput. The node-only block /
+growing row appeared about 9% lower; the follow-up below did not reproduce that
+node-only result. Other individual rows moved in both directions.
 The ReleaseFast recovery must not be described as resolving every build-mode
 regression. Extra immediate-dispatch/forced-inlining experiments were not kept:
-they helped some rows but introduced larger node-only regressions elsewhere.
+their initial results varied between workloads and benchmark contexts.
 
 Allocator-requested peak/live bytes and raw allocation requests were unchanged across
 every measured row, both with retention off and with retention on. For example,
@@ -209,7 +210,56 @@ The [policy benchmark](../bench/policies.zig) now exercises nodes, edges and
 subgraph endpoints with fixed policies, runtime baselines/overrides and runtime
 partial retention: `zig build bench-policy -Doptimize=ReleaseFast` (or
 `ReleaseSafe`). It uses smaller repeated-name synthetic fixtures rather than
-the generated corpus used for the table.
+the generated corpus used for the table. It now warms each case for at least
+150 ms, then takes nine samples averaging four timed parses each. Policy reads
+and result checks are outside the timed region.
+
+### ReleaseSafe repeatability follow-up
+
+The same-day follow-up rebuilt the exact committed sources at `5053e52` and
+`7998f1c`, with identical harnesses and longer per-case warm-ups. Each row had
+at least 150 ms of warm-up followed by nine four-parse samples. Three process
+repetitions alternated build order. This focused comparison covered nodes,
+edges and subgraph endpoints, not all 14 workloads from the initial check.
+
+Node-only runtime policies, retention off, **ReleaseSafe** (decimal MB/s):
+
+| Scanner | Pools | Before → after, ms | Before → after, MB/s |
+| --- | --- | ---: | ---: |
+| scalar | fixed | 2.379 → 2.309 | 331.7 → 341.6 |
+| scalar | growing | 2.520 → 2.560 | 313.1 → 308.2 |
+| block | fixed | 2.956 → 2.775 | 266.9 → 284.3 |
+| block | growing | 3.143 → 3.083 | 251.0 → 255.9 |
+
+The previously flagged block/growing row was about 1.9% faster in this repeat,
+with overlapping process ranges (before 3.114–3.183 ms, after 3.082–3.148 ms).
+The scalar/growing row was about 1.6% slower. This does not establish that every
+ReleaseSafe workload is regression-free, but the earlier 9% node-only slowdown
+is not a repeatable finding in this comparison. Initial first-row timings show
+substantial warm-up variation; harness/code-generation context also differed
+from the earlier pre-commit experiment, so warm-up alone is not a proven cause.
+
+Allocator-requested memory and allocation counts were identical between these
+committed builds. Growing nodes retained 2,400,000 bytes and peaked at 3,127,512
+requested bytes; fixed-pool parses made no document-pool allocations.
+
+A separate experiment kept runtime-selected one-shot engines out of their
+caller's function using `@call(.never_inline, ...)`: one extra call boundary
+per operation, not per token. Compared against `7998f1c` over all 14 workloads,
+with the same longer warm-up and three alternating process repetitions, its
+runtime-profile geometric-mean throughput changes were:
+
+| Scanner | Pools | ReleaseFast | ReleaseSafe |
+| --- | --- | ---: | ---: |
+| scalar | fixed | −2.1% | −1.0% |
+| scalar | growing | −2.0% | −0.5% |
+| block | fixed | +1.4% | +0.8% |
+| block | growing | +2.5% | +1.6% |
+
+This experiment was not retained: it traded block-scanner gains for losses on
+the default scalar scanner (including about 6.6% lower ReleaseFast throughput
+on minified input with fixed pools). Memory was unchanged. The follow-up changes
+only the benchmark methodology and these notes, not production parser behavior.
 
 ## Scanners
 
@@ -253,8 +303,8 @@ memory isn't timed.
 
 ## Compile-time and run-time settings
 
-The [settings benchmark](../bench/policies.zig) parses 50,000 `a;` statements
-(0.100 MB) into fixed buffers, without validation:
+The recorded settings baseline below parsed 50,000 `a;` statements (0.100 MB)
+into fixed buffers, without validation:
 
 - `fixed` uses compile-time settings.
 - `runtime_baseline` turns on run-time settings but changes nothing.
@@ -268,6 +318,11 @@ The [settings benchmark](../bench/policies.zig) parses 50,000 `a;` statements
 | block | fixed | 0.839 / 119.2 | 1.163 / 86.0 |
 | block | runtime_baseline | 1.338 / 74.7 | 1.210 / 82.7 |
 | block | runtime_override | 1.309 / 76.4 | 1.207 / 82.9 |
+
+The current [settings benchmark](../bench/policies.zig) also covers edges,
+subgraph endpoints and runtime partial retention, with the longer warm-up
+described in the development check above. Its node fixture includes newlines
+(0.150 MB), so its timings are not directly comparable to this historical table.
 
 These time the whole parse, not just the cost of reading the settings. Each
 row is compiled differently, so part of the difference is just different
