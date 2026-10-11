@@ -66,8 +66,8 @@ pub const Adapter = struct {
     pub const Item = diagnostic.Diagnostic;
     pub const registry = diagnostic;
     pub const Annotations = common.Annotations(diagnostic.Related.Role, 2);
-    pub fn headline(d: Diagnostic, writer: anytype) !void {
-        try writeHeadline(d, d.code.info(), writer);
+    pub fn headline(d: Diagnostic, positions: *Positions, writer: anytype) !void {
+        try writeHeadline(d, d.code.info(), positions.source_encoding, writer);
     }
     pub fn hasDetails(d: Diagnostic) bool {
         return d.details != .none;
@@ -101,7 +101,7 @@ pub const Adapter = struct {
 /// The message shown in the header. Wording lives here, in the renderer;
 /// most codes use their registry summary, a few are sharpened by the typed
 /// payload.
-fn writeHeadline(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !void {
+fn writeHeadline(d: Diagnostic, info: diagnostic.Code.Info, actual: @import("parser_support").encoding.Actual, writer: anytype) !void {
     switch (d.details) {
         .unterminated => |construct| {
             try writer.print("input ended inside a {s}", .{unterminatedName(construct)});
@@ -118,7 +118,8 @@ fn writeHeadline(d: Diagnostic, info: diagnostic.Code.Info, writer: anytype) !vo
             .spaced => try writer.writeAll("whitespace inside an edge operator"),
         },
         .incomplete_numeral => {
-            try writer.print("'{s}' must be followed by a digit", .{if (d.span.len == 2) "-." else "."});
+            const width = (@import("parser_support").encoding.Info{ .encoding = actual }).unitBytes();
+            try writer.print("'{s}' must be followed by a digit", .{if (d.span.len / width == 2) "-." else "."});
         },
         .reserved_keyword => |reserved| switch (reserved.context) {
             .attribute_list => try writer.print("keyword '{s}' is not followed by its attribute list", .{reserved.keyword.lexeme()}),

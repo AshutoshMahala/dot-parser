@@ -40,7 +40,7 @@ pub fn main() !void {
     const doc = &result.document.?;
     const fixed_view = Fixed.interpretation(doc, .{});
     std.debug.print("fixed kind: {s}, warnings: {d}\n", .{
-        @tagName(doc.effectiveKind(fixed_view)), result.validation.?.outcome.completed.warnings,
+        @tagName(doc.effectiveKind(fixed_view).?), result.validation.?.outcome.completed.warnings,
     });
 
     const Runtime = dot.Profile(.{ .runtime_policy = true });
@@ -61,7 +61,7 @@ pub fn main() !void {
     if (!checked.documentValid()) return error.InvalidDocument;
     const view = try Runtime.interpretation(doc, options);
     std.debug.print("auto kind: {s}, written header kind: {s}\n", .{
-        @tagName(doc.effectiveKind(view)), @tagName(doc.kind),
+        @tagName(doc.effectiveKind(view).?), @tagName(doc.kind),
     });
     var edges = doc.edgeIterator();
     while (edges.next()) |edge| {
@@ -86,7 +86,7 @@ pub fn main() !void {
     if (parsed.outcome != .success) return error.ParseFailed;
     if (!session.validate(dot.diagnostic.discard, .{}).?.documentValid()) return error.InvalidDocument;
     std.debug.print("policy session: {s}, {d} statement\n", .{
-        @tagName(parsed.document.?.effectiveKind(session.interpretation().?)),
+        @tagName(parsed.document.?.effectiveKind(session.interpretation().?).?),
         parsed.document.?.statementCount(),
     });
 }

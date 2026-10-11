@@ -36,7 +36,8 @@ pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Ac
             (!@hasDecl(Child, "source_capabilities") or @as(u4, @bitCast(Child.source_capabilities)) != @as(u4, @bitCast(capabilities)));
         const Bound = if (rebind) Child.withSourceEncodings(capabilities) else Child;
         const EncodedChild = if (@hasDecl(Bound, "forSourceEncoding")) Bound.forSourceEncoding(actual) else if (actual == .utf8) Bound else @compileError("bound processor does not support native source encoding");
-        return @import("composition.zig").ProfileForEncoding(actual, api, config, EncodedChild);
+        const CanonicalChild = if (actual == .utf8) void else Bound.forSourceEncoding(.utf8);
+        return @import("composition.zig").ProfileForEncoding(actual, api, config, EncodedChild, CanonicalChild);
     }
     const Binding = @import("parser_support").processor.PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
     return struct {
@@ -291,21 +292,45 @@ pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Ac
         /// per-edge policy state. Fixed concrete profiles need no instance state;
         /// fixed auto retains one input-derived kind, not runtime policy.
         pub const Interpretation = struct {
+            // One byte, including unknown; optional enums would use two bytes.
+            const Kind = enum(u2) {
+                undigraph,
+                digraph,
+                generic,
+                unknown,
+                fn from(value: ?policy.GraphKind) Kind {
+                    return if (value) |kind| switch (kind) {
+                        .undigraph => .undigraph,
+                        .digraph => .digraph,
+                        .generic => .generic,
+                    } else .unknown;
+                }
+                fn get(self: Kind) ?policy.GraphKind {
+                    return switch (self) {
+                        .undigraph => .undigraph,
+                        .digraph => .digraph,
+                        .generic => .generic,
+                        .unknown => null,
+                    };
+                }
+            };
             const Reading = struct {
-                kind: policy.GraphKind,
+                kind: Kind,
                 operator_reading: policy.OperatorReading,
             };
             reading: if (runtime_policy) Reading else void,
-            auto_kind: if (!runtime_policy and baseline.validation.graph.treated_as == .auto) policy.GraphKind else void,
+            auto_kind: if (!runtime_policy and baseline.validation.graph.treated_as == .auto) Kind else void,
 
-            pub fn effectiveKind(self: @This(), declared: api.DeclaredGraphKind) policy.GraphKind {
-                if (runtime_policy) return self.reading.kind;
+            /// Null only for an unfinished automatic graph with no directed
+            /// edge retained yet. Concrete treatments remain determined.
+            pub fn effectiveKind(self: @This(), declared: api.DeclaredGraphKind) ?policy.GraphKind {
+                if (runtime_policy) return self.reading.kind.get();
                 if (declared == .digraph) return .digraph;
                 return switch (baseline.validation.graph.treated_as) {
                     .undigraph => .undigraph,
                     .digraph => .digraph,
                     .generic => .generic,
-                    .auto => self.auto_kind,
+                    .auto => self.auto_kind.get(),
                 };
             }
 
@@ -317,7 +342,9 @@ pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Ac
                 else
                     baseline.validation.graph.operators.operator_reading;
                 if (reading == .as_written) return written;
-                return switch (self.effectiveKind(declared)) {
+                // Automatic/generic reading returned as_written above; only
+                // concrete, determined treatments can conform an operator.
+                return switch (self.effectiveKind(declared).?) {
                     .generic => written,
                     .digraph => .directed,
                     .undigraph => .undirected,
@@ -337,13 +364,13 @@ pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Ac
             if (runtime_policy) {
                 const treatment = if (document.kind == .digraph) .digraph else effective.graph.treated_as;
                 return .{ .reading = .{
-                    .kind = kindFor(document, treatment),
+                    .kind = Interpretation.Kind.from(kindFor(document, treatment)),
                     .operator_reading = if (document.kind == .digraph) effective.digraph.operator_reading else if (treatment == .auto or treatment == .generic) .as_written else effective.graph.operators.operator_reading,
                 }, .auto_kind = {} };
             }
             return .{
                 .reading = {},
-                .auto_kind = if (baseline.validation.graph.treated_as == .auto) kindFor(document, .auto) else {},
+                .auto_kind = if (baseline.validation.graph.treated_as == .auto) Interpretation.Kind.from(kindFor(document, .auto)) else {},
             };
         }
 

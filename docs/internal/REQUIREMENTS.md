@@ -203,6 +203,12 @@ The implemented slice retains DOT/markup prefixes at the first error
 or operational stop. Recovery may continue diagnostics, but later nodes are not
 retained yet. Direct partial-document validation checks retained facts and reports
 missing coverage; existing markup source/scope validation remains independent.
+Staged pairs, references and links must not advance the retained frontier before
+their owner is represented. Pending scoped-edge owners are not complete statement
+or edge views, even when their endpoint scopes contain retained child statements.
+An automatic graph with no retained directed edge has an unknown final kind while
+partial; interpretation returns no kind and restrictions must not infer undigraph
+from absence of a directed edge in an unfinished prefix.
 Composed `retention.markup` separately retains owning child results with original
 operand coordinates; ordinary composition continues to reuse child workspace.
 Attached delayed selection marks requested operands pending, processes one

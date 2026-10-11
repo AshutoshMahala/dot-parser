@@ -10,6 +10,73 @@ const capacities: dot.DocumentCapacities = .{ .comments = 16, .statements = 64, 
 const Pools = dot.FixedDocumentStorage(capacities);
 const source = "/* lead */ digraph G { a:p:n -> b -> c; subgraph s { x [k=v]; {y} -> z -> {q} -> r; } n [a=1 b=2]; graph [rank=same]; k=v; }";
 
+test "pending pairs links ports and trivia do not advance the represented frontier" {
+    const inputs = [_][]const u8{
+        "graph { a -> b -> c",           "graph { a -> b [x=1", "graph { a:p", "graph { a /* c */",
+        "graph { \"a\" /* c */ + \"b\"",
+    };
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |comments| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .retention = .{ .partial = true, .comments = comments } } });
+        for (inputs) |bytes| {
+            var r = P.parseAndValidate(allocator, bytes, discard, .{});
+            defer r.deinit(allocator);
+            const doc = r.document.?;
+            try equal(@as(usize, 0), doc.statementCount());
+            try equal(@as(u32, 7), doc.retained_end);
+            try equal(@as(u32, 7), r.validation.?.coverage.incomplete);
+            try expect(doc.unrepresented().?.len != 0);
+            try audit(&doc);
+        }
+        var r = P.parseBorrowed(allocator, "digraph { x; a -> /* c */ }", discard, .{});
+        defer r.deinit(allocator);
+        try equal(@as(u32, 11), r.document.?.retained_end);
+    };
+}
+
+test "pending scoped edges remain raw staging records not completed statements" {
+    inline for (.{ .scalar, .block }) |scanner| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .retention = .{ .partial = true } } });
+        var r = P.parseAndValidate(allocator, "graph { a -- subgraph { x } [color=red", discard, .{});
+        defer r.deinit(allocator);
+        const doc = &r.document.?;
+        try equal(@as(usize, 1), doc.statementCount()); // Only the endpoint's x.
+        try equal(@as(usize, 0), doc.rootStatementCount());
+        try expect(!doc.scoped_edges[0].complete());
+        var edges = doc.edgeIterator();
+        try expect(edges.next() == null);
+        var statements = doc.statements();
+        try expect(statements.next().? == .node);
+        try expect(statements.next() == null);
+        try audit(doc);
+
+        var nested = P.parseBorrowed(allocator, "graph { a -- subgraph { x -- { y } -- z; } [color=red", discard, .{});
+        defer nested.deinit(allocator);
+        const child = &nested.document.?;
+        try equal(@as(usize, 2), child.statementCount()); // Finished inner edge and y.
+        try equal(@as(usize, 0), child.rootStatementCount());
+        var child_edges = child.edgeIterator();
+        var count: u32 = 0;
+        while (child_edges.next() != null) count += 1;
+        try equal(@as(u32, 2), count);
+        try audit(child);
+    }
+}
+
+test "automatic graph kind remains unknown until a directed edge or completion" {
+    const P = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true }, .validation = .{
+        .graph = .{ .treated_as = .auto },
+        .restrictions = .{ .graph_kinds = .{ .undigraph = .err } },
+    } } });
+    var bag: dot.FixedDiagnosticBag(16) = .{};
+    var r = P.parseAndValidate(allocator, "graph { a -- b; x [y=; c -> d; }", bag.sink(), .{});
+    defer r.deinit(allocator);
+    try expect(r.document.?.effectiveKind(P.interpretation(&r.document.?, .{})) == null);
+    for (bag.items()) |d| try expect(d.code != .validation_restriction);
+    var directed = P.parseBorrowed(allocator, "graph { a -> b; x [y=", discard, .{});
+    defer directed.deinit(allocator);
+    try equal(dot.GraphKind.generic, directed.document.?.effectiveKind(P.interpretation(&directed.document.?, .{})));
+}
+
 fn audit(doc: *const dot.Document) !void {
     try expect(doc.retained_end <= doc.source.len);
     if (doc.unrepresented()) |tail| try equal(doc.source.len, tail.endOffset());
@@ -20,7 +87,10 @@ fn audit(doc: *const dot.Document) !void {
         _ = doc.text(a.key);
         _ = doc.text(a.value);
     }
-    for (doc.order) |id| try expect(doc.statement(id) != null);
+    for (doc.order) |id| if (doc.statement(id) == null) {
+        try expect(doc.state == .partial and id == .scoped_edge);
+        try expect(!doc.scoped_edges[id.scoped_edge].complete());
+    };
     for (0..doc.subgraph_records.len + 1) |index| {
         const scope = doc.scope(@enumFromInt(index)).?;
         try expect(scope.sourceRange().?.endOffset() <= doc.source.len);

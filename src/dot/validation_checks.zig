@@ -384,7 +384,7 @@ pub const GraphKinds = struct {
         self.done = true;
         const kinds = self.settings.restrictions.graph_kinds;
         if (kinds.undigraph == .off and kinds.digraph == .off and kinds.generic == .off) return null;
-        const kind = kindFor(self.document, self.settings.graph.treated_as);
+        const kind = kindFor(self.document, self.settings.graph.treated_as) orelse return null;
         const severity = switch (kind) {
             .undigraph => kinds.undigraph,
             .digraph => kinds.digraph,
@@ -400,7 +400,7 @@ pub const GraphKinds = struct {
 };
 
 /// Shared with interpretation so auto has exactly one definition.
-pub fn kindFor(document: *const syntax.Document, treatment: policy.GraphTreatment) policy.GraphKind {
+pub fn kindFor(document: *const syntax.Document, treatment: policy.GraphTreatment) ?policy.GraphKind {
     if (document.kind == .digraph) return .digraph;
     return switch (treatment) {
         .undigraph => .undigraph,
@@ -409,7 +409,7 @@ pub fn kindFor(document: *const syntax.Document, treatment: policy.GraphTreatmen
         .auto => blk: {
             var edges = document.edgeIterator();
             while (edges.next()) |edge| if (edge.operator == .directed) break :blk .generic;
-            break :blk .undigraph;
+            break :blk if (document.scopeComplete()) .undigraph else null;
         },
     };
 }

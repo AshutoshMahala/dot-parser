@@ -8,6 +8,46 @@ const source_validation = @import("validate_source.zig");
 const syntax = @import("syntax.zig");
 const scratch_impl = @import("scratch.zig");
 
+fn OptionsFor(comptime api: type, comptime Binding: type) type {
+    const Hook = if (Binding.runtime_policy or Binding.baseline.execution.cancellation) ?api.Cancellation else void;
+    return if (Binding.runtime_policy) struct {
+        policy: policy.Policy = .{},
+        cancellation: Hook = null,
+    } else struct { cancellation: Hook = if (Hook == void) {} else null };
+}
+fn ParseOptionsFor(comptime api: type, comptime Binding: type) type {
+    const Hook = if (Binding.runtime_policy or Binding.baseline.execution.cancellation) ?api.Cancellation else void;
+    return if (Binding.runtime_policy) struct {
+        policy: policy.Policy = .{},
+        cancellation: Hook = null,
+        scratch_allocator: ?std.mem.Allocator = null,
+    } else struct {
+        cancellation: Hook = if (Hook == void) {} else null,
+        scratch_allocator: ?std.mem.Allocator = null,
+    };
+}
+
+// Binding-only processor contract, not an unchecked standalone parser profile.
+// Prepared/workspace calls consume fragments of an already admitted outer source.
+fn BoundProcessor(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime config: policy.Config) type {
+    const Worker = ProfileForInputEncoding(actual, api, config, false);
+    return struct {
+        pub const declared_source_encodings = Worker.declared_source_encodings;
+        pub const source_capabilities = Worker.source_capabilities;
+        pub const Policies = Worker.Policies;
+        pub const Options = Worker.Options;
+        pub const Prepared = Worker.Prepared;
+        pub const Workspace = Worker.Workspace;
+        pub const Diagnostic = Worker.Diagnostic;
+        pub const DiagnosticSink = Worker.DiagnosticSink;
+        pub const CheckResult = Worker.CheckResult;
+        pub const InputError = Worker.InputError;
+        pub const ParseResources = Worker.ParseResources;
+        pub const console = Worker.console;
+        pub const prepare = Worker.prepare;
+    };
+}
+
 pub fn Profile(comptime api: type, comptime config: policy.Config) type {
     const caps = @import("parser_support").encoding.Capabilities.from(config.source_encodings);
     if (@as(u4, @bitCast(caps)) == 2) return ProfileForEncoding(.utf8, api, config);
@@ -31,7 +71,7 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
             return api.Profile(bound);
         }
         pub fn forSourceEncoding(comptime selected: @import("parser_support").encoding.Actual) type {
-            return ProfileForInputEncoding(selected, api, config, false);
+            return BoundProcessor(selected, api, config);
         }
         pub const Policies = Binding;
         pub const Diagnostic = api.Diagnostic;
@@ -44,18 +84,8 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
         pub const runtime_policy = config.runtime_policy;
         const State = Binding.State;
         const Hook = if (runtime_policy or baseline.execution.cancellation) ?api.Cancellation else void;
-        pub const Options = if (runtime_policy) struct {
-            policy: policy.Policy = .{},
-            cancellation: Hook = null,
-        } else struct { cancellation: Hook = if (Hook == void) {} else null };
-        pub const ParseOptions = if (runtime_policy) struct {
-            policy: policy.Policy = .{},
-            cancellation: Hook = null,
-            scratch_allocator: ?std.mem.Allocator = null,
-        } else struct {
-            cancellation: Hook = if (Hook == void) {} else null,
-            scratch_allocator: ?std.mem.Allocator = null,
-        };
+        pub const Options = OptionsFor(api, Binding);
+        pub const ParseOptions = ParseOptionsFor(api, Binding);
         pub const validatePolicy = Binding.validatePolicy;
         /// Prepared once for any number of explicitly selected raw fragments.
         /// For a PolicySet, use .{ .policies = state.path_to_markup } instead.

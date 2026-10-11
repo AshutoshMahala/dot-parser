@@ -126,6 +126,22 @@ or partial native input. Currently admission errors precede tree creation.
 Preserve original bytes and compact per-document provenance; keep disabled
 readers out of dispatch and measure default UTF-8 regressions separately.
 
+Entry/binding boundary: independent profiles admit their complete source; bound
+processor workers consume already-admitted fragments and do not expose standalone
+parser/session methods. A worker may be a leaf; encoding factory hooks belong to
+the factory, and diagnostic/owning-result types remain shared across encodings.
+
+Remaining decisions from the encoding/prefix review:
+
+- Explicit reader precedence when valid leading text resembles a different BOM.
+- Recovery allowance measured in physical bytes versus logical code units.
+- Composition representation state when no DOT document exists.
+- Whether delayed child work can proceed after a DOT validation scratch shortfall.
+
+Runtime-policy retention-off throughput and reader pull-in from generic document
+helpers require separately measured performance work; no stable-parity claim is
+made for those configurations.
+
 Any future explicit transform must state buffer ownership, replacement/loss,
 original/working size bounds, mapping and CPU/memory costs. Such a transform is
 not required to recognize UTF-16/32 grammar and must not become a hidden pass on

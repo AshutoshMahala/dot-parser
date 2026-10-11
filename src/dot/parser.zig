@@ -49,8 +49,8 @@
 //!   (a skipped `{` is matched by counting), the next statement parses
 //!   normally, and every further syntax error is reported the same way.
 //!   The outcome is `invalid_syntax` if a syntax error was found, otherwise
-//!   `unsupported_feature` for excluded HTML-like identifiers. No document is
-//!   published, and the sink sees exactly one terminal event. Lexical errors resume
+//!   `unsupported_feature` for excluded HTML-like identifiers. Only an opt-in
+//!   retaining sink may publish a prefix; it sees exactly one terminal event. Lexical errors resume
 //!   through `Scanner.resumeAfterFailure`; end of input, header errors,
 //!   trailing tokens and limits still stop the parse.
 //! - Iterative state-machine parsing has no recursion, so input size and shape
@@ -215,7 +215,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         begun: bool = false,
         /// True once the sink received its terminal abort. Recovery keeps
         /// the grammar running for diagnostics after that point, with no
-        /// further events and no published document.
+        /// further events. An opt-in retaining sink may publish a safe prefix.
         aborted: bool = false,
         /// Count discovered syntax rejections, independently of sink delivery.
         /// Each recovery consumes input; a terminal EOF finding ends the pass.
@@ -1232,8 +1232,15 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 // Statement callbacks use lookahead; it must not become part of
                 // the represented prefix before its own grammar action runs.
                 const end = switch (action) {
-                    .begin, .begin_subgraph, .end_subgraph, .comment, .attribute, .assignment => token.span.endOffset(),
-                    else => token.span.start,
+                    .begin, .begin_subgraph, .end_subgraph, .assignment => token.span.endOffset(),
+                    .node, .edge, .edge_chain, .attribute_statement, .subgraph_statement => token.span.start,
+                    // Staged pairs, references and links are not statements.
+                    // Trivia inside a pending statement cannot certify it either.
+                    // Concatenation trivia may arrive before the identifier,
+                    // while grammar state is still statement. A comment's own
+                    // pool record never certifies its unfinished owner.
+                    .comment => 0,
+                    else => 0,
                 };
                 self.events.retainThrough(@intCast(end));
             }
@@ -1594,7 +1601,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 },
                 .document_header => switch (found) {
                     .identifier => if (expected.contains(.digraph_keyword))
-                        (if (headerKeywordSuggestion(here.slice(self.tokens.source))) |keyword|
+                        (if (headerKeywordSuggestionEncoded(actual, here.slice(self.tokens.source))) |keyword|
                             diagnostic.Fix{ .span = here, .edit = .{ .replace = keyword }, .applicability = maybe }
                         else
                             null)
@@ -1677,7 +1684,9 @@ fn tokenItem(tag: lex.Token.Tag) diagnostic.SyntaxItem {
 /// A header keyword within edit distance two of `text`, for the "did you
 /// mean" repair. Conservative on purpose: short or very different text
 /// gets no guess, and only the keywords legal in a header are candidates.
-fn headerKeywordSuggestion(text: []const u8) ?diagnostic.Replacement {
+fn headerKeywordSuggestionEncoded(comptime actual: @import("parser_support").encoding.Actual, raw: []const u8) ?diagnostic.Replacement {
+    var buffer: [12]u8 = undefined;
+    const text = @import("parser_support").encoding.Reader(actual).asciiInto(raw, &buffer) orelse return null;
     if (text.len < 3 or text.len > 12) return null;
     var lowered: [12]u8 = undefined;
     for (text, 0..) |byte, i| lowered[i] = std.ascii.toLower(byte);
@@ -1747,7 +1756,7 @@ fn leadingIndentEncoded(comptime actual: @import("parser_support").encoding.Actu
         const byte = enc.byteAt(source, start - enc.width);
         if (byte == '\n' or byte == '\r') break;
         if (byte != ' ' and byte != '\t') return null;
-        if (span.start - start >= max_indent_scan) return null;
+        if (span.start - start >= max_indent_scan * enc.width) return null;
         start -= enc.width;
     }
     return (span.start - start) / enc.width;
@@ -1759,7 +1768,7 @@ fn lineStartEncoded(comptime actual: @import("parser_support").encoding.Actual, 
     const enc = @import("parser_support").encoding.Reader(actual);
     var start = offset;
     while (start > 0 and enc.byteAt(source, start - enc.width) != '\n' and enc.byteAt(source, start - enc.width) != '\r') {
-        if (offset - start >= max_indent_scan) return null;
+        if (offset - start >= max_indent_scan * enc.width) return null;
         start -= enc.width;
     }
     return start;

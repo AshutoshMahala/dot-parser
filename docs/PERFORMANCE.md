@@ -135,7 +135,9 @@ This is a targeted development check, not a replacement for the 0.4.0 baseline.
 With retention **off**, six 100,000-statement workloads (nodes, edges,
 identifiers, flat subgraphs, subgraph endpoints and minified) gave geometric-mean
 throughput changes of **−1.0% to +0.5%** across scalar/block, fixed/growing and
-ReleaseFast/ReleaseSafe combinations. Allocator-requested heap use was unchanged.
+ReleaseFast/ReleaseSafe combinations using **compile-time policy profiles**.
+Runtime-policy profiles were not included in that check; these numbers do not
+establish retention-off parity for them. Allocator-requested heap use was unchanged.
 Individual workload changes vary more than that aggregate.
 
 With `retention.partial` **on**, compared with the same development build with

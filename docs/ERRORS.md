@@ -10,7 +10,7 @@ Every operation tells you two things, kept separate on purpose:
 
 The library never prints or panics on bad input. Grammar and validation findings
 use diagnostics, not Zig errors. Zig errors cover API/configuration failures and
-the opt-in native facade's [encoding admission checks](ENCODINGS.md#bom-or-explicit-byte-order),
+the opt-in native facade's **Unreleased** [encoding admission checks](ENCODINGS.md#bom-or-explicit-byte-order),
 which run before grammar processing or tree creation.
 
 Both parsers report problems this way, with the same bags, sinks, renderer and
@@ -101,10 +101,15 @@ When parsing succeeds, `result.validation` holds the validation result.
 | `.error_stopped` | Stopped at the first error because of `.fail_fast`. |
 | `.diagnostic_stopped` | The diagnostic destination asked to stop, for example because the bag was full. |
 | `.insufficient_scratch` | A check needed a scratch array that was too small, so no checks ran. See [optional checks](POLICIES.md#optional-checks). |
+| `.unsupported_encoding` | **Unreleased.** This validator cannot read the document's source encoding. Validate through a profile with the matching reader. UTF-8 validators also accept ASCII-profile documents. |
 
 Only `.completed` with `document_valid` and complete representation coverage
 makes `documentValid()` true. In every
 other case the document is still available, but it was not fully checked.
+
+Markup reports the equivalent reader mismatch as
+`completion = .{ .unsupported_encoding = actual }` (**Unreleased**), with
+unknown validity rather than a successful validation claim.
 
 ## Keep going, or stop at the first error
 

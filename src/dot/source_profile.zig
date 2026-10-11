@@ -94,6 +94,7 @@ fn Composition(comptime api: type, comptime config: policy.Config, comptime caps
         pub const console = Base.console;
         pub const CheckOptions = dispatch.Options(Base.CheckOptions);
         pub const MarkupOptions = Base.MarkupOptions;
+        pub const SelectionError = Base.SelectionError;
         pub const Error = Base.Error || enc.InputError;
 
         pub fn parseAndValidate(allocator: std.mem.Allocator, source: []const u8, sink: DiagnosticSink, options: CheckOptions) Error!CheckResult {

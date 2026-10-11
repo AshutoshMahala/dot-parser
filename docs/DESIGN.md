@@ -455,7 +455,8 @@ exactly what it says.
 
 There is no plugin registry and no swapping at run time. Settings for every
 processor are checked once, before any work starts. During the one-call check,
-the label checker reuses one set of buffers for all labels.
+the label checker reuses one set of buffers when child-tree retention is off.
+With `retention.markup`, each retained child owns its tree pools instead.
 
 **Why:** compile-time wiring lets the compiler type-check the connection and
 remove anything unused. Reusing buffers cut one test from 4,003 allocations to

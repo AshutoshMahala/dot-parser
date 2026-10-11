@@ -132,7 +132,13 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                 inline else => |actual| if (comptime caps.allows(actual)) {
                     if (comptime std.mem.startsWith(u8, method, "validateScope")) {
                         const scope = if (comptime std.mem.eql(u8, method, "validateScope")) arguments[2] else arguments[1];
-                        if (!@import("scope.zig").metadataValidForEncoding(actual, source, scope, {})) return .{ .completion = .invalid_scope };
+                        const mode = if (config.runtime_policy) prepared.policies.mode else Base.baseline.mode;
+                        switch (mode) {
+                            inline else => |dialect| {
+                                const V = @import("validate.zig").ValidatorForEncoding(actual, if (config.runtime_policy) null else Base.baseline.validation, config.runtime_policy or Base.baseline.execution.cancellation, dialect);
+                                if (V.scopeInputFailure(source, scope, if (config.runtime_policy) prepared.policies.validation else {}, prepared.admissionHook())) |failure| return failure;
+                            },
+                        }
                     }
                     try dispatch.checkControlled(actual, source, prepared.admissionHook());
                     const W = worker(actual);

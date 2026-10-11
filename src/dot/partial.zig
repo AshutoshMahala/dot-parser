@@ -3,7 +3,6 @@
 const std = @import("std");
 const syntax = @import("syntax.zig");
 const event = @import("syntax_event.zig");
-const Span = @import("parser_support").location.Span;
 const no_link = std.math.maxInt(u32);
 
 pub const pools = .{ "comments", "order", "nodes", "edges", "edge_chains", "scoped_edges", "scoped_edge_links", "edge_links", "ported_references", "subgraphs", "attributes", "assignments", "attribute_statements" };
@@ -113,7 +112,6 @@ pub fn Builder(comptime Base: type) type {
                 self.failure_info = self.base.failure_info;
                 return err;
             };
-            if (self.enabled) self.retained_end = @max(self.retained_end, endOf(args));
             return value;
         }
         pub fn retainThrough(self: *Self, end: u32) void {
@@ -206,21 +204,4 @@ pub fn Builder(comptime Base: type) type {
             return document;
         }
     };
-}
-
-// Events contain spans, not arbitrary graph walks. This recursion is entirely
-// over their compile-time schema and has constant depth/work.
-fn endOf(value: anytype) u32 {
-    if (@TypeOf(value) == Span) return @intCast(value.endOffset());
-    var end: u32 = 0;
-    switch (@typeInfo(@TypeOf(value))) {
-        .@"struct" => |s| inline for (s.fields) |f| {
-            end = @max(end, endOf(@field(value, f.name)));
-        },
-        .optional => if (value) |v| {
-            end = endOf(v);
-        },
-        else => {},
-    }
-    return end;
 }

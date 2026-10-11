@@ -11,10 +11,10 @@ const lex = @import("lexer/lexer.zig");
 const Parts = @import("identifier_parts.zig").Parts;
 
 pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Child: type) type {
-    return ProfileForEncoding(.utf8, api, config, Child);
+    return ProfileForEncoding(.utf8, api, config, Child, void);
 }
 
-pub fn ProfileForEncoding(comptime actual: support.encoding.Actual, comptime api: type, comptime config: policy.Config, comptime Child: type) type {
+pub fn ProfileForEncoding(comptime actual: support.encoding.Actual, comptime api: type, comptime config: policy.Config, comptime Child: type, comptime CanonicalChild: type) type {
     const enc = support.encoding.Reader(actual);
     const EncodedParts = @import("identifier_parts.zig").ForEncoding(actual).Parts;
     comptime {
@@ -35,7 +35,7 @@ pub fn ProfileForEncoding(comptime actual: support.encoding.Actual, comptime api
     const can_delay = can_retain and (config.runtime_policy or Binding.baseline.parsing.markup == .passthrough);
     // Reader-independent ownership types. Native workers share these types,
     // without erased payloads, pointer casts or duplicate retained pools.
-    const Canonical = if (actual == .utf8) void else ProfileForEncoding(.utf8, api, config, Child.forSourceEncoding(.utf8));
+    const Canonical = if (actual == .utf8) void else ProfileForEncoding(.utf8, api, config, CanonicalChild, void);
     return struct {
         const Self = @This();
         pub const declared_source_encodings = config.source_encodings;

@@ -130,6 +130,9 @@ pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellabl
 pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime fixed: ?policy.ValidationSettings, comptime cancellable: bool, comptime mode: policy.Mode) type {
     const enc = support.encoding.Reader(actual);
     return struct {
+        fn canRead(document: *const syntax.Document) bool {
+            return document.source_info.encoding == actual or (actual == .utf8 and document.source_info.encoding == .ascii);
+        }
         pub const Settings = if (fixed == null) policy.ValidationSettings else void;
         pub const Hook = if (cancellable) ?support.execution.Cancellation else void;
         const has_encoding = actual == .utf8 and (if (fixed) |s| s.invalid_utf8 != .off else true);
@@ -176,7 +179,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             return result;
         }
         pub fn run(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
-            if (document.source_info.encoding != actual) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
+            if (!canRead(document)) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
@@ -216,7 +219,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                 return self.poller.step(self.result, self.hook);
             }
         };
-        fn scopeInputFailure(source: []const u8, scope: scopes.Scope, settings: Settings, hook: Hook) ?Result {
+        pub fn scopeInputFailure(source: []const u8, scope: scopes.Scope, settings: Settings, hook: Hook) ?Result {
             const invalid: Result = .{ .completion = .invalid_scope };
             const range = scope.span();
             if (source.len > support.location.max_source_len or range.endOffset() > source.len) return invalid;
@@ -600,7 +603,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             return result;
         }
         pub fn allocated(allocator: std.mem.Allocator, document: *const syntax.Document, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
-            if (document.source_info.encoding != actual) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
+            if (!canRead(document)) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
@@ -612,7 +615,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             return runSized(document, .{ .attribute_keys = keys }, sink, settings, hook, required);
         }
         pub fn reusing(allocator: std.mem.Allocator, document: *const syntax.Document, keys: *std.ArrayList(AttributeKeyScratch), sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
-            if (document.source_info.encoding != actual) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
+            if (!canRead(document)) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;

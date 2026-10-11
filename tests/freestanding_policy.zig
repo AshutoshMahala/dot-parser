@@ -110,7 +110,7 @@ export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
         Profile.interpretation(doc, options) catch return 103
     else
         Profile.interpretation(doc, options);
-    var total: usize = @intFromEnum(doc.effectiveKind(view));
+    var total: usize = @intFromEnum(doc.effectiveKind(view).?);
     var edges = doc.edgeIterator();
     while (edges.next()) |edge| total +%= @intFromEnum(edge.effectiveOperator(doc, view));
     if (checked.outcome != .completed) return 105;
@@ -150,7 +150,7 @@ export fn session_policy(source: [*]const u8, len: usize, choice: u8, limit: u32
     // Clear overrides: this must start from the compiled defaults again.
     session.reset("graph {}", dot.diagnostic.discard, .{}) catch return 102;
     if (session.run().outcome != .success) return 103;
-    return count + result.accepted_deviations + result.warnings + @intFromEnum(session.result().?.document.?.effectiveKind(session.interpretation().?));
+    return count + result.accepted_deviations + result.warnings + @intFromEnum(session.result().?.document.?.effectiveKind(session.interpretation().?).?);
 }
 
 // Compile and consume a fixed lenient profile on both freestanding targets too.

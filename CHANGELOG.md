@@ -8,6 +8,20 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- **Breaking:** `Document.effectiveKind` and `Interpretation.effectiveKind`
+  return an optional graph kind. An unfinished `.auto` graph with no retained
+  directed edge has an unknown final kind; validation does not report an
+  undirected-graph restriction from that prefix. Complete graphs remain determined.
+- **Breaking:** DOT validation adds `.unsupported_encoding`; markup validation
+  adds `completion.unsupported_encoding`. Exhaustive outcome switches must handle
+  these cases. UTF-8 validators also accept ASCII-profile documents.
+- Source-encoding binding hooks expose the processor contract, not unchecked
+  standalone parser/session entry points. Typed child options remain compatible
+  between standalone and composed UTF-8 profiles.
+- **Breaking:** console adapters receive source positions in
+  `headline(diagnostic, positions, writer)` so native-encoding wording uses
+  code-unit rather than raw-byte lengths.
+
 - **Breaking:** markup now defaults to `.graphviz`, including root entry points,
   `Profile(.{})`, the `standard`/`untrusted` presets, and default bound markup
   processors. Tag matching ignores ASCII case; validation checks Graphviz tag
@@ -17,14 +31,32 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Compile-time `source_encodings`: UTF-8/raw bytes by default, explicit empty
+  selection for ASCII-only, and opt-in native UTF-16/32 one-shot readers. BOM or
+  explicit byte order selects a compiled reader; source bytes, physical offsets
+  and encoding provenance are preserved. Includes standalone and composed markup,
+  bounded native diagnostic text and encoding-aware identifier/comment views.
+  Native public sessions and boxed source excerpts remain unfinished.
+- Partial DOT documents (`retention.partial`, off by default), including scopes,
+  fixed/growing storage, sessions and partial retained-fact validation. Staged
+  attributes, links and comments inside pending statements do not advance the
+  retained frontier. Pending scoped-edge owners remain raw staging records;
+  statement/edge views do not publish them as completed statements.
+- Attached delayed label trees (`retention.markup`, `requestMarkup`,
+  `processPendingMarkup`) and proactive child-tree retention for editors.
+- `requiredValidationScratch` computes exact reusable duplicate-key scratch
+  requirements from retained metadata without allocating or reading source bytes.
+  **Breaking:** `insufficient_scratch.required_attribute_keys` now reports that
+  exact requirement, rather than the entire retained attribute count.
+
 - Partial markup documents for editors (`retention.partial`, off by default). A
   failed parse can return the part recognised before the first error, as an
   ordinary `Document`. The document and each node say whether they are complete,
   and `unrepresented()` gives the text the tree doesn't cover. Works with both
   scanners, fixed and growing storage, run-time settings, sessions and
   workspaces. Validating a partial document reports what it couldn't check, and
-  `documentValid()` is false. Keeping later recovered parts, and partial DOT
-  documents, are future work. Node and attribute sizes are unchanged.
+  `documentValid()` is false. Keeping later recovered parts is future work.
+  Node and attribute sizes are unchanged.
 
 - Opt-in DOT comment retention (`retention.comments`) for `//`, `/* ... */`
   and `#`, with source-ordered kind/span records, borrowed raw/body views,

@@ -35,7 +35,11 @@ statements and opened subgraphs remain available; unfinished subgraphs are
 marked partial. A pending ordinary statement is not published until its event
 is complete. Raw pools can contain already-read attributes, references or links
 whose unfinished owner is not yet a statement; use statement and scope views
-for an outline. An unfinished raw subgraph has `subtree_end == 0`; views supply
+for an outline. Raw order slots can also refer to staged scoped-edge owners;
+`statement(id)` returns null for those, and iterators/counts skip them. Their
+`complete()` is false until the final statement event attaches its attributes.
+Opened endpoint subgraphs and their completed child statements remain available.
+An unfinished raw subgraph has `subtree_end == 0`; views supply
 safe prefix bounds without walking the stack at failure time.
 
 Retention freezes at the first failure. `.collect` may continue diagnostics,
@@ -51,11 +55,15 @@ terminal, not while a session is paused. Runtime overrides use the same
 
 Completeness does not imply validity. A fully represented graph can fail
 validation; a partial graph is never `documentValid()`. Direct validation checks
-retained facts and returns `coverage = .{ .incomplete = first_unrepresented_byte }`.
+retained facts and returns `coverage = .{ .incomplete = document.retained_end }`.
 Automatic validation does that after a `.collect` syntax failure, but never
 after an operational stop or `.fail_fast` rejection. It does not validate later
 unretained DOT statements. See [memory costs](MEMORY.md#partial-result-storage)
 and [retaining composed label trees](LABELS.md#retaining-label-trees-for-editors).
+
+With `.graph.treated_as = .auto`, `effectiveKind` is `null` for a partial graph
+until a retained directed edge establishes `.generic`. A complete graph with no
+directed edge is `.undigraph`. Undetermined kinds do not trigger restrictions.
 
 ## The document header
 

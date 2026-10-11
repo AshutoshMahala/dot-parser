@@ -227,7 +227,22 @@ pub fn Reader(comptime actual: Actual) type {
             }
             return true;
         }
+        /// Decode a short ASCII spelling into caller storage. Reject incomplete
+        /// code units/non-ASCII input rather than interpreting constituent bytes.
+        pub fn asciiInto(raw: []const u8, output: []u8) ?[]const u8 {
+            if (raw.len % width != 0 or raw.len / width > output.len) return null;
+            const len = raw.len / width;
+            for (output[0..len], 0..) |*out, i| {
+                const code = unit(raw, i * width);
+                if (code > 127) return null;
+                out.* = @intCast(code);
+            }
+            return output[0..len];
+        }
+        /// Complete native units compare by value. Malformed partial-unit
+        /// buffers use raw-byte order so this public helper remains total/safe.
         pub fn orderUnits(a: []const u8, b: []const u8, ignore_case: bool) std.math.Order {
+            if (a.len % width != 0 or b.len % width != 0) return std.mem.order(u8, a, b);
             var at: usize = 0;
             const len = @min(a.len, b.len);
             while (at < len) : (at += width) {
@@ -243,6 +258,7 @@ pub fn Reader(comptime actual: Actual) type {
         }
         pub fn indexAscii(raw: []const u8, value: u8) ?usize {
             if (width == 1) return std.mem.indexOfScalar(u8, raw, value);
+            if (raw.len % width != 0) return null;
             var at: usize = 0;
             while (at < raw.len) : (at += width) if (unit(raw, at) == value) return at;
             return null;

@@ -80,7 +80,9 @@ pub const Positions = struct {
                     at += decoded.len;
                 }
                 try source_text.writeInline(buffer[0..used], self.style, writer);
-                if (at < bytes.len and used <= source_text.max_bytes) try writer.writeAll("...");
+                // writeInline already clips at 32 UTF-8 bytes. Add a marker
+                // only if its input was short enough not to produce one.
+                if (at < bytes.len and used <= 32) try writer.writeAll("...");
             },
         }
     }
@@ -308,7 +310,8 @@ fn plural(count: usize) []const u8 {
 /// quoted (when short and printable) so the line reads on its own.
 pub fn writeFix(fix: anytype, positions: *Positions, writer: anytype) !void {
     const source = positions.source;
-    const marked = markedText(fix.span, source);
+    var buffer: [24]u8 = undefined;
+    const marked = markedText(fix.span, source, positions.source_encoding, &buffer);
     switch (fix.edit) {
         .delete => if (marked) |text| {
             try writer.print("delete '{s}'", .{text});
@@ -351,10 +354,13 @@ pub fn writeFix(fix: anytype, positions: *Positions, writer: anytype) !void {
 }
 
 /// The span's text when it is short and printable, for quoting in a fix.
-fn markedText(span: location.Span, source: ?[]const u8) ?[]const u8 {
+fn markedText(span: location.Span, source: ?[]const u8, actual: @import("encoding.zig").Actual, buffer: []u8) ?[]const u8 {
     const bytes = source orelse return null;
-    if (span.len == 0 or span.len > 24 or !spanFits(span, bytes)) return null;
-    const text = span.slice(bytes);
+    if (span.len == 0 or !spanFits(span, bytes)) return null;
+    if (span.start % (@import("encoding.zig").Info{ .encoding = actual }).unitBytes() != 0) return null;
+    const text = switch (actual) {
+        inline else => |selected| @import("encoding.zig").Reader(selected).asciiInto(span.slice(bytes), buffer) orelse return null,
+    };
     for (text) |byte| {
         if (!std.ascii.isPrint(byte)) return null;
     }
@@ -533,7 +539,7 @@ pub fn Renderer(comptime Adapter: type) type {
             try writer.print("{s}[{s}:{s}]: ", .{
                 severityWord(info.severity), diagnostic.namespace, d.code.structured(),
             });
-            try Adapter.headline(d, writer);
+            try Adapter.headline(d, positions, writer);
             try writer.writeAll("\n");
             if (positions.locate(d.span.start)) |at| {
                 try writer.writeAll("  --> ");
@@ -594,7 +600,7 @@ pub fn Renderer(comptime Adapter: type) type {
             try writer.print("{s}{s} {s} {d}:{s} ", .{
                 pal.frame, g.open, severityTitle(info.severity), number, pal.reset,
             });
-            try Adapter.headline(d, writer);
+            try Adapter.headline(d, positions, writer);
             try writer.writeAll("\n");
 
             try writeRail(g, pal, writer);

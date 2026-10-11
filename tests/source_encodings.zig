@@ -3,6 +3,162 @@ const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 const gpa = std.testing.allocator;
 
+test "composed options retain child identity and native facade exports selection errors" {
+    inline for (.{ false, true }) |runtime| {
+        const Child = markup.Profile(.{ .runtime_policy = runtime });
+        const P = dot.Profile(.{ .processors = .{ .markup = Child } });
+        const N = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16 }, .processors = .{ .markup = Child } });
+        try std.testing.expect(@FieldType(P.CheckOptions, "markup") == Child.Options);
+        try std.testing.expect(@FieldType(P.MarkupOptions, "markup") == Child.Options);
+        try std.testing.expect(N.SelectionError == P.SelectionError);
+        const options: Child.Options = .{};
+        var bag: P.FixedDiagnosticBag(8) = .{};
+        var result = try P.parseAndValidate(gpa, "graph { a [label=<<B>x</B>>] }", bag.sink(), .{ .markup = options });
+        defer result.deinit(gpa);
+        try std.testing.expect(result.documentValid());
+    }
+}
+
+test "public native helpers handle incomplete units and identifier ranges safely" {
+    inline for (.{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        const E = dot.encoding.Reader(actual);
+        try std.testing.expectEqual(std.mem.order(u8, "a", "ab"), E.orderUnits("a", "ab", false));
+        try std.testing.expect(E.indexAscii("a", 'a') == null);
+        const D = dot.Profile(.{ .source_encodings = &.{ .utf16, .utf32 } });
+        var source_buffer: [128]u8 = undefined;
+        const source = encode(actual, "graph { ab }", &source_buffer, false);
+        var parsed = try D.parseBorrowed(gpa, source, dot.diagnostic.discard, .{ .encoding = actual });
+        defer parsed.deinit(gpa);
+        const doc = parsed.document.?;
+        var output: [16]u8 = @splat(0xaa);
+        try std.testing.expectError(error.InvalidIdentifier, doc.decodeIdentifier(.{ .start = 8 * E.width + 1, .len = E.width }, &output));
+        try std.testing.expectError(error.InvalidIdentifier, doc.decodeIdentifier(.{ .start = @intCast(source.len + 1), .len = 0 }, &output));
+        for (output) |byte| try std.testing.expectEqual(@as(u8, 0xaa), byte);
+        var writer = std.Io.Writer.fixed(&output);
+        try std.testing.expectError(error.InvalidIdentifier, doc.writeIdentifier(.{ .start = 1, .len = E.width }, &writer));
+        try std.testing.expectEqual(@as(usize, 0), writer.buffered().len);
+    }
+}
+
+test "binding hooks expose only the admitted processor contract not unchecked parsers" {
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural } });
+    inline for (.{ .ascii, .utf8, .utf16le, .utf32be }) |actual| {
+        const Bound = P.forSourceEncoding(actual);
+        try std.testing.expect(@hasDecl(Bound, "Prepared") and @hasDecl(Bound, "Workspace"));
+        try std.testing.expect(!@hasDecl(Bound, "parseBorrowed") and !@hasDecl(Bound, "parseAndValidate") and !@hasDecl(Bound, "Session"));
+    }
+    const Native = markup.Profile(.{ .source_encodings = &.{.utf16} });
+    try std.testing.expectError(error.InvalidEncoding, Native.parseBorrowed(gpa, "\x00\xd8", markup.diagnostic.discard, .{ .encoding = .utf16le }));
+    try std.testing.expectError(error.TruncatedCodeUnit, Native.parseBorrowed(gpa, "x\x00y", markup.diagnostic.discard, .{ .encoding = .utf16le }));
+}
+
+test "default byte validators accept documents admitted by an ASCII profile" {
+    const D = dot.Profile(.{ .source_encodings = &.{} });
+    var parsed = try D.parseBorrowed(gpa, "graph { a -- b }", dot.diagnostic.discard, .{});
+    defer parsed.deinit(gpa);
+    try std.testing.expect(dot.validate(&parsed.document.?, dot.diagnostic.discard, .{}).documentValid());
+    const M = markup.Profile(.{ .source_encodings = &.{} });
+    var m = try M.parseBorrowed(gpa, "<B>x</B>", markup.diagnostic.discard, .{});
+    defer m.deinit();
+    try std.testing.expectEqual(.valid, markup.validate(gpa, &m.document.?, markup.diagnostic.discard, .{}).validity);
+}
+
+test "scope cancellation precedes malformed header metadata through source facade" {
+    const Stop = struct {
+        fn requested(_: ?*anyopaque) bool {
+            return true;
+        }
+    };
+    const P = markup.Profile(.{ .source_encodings = &.{ .utf8, .utf16 }, .policy = .{ .execution = .{ .cancellation = true } } });
+    const result = try P.validateScope(gpa, "<a x='1'>", .{ .opening_header = .{ .span = .{ .start = 0, .len = 9 }, .name = .{ .start = 1, .len = 0 } } }, markup.diagnostic.discard, .{ .cancellation = .{ .context = null, .is_requested = Stop.requested } });
+    try std.testing.expectEqual(.cancelled, result.completion);
+}
+
+test "scope metadata audits poll before reaching a malformed late attribute" {
+    const source = "<a" ++ " x='1'" ** 130 ++ ">";
+    var attributes: [130]markup.ScopeAttribute = undefined;
+    for (&attributes, 0..) |*attribute, i| attribute.* = .{
+        .name = .{ .start = @intCast(3 + 6 * i), .len = 1 },
+        .value = .{ .start = @intCast(5 + 6 * i), .len = 3 },
+    };
+    attributes[129].value.len = 2;
+    const Stop = struct {
+        fn requested(context: ?*anyopaque) bool {
+            const calls: *u32 = @ptrCast(@alignCast(context.?));
+            calls.* += 1;
+            return calls.* >= 2;
+        }
+    };
+    const P = markup.Profile(.{ .source_encodings = &.{ .utf8, .utf16 }, .policy = .{ .execution = .{ .cancellation = true } } });
+    var calls: u32 = 0;
+    const result = try P.validateScope(gpa, source, .{ .opening_header = .{ .span = .{ .start = 0, .len = source.len }, .name = .{ .start = 1, .len = 1 }, .attributes = &attributes } }, markup.diagnostic.discard, .{ .cancellation = .{ .context = &calls, .is_requested = Stop.requested } });
+    try std.testing.expectEqual(.cancelled, result.completion);
+    try std.testing.expectEqual(@as(u32, 2), calls);
+}
+
+test "native diagnostics quote code units and retain fixes and reference hints" {
+    inline for (.{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        const D = dot.Profile(.{ .source_encodings = &.{ .utf16, .utf32 } });
+        var buffer: [2048]u8 = undefined;
+        var output: [4096]u8 = undefined;
+        var bag: dot.FixedDiagnosticBag(16) = .{};
+        const source = encode(actual, "graph { a [k x] }", &buffer, false);
+        var r = try D.parseBorrowed(gpa, source, bag.sink(), .{ .encoding = actual });
+        defer r.deinit(gpa);
+        var writer = std.Io.Writer.fixed(&output);
+        try dot.console.render(bag.items()[0], .{ .source = source, .source_encoding = actual }, &writer);
+        try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "insert '=' after 'k'") != null);
+
+        bag = .{};
+        const non_ascii = encode(actual, "graph { a [慢 x] }", &buffer, false);
+        var n = try D.parseBorrowed(gpa, non_ascii, bag.sink(), .{ .encoding = actual });
+        defer n.deinit(gpa);
+        writer = std.Io.Writer.fixed(&output);
+        try dot.console.render(bag.items()[0], .{ .source = non_ascii, .source_encoding = actual }, &writer);
+        try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "after 'ba'") == null);
+        try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "after 'ab'") == null);
+
+        bag = .{};
+        const typo = encode(actual, "grap {}", &buffer, false);
+        var h = try D.parseBorrowed(gpa, typo, bag.sink(), .{ .encoding = actual });
+        defer h.deinit(gpa);
+        try std.testing.expect(bag.items()[0].suggestedFix() != null);
+
+        bag = .{};
+        const numeral = encode(actual, "graph { a -- . }", &buffer, false);
+        var number = try D.parseBorrowed(gpa, numeral, bag.sink(), .{ .encoding = actual });
+        defer number.deinit(gpa);
+        writer = std.Io.Writer.fixed(&output);
+        try dot.console.render(bag.items()[0], .{ .source = numeral, .source_encoding = actual }, &writer);
+        try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "'.' must be followed") != null);
+
+        const M = markup.Profile(.{ .source_encodings = &.{ .utf16, .utf32 }, .policy = .{ .mode = .structural, .validation = .{ .references = .{ .severity = .err } } } });
+        var mbag: markup.FixedDiagnosticBag(16) = .{};
+        const reference = encode(actual, "<p>&nbsp;</p>", &buffer, false);
+        var m = try M.parseAndValidate(gpa, try markup.Fragment.init(reference, 0), mbag.sink(), .{ .encoding = actual });
+        defer m.deinit();
+        writer = std.Io.Writer.fixed(&output);
+        try markup.console.render(mbag.items()[0], .{ .source = reference, .source_encoding = actual }, &writer);
+        try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "use '&#160;' instead of '&nbsp;'") != null);
+    }
+}
+
+test "native inline rendering clips long names only once" {
+    inline for (.{ .utf16le, .utf32be }) |actual| {
+        const M = markup.Profile(.{ .source_encodings = &.{ .utf16, .utf32 }, .policy = .{ .mode = .structural } });
+        var buffer: [512]u8 = undefined;
+        const bytes = encode(actual, "<" ++ "x" ** 100 ++ "></y>", &buffer, false);
+        var bag: markup.FixedDiagnosticBag(16) = .{};
+        var parsed = try M.parseBorrowed(gpa, bytes, bag.sink(), .{ .encoding = actual });
+        defer parsed.deinit();
+        var output: [1024]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&output);
+        try markup.console.render(bag.items()[0], .{ .source = bytes, .source_encoding = actual }, &writer);
+        try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "...") != null);
+        try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "......") == null);
+    }
+}
+
 fn encode(comptime actual: dot.InputEncoding, text: []const u8, buffer: []u8, bom: bool) []const u8 {
     const E = dot.encoding.Reader(actual);
     var at: usize = 0;

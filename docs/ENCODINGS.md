@@ -1,5 +1,7 @@
 # Source encodings
 
+> **Unreleased.** Not in 0.4.0.
+
 Encoding applies to the **whole input buffer**, not just strings or non-ASCII
 characters. Both parsers keep the original bytes; spans, limits and byte columns
 refer to those bytes. Parsing does not transcode the source or allocate a map.
@@ -86,7 +88,17 @@ content, not a second BOM to discard.
 
 Custom processors participating in native composition must provide
 `withSourceEncodings(capabilities)` and `forSourceEncoding(actual)` and honor
-that binding. No runtime processor replacement is introduced.
+that binding. The returned worker can be a leaf: it need not expose these factory
+hooks itself. Workers must share their diagnostic, diagnostic-sink and owning
+result types across encodings so a composed result has one statically known type.
+No runtime processor replacement is introduced.
+
+`forSourceEncoding` is a binding-only hook, not a standalone parser factory.
+Its prepared/workspace contract consumes fragments of an already admitted outer
+buffer and does not repeat admission or reinterpret inner BOM-like bytes. Use
+`markup.Profile(.{ .source_encodings = ... })` for independent parsing, bounds
+checks and encoding admission. The binding hook does not expose standalone parse
+entry points or sessions.
 
 ## Reading and showing results
 

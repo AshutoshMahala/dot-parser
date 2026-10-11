@@ -38,7 +38,7 @@ explains the shared parts and DOT's own settings. Markup's own settings are in
 | --- | --- |
 | `.policy` | The compiled settings. Every field is listed in [all DOT settings](#all-dot-settings). |
 | `.runtime_policy` | `true` lets each call pass a `.policy` patch. Default `false`. See [changing settings at run time](#changing-settings-at-run-time). |
-| `.source_encodings` | Compile-time source readers. Omitted means UTF-8; empty means ASCII-only. See [source encodings](ENCODINGS.md). |
+| `.source_encodings` | **Unreleased.** Compile-time source readers. Omitted means UTF-8; empty means ASCII-only. See [source encodings](ENCODINGS.md). |
 | `.processors.markup` | DOT only. A processor that checks HTML-like `<...>` values during parsing. See [adding a label processor](#adding-a-label-processor). |
 
 `markup.Profile(...)` takes `.policy`, `.runtime_policy` and `.source_encodings` in the same way.
@@ -146,6 +146,8 @@ const Lint = dot.Profile(.{ .policy = .{ .validation = .{
 } } });
 ```
 
+> **Unreleased:** `requiredValidationScratch` supplies the exact scratch requirement.
+
 `repeated_attribute` compares decoded values, so `x` and `"x"` count as the
 same key. Supply temporary scratch sized from the retained document:
 
@@ -211,7 +213,7 @@ sees them, ask for an *interpretation*:
 
 ```zig
 const view = Forgiving.interpretation(&document, .{});
-const kind = document.effectiveKind(view); // .undigraph, .digraph or .generic
+const kind = document.effectiveKind(view); // ?GraphKind (Unreleased)
 var edges = document.edgeIterator();
 while (edges.next()) |edge| {
     const operator = edge.effectiveOperator(&document, view);
@@ -219,6 +221,12 @@ while (edges.next()) |edge| {
 }
 _ = kind;
 ```
+
+**Unreleased:** `effectiveKind` returns `?GraphKind`. It is `null` only when a
+partial `.auto` graph has no retained directed edge yet: unseen input could still
+make it generic. Complete graphs and concrete treatments have a known kind.
+Operator reading remains as-written under `.auto`, including while its kind is
+unknown. Graph-kind restrictions check only determined kinds.
 
 Under `.generic` and `.auto` there is no "wrong" operator, so setting
 `operator_mismatch` or `operator_reading` for `graph` is a configuration error.

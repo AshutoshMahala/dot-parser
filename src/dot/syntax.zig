@@ -172,6 +172,9 @@ pub const EdgeView = struct {
 pub const EdgeLinkSource = union(enum) { nodes: EdgeLinkRange, scoped: Index };
 pub const EdgeChainView = struct { first: EdgeView, links: EdgeLinkSource };
 const no_link = std.math.maxInt(Index);
+// Impossible retained attribute index. Promotion stages an owner before its
+// endpoint body runs; only finishScopedEdge attaches a complete attribute range.
+const unfinished_attributes = std.math.maxInt(u32);
 /// Only statements involving a subgraph pay for generalized storage.
 /// A node-only prefix remains in its original pool; promotion never copies it.
 pub const ScopedEdgeStatement = struct {
@@ -180,6 +183,10 @@ pub const ScopedEdgeStatement = struct {
     first_link: Index = no_link,
     last_link: Index = no_link,
     link_count: Index = 0,
+
+    pub fn complete(self: ScopedEdgeStatement) bool {
+        return self.first.attributes.start != unfinished_attributes;
+    }
 };
 pub const ScopedEdgeLink = struct {
     left: Endpoint,
@@ -281,18 +288,21 @@ pub const ScopedStatementIterator = struct {
     scope_cursor: usize,
     scope_end: usize,
     pub fn next(self: *ScopedStatementIterator) ?Statement {
-        if (self.traversal == .direct) {
-            while (self.scope_cursor < self.scope_end) {
-                const child = self.document.subgraphRecord(self.scope_cursor);
-                if (child.body.start > self.index) break;
-                self.index = @max(self.index, @as(usize, child.body.start) + child.body.len);
-                self.scope_cursor = child.subtree_end;
+        while (self.index < self.end) {
+            if (self.traversal == .direct) {
+                while (self.scope_cursor < self.scope_end) {
+                    const child = self.document.subgraphRecord(self.scope_cursor);
+                    if (child.body.start > self.index) break;
+                    self.index = @max(self.index, @as(usize, child.body.start) + child.body.len);
+                    self.scope_cursor = child.subtree_end;
+                }
             }
+            if (self.index >= self.end) return null;
+            const id = self.document.order[self.index];
+            self.index += 1;
+            if (self.document.statement(id)) |statement| return statement;
         }
-        if (self.index >= self.end) return null;
-        const id = self.document.order[self.index];
-        self.index += 1;
-        return self.document.statement(id);
+        return null;
     }
 };
 
@@ -411,23 +421,25 @@ pub const StatementIterator = struct {
     /// Includes the containing scope without per-statement retained metadata.
     /// Full traversal is O(statements + subgraphs), with no recursion.
     pub fn nextScoped(self: *StatementIterator) ?ScopedStatement {
-        if (self.index == self.document.order.len) return null;
-        while (self.current_scope != .root) {
-            const record = self.document.subgraphRecord(@intFromEnum(self.current_scope) - 1);
-            if (self.index < @as(usize, record.body.start) + record.body.len) break;
-            self.current_scope = record.parent;
+        while (self.index < self.document.order.len) {
+            while (self.current_scope != .root) {
+                const record = self.document.subgraphRecord(@intFromEnum(self.current_scope) - 1);
+                if (self.index < @as(usize, record.body.start) + record.body.len) break;
+                self.current_scope = record.parent;
+            }
+            while (self.scope_cursor < self.document.subgraph_records.len) {
+                const record = self.document.subgraphRecord(self.scope_cursor);
+                if (record.body.start > self.index) break;
+                self.scope_cursor += 1;
+                if (self.index < @as(usize, record.body.start) + record.body.len)
+                    self.current_scope = @enumFromInt(self.scope_cursor);
+            }
+            const id = self.document.order[self.index];
+            self.index += 1;
+            if (self.document.statement(id)) |statement|
+                return .{ .id = id, .scope = self.current_scope, .statement = statement };
         }
-        while (self.scope_cursor < self.document.subgraph_records.len) {
-            const record = self.document.subgraphRecord(self.scope_cursor);
-            if (record.body.start > self.index) break;
-            self.scope_cursor += 1;
-            if (self.index < @as(usize, record.body.start) + record.body.len)
-                self.current_scope = @enumFromInt(self.scope_cursor);
-        }
-        const id = self.document.order[self.index];
-        const result: ScopedStatement = .{ .id = id, .scope = self.current_scope, .statement = self.document.statement(id).? };
-        self.index += 1;
-        return result;
+        return null;
     }
 
     pub fn next(self: *StatementIterator) ?Statement {
@@ -467,6 +479,10 @@ pub const EdgeIterator = struct {
     pub fn next(self: *EdgeIterator) ?EdgeView {
         if (self.prefix) |*prefix| if (prefix.next()) |edge| return edge;
         const d = self.document;
+        if (d.state == .partial) {
+            while (self.scoped_index < d.scoped_edges.len and !d.scoped_edges[self.scoped_index].complete()) self.scoped_index += 1;
+            while (self.link_index < d.scoped_edge_links.len and !d.scoped_edges[d.scoped_edge_links[self.link_index].owner].complete()) self.link_index += 1;
+        }
         const starts = [_]u64{
             if (self.edge_index < d.edges.len) d.edges[self.edge_index].operator_range.start else std.math.maxInt(u64),
             if (self.chain_index < d.edge_chains.len) d.edge_chains[self.chain_index].first.operator_range.start else std.math.maxInt(u64),
@@ -529,7 +545,7 @@ pub const Document = struct {
     }
     /// Use an interpretation prepared for this document, not another document.
     /// Policy selects the meaning; auto derives its final kind from syntax.
-    pub fn effectiveKind(self: *const Document, interpretation: anytype) @import("policy.zig").GraphKind {
+    pub fn effectiveKind(self: *const Document, interpretation: anytype) ?@import("policy.zig").GraphKind {
         return interpretation.effectiveKind(self.kind);
     }
 
@@ -598,16 +614,30 @@ pub const Document = struct {
         return .{ .identifier = .{ .start = reference.index_or_start, .len = reference.raw_len } };
     }
 
-    /// Every statement in the document, in every scope: statements nested
-    /// in subgraph bodies (standalone or endpoint) are in `order` too. For
-    /// the root scope alone, use `rootStatementCount`.
+    /// Completed statements in every scope. O(1) for complete documents;
+    /// partial documents scan order slots to exclude staged scoped-edge owners.
+    /// For the root scope alone, use `rootStatementCount`.
     pub fn statementCount(self: *const Document) usize {
+        if (self.state == .partial) {
+            var count: usize = 0;
+            for (self.order) |id| if (self.statement(id) != null) {
+                count += 1;
+            };
+            return count;
+        }
         return self.order.len;
     }
 
     /// Statements written directly in the root scope: `statementCount()`
-    /// minus everything nested inside a subgraph body. O(top-level scopes).
+    /// minus everything nested inside a subgraph body. O(top-level scopes) for
+    /// complete documents; partial documents count direct completed views.
     pub fn rootStatementCount(self: *const Document) usize {
+        if (self.state == .partial) {
+            var statements_it = self.scope(.root).?.statements(.direct);
+            var count: usize = 0;
+            while (statements_it.next() != null) count += 1;
+            return count;
+        }
         var nested: usize = 0;
         var index: usize = 0;
         // Records are in opening order and each carries the index one past
@@ -627,6 +657,7 @@ pub const Document = struct {
         return switch (id) {
             .scoped_edge => |index| if (index < self.scoped_edges.len) blk: {
                 const owner = self.scoped_edges[index];
+                if (!owner.complete()) break :blk null;
                 if (owner.prefix.len == 0 and owner.first_link == no_link) break :blk Statement{ .edge = owner.first };
                 break :blk Statement{ .edge_chain = .{ .first = owner.first, .links = .{ .scoped = index } } };
             } else null,
@@ -716,9 +747,11 @@ pub const Document = struct {
     }
 
     /// Decode an identifier range into caller-owned memory. Output is unchanged
-    /// on error. Range must lie within this document; non-identifier spelling
-    /// is rejected. No caching, normalization, or numeric conversion occurs.
+    /// on error. Out-of-bounds/misaligned ranges and non-identifier spellings
+    /// return InvalidIdentifier. No caching, normalization or numeric conversion.
     pub fn decodeIdentifier(self: *const Document, range: location.Range, output: []u8) identifier.DecodeError![]const u8 {
+        const width = self.source_info.unitBytes();
+        if (range.start % width != 0 or range.len % width != 0 or range.start > self.source.len or range.len > self.source.len - range.start) return error.InvalidIdentifier;
         switch (self.source_info.encoding) {
             inline else => |actual| return identifier.ForEncoding(actual).decodeInto(self.text(range), output),
         }
@@ -726,6 +759,8 @@ pub const Document = struct {
 
     /// Stream a decoded identifier. A writer failure may leave partial output.
     pub fn writeIdentifier(self: *const Document, range: location.Range, writer: anytype) !void {
+        const width = self.source_info.unitBytes();
+        if (range.start % width != 0 or range.len % width != 0 or range.start > self.source.len or range.len > self.source.len - range.start) return error.InvalidIdentifier;
         switch (self.source_info.encoding) {
             inline else => |actual| try identifier.ForEncoding(actual).writeDecoded(self.text(range), writer),
         }
@@ -1815,7 +1850,7 @@ fn endpoint(self: anytype, span: location.Span, port: ?u32, scope: ?u32) @TypeOf
 fn promoteEdge(self: anytype, event: syntax_event.EdgeStatement) @TypeOf(self.*).Error!void {
     if (self.scope_state.scoped_owner != null) return;
     const value: ScopedEdgeStatement = .{
-        .first = .{ .left = try endpoint(self, event.left, event.left_port, event.left_scope), .right = try endpoint(self, event.right, event.right_port, event.right_scope), .operator = event.operator, .operator_range = self.range(event.operator_span) },
+        .first = .{ .left = try endpoint(self, event.left, event.left_port, event.left_scope), .right = try endpoint(self, event.right, event.right_port, event.right_scope), .operator = event.operator, .operator_range = self.range(event.operator_span), .attributes = .{ .start = unfinished_attributes, .len = 0 } },
         .prefix = .{ .start = @intCast(self.pending_links), .len = @intCast(poolLen(self, .edge_links) - self.pending_links) },
     };
     const index = try appendPool(self, .scoped_edges, value, event.operator_span);

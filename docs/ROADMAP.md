@@ -1,7 +1,8 @@
 # Roadmap
 
-What is planned but not built yet. Nothing on this page is available today, and
-plans can change. The other guides describe only what works now.
+Remaining work and the boundaries of unreleased slices. Items described as
+implemented are available in development, not 0.4.0; the other items are plans
+and can change. The linked guides describe the implemented contracts.
 
 ## DOT
 
@@ -12,7 +13,8 @@ plans can change. The other guides describe only what works now.
   parsing starts.
 - **Validation in small steps**, and validation that can be cancelled.
 - **A ready-made "untrusted input" preset** for DOT, like the one markup has.
-- **UTF-16 and UTF-32 input.** See [encodings](#encodings).
+- **Resumable UTF-16/32 input and native source excerpts.** The first native
+  one-shot slice is implemented but unreleased; see [encodings](#encodings).
 - **A public event or logging interface.** The events the parser produces are
   internal for now.
 
@@ -58,13 +60,8 @@ other's rules.
 
 ## Encodings
 
-UTF-16 and UTF-32 input may later be converted to UTF-8 before parsing. When
-that happens:
-
-- the original encoding, byte order and byte order mark must be recorded
-- a lossy conversion must be reported, never silent
-- positions must say whether they refer to the original file or the converted
-  bytes
-
-Today, convert the input to UTF-8 yourself first. Positions then refer to the
-converted bytes.
+Native one-shot UTF-16/32 input is implemented but **Unreleased**; see
+[source encodings](ENCODINGS.md). It preserves original bytes, encoding, byte
+order, BOM provenance and physical offsets without transcoding or a source map.
+Remaining work is resumable public native sessions, metered admission and boxed
+native source excerpts. These follow-ups are not available yet.

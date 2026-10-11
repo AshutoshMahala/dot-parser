@@ -1,6 +1,7 @@
 //! Markup-specific wording bound to the shared, allocation-free console engine.
 //! The parser never imports this module. Rendering is explicitly caller-driven.
 const std = @import("std");
+const support = @import("parser_support");
 const diagnostic = @import("diagnostic.zig");
 const common = @import("parser_support").console;
 const Diagnostic = diagnostic.Diagnostic;
@@ -20,7 +21,7 @@ pub const Adapter = struct {
     pub const Role = enum { opener, first_attribute };
     pub const Annotations = common.Annotations(Role, 1);
 
-    pub fn headline(d: Diagnostic, writer: anytype) !void {
+    pub fn headline(d: Diagnostic, _: *Positions, writer: anytype) !void {
         try writer.writeAll(d.code.info().summary);
     }
     pub fn hasDetails(d: Diagnostic) bool {
@@ -105,9 +106,16 @@ pub const Adapter = struct {
             try writer.writeAll("fix the reported tag mismatches before continuing; the source-sized recovery search budget is exhausted");
         } else if (d.code == .unknown_reference or d.code == .unknown_reference_tolerated) {
             if (positions.slice(d.span)) |name| {
-                const suggestion: ?[]const u8 = if (std.mem.eql(u8, name, "&nbsp;")) "&#160;" else if (std.mem.eql(u8, name, "&copy;")) "&#169;" else if (std.mem.eql(u8, name, "&mdash;")) "&#8212;" else null;
+                var buffer: [7]u8 = undefined;
+                const spelling: ?[]const u8 = switch (positions.source_encoding) {
+                    inline else => |actual| support.encoding.Reader(actual).asciiInto(name, &buffer),
+                };
+                const suggestion: ?[]const u8 = if (spelling) |text|
+                    (if (std.mem.eql(u8, text, "&nbsp;")) "&#160;" else if (std.mem.eql(u8, text, "&copy;")) "&#169;" else if (std.mem.eql(u8, text, "&mdash;")) "&#8212;" else null)
+                else
+                    null;
                 if (suggestion) |replacement| {
-                    try writer.print("use '{s}' instead of '{s}', or select a catalog that defines this name", .{ replacement, name });
+                    try writer.print("use '{s}' instead of '{s}', or select a catalog that defines this name", .{ replacement, spelling.? });
                     return;
                 }
             }

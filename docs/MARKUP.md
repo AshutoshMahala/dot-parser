@@ -37,7 +37,7 @@ The built-in grammar is an XML-like subset of HTML:
 | Comments `<!-- -->` and `<![CDATA[ ]]>` | Supported, kept as their own nodes |
 | Unquoted attributes, `<br>` with no closing tag | Errors. This is XML-style, not browser HTML. |
 | `<?...?>`, `<!DOCTYPE>` | Not supported |
-| UTF-16/32 input | Opt-in native one-shot profiles; see [source encodings](ENCODINGS.md) |
+| UTF-16/32 input | **Unreleased.** Opt-in native one-shot profiles; see [source encodings](ENCODINGS.md) |
 
 ### Two modes
 
@@ -550,6 +550,7 @@ Run them with `zig build examples`. Each program is also installed in
 
 - HTML-style tags that never close, like `<br>`
 - Other name rules or reference lists, or your own
-- UTF-16 or UTF-32 input. Convert it to UTF-8 first.
+- Resumable public UTF-16/32 sessions and native boxed source excerpts. Native
+  one-shot input is available in development; see [source encodings](ENCODINGS.md).
 
 See the [roadmap](ROADMAP.md#markup).

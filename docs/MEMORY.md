@@ -124,8 +124,9 @@ for you during the parse.
 ### When a buffer is too small
 
 The parse stops with `outcome == .storage_failure` (reason `.pool_exhausted`),
-and a diagnostic names the buffer that filled up and its size. You never get a
-half-filled document.
+and a diagnostic names the buffer that filled up and its size. By default no
+document is published. With opt-in `retention.partial`, a safe retained prefix
+may still be available; inspect its state and the storage-failure outcome.
 
 ## Comment storage
 

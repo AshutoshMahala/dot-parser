@@ -26,7 +26,7 @@ few places where it differs from Graphviz on purpose are listed
 | Optional semicolons | `a -> b b -> c` | Supported, as in Graphviz |
 | Comments | `//`, `/* */`, `#` | Supported, skipped |
 | HTML-like value | `label=<<b>hi</b>>` | Supported, kept as written. See [checking HTML-like labels](LABELS.md). |
-| Leading byte order mark | UTF-8 BOM; opt-in UTF-16/32 | Skipped without removing source bytes. See [source encodings](ENCODINGS.md). |
+| Leading byte order mark | UTF-8 BOM; **Unreleased:** opt-in UTF-16/32 | Skipped without removing source bytes. See [source encodings](ENCODINGS.md). |
 | Empty statement | `a;;` | Rejected by default. [Lenient](POLICIES.md#lenient-syntax) accepts it. |
 | Long operator | `a --> b`, `a --- b` | Rejected by default. Lenient reads it as `->` / `--`. |
 | Lone dash | `a - b` | Rejected by default. Lenient reads it from the graph kind. |
