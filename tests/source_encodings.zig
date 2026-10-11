@@ -237,6 +237,45 @@ test "markup recovery allowance uses source code units across native readers and
     };
 }
 
+test "native one-shot typo policies preserve physical spans and code-unit comparisons" {
+    const Case = struct { text: []const u8, strategy: markup.ClosingTagRecovery, errors: u32 };
+    inline for (.{ .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |runtime| {
+        const P = markup.Profile(.{ .runtime_policy = runtime, .source_encodings = &.{ .utf8, .utf16, .utf32 }, .policy = .{ .mode = .structural, .scanner = scanner } });
+        for ([_]Case{
+            .{ .text = "<config><server></servr></config>", .strategy = .one_edit, .errors = 1 },
+            .{ .text = "<config><configuration></ocnfiguratiom></config>", .strategy = .two_edits, .errors = 1 },
+            // UTF-8 counts original bytes, not decoded Unicode characters.
+            .{ .text = "<config><café></cafe></config>", .strategy = .one_edit, .errors = if (actual == .utf8) 2 else 1 },
+        }) |case| {
+            var buffer: [512]u8 = undefined;
+            const source = encode(actual, case.text, &buffer, true);
+            var bag: markup.FixedDiagnosticBag(8) = .{};
+            const patch: markup.Policy = .{ .closing_tag_recovery = case.strategy };
+            const Fixed = markup.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .policy = .{ .mode = .structural, .scanner = scanner, .closing_tag_recovery = .two_edits } });
+            // Fixed comparison uses two edits only for the long-name case;
+            // the short-name fallback retains identical one-edit behavior.
+            var parsed = if (runtime)
+                try P.parseBorrowed(gpa, source, bag.sink(), .{ .policy = patch })
+            else
+                try Fixed.parseBorrowed(gpa, source, bag.sink(), .{});
+            defer parsed.deinit();
+            try std.testing.expectEqual(markup.Outcome.invalid_syntax, parsed.outcome);
+            try std.testing.expectEqual(markup.Completion.complete, parsed.completion);
+            try std.testing.expectEqual(case.errors, parsed.syntax_errors);
+            const first = bag.items()[0];
+            try std.testing.expectEqual(markup.diagnostic.Code.mismatched_tag, first.code);
+            try std.testing.expect(first.span.endOffset() <= source.len);
+            try std.testing.expect(first.related.?.endOffset() <= source.len);
+            const expected_name = if (case.strategy == .two_edits) "ocnfiguratiom" else if (std.mem.indexOf(u8, case.text, "café") != null) "cafe" else "servr";
+            var expected_buffer: [128]u8 = undefined;
+            try std.testing.expectEqualSlices(u8, encode(actual, expected_name, &expected_buffer, false), first.span.slice(source));
+            var prefix_buffer: [256]u8 = undefined;
+            const prefix_len = encode(actual, case.text[0 .. std.mem.indexOf(u8, case.text, "</").? + 2], &prefix_buffer, false).len;
+            try std.testing.expectEqual(@as(u32, @intCast(prefix_len + markup.encoding.Reader(actual).bomLength(source))), first.span.start);
+        }
+    };
+}
+
 test "native DOT and markup preserve source bytes, offsets and encoding" {
     inline for (.{ .scalar, .block }) |scanner| {
         const D = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .policy = .{ .scanner = scanner } });

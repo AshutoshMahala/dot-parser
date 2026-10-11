@@ -7,6 +7,10 @@ pub const ScannerBackend = enum { scalar, block };
 pub const Mode = enum { structural, graphviz };
 pub const Acceptance = enum { reject, warn, accept };
 pub const OnError = @import("parser_support").execution.OnError;
+/// Only guides continuation after a rejected closer, never syntax acceptance.
+/// Both names need at least 4 code units for one edit, or 8 for two edits.
+/// Two-edits selection retains one-edit behavior on shorter names.
+pub const ClosingTagRecovery = enum { exact, one_edit, two_edits };
 pub const Unsupported = @import("parser_support").reporting.Unsupported;
 pub const Fixes = @import("parser_support").reporting.Fixes;
 pub const SyntaxSettings = struct { malformed_reference: Acceptance = .reject };
@@ -32,6 +36,7 @@ pub const Policy = struct {
     mode: ?Mode = null,
     scanner: ?ScannerBackend = null,
     on_error: ?OnError = null,
+    closing_tag_recovery: ?ClosingTagRecovery = null,
     retention: struct { partial: ?bool = null } = .{},
     diagnostics: struct { fixes: ?Fixes = null, unsupported: ?Unsupported = null } = .{},
     syntax: struct { malformed_reference: ?Acceptance = null } = .{},
@@ -65,6 +70,7 @@ pub const Effective = struct {
     mode: Mode = .graphviz,
     scanner: ScannerBackend = .scalar,
     on_error: OnError = .collect,
+    closing_tag_recovery: ClosingTagRecovery = .one_edit,
     diagnostics: struct { fixes: Fixes = .all, unsupported: Unsupported = .err } = .{},
     limits: Limits = .{},
     syntax: SyntaxSettings = .{},
@@ -72,10 +78,10 @@ pub const Effective = struct {
     execution: struct { metering: bool = false, cancellation: bool = false } = .{},
 
     pub fn parsing(self: Effective) ParseSettings {
-        return .{ .retain_partial = self.retention.partial, .limits = self.limits, .syntax = self.syntax, .fixes = self.diagnostics.fixes, .unsupported = self.diagnostics.unsupported, .on_error = self.on_error };
+        return .{ .retain_partial = self.retention.partial, .limits = self.limits, .syntax = self.syntax, .fixes = self.diagnostics.fixes, .unsupported = self.diagnostics.unsupported, .on_error = self.on_error, .closing_tag_recovery = self.closing_tag_recovery };
     }
 };
-pub const ParseSettings = struct { retain_partial: bool = false, limits: Limits = .{}, syntax: SyntaxSettings = .{}, fixes: Fixes = .all, unsupported: Unsupported = .err, on_error: OnError = .collect };
+pub const ParseSettings = struct { retain_partial: bool = false, limits: Limits = .{}, syntax: SyntaxSettings = .{}, fixes: Fixes = .all, unsupported: Unsupported = .err, on_error: OnError = .collect, closing_tag_recovery: ClosingTagRecovery = .one_edit };
 pub const Config = struct {
     policy: Policy = .{},
     runtime_policy: bool = false,
@@ -97,6 +103,7 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
     if (patch.retention.partial) |value| result.retention.partial = value;
     if (patch.mode) |value| result.mode = value;
     if (patch.scanner) |value| result.scanner = value;
+    if (patch.closing_tag_recovery) |value| result.closing_tag_recovery = value;
     if (patch.on_error) |value| {
         result.on_error = value;
         result.validation.on_error = value;
@@ -127,6 +134,7 @@ pub const presets = struct {
         .mode = defaults.mode,
         .scanner = .scalar,
         .on_error = .collect,
+        .closing_tag_recovery = defaults.closing_tag_recovery,
         .diagnostics = .{ .fixes = .all, .unsupported = .err },
         .syntax = .{ .malformed_reference = .reject },
         .limits = .{

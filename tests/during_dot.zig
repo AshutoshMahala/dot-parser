@@ -5,6 +5,36 @@ const gpa = std.testing.allocator;
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 
+test "proactive and delayed composition keep child typo recovery independent of outer completeness" {
+    const source = "graph { a [label=<<config><configuration></ocnfiguratiom></config>>]; b [label=<<ok/>>]; }";
+    inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |delayed| {
+        const Child = markup.Profile(.{ .runtime_policy = runtime, .policy = .{
+            .mode = .structural,
+            .closing_tag_recovery = if (runtime) .exact else .two_edits,
+            .retention = .{ .partial = true },
+        } });
+        const P = dot.Profile(.{ .policy = .{ .markup = if (delayed) .passthrough else .process, .retention = .{ .markup = true } }, .processors = .{ .markup = Child } });
+        var bag: P.FixedDiagnosticBag(8) = .{};
+        var checked = try P.parseAndValidate(gpa, source, bag.sink(), if (runtime and !delayed) .{ .markup = .{ .policy = .{ .closing_tag_recovery = .two_edits } } } else .{});
+        defer checked.deinit(gpa);
+        if (delayed) {
+            for (checked.dot.document.?.attributes) |attribute| try checked.requestMarkup(gpa, attribute.value);
+            try P.processPendingMarkup(gpa, &checked, bag.sink(), if (runtime) .{ .markup = .{ .policy = .{ .closing_tag_recovery = .two_edits } } } else .{});
+        }
+        try expect(checked.dot.documentValid() and checked.scopeComplete());
+        try expect(!checked.documentValid());
+        try equal(@as(u32, 2), checked.markup.visited);
+        try equal(@as(u32, 1), checked.markup.rejected);
+        try equal(@as(u32, 1), checked.markup.valid);
+        try equal(@as(usize, 1), bag.items().len);
+        const finding = bag.items()[0].markup;
+        try equal(markup.diagnostic.Code.mismatched_tag, finding.code);
+        try std.testing.expectEqualStrings("ocnfiguratiom", finding.span.slice(source));
+        try std.testing.expectEqualStrings("configuration", finding.related.?.slice(source));
+        try expect(finding.suggestedFix() == null);
+    };
+}
+
 test "comment retention composes with markup without treating embedded comment-like bytes as DOT trivia" {
     const Parser = dot.Profile(.{ .policy = .{ .retention = .{ .comments = true } }, .processors = .{ .markup = markup.Profile(.{}) } });
     const source = "/*before*/graph{a[label=<<B><!-- markup -->// # /* literal */</B>>/*between*/+\"tail\"]}#after";

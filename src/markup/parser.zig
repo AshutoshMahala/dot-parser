@@ -9,6 +9,7 @@ const policy = @import("policy.zig");
 const scratch = @import("scratch.zig");
 const result = @import("result.zig");
 const Kind = @import("kind.zig").Kind;
+const typo = @import("typo.zig");
 
 pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode) type {
     return MachineWithEncoding(.utf8, backend, fixed, metered, cancellable, mode);
@@ -23,6 +24,8 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
     const Scanner = lexer.ScannerWithEncoding(actual, backend, metered, metered or cancellable);
     const Unit = if (enc.width == 1) u8 else u32;
     const recovery_enabled = fixed == null or fixed.?.on_error == .collect;
+    const one_edit_enabled = recovery_enabled and (fixed == null or fixed.?.closing_tag_recovery != .exact);
+    const two_edits_enabled = recovery_enabled and (fixed == null or fixed.?.closing_tag_recovery == .two_edits);
     const partial_enabled = fixed == null or fixed.?.retain_partial;
     const deviations_enabled = fixed == null or fixed.?.syntax.malformed_reference != .reject;
     const warnings_enabled = fixed == null or fixed.?.syntax.malformed_reference == .warn or fixed.?.unsupported == .warning;
@@ -34,7 +37,7 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
         diagnostics: diagnostic.Sink,
         settings: Settings,
         hook: Hook,
-        phase: enum { preflight, begin, scan, grammar, compare_open, compare_close, open, leaf, close, open_head, attribute, empty_close, commit, recover_find, recover_compare, recover_header, recover_open } = .preflight,
+        phase: enum { preflight, begin, scan, grammar, compare_open, compare_close, open, leaf, close, open_head, attribute, empty_close, commit, recover_find, recover_compare, recover_one, recover_two, recover_header, recover_open } = .preflight,
         token: lexer.Token = undefined,
         /// Only live while reading an attribute-bearing opening header. Not a
         /// nesting frame: self-closing tags still need no persistent scratch.
@@ -47,9 +50,14 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
         warnings: if (warnings_enabled) u32 else void = if (warnings_enabled) 0 else {},
         recovery_state: if (recovery_enabled) struct {
             errors: u32 = 0,
-            // phase is the discriminator: ancestor search and header sync never
+            // phase is the discriminator: ancestor/typo search and header sync never
             // overlap. Explicit layout avoids a second safety tag in Debug/Safe.
-            cursor: extern union { candidate: u32, header: lexer.HeaderRecovery } = .{ .candidate = 0 },
+            cursor: extern union {
+                candidate: u32,
+                header: lexer.HeaderRecovery,
+                one: if (one_edit_enabled) typo.One(actual, mode == .graphviz) else u8,
+                two: if (two_edits_enabled) typo.Two(actual, mode == .graphviz) else u8,
+            } = .{ .candidate = 0 },
             remaining: u32 = 0,
         } else void = if (recovery_enabled) .{} else {},
         terminal: ?result.Report = null,
@@ -57,7 +65,8 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
         pub fn init(source: []const u8, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) Self {
             var self: Self = .{ .scanner = if (strip_bom) Scanner.init(source) else Scanner.initContent(source), .diagnostics = diagnostics, .settings = settings, .hook = hook };
             // One credit per source code unit, shared across ALL ancestor
-            // searches. Each length probe or code-unit comparison costs one;
+            // searches, including fuzzy comparisons and bounded DP rows. Each
+            // length probe, unit comparison or <=5-cell row costs one;
             // wider encodings must not grant extra search work for the same
             // ASCII input. Even unmetered recovery is O(n).
             if (recovery_enabled) self.recovery_state.remaining = searchAllowance(source);
@@ -83,6 +92,54 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
         }
         fn unsupported(self: *const Self) policy.Unsupported {
             return if (fixed) |v| v.unsupported else self.settings.unsupported;
+        }
+        fn closingTagRecovery(self: *const Self) policy.ClosingTagRecovery {
+            return if (fixed) |v| v.closing_tag_recovery else self.settings.closing_tag_recovery;
+        }
+        fn beginTypoRecovery(self: *Self, stack: *scratch.Stack) void {
+            if (!one_edit_enabled and !two_edits_enabled) {
+                self.phase = .scan;
+                return;
+            }
+            const a_len = stack.top().name.len / enc.width;
+            const b_len = self.token.name.len / enc.width;
+            const minimum = @min(a_len, b_len);
+            const difference = @max(a_len, b_len) - minimum;
+            switch (self.closingTagRecovery()) {
+                .one_edit, .two_edits => |strategy| {
+                    if (two_edits_enabled and strategy == .two_edits and minimum >= 8 and difference <= 2) {
+                        self.recovery_state.cursor = .{ .two = .{} };
+                        self.phase = .recover_two;
+                        return;
+                    }
+                    // Two-edit selection includes the one-edit behavior on
+                    // shorter names; it never loses one-edit eligibility.
+                    if (one_edit_enabled and minimum >= 4 and difference <= 1) {
+                        self.recovery_state.cursor = .{ .one = .{} };
+                        self.phase = .recover_one;
+                        return;
+                    }
+                },
+                .exact => {},
+            }
+            self.phase = .scan;
+        }
+        fn recoverTypo(self: *Self, stack: *scratch.Stack, sink: anytype, comptime two: bool) void {
+            if (comptime if (two) !two_edits_enabled else !one_edit_enabled) unreachable;
+            if (!self.searchCredit(stack, sink)) return;
+            const status = if (two)
+                self.recovery_state.cursor.two.step(self.scanner.source, stack.top().name, self.token.name)
+            else
+                self.recovery_state.cursor.one.step(self.scanner.source, stack.top().name, self.token.name);
+            switch (status) {
+                .pending => {},
+                .matched, .different => {
+                    // Only traversal changes. The original mismatch is retained;
+                    // frozen output receives no fabricated closing tag or fix.
+                    if (status == .matched) stack.len -= 1;
+                    self.phase = .scan;
+                },
+            }
         }
         fn writing(self: *const Self) bool {
             return !recovery_enabled or self.recovery_state.errors == 0;
@@ -313,7 +370,7 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                 .recover_find => {
                     if (!recovery_enabled) unreachable;
                     if (self.recovery_state.cursor.candidate == 0) {
-                        self.phase = .scan; // unmatched closer: preserve open ancestors
+                        self.beginTypoRecovery(stack);
                         return;
                     }
                     if (!self.searchCredit(stack, sink)) return;
@@ -340,6 +397,8 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                         }
                     }
                 },
+                .recover_one => self.recoverTypo(stack, sink, false),
+                .recover_two => self.recoverTypo(stack, sink, true),
                 .recover_header => self.recoverHeader(stack, sink),
                 .recover_open => {
                     if (!recovery_enabled) unreachable;
@@ -513,11 +572,90 @@ test "code-unit recovery allowance survives partitioning and cancellation in eve
     }
 }
 
+test "typo recovery is source-bounded resumable and cancellable in every reader" {
+    @setEvalBranchQuota(10_000);
+    const Request = struct {
+        stop: bool = false,
+        fn poll(context: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            return self.stop;
+        }
+    };
+    inline for (.{ .one_edit, .two_edits }) |strategy| {
+        const text = if (strategy == .one_edit) "<config><server></servr></config>" else "<config><configuration></ocnfiguratiom></config>";
+        inline for (.{ .ascii, .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+            const E = support.encoding.Reader(actual);
+            var buffer: [text.len * E.width]u8 = undefined;
+            for (text, 0..) |byte, index| switch (E.width) {
+                1 => buffer[index] = byte,
+                2 => std.mem.writeInt(u16, buffer[index * 2 ..][0..2], byte, E.endian),
+                4 => std.mem.writeInt(u32, buffer[index * 4 ..][0..4], byte, E.endian),
+                else => unreachable,
+            };
+            inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| {
+                const settings: policy.ParseSettings = .{ .closing_tag_recovery = strategy };
+                const M = MachineWithEncoding(actual, backend, if (runtime) null else settings, true, true, .structural);
+                var reference_work: ?u64 = null;
+                var reference_credits: ?u32 = null;
+                for ([_]u32{ 1, 7, 256 }) |budget| {
+                    var storage: scratch.Fixed(4) = .{};
+                    var stack: scratch.Stack = .{ .frames = storage.storage().frames };
+                    var counter: @import("syntax.zig").Counter = .{};
+                    var machine = M.init(&buffer, diagnostic.discard, if (runtime) settings else {}, null);
+                    var work: u64 = 0;
+                    while (machine.terminal == null) {
+                        const progress = machine.advance(&stack, &counter, budget);
+                        try std.testing.expect(progress.work_used <= budget);
+                        work += progress.work_used;
+                        try std.testing.expect(work < text.len * 16);
+                    }
+                    if (reference_work) |prior| try std.testing.expectEqual(prior, work) else reference_work = work;
+                    if (reference_credits) |prior| try std.testing.expectEqual(prior, machine.recovery_state.remaining) else reference_credits = machine.recovery_state.remaining;
+                    try std.testing.expect(machine.recovery_state.remaining < text.len);
+                    try std.testing.expectEqual(result.Outcome.invalid_syntax, machine.terminal.?.outcome);
+                    try std.testing.expectEqual(result.Completion.complete, machine.terminal.?.completion);
+                    try std.testing.expectEqual(@as(u32, 1), machine.terminal.?.syntax_errors);
+                }
+                var storage: scratch.Fixed(4) = .{};
+                var stack: scratch.Stack = .{ .frames = storage.storage().frames };
+                var counter: @import("syntax.zig").Counter = .{};
+                var request: Request = .{};
+                var machine = M.init(&buffer, diagnostic.discard, if (runtime) settings else {}, .{ .context = &request, .is_requested = Request.poll });
+                while (machine.phase != .recover_one and machine.phase != .recover_two) _ = machine.advance(&stack, &counter, 1);
+                try std.testing.expect(machine.terminal == null);
+                const before = machine.recovery_state.remaining;
+                _ = machine.advance(&stack, &counter, 1);
+                try std.testing.expectEqual(before - 1, machine.recovery_state.remaining);
+                // No input-dependent work on a zero-credit call, including a
+                // suspended DP row. Cancellation still wins before the budget.
+                const remaining = machine.recovery_state.remaining;
+                try std.testing.expectEqual(@as(u32, 0), machine.advance(&stack, &counter, 0).work_used);
+                try std.testing.expectEqual(remaining, machine.recovery_state.remaining);
+                request.stop = true;
+                try std.testing.expectEqual(@as(u32, 0), machine.advance(&stack, &counter, 0).work_used);
+                try std.testing.expectEqual(result.Outcome.cancelled, machine.terminal.?.outcome);
+                try std.testing.expectEqual(@as(u32, 1), machine.terminal.?.syntax_errors);
+                try std.testing.expectEqual(remaining, machine.recovery_state.remaining);
+
+                counter = .{};
+                machine = M.init(&buffer, diagnostic.discard, if (runtime) settings else {}, null);
+                while (machine.phase != .recover_one and machine.phase != .recover_two) _ = machine.advance(&stack, &counter, 1);
+                machine.recovery_state.remaining = 0;
+                _ = machine.advance(&stack, &counter, 1);
+                try std.testing.expectEqual(result.Outcome{ .resource_limit = .{ .resource = .recovery_work, .limit = text.len } }, machine.terminal.?.outcome);
+                try std.testing.expectEqual(result.Completion.incomplete, machine.terminal.?.completion);
+                try std.testing.expectEqual(@as(u32, 1), machine.terminal.?.syntax_errors);
+            };
+        }
+    }
+}
+
 test "each event attempt is charged and every rejecting sink aborts exactly once" {
     try std.testing.expect(Machine(.scalar, .{}, false, false, .structural).Settings == void);
     try std.testing.expect(Machine(.scalar, .{}, false, false, .structural).Hook == void);
     try std.testing.expect(@FieldType(Machine(.scalar, .{ .on_error = .fail_fast }, false, false, .structural), "recovery_state") == void);
-    try std.testing.expectEqual(@as(usize, 3 * @sizeOf(u32)), @sizeOf(@FieldType(Machine(.scalar, .{}, true, false, .structural), "recovery_state")));
+    try std.testing.expectEqual(@as(usize, 3 * @sizeOf(u32)), @sizeOf(@FieldType(Machine(.scalar, .{ .closing_tag_recovery = .exact }, true, false, .structural), "recovery_state")));
+    try std.testing.expect(@sizeOf(@FieldType(Machine(.scalar, .{}, true, false, .structural), "recovery_state")) > 3 * @sizeOf(u32));
     try std.testing.expect(@FieldType(lexer.Scanner(.scalar, false, false), "frontier") == void);
     try std.testing.expect(@FieldType(lexer.Scanner(.scalar, true, true), "frontier") == u32);
     const Probe = struct {

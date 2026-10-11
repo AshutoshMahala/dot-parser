@@ -176,6 +176,12 @@ validation; it still reports through the same diagnostic sink. Warnings do not
 trigger it. Recovery is an internal safe-continuation mechanism, not a separate
 public setting. The shared enum is `OnError`; no legacy aliases remain.
 
+Markup's `closing_tag_recovery` tunes continuation under `.collect` without
+changing this stop/continue contract. It prefers exact ancestors, then may use
+bounded current-element typo matching, with an exact-only opt-out. The mismatch
+remains an error; source bytes, frozen prefixes and validation acceptance are
+never healed. Its fixed-memory resumable steps share the recovery allowance.
+
 Under `.collect`, the parser may record a recoverable syntax diagnostic,
 synchronize at a safe grammar boundary, and continue collecting problems up to
 caller-provided diagnostic and work limits. Recovery must be best-effort and

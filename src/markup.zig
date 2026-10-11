@@ -33,6 +33,7 @@ pub const NameRule = policy.NameRule;
 pub const ReferenceCatalog = policy.ReferenceCatalog;
 pub const Acceptance = policy.Acceptance;
 pub const OnError = policy.OnError;
+pub const ClosingTagRecovery = policy.ClosingTagRecovery;
 pub const Unsupported = policy.Unsupported;
 pub const encoding = support.encoding;
 pub const SourceEncoding = encoding.Encoding;

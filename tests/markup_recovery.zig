@@ -14,6 +14,160 @@ test "collect is the markup recovery default and presets expose the same two cho
     try equal(markup.OnError.fail_fast, markup.Profile(.{ .policy = .{ .on_error = .fail_fast } }).baseline.on_error);
 }
 
+test "closing typo recovery is configurable without accepting or repairing syntax" {
+    const Case = struct { source: []const u8, exact: u32, one: u32, two: u32 };
+    for ([_]Case{
+        .{ .source = "<config><server></servr></config>", .exact = 2, .one = 1, .two = 1 },
+        .{ .source = "<config><sever></server></config>", .exact = 2, .one = 1, .two = 1 },
+        .{ .source = "<config><server></serverr></config>", .exact = 2, .one = 1, .two = 1 },
+        .{ .source = "<config><server></srever></config>", .exact = 2, .one = 1, .two = 1 },
+        .{ .source = "<config><server></serxer></config>", .exact = 2, .one = 1, .two = 1 },
+        .{ .source = "<config><server></serveq></config>", .exact = 2, .one = 1, .two = 1 },
+        .{ .source = "<config><configuration></confguratin></config>", .exact = 2, .one = 2, .two = 1 },
+        .{ .source = "<config><configuration></ocnfiguratiom></config>", .exact = 2, .one = 2, .two = 1 },
+        // Exact ancestors always win, even if the top is within one edit.
+        .{ .source = "<servers><server></servers>", .exact = 1, .one = 1, .two = 1 },
+        // Small names never guess; a short two-edit collision remains ignored.
+        .{ .source = "<config><a></b></config>", .exact = 2, .one = 2, .two = 2 },
+        .{ .source = "<config><server></sender></server></config>", .exact = 1, .one = 1, .two = 1 },
+        // Intent is unknown. These document genuine false-positive tradeoffs:
+        // a guessed top closure makes the later exact closer unexpected.
+        .{ .source = "<config><items></item></items></config>", .exact = 1, .one = 2, .two = 2 },
+        .{ .source = "<config><server_name></sender_name></server_name></config>", .exact = 1, .one = 1, .two = 2 },
+        // Never fuzzy-search ancestors. Only unrelated is eligible here.
+        .{ .source = "<config><server><unrelated></servr></server></config>", .exact = 2, .one = 2, .two = 2 },
+    }) |case| inline for (.{ .exact, .one_edit, .two_edits }, .{ case.exact, case.one, case.two }) |strategy, errors| {
+        const P = markup.Profile(.{ .policy = .{ .mode = .structural, .closing_tag_recovery = strategy } });
+        var bag: markup.FixedDiagnosticBag(16) = .{};
+        var parsed = P.parseBorrowed(std.testing.allocator, case.source, bag.sink(), .{});
+        defer parsed.deinit();
+        errdefer std.debug.print("recovery case '{s}', strategy={s}\n", .{ case.source, @tagName(strategy) });
+        try equal(markup.Outcome.invalid_syntax, parsed.outcome);
+        try equal(markup.Completion.complete, parsed.completion);
+        try equal(errors, parsed.syntax_errors);
+        try equal(@as(usize, errors), bag.items().len);
+        try equal(@as(u32, 0), parsed.accepted_deviations);
+        try expect(parsed.document == null);
+        try equal(markup.diagnostic.Code.mismatched_tag, bag.items()[0].code);
+        for (bag.items()) |finding| try expect(finding.suggestedFix() == null);
+    };
+}
+
+test "typo recovery keeps later independent errors and the original frozen prefix" {
+    const source = "<config><server></servr><later x=0/><name>fish & chips</name></config>";
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .retention = .{ .partial = true } } });
+    var bag: markup.FixedDiagnosticBag(16) = .{};
+    var parsed = P.parseBorrowed(std.testing.allocator, source, bag.sink(), .{});
+    defer parsed.deinit();
+    try equal(markup.Outcome.invalid_syntax, parsed.outcome);
+    try equal(markup.Completion.complete, parsed.completion);
+    try equal(@as(u32, 3), parsed.syntax_errors);
+    try equal(markup.diagnostic.Code.mismatched_tag, bag.items()[0].code);
+    try equal(markup.diagnostic.Code.unexpected_byte, bag.items()[1].code);
+    try equal(markup.diagnostic.Code.malformed_reference, bag.items()[2].code);
+    const doc = parsed.document.?;
+    try equal(@as(u32, 2), doc.nodeCount());
+    try expect(!doc.scopeComplete());
+    var roots = doc.roots();
+    const root = roots.next().?;
+    var children = root.children();
+    const child = children.next().?;
+    try std.testing.expectEqualStrings("server", child.name().?);
+    try expect(!child.scopeComplete());
+    try expect(children.next() == null);
+}
+
+test "typo policies inherit and latch across fixed runtime scanner and execution paths" {
+    try equal(markup.ClosingTagRecovery.one_edit, markup.Profile(.{}).baseline.closing_tag_recovery);
+    try equal(markup.ClosingTagRecovery.one_edit, markup.presets.standard.closing_tag_recovery.?);
+    try equal(markup.ClosingTagRecovery.one_edit, markup.presets.untrusted.closing_tag_recovery.?);
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .closing_tag_recovery = .exact } });
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ .exact, .one_edit, .two_edits }) |strategy| inline for (.{ .collect, .fail_fast }) |on_error| {
+        const source = if (strategy == .two_edits) "<config><configuration></ocnfiguratiom></config>" else "<config><server></servr></config>";
+        const p: markup.Policy = .{ .mode = .structural, .scanner = scanner, .closing_tag_recovery = strategy, .on_error = on_error, .execution = .{ .metering = true, .cancellation = true } };
+        const P = markup.Profile(.{ .policy = p });
+        var nodes: markup.FixedDocumentStorage(.{ .nodes = 4 }) = .{};
+        var frames: markup.FixedParseScratch(4) = .{};
+        const memory: markup.ParseMemory = .{ .document = nodes.storage(), .scratch = frames.storage() };
+        var first: markup.FixedDiagnosticBag(8) = .{};
+        const expected = P.parseBorrowedIn(source, memory, first.sink(), .{});
+        var reference_work: ?u64 = null;
+        for ([_]u32{ 1, 7, 256 }) |budget| {
+            var second: markup.FixedDiagnosticBag(8) = .{};
+            var session = Dynamic.Session.init(source, memory, second.sink(), .{ .policy = p });
+            defer session.deinit();
+            var work: u64 = 0;
+            while (true) {
+                try equal(@as(u32, 0), (try session.advance(0)).work_used);
+                const progress = try session.advance(budget);
+                try expect(progress.work_used <= budget);
+                work += progress.work_used;
+                try expect(work < source.len * 16);
+                if (progress.outcome != null) break;
+            }
+            if (reference_work) |prior| try equal(prior, work) else reference_work = work;
+            try deep(expected, session.result().?);
+            try std.testing.expectEqualSlices(markup.Diagnostic, first.items(), second.items());
+            try equal(markup.Outcome.invalid_syntax, expected.outcome);
+            try equal(if (on_error == .fail_fast) markup.Completion.incomplete else .complete, expected.completion);
+            try equal(@as(u32, if (on_error == .collect and strategy == .exact) 2 else 1), expected.syntax_errors);
+            session.reset(source, discard, .{});
+            try equal(@as(u32, 2), session.run().syntax_errors); // exact-only baseline restored
+        }
+    };
+}
+
+test "Graphviz typo recovery folds ASCII while structural names stay byte exact" {
+    const source = "<table></TaBl>";
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ .structural, .graphviz }) |mode| {
+        const P = markup.Profile(.{ .policy = .{ .mode = mode, .scanner = scanner } });
+        var bag: markup.FixedDiagnosticBag(8) = .{};
+        const r = P.measure(std.testing.allocator, source, bag.sink(), .{});
+        try equal(markup.Outcome.invalid_syntax, r.outcome);
+        try equal(@as(u32, if (mode == .graphviz) 1 else 2), r.syntax_errors);
+        try equal(markup.diagnostic.Code.mismatched_tag, bag.items()[0].code);
+        const Fast = markup.Profile(.{ .policy = .{ .mode = mode, .scanner = scanner, .on_error = .fail_fast } });
+        const fast = Fast.measure(std.testing.allocator, source, discard, .{});
+        try equal(markup.Completion.incomplete, fast.completion);
+        try equal(@as(u32, 1), fast.syntax_errors);
+    };
+}
+
+test "mutated long names have fuzzy recovery parity across scanners and pause boundaries" {
+    const parts = [_][]const u8{ "<config>", "</config>", "<configuration>", "</ocnfiguratiom>", "</configuration>", "<server>", "</servr>", "</sender>", "<items>", "</item>", "<later x=0/>", "<x q='", "&bad ", "<!--ok-->" };
+    var prng = std.Random.DefaultPrng.init(0x873baef);
+    const random = prng.random();
+    inline for (.{ .exact, .one_edit, .two_edits }) |strategy| {
+        const P = markup.Profile(.{ .policy = .{ .mode = .structural, .closing_tag_recovery = strategy } });
+        for (0..512) |_| {
+            var buffer: [512]u8 = undefined;
+            var writer = std.Io.Writer.fixed(&buffer);
+            for (0..16) |_| try writer.writeAll(parts[random.uintLessThan(usize, parts.len)]);
+            const source = writer.buffered()[0..random.uintLessThan(usize, writer.end + 1)];
+            var nodes: markup.FixedDocumentStorage(.{ .nodes = 64, .attributes = 64 }) = .{};
+            var frames: markup.FixedParseScratch(32) = .{};
+            const memory: markup.ParseMemory = .{ .document = nodes.storage(), .scratch = frames.storage() };
+            var first: markup.FixedDiagnosticBag(64) = .{};
+            const expected = P.parseBorrowedIn(source, memory, first.sink(), .{});
+            inline for (.{ .scalar, .block }) |scanner| {
+                const S = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = scanner, .closing_tag_recovery = strategy, .execution = .{ .metering = true } } });
+                var second: markup.FixedDiagnosticBag(64) = .{};
+                var session = S.Session.init(source, memory, second.sink(), .{});
+                defer session.deinit();
+                var work: u64 = 0;
+                while (true) {
+                    const progress = session.advance(1 + random.uintLessThan(u32, 8));
+                    work += progress.work_used;
+                    try expect(work <= source.len * 16 + 32);
+                    if (progress.outcome != null) break;
+                }
+                try deep(expected, session.result().?);
+                try std.testing.expectEqualSlices(markup.Diagnostic, first.items(), second.items());
+            }
+        }
+    }
+}
+
 test "structural recovery reports independent findings without publishing a tree" {
     const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
     const Case = struct { source: []const u8, errors: u32 };

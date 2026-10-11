@@ -245,7 +245,7 @@ By default the parser keeps going after an error to find more:
 | Problem | What it does |
 | --- | --- |
 | A closing tag with nothing open | Reports it and skips it |
-| A closing tag that doesn't match | Reports it once, and closes back to the matching open tag if there is one |
+| A closing tag that doesn't match | Reports it, prefers an exact open ancestor, then optionally guesses that it closes the current element |
 | Elements still open at the end | Reports each one |
 | A bad attribute, like a missing `=` | Reports it and skips to the end of the tag |
 | An unclosed quote, comment or CDATA | Stops; there is no safe place to continue |
@@ -254,15 +254,60 @@ It never invents tags or repairs the source. By default, a failed parse returns
 no tree. To keep the part that was recognised, turn on
 [partial results](#partial-results-for-editors) (unreleased). Set `on_error = .fail_fast` to stop at the first error.
 
-Ancestor searches share a total recovery allowance of **one credit per source
+### Closing-tag typo recovery
+
+**Unreleased.** `closing_tag_recovery` guides continuation after a mismatch;
+it does not accept malformed syntax or replace `on_error`.
+
+| Policy | After exact ancestor matching fails |
+| --- | --- |
+| `.exact` | Ignore the closer and preserve the open elements; the previous behavior |
+| `.one_edit` (default) | Compare only the current element, allowing one insertion, deletion, substitution or adjacent transposition; both names must have at least 4 code units |
+| `.two_edits` | Include the one-edit behavior above, and allow two edits when both names have at least 8 code units |
+
+```zig
+const Custom = markup.Profile(.{ .policy = .{
+    .mode = .structural,
+    .on_error = .collect,
+    .closing_tag_recovery = .two_edits,
+} });
+```
+
+The leaf is also runtime-overridable when runtime policies are compiled in.
+`.fail_fast` stops at the mismatch without searching or guessing. Exact ancestors
+always win; fuzzy matching never chooses an ancestor. Graphviz comparisons fold
+ASCII case, while structural comparisons do not. Edits count original code units:
+UTF-8 bytes, UTF-16 units or UTF-32 units, not Unicode scalars or graphemes. There
+is no normalization or Unicode case folding. Non-ASCII guesses can therefore
+differ between encodings even when the displayed names are the same.
+
+A matched guess pops only the current parsing frame. The original mismatch,
+invalid outcome and frozen retained prefix remain unchanged; no synthetic closer,
+replacement source, fix offer or accepted-deviation count is produced. For
+`<config><server></servr></config>`, the default reports one mismatch instead of
+another mismatch on `</config>`. This is a heuristic, not proof of intent: a stray
+`</item>` inside `<items>` can be mistaken for a typo, making a later correct
+`</items>` unexpected. Use `.exact` when that tradeoff is unwanted. No lookahead
+or partial-tree healing is performed.
+
+One-edit matching is a resumable linear comparison. Two-edit matching trims
+matching affixes and uses restricted Damerau/optimal-string-alignment distance
+with three five-cell rows, counting adjacent transpositions as one edit. An
+already-edited substring cannot be edited again; this is not unrestricted
+Damerau distance. Both paths are allocation-free. Disabled fixed policies exclude
+the corresponding matcher; fixed fail-fast excludes all recovery state.
+
+Exact and typo searches share a total recovery allowance of **one credit per source
 code unit**, including any leading BOM units. The encoding reader supplies that
 count: physical bytes for UTF-8/ASCII, bytes divided by two for UTF-16 and by four
-for UTF-32. Each ancestor name-length probe or code-unit comparison spends one
-credit. This is a work bound, not a character count or diagnostic limit; it is
+for UTF-32. Each ancestor name-length probe, one-edit/affix comparison, or bounded
+two-edit row (at most five cells) spends one credit. This is a bounded-work unit,
+not a uniform CPU cost, character count or diagnostic limit; it is
 not replenished after an error or pause. Exhaustion returns
 `resource_limit.resource = .recovery_work`, with `limit` in credits and
 `completion = .incomplete`. UTF-8 accounting is unchanged. Native code-unit
-accounting is unreleased; the allowance is independent of session
+accounting is unreleased; searches never acquire a fresh allowance for a typo.
+The allowance is independent of session
 `advance(budget)` and cancellation checks.
 
 | `parsed.outcome` | Meaning |
@@ -314,7 +359,8 @@ the markup is valid. `.not_processed` is reserved and isn't returned yet.
 **Only the prefix before the first failure is retained.** `.collect` can keep
 finding errors, but it doesn't add later nodes to the tree. A finished scan
 (`parsed.completion == .complete`) can therefore still have a partial document.
-Missing quotes, comments and closing tags are never guessed or repaired.
+Retained containers are never completed with guessed or repaired delimiters;
+typo recovery changes diagnostic traversal only, not this prefix.
 
 Use `unrepresented()` to find the remaining raw text, not as a place to restart
 parsing. It may include whitespace already scanned, or be empty when only a

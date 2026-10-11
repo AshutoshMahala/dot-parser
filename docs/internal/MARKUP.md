@@ -90,7 +90,7 @@ Keep a single Document type, safe traversal, borrowed source and separate
 validity/operational outcomes. Per-scope `.not_processed` must not mean that
 processing was never requested. Preserve independent outer/inner completeness;
 opt-in composed child retention now owns separate buffers, while the default
-workspace path still discards child trees. No guessed delimiter or typo repair.
+workspace path still discards child trees. No guessed delimiter or repaired tree.
 Current APIs: [markup prefixes](../MARKUP.md#partial-results-for-editors),
 [DOT prefixes](../READING_DOCUMENTS.md#partial-results-for-editors) and
 [composed retention](../LABELS.md#retaining-label-trees-for-editors).
@@ -98,8 +98,10 @@ Current APIs: [markup prefixes](../MARKUP.md#partial-results-for-editors),
 New dialect grammar will need its own safe synchronization boundaries, especially
 around void elements and unquoted/empty attributes. Preserve the distinction
 between recovery for further diagnostics and accepting or repairing syntax;
-guessed typo correction is not an agreed extension. Current recovery behaviour
-is documented under [parse failures](../MARKUP.md#when-parsing-fails).
+Bounded current-element typo matching is implemented for diagnostic continuation,
+not source or tree correction; see [closing-tag recovery](../MARKUP.md#closing-tag-typo-recovery).
+Lookahead and fuzzy ancestor selection are not included. Current recovery
+behaviour is documented under [parse failures](../MARKUP.md#when-parsing-fails).
 
 ### Optional summaries and retention
 

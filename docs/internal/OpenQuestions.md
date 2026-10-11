@@ -883,7 +883,7 @@ unrepresented source ranges. Local completeness and recursive completeness diffe
 from validity and operation completion; unrequested inner processing differs
 from pending processing. An inner failure alone does not make the outer syntax
 partial. `retention.partial` is default-off and independent of `on_error`, with
-compile-time/runtime parity. No guessed delimiters or typo healing. Prefix
+compile-time/runtime parity. No guessed delimiters or healed retained trees. Prefix
 retention reuses syntax storage and freezes at the first failure without
 an allocation or stack walk; growing DOT operations reserve constant ownership
 metadata before parsing. Direct validation reports missing coverage. Composed
@@ -1039,7 +1039,20 @@ Markup ancestor-search recovery uses a shared 1x source-code-unit allowance:
 one credit per ancestor probe or name code-unit comparison, never replenished
 by an error or pause. UTF-8 is unchanged; native readers supply the logical unit
 count, and `.recovery_work.limit` reports credits rather than physical bytes.
-This bounds search work without changing execution stepping or cancellation.
+Bounded closing-tag typo recovery (2026-10-11) shares this allowance: exact
+ancestors take precedence, followed by the current element only. The new
+`closing_tag_recovery` leaf defaults to `one_edit`, with `exact` and `two_edits`
+choices and compile-time/runtime parity. One edit includes adjacent transposition
+and requires both names to have at least four code units; two edits additionally
+require eight, retaining one-edit behavior on shorter names. Counts follow the
+selected reader, not Unicode scalars. Graphviz folds only ASCII case. Two-edit
+matching uses restricted Damerau/optimal-string-alignment distance, not unrestricted
+Damerau distance; a bounded row has at most five cells. Each one-edit/affix
+comparison or row consumes a recovery credit and execution step. Fixed disabled
+and fail-fast policies strip unused matchers. Source, findings, rejection and the
+frozen prefix are unchanged; no synthetic close/fix/accepted deviation is produced.
+False matches remain possible. Lookahead and fuzzy ancestor selection are deferred.
+This bounds search work without introducing an unbounded step or changing cancellation.
 Future explicit transforms need their own loss, ownership, mapping and work
 contracts; native parsing does not silently normalize or replace source data.
 *(Embodied: `src/dot/lexer/`, `src/dot/validation_checks.zig`,

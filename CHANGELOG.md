@@ -8,6 +8,14 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- Markup collecting recovery now defaults to bounded one-edit closing-tag
+  matching after exact ancestor matching fails. `closing_tag_recovery` also
+  provides `exact` and `two_edits`, with compile-time/runtime parity and minimum
+  name lengths of four/eight code units. Guesses only guide traversal: the
+  original mismatch, invalid result and frozen prefix remain unchanged. Matchers
+  allocate no heap memory and share the existing code-unit recovery allowance;
+  a two-edit step is a bounded row of at most five cells. No fuzzy ancestor
+  search, lookahead, source repair or suggested typo fix is introduced.
 - Markup recovery's shared ancestor-search allowance counts source code units,
   preserving UTF-8 behavior and normalizing native UTF-16/32 search work.
   `.recovery_work` limits report credits, not native source bytes; execution
