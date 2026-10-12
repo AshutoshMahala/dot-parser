@@ -109,163 +109,54 @@ Additional type sizes, the same in Fast and Safe builds:
 | Markup node / attribute view | 64 / 64 |
 | Markup root/child iterator / attribute iterator | 64 / 64 |
 
-Default one-edit closing-tag recovery (unreleased) adds 8 bytes to fixed-policy
-sessions and 24 bytes to the run-time-policy session. Fixed
-`closing_tag_recovery = .exact` restores the default/bounded sizes to 432/440
-bytes; run-time policies still retain state for the available matcher choices.
-No matcher adds heap allocation or per-node/attribute storage.
+Unreleased changes to these sizes:
 
-Partial markup retention (unreleased) adds 8 bytes to a run-time-policy session;
-default fixed-policy and bounded session sizes are unchanged. `Document` grew
-from 48 to 56 bytes, so views and iterators that contain it also grew by 8 bytes.
-This metadata cost applies even with retention off. Copying a view copies only
-that metadata, not the source or tree, and requires no heap allocation.
+- **Closing-tag typo recovery**, on by default, adds 8 bytes to sessions with
+  fixed settings and 24 bytes to the run-time-settings session. With a fixed
+  `closing_tag_recovery = .exact`, the default and bounded sessions are 432 and
+  440 bytes again; run-time settings keep room for every choice. No choice
+  allocates or makes node or attribute records bigger.
+- **Markup partial results** add 8 bytes to the run-time-settings session; other
+  sessions are unchanged. The markup `Document` grew from 48 to 56 bytes, even
+  with partial results off, so views and iterators that hold it grew by 8 bytes
+  too. Copying a view still copies no source or tree and doesn't allocate.
+  Node and attribute records are still 20 bytes. Keeping the finished part after
+  a failure reuses the same buffers, without allocating. Growing buffers keep
+  their spare room after a failure: an owned result holds it until `deinit()`,
+  and a workspace keeps it for the next call.
+- **DOT partial results and kept label trees** have their own
+  [memory costs](EDITORS.md#memory). The default DOT session grew by 8 bytes,
+  and run-time-settings sessions by 56 bytes, because they must be able to keep
+  partial results too. Default node and edge allocations are unchanged, and no
+  list of label results is allocated unless label trees are kept.
 
-Node and attribute records remain 20 bytes. Retaining a failed prefix reuses
-those pools without a new allocation or a walk of the open-element stack.
-Growing pools keep their spare capacity after failure; an owned result holds
-them until `deinit()`, while a workspace keeps them for reuse.
+## Cost of opt-in features
 
-DOT prefix retention and composed child retention (unreleased) have separate
-[storage costs](MEMORY.md#partial-result-storage). The default DOT session grew
-by 8 bytes for completeness metadata; runtime sessions grew by 56 bytes because
-they must also support the opt-in builder. Default node/edge pool allocations are
-unchanged. No child-result array is allocated unless composition retention is on.
+> **Unreleased.** These were measured on development builds, separately from
+> the tables above, on the same machine.
 
-## Development check: opt-in DOT prefix retention
+**Partial DOT results** ([editors](EDITORS.md#keep-the-finished-part-of-a-dot-file)):
 
-Checked 2026-10-08 against `2c22869` on the same machine, Zig 0.16.0, with an
-identical parse-plus-validation harness and three alternating repetitions.
-This is a targeted development check, not a replacement for the 0.4.0 baseline.
+- **Off:** with compile-time settings, no measurable change (−1.0% to +0.5%
+  across scanners, storage and both builds). Profiles with run-time settings
+  weren't compared with the version before this feature.
+- **On:** parsing is a few percent slower. Scalar scanner, Fast build:
 
-With retention **off**, six 100,000-statement workloads (nodes, edges,
-identifiers, flat subgraphs, subgraph endpoints and minified) gave geometric-mean
-throughput changes of **−1.0% to +0.5%** across scalar/block, fixed/growing and
-ReleaseFast/ReleaseSafe combinations using **compile-time policy profiles**.
-Runtime-policy profiles were not included in that check; these numbers do not
-establish retention-off parity for them. Allocator-requested heap use was unchanged.
-Individual workload changes vary more than that aggregate.
-
-With `retention.partial` **on**, compared with the same development build with
-it off, the scalar ReleaseFast check measured:
-
-| Workload | Fixed-pool throughput change | Growing-pool throughput change |
+| Input | Fixed buffers | Growing buffers |
 | --- | ---: | ---: |
 | Nodes | −6.0% | −2.5% |
 | Edges | −5.3% | −6.9% |
-| Subgraph endpoints | −7.9% | −8.9% |
+| Subgraph edge ends | −7.9% | −8.9% |
 
-Fixed-pool heap usage was unchanged. Growing-pool peak live allocation was
-104 bytes higher for ownership metadata. Successful growing results retained
-26–34% more capacity in these cases, because the opt-in path does not trim pools
-at handoff; this is sustained retained memory, not a comparable peak increase.
-Exact capacity hints or fixed pools avoid that growth slack. Retaining composed
-child trees has an additional input-dependent cost; these numbers are DOT-only.
+- **Memory, on:** fixed buffers use nothing extra. Growing buffers use 104 bytes
+  more at their peak, and keep 26–34% more memory afterwards, because the lists
+  aren't trimmed when parsing ends. Exact size hints or fixed buffers avoid that.
 
-## Development check: runtime-policy prefix adapter
+**Keeping label trees** costs memory for every kept tree; how much depends on
+the labels. It hasn't been timed yet.
 
-Checked 2026-10-10 against `5053e52`, on the same Apple M4 Pro and Zig 0.16.0.
-The retained change makes scope entry and scoped-edge promotion failure-atomic:
-all required pools are reserved/checked before live records change. This removes
-the partial adapter's per-event snapshot/rollback work without disabling runtime
-partial retention or compiling a second grammar for retention-off operations.
-
-This check used parse-only operations over 14 generated workloads of roughly
-100,000 statements, scalar/block scanners and fixed/growing pools. Each binary
-had two warm-ups and nine timed parses per row, with three alternating process
-repetitions; the table shows medians of those process medians. Growing parses
-used the C allocator and excluded result destruction from timing. These are
-development comparisons, not replacements for the release baseline above.
-
-Runtime policies, retention off, **ReleaseFast** (decimal MB/s):
-
-| Workload | Scanner | Pools | Before → after, ms | Before → after, MB/s |
-| --- | --- | --- | ---: | ---: |
-| Edges | scalar | fixed | 4.639 → 4.300 | 383.2 → 413.5 |
-| Edges | scalar | growing | 4.994 → 4.535 | 356.0 → 392.0 |
-| Edges | block | fixed | 6.942 → 6.408 | 256.1 → 277.4 |
-| Edges | block | growing | 7.567 → 7.115 | 234.9 → 249.9 |
-| Subgraph endpoints | scalar | fixed | 3.772 → 3.379 | 212.1 → 236.8 |
-| Subgraph endpoints | scalar | growing | 4.235 → 3.900 | 188.9 → 205.1 |
-| Subgraph endpoints | block | fixed | 4.961 → 4.557 | 161.3 → 175.6 |
-| Subgraph endpoints | block | growing | 5.423 → 5.167 | 147.5 → 154.8 |
-
-Across all 14 workloads, runtime-profile geometric-mean throughput improved
-3.5–5.4%, depending on scanner/storage. Compile-time-policy geometric means were
-within −0.4% to +1.5%. Runtime retention-on edge/subgraph rows improved 7.6–14.7%
-in throughput, with the same retained-prefix and failure contracts.
-
-**The initial ReleaseSafe measurements were mixed:** runtime-profile geometric
-means ranged from approximately unchanged to 1.4% lower throughput. The node-only block /
-growing row appeared about 9% lower; the follow-up below did not reproduce that
-node-only result. Other individual rows moved in both directions.
-The ReleaseFast recovery must not be described as resolving every build-mode
-regression. Extra immediate-dispatch/forced-inlining experiments were not kept:
-their initial results varied between workloads and benchmark contexts.
-
-Allocator-requested peak/live bytes and raw allocation requests were unchanged across
-every measured row, both with retention off and with retention on. For example,
-growing edges retained 4,400,000 bytes and peaked at 5,892,592 requested bytes;
-subgraph endpoints retained 4,666,800 and peaked at 5,887,788. These are allocator
-observations, not process RSS or memory internal to `realloc`. Public result and
-session sizes are unchanged. The representative runtime benchmark executable
-shrank slightly (1,028,960 → 1,027,952 bytes in ReleaseFast). A separate direct
-builder bypass recovered speed but grew it to 1,325,328 bytes, so it was not kept.
-
-The [policy benchmark](../bench/policies.zig) now exercises nodes, edges and
-subgraph endpoints with fixed policies, runtime baselines/overrides and runtime
-partial retention: `zig build bench-policy -Doptimize=ReleaseFast` (or
-`ReleaseSafe`). It uses smaller repeated-name synthetic fixtures rather than
-the generated corpus used for the table. It now warms each case for at least
-150 ms, then takes nine samples averaging four timed parses each. Policy reads
-and result checks are outside the timed region.
-
-### ReleaseSafe repeatability follow-up
-
-The same-day follow-up rebuilt the exact committed sources at `5053e52` and
-`7998f1c`, with identical harnesses and longer per-case warm-ups. Each row had
-at least 150 ms of warm-up followed by nine four-parse samples. Three process
-repetitions alternated build order. This focused comparison covered nodes,
-edges and subgraph endpoints, not all 14 workloads from the initial check.
-
-Node-only runtime policies, retention off, **ReleaseSafe** (decimal MB/s):
-
-| Scanner | Pools | Before → after, ms | Before → after, MB/s |
-| --- | --- | ---: | ---: |
-| scalar | fixed | 2.379 → 2.309 | 331.7 → 341.6 |
-| scalar | growing | 2.520 → 2.560 | 313.1 → 308.2 |
-| block | fixed | 2.956 → 2.775 | 266.9 → 284.3 |
-| block | growing | 3.143 → 3.083 | 251.0 → 255.9 |
-
-The previously flagged block/growing row was about 1.9% faster in this repeat,
-with overlapping process ranges (before 3.114–3.183 ms, after 3.082–3.148 ms).
-The scalar/growing row was about 1.6% slower. This does not establish that every
-ReleaseSafe workload is regression-free, but the earlier 9% node-only slowdown
-is not a repeatable finding in this comparison. Initial first-row timings show
-substantial warm-up variation; harness/code-generation context also differed
-from the earlier pre-commit experiment, so warm-up alone is not a proven cause.
-
-Allocator-requested memory and allocation counts were identical between these
-committed builds. Growing nodes retained 2,400,000 bytes and peaked at 3,127,512
-requested bytes; fixed-pool parses made no document-pool allocations.
-
-A separate experiment kept runtime-selected one-shot engines out of their
-caller's function using `@call(.never_inline, ...)`: one extra call boundary
-per operation, not per token. Compared against `7998f1c` over all 14 workloads,
-with the same longer warm-up and three alternating process repetitions, its
-runtime-profile geometric-mean throughput changes were:
-
-| Scanner | Pools | ReleaseFast | ReleaseSafe |
-| --- | --- | ---: | ---: |
-| scalar | fixed | −2.1% | −1.0% |
-| scalar | growing | −2.0% | −0.5% |
-| block | fixed | +1.4% | +0.8% |
-| block | growing | +2.5% | +1.6% |
-
-This experiment was not retained: it traded block-scanner gains for losses on
-the default scalar scanner (including about 6.6% lower ReleaseFast throughput
-on minified input with fixed pools). Memory was unchanged. The follow-up changes
-only the benchmark methodology and these notes, not production parser behavior.
+`zig build bench-policy` now also measures partial results with run-time
+settings; see [running the benchmarks](#running-the-benchmarks).
 
 ## Scanners
 
@@ -610,3 +501,9 @@ Repeat everything with `-Doptimize=ReleaseSafe`. Repeat the first four with
 Run each one five times and take the median. `bench-markup` also accepts
 `-- --rules-only`, `-- --validation-only` and `-- --graphviz-only` for shorter
 runs.
+
+`bench-policy` now covers nodes, edges and subgraph edge ends, with fixed
+settings, run-time settings and partial results. It warms each case for at
+least 150 ms and averages four parses per sample, so its output isn't directly
+comparable with the [settings table](#compile-time-and-run-time-settings)
+above, which used the older method.

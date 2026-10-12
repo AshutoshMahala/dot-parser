@@ -213,6 +213,8 @@ You can do all of these on top of the parsed document.
 | [Memory](docs/MEMORY.md) | use an arena or fixed buffers, or work with no allocator at all |
 | [Settings](docs/POLICIES.md) | make parsing stricter or more lenient, add checks, or set limits |
 | [Parsing in small steps](docs/EXECUTION.md) | spread parsing over time, or cancel it |
+| [Using it in an editor](docs/EDITORS.md) | Keep the finished part of unfinished files, label trees and comments (unreleased) |
+| [Source encodings](docs/ENCODINGS.md) | Read UTF-16 or UTF-32 files without converting them (unreleased) |
 
 **Project**
 
@@ -248,10 +250,10 @@ and runs them all, and installs each one in `zig-out/bin/`.
 | [bounded](examples/bounded.zig) | parse in small steps, and cancel | [Small steps](docs/EXECUTION.md) |
 | [composed_markup](examples/composed_markup.zig) | check every label while parsing DOT | [Labels](docs/LABELS.md#check-every-label-while-parsing) |
 | [delayed_markup](examples/delayed_markup.zig) | check only the labels you choose | [Labels](docs/LABELS.md#check-the-labels-you-choose) |
-| [attached_markup](examples/attached_markup.zig) | attach delayed label trees to the DOT result (unreleased) | [Attached delayed processing](docs/LABELS.md#attach-delayed-results) |
+| [attached_markup](examples/attached_markup.zig) | check chosen labels later and keep their trees in the DOT result (unreleased) | [Editors](docs/EDITORS.md#check-chosen-labels-later-in-the-same-result) |
 | [markup](examples/markup.zig) | parse and validate markup on its own | [Markup](docs/MARKUP.md) |
-| [markup_partial](examples/markup_partial.zig) | retain a safe markup prefix for editors (unreleased) | [Partial results](docs/MARKUP.md#partial-results-for-editors) |
-| [partial_documents](examples/partial_documents.zig) | retain DOT prefixes and independently complete/partial label trees (unreleased) | [Editor label trees](docs/LABELS.md#retaining-label-trees-for-editors) |
+| [markup_partial](examples/markup_partial.zig) | keep the finished part of markup for editors (unreleased) | [Editors](docs/EDITORS.md#keep-the-finished-part-of-markup) |
+| [partial_documents](examples/partial_documents.zig) | keep the finished part of a DOT file and its label trees (unreleased) | [Editors](docs/EDITORS.md#keep-the-label-trees-from-a-dot-file) |
 | [graphviz_vocabulary](examples/graphviz_vocabulary.zig) | check Graphviz tags and attributes (unreleased; not the full label rules) | [Vocabulary](docs/MARKUP.md#graphviz-vocabulary) |
 | [custom_processor](examples/custom_processor.zig) | plug in your own label checker | [Own processor](docs/CUSTOM_PROCESSORS.md) |
 

@@ -124,9 +124,11 @@ for you during the parse.
 ### When a buffer is too small
 
 The parse stops with `outcome == .storage_failure` (reason `.pool_exhausted`),
-and a diagnostic names the buffer that filled up and its size. By default no
-document is published. With opt-in `retention.partial`, a safe retained prefix
-may still be available; inspect its state and the storage-failure outcome.
+and a diagnostic names the buffer that filled up and its size. By default
+there is no document. With `retention.partial` (unreleased), the part parsed
+before the buffer filled up can still be returned, and the outcome still
+reports the failure. See
+[Using it in an editor](EDITORS.md#keep-the-finished-part-of-a-dot-file).
 
 ## Comment storage
 
@@ -180,41 +182,16 @@ var frames: markup.FixedParseScratch(8) = .{}; // deepest element nesting
 To check many fragments without allocating each time, reuse one
 [workspace](MARKUP.md#checking-many-fragments).
 
-With [partial results](MARKUP.md#partial-results-for-editors) on (unreleased),
+With [partial results](EDITORS.md#keep-the-finished-part-of-markup) on (unreleased),
 a markup parse that runs out of buffer space can still return the part it
-recognised. DOT offers the same opt-in prefix contract.
+recognised, as DOT can.
 
 ## Partial-result storage
 
-With DOT `retention.partial` on (unreleased), growing parses allocate a small
-ownership record before parsing: 13 allocation lengths (104 bytes on a 64-bit
-target). They retain existing pool capacities, including unused growth space,
-on success or failure, instead of trimming them at handoff. The result owns
-that record and the pools; `deinit(allocator)` frees both. Fixed-storage parsing
-needs no ownership allocation. Neither path allocates or walks nesting to
-salvage a failure. Transactional bookkeeping is compiled out of fixed profiles
-with partial retention off.
+> **Unreleased.** Not in 0.4.0.
 
-DOT documents gain 8 bytes of completeness/frontier metadata on the tested
-64-bit target, including in ordinary profiles; allocator-owned results also
-carry one optional ownership pointer. Node, edge and subgraph record sizes are
-unchanged. A retained prefix may include initialized pool entries whose owner
-statement was unfinished; its public statement/scope views remain safe.
-
-Composed `retention.markup` keeps a growable, source-ordered result list and each
-child's owned buffers. It therefore holds the sum of retained child capacities,
-not merely the largest child's workspace. No child-result list is allocated
-when retention is off, and fixed profiles without it compile out that storage.
-All source stays borrowed. The composed `deinit(allocator)` frees the complete
-ownership tree; child entries are views, not independently owned copies.
-
-Attached delayed processing allocates a source-ordered span queue only when
-`requestMarkup` selects operands (8 bytes per entry plus growable capacity).
-It is released when drained; after a stop it retains pending envelopes until
-parent deinitialization. Child buffers still cost the sum of retained trees.
-The delayed queue/state is compiled out of fixed proactive-only profiles and
-profiles without child retention; enabling retention alone allocates no queue.
-Use the same allocator throughout the parent result's lifetime.
+Keeping partial documents and label trees for editors has small memory costs,
+listed in [Using it in an editor](EDITORS.md#memory).
 
 ## Threads
 

@@ -74,15 +74,45 @@ Tags: R-MOD-003, R-PORT-001
 
 ### Text is bytes, not checked Unicode
 
-Names can contain any byte from 0x80 to 0xFF and are kept exactly. UTF-8
-checking is optional and off by default. Nothing is normalised or converted.
-Columns count bytes.
+In UTF-8 input, the default, names can contain any byte from 0x80 to 0xFF and
+are kept exactly. UTF-8 checking is optional and off by default. Nothing is
+normalised or converted. Columns count bytes.
+
+UTF-16 and UTF-32 input (unreleased) is checked once, before parsing, and must
+be valid.
 
 **Why:** real DOT files aren't always valid UTF-8, and Graphviz accepts them.
 Checking would cost every user, even those who don't need it. Keeping bytes
-exact also keeps every error position exact.
+exact also keeps every error position exact. UTF-16 and UTF-32 are different:
+a cut-off or broken code unit leaves the parser unsure where a character ends.
+Checking first means the parser can rely on whole characters, and only programs
+that turn those readers on pay for the check.
 
 Tags: R-PORT-006
+
+### Other encodings are read as they are
+
+> **Unreleased.** Not in 0.4.0.
+
+UTF-16 and UTF-32 readers are chosen at compile time. They read the original
+bytes; nothing is converted to UTF-8 first. A byte order mark or the
+`.encoding` call option picks the reader for a file. Without either, the
+library doesn't guess.
+
+**Why:**
+
+- Converting first would mean allocating a copy and keeping a map from the copy
+  back to the file. Reading in place keeps every position, length and limit in
+  the original bytes, with no extra memory.
+- Readers you don't choose aren't compiled in, so a UTF-8 program carries no
+  extra code and behaves exactly as before.
+- Guessing from patterns of zero bytes can be wrong, and a wrong guess shows up
+  as confusing syntax errors. A byte order mark is a clear signal; otherwise
+  the caller says which encoding it is.
+- An explicit `.encoding` wins over a byte order mark, because the caller knows
+  their data. Conflicting signals aren't settled by guessing.
+- One reader is chosen for the whole file, and labels inside it use the same
+  one, so a file never mixes encodings.
 
 ## Memory
 
@@ -211,8 +241,8 @@ Tags: R-FUNC-005, R-DIAG-003
 After a syntax error the parser skips to the next `;` or `}` and keeps looking.
 It stops where there is no safe place to continue, such as an unclosed quote
 or comment. By default a failed parse returns no document at all. DOT and markup
-can keep a safe prefix, but only when you ask (unreleased; see
-[partial documents for editors](#partial-markup-documents-for-editors)).
+can keep the finished part, but only when you ask (unreleased; see
+[partial documents for editors](#partial-documents-for-editors)).
 `.fail_fast` is available, and removes the recovery code when chosen at compile
 time.
 
@@ -341,9 +371,9 @@ now; the `Document` is the public result.
 **Why:** one grammar can then feed every builder: allocator-backed, fixed
 buffers, and the counting pass behind `measure`. A consumer might act before a
 later error is found, so it needs an abort signal to throw away staged work.
-That is how ordinary parsing avoids publishing a partial document. The opt-in
-partial builder instead freezes safe retained data at abort. The interface stays
-private until its shape settles.
+That is how ordinary parsing avoids returning a partial document. With partial
+results on (unreleased), the builder instead keeps what was finished when the
+abort comes. The interface stays private until its shape settles.
 
 Tags: R-MOD-011
 
@@ -413,29 +443,56 @@ matching open tag is capped by the input length.
 code downstream might trust it. The cap stops hostile input from causing
 quadratic work.
 
-### Partial markup documents for editors
+### A small typo in a closing tag is treated as a typo
 
-> **Unreleased.** Not in 0.4.0.
+> **Unreleased.** 0.4.0 behaves like `.exact`.
 
-With `retention.partial = true`, a markup parse that fails can still return the
-part it recognised before the first error. The document and every node say
-whether they are complete or partial, and `unrepresented()` gives the text the
-tree doesn't cover. DOT offers the same prefix contract, with completeness on
-document/subgraph views. Composed child-tree retention is a separate choice.
+By default (`closing_tag_recovery = .one_edit`), a closing tag that matches no
+open element, but is one edit away from the current element's name, is treated
+as closing that element while recovering.
 
 **Why:**
 
-- Editors need it. While someone is typing, the markup is unfinished most of
+- Typos like `</TABEL>` for `<TABLE>` are common in hand-written labels. Without the guess,
+  the element stays open and later closing tags are reported too, which hides
+  the one real mistake.
+- The guess only steers how parsing carries on. The mismatch is still reported,
+  the result is still invalid, and nothing is rewritten or offered as a fix. So
+  [markup recovery still never guesses a tree](#markup-recovery-never-guesses-a-tree),
+  and a partial document still stops before the first error.
+- An exact match always wins, and only the current element is considered, so
+  correct markup is never affected and a guess can't reach far.
+- Short names are left out, because almost any short name is one edit away
+  from another.
+- The work is small and capped. It shares the existing search allowance and
+  allocates nothing.
+- It can guess wrong, for example a stray `</item>` inside `<items>`. `.exact`
+  is there for anyone who prefers no guesses. `.two_edits` is opt-in because
+  more edits mean more wrong guesses.
+
+### Partial documents for editors
+
+> **Unreleased.** Not in 0.4.0.
+
+With `retention.partial = true`, a DOT or markup parse that fails can still
+return the part it finished before the first error. The document says whether
+it is complete, and so does each DOT subgraph and each markup node.
+`unrepresented()` gives the text the document doesn't cover. Keeping label
+trees from a DOT file is a separate choice.
+
+**Why:**
+
+- Editors need it. While someone is typing, the file is unfinished most of
   the time, and an outline or highlighting still needs the part that is done.
 - Only the part before the first error is kept. After an error, the parser's
-  idea of the structure is a guess, and a guessed tree is what the previous
-  decision rules out.
+  idea of the structure is a guess, and the library never returns a guessed
+  tree.
 - It is opt-in and clearly marked, because a partial tree could pass for a
   complete one. The parse outcome still reports the failure, and
   `documentValid()` is always false for a partial document.
-- Salvaging it needs no extra scanning or allocation: the parser hands back what
-  it had already built. DOT preallocates constant-size ownership metadata when
-  growing partial retention is requested; see [memory costs](MEMORY.md#partial-result-storage).
+- Keeping it needs no extra scanning: the parser hands back what it had already
+  built. The only extra allocation is one small record for DOT with growing
+  storage; see [memory costs](EDITORS.md#memory).
 
 ### Two ways to check labels, both reporting in DOT positions
 
@@ -455,8 +512,8 @@ exactly what it says.
 
 There is no plugin registry and no swapping at run time. Settings for every
 processor are checked once, before any work starts. During the one-call check,
-the label checker reuses one set of buffers when child-tree retention is off.
-With `retention.markup`, each retained child owns its tree pools instead.
+the label checker reuses one set of buffers, unless label trees are kept
+(`retention.markup`, unreleased); then each label has its own.
 
 **Why:** compile-time wiring lets the compiler type-check the connection and
 remove anything unused. Reusing buffers cut one test from 4,003 allocations to

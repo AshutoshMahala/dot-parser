@@ -37,7 +37,7 @@ The built-in grammar is an XML-like subset of HTML:
 | Comments `<!-- -->` and `<![CDATA[ ]]>` | Supported, kept as their own nodes |
 | Unquoted attributes, `<br>` with no closing tag | Errors. This is XML-style, not browser HTML. |
 | `<?...?>`, `<!DOCTYPE>` | Not supported |
-| UTF-16/32 input | **Unreleased.** Opt-in native one-shot profiles; see [source encodings](ENCODINGS.md) |
+| UTF-16 and UTF-32 input | Supported when turned on (unreleased). See [source encodings](ENCODINGS.md). |
 
 ### Two modes
 
@@ -230,8 +230,8 @@ checked; skipped regions are reported as not fully checked.
 
 **Inside DOT.** Checking every label while parsing DOT checks **every** `<...>`
 value, not only labels, so HTML-like values in other places get the Graphviz
-rules too. To check only labels, pick them yourself with the
-[delayed path](LABELS.md#check-the-labels-you-choose). Picking label positions
+rules too. To check only labels, pick them yourself and
+[check the labels you choose](LABELS.md#check-the-labels-you-choose). Picking label positions
 automatically is planned.
 
 See [graphviz_vocabulary.zig](../examples/graphviz_vocabulary.zig) for a
@@ -245,7 +245,7 @@ By default the parser keeps going after an error to find more:
 | Problem | What it does |
 | --- | --- |
 | A closing tag with nothing open | Reports it and skips it |
-| A closing tag that doesn't match | Reports it, prefers an exact open ancestor, then optionally guesses that it closes the current element |
+| A closing tag that doesn't match | Reports it. Closes back to an open element with exactly that name; otherwise may treat it as a typo ([see below](#closing-tag-typo-recovery), unreleased) |
 | Elements still open at the end | Reports each one |
 | A bad attribute, like a missing `=` | Reports it and skips to the end of the tag |
 | An unclosed quote, comment or CDATA | Stops; there is no safe place to continue |
@@ -256,14 +256,18 @@ no tree. To keep the part that was recognised, turn on
 
 ### Closing-tag typo recovery
 
-**Unreleased.** `closing_tag_recovery` guides continuation after a mismatch;
-it does not accept malformed syntax or replace `on_error`.
+> **Unreleased.** Not in 0.4.0, which behaves like `.exact`.
 
-| Policy | After exact ancestor matching fails |
+When a closing tag doesn't match, the parser first looks for an open element
+with exactly that name and closes back to it. If there is none,
+`closing_tag_recovery` decides whether to treat the closer as a typo for the
+current element:
+
+| `closing_tag_recovery` | When no open element matches exactly |
 | --- | --- |
-| `.exact` | Ignore the closer and preserve the open elements; the previous behavior |
-| `.one_edit` (default) | Compare only the current element, allowing one insertion, deletion, substitution or adjacent transposition; both names must have at least 4 code units |
-| `.two_edits` | Include the one-edit behavior above, and allow two edits when both names have at least 8 code units |
+| `.exact` | Ignore the closing tag and keep everything open |
+| `.one_edit` (default) | Treat it as closing the current element if the names differ by one edit: one character added, removed or changed, or two neighbours swapped. Both names need at least 4 characters. |
+| `.two_edits` | As above, and also allow two edits when both names have at least 8 characters |
 
 ```zig
 const Custom = markup.Profile(.{ .policy = .{
@@ -273,42 +277,40 @@ const Custom = markup.Profile(.{ .policy = .{
 } });
 ```
 
-The leaf is also runtime-overridable when runtime policies are compiled in.
-`.fail_fast` stops at the mismatch without searching or guessing. Exact ancestors
-always win; fuzzy matching never chooses an ancestor. Graphviz comparisons fold
-ASCII case, while structural comparisons do not. Edits count original code units:
-UTF-8 bytes, UTF-16 units or UTF-32 units, not Unicode scalars or graphemes. There
-is no normalization or Unicode case folding. Non-ASCII guesses can therefore
-differ between encodings even when the displayed names are the same.
+**Why it helps.** In `<config><server></servr></config>`, the default reports
+one mismatch, for `</servr>`. Without the guess, `<server>` would stay open and
+`</config>` would be reported too.
 
-A matched guess pops only the current parsing frame. The original mismatch,
-invalid outcome and frozen retained prefix remain unchanged; no synthetic closer,
-replacement source, fix offer or accepted-deviation count is produced. For
-`<config><server></servr></config>`, the default reports one mismatch instead of
-another mismatch on `</config>`. This is a heuristic, not proof of intent: a stray
-`</item>` inside `<items>` can be mistaken for a typo, making a later correct
-`</items>` unexpected. Use `.exact` when that tradeoff is unwanted. No lookahead
-or partial-tree healing is performed.
+**What it doesn't do.**
 
-One-edit matching is a resumable linear comparison. Two-edit matching trims
-matching affixes and uses restricted Damerau/optimal-string-alignment distance
-with three five-cell rows, counting adjacent transpositions as one edit. An
-already-edited substring cannot be edited again; this is not unrestricted
-Damerau distance. Both paths are allocation-free. Disabled fixed policies exclude
-the corresponding matcher; fixed fail-fast excludes all recovery state.
+- It only changes how parsing carries on, to avoid follow-on errors. The
+  mismatch is still reported, the result is still invalid, and a
+  [partial document](#partial-results-for-editors) is unchanged. No closing
+  tag is invented, nothing is rewritten, no fix is suggested, and the guess
+  isn't counted as an accepted deviation.
+- It only guesses for the current element, never one further out, and an exact
+  match always wins. It doesn't look ahead.
+- With `on_error = .fail_fast`, parsing stops at the mismatch without guessing.
+- It can guess wrong. A stray `</item>` inside `<items>` can be taken for a
+  typo, and then a later, correct `</items>` is reported as unexpected. Use
+  `.exact` if you'd rather not guess.
 
-Exact and typo searches share a total recovery allowance of **one credit per source
-code unit**, including any leading BOM units. The encoding reader supplies that
-count: physical bytes for UTF-8/ASCII, bytes divided by two for UTF-16 and by four
-for UTF-32. Each ancestor name-length probe, one-edit/affix comparison, or bounded
-two-edit row (at most five cells) spends one credit. This is a bounded-work unit,
-not a uniform CPU cost, character count or diagnostic limit; it is
-not replenished after an error or pause. Exhaustion returns
-`resource_limit.resource = .recovery_work`, with `limit` in credits and
-`completion = .incomplete`. UTF-8 accounting is unchanged. Native code-unit
-accounting is unreleased; searches never acquire a fresh allowance for a typo.
-The allowance is independent of session
-`advance(budget)` and cancellation checks.
+**How names are compared.** Graphviz mode ignores ASCII case; structural mode
+doesn't. "Characters" here means code units: bytes in UTF-8, 16-bit units in
+UTF-16, 32-bit units in UTF-32. So a guess involving non-ASCII names can differ
+between encodings, even when the names look the same. There is no Unicode
+normalisation or case folding.
+
+**Bounded work.** All searching after mismatches, exact or guessed, shares one
+allowance: one credit per code unit of the source, including any byte order
+mark. Each search step spends one credit, and the allowance is never refilled.
+If it runs out, parsing ends with `resource_limit`, resource `.recovery_work`
+(with `limit` in credits) and incomplete completion, so hostile input can't make
+the search slow. The allowance is separate from session budgets and cancel
+checks. With fixed settings, an unused matcher is left out of the program, and
+`.fail_fast` leaves out all of this.
+
+The setting can also be changed per call when run-time settings are on.
 
 | `parsed.outcome` | Meaning |
 | --- | --- |
@@ -326,64 +328,9 @@ The allowance is independent of session
 
 > **Unreleased.** Not in 0.4.0.
 
-An editor can use the recognized part of a document for an outline while the
-user is still typing. Enable partial retention to keep that part after a parse
-failure; by default, failures return no document:
-
-```zig
-const Editor = markup.Profile(.{ .policy = .{
-    .mode = .structural,
-    .retention = .{ .partial = true },
-} });
-var parsed = Editor.parseBorrowed(allocator, "<root><done/><child x='unfinished", bag.sink(), .{});
-defer parsed.deinit();
-if (parsed.document) |document| {
-    _ = document.state; // .partial here; the Document type is unchanged
-    var roots = document.roots();
-    while (roots.next()) |node| {
-        _ = node.state(); // .partial for this unfinished <root>
-        _ = node.children(); // <done/> is available inside unfinished <root>
-        _ = node.attributes(); // completed attributes are available too
-        _ = node.subtreeComplete(); // false: this element isn't fully represented
-        _ = node.headerComplete(); // true for <root>; null for text/comments/CDATA
-    }
-    _ = document.unrepresented(); // source range not represented by the tree
-}
-```
-
-Use `subtreeComplete()` when you need an element and all its children to be
-complete. `scopeComplete()` checks just the current scope. They currently agree,
-because an unfinished child also leaves its ancestors unfinished. Neither says
-the markup is valid. `.not_processed` is reserved and isn't returned yet.
-
-**Only the prefix before the first failure is retained.** `.collect` can keep
-finding errors, but it doesn't add later nodes to the tree. A finished scan
-(`parsed.completion == .complete`) can therefore still have a partial document.
-Retained containers are never completed with guessed or repaired delimiters;
-typo recovery changes diagnostic traversal only, not this prefix.
-
-Use `unrepresented()` to find the remaining raw text, not as a place to restart
-parsing. It may include whitespace already scanned, or be empty when only a
-closing tag is missing at EOF. Use node views for traversal; see the
-[raw-record rules](#building-a-document-yourself) if you access the pools directly.
-
-This works with both scanners, fixed or growing storage, sessions, workspaces
-and runtime policies. Cancellation, unsupported input or exhausted limits/storage
-can leave a prefix too. A stop before parsing begins returns no document.
-Outcomes and diagnostics don't change, and both presets turn retention off.
-Keep the source and storage alive under the usual [ownership rules](MEMORY.md#two-rules);
-[memory costs](PERFORMANCE.md#type-sizes) are documented separately.
-
-`validate[In]` checks the retained tree and reports missing coverage or the reason
-it stopped. `parseAndValidate` may also check later source regions after a
-recoverable syntax error; `documentValid()` remains false for a partial document.
-It does not start validation after an operational stop or fail-fast rejection.
-
-DOT also offers [prefix retention](READING_DOCUMENTS.md#partial-results-for-editors).
-Automatic label checking can [retain child trees](LABELS.md#retaining-label-trees-for-editors)
-separately from retaining the outer DOT prefix (both unreleased).
-
-See [markup_partial.zig](../examples/markup_partial.zig) for a runnable example.
+With `retention.partial`, a failed parse can still return the part recognised
+before the first error, for editors that need an outline while someone types.
+See [Using it in an editor](EDITORS.md#keep-the-finished-part-of-markup).
 
 ## Checking a fragment that failed to parse
 
@@ -551,6 +498,7 @@ Every setting:
 | `limits.max_attributes` | no limit | Attributes in total |
 | `limits.max_nesting` | no limit | Deepest element nesting (top-level elements are depth 1) |
 | `on_error` | `.collect` | Keep looking after an error, or `.fail_fast` |
+| `closing_tag_recovery` | `.one_edit` (unreleased) | `.exact`, `.one_edit` or `.two_edits`. See [closing-tag typo recovery](#closing-tag-typo-recovery). |
 | `retention.partial` | `false` | Keep the part recognised before a failure (unreleased). Doesn't change error handling or what is accepted. See [partial results](#partial-results-for-editors). |
 | `syntax.malformed_reference` | `.reject` | `.warn` or `.accept` treat a broken `&` reference as plain text |
 | `scanner` | `.scalar` | `.block` reads with vector instructions; same results |
@@ -607,7 +555,8 @@ Run them with `zig build examples`. Each program is also installed in
 
 - HTML-style tags that never close, like `<br>`
 - Other name rules or reference lists, or your own
-- Resumable public UTF-16/32 sessions and native boxed source excerpts. Native
-  one-shot input is available in development; see [source encodings](ENCODINGS.md).
+- Step-by-step sessions for UTF-16 and UTF-32 input, and source excerpts for
+  them in boxed output. One-call parsing of those encodings is available
+  (unreleased); see [source encodings](ENCODINGS.md).
 
 See the [roadmap](ROADMAP.md#markup).

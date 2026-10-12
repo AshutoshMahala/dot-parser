@@ -6,71 +6,6 @@ the file says, in the order it says it. This page shows how to read each part.
 All the reading functions are cheap and allocate nothing. They return small
 values that point into your source text.
 
-## Partial results for editors
-
-> **Unreleased.** Default parsing still returns no document on failure.
-
-To keep a safe prefix of an unfinished DOT file:
-
-```zig
-const Editor = dot.Profile(.{ .policy = .{
-    .retention = .{ .partial = true },
-} });
-var result = Editor.parseAndValidate(allocator, source, bag.sink(), .{});
-defer result.deinit(allocator);
-if (result.document) |*document| {
-    _ = document.state;             // .complete or .partial
-    _ = document.scopeComplete();   // DOT representation only, not validity
-    _ = document.unrepresented();   // remaining raw source range, or null
-    var scopes = document.subgraphs();
-    while (scopes.next()) |scope| {
-        _ = scope.state();
-        _ = scope.sourceRange();
-    }
-}
-```
-
-The same `Document` type and traversal functions work for both states. Completed
-statements and opened subgraphs remain available; unfinished subgraphs are
-marked partial. A pending ordinary statement is not published until its event
-is complete. Raw pools can contain already-read attributes, references or links
-whose unfinished owner is not yet a statement; use statement and scope views
-for an outline. Raw order slots can also refer to staged scoped-edge owners or
-an unclassified left subgraph (`.subgraph` with the reserved maximum u32 index).
-`statement(id)` returns null for those, and iterators/counts skip them. A
-standalone subgraph statement is published only when lookahead confirms it;
-an endpoint is never temporarily shown as a standalone statement. Staged edges'
-`complete()` is false until the final statement event attaches its attributes.
-Opened endpoint subgraphs and their completed child statements remain available.
-An unfinished raw subgraph has `subtree_end == 0`; views supply
-safe prefix bounds without walking the stack at failure time.
-
-Retention freezes at the first failure. `.collect` may continue diagnostics,
-but later recovered statements are not added. Unterminated quotes/comments leave
-the ambiguous tail raw; no closing delimiter or name is guessed. The returned
-tail is not a safe restart point, and can be empty at EOF when a closer is
-missing. A failure before a supported graph header has begun returns no document.
-
-This works with fixed/growing storage, both scanners, sessions, cancellation,
-limits and runtime policy. Results become readable only when the operation is
-terminal, not while a session is paused. Runtime overrides use the same
-`retention.partial` leaf. `measure` still returns counts only on success.
-
-Completeness does not imply validity. A fully represented graph can fail
-validation; a partial graph is never `documentValid()`. Direct validation checks
-retained facts, including known operators of staged scoped edges before
-`retained_end`, and returns `coverage = .{ .incomplete = document.retained_end }`.
-This does not publish an unfinished statement or validate its unrepresented
-suffix/attributes.
-Automatic validation does that after a `.collect` syntax failure, but never
-after an operational stop or `.fail_fast` rejection. It does not validate later
-unretained DOT statements. See [memory costs](MEMORY.md#partial-result-storage)
-and [retaining composed label trees](LABELS.md#retaining-label-trees-for-editors).
-
-With `.graph.treated_as = .auto`, `effectiveKind` is `null` for a partial graph
-until a retained directed edge establishes `.generic`. A complete graph with no
-directed edge is `.undigraph`. Undetermined kinds do not trigger restrictions.
-
 ## The document header
 
 | Field | Meaning |
@@ -309,8 +244,9 @@ if (parsed.document) |document| {
 `lenient` presets turn retention off. `parseAndValidate` keeps comments when
 asked, but doesn't check them.
 
-**When parsing fails**, there is no document by default. With `retention.partial`
-also enabled, complete comments in the retained prefix remain available.
+**When parsing fails**, there is no document by default. With
+`retention.partial` also on, complete comments in the
+[finished part](EDITORS.md#keep-the-finished-part-of-a-dot-file) are kept.
 An unclosed `/*` is still a syntax error.
 
 [Comment storage](MEMORY.md#comment-storage) covers sizing.
@@ -331,6 +267,13 @@ comments.
   skipping the comment tokens gives exactly the ordinary token list.
 - This doesn't return whitespace or separators, so you can't rebuild the file
   exactly from the tokens.
+
+## Unfinished files
+
+> **Unreleased.** By default, a failed parse returns no document.
+
+Editors can keep the finished part of a DOT file after an error. See
+[Using it in an editor](EDITORS.md#keep-the-finished-part-of-a-dot-file).
 
 ## Lifetimes
 

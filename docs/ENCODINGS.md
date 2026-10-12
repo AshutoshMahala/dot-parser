@@ -2,11 +2,18 @@
 
 > **Unreleased.** Not in 0.4.0.
 
-Encoding applies to the **whole input buffer**, not just strings or non-ASCII
-characters. Both parsers keep the original bytes; spans, limits and byte columns
-refer to those bytes. Parsing does not transcode the source or allocate a map.
+By default both parsers read UTF-8, or plain bytes. Some tools, especially on
+Windows, save files as UTF-16 or UTF-32. These settings let the parsers read
+such files directly, without converting them first.
 
-## Compile the readers you need
+Nothing is converted. The parsers read your original bytes, and every position,
+length, limit and column refers to those bytes. No copy of the source and no
+position map is made.
+
+## Choose the readers you need
+
+Readers are chosen at compile time with `source_encodings`, so readers you
+don't list are left out of the program:
 
 ```zig
 const Parser = dot.Profile(.{
@@ -17,34 +24,32 @@ var result = try Parser.parseAndValidate(allocator, source, bag.sink(), .{});
 defer result.deinit(allocator);
 ```
 
-The same option is available on `markup.Profile`.
+`markup.Profile` takes the same option.
 
-| Selection | Meaning |
+| `source_encodings` | Reads |
 | --- | --- |
-| Omitted | Existing UTF-8/raw-byte path |
-| `&.{}` or `&.{.ascii}` | ASCII-only, including strings, comments and markup bodies |
-| `&.{.utf8}` | Existing UTF-8/raw-byte path |
-| `&.{ .utf8, .utf16, .utf32 }` | All three families, both byte orders for UTF-16/32 |
-| `&.{.utf32}` | UTF-32 only; no implicit UTF-8 fallback |
+| Left out | UTF-8 or plain bytes, as before |
+| `&.{}` or `&.{.ascii}` | ASCII only, everywhere, including strings, comments and markup text |
+| `&.{.utf8}` | UTF-8 or plain bytes, as before |
+| `&.{ .utf8, .utf16, .utf32 }` | All three; UTF-16 and UTF-32 in either byte order |
+| `&.{.utf32}` | UTF-32 only; UTF-8 isn't tried |
 
-Duplicate selections are harmless. This is a compile-time capability, **not** a
-runtime policy leaf. Runtime calls can choose an enabled reader, not add one.
-The UTF-8-only profile retains its existing function signatures and execution
-path. Other selections add an input-error union and `.encoding` call option.
+- Listing a reader twice is harmless.
+- This is a compile-time choice, not a run-time setting. A call can pick among
+  the compiled readers, but can't add one.
+- A UTF-8-only profile keeps its usual functions and behaviour. With any other
+  choice, functions can also return encoding errors, and calls accept an
+  `.encoding` option.
 
-## BOM or explicit byte order
+## How the reader is chosen for a file
 
-An explicit `.encoding` is authoritative. Only a BOM matching that reader is
-skipped as framing; bytes resembling another encoding's BOM remain content in
-the selected reader. The bytes remain in the borrowed source and occupy their
-original offsets. For example, explicit UTF-16LE treats `ff fe 00 00` as its
-two-byte BOM followed by NUL, not a UTF-32LE BOM. Grammar NUL rules still apply.
-
-Without explicit selection, a leading BOM selects UTF-8, UTF-16LE/BE or
-UTF-32LE/BE. UTF-32 signatures are tested before UTF-16 signatures. A BOM for a
-compiled-out reader returns `UnsupportedEncoding`, without trying a shorter BOM.
-
-Without a BOM, use an explicit encoding for native input:
+| Checked in this order | Reader used |
+| --- | --- |
+| You pass `.encoding` | That one. Only its own byte order mark is skipped. |
+| The file starts with a byte order mark | The encoding the mark names. Longer marks are checked first, so a UTF-32 mark beats UTF-16. |
+| UTF-8 is compiled in | UTF-8 |
+| ASCII is compiled in | ASCII |
+| Otherwise | `error.EncodingRequired`: pass `.encoding` with the encoding and byte order |
 
 ```zig
 var parsed = try Parser.parseBorrowed(allocator, source, bag.sink(), .{
@@ -53,40 +58,48 @@ var parsed = try Parser.parseBorrowed(allocator, source, bag.sink(), .{
 defer parsed.deinit(allocator);
 ```
 
-Other choices are `.ascii`, `.utf8`, `.utf16le`, `.utf32le` and `.utf32be`.
-There is no host-endian guess. Without either selection, UTF-8 is preferred if
-enabled, otherwise ASCII if enabled; a native-only profile returns
-`error.EncodingRequired`. No NUL-pattern heuristic or retry with another reader
-is performed. Explicit selection cannot enable a compiled-out reader.
+The choices are `.ascii`, `.utf8`, `.utf16le`, `.utf16be`, `.utf32le` and
+`.utf32be`.
 
-| Selection order | Result |
+- **A passed `.encoding` always wins.** A byte order mark for a different
+  encoding is then just content. With `.utf16le`, for example, the bytes
+  `ff fe 00 00` are a UTF-16 byte order mark followed by a NUL character, not a
+  UTF-32 mark. The usual rules about NUL still apply.
+- A skipped byte order mark stays in your source buffer, at its position.
+- **No guessing.** Without a mark or `.encoding`, the library doesn't assume
+  your machine's byte order, doesn't look for patterns of zero bytes, and never
+  retries with another reader. `.encoding` can't turn on a reader that wasn't
+  compiled in.
+- A byte order mark for a reader that isn't compiled in returns
+  `error.UnsupportedEncoding`; a shorter matching mark isn't tried instead.
+
+## Checks before parsing
+
+UTF-16 and UTF-32 input must be complete and valid: no cut-off code units, no
+unpaired UTF-16 surrogates, and no invalid UTF-32 values. This is checked in one
+pass before parsing, without allocating:
+
+| Error | Meaning |
 | --- | --- |
-| Explicit `.encoding` | Use that reader; recognize only its matching BOM |
-| Otherwise, leading BOM | Use the longest matching signature |
-| Otherwise, UTF-8 compiled | Use the existing UTF-8/raw-byte reader |
-| Otherwise, ASCII compiled | Use the ASCII reader |
-| Otherwise | `EncodingRequired`; provide native encoding and byte order |
+| `error.TruncatedCodeUnit` | The input ends partway through a code unit |
+| `error.InvalidEncoding` | The input contains invalid UTF-16 or UTF-32 |
+| `error.UnsupportedEncoding` | The input needs a reader that isn't compiled in |
+| `error.Cancelled` | Cancellation is on, and was requested during this check |
 
-Native input must contain complete, valid code units: no unpaired UTF-16
-surrogates or invalid UTF-32 scalars. The initial one-shot API checks this in an
-allocation-free pass before grammar processing. Bad framing/content returns
-`error.TruncatedCodeUnit` or `error.InvalidEncoding`; a compiled-out reader
-returns `error.UnsupportedEncoding`. These admission errors precede tree
-creation and diagnostic emission, so they do not publish a partial tree.
-If cancellation is enabled, admission polls between bounded byte runs and returns
-`error.Cancelled` when stopped before grammar processing begins.
+These come before any diagnostic or document, so they never leave a partial
+document. With cancellation on, the check asks your cancel callback between
+chunks of bytes. The check itself can't be split into
+[small steps](EXECUTION.md).
 
-UTF-8 keeps the existing raw-byte contract. `validation.invalid_utf8` remains
-optional and defaults to off; enabling native readers does not make UTF-8
-validation mandatory. That check is `.not_run` for native markup input rather
-than pretending native bytes were checked as UTF-8.
+UTF-8 is unchanged: bytes are accepted as they are, and `validation.invalid_utf8`
+stays optional and off by default. Turning on other readers doesn't make UTF-8
+checking mandatory. For UTF-16 or UTF-32 markup, that check reports `.not_run`
+rather than claiming the bytes were checked as UTF-8.
 
-Markup's recovery-search allowance counts source code units, not physical
-bytes: one credit per UTF-8/ASCII byte, UTF-16 unit or UTF-32 unit. Ancestor
-probes and name code-unit comparisons each spend one credit. This preserves
-UTF-8 behavior without giving wider encodings extra search work for equivalent
-ASCII markup. It does not change physical-byte spans/limits, session stepping
-or cancellation polling; see [parse failures](MARKUP.md#when-parsing-fails).
+Markup's [closing-tag search allowance](MARKUP.md#closing-tag-typo-recovery)
+counts code units, not bytes, so a UTF-16 or UTF-32 file gets the same search
+work as the same markup in UTF-8. Positions, limits, session steps and cancel
+checks still use bytes.
 
 ## DOT and markup together
 
@@ -99,41 +112,32 @@ const Parser = dot.Profile(.{
 });
 ```
 
-Explicit outer/inner selections form a union: this composition accepts UTF-16
-and UTF-32. An omitted inner setting inherits the outer selection when bound;
-the same inner profile defaults to UTF-8 when used standalone. The actual reader
-is selected once for DOT and inherited by its markup operands, in proactive and
-delayed processing. A single buffer cannot mix encodings merely because several
-readers were compiled.
-Only the outer buffer's BOM is framing: a leading U+FEFF inside a bound label is
-content, not a second BOM to discard.
+- Readers listed on DOT and on its label checker are combined, so this profile
+  reads UTF-16 and UTF-32.
+- A label checker without its own list uses DOT's when bound. Used on its own,
+  the same markup profile reads UTF-8.
+- The reader is chosen once, for the DOT file, and the labels use the same one,
+  both when every label is checked while parsing and when chosen labels are
+  checked later. One file can't mix encodings.
+- Only the file's own byte order mark is skipped. A U+FEFF at the start of a
+  label is content.
 
-Custom processors participating in native composition must provide
-`withSourceEncodings(capabilities)` and `forSourceEncoding(actual)` and honor
-that binding. The returned worker can be a leaf: it need not expose these factory
-hooks itself. Workers must share their diagnostic, diagnostic-sink and owning
-result types across encodings so a composed result has one statically known type.
-No runtime processor replacement is introduced.
+[Your own label checker](CUSTOM_PROCESSORS.md#supporting-other-source-encodings)
+needs two extra functions to take part.
 
-`forSourceEncoding` is a binding-only hook, not a standalone parser factory.
-Its prepared/workspace contract consumes fragments of an already admitted outer
-buffer and does not repeat admission or reinterpret inner BOM-like bytes. Use
-`markup.Profile(.{ .source_encodings = ... })` for independent parsing, bounds
-checks and encoding admission. The binding hook does not expose standalone parse
-entry points or sessions.
+## Reading results and showing errors
 
-## Reading and showing results
+- `document.source_info` says which reader was used, whether there was a byte
+  order mark, and how the reader was chosen: `.default`, `.explicit`, `.bom` or
+  `.inherited`.
+- Names, values, comments and markup `content()` still return the original
+  encoded bytes.
+- `document.commentBody(comment)` removes DOT comment markers correctly in any
+  encoding. `comment.body(source)` is only for UTF-8 or plain bytes.
+- `document.decodeIdentifier` and `writeIdentifier` turn UTF-16 and UTF-32
+  names into UTF-8, in your buffer or writer. UTF-8 decoding works as before.
 
-`document.source_info` records the actual reader, BOM presence and selection
-provenance (`.default`, `.explicit`, `.bom`, or `.inherited`). Raw names, values,
-comments and markup `content()` still return original encoded bytes.
-Use `document.commentBody(comment)` to remove DOT comment delimiters correctly
-for any source encoding (`comment.body(source)` remains the UTF-8/raw-byte helper).
-`Document.decodeIdentifier` / `writeIdentifier` explicitly produce UTF-8 for
-native DOT spellings, using caller storage or a writer; UTF-8/raw-byte decoding
-retains its previous behavior.
-
-Use the encoding when resolving or rendering a diagnostic:
+Pass the encoding when you look up a position or print a diagnostic:
 
 ```zig
 const at = dot.location.locateEncoded(source, finding.span.start,
@@ -144,23 +148,26 @@ try dot.console.render(finding, .{
 }, writer);
 ```
 
-Lines recognize encoded LF/CRLF/CR; columns count **physical bytes**, not UTF-16
-units or editor character positions. Renderer output is UTF-8. Native inline tag
-names are decoded in bounded stack storage; boxed native diagnostics currently
-use compact location lines instead of source excerpt windows. Suggested edit
-spellings must be encoded in the source encoding before applying them.
+- Lines end at encoded LF, CRLF or CR. Columns count **bytes**, not UTF-16
+  units or the characters an editor shows.
+- The console renderer writes UTF-8. Tag names quoted in a message are decoded
+  in a small fixed buffer.
+- For UTF-16 and UTF-32 files, boxed output currently shows compact location
+  lines instead of source excerpts.
+- Suggested fixes are UTF-8 text. Encode them in the file's encoding before
+  applying them.
 
-## Costs and current boundary
+## Costs and limits
 
-Enabled native grammars add binary code; disabled grammars are not instantiated
-by dispatch. The source buffer itself usually grows compared with UTF-8. Output
-pools, indices and scratch record layouts do not change. One encoding record is
-stored per document, not per token/node/attribute; on the current aarch64 build
-it fits existing Document padding (DOT 256 B, markup 56 B).
-
-The initial native facade supports one-shot borrowed/fixed parsing, measurement,
-validation, markup workspaces and proactive/delayed composition. Native admission
-is a full unmetered pass. Resumable `Session` dispatch and native excerpt windows
-are not yet exposed by these opt-in profiles; UTF-8-only sessions are unchanged.
-The work is not a string processor, normalization facility, encoding detector
-without a BOM, or browser/XML transcoder.
+- Each extra reader adds code to the program; readers you don't list aren't
+  included.
+- UTF-16 and UTF-32 files are usually bigger than the same text in UTF-8.
+- Document buffers, positions and scratch records don't change. The encoding is
+  recorded once per document, in space that was already there: the DOT
+  document stays 256 bytes and the markup document 56 bytes on aarch64.
+- Supported so far: one-call parsing with an allocator or fixed buffers,
+  measuring, validation, markup workspaces, and both ways of checking labels.
+  Step-by-step sessions for UTF-16 and UTF-32 aren't available yet; UTF-8
+  sessions are unchanged.
+- This isn't a string converter, a Unicode normaliser, a way to detect the
+  encoding of files without a byte order mark, or a browser or XML transcoder.

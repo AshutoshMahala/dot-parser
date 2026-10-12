@@ -6,108 +6,54 @@ are marked; no compatibility shims are kept.
 
 ## Unreleased
 
-### Changed
-
-- **Breaking:** markup collecting recovery now defaults to bounded one-edit
-  closing-tag matching after exact ancestor matching fails. Diagnostic sequences
-  and counts can change; `.exact` retains the previous continuation behavior.
-  `closing_tag_recovery` also
-  provides `exact` and `two_edits`, with compile-time/runtime parity and minimum
-  name lengths of four/eight code units. Guesses only guide traversal: the
-  original mismatch, invalid result and frozen prefix remain unchanged. Matchers
-  allocate no heap memory and share the existing code-unit recovery allowance;
-  a two-edit step is a bounded row of at most five cells. No fuzzy ancestor
-  search, lookahead, source repair or suggested typo fix is introduced.
-- Markup recovery's shared ancestor-search allowance counts source code units,
-  preserving UTF-8 behavior and normalizing native UTF-16/32 search work.
-  `.recovery_work` limits report credits, not native source bytes; execution
-  stepping and cancellation polling are unchanged.
-- **Breaking:** explicit `.encoding` is authoritative; only its matching BOM is
-  framing, and `ConflictingBom` is removed from native input-error sets.
-  Autodetection still prefers the longest BOM; BOM-less native-only input needs
-  an explicit reader/byte order, without NUL heuristics or parser retries.
-- **Breaking:** shared `Completeness` adds `.empty`. Composed `state()` returns
-  it when no outer DOT tree was returned, not for a complete zero-statement graph.
-- Collecting compositions allow delayed markup after DOT validation's
-  `.insufficient_scratch`, without changing the unfinished validation report.
-  Fail-fast and diagnostic-sink stops still prevent further work.
-- DOT scope entry and scoped-edge promotion reserve every required pool before
-  changing live syntax. Partial retention no longer snapshots or rolls back
-  those events; runtime policies still support enabling retention per operation.
-- **Breaking:** `Document.effectiveKind` and `Interpretation.effectiveKind`
-  return an optional graph kind. An unfinished `.auto` graph with no retained
-  directed edge has an unknown final kind; validation does not report an
-  undirected-graph restriction from that prefix. Complete graphs remain determined.
-- **Breaking:** DOT validation adds `.unsupported_encoding`; markup validation
-  adds `completion.unsupported_encoding`. Exhaustive outcome switches must handle
-  these cases. UTF-8 validators also accept ASCII-profile documents.
-- Source-encoding binding hooks expose the processor contract, not unchecked
-  standalone parser/session entry points. Typed child options remain compatible
-  between standalone and composed UTF-8 profiles.
-- **Breaking:** console adapters receive source positions in
-  `headline(diagnostic, positions, writer)` so native-encoding wording uses
-  code-unit rather than raw-byte lengths.
-
-- **Breaking:** markup now defaults to `.graphviz`, including root entry points,
-  `Profile(.{})`, the `standard`/`untrusted` presets, and default bound markup
-  processors. Tag matching ignores ASCII case; validation checks Graphviz tag
-  and attribute vocabulary. Select `.mode = .structural` explicitly to retain
-  vocabulary-free validation and byte-exact tag matching. DOT-only passthrough
-  behavior is unchanged.
-
-### Fixed
-
-- Partial DOT validation checks safely retained operators of unfinished scoped
-  edges, without exposing those owners as completed statements. Links beyond
-  the frozen frontier remain unchecked. Unclassified left subgraphs reserve
-  order slots but do not appear as standalone statements until confirmed.
-- Correct markup session sizes in the performance guide and share identifier
-  range checks, encoding widths/reader compatibility and inline clip limits.
+Changes since 0.4.0.
 
 ### Added
 
-- Compile-time `source_encodings`: UTF-8/raw bytes by default, explicit empty
-  selection for ASCII-only, and opt-in native UTF-16/32 one-shot readers. BOM or
-  explicit byte order selects a compiled reader; source bytes, physical offsets
-  and encoding provenance are preserved. Includes standalone and composed markup,
-  bounded native diagnostic text and encoding-aware identifier/comment views.
-  Native public sessions and boxed source excerpts remain unfinished.
-- Partial DOT documents (`retention.partial`, off by default), including scopes,
-  fixed/growing storage, sessions and partial retained-fact validation. Staged
-  attributes, links and comments inside pending statements do not advance the
-  retained frontier. Pending scoped-edge owners remain raw staging records;
-  statement/edge views do not publish them as completed statements.
-- Attached delayed label trees (`retention.markup`, `requestMarkup`,
-  `processPendingMarkup`) and proactive child-tree retention for editors.
-- `requiredValidationScratch` computes exact reusable duplicate-key scratch
-  requirements from retained metadata without allocating or reading source bytes.
-  **Breaking:** `insufficient_scratch.required_attribute_keys` now reports that
-  exact requirement, rather than the entire retained attribute count.
+- **Other source encodings.** `source_encodings` on `dot.Profile` and
+  `markup.Profile` chooses which readers are built in: UTF-8 (the default),
+  ASCII only, UTF-16 and UTF-32. A byte order mark or the `.encoding` call
+  option picks the reader for each file. Files are read without converting
+  them, and positions stay in the original bytes. Step-by-step sessions for
+  UTF-16 and UTF-32 aren't available yet. See
+  [Source encodings](docs/ENCODINGS.md).
+- **Results for editors**, all off by default. See
+  [Using it in an editor](docs/EDITORS.md).
+  - DOT and markup `retention.partial` keep the finished part of a file after
+    an error.
+  - DOT `retention.markup` keeps the tree of each checked label.
+    `requestMarkup` and `processPendingMarkup` check chosen labels later, in
+    the same result.
+  - DOT `retention.comments` keeps comments, with an optional
+    `limits.max_comments`. `lexer.WithComments` returns them as tokens.
+- **Graphviz markup mode**, `.mode = .graphviz`. It checks tag and attribute
+  names against Graphviz's list and matches tags ignoring ASCII case. Where
+  tags may appear and attribute values aren't checked yet.
+- **Closing-tag typo recovery**, `closing_tag_recovery`. A closing tag with a
+  small typo, like `</TABEL>` for `<TABLE>`, still closes its element, so one
+  typo doesn't cause more errors later. The mismatch is still reported, and
+  nothing is rewritten.
+- `dot.requiredValidationScratch(&document)` gives the exact scratch space
+  validation needs for a document.
 
-- Partial markup documents for editors (`retention.partial`, off by default). A
-  failed parse can return the part recognised before the first error, as an
-  ordinary `Document`. The document and each node say whether they are complete,
-  and `unrepresented()` gives the text the tree doesn't cover. Works with both
-  scanners, fixed and growing storage, run-time settings, sessions and
-  workspaces. Validating a partial document reports what it couldn't check, and
-  `documentValid()` is false. Keeping later recovered parts is future work.
-  Node and attribute sizes are unchanged.
+### Changed
 
-- Opt-in DOT comment retention (`retention.comments`) for `//`, `/* ... */`
-  and `#`, with source-ordered kind/span records, borrowed raw/body views,
-  fixed/growing pools, exact sizing and `limits.max_comments`. Standalone
-  `lexer.WithComments` exposes comment tokens without splitting concatenated
-  identifiers. Comments remain passthrough data, not statements or processors;
-  default retention stays off.
-
-- Standalone markup `.mode = .graphviz`: case-insensitive element and per-element
-  attribute vocabulary checks, independent error/warning/off policies, and
-  diagnostics on complete documents or recognizable source scopes. Duplicate
-  attribute checks and opening/closing tag matching in this mode also compare
-  ASCII case-insensitively. Structural mode remains byte-exact. Skipped attributes
-  on unknown elements report incomplete coverage, not successful validation.
-  This is vocabulary coverage only; placement, values, the Graphviz reference
-  catalog and automatic DOT label-context selection remain unfinished.
+- **Breaking:** markup now defaults to `.mode = .graphviz`, including the
+  presets and labels checked from DOT. Set `.mode = .structural` for the 0.4.0
+  behaviour.
+- **Breaking:** markup now defaults to `closing_tag_recovery = .one_edit`, so
+  diagnostics after a mistyped closing tag can change. `.exact` gives the 0.4.0
+  behaviour.
+- **Breaking:** `effectiveKind` returns `?GraphKind`. It is `null` only for an
+  unfinished document whose kind can't be known yet.
+- **Breaking:** DOT validation can return `.unsupported_encoding`, and markup
+  validation `completion.unsupported_encoding`. Exhaustive switches must
+  handle them.
+- **Breaking:** `insufficient_scratch.required_attribute_keys` now gives the
+  exact amount needed, which is usually less than the attribute count it
+  reported before.
+- **Breaking:** for custom processors, `console.Adapter.headline` takes the
+  source positions: `headline(diagnostic, positions, writer)`.
 
 ## 0.4.0 — 2026-10-05
 

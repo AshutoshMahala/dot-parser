@@ -8,10 +8,11 @@ Every operation tells you two things, kept separate on purpose:
    error or a warning, where it is, and often a suggested fix. Diagnostics go
    to a destination you choose, usually a *bag*.
 
-The library never prints or panics on bad input. Grammar and validation findings
-use diagnostics, not Zig errors. Zig errors cover API/configuration failures and
-the opt-in native facade's **Unreleased** [encoding admission checks](ENCODINGS.md#bom-or-explicit-byte-order),
-which run before grammar processing or tree creation.
+The library never prints or panics on bad input. Problems in the text are
+reported as diagnostics, not Zig errors. Zig errors are for mistakes in how the
+library is called or set up and, in unreleased builds, for files whose
+[encoding can't be read](ENCODINGS.md#checks-before-parsing). Those are checked
+before parsing starts.
 
 Both parsers report problems this way, with the same bags, sinks, renderer and
 fixes. The examples here use DOT; for markup, write `markup.` instead of
@@ -48,11 +49,11 @@ So `digraph { a -- b }` parses fine (`result.outcome == .success`), but
 validation rejects it (`result.documentValid() == false`). You still get the
 document in this case, so tools can show or fix the problem.
 
-If parsing fails, there is **no document by default**. Both parsers can keep a
-safe prefix when requested, for editors (unreleased): see
-[partial DOT results](READING_DOCUMENTS.md#partial-results-for-editors) and
-[partial markup results](MARKUP.md#partial-results-for-editors). Document presence
-alone is no longer a success test when retention is enabled.
+If parsing fails, there is **no document by default**. Editors can ask both
+parsers to keep the finished part instead (unreleased); see
+[Using it in an editor](EDITORS.md#keep-the-finished-part-of-a-dot-file). With
+that on, a failed parse can still return a document, so check the outcome or
+`documentValid()`, not whether a document exists.
 
 You can also run the steps on their own: `dot.parseBorrowed` parses, and
 `dot.validate(&document, sink, .{})` validates.
@@ -85,10 +86,11 @@ Results also carry a few counts and flags:
 **An empty bag doesn't mean success.** Some outcomes, like `.cancelled`, have
 no diagnostic. Always check the outcome or `documentValid()`.
 
-For [attached delayed markup](LABELS.md#attach-delayed-results), `result.dot`
-continues to describe the finished DOT stage. Inspect `result.markup.stop`,
-`diagnostic_delivery`, `diagnostic_stop`, and the retained child results for the
-later stage; `result.documentValid()` combines the requested stages.
+When chosen labels are
+[checked later, in the same result](EDITORS.md#check-chosen-labels-later-in-the-same-result)
+(unreleased), `result.dot` still describes only the DOT step. The later check
+reports in `result.markup.stop`, `diagnostic_delivery`, `diagnostic_stop` and
+each label's own result. `result.documentValid()` covers both.
 
 ## DOT validation results
 
@@ -97,19 +99,19 @@ When parsing succeeds, `result.validation` holds the validation result.
 
 | Outcome | Meaning |
 | --- | --- |
-| `.completed` | The retained-facts pass finished. It reports `document_valid`, `violations` (errors) and `warnings`; inspect `coverage` for missing source. |
+| `.completed` | All checks ran. It reports `document_valid`, `violations` (errors) and `warnings`. For an [unfinished document](EDITORS.md#keep-the-finished-part-of-a-dot-file), `coverage` (unreleased) says where the checked part ends. |
 | `.error_stopped` | Stopped at the first error because of `.fail_fast`. |
 | `.diagnostic_stopped` | The diagnostic destination asked to stop, for example because the bag was full. |
 | `.insufficient_scratch` | A check needed a scratch array that was too small, so no checks ran. See [optional checks](POLICIES.md#optional-checks). |
-| `.unsupported_encoding` | **Unreleased.** This validator cannot read the document's source encoding. Validate through a profile with the matching reader. UTF-8 validators also accept ASCII-profile documents. |
+| `.unsupported_encoding` | (unreleased) This validator can't read the document's [encoding](ENCODINGS.md). Validate with a profile that has that reader. A UTF-8 validator can also check documents from an ASCII-only profile. |
 
-Only `.completed` with `document_valid` and complete representation coverage
-makes `documentValid()` true. In every
-other case the document is still available, but it was not fully checked.
+`documentValid()` is true only for `.completed` with `document_valid`, on a
+complete document. In every other case the document is still available, but it
+was not fully checked.
 
-Markup reports the equivalent reader mismatch as
-`completion = .{ .unsupported_encoding = actual }` (**Unreleased**), with
-unknown validity rather than a successful validation claim.
+Markup validation reports the same case as
+`completion = .{ .unsupported_encoding = actual }` (unreleased). Its validity
+is then unknown, never valid.
 
 ## Keep going, or stop at the first error
 
@@ -168,7 +170,8 @@ sinks:
 depends on which step was running:
 
 - **During parsing**, `result.outcome` becomes `.diagnostic_stopped` and there
-  is no document by default; opt-in retention can preserve a partial prefix.
+  is no document, unless you asked to
+  [keep the finished part](EDITORS.md#keep-the-finished-part-of-a-dot-file).
 - **During validation**, parsing has already succeeded, so `result.outcome`
   stays `.success` and the document is available. The stop shows up in
   `result.validation.?.outcome`, which is `.diagnostic_stopped`.
@@ -347,7 +350,7 @@ Everything above applies to the markup parser too, with these differences:
 - **Partial results (unreleased).** With `retention.partial` on, a failed parse
   can still return the part it recognised. The outcome still reports the
   failure; check `document.state` to tell a partial document from a complete
-  one. See [partial results](MARKUP.md#partial-results-for-editors).
+  one. See [partial results](EDITORS.md#keep-the-finished-part-of-markup).
 - **Names.** Use `markup.GrowableDiagnosticBag`, `markup.FixedDiagnosticBag`,
   `markup.DiagnosticSink` and `markup.console`.
 - **Outcomes.** Markup parse outcomes have their own names, such as

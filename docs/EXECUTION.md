@@ -121,8 +121,8 @@ A cancelled parse ends with `outcome == .cancelled`, no document, and no
 diagnostic. If the parse had already finished, a late cancel doesn't replace
 its result.
 
-With [DOT](READING_DOCUMENTS.md#partial-results-for-editors) or
-[markup partial results](MARKUP.md#partial-results-for-editors) turned on
+With [DOT](EDITORS.md#keep-the-finished-part-of-a-dot-file) or
+[markup partial results](EDITORS.md#keep-the-finished-part-of-markup) turned on
 (unreleased), a cancelled parse can instead return the part recognised before
 the cancel. Keeping it costs no extra scanning or allocation.
 
@@ -142,9 +142,10 @@ inside the library. If another thread sets your flag, make it an atomic.
 - Call `deinit()` when you abandon a session. It never frees your buffers.
 - `session.reset(source, sink, options)` starts a new parse in the same
   buffers. Documents from the earlier parse become invalid.
-- After a terminal result publishes a document, `session.validate(sink, .{})`
-  validates it. A partial document reports incomplete representation coverage;
-  validation is not metered.
+- Once the session has finished with a document, `session.validate(sink, .{})`
+  validates it. Validation doesn't use credits. For an
+  [unfinished document](EDITORS.md#keep-the-finished-part-of-a-dot-file)
+  (unreleased), it also reports that part of the file wasn't checked.
 
 ## Choosing the session type
 

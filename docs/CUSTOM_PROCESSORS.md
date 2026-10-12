@@ -32,8 +32,9 @@ one bag for DOT and your diagnostics, `result.dot`, `result.markup`, and
 
 Binding your processor turns checking on: DOT's `markup` setting defaults to
 `.process`. If a caller sets `markup = .passthrough` or `.none`, DOT doesn't run
-your processor during parsing. With `.passthrough` and child retention, explicit
-[attached delayed processing](LABELS.md#attach-delayed-results) can run it later.
+your processor during parsing. With `.passthrough` and `retention.markup`
+(unreleased), DOT can still run it later on
+[labels you choose](EDITORS.md#check-chosen-labels-later-in-the-same-result).
 See [turning checking on or off](LABELS.md#turning-checking-on-or-off).
 Your processor's own settings don't need a `mode` field; that is just how the
 built-in markup parser describes what it checks.
@@ -77,27 +78,60 @@ The compiler checks that your processor type declares all of these:
    next value only after you return.
 4. **Never turn unsupported input into success.** Reporting it quietly is fine;
    treating it as checked is not.
-5. **Match the selected ownership path.** Workspace results only need to stay
-   valid until the next call or workspace `deinit()`. Optional owned results
-   must instead stay valid independently until their own `deinit()`.
+5. **Keep results alive as long as promised.** A workspace result only needs
+   to stay valid until the next call or the workspace's `deinit()`. An
+   [owned result](#optional-owned-results) must stay valid until its own
+   `deinit()`.
 
 ### Optional owned results
 
-> **Unreleased.** Required for DOT's `retention.markup`, including attached
-> delayed processing; workspace-only processors remain supported without it.
+> **Unreleased.** Not in 0.4.0. Only needed for DOT's `retention.markup`, which
+> [keeps label trees](EDITORS.md#keep-the-label-trees-from-a-dot-file) and
+> checks chosen labels later. Processors without it work as before.
 
-Expose `CheckResult` and
-`Prepared.parseAndValidate(allocator, fragment, sink, resources) InputError!CheckResult`.
-The result has the same error/stop members as the workspace result plus
-`deinit()` (without an allocator argument). It owns independent buffers but may
-borrow the unchanged source. DOT transfers this ownership into its result and
-deinitializes each child exactly once. Do not return workspace-backed views
-through this path. Source-coordinate and sink-stop rules are unchanged.
+To let DOT keep each label's result, also declare:
 
-An optional `subtreeComplete()` reports representation independently of validity.
-Without it, composition conservatively uses `documentValid()` for completeness.
-Delayed processing calls `prepare` again with its own per-call options, before
-starting the batch; it never swaps the compile-time-bound processor.
+| Declaration | Requirement |
+| --- | --- |
+| `CheckResult` | A result that owns its buffers. Same members as `Result`, plus `deinit()` with no arguments. It may point into the unchanged source. |
+| `Prepared.parseAndValidate(allocator, fragment, sink, resources)` | Checks one value and returns `InputError!CheckResult`. Don't return views into a workspace from here. |
+| `CheckResult.subtreeComplete()` | Optional. Whether the whole value was parsed into the tree, whether or not it is valid. Without it, DOT counts a value as complete only when `documentValid()` is true. |
+
+- DOT takes ownership of each `CheckResult` and calls its `deinit()` exactly
+  once.
+- The rules above still apply: report in original positions, and respect the
+  sink.
+- When checking chosen labels later, DOT calls `prepare` again with that call's
+  options before it starts. It never swaps the processor bound at compile time.
+
+### Supporting other source encodings
+
+> **Unreleased.** Not in 0.4.0. Only needed if the DOT profile reads
+> [UTF-16 or UTF-32](ENCODINGS.md).
+
+A processor that only declares the items above works with UTF-8 DOT files. To
+check labels in other encodings, it also declares two functions that return
+types:
+
+| Declaration | Requirement |
+| --- | --- |
+| `withSourceEncodings(capabilities)` | Optional. Returns a version of your processor for the readers the DOT profile compiled in. |
+| `forSourceEncoding(actual)` | Returns the processor that reads labels in one encoding. DOT also asks for the `.utf8` one. |
+
+- DOT picks the encoding once for the file and uses the matching processor for
+  every label. Nothing is swapped at run time.
+- The processor for each encoding must use the same `Diagnostic`,
+  `DiagnosticSink` and `CheckResult` types, so the DOT result has one fixed
+  type.
+- The returned processors don't need these two functions themselves.
+- These functions only serve labels inside a DOT file. DOT has already checked
+  the file's encoding, and the file's byte order mark is never part of a label.
+  Don't check the encoding again, and treat a byte order mark at the start of a
+  label as content. For parsing markup on its own, use
+  `markup.Profile(.{ .source_encodings = ... })`.
+
+Without `forSourceEncoding`, a DOT profile that reads anything other than UTF-8
+fails to compile.
 
 ## A starting point
 

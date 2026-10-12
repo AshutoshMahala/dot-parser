@@ -13,8 +13,9 @@ and can change. The linked guides describe the implemented contracts.
   parsing starts.
 - **Validation in small steps**, and validation that can be cancelled.
 - **A ready-made "untrusted input" preset** for DOT, like the one markup has.
-- **Resumable UTF-16/32 input and native source excerpts.** The first native
-  one-shot slice is implemented but unreleased; see [encodings](#encodings).
+- **Step-by-step parsing of UTF-16 and UTF-32**, and source excerpts for them
+  in boxed output. One-call parsing is done but unreleased; see
+  [encodings](#encodings).
 - **A public event or logging interface.** The events the parser produces are
   internal for now.
 
@@ -45,10 +46,10 @@ other's rules.
 - **A built-in string processor** for checking quoted values inside markup.
   Today you can prepare its settings with `PolicySet` and keep positions with
   `fragment.child`, but your code must run it.
-- **More of a partial document.** Unreleased DOT and markup retain safe prefixes,
-  and composition can retain independently complete/partial child results.
-  Still to do: keeping later safely recovered regions with explicit gaps, and
-  per-scope pending-work maps for resumable nested processing.
+- **More of a partial document.** Unreleased DOT and markup keep the finished
+  part before the first error, and DOT can keep each label's tree. Still to do:
+  keeping later parts that recovery finds, with the gaps marked, and letting
+  label checks inside a DOT file pause and resume.
 
 ## Checking labels inside DOT
 
@@ -60,8 +61,10 @@ other's rules.
 
 ## Encodings
 
-Native one-shot UTF-16/32 input is implemented but **Unreleased**; see
-[source encodings](ENCODINGS.md). It preserves original bytes, encoding, byte
-order, BOM provenance and physical offsets without transcoding or a source map.
-Remaining work is resumable public native sessions, metered admission and boxed
-native source excerpts. These follow-ups are not available yet.
+One-call parsing of UTF-16 and UTF-32 is done but unreleased; see
+[source encodings](ENCODINGS.md). It reads the original bytes without
+converting them. Still to do:
+
+- step-by-step sessions for these encodings
+- splitting the encoding check into small steps, so it can share a budget
+- source excerpts for them in boxed output

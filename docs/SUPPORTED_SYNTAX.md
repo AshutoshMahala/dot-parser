@@ -26,16 +26,16 @@ few places where it differs from Graphviz on purpose are listed
 | Optional semicolons | `a -> b b -> c` | Supported, as in Graphviz |
 | Comments | `//`, `/* */`, `#` | Supported, skipped |
 | HTML-like value | `label=<<b>hi</b>>` | Supported, kept as written. See [checking HTML-like labels](LABELS.md). |
-| Leading byte order mark | UTF-8 BOM; **Unreleased:** opt-in UTF-16/32 | Skipped without removing source bytes. See [source encodings](ENCODINGS.md). |
+| Leading byte order mark | UTF-8; UTF-16 and UTF-32 when turned on (unreleased) | Skipped, but left in your source buffer. See [source encodings](ENCODINGS.md). |
 | Empty statement | `a;;` | Rejected by default. [Lenient](POLICIES.md#lenient-syntax) accepts it. |
 | Long operator | `a --> b`, `a --- b` | Rejected by default. Lenient reads it as `->` / `--`. |
 | Lone dash | `a - b` | Rejected by default. Lenient reads it from the graph kind. |
 
 ## Names
 
-This page describes the default UTF-8/raw-byte path. Opt-in native UTF-16/32
-readers recognize the same grammar using code units and retain original byte
-spans; see [source encodings](ENCODINGS.md).
+This page describes UTF-8 input, the default. UTF-16 and UTF-32 input
+(unreleased) follows the same grammar, and positions still count bytes of the
+original file; see [source encodings](ENCODINGS.md).
 
 DOT calls names *IDs*. Every form below works anywhere a name can go: graph
 and subgraph names, nodes, both parts of a port, and attribute keys and values.
