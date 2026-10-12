@@ -22,7 +22,7 @@ decision before becoming implementation work.
 | Bounded validation | Credit accounting, resumable checks and DOT validation cancellation |
 | Partial trees | Retain later safely recovered regions, distinguish locally closed scopes with partial descendants, and add per-scope pending-work maps |
 | Summaries and public events | Representation, ownership, coverage and costs; proposals remain deferred |
-| Native encoding execution | Resumable admission/session dispatch, diagnostic admission and native excerpt windows |
+| Native encoding execution | Native session dispatch, metered validation and native excerpt windows |
 | Composed execution | Shared budgets, fixed memory and recursive/string scheduling; see [processor design](PROCESSOR_CONTRACT.md#remaining-design) |
 | Packaging | Whether markup should ever have a separate package/version lifecycle |
 
@@ -121,15 +121,17 @@ Compile-time capabilities, inheritance/union, BOM/explicit selection and the
 initial one-shot native paths are implemented; see [source encodings](../ENCODINGS.md).
 Do not retain a UTF-8 conversion/source-map requirement for native parsing.
 
-Remaining work: resumable/cancellable admission under an explicit work budget,
-native Session dispatch, source excerpt windows with physical-byte annotation
-mapping, and an encoding-admission diagnostic contract before exposing repaired
-or partial native input. Currently admission errors precede tree creation.
+Remaining work: native Session dispatch, metered encoding/content validation,
+and source excerpt windows with physical-byte annotation mapping. Selection and
+complete-unit framing precede tree creation; malformed full units now follow
+the processor's `validation.invalid_encoding` severity. DOT excludes HTML
+operand bodies, while markup checks its whole fragment or explicit local scope.
 Preserve original bytes and compact per-document provenance; keep disabled
 readers out of dispatch and measure default UTF-8 regressions separately.
 
-Entry/binding boundary: independent profiles admit their complete source; bound
-processor workers consume already-admitted fragments and do not expose standalone
+Entry/binding boundary: independent profiles select/check whole-buffer framing;
+bound processor workers consume aligned fragments in the inherited reader,
+own their content validation, and do not expose standalone
 parser/session methods. A worker may be a leaf; encoding factory hooks belong to
 the factory, and diagnostic/owning-result types remain shared across encodings.
 

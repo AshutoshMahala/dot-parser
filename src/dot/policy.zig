@@ -64,7 +64,7 @@ pub const Policy = struct {
         /// Lexical check applied while parsing, not replayed by validate().
         ambiguous_numeral: ?RuleSeverity = null,
         /// Whole-source encoding check; does not decode or replace bytes.
-        invalid_utf8: ?RuleSeverity = null,
+        invalid_encoding: ?RuleSeverity = null,
         /// Logical keys within one statement's combined attribute lists.
         repeated_attribute: ?RuleSeverity = null,
         restrictions: Restrictions = .{},
@@ -98,7 +98,8 @@ pub const Policy = struct {
 pub const ValidationSettings = struct {
     on_error: OnError = .collect,
     fixes: Fixes = .all,
-    invalid_utf8: RuleSeverity = .off,
+    /// Selected source reader, excluding delegated HTML operand bodies.
+    invalid_encoding: RuleSeverity = .off,
     repeated_attribute: RuleSeverity = .off,
     restrictions: struct {
         graph_kinds: struct {
@@ -181,7 +182,7 @@ pub const presets = struct {
         },
         .validation = .{
             .ambiguous_numeral = .warning,
-            .invalid_utf8 = .off,
+            .invalid_encoding = .off,
             .repeated_attribute = .off,
             .restrictions = .{
                 .graph_kinds = .{ .undigraph = .off, .digraph = .off, .generic = .off },
@@ -217,7 +218,7 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
         .validation = .{
             .on_error = input.on_error orelse baseline.validation.on_error,
             .fixes = input.diagnostics.fixes orelse baseline.validation.fixes,
-            .invalid_utf8 = input.validation.invalid_utf8 orelse baseline.validation.invalid_utf8,
+            .invalid_encoding = input.validation.invalid_encoding orelse baseline.validation.invalid_encoding,
             .repeated_attribute = input.validation.repeated_attribute orelse baseline.validation.repeated_attribute,
             .restrictions = .{
                 .graph_kinds = .{

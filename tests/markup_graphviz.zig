@@ -227,7 +227,7 @@ test "Graphviz recovery uses the same folded ancestor matching without publishin
 test "unknown owner attributes retain incomplete coverage across scopes fragments and workspaces" {
     const source = "<DIV onclick='x'>t</DIV>";
     const p: markup.Policy = .{ .mode = .graphviz, .validation = .{
-        .invalid_utf8 = .err,
+        .invalid_encoding = .err,
         .names = .{ .severity = .err },
         .references = .{ .severity = .err },
         .graphviz = .{ .unknown_element = .off },
@@ -262,7 +262,7 @@ test "unknown owner attributes retain incomplete coverage across scopes fragment
     try equal(.incomplete, checked.checks.graphviz_attributes);
     try equal(.not_run, checked.checks.graphviz_elements);
     try equal(.complete, checked.checks.duplicate_attribute);
-    try equal(.complete, checked.checks.invalid_utf8);
+    try equal(.complete, checked.checks.invalid_encoding);
     try equal(.complete, checked.checks.names);
     try equal(.complete, checked.checks.references);
     const header: markup.ValidationScope = .{ .opening_header = .{
@@ -508,7 +508,7 @@ test "Graphviz fixed fragment and reused workspace agree with owned results and 
 
 test "vocabulary and XML name findings keep document order without source repair" {
     const source = "<TABLE a\xff='x'/><a\xff/>";
-    const P = markup.Profile(.{ .policy = .{ .mode = .graphviz, .validation = .{ .names = .{ .severity = .err }, .invalid_utf8 = .warning } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .graphviz, .validation = .{ .names = .{ .severity = .err }, .invalid_encoding = .warning } } });
     var parsed = P.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     var bag: markup.FixedDiagnosticBag(16) = .{};

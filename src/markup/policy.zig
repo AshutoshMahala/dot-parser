@@ -26,7 +26,8 @@ pub const GraphvizSettings = struct {
 pub const ValidationSettings = struct {
     on_error: OnError = .collect,
     duplicate_attribute: RuleSeverity = .err,
-    invalid_utf8: RuleSeverity = .off,
+    /// Selected source reader; includes text, attributes, comments and CDATA.
+    invalid_encoding: RuleSeverity = .off,
     names: NameSettings = .{},
     references: ReferenceSettings = .{},
     graphviz: GraphvizSettings = .{},
@@ -49,7 +50,7 @@ pub const Policy = struct {
     } = .{},
     validation: struct {
         duplicate_attribute: ?RuleSeverity = null,
-        invalid_utf8: ?RuleSeverity = null,
+        invalid_encoding: ?RuleSeverity = null,
         names: struct { rule: ?NameRule = null, severity: ?RuleSeverity = null } = .{},
         references: struct { catalog: ?ReferenceCatalog = null, severity: ?RuleSeverity = null } = .{},
         graphviz: struct { unknown_element: ?RuleSeverity = null, invalid_attribute: ?RuleSeverity = null } = .{},
@@ -118,7 +119,7 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
         if (@field(patch.execution, field.name)) |value| @field(result.execution, field.name) = value;
     }
     if (patch.validation.duplicate_attribute) |v| result.validation.duplicate_attribute = v;
-    if (patch.validation.invalid_utf8) |v| result.validation.invalid_utf8 = v;
+    if (patch.validation.invalid_encoding) |v| result.validation.invalid_encoding = v;
     inline for (.{ "names", "references", "graphviz" }) |group| {
         inline for (std.meta.fields(@TypeOf(@field(patch.validation, group)))) |field| {
             if (@field(@field(patch.validation, group), field.name)) |value|
@@ -145,7 +146,7 @@ pub const presets = struct {
         },
         .validation = .{
             .duplicate_attribute = defaults.validation.duplicate_attribute,
-            .invalid_utf8 = defaults.validation.invalid_utf8,
+            .invalid_encoding = defaults.validation.invalid_encoding,
             .names = .{ .rule = defaults.validation.names.rule, .severity = defaults.validation.names.severity },
             .references = .{ .catalog = defaults.validation.references.catalog, .severity = defaults.validation.references.severity },
             .graphviz = .{ .unknown_element = .err, .invalid_attribute = .err },

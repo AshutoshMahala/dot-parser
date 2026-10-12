@@ -110,7 +110,6 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
         pub const Parts = @import("identifier_parts.zig").ForEncoding(actual).Parts;
         fn checked(raw: []const u8) error{InvalidIdentifier}!lex.Token {
             if (raw.len % E.width != 0) return error.InvalidIdentifier;
-            @import("parser_support").source_dispatch.check(actual, raw) catch return error.InvalidIdentifier;
             var scanner = lex.scalar.ScannerWithEncoding(actual, false, false, true, false).initRaw(raw);
             const result = scanner.next();
             if (result != .token or result.token.tag != .identifier or result.token.span.start != 0 or result.token.span.len != raw.len)

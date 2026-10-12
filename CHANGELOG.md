@@ -38,6 +38,14 @@ Changes since 0.4.0.
 
 ### Changed
 
+- **Breaking:** both parsers replace `validation.invalid_utf8` with
+  `validation.invalid_encoding` (still off by default). It checks the selected
+  ASCII/UTF-8/16/32 reader. Encoding diagnostic codes/payloads, markup name
+  failure reasons and `checks.invalid_encoding` use the general name too;
+  there are no compatibility aliases. DOT excludes HTML operand bodies so
+  markup owns their findings. Native/ASCII content failures now follow the
+  validation policy instead of returning `error.InvalidEncoding` before parsing;
+  incomplete code-unit framing remains an input error.
 - **Breaking:** markup now defaults to `.mode = .graphviz`, including the
   presets and labels checked from DOT. Set `.mode = .structural` for the 0.4.0
   behaviour.

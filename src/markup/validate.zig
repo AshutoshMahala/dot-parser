@@ -58,7 +58,7 @@ pub const Result = struct {
     validity: enum { valid, invalid, unknown } = .unknown,
     checks: struct {
         duplicate_attribute: CheckStatus = .not_run,
-        invalid_utf8: CheckStatus = .not_run,
+        invalid_encoding: CheckStatus = .not_run,
         names: CheckStatus = .not_run,
         references: CheckStatus = .not_run,
         graphviz_elements: CheckStatus = .not_run,
@@ -135,7 +135,8 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
         }
         pub const Settings = if (fixed == null) policy.ValidationSettings else void;
         pub const Hook = if (cancellable) ?support.execution.Cancellation else void;
-        const has_encoding = actual == .utf8 and (if (fixed) |s| s.invalid_utf8 != .off else true);
+        const has_encoding = if (fixed) |s| s.invalid_encoding != .off else true;
+        const distinguish_ascii = actual == .utf8 and (if (fixed) |s| s.invalid_encoding != .off or s.names.severity != .off else true);
         const Offset = if (has_encoding) u32 else void;
         /// One countdown shared by the traversal and all content scans. Charge
         /// bytes examined (including revisits by another check) and record steps,
@@ -151,7 +152,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             const s = rules(settings);
             return .{ .checks = .{
                 .duplicate_attribute = if (s.duplicate_attribute == .off) .not_run else .incomplete,
-                .invalid_utf8 = if (!has_encoding or s.invalid_utf8 == .off) .not_run else .incomplete,
+                .invalid_encoding = if (!has_encoding or s.invalid_encoding == .off) .not_run else .incomplete,
                 .names = if (s.names.severity == .off) .not_run else .incomplete,
                 .references = if (s.references.severity == .off) .not_run else .incomplete,
                 .graphviz_elements = if (mode == .structural or s.graphviz.unknown_element == .off) .not_run else .incomplete,
@@ -160,7 +161,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
         }
         fn enabled(settings: Settings) bool {
             const s = rules(settings);
-            return s.duplicate_attribute != .off or (has_encoding and s.invalid_utf8 != .off) or s.names.severity != .off or s.references.severity != .off or vocabularyActive(mode, s);
+            return s.duplicate_attribute != .off or (has_encoding and s.invalid_encoding != .off) or s.names.severity != .off or s.references.severity != .off or vocabularyActive(mode, s);
         }
         fn requested(hook: Hook) bool {
             return if (cancellable) (if (hook) |h| h.requested() else false) else false;
@@ -180,6 +181,8 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
         }
         pub fn run(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
             if (!canRead(document)) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
+            if (distinguish_ascii and document.source_info.encoding == .ascii)
+                return ValidatorForEncoding(.ascii, fixed, cancellable, mode).run(document, scratch, sink, settings, hook);
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
@@ -334,7 +337,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             }
             inline for (std.meta.fields(@TypeOf(result.checks))) |field| {
                 // Encoding is independent of syntax if every source byte was read.
-                const all_bytes = comptime std.mem.eql(u8, field.name, "invalid_utf8");
+                const all_bytes = comptime std.mem.eql(u8, field.name, "invalid_encoding");
                 if (@field(result.checks, field.name) == .complete and !(all_bytes and document.retained_end == document.source.len))
                     @field(result.checks, field.name) = .incomplete;
             }
@@ -459,7 +462,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                         width = decoded.len;
                         point = decoded.scalar;
                     } else |_| {
-                        problem = .invalid_utf8;
+                        problem = .invalid_encoding;
                     }
                 }
                 if (problem == null and !definitions.nameCharacter(selected.rule, point, index == 0))
@@ -472,7 +475,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                     const code: diagnostic.Code = if (selected.severity == .err) .invalid_name else .invalid_name_tolerated;
                     return emit(result, sink, .{
                         .code = code,
-                        .span = .{ .start = at, .len = if (reason == .invalid_utf8) enc.width else width },
+                        .span = .{ .start = at, .len = if (reason == .invalid_encoding) enc.width else width },
                         .related = name,
                         .details = .{ .name = .{ .context = context, .problem = reason } },
                     }, settings);
@@ -604,6 +607,8 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
         }
         pub fn allocated(allocator: std.mem.Allocator, document: *const syntax.Document, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
             if (!canRead(document)) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
+            if (distinguish_ascii and document.source_info.encoding == .ascii)
+                return ValidatorForEncoding(.ascii, fixed, cancellable, mode).allocated(allocator, document, sink, settings, hook);
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
@@ -616,6 +621,8 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
         }
         pub fn reusing(allocator: std.mem.Allocator, document: *const syntax.Document, keys: *std.ArrayList(AttributeKeyScratch), sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
             if (!canRead(document)) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
+            if (distinguish_ascii and document.source_info.encoding == .ascii)
+                return ValidatorForEncoding(.ascii, fixed, cancellable, mode).reusing(allocator, document, keys, sink, settings, hook);
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
@@ -650,26 +657,21 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             }
             return true;
         }
-        /// One monotonically advancing source cursor. Each invalid leading byte
-        /// is reported separately; valid sequences consume 1..4 bytes. This is
-        /// encoding validation, not XML character/name validation or decoding.
+        /// One monotonically advancing scope cursor using the selected reader.
+        /// Each invalid code unit is one finding; valid scalars consume whole
+        /// sequences. Encoding validity is not XML character/name validity.
         fn encodingThrough(source: []const u8, through: u32, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
             if (comptime !has_encoding) return true;
-            if (rules(settings).invalid_utf8 == .off) return true;
+            if (rules(settings).invalid_encoding == .off) return true;
             if (!cancellable) {
                 // Keep the direct, unchunked loop when polling is compiled out.
                 while (offset.* < source.len and offset.* <= through) {
                     const at = offset.*;
-                    if (source[at] < 0x80) {
-                        offset.* += 1;
-                        continue;
-                    }
-                    if (support.utf8.sequenceLength(source[at..])) |len| {
-                        offset.* += len;
-                    } else {
-                        offset.* += 1;
-                        const code: diagnostic.Code = if (rules(settings).invalid_utf8 == .err) .invalid_utf8 else .invalid_utf8_tolerated;
-                        if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .byte = source[at] } }, settings)) return false;
+                    const step = support.encoding.validationStep(actual, source, at);
+                    offset.* += step.len;
+                    if (step.invalid) |bad| {
+                        const code: diagnostic.Code = if (rules(settings).invalid_encoding == .err) .invalid_encoding else .invalid_encoding_tolerated;
+                        if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = step.len }, .details = .{ .invalid_encoding = bad } }, settings)) return false;
                     }
                 }
             } else {
@@ -684,22 +686,17 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                     // Finish whole scalars; sink stops inside chunks stay immediate.
                     while (cursor < end) {
                         const at = cursor;
-                        if (source[at] < 0x80) {
-                            cursor += 1;
-                            continue;
-                        }
-                        if (support.utf8.sequenceLength(source[at..])) |len| {
-                            cursor += len;
-                        } else {
-                            cursor += 1;
-                            const code: diagnostic.Code = if (rules(settings).invalid_utf8 == .err) .invalid_utf8 else .invalid_utf8_tolerated;
-                            if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .byte = source[at] } }, settings)) return false;
+                        const step = support.encoding.validationStep(actual, source, at);
+                        cursor += step.len;
+                        if (step.invalid) |bad| {
+                            const code: diagnostic.Code = if (rules(settings).invalid_encoding == .err) .invalid_encoding else .invalid_encoding_tolerated;
+                            if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = step.len }, .details = .{ .invalid_encoding = bad } }, settings)) return false;
                         }
                     }
                 }
                 scan.flush(cursor, poller);
             }
-            if (offset.* == source.len) result.checks.invalid_utf8 = .complete;
+            if (offset.* == source.len) result.checks.invalid_encoding = .complete;
             return true;
         }
     };

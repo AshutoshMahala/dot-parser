@@ -323,9 +323,6 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
         inline fn microstep(self: *Self, comptime state: State) State {
             var continuation = state;
             const byte = self.examine();
-            if (actual == .ascii) if (byte) |value| {
-                if (value >= 128) return self.fail(.invalid, self.cursor, 1, value);
-            };
             switch (state) {
                 .ready => unreachable,
                 .trivia => {

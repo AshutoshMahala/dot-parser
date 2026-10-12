@@ -27,7 +27,7 @@ test "all fragment storage paths agree across resets origins backends and policy
             .on_error = on_error,
             .execution = .{ .cancellation = controlled },
             .diagnostics = .{ .unsupported = .silent },
-            .validation = .{ .invalid_utf8 = .err },
+            .validation = .{ .invalid_encoding = .err },
         };
         const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{
             .mode = .structural,

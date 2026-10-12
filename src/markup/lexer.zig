@@ -187,7 +187,6 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime backend: p
             const at = self.offset;
             if (at == enc.units(self.source)) return .blocked;
             const byte = enc.scanByte(self.source, at);
-            if (actual == .ascii and byte >= 128) return .blocked;
             if (metered) self.frontier = @max(self.frontier, at + 1);
             if (byte == '<' or (byte < 0x20 and !whitespace(byte))) return .blocked;
             switch (cursor.*) {

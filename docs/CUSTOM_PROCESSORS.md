@@ -124,9 +124,10 @@ types:
   `DiagnosticSink` and `CheckResult` types, so the DOT result has one fixed
   type.
 - The returned processors don't need these two functions themselves.
-- These functions only serve labels inside a DOT file. DOT has already checked
-  the file's encoding, and the file's byte order mark is never part of a label.
-  Don't check the encoding again, and treat a byte order mark at the start of a
+- These functions only serve labels inside a DOT file. DOT has already selected
+  the reader and checked complete code-unit framing, but excludes label bodies
+  from its content encoding validation. Your processor owns any such checks
+  and their policy/diagnostics. Treat a byte order mark at the start of a
   label as content. For parsing markup on its own, use
   `markup.Profile(.{ .source_encodings = ... })`.
 

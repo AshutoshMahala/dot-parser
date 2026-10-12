@@ -30,7 +30,7 @@ test "name rules and catalogs are independent, opt-in, and do not change retaine
     try equal(.complete, names.completion);
     try equal(@as(u64, 1), names.errors); // Opening/closing name is checked once.
     try equal(.not_run, names.checks.references);
-    try equal(.not_run, names.checks.invalid_utf8);
+    try equal(.not_run, names.checks.invalid_encoding);
     const refs = References.validate(std.testing.failing_allocator, &doc, discard, .{});
     try equal(.complete, refs.completion);
     try equal(@as(u64, 1), refs.errors);
@@ -67,9 +67,9 @@ test "invalid names report only their first bad code point with whole-name conte
         .{ .name = "a\u{037e}", .offset = 1, .len = 2, .reason = .invalid_character },
         .{ .name = "\u{f0000}", .offset = 0, .len = 4, .reason = .invalid_start },
         .{ .name = "a\u{ffff}", .offset = 1, .len = 3, .reason = .invalid_character },
-        .{ .name = "\xff\xff", .offset = 0, .len = 1, .reason = .invalid_utf8 },
-        .{ .name = "a\xf0\x90", .offset = 1, .len = 1, .reason = .invalid_utf8 },
-        .{ .name = "a\xed\xa0\x80", .offset = 1, .len = 1, .reason = .invalid_utf8 },
+        .{ .name = "\xff\xff", .offset = 0, .len = 1, .reason = .invalid_encoding },
+        .{ .name = "a\xf0\x90", .offset = 1, .len = 1, .reason = .invalid_encoding },
+        .{ .name = "a\xed\xa0\x80", .offset = 1, .len = 1, .reason = .invalid_encoding },
     }) |case| {
         var source: [64]u8 = undefined;
         const input = try std.fmt.bufPrint(&source, "<{s}/>", .{case.name});
@@ -143,7 +143,7 @@ test "name catalog encoding and duplicate policies compose with source-order and
     inline for (.{ .off, .warning, .err }) |names| {
         inline for (.{ .off, .warning, .err }) |refs| {
             const patch: markup.Policy = .{ .mode = .structural, .validation = .{
-                .invalid_utf8 = .warning,
+                .invalid_encoding = .warning,
                 .names = .{ .severity = names },
                 .references = .{ .severity = refs },
             } };
@@ -173,7 +173,7 @@ test "name catalog encoding and duplicate policies compose with source-order and
 
 fn order(code: markup.diagnostic.Code) u8 {
     return switch (code) {
-        .invalid_utf8, .invalid_utf8_tolerated => 0,
+        .invalid_encoding, .invalid_encoding_tolerated => 0,
         .duplicate_attribute, .duplicate_attribute_tolerated => 1,
         .invalid_name, .invalid_name_tolerated => 2,
         .unknown_reference, .unknown_reference_tolerated => 3,
@@ -187,14 +187,14 @@ test "name errors do not inherit encoding severity; whole-source encoding still 
     const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
         .duplicate_attribute = .off,
         .names = .{ .severity = .err },
-        .invalid_utf8 = .warning,
+        .invalid_encoding = .warning,
     } } });
     var bag: markup.FixedDiagnosticBag(8) = .{};
     const checked = P.validateIn(&parsed.document.?, .{}, bag.sink(), .{});
     try equal(.invalid, checked.validity);
     try equal(@as(u64, 1), checked.errors);
     try equal(@as(u64, 3), checked.warnings);
-    try equal(markup.diagnostic.Code.invalid_utf8_tolerated, bag.items()[0].code);
+    try equal(markup.diagnostic.Code.invalid_encoding_tolerated, bag.items()[0].code);
     try equal(markup.diagnostic.Code.invalid_name, bag.items()[1].code);
 }
 
@@ -350,7 +350,7 @@ test "dense markup shares polling work across short scans with fixed-runtime par
     const source = "<a x='1' y='2'/>" ** 10_000;
     const patch: markup.Policy = .{ .mode = .structural, .validation = .{
         .duplicate_attribute = .off,
-        .invalid_utf8 = .err,
+        .invalid_encoding = .err,
         .names = .{ .severity = .err },
         .references = .{ .severity = .err },
     }, .execution = .{ .cancellation = true } };
@@ -381,7 +381,7 @@ test "encoding revisits stay cancellable after a completed reference scan" {
     const source = "x" ** 10_000;
     const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
         .duplicate_attribute = .off,
-        .invalid_utf8 = .err,
+        .invalid_encoding = .err,
         .references = .{ .severity = .err },
     }, .execution = .{ .cancellation = true } } });
     var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
@@ -392,7 +392,7 @@ test "encoding revisits stay cancellable after a completed reference scan" {
     const checked = P.validateIn(&parsed.document.?, .{}, discard, .{ .cancellation = stop.hook() });
     try equal(.cancelled, checked.completion);
     try equal(.complete, checked.checks.references);
-    try equal(.incomplete, checked.checks.invalid_utf8);
+    try equal(.incomplete, checked.checks.invalid_encoding);
     try equal(@as(u32, 201), stop.polls);
 }
 
@@ -401,7 +401,7 @@ test "bounded scalar and block parses produce identical later name and reference
     const patch: markup.Policy = .{ .mode = .structural, .syntax = .{ .malformed_reference = .warn }, .validation = .{
         .names = .{ .severity = .err },
         .references = .{ .severity = .warning },
-        .invalid_utf8 = .err,
+        .invalid_encoding = .err,
     }, .execution = .{ .metering = true } };
     var expected: ?markup.ValidationResult = null;
     inline for (.{ .scalar, .block }) |backend| {
@@ -429,14 +429,14 @@ test "new checks finish empty input and preserve completed checks when trailing 
     const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
         .names = .{ .severity = .err },
         .references = .{ .severity = .err },
-        .invalid_utf8 = .err,
+        .invalid_encoding = .err,
     } } });
     for ([_][]const u8{ "", "\xef\xbb\xbf" }) |source| {
         var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
         defer parsed.deinit();
         const result = P.validateIn(&parsed.document.?, .{}, discard, .{});
         try equal(.complete, result.completion);
-        inline for (.{ "duplicate_attribute", "invalid_utf8", "names", "references" }) |name| try equal(.complete, @field(result.checks, name));
+        inline for (.{ "duplicate_attribute", "invalid_encoding", "names", "references" }) |name| try equal(.complete, @field(result.checks, name));
         try equal(.not_run, result.checks.graphviz_elements);
         try equal(.not_run, result.checks.graphviz_attributes);
     }
@@ -448,7 +448,7 @@ test "new checks finish empty input and preserve completed checks when trailing 
     try equal(.complete, checked.checks.names);
     try equal(.complete, checked.checks.references);
     try equal(.complete, checked.checks.duplicate_attribute);
-    try equal(.incomplete, checked.checks.invalid_utf8);
+    try equal(.incomplete, checked.checks.invalid_encoding);
 }
 
 test "new validation floods obey the default diagnostic cap without allocating scratch" {

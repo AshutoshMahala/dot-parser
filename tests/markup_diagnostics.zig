@@ -153,7 +153,7 @@ test "markup duplicate attributes have primary and related labels on one line" {
 
 test "markup rendering supports ASCII ANSI summaries and escaped source bytes" {
     const source = "a\x1b\xff\x00\r\nb";
-    const finding: markup.Diagnostic = .{ .code = .invalid_utf8_tolerated, .span = .{ .start = 1, .len = 3 }, .details = .{ .byte = 0xff } };
+    const finding: markup.Diagnostic = .{ .code = .invalid_encoding_tolerated, .span = .{ .start = 1, .len = 3 }, .details = .{ .invalid_encoding = .{ .unit = 0xff, .encoding = .utf8 } } };
     var storage: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&storage);
     var locations: [6]markup.location.Location = undefined;

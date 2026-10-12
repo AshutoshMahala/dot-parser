@@ -2,7 +2,7 @@
 const dot = @import("dot_parser");
 
 export fn native_dot(source: [*]const u8, len: usize) u32 {
-    const Native = dot.Profile(.{ .source_encodings = &.{ .utf16, .utf32 } });
+    const Native = dot.Profile(.{ .source_encodings = &.{ .utf16, .utf32 }, .policy = .{ .validation = .{ .invalid_encoding = .err } } });
     var nodes: dot.FixedDocumentStorage(.{ .nodes = 16, .edges = 16, .statements = 32, .attributes = 16 }) = .{};
     var frames: dot.FixedParseScratch(.{ .nesting = 8 }) = .{};
     const result = Native.parseBorrowedIn(source[0..len], .{ .document = nodes.storage(), .scratch = frames.storage() }, dot.diagnostic.discard, .{}) catch return 0;
@@ -62,7 +62,7 @@ export fn prepare_profiles(choice: u8) usize {
 export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
     const input: dot.Policy = .{ .markup = if (choice & 1 == 0) .none else .passthrough, .diagnostics = .{ .fixes = if (choice & 2 == 0) .off else .machine_applicable, .unsupported = @enumFromInt(choice % 3) }, .scanner = if (choice & 1 == 0) .scalar else .block, .execution = .{ .metering = choice & 2 != 0, .cancellation = choice & 4 != 0 }, .limits = .{ .max_statements = @as(usize, choice) + 1, .max_attributes = choice }, .on_error = if (choice & 8 == 0) .fail_fast else .collect, .validation = .{
         .ambiguous_numeral = if (choice & 16 == 0) .warning else .err,
-        .invalid_utf8 = if (choice & 32 == 0) .off else .warning,
+        .invalid_encoding = if (choice & 32 == 0) .off else .warning,
         .repeated_attribute = if (choice & 64 == 0) .off else .err,
         .restrictions = .{
             .ports = if (choice & 8 == 0) .off else .warning,

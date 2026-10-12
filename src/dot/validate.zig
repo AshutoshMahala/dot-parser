@@ -111,6 +111,12 @@ pub fn validate(
 
 pub fn validateForEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime fixed: ?policy.ValidationSettings, document: *const syntax.Document, diagnostics: diagnostic.Sink, runtime: if (fixed == null) policy.ValidationSettings else void, scratch: Scratch) Result {
     if (!@import("parser_support").encoding.readerAccepts(actual, document.source_info.encoding)) return .{ .outcome = .{ .unsupported_encoding = document.source_info.encoding }, .diagnostic_delivery = .complete };
+    // Byte-compatible grammar is not interchangeable encoding validity. ASCII
+    // documents may contain unchecked high bytes when their policy is off.
+    if (actual == .utf8 and (if (fixed) |s| s.invalid_encoding != .off else true)) {
+        if (document.source_info.encoding == .ascii)
+            return validateForEncoding(.ascii, fixed, document, diagnostics, runtime, scratch);
+    }
     if (!document.scopeComplete()) {
         var prefix = document.*;
         prefix.source = prefix.source[0..prefix.retained_end];
@@ -229,12 +235,12 @@ fn cursorTypes(comptime actual: @import("parser_support").encoding.Actual, compt
         s.restrictions.graph_kinds.undigraph != .off or s.restrictions.graph_kinds.digraph != .off or s.restrictions.graph_kinds.generic != .off,
         s.digraph.operator_mismatch != .off or
             ((s.graph.treated_as != .auto and s.graph.treated_as != .generic) and s.graph.operators.operator_mismatch != .off),
-        actual == .utf8 and s.invalid_utf8 != .off,
+        s.invalid_encoding != .off,
         s.repeated_attribute != .off,
         s.restrictions.ports != .off,
         s.restrictions.subgraphs != .off,
-    } else .{ true, true, actual == .utf8, true, true, true };
-    const all = .{ checks.GraphKinds, checks.Operators, checks.Encoding, checks.RepeatedAttributesForEncoding(actual), checks.Ports, checks.SubgraphsForEncoding(actual) };
+    } else .{ true, true, true, true, true, true };
+    const all = .{ checks.GraphKinds, checks.Operators, checks.EncodingForEncoding(actual), checks.RepeatedAttributesForEncoding(actual), checks.Ports, checks.SubgraphsForEncoding(actual) };
     comptime var types: [all.len]type = undefined;
     comptime var count: usize = 0;
     inline for (all, enabled) |T, include| {

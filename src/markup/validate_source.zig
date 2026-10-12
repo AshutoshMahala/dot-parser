@@ -29,7 +29,7 @@ pub fn FixedScratch(comptime capacity: u32) type {
 
 fn localSettings(settings: policy.ValidationSettings) policy.ValidationSettings {
     var local = settings;
-    local.invalid_utf8 = .off; // Independent whole-source pass, once, before scopes.
+    local.invalid_encoding = .off; // Independent whole-source pass, once, before scopes.
     return local;
 }
 
@@ -211,7 +211,7 @@ pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, compt
                 const v = p.validation;
                 self.result.checks = .{
                     .duplicate_attribute = if (p.validation.duplicate_attribute == .off) .not_run else .incomplete,
-                    .invalid_utf8 = if (p.validation.invalid_utf8 == .off) .not_run else .incomplete,
+                    .invalid_encoding = if (p.validation.invalid_encoding == .off) .not_run else .incomplete,
                     .names = if (p.validation.names.severity == .off) .not_run else .incomplete,
                     .references = if (p.validation.references.severity == .off) .not_run else .incomplete,
                     .graphviz_elements = if (mode == .structural or v.graphviz.unknown_element == .off) .not_run else .incomplete,
@@ -227,7 +227,7 @@ pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, compt
                 // Encoding has no lexical prerequisites, so even a terminal
                 // malformed header cannot hide invalid bytes elsewhere.
                 const encoded = V.runScopePolled(self.source, .{ .bytes = .{ .start = 0, .len = @intCast(self.source.len) } }, .{}, self.sink, if (fixed == null) self.settings.validation else {}, self.hook, &self.poller, false);
-                self.result.checks.invalid_utf8 = encoded.checks.invalid_utf8;
+                self.result.checks.invalid_encoding = encoded.checks.invalid_encoding;
                 if (!self.merge(encoded)) return self.result;
                 if (p.validation.duplicate_attribute == .off and p.validation.names.severity == .off and p.validation.references.severity == .off and !validation.vocabularyActive(mode, v))
                     return self.finish();

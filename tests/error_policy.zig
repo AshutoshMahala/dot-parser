@@ -195,7 +195,7 @@ test "DOT non-error unsupported input stays partition invariant with fail-fast" 
 }
 
 test "fail-fast applies to every markup validation finding and sink stop wins" {
-    inline for ([_]@FieldType(markup.Policy, "validation"){ .{ .invalid_utf8 = .err, .duplicate_attribute = .off }, .{ .names = .{ .severity = .err }, .duplicate_attribute = .off }, .{ .references = .{ .severity = .err }, .duplicate_attribute = .off } }) |rules| {
+    inline for ([_]@FieldType(markup.Policy, "validation"){ .{ .invalid_encoding = .err, .duplicate_attribute = .off }, .{ .names = .{ .severity = .err }, .duplicate_attribute = .off }, .{ .references = .{ .severity = .err }, .duplicate_attribute = .off } }) |rules| {
         const P = markup.Profile(.{ .policy = .{ .mode = .structural, .on_error = .fail_fast, .validation = rules } });
         const text = "<a\xff/><a\xff/>&unknown;&absent;";
         var parsed = Structural.parseBorrowed(allocator, text, markup.diagnostic.discard, .{});

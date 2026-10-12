@@ -112,7 +112,7 @@ fn scalarTail(comptime mode: Mode, source: []const u8, start: u32, from: u32, li
 /// units without transcoding retained input. Projection is bounded stack scratch,
 /// not a source-sized working buffer; returned counts are code units.
 pub fn prefixEncoded(comptime actual: encoding.Actual, comptime backend: Backend, comptime bounded: bool, comptime mode: Mode, source: []const u8, start: u32) Run {
-    if (actual == .utf8) return prefix(backend, bounded, mode, source, start);
+    if (actual == .utf8 or actual == .ascii) return prefix(backend, bounded, mode, source, start);
     const R = encoding.Reader(actual);
     const remaining: u32 = @intCast(R.units(source) - start);
     const limit = if (backend == .block and bounded) @min(remaining, 64) else remaining;
@@ -120,7 +120,7 @@ pub fn prefixEncoded(comptime actual: encoding.Actual, comptime backend: Backend
     if (backend == .scalar) {
         while (consumed < limit) : (consumed += 1) {
             const byte = R.scanByte(source, start + consumed);
-            if ((actual == .ascii and byte >= 128) or !goodByte(mode, byte))
+            if (!goodByte(mode, byte))
                 return .{ .consumed = consumed, .examined = consumed + 1 };
         }
         return .{ .consumed = consumed, .examined = consumed };
@@ -129,8 +129,7 @@ pub fn prefixEncoded(comptime actual: encoding.Actual, comptime backend: Backend
         var projected: [64]u8 = undefined;
         const len: u32 = @min(limit - consumed, projected.len);
         for (projected[0..len], 0..) |*byte, i| {
-            const value = R.scanByte(source, start + consumed + i);
-            byte.* = if (actual == .ascii and value >= 128) 0 else value;
+            byte.* = R.scanByte(source, start + consumed + i);
         }
         const found = prefix(.block, true, mode, projected[0..len], 0);
         if (found.consumed != len) return .{ .consumed = consumed + found.consumed, .examined = consumed + found.examined };

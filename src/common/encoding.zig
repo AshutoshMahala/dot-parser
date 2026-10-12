@@ -110,7 +110,6 @@ pub const InputError = error{
     EncodingRequired,
     SourceTooLarge,
     TruncatedCodeUnit,
-    InvalidEncoding,
     Cancelled,
 };
 
@@ -154,6 +153,29 @@ pub fn select(comptime capabilities: Capabilities, source: []const u8, explicit:
 
 pub const DecodeError = error{ InvalidEncoding, TruncatedEncoding };
 pub const Decoded = packed struct { scalar: u21, len: u3 };
+
+/// A processor-owned finding can retain the actual reader and offending code
+/// unit without copying source text. Spans still count original physical bytes.
+pub const Invalid = struct { unit: u32, encoding: Actual };
+
+/// Encoding validity only, independent of grammar/name/character rules. On
+/// failure consume one physical code unit, never the following valid scalar.
+/// Callers bound the slice to their scope; no lookahead escapes that boundary.
+pub inline fn validationStep(comptime actual: Actual, source: []const u8, at: u32) struct { len: u3, invalid: ?Invalid = null } {
+    const R = Reader(actual);
+    if (at <= source.len and source.len - at >= R.width and R.unit(source, at) < 128)
+        return .{ .len = R.width };
+    if (R.decode(source, at)) |decoded| return .{ .len = decoded.len } else |_| {
+        // Whole-source selection and public scope metadata enforce full units.
+        // Keep this helper total for caller-built/truncated slices as well.
+        const remaining = source.len - @min(@as(usize, at), source.len);
+        const len: u3 = @intCast(@min(R.width, remaining));
+        return .{ .len = len, .invalid = .{
+            .unit = if (len == R.width) R.unit(source, at) else if (len != 0) source[at] else 0,
+            .encoding = actual,
+        } };
+    }
+}
 
 pub fn Reader(comptime actual: Actual) type {
     return struct {

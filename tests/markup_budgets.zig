@@ -21,7 +21,7 @@ test "16 MiB invalid-byte floods retain at most 1024 diagnostics, including alte
         const parsed = Structural.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
         try equal(markup.Outcome.success, parsed.outcome);
         const document = parsed.document.?;
-        const P = markup.Profile(.{ .runtime_policy = alternating, .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err } } });
+        const P = markup.Profile(.{ .runtime_policy = alternating, .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_encoding = .err } } });
         // Track only diagnostic allocations, not the caller's input buffer.
         var tracked = std.testing.FailingAllocator.init(std.testing.allocator, .{});
         var bag = markup.GrowableDiagnosticBag.init(tracked.allocator(), .{});
@@ -29,7 +29,7 @@ test "16 MiB invalid-byte floods retain at most 1024 diagnostics, including alte
         try equal(markup.reporting.StopReason.requested, checked.completion.diagnostic_stopped);
         try equal(.invalid, checked.validity);
         try equal(.complete, checked.diagnostic_delivery);
-        try equal(.incomplete, checked.checks.invalid_utf8);
+        try equal(.incomplete, checked.checks.invalid_encoding);
         try equal(@as(u64, 1024), checked.errors);
         try equal(@as(usize, 1024), bag.items().len);
         try expect(bag.storage.capacity <= 1024);
@@ -98,7 +98,7 @@ test "untrusted is a complete resource-only preset with runtime inheritance and 
         .mode = .structural,
         .scanner = .block,
         .syntax = .{ .malformed_reference = .accept },
-        .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err },
+        .validation = .{ .duplicate_attribute = .off, .invalid_encoding = .err },
         .execution = .{ .metering = true, .cancellation = true },
     } });
     const prepared = try HostileBaseline.Policies.prepare(.{ .policy = markup.presets.untrusted });
@@ -109,7 +109,7 @@ test "untrusted is a complete resource-only preset with runtime inheritance and 
     try equal(@as(u32, 256), Untrusted.baseline.limits.max_nesting);
     // The preset does not turn byte-oriented parsing into an encoding dialect.
     try equal(markup.Outcome.success, Untrusted.measureIn("\xff", .{}, discard, .{}).outcome);
-    try equal(.off, Untrusted.baseline.validation.invalid_utf8);
+    try equal(.off, Untrusted.baseline.validation.invalid_encoding);
     const patched = try Dynamic.Policies.prepare(.{ .policy = .{ .limits = .{ .max_nodes = 7 } } });
     try equal(@as(u32, 7), patched.limits.max_nodes);
     try equal(Untrusted.baseline.limits.max_source_bytes, patched.limits.max_source_bytes);

@@ -9,7 +9,7 @@ const Storage = dot.FixedDocumentStorage(.{ .statements = 32, .nodes = 32, .edge
 
 fn checks(severity: dot.RuleSeverity) dot.Policy {
     return .{ .validation = .{
-        .invalid_utf8 = severity,
+        .invalid_encoding = severity,
         .repeated_attribute = severity,
         .graph = .{ .operator_mismatch = severity },
         .digraph = .{ .operator_mismatch = severity },
@@ -46,7 +46,7 @@ test "all validation checks have fixed/runtime severity parity and source orderi
             try equal(.repeated_attribute, std.meta.activeTag(a_bag.items()[2].details));
             try equal(.subgraph, a_bag.items()[3].details.restriction);
             try equal(.operator_mismatch, std.meta.activeTag(a_bag.items()[4].details));
-            try equal(.invalid_utf8, std.meta.activeTag(a_bag.items()[5].details));
+            try equal(.invalid_encoding, std.meta.activeTag(a_bag.items()[5].details));
             for (a_bag.items()[1..], a_bag.items()[0 .. a_bag.items().len - 1]) |next, previous| try expect(previous.span.start <= next.span.start);
         }
         // Repeated validation is deterministic and never mutates retained data.
@@ -108,7 +108,7 @@ test "new leaves inherit independently and complete presets reset them" {
     const Custom = dot.Profile(.{ .runtime_policy = true, .policy = checks(.err) });
     var keys: [2]dot.AttributeKeyScratch = undefined;
     var checked = try Custom.parseAndValidate(std.testing.allocator, mixed, dot.diagnostic.discard, .{
-        .policy = .{ .validation = .{ .invalid_utf8 = .warning, .restrictions = .{ .ports = .off } } },
+        .policy = .{ .validation = .{ .invalid_encoding = .warning, .restrictions = .{ .ports = .off } } },
         .validation = .{ .attribute_keys = &keys },
     });
     defer checked.deinit(std.testing.allocator);
@@ -122,7 +122,7 @@ test "new leaves inherit independently and complete presets reset them" {
 }
 
 test "UTF-8 checks all source bytes and recovers one invalid byte at a time" {
-    const Utf8 = dot.Profile(.{ .policy = .{ .validation = .{ .invalid_utf8 = .err } } });
+    const Utf8 = dot.Profile(.{ .policy = .{ .validation = .{ .invalid_encoding = .err } } });
     const source = "// \xc0\xaf \xed\xa0\x80 \xf4\x90\x80\x80 \xe2(\xa1 \x00\n";
     // Keep the BOM document-leading, and put malformed bytes in all payload forms.
     const input = "\xef\xbb\xbfgraph { caf\xe9 [label=\"\xff\"] } " ++ source ++ "// \xe2\x82";
@@ -132,9 +132,10 @@ test "UTF-8 checks all source bytes and recovers one invalid byte at a time" {
     try expect(checked.outcome == .success);
     try equal(@as(u64, 15), checked.validation.?.outcome.completed.violations);
     for (bag.items()) |d| {
-        try equal(dot.Code.validation_invalid_utf8, d.code);
+        try equal(dot.Code.validation_invalid_encoding, d.code);
         try equal(@as(u32, 1), d.span.len);
-        try equal(input[d.span.start], d.details.invalid_utf8);
+        try equal(@as(u32, input[d.span.start]), d.details.invalid_encoding.unit);
+        try equal(.utf8, d.details.invalid_encoding.encoding);
         try expect(d.fix == null);
     }
     var valid = Utf8.parseAndValidate(std.testing.allocator, "\xef\xbb\xbfgraph { café [label=\"東京 😀 \xF4\x8F\xBF\xBF\"] } // \x00", dot.diagnostic.discard, .{});

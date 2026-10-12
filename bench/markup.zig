@@ -241,7 +241,7 @@ fn benchCancellation(init: std.process.Init, writer: *std.Io.Writer) !void {
         inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |cancellable| {
             const patch: markup.Policy = .{ .mode = .structural, .validation = .{
                 .duplicate_attribute = .off,
-                .invalid_utf8 = if (dense or comptime std.mem.eql(u8, fixture, "encoding")) .err else .off,
+                .invalid_encoding = if (dense or comptime std.mem.eql(u8, fixture, "encoding")) .err else .off,
                 .names = .{ .severity = if (names or dense) .err else .off },
                 .references = .{ .severity = if (dense or comptime std.mem.eql(u8, fixture, "references")) .err else .off },
             }, .execution = .{ .cancellation = cancellable } };
@@ -306,7 +306,7 @@ fn benchRules(init: std.process.Init, writer: *std.Io.Writer) !void {
         const patch: markup.Policy = .{ .mode = .structural, .validation = .{
             .names = .{ .severity = if (references) .off else .warning },
             .references = .{ .severity = if (combined or references) .warning else .off },
-            .invalid_utf8 = if (combined) .warning else .off,
+            .invalid_encoding = if (combined) .warning else .off,
             .duplicate_attribute = if (combined) .warning else .off,
         } };
         inline for (.{ false, true }) |runtime| {
@@ -378,12 +378,12 @@ fn benchEncoding(init: std.process.Init, writer: *std.Io.Writer) !void {
 }
 
 noinline fn validateEncoding(comptime runtime: bool, comptime combined: bool, document: *const markup.Document, scratch: markup.ValidationScratch) u64 {
-    const policy: markup.Policy = .{ .mode = .structural, .validation = .{ .invalid_utf8 = .warning, .duplicate_attribute = if (combined) .warning else .off } };
+    const policy: markup.Policy = .{ .mode = .structural, .validation = .{ .invalid_encoding = .warning, .duplicate_attribute = if (combined) .warning else .off } };
     var patch = policy;
     const opaque_patch: *volatile markup.Policy = &patch;
     const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else policy });
     const result = P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.* } else .{});
-    return if (result.completion == .complete and result.checks.invalid_utf8 == .complete) result.warnings else std.math.maxInt(u64);
+    return if (result.completion == .complete and result.checks.invalid_encoding == .complete) result.warnings else std.math.maxInt(u64);
 }
 
 noinline fn validateFixed(document: *const markup.Document, scratch: markup.ValidationScratch) u64 {

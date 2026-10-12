@@ -6,7 +6,7 @@ pub fn main() !void {
     // Optional checks do not mutate the syntax. Repeated-key linting alone
     // needs caller-owned scratch, separate from parser storage or policy.
     const Lint = dot.Profile(.{ .policy = .{ .validation = .{
-        .invalid_utf8 = .err,
+        .invalid_encoding = .err,
         .repeated_attribute = .warning,
         .restrictions = .{ .ports = .warning, .subgraphs = .err },
     } } });

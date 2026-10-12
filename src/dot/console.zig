@@ -389,7 +389,7 @@ fn secondaryAnnotations(details: Details) Adapter.Annotations {
 /// directly above the carets, so labels never repeat what was found.
 fn writePrimaryLabel(details: Details, writer: anytype) !void {
     switch (details) {
-        .invalid_utf8 => |byte| try writer.print("byte 0x{X:0>2} cannot begin a valid UTF-8 sequence here", .{byte}),
+        .invalid_encoding => |bad| try writer.print("code unit 0x{X} cannot begin a valid {s} sequence here", .{ bad.unit, @tagName(bad.encoding) }),
         .repeated_attribute => try writer.writeAll("same logical key as the earlier attribute"),
         .restriction => |kind| try writer.print("'{s}' is restricted by the consumer policy", .{@tagName(kind)}),
         .none => unreachable,
@@ -490,7 +490,7 @@ fn writeSecondaryLabel(details: Details, role: diagnostic.Related.Role, writer: 
 /// renderer, never in the diagnostic data.
 fn writeDetailValue(details: Details, writer: anytype) !void {
     switch (details) {
-        .invalid_utf8 => |byte| try writer.print("invalid UTF-8 at byte 0x{X:0>2}", .{byte}),
+        .invalid_encoding => |bad| try writer.print("invalid {s} at code unit 0x{X}", .{ @tagName(bad.encoding), bad.unit }),
         .repeated_attribute => |first| try writer.print("first equal key at byte offset {d}", .{first.start}),
         .restriction => |kind| try writer.print("restricted construct: {s}", .{@tagName(kind)}),
         .none => unreachable,

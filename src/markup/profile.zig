@@ -28,7 +28,8 @@ fn ParseOptionsFor(comptime api: type, comptime Binding: type) type {
 }
 
 // Binding-only processor contract, not an unchecked standalone parser profile.
-// Prepared/workspace calls consume fragments of an already admitted outer source.
+// Prepared/workspace calls consume aligned fragments in the outer source reader;
+// content encoding validity remains this processor's own policy.
 fn BoundProcessor(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime config: policy.Config) type {
     const Worker = ProfileForInputEncoding(actual, api, config, false);
     return struct {

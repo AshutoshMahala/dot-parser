@@ -57,6 +57,7 @@ pub const Adapter = struct {
             .byte => |byte| {
                 if (std.ascii.isPrint(byte)) try writer.print("offending byte 0x{X:0>2} ('{c}')", .{ byte, byte }) else try writer.print("offending byte 0x{X:0>2}", .{byte});
             },
+            .invalid_encoding => |bad| try writer.print("invalid {s} at code unit 0x{X}", .{ @tagName(bad.encoding), bad.unit }),
             .expected => |expected| if (expected == .attribute_value)
                 try writer.writeAll("'<' is not allowed in attribute values; write '&lt;'")
             else
@@ -78,7 +79,7 @@ pub const Adapter = struct {
                 switch (problem.problem) {
                     .invalid_start => "invalid initial character under the selected name rule",
                     .invalid_character => "invalid character under the selected name rule",
-                    .invalid_utf8 => "invalid UTF-8 under the selected name rule",
+                    .invalid_encoding => "invalid source encoding under the selected name rule",
                 },
             }),
         }

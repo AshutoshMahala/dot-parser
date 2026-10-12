@@ -125,7 +125,7 @@ hide the result.
 | Setting, under `validation` | Default | Reports |
 | --- | --- | --- |
 | `ambiguous_numeral` | `.warning` | A number that runs into a letter or dot, like `1e3` (read as `1` and `e3`, as Graphviz does) |
-| `invalid_utf8` | `.off` | Bytes that aren't valid UTF-8, anywhere in the file |
+| `invalid_encoding` | `.off` | Malformed content in the selected encoding, in DOT-owned bytes; HTML operand bodies belong to markup |
 | `repeated_attribute` | `.off` | The same key twice on one statement, like `[color=red, color=blue]` |
 | `restrictions.graph_kinds.undigraph` | `.off` | The graph is undirected |
 | `restrictions.graph_kinds.digraph` | `.off` | The graph is directed |
@@ -133,12 +133,17 @@ hide the result.
 | `restrictions.ports` | `.off` | Any node mention with a port, like `a:out` |
 | `restrictions.subgraphs` | `.off` | Any subgraph |
 
+Encoding validation covers strings, comments and trivia too. It checks the
+selected reader (ASCII, UTF-8, UTF-16 or UTF-32), not all compiled readers. Markup
+has its own severity and coverage, and passthrough bodies are not validated by
+DOT. See [encoding validation](ENCODINGS.md#optional-encoding-validation).
+
 Restrictions are for programs that can't handle some feature. For example, a
 tool that only understands directed graphs without subgraphs:
 
 ```zig
 const Lint = dot.Profile(.{ .policy = .{ .validation = .{
-    .invalid_utf8 = .err,
+    .invalid_encoding = .err,
     .restrictions = .{
         .graph_kinds = .{ .undigraph = .err, .generic = .err },
         .subgraphs = .err,
@@ -291,7 +296,8 @@ What the library does and doesn't guarantee:
 - **Parsing** uses no recursion and makes one pass over the input. Deep nesting
   can't overflow the stack, and parse time grows roughly in step with input
   size.
-- **Optional checks cost more.** The UTF-8 check is another pass over the input,
+- **Optional checks cost more.** Encoding validation makes another pass over
+  DOT-owned input, with a constant-space lexical walk to skip HTML bodies,
   and the repeated-attribute check sorts each statement's keys. Validation
   can't yet be split into steps or cancelled.
 - **Limits are off by default.** Without the budgets above, a large input can
@@ -362,7 +368,7 @@ Every field of `dot.Policy`, with its default and where it is explained:
 | `syntax.bare_dash.acceptance` | `.reject`, `.warn`, `.accept` | `.reject` | [Lenient syntax](#lenient-syntax) |
 | `syntax.bare_dash.interpretation` | `.from_keyword` | `.from_keyword` | [Lenient syntax](#lenient-syntax) |
 | `validation.ambiguous_numeral` | `.err`, `.warning`, `.off` | `.warning` | [Optional checks](#optional-checks) |
-| `validation.invalid_utf8` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |
+| `validation.invalid_encoding` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |
 | `validation.repeated_attribute` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |
 | `validation.restrictions.graph_kinds.undigraph` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |
 | `validation.restrictions.graph_kinds.digraph` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |

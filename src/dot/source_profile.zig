@@ -35,7 +35,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
             const info = try enc.select(caps, source, options.encoding);
             switch (info.encoding) {
                 inline else => |actual| if (comptime caps.allows(actual)) {
-                    try dispatch.checkControlled(actual, source, cancellation);
+                    if (actual != .utf8) try dispatch.checkCancellation(cancellation);
                     const W = profile.ProfileForEncoding(actual, api, config);
                     const Opt = comptime if (std.mem.eql(u8, method, "parseAndValidate")) W.CheckOptions else if (std.mem.eql(u8, method, "parseBorrowedIn") or std.mem.eql(u8, method, "measureIn")) W.FixedParseOptions else W.ParseOptions;
                     const called = @call(.auto, @field(W, method), arguments ++ .{dispatch.options(Opt, options)});
@@ -104,7 +104,7 @@ fn Composition(comptime api: type, comptime config: policy.Config, comptime caps
             const info = try enc.select(caps, source, options.encoding);
             switch (info.encoding) {
                 inline else => |actual| if (comptime caps.allows(actual)) {
-                    try dispatch.checkControlled(actual, source, cancellation);
+                    if (actual != .utf8) try dispatch.checkCancellation(cancellation);
                     const W = profile.ProfileForEncoding(actual, api, config);
                     var result = try W.parseAndValidate(allocator, source, sink, dispatch.options(W.CheckOptions, options));
                     dispatch.stamp(&result, info);

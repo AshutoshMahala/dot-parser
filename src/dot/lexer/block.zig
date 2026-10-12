@@ -334,13 +334,13 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                 .ws = blank | lf | cr,
                 .blank = blank,
                 .newline_byte = lf | cr,
-                .ident = (alpha | digit | eq(v, '_') | (if (actual == .ascii) 0 else high)) & valid,
+                .ident = (alpha | digit | eq(v, '_') | high) & valid,
                 .digit = digit,
                 .quote = eq(v, '"') & valid,
                 .escaped = findEscaped(backslash, &self.prev_escaped),
                 .star = eq(v, '*') & valid,
                 .slash = eq(v, '/') & valid,
-                .nul = (eq(v, 0) | (if (actual == .ascii) high else 0)) & valid,
+                .nul = eq(v, 0) & valid,
             };
             self.block_start = block_start;
             self.classified = true;
@@ -471,7 +471,6 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
             self.advanceTo(self.cursor + self.runLen(self.masks.ws));
             if (self.cursor == self.blockEnd()) return null;
             const b = enc.scanByte(self.source, self.cursor);
-            if (actual == .ascii and b >= 128) return self.fail(.invalid, self.cursor, 1, b);
             // Comments are trivia in every mode, including between the parts
             // of a quoted concatenation. In ordinary mode the comment opener
             // is also the anchor, so an unterminated comment rests there.
@@ -608,7 +607,6 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
             self.advanceTo(self.cursor + self.runLen(self.masks.blank));
             if (self.cursor == self.blockEnd()) return null;
             const b = enc.scanByte(self.source, self.cursor);
-            if (actual == .ascii and b >= 128) return self.fail(.invalid, self.cursor, 1, b);
             if (b == '>' or b == '-') {
                 const len = self.cursor + 1 - self.anchor;
                 return self.fail(.operator_spaced, self.anchor, len, b);
@@ -643,7 +641,6 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                 self.advanceTo(self.cursor + self.runLen(self.masks.digit));
                 if (self.cursor == self.blockEnd()) return null;
                 const b = enc.scanByte(self.source, self.cursor);
-                if (actual == .ascii and b >= 128) return self.fail(.invalid, self.cursor, 1, b);
                 if (self.part == .integral and b == '.') {
                     self.advanceTo(self.cursor + 1);
                     self.part = .fraction;
@@ -660,21 +657,7 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
             }
         }
 
-        fn firstNonAscii(self: *Self) ?u32 {
-            if (actual != .ascii) return null;
-            var candidates = self.masks.nul;
-            while (self.findFirst(candidates)) |at| {
-                if (enc.scanByte(self.source, at) >= 128) return at;
-                candidates &= ~(@as(u64, 1) << @as(u6, @intCast(at - self.block_start)));
-            }
-            return null;
-        }
-
         fn stepLineComment(self: *Self) ?Result {
-            if (actual == .ascii) if (self.firstNonAscii()) |bad| {
-                const end = self.findFirst(self.masks.newline_byte);
-                if (end == null or bad < end.?) return self.fail(.invalid, bad, 1, enc.scanByte(self.source, bad));
-            };
             if (self.findFirst(self.masks.newline_byte)) |p| {
                 // Consume the terminator, but exclude it from a retained span.
                 // A CRLF's LF is then plain whitespace, as in the scalar scanner.
@@ -704,10 +687,6 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                 const below = self.content.body_start - self.block_start;
                 close = if (below >= block_len) 0 else close & ~((@as(u64, 1) << @intCast(below)) - 1);
             }
-            if (actual == .ascii) if (self.firstNonAscii()) |bad| {
-                const end = self.findFirst(close);
-                if (end == null or bad < end.?) return self.fail(.invalid, bad, 1, enc.scanByte(self.source, bad));
-            };
             if (self.findFirst(close)) |p| {
                 self.advanceTo(p + 2);
                 self.mode = .trivia;
@@ -740,12 +719,10 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
             if (metered) self.source_frontier = @max(self.source_frontier, (@as(usize, start) + n) * enc.width);
             const opens = eq(&bytes, '<');
             var angles = opens | eq(&bytes, '>');
-            const bad: ?u6 = if (actual == .ascii and ge(&bytes, 128) != 0) @intCast(@ctz(ge(&bytes, 128))) else null;
             self.classified = false;
             self.prev_escaped = false;
             while (angles != 0) {
                 const bit: u6 = @intCast(@ctz(angles));
-                if (bad) |at| if (at < bit) return self.fail(.invalid, start + at, 1, bytes[at]);
                 const mask = @as(u64, 1) << bit;
                 angles &= angles - 1;
                 if (opens & mask != 0) {
@@ -761,7 +738,6 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                     }
                 }
             }
-            if (bad) |at| return self.fail(.invalid, start + at, 1, bytes[at]);
             self.cursor = start + n;
             return null;
         }
@@ -770,7 +746,7 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
             const candidates = (self.masks.quote & ~self.masks.escaped) | self.masks.nul;
             if (self.findFirst(candidates)) |p| {
                 self.advanceTo(p);
-                if (enc.scanByte(self.source, p) == 0 or (actual == .ascii and enc.scanByte(self.source, p) >= 128)) return self.fail(.invalid, self.cursor, 1, enc.scanByte(self.source, p));
+                if (enc.scanByte(self.source, p) == 0) return self.fail(.invalid, self.cursor, 1, enc.scanByte(self.source, p));
                 self.advanceTo(p + 1);
                 self.part_end = self.cursor;
                 self.trivia = .after_part;

@@ -31,25 +31,11 @@ pub fn options(comptime T: type, value: anytype) T {
     return result;
 }
 
-/// Native code units are framing, not arbitrary UTF-8 payload bytes. Reject
-/// unpaired surrogates/out-of-range scalars before exposing a native document.
-/// No allocation, decoding buffer, normalization or source map is involved.
-pub fn check(comptime actual: encoding.Actual, source: []const u8) encoding.InputError!void {
-    return checkControlled(actual, source, {});
-}
-
-pub fn checkControlled(comptime actual: encoding.Actual, source: []const u8, cancellation: anytype) encoding.InputError!void {
-    if (actual == .utf8) return; // Existing optional UTF-8 validation contract.
-    const reader = encoding.Reader(actual);
-    var at: usize = 0;
-    var next_poll: usize = 0;
-    while (at < source.len) {
-        if (@TypeOf(cancellation) != void) if (at >= next_poll) {
-            if (cancellation) |hook| if (hook.requested()) return error.Cancelled;
-            next_poll = at +| 256;
-        };
-        const decoded = reader.decode(source, at) catch return error.InvalidEncoding;
-        at += decoded.len;
+/// Framing is checked by encoding.select. Content validity belongs to each
+/// processor's invalid_encoding policy, not an unconditional admission pass.
+pub fn checkCancellation(cancellation: anytype) encoding.InputError!void {
+    if (@TypeOf(cancellation) != void) {
+        if (cancellation) |hook| if (hook.requested()) return error.Cancelled;
     }
 }
 

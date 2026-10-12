@@ -92,7 +92,9 @@ test "binding hooks expose only the admitted processor contract not unchecked pa
         try std.testing.expect(!@hasDecl(Bound, "parseBorrowed") and !@hasDecl(Bound, "parseAndValidate") and !@hasDecl(Bound, "Session"));
     }
     const Native = markup.Profile(.{ .source_encodings = &.{.utf16} });
-    try std.testing.expectError(error.InvalidEncoding, Native.parseBorrowed(gpa, "\x00\xd8", markup.diagnostic.discard, .{ .encoding = .utf16le }));
+    var unchecked = try Native.parseBorrowed(gpa, "\x00\xd8", markup.diagnostic.discard, .{ .encoding = .utf16le });
+    defer unchecked.deinit();
+    try std.testing.expectEqual(.success, unchecked.outcome);
     try std.testing.expectError(error.TruncatedCodeUnit, Native.parseBorrowed(gpa, "x\x00y", markup.diagnostic.discard, .{ .encoding = .utf16le }));
 }
 
@@ -239,6 +241,196 @@ fn encode(comptime actual: dot.InputEncoding, text: []const u8, buffer: []u8, bo
         }
     }
     return buffer[0..at];
+}
+
+fn corrupt(comptime actual: dot.InputEncoding, buffer: []u8, at: usize, unit: u32) void {
+    const E = dot.encoding.Reader(actual);
+    switch (E.width) {
+        1 => buffer[at] = @intCast(unit),
+        2 => std.mem.writeInt(u16, buffer[at..][0..2], @intCast(unit), E.endian),
+        4 => std.mem.writeInt(u32, buffer[at..][0..4], unit, E.endian),
+        else => unreachable,
+    }
+}
+
+test "encoding findings cover all readers with fixed runtime and storage parity" {
+    const caps = &.{ .ascii, .utf8, .utf16, .utf32 };
+    const RuntimeDot = dot.Profile(.{ .source_encodings = caps, .runtime_policy = true });
+    const RuntimeMarkup = markup.Profile(.{ .source_encodings = caps, .runtime_policy = true });
+    inline for (.{ .ascii, .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| inline for (.{ .err, .warning, .off }) |severity| {
+        const E = dot.encoding.Reader(actual);
+        const bad: u32 = if (E.width == 1) 0xff else if (E.width == 2) 0xd800 else 0x110000;
+        const D = dot.Profile(.{ .source_encodings = caps, .policy = .{ .validation = .{ .invalid_encoding = severity } } });
+        const M = markup.Profile(.{ .source_encodings = caps, .policy = .{ .mode = .structural, .validation = .{ .invalid_encoding = severity } } });
+        var buffer: [256]u8 = undefined;
+        const text = "graph { X [x=\"Y\"] } //Z";
+        const source = encode(actual, text, &buffer, false);
+        inline for (.{ 'X', 'Y', 'Z' }) |marker| corrupt(actual, &buffer, std.mem.indexOfScalar(u8, text, marker).? * E.width, bad);
+        var bag: dot.FixedDiagnosticBag(16) = .{};
+        var dynamic_bag: dot.FixedDiagnosticBag(16) = .{};
+        var checked = try D.parseAndValidate(gpa, source, bag.sink(), .{ .encoding = actual });
+        defer checked.deinit(gpa);
+        var dynamic = try RuntimeDot.parseAndValidate(gpa, source, dynamic_bag.sink(), .{ .encoding = actual, .policy = .{ .validation = .{ .invalid_encoding = severity } } });
+        defer dynamic.deinit(gpa);
+        try std.testing.expectEqual(.success, checked.outcome);
+        try std.testing.expectEqual(severity != .err, checked.documentValid());
+        try std.testing.expectEqual(@as(u64, if (severity == .err) 3 else 0), checked.validation.?.outcome.completed.violations);
+        try std.testing.expectEqual(@as(u64, if (severity == .warning) 3 else 0), checked.warnings);
+        try std.testing.expectEqualDeep(checked.validation, dynamic.validation);
+        try std.testing.expectEqualDeep(bag.items(), dynamic_bag.items());
+        const rechecked = try D.validate(&checked.document.?, dot.diagnostic.discard, .{});
+        try std.testing.expectEqualDeep(checked.validation.?, rechecked);
+        for (bag.items()) |finding| {
+            try std.testing.expectEqual(@as(u32, E.width), finding.span.len);
+            try std.testing.expectEqual(actual, finding.details.invalid_encoding.encoding);
+            try std.testing.expectEqual(bad, finding.details.invalid_encoding.unit);
+        }
+
+        const mt = "<X a='Y'>Z<!--W--><![CDATA[V]]></X>";
+        var markup_buffer: [256]u8 = undefined;
+        const ms = encode(actual, mt, &markup_buffer, false);
+        for (mt, 0..) |byte, index| if (byte >= 'V' and byte <= 'Z') corrupt(actual, &markup_buffer, index * E.width, bad);
+        var mbag: markup.FixedDiagnosticBag(16) = .{};
+        var mdbag: markup.FixedDiagnosticBag(16) = .{};
+        var mc = try M.parseAndValidate(gpa, try markup.Fragment.init(ms, 20), mbag.sink(), .{ .encoding = actual });
+        defer mc.deinit();
+        var md = try RuntimeMarkup.parseAndValidate(gpa, try markup.Fragment.init(ms, 20), mdbag.sink(), .{ .encoding = actual, .policy = .{ .mode = .structural, .validation = .{ .invalid_encoding = severity } } });
+        defer md.deinit();
+        try std.testing.expectEqual(.success, mc.parse.outcome);
+        try std.testing.expectEqual(severity != .err, mc.documentValid());
+        try std.testing.expectEqual(if (severity == .off) .not_run else .complete, mc.validation.?.checks.invalid_encoding);
+        try std.testing.expectEqual(@as(u64, if (severity == .err) 6 else 0), mc.validation.?.errors);
+        try std.testing.expectEqual(@as(u64, if (severity == .warning) 6 else 0), mc.validation.?.warnings);
+        try std.testing.expectEqualDeep(mc.validation, md.validation);
+        try std.testing.expectEqualDeep(mbag.items(), mdbag.items());
+        // The fixed standalone source pass shares the same kernel and origin
+        // rebasing remains a fragment adapter responsibility.
+        var local_bag: markup.FixedDiagnosticBag(16) = .{};
+        var scratch: markup.FixedSourceValidationScratch(1) = .{};
+        const local = try M.validateSourceIn(ms, scratch.storage(), local_bag.sink(), .{ .encoding = actual });
+        try std.testing.expectEqualDeep(mc.validation.?, local);
+        for (local_bag.items(), mbag.items()) |local_finding, original| {
+            try std.testing.expectEqual(local_finding.span.start + 20, original.span.start);
+            try std.testing.expectEqual(@as(u32, E.width), original.span.len);
+            try std.testing.expectEqual(actual, original.details.invalid_encoding.encoding);
+        }
+        var storage: markup.FixedDocumentStorage(.{ .nodes = 8, .attributes = 1 }) = .{};
+        var frames: markup.FixedParseScratch(2) = .{};
+        var fixed_bag: markup.FixedDiagnosticBag(16) = .{};
+        const fixed = try M.parseAndValidateIn(try markup.Fragment.init(ms, 20), .{ .document = storage.storage(), .scratch = frames.storage() }, scratch.storage(), fixed_bag.sink(), .{ .encoding = actual });
+        try std.testing.expectEqualDeep(mc.validation, fixed.validation);
+        try std.testing.expectEqualDeep(mbag.items(), fixed_bag.items());
+    };
+}
+
+test "DOT and markup encoding severities are independent in proactive composition" {
+    const Child = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
+    const P = dot.Profile(.{ .source_encodings = &.{ .ascii, .utf8, .utf16, .utf32 }, .runtime_policy = true, .processors = .{ .markup = Child } });
+    inline for (.{ .ascii, .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        const E = dot.encoding.Reader(actual);
+        const bad: u32 = if (E.width == 1) 0xff else 0xd800;
+        var buffer: [512]u8 = undefined;
+        const text = "graph { a[label=<<b>X</b>>+\"Y\"] } //Z";
+        const source = encode(actual, text, &buffer, false);
+        inline for (.{ 'X', 'Y', 'Z' }) |marker| corrupt(actual, &buffer, std.mem.indexOfScalar(u8, text, marker).? * E.width, bad);
+        inline for (.{ .err, .warning, .off }) |outer| inline for (.{ .err, .warning, .off }) |inner| {
+            var bag: P.FixedDiagnosticBag(16) = .{};
+            var result = try P.parseAndValidate(gpa, source, bag.sink(), .{
+                .encoding = actual,
+                .dot = .{ .policy = .{ .validation = .{ .invalid_encoding = outer } } },
+                .markup = .{ .policy = .{ .validation = .{ .invalid_encoding = inner } } },
+            });
+            defer result.deinit(gpa);
+            try std.testing.expect(result.scopeComplete());
+            try std.testing.expectEqual(outer != .err, result.dot.documentValid());
+            try std.testing.expectEqual(inner != .err, result.markup.allValid());
+            try std.testing.expectEqual(outer != .err and inner != .err, result.documentValid());
+            var dot_count: usize = 0;
+            var markup_count: usize = 0;
+            for (bag.items()) |finding| switch (finding) {
+                .dot => |d| {
+                    dot_count += 1;
+                    try std.testing.expectEqual(actual, d.details.invalid_encoding.encoding);
+                    try std.testing.expect(d.span.start != std.mem.indexOfScalar(u8, text, 'X').? * E.width);
+                },
+                .markup => |m| {
+                    markup_count += 1;
+                    try std.testing.expectEqual(@as(u32, @intCast(std.mem.indexOfScalar(u8, text, 'X').? * E.width)), m.span.start);
+                    try std.testing.expectEqual(actual, m.details.invalid_encoding.encoding);
+                },
+            };
+            try std.testing.expectEqual(@as(usize, if (outer == .off) 0 else 2), dot_count);
+            try std.testing.expectEqual(@as(usize, if (inner == .off) 0 else 1), markup_count);
+        };
+    }
+}
+
+test "passthrough skips inner encoding and delayed processing reports it once" {
+    const Child = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .invalid_encoding = .err } } });
+    const P = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .processors = .{ .markup = Child }, .policy = .{ .markup = .passthrough, .retention = .{ .markup = true }, .validation = .{ .invalid_encoding = .err } } });
+    inline for (.{ .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        const E = dot.encoding.Reader(actual);
+        var buffer: [512]u8 = undefined;
+        const text = "graph { a[label=<<b>X</b>>] }";
+        const source = encode(actual, text, &buffer, true);
+        const at = std.mem.indexOfScalar(u8, text, 'X').? * E.width + E.bomLength(source);
+        corrupt(actual, &buffer, at, if (E.width == 1) 0xff else 0xd800);
+        var bag: P.FixedDiagnosticBag(16) = .{};
+        var result = try P.parseAndValidate(gpa, source, bag.sink(), .{});
+        defer result.deinit(gpa);
+        try std.testing.expect(result.dot.documentValid());
+        try std.testing.expect(!result.markup.requested);
+        try std.testing.expectEqual(@as(usize, 0), bag.items().len);
+        try result.requestMarkup(gpa, result.dot.document.?.attributes[0].value);
+        try std.testing.expectEqual(.not_processed, result.state());
+        try P.processPendingMarkup(gpa, &result, bag.sink(), .{});
+        try std.testing.expect(result.dot.documentValid());
+        try std.testing.expect(!result.documentValid());
+        try std.testing.expectEqual(@as(usize, 1), bag.items().len);
+        try std.testing.expectEqual(@as(u32, @intCast(at)), bag.items()[0].markup.span.start);
+        try std.testing.expectEqual(.complete, result.markupResults().?[0].result.validation.?.checks.invalid_encoding);
+    }
+}
+
+test "public encoding scopes ignore malformed content outside their bounds" {
+    const P = markup.Profile(.{ .source_encodings = &.{ .ascii, .utf8, .utf16, .utf32 }, .policy = .{ .mode = .structural, .validation = .{ .invalid_encoding = .err, .duplicate_attribute = .off } } });
+    inline for (.{ .ascii, .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        const E = dot.encoding.Reader(actual);
+        var buffer: [64]u8 = undefined;
+        const source = encode(actual, "XokY", &buffer, false);
+        corrupt(actual, &buffer, 0, if (E.width == 1) 0xff else 0xd800);
+        corrupt(actual, &buffer, 3 * E.width, if (E.width == 1) 0xff else 0xd800);
+        var bag: markup.FixedDiagnosticBag(8) = .{};
+        const scoped = try P.validateScopeIn(source, .{ .bytes = .{ .start = E.width, .len = 2 * E.width } }, .{}, bag.sink(), .{ .encoding = actual });
+        try std.testing.expectEqual(.complete, scoped.checks.invalid_encoding);
+        try std.testing.expectEqual(.valid, scoped.validity);
+        try std.testing.expectEqual(@as(usize, 0), bag.items().len);
+        const outside = try P.validateScope(gpa, source, .{ .bytes = .{ .start = 0, .len = E.width } }, bag.sink(), .{ .encoding = actual });
+        try std.testing.expectEqual(.invalid, outside.validity);
+        try std.testing.expectEqual(@as(usize, 1), bag.items().len);
+        try std.testing.expectEqual(@as(u32, E.width), bag.items()[0].span.len);
+    }
+    // A UTF-16 pair is valid only when both units are inside the checked scope.
+    const pair = "\x00\xd8\x00\xdc";
+    const whole = try P.validateScopeIn(pair, .{ .bytes = .{ .start = 0, .len = 4 } }, .{}, markup.diagnostic.discard, .{ .encoding = .utf16le });
+    try std.testing.expectEqual(.valid, whole.validity);
+    const half = try P.validateScopeIn(pair, .{ .bytes = .{ .start = 0, .len = 2 } }, .{}, markup.diagnostic.discard, .{ .encoding = .utf16le });
+    try std.testing.expectEqual(.invalid, half.validity);
+}
+
+test "UTF-8 byte validators respect ASCII provenance even when validity was not checked" {
+    const A = dot.Profile(.{ .source_encodings = &.{} });
+    const D = dot.Profile(.{ .policy = .{ .validation = .{ .invalid_encoding = .err } } });
+    var doc = try A.parseBorrowed(gpa, "graph { é }", dot.diagnostic.discard, .{});
+    defer doc.deinit(gpa);
+    const checked = D.validate(&doc.document.?, dot.diagnostic.discard, .{});
+    try std.testing.expectEqual(@as(u64, 2), checked.outcome.completed.violations);
+    const AM = markup.Profile(.{ .source_encodings = &.{}, .policy = .{ .mode = .structural } });
+    const M = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .invalid_encoding = .err } } });
+    var mdoc = try AM.parseBorrowed(gpa, "é", markup.diagnostic.discard, .{});
+    defer mdoc.deinit();
+    try std.testing.expectEqual(@as(u64, 2), M.validateIn(&mdoc.document.?, .{}, markup.diagnostic.discard, .{}).errors);
+    try std.testing.expectEqual(@as(u64, 2), M.validate(gpa, &mdoc.document.?, markup.diagnostic.discard, .{}).errors);
 }
 
 test "markup recovery allowance uses source code units across native readers and policies" {
@@ -436,18 +628,28 @@ test "native diagnostics retain original line and physical byte column" {
     }
 }
 
-test "ASCII-only is enforced inside strings comments and markup" {
-    const D = dot.Profile(.{ .source_encodings = &.{} });
-    const M = markup.Profile(.{ .source_encodings = &.{}, .policy = .{ .mode = .structural } });
+test "ASCII validity is a scoped encoding policy not an admission failure" {
+    const D = dot.Profile(.{ .source_encodings = &.{}, .policy = .{ .validation = .{ .invalid_encoding = .err } } });
+    const M = markup.Profile(.{ .source_encodings = &.{}, .policy = .{ .mode = .structural, .validation = .{ .invalid_encoding = .err } } });
     var bag: dot.FixedDiagnosticBag(8) = .{};
     var okay = try D.parseBorrowed(gpa, "graph { a }", bag.sink(), .{});
     defer okay.deinit(gpa);
     try std.testing.expect(okay.outcome == .success);
     inline for (.{ "graph { a [x=\"é\"] }", "graph { //é\n a }", "graph { /*é*/ a }", "graph { #é\n a }", "graph { <é> }" }) |source| {
-        try std.testing.expectError(error.InvalidEncoding, D.parseBorrowed(gpa, source, bag.sink(), .{}));
+        bag.reset();
+        var checked = try D.parseAndValidate(gpa, source, bag.sink(), .{});
+        defer checked.deinit(gpa);
+        try std.testing.expectEqual(.success, checked.outcome);
+        const html = comptime std.mem.eql(u8, source, "graph { <é> }");
+        try std.testing.expectEqual(html, checked.documentValid());
+        try std.testing.expectEqual(@as(usize, if (html) 0 else 2), bag.items().len);
+        for (bag.items()) |d| try std.testing.expectEqual(.ascii, d.details.invalid_encoding.encoding);
     }
     var mbag: markup.FixedDiagnosticBag(8) = .{};
-    try std.testing.expectError(error.InvalidEncoding, M.parseBorrowed(gpa, "<!--é-->", mbag.sink(), .{}));
+    var checked = try M.parseAndValidate(gpa, try markup.Fragment.init("<!--é-->", 0), mbag.sink(), .{});
+    defer checked.deinit();
+    try std.testing.expect(!checked.documentValid());
+    try std.testing.expectEqual(@as(usize, 2), mbag.items().len);
 }
 
 test "bound markup inherits and explicit child capabilities form a union" {
@@ -466,20 +668,24 @@ test "bound markup inherits and explicit child capabilities form a union" {
     }
 }
 
-test "native selection requires byte order and rejects malformed units" {
+test "native selection requires byte order and complete unit framing" {
     const D = dot.Profile(.{ .source_encodings = &.{.utf32} });
     var bag: dot.FixedDiagnosticBag(8) = .{};
     try std.testing.expectError(error.EncodingRequired, D.parseBorrowed(gpa, "graph {}", bag.sink(), .{}));
     try std.testing.expectError(error.UnsupportedEncoding, D.parseBorrowed(gpa, "graph {}", bag.sink(), .{ .encoding = .utf8 }));
     try std.testing.expectError(error.TruncatedCodeUnit, D.parseBorrowed(gpa, "\xff\xfe\x00\x00x", bag.sink(), .{}));
-    try std.testing.expectError(error.InvalidEncoding, D.parseBorrowed(gpa, "\xff\xfe\x00\x00\x00\xd8\x00\x00", bag.sink(), .{}));
+    var malformed = try D.parseBorrowed(gpa, "\xff\xfe\x00\x00\x00\xd8\x00\x00", bag.sink(), .{});
+    defer malformed.deinit(gpa);
+    try std.testing.expectEqual(.invalid_syntax, malformed.outcome); // Missing DOT header, not admission.
     const U = dot.Profile(.{ .source_encodings = &.{ .utf16, .utf32 } });
     // Explicit UTF-16LE sees its own two-byte BOM followed by NUL, not a
     // conflicting UTF-32LE signature. NUL is a grammar failure, not framing.
     var narrow = try U.parseBorrowed(gpa, "\xff\xfe\x00\x00", bag.sink(), .{ .encoding = .utf16le });
     defer narrow.deinit(gpa);
     try std.testing.expectEqual(dot.ParseOutcome.invalid_syntax, narrow.outcome);
-    try std.testing.expectError(error.InvalidEncoding, U.parseBorrowed(gpa, "\xfe\xff\xd8\x00", bag.sink(), .{}));
+    var surrogate = try U.parseBorrowed(gpa, "\xfe\xff\xd8\x00", bag.sink(), .{});
+    defer surrogate.deinit(gpa);
+    try std.testing.expectEqual(.invalid_syntax, surrogate.outcome);
 }
 
 test "explicit native markup preserves leading text that resembles another BOM" {

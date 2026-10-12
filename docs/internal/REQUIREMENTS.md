@@ -426,7 +426,7 @@ bare-dash `.from_keyword` interpretation apply at both binding times. Factual
 u32 deviation/warning counters survive diagnostic suppression and later failure;
 source ranges remain original, while retained structure may normalize operators
 or omit empty statements. No per-record policy/history storage is added.
-Configurable lexical numeral severity and optional UTF-8, repeated-key and
+Configurable lexical numeral severity and optional encoding, repeated-key and
 consumer kind/port/subgraph checks are implemented at both binding times.
 Their severities are `.err`, `.warning` and `.off`: errors affect acceptance,
 warnings do not invalidate, and off means the check is not performed, not that
@@ -443,8 +443,9 @@ never an unbounded quadratic scan or hidden allocation. Post-parse metadata
 sizing and per-owner scratch reuse must preserve source-ordered findings,
 including nested subgraph-edge owners. Required scratch is no greater than
 one 16-byte entry per retained attribute; empty/singleton lists require none.
-Scratch exhaustion is incomplete validation, never valid acceptance. UTF-8
-checks the whole source with bytewise error recovery. Kind restrictions use the
+Scratch exhaustion is incomplete validation, never valid acceptance. Encoding
+validation checks DOT-owned bytes in the actual reader, excluding HTML operand
+bodies; it recovers one code unit at a time. Kind restrictions use the
 effective kind; port restrictions count written qualified node references and
 subgraph restrictions count named/anonymous occurrences, including endpoints.
 These restrictions neither resolve ports nor remove grammar support. Diagnostics
@@ -617,7 +618,7 @@ for every dialect's grammar; different parsing semantics require an explicit
 grammar contract or compile-time-bound processor. The generic/extensible processor
 prioritizes Graphviz as a consumer, not browser implementation. Slice 4b supplies optional
 XML 1.0 names and a first five-name predefined-reference catalog, not full XML
-conformance or value expansion. Name-local UTF-8 decoding does not enable a
+conformance or value expansion. Name-local scalar decoding does not enable a
 whole-source check. Independent findings keep their severities and may overlap.
 Structural recovery is implemented separately from validation, preserving the
 no-guessed-repair/no-partial-success contract. Details and
@@ -636,7 +637,7 @@ duplicate checks support error/warning/off with explicit scratch and results.
 Parsing preserves references without decoding/lookup; malformed-reference acceptance
 is an explicit reject/warn/accept syntax policy with factual counters and sink-stop
 handling. Comments and CDATA remain distinct source-backed leaves. Slice 4a adds
-optional whole-source UTF-8 validation, off by default with error/warning choices;
+optional fragment-wide encoding validation, off by default with error/warning choices;
 its source-ordered findings do not stop independent duplicate checks. Slice 4b
 adds independent default-off name and catalog checks with source-ordered typed
 findings, no new retained pool or required scratch, and fixed/runtime parity.
@@ -970,10 +971,10 @@ normalization or transcoding in the parser. Encoding validation is a separable
 policy or pass so users who do not request it do not link its tables or code.
 
 UTF-8 and Latin-1 remain ASCII-compatible raw-byte inputs on the default path.
-Optional UTF-8 validation does not change retained lexemes. Source-reader
+Optional encoding validation does not change retained lexemes. Source-reader
 capabilities are compile-time profile configuration: omission means UTF-8,
 explicit empty means ASCII-only, and UTF-16/32 readers are opt-in. Enabling a
-reader is not enabling a string processor or mandatory UTF-8 validation.
+reader is not enabling a string processor or mandatory encoding-content validation.
 
 **Native source decision (2026-10-10):** recognize structural ASCII code units
 without transcoding the source. Explicit input encoding is authoritative and
@@ -987,10 +988,18 @@ standalone. Actual encoding is inherited by raw child operands.
 
 Retain original bytes, physical byte offsets and one compact encoding/BOM/
 provenance record per document. No conversion buffer or source map belongs on
-the native path. ASCII-only applies even inside comments and quoted content.
-Native malformed code units must not be mistaken for complete successful input.
-The first implementation provides unmetered admission plus one-shot processing;
-resumable admission/dispatch and native excerpt windows remain unfinished. The
+the native path. Complete native-unit framing is always enforced before parsing.
+`validation.invalid_encoding` replaces the UTF-8-only policy, with independent
+error/warning/off settings for DOT and markup. Checks select the actual reader;
+DOT covers ordinary syntax, strings, comments and trivia, excluding the bodies of
+HTML operands. Markup covers its own fragment, and explicit local scope checks
+bound scalar lookahead to that span. Passthrough does not certify child encoding.
+Errors affect the owning scope and aggregate validity, not another processor's
+scope validity; shared mechanics must not duplicate findings or add per-record
+storage. Warning/off may preserve malformed full units without changing source.
+Unfinished checking must not be claimed complete, and framing/bounds checks
+cannot be disabled. Native one-shot processing is implemented;
+resumable dispatch/validation and native excerpt windows remain unfinished. The
 current API/cost boundaries are in [source encodings](../ENCODINGS.md).
 
 **Markup recovery-work decision (2026-10-11):** the total ancestor-search

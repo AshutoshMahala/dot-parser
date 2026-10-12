@@ -145,42 +145,71 @@ pub const Operators = struct {
     }
 };
 
-pub const Encoding = struct {
-    source: []const u8,
-    severity: policy.RuleSeverity,
-    offset: u32 = 0,
+/// Encoding checks own DOT bytes, never the bodies of HTML-like operands.
+/// A lexical cursor establishes boundaries without an index/allocation and also
+/// covers comments/trivia and concatenation glue not retained as syntax records.
+pub fn EncodingForEncoding(comptime actual: @import("parser_support").encoding.Actual) type {
+    const support = @import("parser_support");
+    const enc = support.encoding.Reader(actual);
+    const Scanner = @import("lexer/lexer.zig").scannerForEncoding(actual, .scalar, false)(false, false, false);
+    const Parts = @import("identifier_parts.zig").ForEncoding(actual).Parts;
+    return struct {
+        source: []const u8,
+        severity: policy.RuleSeverity,
+        offset: u32 = 0,
+        scanner: Scanner,
+        parts: Parts = .{ .input = .{ .bytes = &.{}, .origin = 0 }, .compound = false },
+        skip: ?@import("parser_support").location.Span = null,
+        scanned: bool = false,
 
-    pub fn init(document: *const syntax.Document, settings: Settings, _: Scratch) Encoding {
-        return .{ .source = document.source, .severity = settings.invalid_utf8 };
-    }
-
-    pub fn next(self: *Encoding) ?D {
-        if (self.severity == .off) return null;
-        while (self.offset < self.source.len) {
-            const start = self.offset;
-            const byte = self.source[start];
-            if (byte < 0x80) {
-                self.offset += 1;
-                continue;
-            }
-            const len = @import("parser_support").utf8.sequenceLength(self.source[start..]) orelse return self.invalid();
-            self.offset += len;
+        pub fn init(document: *const syntax.Document, settings: Settings, _: Scratch) @This() {
+            return .{ .source = document.source, .severity = settings.invalid_encoding, .scanner = Scanner.init(document.source) };
         }
-        return null;
-    }
 
-    /// Bytewise recovery: every byte not consumed by a valid sequence is one
-    /// finding. Never swallows a subsequent ASCII byte or valid sequence.
-    fn invalid(self: *Encoding) D {
-        const start = self.offset;
-        self.offset += 1;
-        return .{
-            .code = severityCode(self.severity, .validation_invalid_utf8, .validation_invalid_utf8_tolerated),
-            .span = .{ .start = start, .len = 1 },
-            .details = .{ .invalid_utf8 = self.source[start] },
-        };
-    }
-};
+        fn nextSkip(self: *@This()) ?support.location.Span {
+            while (true) {
+                while (self.parts.next()) |part| if (part.form == .html) return part.inner;
+                if (self.scanned) return null;
+                const token = self.scanner.next();
+                switch (token) {
+                    .failure => switch (self.scanner.terminal) {
+                        .oversize, .none, .eof => self.scanned = true,
+                        else => self.scanner.resumeAfterFailure(),
+                    },
+                    .token => |t| {
+                        if (t.tag == .eof) self.scanned = true;
+                        if (t.flags.has_html) self.parts = .{
+                            .input = .{ .bytes = t.span.slice(self.source), .origin = t.span.start },
+                            .compound = t.flags.concatenated,
+                        };
+                    },
+                }
+            }
+        }
+
+        pub fn next(self: *@This()) ?D {
+            if (self.severity == .off) return null;
+            if (self.offset == 0) self.skip = self.nextSkip();
+            while (self.offset < self.source.len) {
+                if (self.skip) |span| if (self.offset == span.start) {
+                    self.offset += span.len;
+                    self.skip = self.nextSkip();
+                    continue;
+                };
+                const start = self.offset;
+                const end = if (self.skip) |span| span.start else self.source.len;
+                const step = support.encoding.validationStep(actual, self.source[0..end], start);
+                self.offset += step.len;
+                if (step.invalid) |bad| return .{
+                    .code = severityCode(self.severity, .validation_invalid_encoding, .validation_invalid_encoding_tolerated),
+                    .span = .{ .start = start, .len = enc.width },
+                    .details = .{ .invalid_encoding = bad },
+                };
+            }
+            return null;
+        }
+    };
+}
 
 pub const RepeatedAttributes = RepeatedAttributesForEncoding(.utf8);
 

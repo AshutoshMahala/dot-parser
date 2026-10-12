@@ -53,7 +53,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                 const info = try enc.select(caps, input.bytes, self.encoding);
                 switch (info.encoding) {
                     inline else => |actual| if (comptime caps.allows(actual)) {
-                        try dispatch.checkControlled(actual, input.bytes, self.admissionHook());
+                        if (actual != .utf8) try dispatch.checkCancellation(self.admissionHook());
                         const W = worker(actual);
                         const ready: W.Prepared = .{ .policies = self.policies, .cancellation = self.cancellation };
                         var result = try ready.parseAndValidate(allocator, input, sink, resources);
@@ -66,7 +66,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                 const info = try enc.select(caps, input.bytes, self.encoding);
                 switch (info.encoding) {
                     inline else => |actual| if (comptime caps.allows(actual)) {
-                        try dispatch.checkControlled(actual, input.bytes, self.admissionHook());
+                        if (actual != .utf8) try dispatch.checkCancellation(self.admissionHook());
                         const W = worker(actual);
                         const ready: W.Prepared = .{ .policies = self.policies, .cancellation = self.cancellation };
                         var result = try ready.parseAndValidateIn(input, memory, scratch, sink);
@@ -84,7 +84,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                 switch (info.encoding) {
                     inline else => |actual| if (comptime caps.allows(actual)) {
                         const cancellation = if (config.runtime_policy) (if (self.base.prepared.policies.execution.cancellation) self.base.prepared.cancellation else null) else self.base.prepared.cancellation;
-                        try dispatch.checkControlled(actual, input.bytes, cancellation);
+                        if (actual != .utf8) try dispatch.checkCancellation(cancellation);
                         const W = worker(actual);
                         // Move the same buffers through the selected worker. No
                         // extra pool, duplicate ownership or per-encoding cache.
@@ -140,7 +140,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                             },
                         }
                     }
-                    try dispatch.checkControlled(actual, source, prepared.admissionHook());
+                    if (actual != .utf8) try dispatch.checkCancellation(prepared.admissionHook());
                     const W = worker(actual);
                     const Opt = comptime if (std.mem.eql(u8, method, "parseBorrowed")) W.ParseOptions else W.Options;
                     var result: Result = @call(.auto, @field(W, method), arguments ++ .{dispatch.options(Opt, options)});

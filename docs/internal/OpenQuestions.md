@@ -35,7 +35,7 @@ assigned merely because a topic has been discussed.
 | Markup — Q40 | Structural parsing/checks/recovery, local scopes, passthrough IDs | Graphviz/extended rules, dialect grammar, catalogs, summaries and partial-tree design |
 | Processors — Q40 | Custom compile-time bindings, nested policy preparation, delayed/one-shot integration and workspace reuse | Recursive/string execution, fixed/resumable composition and broader profile API |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
-| Encoding — Q23 | Raw bytes, optional UTF-8 and byte-coordinate diagnostics | UTF-16/32 conversion, provenance/mapping APIs |
+| Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
 | Graph layer — Q5/Q17/Q35 | Source-shaped syntax for downstream consumers | Semantic lowering, consumer adapters and marshal/unmarshal |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
@@ -377,7 +377,7 @@ not mean every future validation or graph-building rule is implemented.
 | Existing settings | Nesting/statement/attribute limits, recovery, scanner, independent metering/cancellation | Parse, measure and policy-bound sessions; `tests/policy_settings.zig` |
 | Initial lenient syntax | Empty statements, exact `---`/`-->`, bare `-` from the written header; independent reject/warn/accept choices | Parsing; `tests/lenient.zig` |
 | Numeral ambiguity | `validation.ambiguous_numeral`: error/warning/off, default warning; tokenization is unchanged | Parsing, not a later validation replay; `tests/validation_checks.zig` |
-| Optional checks | Whole-source UTF-8, repeated attribute keys, effective graph-kind restrictions, qualified node references and subgraph occurrences | Post-parse validation; default off; `tests/validation_checks.zig` |
+| Optional checks | DOT-owned encoding, repeated attribute keys, effective graph-kind restrictions, qualified node references and subgraph occurrences | Post-parse validation; default off; `tests/validation_checks.zig` |
 | Presets and factual results | Complete `standard` / `lenient` policies; deviations and warning counts survive suppression/failure; no hidden history | Q36 and the [public contract](../POLICIES.md) |
 | Diagnostics and fixes | Typed policy-aware findings; `diagnostics.fixes = all / machine_applicable / off` filters all DOT offers at either binding time without changing validity or delivery | Q37; `tests/diagnostics.zig`, `tests/html_identifiers.zig` |
 | HTML-like identifiers and processing selection | `markup = none / passthrough / process`; passthrough without a bound child, process with one; raw operands and explicit decoding | Parsing; `tests/html_identifiers.zig`, `tests/during_dot.zig` |
@@ -629,7 +629,7 @@ production adapters do not translate through an old options structure.
 
 **Additional checks implemented (2026-09-20):** `validation.ambiguous_numeral`
 selects error/warning/off during parsing (default warning); validation does not
-retroactively re-run lexical checks. `invalid_utf8`, `repeated_attribute`, and
+retroactively re-run lexical checks. `invalid_encoding`, `repeated_attribute`, and
 consumer restrictions on effective graph kinds, ports and subgraph occurrences
 are independent optional post-parse checks, default off. Every leaf supports
 fixed and runtime binding. Each check selects `.err`, `.warning` or `.off`;
@@ -942,7 +942,7 @@ need not leave a document.
 | Profile/API redesign | Deferred discussion; workspace reuse did not decide it |
 | Summary index / caching / public events | Optional proposals; ownership, layout, budgets and event contract unresolved |
 | Partial-tree publication | Deferred; current parse results remain complete-document-only |
-| Native encoding execution | Initial one-shot paths implemented; resumable admission/session dispatch and native excerpts remain |
+| Native encoding execution | Initial one-shot paths implemented; native session dispatch, metered validation and native excerpts remain |
 | Packaging/versioning | Open; an independent module does not decide separate packages/version numbers |
 | Cross-parser boundary survey | Optional follow-up, not a gate on delivered recognition |
 
@@ -981,7 +981,7 @@ them; 8-byte compact ranges and 32-bit positions sharing one 4 GiB domain,
 enforced once at the scanner entry. u16/u24 variants
 await the profile work. *(Embodied: `syntax.Index`, `location.Range`.)*
 
-**Q23 — Does version 1 ship the optional UTF-8 validator, and what policy
+**Q23 — Does version 1 ship the optional encoding validator, and what policy
 applies to BOMs, NUL bytes, invalid sequences, and HTML-like IDs?**
 **Decided:** the core is byte-oriented, with physical byte offsets and
 LF/CRLF/standalone-CR tracking; encoding validation is a separate optional
@@ -1007,15 +1007,18 @@ A leading UTF-8 BOM is skipped, matching Graphviz's scanner (decided
 decoding an extracted identifier starting with those bytes. Q40's recognition in
 all DOT ID positions, independent structural markup and delayed/one-shot
 integration are implemented; specialized label rules remain future work.
-**Optional validator implemented (2026-09-20):** `validation.invalid_utf8` is
-off by default, with error and warning choices. It checks all source bytes,
-including comments and trivia, without mutation. A byte not consumed by a valid
-UTF-8 sequence is one finding, then recovery advances one byte. Overlong forms,
-surrogates and values beyond U+10FFFF are invalid. No policy weakens grammar NUL
-rules. **Standalone markup implemented (2026-09-27, slice 4a):** the same optional
-whole-source encoding check is available independently of parsing, including
-comments/CDATA and with compile-time/runtime parity. Retained-document findings
-merge with duplicates in source order, UTF-8 first on equal starts. The separate
+**Optional validator implemented (2026-09-20; generalized 2026-10-11):**
+`validation.invalid_encoding` is off by default, with error and warning choices.
+It checks the selected source reader, without mutation. DOT owns ordinary
+syntax, strings, comments and trivia, but excludes HTML operand bodies. Markup
+owns its fragment, with independent severity and diagnostics; passthrough makes
+no child-encoding claim. Each invalid code unit is one finding, advancing one
+byte (ASCII/UTF-8), two (UTF-16) or four (UTF-32). No policy weakens bounds,
+complete-unit framing or grammar NUL rules. **Standalone markup implemented
+(2026-09-27, slice 4a):** the optional fragment-wide encoding check is available
+independently of parsing, including comments/CDATA and with compile-time/runtime
+parity. Explicit scopes bound lookahead to their spans. Retained-document findings
+merge with duplicates in source order, encoding first on equal starts. The separate
 source-scope path runs encoding before local checks; it is not globally sorted. Shared sequence checking
 does not share processor-owned policies/diagnostics or imply XML name/character
 conformance. Optional markup names and known-reference checks are implemented in
@@ -1034,10 +1037,11 @@ framing contract; they do not follow from the union.
 Native grammar readers borrow the untouched original buffer and retain physical
 byte spans. Record actual encoding, byte order, BOM and selection provenance once
 per document, not per token. No source-wide conversion/map is introduced. The
-initial one-shot facade prechecks ASCII/native code units and reports admission
-failures as typed input errors before tree creation; UTF-8 validation stays
-optional. Fixed storage, workspaces and proactive/delayed markup are supported;
-resumable native admission/session dispatch and native source excerpts remain
+one-shot facade checks reader selection and full code-unit framing before tree
+creation; malformed full units follow each processor's optional validation
+policy rather than unconditional admission rejection. Fixed storage, workspaces
+and proactive/delayed markup are supported;
+resumable native session dispatch/validation and native source excerpts remain
 unfinished. See [source encodings](../ENCODINGS.md) for the available contract.
 Markup ancestor-search recovery uses a shared 1x source-code-unit allowance:
 one credit per ancestor probe or name code-unit comparison, never replenished

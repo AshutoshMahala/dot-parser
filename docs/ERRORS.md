@@ -11,7 +11,7 @@ Every operation tells you two things, kept separate on purpose:
 The library never prints or panics on bad input. Problems in the text are
 reported as diagnostics, not Zig errors. Zig errors are for mistakes in how the
 library is called or set up and, in unreleased builds, for files whose
-[encoding can't be read](ENCODINGS.md#checks-before-parsing). Those are checked
+[encoding can't be read or has incomplete code-unit framing](ENCODINGS.md#framing-before-parsing). Those are checked
 before parsing starts.
 
 Both parsers report problems this way, with the same bags, sinks, renderer and
@@ -392,7 +392,7 @@ always prints the full form. Codes may change between 0.x versions.
 | `E.Syntax.Grammar.031` | The input ended before the document was complete |
 | `E.Syntax.Keyword.003` | A keyword used as a name, like `a -- node`. Quote it: `"node"`. |
 | `E/W.Validation.Operator.002` | The edge operator doesn't match the graph kind |
-| `E/W.Validation.Encoding.003` | Invalid UTF-8 (optional check) |
+| `E/W.Validation.Encoding.003` | Malformed content in the selected source encoding (optional, scope-owned check) |
 | `E/W.Validation.Attribute.035` | The same key twice on one statement (optional check) |
 | `E/W.Validation.Restriction.003` | Input uses something you restricted, such as ports or subgraphs (optional check) |
 | `E/W.Profile.Feature.009` | Input uses a feature your settings turned off |
@@ -414,7 +414,7 @@ The full list, with summaries and hints, is in
 | `E.Syntax.Tag.032` | The input ended before an element was closed |
 | `E/W.Syntax.Reference.003` | A malformed reference, like `&` on its own or `&amp` without `;`. A warning when your settings tolerate it. |
 | `E/W.Validation.Attribute.006` | The same attribute twice on one element |
-| `E/W.Validation.Encoding.003` | Invalid UTF-8 (optional check) |
+| `E/W.Validation.Encoding.003` | Malformed content in the selected source encoding (optional, fragment/scope check) |
 | `E/W.Validation.Name.003` | A name that breaks the selected name rule (optional check) |
 | `E/W.Validation.Reference.003` | A reference missing from the selected list, like `&nbsp;` (optional check) |
 | `E/W.Validation.Tag.009` | An element Graphviz doesn't know (Graphviz mode, unreleased) |

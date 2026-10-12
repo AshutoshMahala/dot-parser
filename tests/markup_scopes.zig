@@ -10,7 +10,7 @@ fn span(source: []const u8, needle: []const u8) Span {
     return .{ .start = @intCast(std.mem.indexOf(u8, source, needle).?), .len = @intCast(needle.len) };
 }
 const All = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
-    .invalid_utf8 = .err,
+    .invalid_encoding = .err,
     .names = .{ .severity = .err },
     .references = .{ .severity = .err },
 } } });
@@ -23,13 +23,13 @@ test "local attribute value validation is independent of outer syntax and exclud
     try equal(.invalid, checked.validity);
     try equal(@as(u64, 2), checked.errors);
     try equal(.not_run, checked.checks.duplicate_attribute);
-    try equal(.complete, checked.checks.invalid_utf8);
+    try equal(.complete, checked.checks.invalid_encoding);
     try equal(.complete, checked.checks.names);
     try equal(.complete, checked.checks.references);
     try equal(markup.diagnostic.Code.unknown_reference, bag.items()[0].code);
-    try equal(markup.diagnostic.Code.invalid_utf8, bag.items()[1].code);
+    try equal(markup.diagnostic.Code.invalid_encoding, bag.items()[1].code);
     try equal(span(source, "&bogus;").start + 7, bag.items()[1].span.start);
-    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .invalid_utf8 = .err } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .invalid_encoding = .err } } });
     var truncated: markup.FixedDiagnosticBag(8) = .{};
     // A local boundary cannot borrow continuation bytes from an adjacent scope.
     const r = P.validateScopeIn("\xc3\xa9", .{ .bytes = .{ .start = 0, .len = 1 } }, .{}, truncated.sink(), .{});
@@ -124,7 +124,7 @@ test "encoding remains independent of terminal syntax while local coverage stays
     var bag: markup.FixedDiagnosticBag(8) = .{};
     const r = All.validateSource(std.testing.allocator, source, bag.sink(), .{});
     try equal(@as(u32, source.len), r.completion.incomplete);
-    try equal(.complete, r.checks.invalid_utf8);
+    try equal(.complete, r.checks.invalid_encoding);
     try equal(.incomplete, r.checks.references);
     try equal(.invalid, r.validity);
     try equal(@as(u64, 1), r.errors);
@@ -214,7 +214,7 @@ test "scope scanning is invariant across every source truncation and backend" {
         const a = All.validateSource(std.testing.allocator, source[0..end], scalar.sink(), .{});
         inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |cancellable| {
             block.reset();
-            const B = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend, .execution = .{ .cancellation = cancellable }, .validation = .{ .invalid_utf8 = .err, .names = .{ .severity = .err }, .references = .{ .severity = .err } } } });
+            const B = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend, .execution = .{ .cancellation = cancellable }, .validation = .{ .invalid_encoding = .err, .names = .{ .severity = .err }, .references = .{ .severity = .err } } } });
             const b = B.validateSource(std.testing.allocator, source[0..end], block.sink(), .{});
             try std.testing.expectEqualDeep(a, b);
             try std.testing.expectEqualSlices(markup.Diagnostic, scalar.items(), block.items());
@@ -226,7 +226,7 @@ test "scope scanning is invariant across every source truncation and backend" {
     var random = std.Random.DefaultPrng.init(0x53434f504553);
     var bytes: [source.len]u8 = undefined;
     const Block = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = .block, .execution = .{ .cancellation = true }, .validation = .{
-        .invalid_utf8 = .err,
+        .invalid_encoding = .err,
         .names = .{ .severity = .err },
         .references = .{ .severity = .err },
     } } });
@@ -380,7 +380,7 @@ test "public scope metadata is checked with fixed runtime and disabled content p
     inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |enabled| {
         const p: markup.Policy = .{ .mode = .structural, .validation = .{
             .duplicate_attribute = if (enabled) .err else .off,
-            .invalid_utf8 = if (enabled) .err else .off,
+            .invalid_encoding = if (enabled) .err else .off,
             .names = .{ .severity = if (enabled) .err else .off },
             .references = .{ .severity = if (enabled) .err else .off },
         } };
@@ -473,19 +473,19 @@ test "public metadata audit honors cancellation even with content checks off" {
 test "incomplete offsets retain the earliest lexical gap despite later checks" {
     const source = "ok<a bad=0/><b other=1/><c x='1' x='2'>&bogus;</c>\xff";
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| {
-        const p: markup.Policy = .{ .mode = .structural, .scanner = backend, .validation = .{ .invalid_utf8 = .err, .references = .{ .severity = .err } } };
+        const p: markup.Policy = .{ .mode = .structural, .scanner = backend, .validation = .{ .invalid_encoding = .err, .references = .{ .severity = .err } } };
         const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{
             .mode = .structural,
         } else p });
         var bag: markup.FixedDiagnosticBag(8) = .{};
         const r = P.validateSource(std.testing.allocator, source, bag.sink(), if (runtime) .{ .policy = p } else .{});
         try equal(span(source, "0").start, r.completion.incomplete);
-        try equal(.complete, r.checks.invalid_utf8);
+        try equal(.complete, r.checks.invalid_encoding);
         try equal(.incomplete, r.checks.references);
         try equal(@as(u64, 3), r.errors);
         try equal(.invalid, r.validity);
         // Encoding ran first; later local checks ran beyond the first gap.
-        try equal(markup.diagnostic.Code.invalid_utf8, bag.items()[0].code);
+        try equal(markup.diagnostic.Code.invalid_encoding, bag.items()[0].code);
         try equal(markup.diagnostic.Code.duplicate_attribute, bag.items()[1].code);
         try expect(bag.items()[1].span.start > r.completion.incomplete);
     };

@@ -173,8 +173,8 @@ pub const Code = enum {
     /// E.Syntax.Numeral.033 — the lexical ambiguity is rejected by policy.
     syntax_ambiguous_numeral_rejected,
     /// E/W.Validation.Encoding.003 — one byte that cannot begin valid UTF-8.
-    validation_invalid_utf8,
-    validation_invalid_utf8_tolerated,
+    validation_invalid_encoding,
+    validation_invalid_encoding_tolerated,
     /// E/W.Validation.Attribute.035 — logical key repeated within one owner.
     validation_repeated_attribute,
     validation_repeated_attribute_tolerated,
@@ -291,13 +291,13 @@ pub const Code = enum {
                 .summary = "numeral runs directly into the next token",
                 .hint = "Graphviz reads this as two tokens; quote the text, or separate the tokens with whitespace",
             },
-            .validation_invalid_utf8, .validation_invalid_utf8_tolerated => .{
-                .severity = if (self == .validation_invalid_utf8) .err else .warning,
+            .validation_invalid_encoding, .validation_invalid_encoding_tolerated => .{
+                .severity = if (self == .validation_invalid_encoding) .err else .warning,
                 .component = .validation,
                 .primary = .encoding,
                 .sequence = Sequence.invalid,
-                .summary = "source contains invalid UTF-8",
-                .hint = "supply UTF-8 input or disable the optional encoding check when using another byte encoding; no bytes were replaced",
+                .summary = "invalid sequence in the source encoding",
+                .hint = "supply well-formed input in the selected source encoding or change the encoding-validation policy",
             },
             .validation_repeated_attribute, .validation_repeated_attribute_tolerated => .{
                 .severity = if (self == .validation_repeated_attribute) .err else .warning,
@@ -399,7 +399,7 @@ pub const Details = union(enum) {
     incomplete_numeral: ?u8,
     /// For `syntax_ambiguous_numeral`: the byte the numeral runs into.
     ambiguous_numeral: u8,
-    invalid_utf8: u8,
+    invalid_encoding: @import("parser_support").encoding.Invalid,
     /// First equal logical key in the same statement's attribute lists.
     repeated_attribute: location.Span,
     restriction: enum { undigraph, digraph, generic, port, subgraph },

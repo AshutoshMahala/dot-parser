@@ -6,7 +6,7 @@ const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
 const equal = std.testing.expectEqual;
 const expect = std.testing.expect;
 const discard = markup.diagnostic.discard;
-const Encoding = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err } } });
+const Encoding = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_encoding = .err } } });
 
 test "UTF-8 is opt-in, independent of parsing, and covers every raw source context" {
     const source = "\xef\xbb\xbf<\xff \xff='\xff'>\xff<!--\xff--><![CDATA[\xff]]></\xff>\xff";
@@ -17,7 +17,7 @@ test "UTF-8 is opt-in, independent of parsing, and covers every raw source conte
     const retained = parsed.retainedBytes();
     const default = Structural.validateIn(&document, .{}, discard, .{});
     try equal(.valid, default.validity);
-    try equal(.not_run, default.checks.invalid_utf8);
+    try equal(.not_run, default.checks.invalid_encoding);
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
     defer bag.deinit();
     // Encoding-only validation needs no allocator, even with the owned API.
@@ -25,14 +25,15 @@ test "UTF-8 is opt-in, independent of parsing, and covers every raw source conte
     try equal(.complete, checked.completion);
     try equal(.invalid, checked.validity);
     try equal(.not_run, checked.checks.duplicate_attribute);
-    try equal(.complete, checked.checks.invalid_utf8);
+    try equal(.complete, checked.checks.invalid_encoding);
     try equal(@as(u64, 8), checked.errors);
     var index: usize = 0;
     for (source, 0..) |byte, offset| if (byte == 0xff) {
         const finding = bag.items()[index];
-        try equal(markup.diagnostic.Code.invalid_utf8, finding.code);
+        try equal(markup.diagnostic.Code.invalid_encoding, finding.code);
         try equal(markup.location.Span{ .start = @intCast(offset), .len = 1 }, finding.span);
-        try equal(byte, finding.details.byte);
+        try equal(@as(u32, byte), finding.details.invalid_encoding.unit);
+        try equal(.utf8, finding.details.invalid_encoding.encoding);
         try expect(finding.related == null);
         index += 1;
     };
@@ -53,7 +54,7 @@ test "UTF-8 valid boundaries and bytewise recovery do not reinterpret content" {
         const document = parsed.document.?;
         const result = Encoding.validateIn(&document, .{}, discard, .{});
         try equal(.valid, result.validity);
-        try equal(.complete, result.checks.invalid_utf8);
+        try equal(.complete, result.checks.invalid_encoding);
         try equal(@as(u64, 0), result.errors);
     }
     // Every byte of these encodings is invalid when visited as the next lead.
@@ -71,7 +72,7 @@ test "UTF-8 valid boundaries and bytewise recovery do not reinterpret content" {
         try equal(@as(u64, bad.len), result.errors);
         for (bag.items(), 1..) |finding, offset| {
             try equal(@as(u32, @intCast(offset)), finding.span.start);
-            try equal(source[offset], finding.details.byte);
+            try equal(@as(u32, source[offset]), finding.details.invalid_encoding.unit);
         }
         // A truly truncated final sequence behaves identically, without suffix.
         var tail = Structural.parseBorrowed(std.testing.allocator, source[0 .. bad.len + 1], discard, .{});
@@ -86,10 +87,10 @@ test "combined check policies have fixed-runtime parity and globally source-orde
     defer parsed.deinit();
     const document = parsed.document.?;
     var scratch: markup.FixedValidationScratch(4) = .{};
-    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .validation = .{ .invalid_utf8 = .warning } } });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .validation = .{ .invalid_encoding = .warning } } });
     inline for (.{ .err, .warning, .off }) |duplicate| {
         inline for (.{ .err, .warning, .off }) |encoding| {
-            const patch: markup.Policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = duplicate, .invalid_utf8 = encoding } };
+            const patch: markup.Policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = duplicate, .invalid_encoding = encoding } };
             const Fixed = markup.Profile(.{ .policy = patch });
             var bag: markup.FixedDiagnosticBag(16) = .{};
             const checked = Fixed.validateIn(&document, scratch.storage(), bag.sink(), .{});
@@ -98,7 +99,7 @@ test "combined check policies have fixed-runtime parity and globally source-orde
             try equal(@as(u64, (if (duplicate == .warning) @as(u64, 2) else 0) + (if (encoding == .warning) @as(u64, 5) else 0)), checked.warnings);
             try equal(@as(@TypeOf(checked.validity), if (checked.errors == 0) .valid else .invalid), checked.validity);
             try equal(if (duplicate == .off) .not_run else .complete, checked.checks.duplicate_attribute);
-            try equal(if (encoding == .off) .not_run else .complete, checked.checks.invalid_utf8);
+            try equal(if (encoding == .off) .not_run else .complete, checked.checks.invalid_encoding);
             try equal(checked, Dynamic.validateIn(&document, scratch.storage(), discard, .{ .policy = patch }));
             try equal(checked, Fixed.validate(std.testing.allocator, &document, discard, .{}));
             // Omission is successful delivery, never a change in validity/counts.
@@ -109,7 +110,7 @@ test "combined check policies have fixed-runtime parity and globally source-orde
                 const previous = bag.items()[i - 1];
                 try expect(previous.span.start <= finding.span.start);
                 if (previous.span.start == finding.span.start) {
-                    try expect(previous.code == .invalid_utf8 or previous.code == .invalid_utf8_tolerated);
+                    try expect(previous.code == .invalid_encoding or previous.code == .invalid_encoding_tolerated);
                     try expect(finding.code == .duplicate_attribute or finding.code == .duplicate_attribute_tolerated);
                 }
             }
@@ -118,13 +119,13 @@ test "combined check policies have fixed-runtime parity and globally source-orde
     const inherited = Dynamic.validateIn(&document, scratch.storage(), discard, .{});
     try equal(@as(u64, 5), inherited.warnings);
     const reset = Dynamic.validateIn(&document, scratch.storage(), discard, .{ .policy = markup.presets.standard });
-    try equal(.not_run, reset.checks.invalid_utf8);
+    try equal(.not_run, reset.checks.invalid_encoding);
     try equal(markup.validateIn(&document, scratch.storage(), discard, .{}), reset);
-    try equal(.valid, Dynamic.validatePolicy(.{ .validation = .{ .invalid_utf8 = .err } }));
+    try equal(.valid, Dynamic.validatePolicy(.{ .validation = .{ .invalid_encoding = .err } }));
 }
 
 test "encoding and duplicate findings continue independently but sink stop ends the prefix" {
-    const Both = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .invalid_utf8 = .err } } });
+    const Both = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .invalid_encoding = .err } } });
     var parsed = Structural.parseBorrowed(std.testing.allocator, "\xff<a x='1' x='2'/>\xff", discard, .{});
     defer parsed.deinit();
     const document = parsed.document.?;
@@ -134,7 +135,7 @@ test "encoding and duplicate findings continue independently but sink stop ends 
     try equal(markup.reporting.StopReason.requested, stopped.completion.diagnostic_stopped);
     try equal(.invalid, stopped.validity);
     try equal(@as(u64, 1), stopped.errors); // Duplicate not yet visited.
-    try equal(.incomplete, stopped.checks.invalid_utf8);
+    try equal(.incomplete, stopped.checks.invalid_encoding);
     try equal(.incomplete, stopped.checks.duplicate_attribute);
     var none: markup.FixedDiagnosticBag(0) = .{};
     const failed = Both.validateIn(&document, scratch.storage(), none.sink(), .{});
@@ -149,16 +150,16 @@ test "encoding and duplicate findings continue independently but sink stop ends 
     var last: markup.FixedDiagnosticBag(3) = .{};
     const final_stop = Both.validateIn(&document, scratch.storage(), last.sink(), .{});
     try equal(.complete, final_stop.checks.duplicate_attribute);
-    try equal(.incomplete, final_stop.checks.invalid_utf8);
+    try equal(.incomplete, final_stop.checks.invalid_encoding);
     try equal(@as(u64, 3), final_stop.errors);
     const complete = Both.validateIn(&document, scratch.storage(), discard, .{});
     try equal(.complete, complete.completion);
     try equal(@as(u64, 3), complete.errors);
-    try equal(.complete, complete.checks.invalid_utf8);
+    try equal(.complete, complete.checks.invalid_encoding);
 }
 
 test "resource preflight precedes checks, but encoding alone never needs duplicate scratch" {
-    const Both = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .invalid_utf8 = .err } } });
+    const Both = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .invalid_encoding = .err } } });
     var parsed = Structural.parseBorrowed(std.testing.allocator, "\xff<a x='1' x='2'/>", discard, .{});
     defer parsed.deinit();
     const document = parsed.document.?;
@@ -166,7 +167,7 @@ test "resource preflight precedes checks, but encoding alone never needs duplica
     const capacity = Both.validateIn(&document, .{}, bag.sink(), .{});
     try equal(@as(u32, 2), capacity.completion.storage_exhausted);
     try equal(.unknown, capacity.validity);
-    try equal(.incomplete, capacity.checks.invalid_utf8);
+    try equal(.incomplete, capacity.checks.invalid_encoding);
     try equal(.incomplete, capacity.checks.duplicate_attribute);
     try equal(@as(u64, 0), capacity.errors);
     try equal(@as(usize, 1), bag.items().len);
@@ -199,7 +200,7 @@ const Stop = struct {
 };
 
 test "UTF-8 chunk cancellation preserves known invalidity" {
-    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .warning } } });
+    const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_encoding = .warning } } });
     const source = "\xff" ++ "東京" ** 1000;
     var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
@@ -208,23 +209,23 @@ test "UTF-8 chunk cancellation preserves known invalidity" {
     try equal(.complete, Dynamic.validateIn(&document, .{}, discard, .{ .cancellation = inactive.hook() }).completion);
     try equal(@as(u32, 0), inactive.polls);
     inline for (.{ .err, .warning }) |severity| {
-        const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = severity }, .execution = .{ .cancellation = true } } });
+        const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_encoding = severity }, .execution = .{ .cancellation = true } } });
         for ([_]u32{ 0, 1, 2, 10, 50 }) |after| {
             var stop: Stop = .{ .after = after };
             const checked = Fixed.validateIn(&document, .{}, discard, .{ .cancellation = stop.hook() });
             try equal(.cancelled, checked.completion);
             try equal(after + 1, stop.polls);
-            try equal(.incomplete, checked.checks.invalid_utf8);
+            try equal(.incomplete, checked.checks.invalid_encoding);
             try equal(@as(@TypeOf(checked.validity), if (after >= 2 and severity == .err) .invalid else .unknown), checked.validity);
             try equal(@as(u64, if (after >= 2) 1 else 0), checked.errors + checked.warnings);
             var dynamic_stop: Stop = .{ .after = after };
-            try equal(checked, Dynamic.validateIn(&document, .{}, discard, .{ .cancellation = dynamic_stop.hook(), .policy = .{ .validation = .{ .invalid_utf8 = severity }, .execution = .{ .cancellation = true } } }));
+            try equal(checked, Dynamic.validateIn(&document, .{}, discard, .{ .cancellation = dynamic_stop.hook(), .policy = .{ .validation = .{ .invalid_encoding = severity }, .execution = .{ .cancellation = true } } }));
         }
     }
 }
 
 test "encoding chunk boundaries preserve whole scalars and immediate sink stops" {
-    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err }, .execution = .{ .cancellation = true } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_encoding = .err }, .execution = .{ .cancellation = true } } });
     inline for (.{ "x", "é", "東", "😀" }) |scalar| {
         inline for (.{ 61, 62, 63, 64, 65 }) |padding| {
             const source = "x" ** padding ++ scalar ++ "\xff" ++ "x" ** 256;
@@ -275,7 +276,7 @@ test "random raw bytes agree with a UTF-8 oracle across scalar and bounded block
             }
         }
         inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |cancellable| {
-            const P = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend, .execution = .{ .metering = true, .cancellation = cancellable }, .validation = .{ .duplicate_attribute = .off, .invalid_utf8 = .err } } });
+            const P = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = backend, .execution = .{ .metering = true, .cancellation = cancellable }, .validation = .{ .duplicate_attribute = .off, .invalid_encoding = .err } } });
             var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
             var session = P.Session.init(source[0..len], .{ .document = output.storage() }, discard, .{});
             while (session.result() == null) _ = session.advance(1);

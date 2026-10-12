@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
         // UTF-8 is opt-in and checks the entire source, including comments/CDATA.
         // Name rules and reference catalogs are independent of structural syntax.
         const Checked = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
-            .invalid_utf8 = .err,
+            .invalid_encoding = .err,
             .names = .{ .rule = .xml_1_0, .severity = .err },
             .references = .{ .catalog = .xml_predefined, .severity = .warning },
         } } });

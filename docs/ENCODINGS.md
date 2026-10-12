@@ -29,7 +29,7 @@ defer result.deinit(allocator);
 | `source_encodings` | Reads |
 | --- | --- |
 | Left out | UTF-8 or plain bytes, as before |
-| `&.{}` or `&.{.ascii}` | ASCII only, everywhere, including strings, comments and markup text |
+| `&.{}` or `&.{.ascii}` | ASCII reader only; optional validation rejects non-ASCII bytes |
 | `&.{.utf8}` | UTF-8 or plain bytes, as before |
 | `&.{ .utf8, .utf16, .utf32 }` | All three; UTF-16 and UTF-32 in either byte order |
 | `&.{.utf32}` | UTF-32 only; UTF-8 isn't tried |
@@ -73,28 +73,55 @@ The choices are `.ascii`, `.utf8`, `.utf16le`, `.utf16be`, `.utf32le` and
 - A byte order mark for a reader that isn't compiled in returns
   `error.UnsupportedEncoding`; a shorter matching mark isn't tried instead.
 
-## Checks before parsing
+## Framing before parsing
 
-UTF-16 and UTF-32 input must be complete and valid: no cut-off code units, no
-unpaired UTF-16 surrogates, and no invalid UTF-32 values. This is checked in one
-pass before parsing, without allocating:
+UTF-16 and UTF-32 buffers must end on a complete code-unit boundary. Reader
+selection and framing are always checked before parsing, without allocating:
 
 | Error | Meaning |
 | --- | --- |
 | `error.TruncatedCodeUnit` | The input ends partway through a code unit |
-| `error.InvalidEncoding` | The input contains invalid UTF-16 or UTF-32 |
 | `error.UnsupportedEncoding` | The input needs a reader that isn't compiled in |
-| `error.Cancelled` | Cancellation is on, and was requested during this check |
+| `error.Cancelled` | Cancellation is on, and was requested before native/ASCII parsing |
 
 These come before any diagnostic or document, so they never leave a partial
-document. With cancellation on, the check asks your cancel callback between
-chunks of bytes. The check itself can't be split into
-[small steps](EXECUTION.md).
+document. Content validity is not an unconditional admission pass.
 
-UTF-8 is unchanged: bytes are accepted as they are, and `validation.invalid_utf8`
-stays optional and off by default. Turning on other readers doesn't make UTF-8
-checking mandatory. For UTF-16 or UTF-32 markup, that check reports `.not_run`
-rather than claiming the bytes were checked as UTF-8.
+## Optional encoding validation
+
+Both parsers expose `validation.invalid_encoding`: `.err`, `.warning`, or `.off`
+(the default). It checks the selected reader, not every compiled encoding:
+
+| Reader | Reports |
+| --- | --- |
+| ASCII | Bytes above `0x7F` |
+| UTF-8 | Malformed/truncated sequences, overlong forms, surrogate values and values above `U+10FFFF` |
+| UTF-16 | Unpaired high or low surrogates |
+| UTF-32 | Surrogate values and values above `U+10FFFF` |
+
+Errors invalidate the checked scope; warnings retain findings without
+invalidating it. Off means no encoding-content pass runs. Malformed full code
+units remain untouched and may be retained when the grammar accepts them;
+`parseBorrowed` only parses, even when an encoding validation policy is configured.
+Post-parse checks may therefore receive an already allocated tree with malformed
+content; use explicit parse/storage limits for untrusted input.
+Each invalid code unit is one finding; recovery advances one byte for ASCII/UTF-8,
+two for UTF-16, or four for UTF-32, without swallowing the next valid scalar.
+Diagnostics carry the actual encoding and offending code unit, with spans in
+original bytes. Markup reports coverage as `checks.invalid_encoding`.
+
+DOT owns ordinary syntax, strings, comments and trivia, but skips the bodies of
+HTML-like operands. Markup owns its entire fragment, including attributes, text,
+comments and CDATA. During composition their severities are independent; a bad
+label can leave DOT valid while combined validation is invalid. Passthrough does
+not validate the inner body or claim it was checked. Delayed processing applies
+the child's policy later, without repeating an outer encoding check.
+
+Standalone markup validates its own buffer. `validateScope[In]` checks only the
+specified span, with scalar lookahead bounded to that scope. A UTF-16 surrogate
+pair split by the caller's scope boundary is not a valid sequence in that scope.
+Encoding validity does not imply XML/Graphviz name or character validity; those
+remain separate policies. No setting disables safe bounds or framing checks.
 
 Markup's [closing-tag search allowance](MARKUP.md#closing-tag-typo-recovery)
 counts code units, not bytes, so a UTF-16 or UTF-32 file gets the same search
@@ -161,6 +188,10 @@ try dot.console.render(finding, .{
 
 - Each extra reader adds code to the program; readers you don't list aren't
   included.
+- Encoding validation adds a source/scope pass only when requested. DOT uses a
+  constant-space lexical walk to exclude HTML bodies; no boundary index or
+  per-record encoding state is allocated. The checker is shared, not the
+  processor's policy or diagnostic identity.
 - UTF-16 and UTF-32 files are usually bigger than the same text in UTF-8.
 - Document buffers, positions and scratch records don't change. The encoding is
   recorded once per document, in space that was already there: the DOT

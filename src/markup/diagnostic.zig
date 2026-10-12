@@ -88,7 +88,7 @@ pub const Resource = enum { source_bytes, nesting_depth, nodes, attributes, nest
 pub const Expected = enum { name, tag_end, closing_angle, equal_sign, opening_quote, closing_quote, attribute_separator, attribute_value, declaration_start, comment_start, comment_end, cdata_start, cdata_end };
 pub const ReferenceProblem = enum { missing_name, missing_digits, missing_semicolon, invalid_character };
 pub const NameContext = enum { element, attribute, reference };
-pub const NameProblem = enum { invalid_start, invalid_character, invalid_utf8 };
+pub const NameProblem = enum { invalid_start, invalid_character, invalid_encoding };
 pub const Code = enum {
     invalid_byte,
     unexpected_byte,
@@ -104,8 +104,8 @@ pub const Code = enum {
     duplicate_attribute_tolerated,
     malformed_reference,
     malformed_reference_tolerated,
-    invalid_utf8,
-    invalid_utf8_tolerated,
+    invalid_encoding,
+    invalid_encoding_tolerated,
     invalid_name,
     invalid_name_tolerated,
     unknown_reference,
@@ -207,13 +207,13 @@ pub const Code = enum {
                 .summary = "malformed markup reference",
                 .hint = "write '&amp;' for a literal '&'; for a reference, use '&name;', '&#123;' or '&#x7B;'",
             },
-            .invalid_utf8, .invalid_utf8_tolerated => .{
-                .severity = if (self == .invalid_utf8) .err else .warning,
+            .invalid_encoding, .invalid_encoding_tolerated => .{
+                .severity = if (self == .invalid_encoding) .err else .warning,
                 .component = .validation,
                 .primary = .encoding,
                 .sequence = Sequence.invalid,
-                .summary = "invalid UTF-8 byte sequence",
-                .hint = "supply UTF-8 input or disable the optional encoding check for raw-byte processing",
+                .summary = "invalid sequence in the source encoding",
+                .hint = "supply well-formed input in the selected source encoding or change the encoding-validation policy",
             },
             .invalid_name, .invalid_name_tolerated => .{
                 .severity = if (self == .invalid_name) .err else .warning,
@@ -262,6 +262,7 @@ comptime {
 pub const Details = union(enum) {
     none,
     byte: u8,
+    invalid_encoding: support.encoding.Invalid,
     expected: Expected,
     feature: Feature,
     capacity: struct { resource: Resource, limit: u32 },

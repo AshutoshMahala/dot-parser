@@ -111,7 +111,7 @@ Validation is a separate step with these checks, each `.err`, `.warning` or
 | Setting | Default | Reports |
 | --- | --- | --- |
 | `validation.duplicate_attribute` | `.err` | The same attribute twice on one element |
-| `validation.invalid_utf8` | `.off` | Bytes that aren't valid UTF-8, anywhere in the input |
+| `validation.invalid_encoding` | `.off` | Malformed content in the selected source encoding, throughout this markup fragment |
 | `validation.names.severity` | `.off` | Names that break the rule in `names.rule` |
 | `validation.names.rule` | `.xml_1_0` | XML 1.0's rules for tag, attribute and reference names (the only rule today) |
 | `validation.references.severity` | `.off` | Named references missing from `references.catalog` |
@@ -121,7 +121,7 @@ Validation is a separate step with these checks, each `.err`, `.warning` or
 
 ```zig
 const Strict = markup.Profile(.{ .policy = .{ .validation = .{
-    .invalid_utf8 = .err,
+    .invalid_encoding = .err,
     .names = .{ .rule = .xml_1_0, .severity = .err },
     .references = .{ .catalog = .xml_predefined, .severity = .warning },
 } } });
@@ -135,6 +135,12 @@ const checked = Strict.validate(allocator, &document, bag.sink(), .{});
 - `checked.validity` is `.valid`, `.invalid` or `.unknown` (when checking
   stopped early). `checked.errors` and `checked.warnings` count findings.
 - Validation never changes the tree.
+
+Encoding validation covers names, values, text, comments and CDATA, and records
+coverage in `checks.invalid_encoding`. It uses the actual reader: ASCII, UTF-8,
+UTF-16 or UTF-32. In DOT composition the child owns its fragment; DOT does not
+duplicate its encoding findings. Explicit local scope checks inspect only their
+bounded spans. See [source encodings](ENCODINGS.md#optional-encoding-validation).
 - `validateIn` does the same without an allocator. It needs a small scratch
   array only for duplicate checking; `markup.requiredValidationScratch(&document)`
   tells you how big.
