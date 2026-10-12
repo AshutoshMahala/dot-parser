@@ -124,11 +124,11 @@ types:
   `DiagnosticSink` and `CheckResult` types, so the DOT result has one fixed
   type.
 - The returned processors don't need these two functions themselves.
-- These functions only serve labels inside a DOT file. DOT has already selected
-  the reader and checked complete code-unit framing, but excludes label bodies
-  from its content encoding validation. Your processor owns any such checks
-  and their policy/diagnostics. Treat a byte order mark at the start of a
-  label as content. For parsing markup on its own, use
+- These functions only serve labels inside a DOT file. DOT has already chosen
+  the reader and checked that the file is made of whole code units. DOT's own
+  encoding check skips labels, so checking that a label's text is valid is up
+  to your processor, with its own setting and diagnostics. Treat a byte order
+  mark at the start of a label as content. For parsing markup on its own, use
   `markup.Profile(.{ .source_encodings = ... })`.
 
 Without `forSourceEncoding`, a DOT profile that reads anything other than UTF-8

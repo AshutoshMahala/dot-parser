@@ -75,19 +75,20 @@ Tags: R-MOD-003, R-PORT-001
 ### Text is bytes, not checked Unicode
 
 In UTF-8 input, the default, names can contain any byte from 0x80 to 0xFF and
-are kept exactly. Encoding checking is optional and off by default. Nothing is
-normalised or converted. Columns count bytes.
+are kept exactly. Checking the encoding is optional and off by default, in
+every encoding. Nothing is normalised or converted. Columns count bytes.
 
-UTF-16 and UTF-32 input (unreleased) must have complete code-unit framing.
-Content validity follows each processor's `validation.invalid_encoding` policy;
-DOT does not duplicate checks inside HTML-like operand bodies.
+UTF-16 and UTF-32 input (unreleased) only has to be made of whole code units.
+DOT's encoding check skips the inside of HTML-like labels; the label checker
+checks those with its own setting.
 
 **Why:** real DOT files aren't always valid UTF-8, and Graphviz accepts them.
 Checking would cost every user, even those who don't need it. Keeping bytes
-exact also keeps every error position exact. UTF-16 and UTF-32 are different:
-a cut-off or broken code unit leaves the parser unsure where a character ends.
-Checking first means the parser can rely on whole characters, and only programs
-that turn those readers on pay for the check.
+exact also keeps every error position exact. UTF-16 and UTF-32 follow the same
+rule. The parser needs whole code units to find its way, and that is only a
+length check. Whether each one is valid is the same optional check as for
+UTF-8. Labels are left to the label checker so that a bad character there is
+reported once, under the setting for labels.
 
 Tags: R-PORT-006
 
@@ -180,9 +181,8 @@ can't make *parsing* do slow, quadratic work. Parsing cost grows roughly in step
 with the size of the input.
 
 This is a property of parsing, not of everything. Optional validation checks
-have their own costs: encoding validation is another scope pass (DOT also walks
-lexical boundaries without an index to exclude HTML bodies), and the
-repeated-attribute check sorts each statement's keys. Limits are also off by
+have their own costs: the encoding check is another pass over the input, and
+the repeated-attribute check sorts each statement's keys. Limits are also off by
 default. So the library *supports* safe handling of untrusted input, but you
 still choose the budgets. See [untrusted input](POLICIES.md#untrusted-input).
 
