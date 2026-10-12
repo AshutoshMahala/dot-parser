@@ -8,8 +8,10 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
-- Markup collecting recovery now defaults to bounded one-edit closing-tag
-  matching after exact ancestor matching fails. `closing_tag_recovery` also
+- **Breaking:** markup collecting recovery now defaults to bounded one-edit
+  closing-tag matching after exact ancestor matching fails. Diagnostic sequences
+  and counts can change; `.exact` retains the previous continuation behavior.
+  `closing_tag_recovery` also
   provides `exact` and `two_edits`, with compile-time/runtime parity and minimum
   name lengths of four/eight code units. Guesses only guide traversal: the
   original mismatch, invalid result and frozen prefix remain unchanged. Matchers
@@ -52,6 +54,15 @@ are marked; no compatibility shims are kept.
   and attribute vocabulary. Select `.mode = .structural` explicitly to retain
   vocabulary-free validation and byte-exact tag matching. DOT-only passthrough
   behavior is unchanged.
+
+### Fixed
+
+- Partial DOT validation checks safely retained operators of unfinished scoped
+  edges, without exposing those owners as completed statements. Links beyond
+  the frozen frontier remain unchecked. Unclassified left subgraphs reserve
+  order slots but do not appear as standalone statements until confirmed.
+- Correct markup session sizes in the performance guide and share identifier
+  range checks, encoding widths/reader compatibility and inline clip limits.
 
 ### Added
 

@@ -213,6 +213,10 @@ The implemented slice retains DOT/markup prefixes at the first error
 or operational stop. Recovery may continue diagnostics, but later nodes are not
 retained yet. Direct partial-document validation checks retained facts and reports
 missing coverage; existing markup source/scope validation remains independent.
+Known operators of staged scoped edges inside the retained frontier are checked
+as independent source facts; validation does not publish their unfinished owners.
+Unclassified left scopes reserve order but become standalone statements only on
+the final subgraph-statement event; endpoint scopes remain accessible separately.
 Staged pairs, references and links must not advance the retained frontier before
 their owner is represented. Pending scoped-edge owners are not complete statement
 or edge views, even when their endpoint scopes contain retained child statements.

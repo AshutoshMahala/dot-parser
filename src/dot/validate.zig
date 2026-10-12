@@ -110,7 +110,7 @@ pub fn validate(
 }
 
 pub fn validateForEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime fixed: ?policy.ValidationSettings, document: *const syntax.Document, diagnostics: diagnostic.Sink, runtime: if (fixed == null) policy.ValidationSettings else void, scratch: Scratch) Result {
-    if (document.source_info.encoding != actual and !(actual == .utf8 and document.source_info.encoding == .ascii)) return .{ .outcome = .{ .unsupported_encoding = document.source_info.encoding }, .diagnostic_delivery = .complete };
+    if (!@import("parser_support").encoding.readerAccepts(actual, document.source_info.encoding)) return .{ .outcome = .{ .unsupported_encoding = document.source_info.encoding }, .diagnostic_delivery = .complete };
     if (!document.scopeComplete()) {
         var prefix = document.*;
         prefix.source = prefix.source[0..prefix.retained_end];

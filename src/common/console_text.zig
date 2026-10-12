@@ -5,6 +5,7 @@ const widths = @import("console_widths.zig");
 
 pub const Style = enum { unicode, ascii };
 pub const max_bytes = 64;
+pub const inline_max_bytes = 32;
 
 fn contains(ranges: []const [2]u21, scalar: u21) bool {
     var low: usize = 0;
@@ -83,7 +84,7 @@ pub const Layout = struct {
 /// Bounded inline source names: no tabs/newlines/escape sequences may affect the
 /// surrounding message. Long names are clipped on scalar boundaries.
 pub fn writeInline(bytes: []const u8, style: Style, writer: anytype) !void {
-    try writeEscaped(bytes, style, 32, writer);
+    try writeEscaped(bytes, style, inline_max_bytes, writer);
 }
 
 /// Escape an entire caller-supplied file name without truncating ordinary paths.

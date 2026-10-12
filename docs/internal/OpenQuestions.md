@@ -886,8 +886,12 @@ partial. `retention.partial` is default-off and independent of `on_error`, with
 compile-time/runtime parity. No guessed delimiters or healed retained trees. Prefix
 retention reuses syntax storage and freezes at the first failure without
 an allocation or stack walk; growing DOT operations reserve constant ownership
-metadata before parsing. Direct validation reports missing coverage. Composed
-`retention.markup` retains owned child results separately from both parsers'
+metadata before parsing. Direct validation reports missing coverage. Safely
+retained operators of unfinished scoped-edge owners are independent checkable
+facts before that frontier; public edge/statement views still exclude the owner.
+An unclassified left subgraph reserves an invalid order index until the final
+statement event or edge promotion selects its meaning, without adding storage.
+Composed `retention.markup` retains owned child results separately from both parsers'
 partial-retention choices. Ordinary successful parsing remains the default
 contract. Attached delayed processing now supports an explicit source-ordered
 selection and one batch on the same composed result; pending operands are visible

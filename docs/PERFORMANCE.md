@@ -104,10 +104,16 @@ Additional type sizes, the same in Fast and Safe builds:
 | Markup node / attribute | 20 / 20 |
 | Markup nesting frame / attribute-key scratch entry | 12 / 8 |
 | Markup diagnostic / validation result | 36 / 32 |
-| Markup session: default / bounded / run-time settings | 432 / 440 / 504 |
+| Markup session: default / bounded / run-time settings | 440 / 448 / 528 |
 | Markup `Document` | 56 |
 | Markup node / attribute view | 64 / 64 |
 | Markup root/child iterator / attribute iterator | 64 / 64 |
+
+Default one-edit closing-tag recovery (unreleased) adds 8 bytes to fixed-policy
+sessions and 24 bytes to the run-time-policy session. Fixed
+`closing_tag_recovery = .exact` restores the default/bounded sizes to 432/440
+bytes; run-time policies still retain state for the available matcher choices.
+No matcher adds heap allocation or per-node/attribute storage.
 
 Partial markup retention (unreleased) adds 8 bytes to a run-time-policy session;
 default fixed-policy and bounded session sizes are unchanged. `Document` grew

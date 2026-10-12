@@ -1,10 +1,25 @@
 //! Compile-time input capabilities and allocation-free native code-unit readers.
 //! A capability set is not a runtime validation policy or mixed-encoding framing.
 const std = @import("std");
+const encoding = @This();
 
 pub const Encoding = enum { ascii, utf8, utf16, utf32 };
 pub const Actual = enum(u3) { ascii, utf8, utf16le, utf16be, utf32le, utf32be };
 pub const Provenance = enum(u2) { default, explicit, bom, inherited };
+
+pub fn unitBytes(actual: Actual) u3 {
+    return switch (actual) {
+        .ascii, .utf8 => 1,
+        .utf16le, .utf16be => 2,
+        .utf32le, .utf32be => 4,
+    };
+}
+
+/// Validation is byte-compatible from ASCII-profile documents to UTF-8, not
+/// the reverse. Native readers require the exact encoding and byte order.
+pub fn readerAccepts(reader: Actual, document: Actual) bool {
+    return reader == document or (reader == .utf8 and document == .ascii);
+}
 
 /// One byte per input context, never per token, node or attribute.
 pub const Info = packed struct(u8) {
@@ -23,11 +38,7 @@ pub const Info = packed struct(u8) {
     }
 
     pub fn unitBytes(self: Info) u3 {
-        return switch (self.encoding) {
-            .ascii, .utf8 => 1,
-            .utf16le, .utf16be => 2,
-            .utf32le, .utf32be => 4,
-        };
+        return encoding.unitBytes(self.encoding);
     }
 };
 
@@ -136,11 +147,7 @@ pub fn select(comptime capabilities: Capabilities, source: []const u8, explicit:
         .provenance = if (explicit != null) .explicit else if (detected != null) .bom else .default,
         .has_bom = has_bom,
     };
-    const width: u3 = switch (actual) {
-        .ascii, .utf8 => 1,
-        .utf16le, .utf16be => 2,
-        .utf32le, .utf32be => 4,
-    };
+    const width = unitBytes(actual);
     if (source.len % width != 0) return error.TruncatedCodeUnit;
     return info;
 }
@@ -151,11 +158,7 @@ pub const Decoded = packed struct { scalar: u21, len: u3 };
 pub fn Reader(comptime actual: Actual) type {
     return struct {
         pub const selected = actual;
-        pub const width = switch (actual) {
-            .ascii, .utf8 => 1,
-            .utf16le, .utf16be => 2,
-            .utf32le, .utf32be => 4,
-        };
+        pub const width: comptime_int = unitBytes(actual);
         pub const endian: std.builtin.Endian = switch (actual) {
             .utf16be, .utf32be => .big,
             else => .little,
@@ -296,6 +299,17 @@ pub fn Reader(comptime actual: Actual) type {
             return result;
         }
     };
+}
+
+test "encoding widths and reader compatibility have one source of truth" {
+    inline for (comptime std.meta.tags(Actual)) |actual| {
+        try std.testing.expectEqual(unitBytes(actual), (Info{ .encoding = actual }).unitBytes());
+        try std.testing.expectEqual(unitBytes(actual), Reader(actual).width);
+        try std.testing.expect(@TypeOf(Reader(actual).width) == comptime_int);
+        inline for (comptime std.meta.tags(Actual)) |document| {
+            try std.testing.expectEqual(actual == document or (actual == .utf8 and document == .ascii), readerAccepts(actual, document));
+        }
+    }
 }
 
 test "encoding capability defaults, empty fallback and bound inheritance" {

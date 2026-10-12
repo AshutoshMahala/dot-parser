@@ -80,9 +80,9 @@ pub const Positions = struct {
                     at += decoded.len;
                 }
                 try source_text.writeInline(buffer[0..used], self.style, writer);
-                // writeInline already clips at 32 UTF-8 bytes. Add a marker
+                // writeInline already clips UTF-8 input. Add a marker
                 // only if its input was short enough not to produce one.
-                if (at < bytes.len and used <= 32) try writer.writeAll("...");
+                if (at < bytes.len and used <= source_text.inline_max_bytes) try writer.writeAll("...");
             },
         }
     }
@@ -357,7 +357,7 @@ pub fn writeFix(fix: anytype, positions: *Positions, writer: anytype) !void {
 fn markedText(span: location.Span, source: ?[]const u8, actual: @import("encoding.zig").Actual, buffer: []u8) ?[]const u8 {
     const bytes = source orelse return null;
     if (span.len == 0 or !spanFits(span, bytes)) return null;
-    if (span.start % (@import("encoding.zig").Info{ .encoding = actual }).unitBytes() != 0) return null;
+    if (span.start % @import("encoding.zig").unitBytes(actual) != 0) return null;
     const text = switch (actual) {
         inline else => |selected| @import("encoding.zig").Reader(selected).asciiInto(span.slice(bytes), buffer) orelse return null,
     };

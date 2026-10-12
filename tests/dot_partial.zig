@@ -2,6 +2,7 @@ const std = @import("std");
 const dot = @import("dot_parser");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
+const equalStrings = std.testing.expectEqualStrings;
 const deep = std.testing.expectEqualDeep;
 const allocator = std.testing.allocator;
 const discard = dot.diagnostic.discard;
@@ -9,6 +10,109 @@ const Keep = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true, .comme
 const capacities: dot.DocumentCapacities = .{ .comments = 16, .statements = 64, .nodes = 32, .edges = 16, .edge_chains = 16, .edge_links = 32, .scoped_edges = 16, .scoped_edge_links = 32, .ported_references = 16, .subgraphs = 16, .attributes = 32, .assignments = 16, .attribute_statements = 16 };
 const Pools = dot.FixedDocumentStorage(capacities);
 const source = "/* lead */ digraph G { a:p:n -> b -> c; subgraph s { x [k=v]; {y} -> z -> {q} -> r; } n [a=1 b=2]; graph [rank=same]; k=v; }";
+
+test "partial validation checks retained operators of unfinished scoped owners" {
+    const cases = .{
+        .{ "graph { a -> {b} [x=1", 1 },
+        .{ "graph { a -> {b}", 1 },
+        .{ "graph { a -> subgraph s { c } -> d", 1 },
+        .{ "graph { a -> b -> {c} -> d -> { e -> f } [x=1", 5 },
+    };
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |runtime| {
+        const policy: dot.Policy = .{ .scanner = scanner, .retention = .{ .partial = true } };
+        const P = dot.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else policy });
+        inline for (cases) |case| {
+            var bag: dot.FixedDiagnosticBag(16) = .{};
+            var r = if (runtime) try P.parseAndValidate(allocator, case[0], bag.sink(), .{ .policy = policy }) else P.parseAndValidate(allocator, case[0], bag.sink(), .{});
+            defer r.deinit(allocator);
+            try equal(dot.ParseOutcome.invalid_syntax, r.outcome);
+            const end: u32 = @intCast(std.mem.lastIndexOf(u8, case[0], "}").? + 1);
+            try equal(end, r.validation.?.coverage.incomplete);
+            try equal(@as(u64, case[1]), r.validation.?.outcome.completed.violations);
+            var found: u32 = 0;
+            var previous: u32 = 0;
+            for (bag.items()) |d| if (d.code == .validation_operator_mismatch) {
+                try expect(d.span.start >= previous and d.span.endOffset() <= r.document.?.retained_end);
+                try equal("->".len, d.span.len);
+                previous = d.span.start;
+                found += 1;
+            };
+            try equal(@as(u32, case[1]), found);
+            try expect(!r.documentValid());
+            try audit(&r.document.?);
+
+            var pools: Pools = .{};
+            var frames: dot.FixedParseScratch(.{ .nesting = 32 }) = .{};
+            const fixed = if (runtime) try P.parseBorrowedIn(case[0], .{ .document = pools.storage(), .scratch = frames.storage() }, discard, .{ .policy = policy }) else P.parseBorrowedIn(case[0], .{ .document = pools.storage(), .scratch = frames.storage() }, discard, .{});
+            try deep(r.document.?, fixed.document.?);
+            const checked = if (runtime) try P.validate(&fixed.document.?, discard, .{ .policy = policy }) else P.validate(&fixed.document.?, discard, .{});
+            try equal(@as(u64, case[1]), checked.outcome.completed.violations);
+        }
+    };
+}
+
+test "unclassified left scopes never publish fabricated standalone statements" {
+    const cases = .{
+        .{ "graph { {a} ->", 1, 1 },
+        .{ "graph { {a} -> b [x=1", 1, 1 },
+        .{ "graph { x; {a} -> {b} -> ", 3, 2 },
+    };
+    inline for (.{ .scalar, .block }) |scanner| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .retention = .{ .partial = true } } });
+        inline for (cases) |case| {
+            var r = P.parseBorrowed(allocator, case[0], discard, .{});
+            defer r.deinit(allocator);
+            const doc = &r.document.?;
+            try equal(@as(usize, case[1]), doc.statementCount());
+            try equal(@as(usize, if (case[1] == 3) 1 else 0), doc.rootStatementCount());
+            var statements = doc.statements();
+            while (statements.next()) |statement| try expect(statement == .node);
+            var scopes = doc.subgraphs();
+            var count: usize = 0;
+            while (scopes.next()) |scope| {
+                try expect(scope.scopeComplete());
+                var children = scope.statements(.direct);
+                try expect(children.next().? == .node);
+                try expect(children.next() == null);
+                count += 1;
+            }
+            try equal(@as(usize, case[2]), count);
+            try audit(doc);
+        }
+        var complete = P.parseBorrowed(allocator, "graph { {a}; {b} -> c; }", discard, .{});
+        defer complete.deinit(allocator);
+        try equal(@as(usize, 4), complete.document.?.statementCount());
+        var statements = complete.document.?.statements();
+        try expect(statements.next().? == .subgraph);
+        try expect(statements.next().? == .node);
+        try expect(statements.next().? == .edge);
+        try expect(statements.next().? == .node);
+    }
+}
+
+test "staged-operator checks retain severity fixes and validation fail-fast" {
+    var parsed = Keep.parseBorrowed(allocator, "graph { a -> {b} -> {c} [x=1", discard, .{});
+    defer parsed.deinit(allocator);
+    const doc = &parsed.document.?;
+    const Warn = dot.Profile(.{ .policy = .{ .validation = .{ .graph = .{ .operator_mismatch = .warning, .operator_reading = .conform_to_kind } } } });
+    var bag: dot.FixedDiagnosticBag(8) = .{};
+    const warning = Warn.validate(doc, bag.sink(), .{});
+    try equal(@as(u64, 2), warning.outcome.completed.warnings);
+    try equal(@as(u64, 0), warning.outcome.completed.violations);
+    for (bag.items()) |d| {
+        try equal(dot.Code.validation_operator_tolerated, d.code);
+        try equal(.machine_applicable, d.fix.?.applicability);
+    }
+    const Off = dot.Profile(.{ .policy = .{ .validation = .{ .graph = .{ .operator_mismatch = .off } } } });
+    try equal(@as(u64, 0), Off.validate(doc, discard, .{}).outcome.completed.violations);
+    const Fast = dot.Profile(.{ .policy = .{ .on_error = .fail_fast } });
+    var stop: dot.FixedDiagnosticBag(8) = .{};
+    try expect(Fast.validate(doc, stop.sink(), .{}).outcome == .error_stopped);
+    try equal(@as(usize, 1), stop.items().len);
+    try equalStrings("->", doc.text(stop.items()[0].span));
+    var edges = doc.edgeIterator();
+    try expect(edges.next() == null);
+}
 
 test "pending pairs links ports and trivia do not advance the represented frontier" {
     const inputs = [_][]const u8{
@@ -88,8 +192,12 @@ fn audit(doc: *const dot.Document) !void {
         _ = doc.text(a.value);
     }
     for (doc.order) |id| if (doc.statement(id) == null) {
-        try expect(doc.state == .partial and id == .scoped_edge);
-        try expect(!doc.scoped_edges[id.scoped_edge].complete());
+        try expect(doc.state == .partial);
+        switch (id) {
+            .scoped_edge => |index| try expect(!doc.scoped_edges[index].complete()),
+            .subgraph => |index| try equal(std.math.maxInt(u32), index),
+            else => return error.UnexpectedStagedStatement,
+        }
     };
     for (0..doc.subgraph_records.len + 1) |index| {
         const scope = doc.scope(@enumFromInt(index)).?;

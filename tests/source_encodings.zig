@@ -3,6 +3,50 @@ const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 const gpa = std.testing.allocator;
 
+test "documented markup session sizes include default typo recovery" {
+    if (@import("builtin").cpu.arch != .aarch64 or @import("builtin").os.tag != .macos) return error.SkipZigTest;
+    try std.testing.expectEqual(@as(usize, 440), @sizeOf(markup.Profile(.{}).Session));
+    try std.testing.expectEqual(@as(usize, 448), @sizeOf(markup.BoundedSession));
+    try std.testing.expectEqual(@as(usize, 528), @sizeOf(markup.Profile(.{ .runtime_policy = true }).Session));
+    const Exact = markup.Profile(.{ .policy = .{ .closing_tag_recovery = .exact } });
+    const ExactBounded = markup.Profile(.{ .policy = .{ .closing_tag_recovery = .exact, .execution = .{ .metering = true } } });
+    try std.testing.expectEqual(@as(usize, 432), @sizeOf(Exact.Session));
+    try std.testing.expectEqual(@as(usize, 440), @sizeOf(ExactBounded.Session));
+}
+
+test "native partial validation checks retained scoped operators at physical offsets" {
+    inline for (.{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| inline for (.{ .scalar, .block }) |scanner| {
+        const E = dot.encoding.Reader(actual);
+        const P = dot.Profile(.{ .source_encodings = &.{ .utf16, .utf32 }, .policy = .{ .scanner = scanner, .retention = .{ .partial = true } } });
+        for ([_][]const u8{ "graph { a -> {b} [x=1", "graph { a -> subgraph s { c } -> d", "graph { {a} -> b [x=1" }) |text| {
+            inline for (.{ false, true }) |bom| {
+                var input: [256]u8 = undefined;
+                const bytes = encode(actual, text, &input, bom);
+                var bag: dot.FixedDiagnosticBag(16) = .{};
+                var parsed = try P.parseAndValidate(gpa, bytes, bag.sink(), .{ .encoding = actual });
+                defer parsed.deinit(gpa);
+                const document = &parsed.document.?;
+                const framing: u32 = if (!bom) 0 else if (E.width == 2) 2 else 4;
+                const expected_end: u32 = framing + @as(u32, @intCast(std.mem.lastIndexOf(u8, text, "}").? + 1)) * E.width;
+                try std.testing.expectEqual(expected_end, document.retained_end);
+                try std.testing.expectEqual(expected_end, parsed.validation.?.coverage.incomplete);
+                const left_scope = std.mem.startsWith(u8, text, "graph { {");
+                try std.testing.expectEqual(@as(u64, if (left_scope) 0 else 1), parsed.validation.?.outcome.completed.violations);
+                for (bag.items()) |d| if (d.code == .validation_operator_mismatch) {
+                    try std.testing.expectEqual(framing + 10 * E.width, d.span.start);
+                    try std.testing.expectEqual(@as(u32, 2 * E.width), d.span.len);
+                };
+                try std.testing.expectEqual(@as(usize, 1), document.statementCount());
+                try std.testing.expectEqual(@as(usize, 0), document.rootStatementCount());
+                var statements = document.statements();
+                try std.testing.expect(statements.next().? == .node);
+                try std.testing.expect(statements.next() == null);
+                try std.testing.expect(!parsed.documentValid());
+            }
+        }
+    };
+}
+
 test "composed options retain child identity and native facade exports selection errors" {
     inline for (.{ false, true }) |runtime| {
         const Child = markup.Profile(.{ .runtime_policy = runtime });

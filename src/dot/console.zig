@@ -118,7 +118,7 @@ fn writeHeadline(d: Diagnostic, info: diagnostic.Code.Info, actual: @import("par
             .spaced => try writer.writeAll("whitespace inside an edge operator"),
         },
         .incomplete_numeral => {
-            const width = (@import("parser_support").encoding.Info{ .encoding = actual }).unitBytes();
+            const width = @import("parser_support").encoding.unitBytes(actual);
             try writer.print("'{s}' must be followed by a digit", .{if (d.span.len / width == 2) "-." else "."});
         },
         .reserved_keyword => |reserved| switch (reserved.context) {

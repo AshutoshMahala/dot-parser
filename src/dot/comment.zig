@@ -19,7 +19,7 @@ pub const Comment = struct {
 
     pub fn bodyEncoded(self: Comment, source: []const u8, actual: @import("parser_support").encoding.Actual) []const u8 {
         const bytes = self.raw(source);
-        const width: usize = (@import("parser_support").encoding.Info{ .encoding = actual }).unitBytes();
+        const width: usize = @import("parser_support").encoding.unitBytes(actual);
         return switch (self.kind) {
             .slash_line => bytes[2 * width ..],
             .block => bytes[2 * width .. bytes.len - 2 * width],

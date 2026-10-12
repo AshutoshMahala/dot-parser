@@ -100,7 +100,7 @@ pub fn requiredScratch(document: *const syntax.Document) u32 {
 }
 
 pub const Operators = struct {
-    edges: syntax.EdgeIterator,
+    edges: syntax.RetainedOperatorIterator,
     document: *const syntax.Document,
     operators: Settings.Operators,
     treatment: policy.GraphTreatment,
@@ -109,7 +109,7 @@ pub const Operators = struct {
     pub fn init(document: *const syntax.Document, settings: Settings, _: Scratch) Operators {
         const operators = if (document.kind == .digraph) settings.digraph else settings.graph.operators;
         return .{
-            .edges = document.edgeIterator(),
+            .edges = syntax.RetainedOperatorIterator.init(document),
             .document = document,
             .operators = operators,
             .treatment = settings.graph.treated_as,

@@ -449,77 +449,101 @@ pub const StatementIterator = struct {
 
 /// Allocation-free pairwise view. This does not create nodes or rewrite storage.
 /// Chain attributes are shared by every yielded edge; order is source order.
-pub const EdgeIterator = struct {
-    document: *const Document,
-    edge_index: usize = 0,
-    chain_index: usize = 0,
-    scoped_index: usize = 0,
-    link_index: usize = 0,
-    prefix: ?EdgeLinkIterator = null,
+pub const EdgeIterator = EdgeIteratorFor(false);
 
-    fn seek(self: *EdgeIterator, offset: u32) void {
-        self.edge_index = lowerBound(self.document.edges, offset);
-        self.chain_index = lowerBound(self.document.edge_chains, offset);
-        self.scoped_index = lowerBound(self.document.scoped_edges, offset);
-        self.link_index = lowerBound(self.document.scoped_edge_links, offset);
-        self.prefix = null;
-    }
-    fn lowerBound(pool: anytype, offset: u32) usize {
-        var lo: usize = 0;
-        var hi = pool.len;
-        while (lo < hi) {
-            const mid = lo + (hi - lo) / 2;
-            const item = pool[mid];
-            const start = if (@hasField(@TypeOf(item), "first")) item.first.operator_range.start else item.operator_range.start;
-            if (start < offset) lo = mid + 1 else hi = mid;
-        }
-        return lo;
+/// Internal validation cursor: retained operators need no completed attribute
+/// owner. Public edge/statement views still hide unfinished scoped edges.
+pub const RetainedOperatorIterator = struct {
+    edges: EdgeIteratorFor(true),
+
+    pub inline fn init(document: *const Document) RetainedOperatorIterator {
+        return .{ .edges = .{ .document = document } };
     }
 
-    pub fn next(self: *EdgeIterator) ?EdgeView {
-        if (self.prefix) |*prefix| if (prefix.next()) |edge| return edge;
-        const d = self.document;
-        if (d.state == .partial) {
-            while (self.scoped_index < d.scoped_edges.len and !d.scoped_edges[self.scoped_index].complete()) self.scoped_index += 1;
-            while (self.link_index < d.scoped_edge_links.len and !d.scoped_edges[d.scoped_edge_links[self.link_index].owner].complete()) self.link_index += 1;
-        }
-        const starts = [_]u64{
-            if (self.edge_index < d.edges.len) d.edges[self.edge_index].operator_range.start else std.math.maxInt(u64),
-            if (self.chain_index < d.edge_chains.len) d.edge_chains[self.chain_index].first.operator_range.start else std.math.maxInt(u64),
-            if (self.scoped_index < d.scoped_edges.len) d.scoped_edges[self.scoped_index].first.operator_range.start else std.math.maxInt(u64),
-            if (self.link_index < d.scoped_edge_links.len) d.scoped_edge_links[self.link_index].operator_range.start else std.math.maxInt(u64),
-        };
-        var selected: usize = 0;
-        for (starts, 0..) |value, i| if (value < starts[selected]) {
-            selected = i;
-        };
-        if (starts[selected] == std.math.maxInt(u64)) return null;
-        switch (selected) {
-            0 => {
-                const edge = d.edges[self.edge_index];
-                self.edge_index += 1;
-                return EdgeView.fromNode(edge);
-            },
-            1 => {
-                const chain = d.edge_chains[self.chain_index];
-                self.chain_index += 1;
-                self.prefix = .{ .document = d, .nodes = d.edgeLinkSlice(chain.links).?, .left = .{ .node = chain.first.right }, .attributes = chain.first.attributes };
-                return EdgeView.fromNode(chain.first);
-            },
-            2 => {
-                const owner = d.scoped_edges[self.scoped_index];
-                self.scoped_index += 1;
-                self.prefix = .{ .document = d, .nodes = d.edgeLinkSlice(owner.prefix).?, .left = owner.first.right, .attributes = owner.first.attributes };
-                return owner.first;
-            },
-            else => {
-                const link = d.scoped_edge_links[self.link_index];
-                self.link_index += 1;
-                return .{ .left = link.left, .right = link.right, .operator = link.operator, .operator_range = link.operator_range, .attributes = d.scoped_edges[link.owner].first.attributes };
-            },
-        }
+    pub inline fn next(self: *RetainedOperatorIterator) ?struct { operator: EdgeOperator, operator_range: location.Range } {
+        const edge = self.edges.next() orelse return null;
+        const document = self.edges.document;
+        // An incomplete scoped owner still has safely retained operator facts.
+        // Later staged links outside the frozen frontier stay unavailable. Do
+        // not expose its unfinished attribute range through an EdgeView.
+        if (document.state == .partial and edge.operator_range.endOffset() > document.retained_end) return null;
+        return .{ .operator = edge.operator, .operator_range = edge.operator_range };
     }
 };
+
+fn EdgeIteratorFor(comptime retained_operators: bool) type {
+    return struct {
+        document: *const Document,
+        edge_index: usize = 0,
+        chain_index: usize = 0,
+        scoped_index: usize = 0,
+        link_index: usize = 0,
+        prefix: ?EdgeLinkIterator = null,
+
+        fn seek(self: *@This(), offset: u32) void {
+            self.edge_index = lowerBound(self.document.edges, offset);
+            self.chain_index = lowerBound(self.document.edge_chains, offset);
+            self.scoped_index = lowerBound(self.document.scoped_edges, offset);
+            self.link_index = lowerBound(self.document.scoped_edge_links, offset);
+            self.prefix = null;
+        }
+        fn lowerBound(pool: anytype, offset: u32) usize {
+            var lo: usize = 0;
+            var hi = pool.len;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                const item = pool[mid];
+                const start = if (@hasField(@TypeOf(item), "first")) item.first.operator_range.start else item.operator_range.start;
+                if (start < offset) lo = mid + 1 else hi = mid;
+            }
+            return lo;
+        }
+
+        pub fn next(self: *@This()) ?EdgeView {
+            if (self.prefix) |*prefix| if (prefix.next()) |edge| return edge;
+            const d = self.document;
+            if (!retained_operators and d.state == .partial) {
+                while (self.scoped_index < d.scoped_edges.len and !d.scoped_edges[self.scoped_index].complete()) self.scoped_index += 1;
+                while (self.link_index < d.scoped_edge_links.len and !d.scoped_edges[d.scoped_edge_links[self.link_index].owner].complete()) self.link_index += 1;
+            }
+            const starts = [_]u64{
+                if (self.edge_index < d.edges.len) d.edges[self.edge_index].operator_range.start else std.math.maxInt(u64),
+                if (self.chain_index < d.edge_chains.len) d.edge_chains[self.chain_index].first.operator_range.start else std.math.maxInt(u64),
+                if (self.scoped_index < d.scoped_edges.len) d.scoped_edges[self.scoped_index].first.operator_range.start else std.math.maxInt(u64),
+                if (self.link_index < d.scoped_edge_links.len) d.scoped_edge_links[self.link_index].operator_range.start else std.math.maxInt(u64),
+            };
+            var selected: usize = 0;
+            for (starts, 0..) |value, i| if (value < starts[selected]) {
+                selected = i;
+            };
+            if (starts[selected] == std.math.maxInt(u64)) return null;
+            switch (selected) {
+                0 => {
+                    const edge = d.edges[self.edge_index];
+                    self.edge_index += 1;
+                    return EdgeView.fromNode(edge);
+                },
+                1 => {
+                    const chain = d.edge_chains[self.chain_index];
+                    self.chain_index += 1;
+                    self.prefix = .{ .document = d, .nodes = d.edgeLinkSlice(chain.links).?, .left = .{ .node = chain.first.right }, .attributes = chain.first.attributes };
+                    return EdgeView.fromNode(chain.first);
+                },
+                2 => {
+                    const owner = d.scoped_edges[self.scoped_index];
+                    self.scoped_index += 1;
+                    self.prefix = .{ .document = d, .nodes = d.edgeLinkSlice(owner.prefix).?, .left = owner.first.right, .attributes = owner.first.attributes };
+                    return owner.first;
+                },
+                else => {
+                    const link = d.scoped_edge_links[self.link_index];
+                    self.link_index += 1;
+                    return .{ .left = link.left, .right = link.right, .operator = link.operator, .operator_range = link.operator_range, .attributes = d.scoped_edges[link.owner].first.attributes };
+                },
+            }
+        }
+    };
+}
 
 /// A frozen, borrowed syntax document: complete, or an opt-in retained prefix. Immutable
 /// after `Builder.toDocument`; safe to read concurrently while its memory and
@@ -724,7 +748,8 @@ pub const Document = struct {
         return self.attributes[start..][0..range.len];
     }
 
-    /// The statement at a position in source order, or null past the end.
+    /// Completed statement at an order position; null for a staged owner or
+    /// past the end. A raw order slot alone does not certify a statement.
     pub fn statementAt(self: *const Document, order_index: usize) ?Statement {
         if (order_index >= self.order.len) return null;
         return self.statement(self.order[order_index]);
@@ -750,20 +775,24 @@ pub const Document = struct {
     /// on error. Out-of-bounds/misaligned ranges and non-identifier spellings
     /// return InvalidIdentifier. No caching, normalization or numeric conversion.
     pub fn decodeIdentifier(self: *const Document, range: location.Range, output: []u8) identifier.DecodeError![]const u8 {
-        const width = self.source_info.unitBytes();
-        if (range.start % width != 0 or range.len % width != 0 or range.start > self.source.len or range.len > self.source.len - range.start) return error.InvalidIdentifier;
+        const raw = try self.identifierText(range);
         switch (self.source_info.encoding) {
-            inline else => |actual| return identifier.ForEncoding(actual).decodeInto(self.text(range), output),
+            inline else => |actual| return identifier.ForEncoding(actual).decodeInto(raw, output),
         }
     }
 
     /// Stream a decoded identifier. A writer failure may leave partial output.
     pub fn writeIdentifier(self: *const Document, range: location.Range, writer: anytype) !void {
+        const raw = try self.identifierText(range);
+        switch (self.source_info.encoding) {
+            inline else => |actual| try identifier.ForEncoding(actual).writeDecoded(raw, writer),
+        }
+    }
+
+    fn identifierText(self: *const Document, range: location.Range) error{InvalidIdentifier}![]const u8 {
         const width = self.source_info.unitBytes();
         if (range.start % width != 0 or range.len % width != 0 or range.start > self.source.len or range.len > self.source.len - range.start) return error.InvalidIdentifier;
-        switch (self.source_info.encoding) {
-            inline else => |actual| try identifier.ForEncoding(actual).writeDecoded(self.text(range), writer),
-        }
+        return self.text(range);
     }
 };
 
@@ -1099,10 +1128,7 @@ pub const Builder = struct {
         return endScope(self, event);
     }
     pub fn subgraphStatement(self: *Builder, id: u32) Error!void {
-        std.debug.assert(self.phase == .building and self.scope_state.scoped_owner == null);
-        const owner = poolItems(self, .order)[self.scope_state.reserved_order.?];
-        std.debug.assert(owner == .subgraph and owner.subgraph + 1 == id);
-        self.scope_state = .{};
+        finishSubgraphStatement(self, id);
     }
 
     pub fn portedReference(self: *Builder, event: syntax_event.PortedReference) Error!u32 {
@@ -1614,10 +1640,7 @@ pub const FixedBuilder = struct {
         return endScope(self, event);
     }
     pub fn subgraphStatement(self: *FixedBuilder, id: u32) Error!void {
-        std.debug.assert(self.phase == .building and self.scope_state.scoped_owner == null);
-        const owner = poolItems(self, .order)[self.scope_state.reserved_order.?];
-        std.debug.assert(owner == .subgraph and owner.subgraph + 1 == id);
-        self.scope_state = .{};
+        finishSubgraphStatement(self, id);
     }
 
     pub fn portedReference(self: *FixedBuilder, event: syntax_event.PortedReference) Error!u32 {
@@ -1904,7 +1927,10 @@ fn beginScope(self: anytype, event: syntax_event.BeginSubgraph) @TypeOf(self.*).
     }
     try preparePool(self, .subgraphs, event.start);
     if (event.role == .left) {
-        self.scope_state.reserved_order = appendPrepared(self, .order, .{ .subgraph = index });
+        // Lookahead decides standalone statement versus left edge endpoint.
+        // Reserve order without publishing either interpretation. This index
+        // cannot name a record: checkedIndex reserves the maximum u32 value.
+        self.scope_state.reserved_order = appendPrepared(self, .order, .{ .subgraph = unfinished_subgraph });
     } else {
         var edge = event.edge.?;
         if (event.role == .right) {
@@ -1928,6 +1954,16 @@ fn beginScope(self: anytype, event: syntax_event.BeginSubgraph) @TypeOf(self.*).
     self.pending_links = poolLen(self, .edge_links);
     self.pending_attributes = poolLen(self, .attributes);
     return entry;
+}
+
+const unfinished_subgraph = std.math.maxInt(Index);
+
+fn finishSubgraphStatement(self: anytype, id: u32) void {
+    std.debug.assert(self.phase == .building and self.scope_state.scoped_owner == null);
+    const owner = &poolItems(self, .order)[self.scope_state.reserved_order.?];
+    std.debug.assert(owner.* == .subgraph and owner.subgraph == unfinished_subgraph);
+    owner.* = .{ .subgraph = id - 1 };
+    self.scope_state = .{};
 }
 fn endScope(self: anytype, event: syntax_event.EndSubgraph) @TypeOf(self.*).Error!void {
     std.debug.assert(self.phase == .building and @intFromEnum(self.current_scope) == event.entry.id);

@@ -131,7 +131,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
     const enc = support.encoding.Reader(actual);
     return struct {
         fn canRead(document: *const syntax.Document) bool {
-            return document.source_info.encoding == actual or (actual == .utf8 and document.source_info.encoding == .ascii);
+            return support.encoding.readerAccepts(actual, document.source_info.encoding);
         }
         pub const Settings = if (fixed == null) policy.ValidationSettings else void;
         pub const Hook = if (cancellable) ?support.execution.Cancellation else void;
