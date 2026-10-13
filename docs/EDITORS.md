@@ -1,6 +1,6 @@
 # Using it in an editor
 
-> **Unreleased.** Everything on this page is new since 0.4.0.
+> **Available since 0.5.0.**
 
 Editors and language servers parse a file on almost every keystroke, so most of
 the time the file is unfinished. By default a failed parse returns no document

@@ -122,8 +122,8 @@ diagnostic. If the parse had already finished, a late cancel doesn't replace
 its result.
 
 With [DOT](EDITORS.md#keep-the-finished-part-of-a-dot-file) or
-[markup partial results](EDITORS.md#keep-the-finished-part-of-markup) turned on
-(unreleased), a cancelled parse can instead return the part recognised before
+[markup partial results](EDITORS.md#keep-the-finished-part-of-markup) turned on,
+a cancelled parse can instead return the part recognised before
 the cancel. Keeping it costs no extra scanning or allocation.
 
 The same `.cancellation` option works on the one-call functions
@@ -144,8 +144,8 @@ inside the library. If another thread sets your flag, make it an atomic.
   buffers. Documents from the earlier parse become invalid.
 - Once the session has finished with a document, `session.validate(sink, .{})`
   validates it. Validation doesn't use credits. For an
-  [unfinished document](EDITORS.md#keep-the-finished-part-of-a-dot-file)
-  (unreleased), it also reports that part of the file wasn't checked.
+  [unfinished document](EDITORS.md#keep-the-finished-part-of-a-dot-file),
+  it also reports that part of the file wasn't checked.
 
 ## Choosing the session type
 

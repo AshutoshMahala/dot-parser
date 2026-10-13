@@ -38,7 +38,7 @@ explains the shared parts and DOT's own settings. Markup's own settings are in
 | --- | --- |
 | `.policy` | The compiled settings. Every field is listed in [all DOT settings](#all-dot-settings). |
 | `.runtime_policy` | `true` lets each call pass a `.policy` patch. Default `false`. See [changing settings at run time](#changing-settings-at-run-time). |
-| `.source_encodings` | Which encodings can be read, chosen at compile time (unreleased). Left out means UTF-8; empty means ASCII only. See [source encodings](ENCODINGS.md). |
+| `.source_encodings` | Which encodings can be read, chosen at compile time. Left out means UTF-8; empty means ASCII only. See [source encodings](ENCODINGS.md). |
 | `.processors.markup` | DOT only. A processor that checks HTML-like `<...>` values during parsing. See [adding a label processor](#adding-a-label-processor). |
 
 `markup.Profile(...)` takes `.policy`, `.runtime_policy` and `.source_encodings` in the same way.
@@ -125,7 +125,7 @@ hide the result.
 | Setting, under `validation` | Default | Reports |
 | --- | --- | --- |
 | `ambiguous_numeral` | `.warning` | A number that runs into a letter or dot, like `1e3` (read as `1` and `e3`, as Graphviz does) |
-| `invalid_encoding` | `.off` | Text that isn't valid in the file's encoding, anywhere except inside HTML-like labels (unreleased; `invalid_utf8` in 0.4.0) |
+| `invalid_encoding` | `.off` | Text that isn't valid in the file's encoding, anywhere except inside HTML-like labels (`invalid_utf8` in 0.4.0) |
 | `repeated_attribute` | `.off` | The same key twice on one statement, like `[color=red, color=blue]` |
 | `restrictions.graph_kinds.undigraph` | `.off` | The graph is undirected |
 | `restrictions.graph_kinds.digraph` | `.off` | The graph is directed |
@@ -166,7 +166,7 @@ const checked = Checks.validate(&document, bag.sink(), .{
 });
 ```
 
-- `dot.requiredValidationScratch(&document)` (unreleased) gives the exact
+- `dot.requiredValidationScratch(&document)` gives the exact
   number of entries needed, without reading the source or allocating. Each
   entry is 16 bytes. 0.4.0 doesn't have it; use `document.attributes.len`
   there, which is always enough.
@@ -212,7 +212,7 @@ sees them, ask for an *interpretation*:
 
 ```zig
 const view = Forgiving.interpretation(&document, .{});
-const kind = document.effectiveKind(view); // ?GraphKind (unreleased)
+const kind = document.effectiveKind(view); // ?GraphKind
 var edges = document.edgeIterator();
 while (edges.next()) |edge| {
     const operator = edge.effectiveOperator(&document, view);
@@ -221,7 +221,7 @@ while (edges.next()) |edge| {
 _ = kind;
 ```
 
-`effectiveKind` returns `?GraphKind` (unreleased; 0.4.0 returns `GraphKind`).
+`effectiveKind` returns `?GraphKind` (0.4.0 returns `GraphKind`).
 It is `null` only for an [unfinished document](EDITORS.md#keep-the-finished-part-of-a-dot-file)
 under `.auto` with no `->` kept yet, because the missing part could still make
 it generic. Complete documents always have a kind. Under `.auto`, operators are
@@ -233,7 +233,7 @@ Under `.generic` and `.auto` there is no "wrong" operator, so setting
 
 ### Keeping comments
 
-> **Unreleased.** Not in 0.4.0.
+> **Available since 0.5.0.**
 
 Comments are skipped by default. `.retention = .{ .comments = true }` keeps
 every DOT comment as a record of its kind and position, without interpreting
@@ -248,10 +248,10 @@ off. See [comments](READING_DOCUMENTS.md#comments) and
 | `limits.max_statements` | no limit | Most statements allowed |
 | `limits.max_attributes` | no limit | Most `key=value` pairs allowed, including `key = value` statements |
 | `limits.max_nesting` | no limit | Deepest subgraph nesting allowed (the document is level 0) |
-| `limits.max_comments` | no limit | Most comments kept when comment retention is on (unreleased) |
-| `retention.comments` | `false` | Keep comments in the document (unreleased). See [keeping comments](#keeping-comments). |
-| `retention.partial` | `false` | Keep the finished part of the file after an error (unreleased). See [Using it in an editor](EDITORS.md#keep-the-finished-part-of-a-dot-file). |
-| `retention.markup` | `false` | Keep the tree of each checked label (unreleased). See [keeping label trees](EDITORS.md#keep-the-label-trees-from-a-dot-file). |
+| `limits.max_comments` | no limit | Most comments kept when comment retention is on |
+| `retention.comments` | `false` | Keep comments in the document. See [keeping comments](#keeping-comments). |
+| `retention.partial` | `false` | Keep the finished part of the file after an error. See [Using it in an editor](EDITORS.md#keep-the-finished-part-of-a-dot-file). |
+| `retention.markup` | `false` | Keep the tree of each checked label. See [keeping label trees](EDITORS.md#keep-the-label-trees-from-a-dot-file). |
 | `on_error` | `.collect` | Keep looking after an error, or `.fail_fast` to stop at the first. See [errors](ERRORS.md#keep-going-or-stop-at-the-first-error). |
 | `scanner` | `.scalar` | Which text scanner to use. See [scanners](EXECUTION.md#two-scanners). |
 | `execution.metering` | `false` | Allow parsing in small steps. See [EXECUTION.md](EXECUTION.md). |
@@ -369,7 +369,7 @@ Every field of `dot.Policy`, with its default and where it is explained:
 | `syntax.bare_dash.acceptance` | `.reject`, `.warn`, `.accept` | `.reject` | [Lenient syntax](#lenient-syntax) |
 | `syntax.bare_dash.interpretation` | `.from_keyword` | `.from_keyword` | [Lenient syntax](#lenient-syntax) |
 | `validation.ambiguous_numeral` | `.err`, `.warning`, `.off` | `.warning` | [Optional checks](#optional-checks) |
-| `validation.invalid_encoding` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) (unreleased; `invalid_utf8` in 0.4.0) |
+| `validation.invalid_encoding` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) (`invalid_utf8` in 0.4.0) |
 | `validation.repeated_attribute` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |
 | `validation.restrictions.graph_kinds.undigraph` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |
 | `validation.restrictions.graph_kinds.digraph` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |
@@ -386,10 +386,10 @@ Every field of `dot.Policy`, with its default and where it is explained:
 | `limits.max_nesting` | a number | no limit | [Limits](#limits-and-other-settings) |
 | `on_error` | `.collect`, `.fail_fast` | `.collect` | [Errors](ERRORS.md#keep-going-or-stop-at-the-first-error) |
 | `scanner` | `.scalar`, `.block` | `.scalar` | [Two scanners](EXECUTION.md#two-scanners) |
-| `retention.comments` | `true`, `false` | `false` | [Keeping comments](#keeping-comments) (unreleased) |
-| `retention.partial` | `true`, `false` | `false` | [Partial DOT results](EDITORS.md#keep-the-finished-part-of-a-dot-file) (unreleased) |
-| `retention.markup` | `true`, `false` | `false` | [Keeping label trees](EDITORS.md#keep-the-label-trees-from-a-dot-file) (unreleased) |
-| `limits.max_comments` | a number | no limit | [Keeping comments](#keeping-comments) (unreleased) |
+| `retention.comments` | `true`, `false` | `false` | [Keeping comments](#keeping-comments) |
+| `retention.partial` | `true`, `false` | `false` | [Partial DOT results](EDITORS.md#keep-the-finished-part-of-a-dot-file) |
+| `retention.markup` | `true`, `false` | `false` | [Keeping label trees](EDITORS.md#keep-the-label-trees-from-a-dot-file) |
+| `limits.max_comments` | a number | no limit | [Keeping comments](#keeping-comments) |
 | `execution.metering` | `true`, `false` | `false` | [Parsing in small steps](EXECUTION.md) |
 | `execution.cancellation` | `true`, `false` | `false` | [Cancelling](EXECUTION.md#cancelling) |
 | `markup` | `.none`, `.passthrough`, `.process` | `.process` with a bound processor, otherwise `.passthrough` | [Checking HTML-like labels](LABELS.md#what-happens-by-default) |

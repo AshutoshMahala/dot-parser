@@ -4,9 +4,16 @@ Notable changes to dot-parser. During `0.x`, minor versions may break
 compatibility, including diagnostic codes and enum values. Breaking changes
 are marked; no compatibility shims are kept.
 
-## Unreleased
+## 0.5.0 — 2026-10-12
 
-Changes since 0.4.0.
+Changes since 0.4.0. This is an experimental, breaking minor release.
+Both `dot_parser` and `markup_parser` share this package version.
+
+This release adds results for editors, UTF-16 and UTF-32 input, and checks
+for Graphviz's tag and attribute names, which markup now uses by default. It
+still keeps your source as written and never builds a repaired tree. Full
+Graphviz label rules and step-by-step parsing of UTF-16 and UTF-32 are future
+work.
 
 ### Added
 
@@ -26,6 +33,8 @@ Changes since 0.4.0.
     the same result.
   - DOT `retention.comments` keeps comments, with an optional
     `limits.max_comments`. `lexer.WithComments` returns them as tokens.
+  - Documents, subgraphs, elements and labels say whether they are complete,
+    separately from whether they are valid.
 - **Graphviz markup mode**, `.mode = .graphviz`. It checks tag and attribute
   names against Graphviz's list and matches tags ignoring ASCII case. Where
   tags may appear and attribute values aren't checked yet.

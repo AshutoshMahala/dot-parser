@@ -8,12 +8,13 @@ file, reports problems, and reads the result.
 You need Zig 0.16.0.
 
 ```sh
-zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#v0.4.0
+zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#v0.5.0
 ```
 
-This installs the latest release, 0.4.0. The docs follow the `main` branch:
-anything marked **Unreleased** isn't in 0.4.0 yet. To use those features, use
-`#main` instead of `#v0.4.0`.
+This installs the latest release, 0.5.0. The docs follow the `main` branch:
+anything marked **Unreleased** isn't in 0.5.0 yet. To use those features, use
+`#main` instead of `#v0.5.0`. See the [changelog](../CHANGELOG.md) for breaking
+changes from 0.4.0.
 
 In your `build.zig`, import the `dot_parser` module into your program:
 

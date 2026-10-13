@@ -1,23 +1,23 @@
 # Performance
 
-How fast the parsers are and how much memory they use. Throughput and allocation
-tables were measured on the development version (commit `fd36194`, 2026-10-05);
-[type sizes](#type-sizes) were checked separately on 2026-10-07. Measurements use
-one machine and made-up test files. Use the numbers as a rough guide: your files,
-hardware and settings will give different results.
+How fast the parsers are and how much memory they use. Everything here was
+measured for 0.5.0 on 2026-10-12, at commit `2ea1311`, except where a section
+says otherwise. Measurements use one machine and made-up test files. Use the
+numbers as a rough guide: your files, hardware and settings will give different
+results.
 [How these were measured](#how-these-were-measured) has the details.
 
 Reading the tables:
 
 - **MB** means 1,000,000 bytes, and **MB/s** means MB per second.
-- A timing cell like `7.60 / 359.7` means **7.60 ms, which is 359.7 MB/s**.
+- A timing cell like `7.85 / 348.2` means **7.85 ms, which is 348.2 MB/s**.
   Both numbers describe the same run.
 - **Fast** and **Safe** mean `ReleaseFast` and `ReleaseSafe` builds.
 
 ## At a glance
 
-- **DOT:** parsing and validating a 2.7 MB file takes 7.6 ms (about 360 MB/s)
-  in a Fast build, or 6.6 ms (about 410 MB/s) with size hints.
+- **DOT:** parsing and validating a 2.7 MB file takes 7.9 ms (about 350 MB/s)
+  in a Fast build, or 6.8 ms (about 400 MB/s) with size hints.
 - **Memory:** the document takes about 34 bytes per statement, and your source
   is never copied. With an arena, size hints cut the memory for that file from
   37.6 MB to 8.4 MB.
@@ -25,10 +25,12 @@ Reading the tables:
   scanner wins on long runs of plain text.
 - **Small steps:** with both metering and cancel checks on, parsing takes about
   1.6 times as long.
-- **Markup:** about 290 to 440 MB/s for markup full of tags and attributes, and
-  much faster for mostly plain text.
+- **Markup:** about 300 to 430 MB/s for markup full of tags and attributes, and
+  much faster for mostly plain text. These are structural-mode parsing numbers.
+  Checking Graphviz tag and attribute names afterwards ran at about 1,700 MB/s
+  on the test labels.
 - **Labels in DOT:** a file with 1,000 small labels is parsed and checked at
-  about 140 MB/s, with only 7 allocations.
+  about 150 MB/s, with only 7 allocations (labels in structural mode).
 
 ## Parse and validate
 
@@ -42,10 +44,10 @@ The time it would take `measure` to work them out is **not** included.
 
 | Build | Scanner | Growing | Hinted |
 | --- | --- | --- | --- |
-| Fast | scalar | 7.60 / 359.7 | 6.63 / 412.3 |
-| Fast | block | 8.63 / 316.7 | 7.64 / 357.8 |
-| Safe | scalar | 9.12 / 299.7 | 7.67 / 356.4 |
-| Safe | block | 12.26 / 222.9 | 10.74 / 254.5 |
+| Fast | scalar | 7.85 / 348.2 | 6.82 / 400.8 |
+| Fast | block | 8.04 / 340.0 | 7.04 / 388.3 |
+| Safe | scalar | 8.91 / 306.8 | 7.36 / 371.4 |
+| Safe | block | 10.06 / 271.7 | 8.42 / 324.6 |
 
 ## Memory
 
@@ -70,8 +72,8 @@ for the source, diagnostics, sessions and nesting space separately.
 
 ## Type sizes
 
-`@sizeOf` values for the development version on this machine (aarch64 macOS,
-Zig 0.16.0), checked 2026-10-08. They are the size of each value itself, not
+`@sizeOf` values for 0.5.0 on this machine (aarch64 macOS,
+Zig 0.16.0), checked 2026-10-12. They are the size of each value itself, not
 memory used while parsing, and they can differ on other targets or Zig
 versions. A [layout test](../tests/layouts.zig) checks this table in all four
 build modes.
@@ -89,7 +91,7 @@ source, document buffers, nesting space or diagnostics, which you supply
 separately. Use `@sizeOf` on your own profile and target rather than copying
 these numbers.
 
-Keeping comments (unreleased) makes the document and storage types a little
+Keeping comments makes the document and storage types a little
 larger even when it is off. With the additional DOT completeness metadata, the
 default fixed session is now 40 bytes bigger than in 0.4.0. Scanner sizes and per-statement records are unchanged. With
 comment retention off, no comment records are allocated. With it on, each
@@ -109,7 +111,7 @@ Additional type sizes, the same in Fast and Safe builds:
 | Markup node / attribute view | 64 / 64 |
 | Markup root/child iterator / attribute iterator | 64 / 64 |
 
-Unreleased changes to these sizes:
+Changes since 0.4.0 to these sizes:
 
 - **Closing-tag typo recovery**, on by default, adds 8 bytes to sessions with
   fixed settings and 24 bytes to the run-time-settings session. With a fixed
@@ -132,8 +134,8 @@ Unreleased changes to these sizes:
 
 ## Cost of opt-in features
 
-> **Unreleased.** These were measured on development builds, separately from
-> the tables above, on the same machine.
+> The compile-time numbers in this section were measured during 0.5.0
+> development, on the same machine, and weren't re-run for the release.
 
 **Partial DOT results** ([editors](EDITORS.md#keep-the-finished-part-of-a-dot-file)):
 
@@ -148,15 +150,15 @@ Unreleased changes to these sizes:
 | Edges | −5.3% | −6.9% |
 | Subgraph edge ends | −7.9% | −8.9% |
 
+- **On, with run-time settings:** 0–2% slower than the same profile with it
+  off (`runtime_partial` against `runtime_baseline` in the
+  [settings tables](#compile-time-and-run-time-settings)).
 - **Memory, on:** fixed buffers use nothing extra. Growing buffers use 104 bytes
   more at their peak, and keep 26–34% more memory afterwards, because the lists
   aren't trimmed when parsing ends. Exact size hints or fixed buffers avoid that.
 
 **Keeping label trees** costs memory for every kept tree; how much depends on
 the labels. It hasn't been timed yet.
-
-`zig build bench-policy` now also measures partial results with run-time
-settings; see [running the benchmarks](#running-the-benchmarks).
 
 ## Scanners
 
@@ -167,12 +169,12 @@ is inside it.
 
 | Pattern | Source (MB) | Scalar | Block |
 | --- | ---: | --- | --- |
-| short names and punctuation | 1.114 | 7.21 / 154.5 | 5.67 / 196.5 |
-| short names, spaces and line breaks | 0.983 | 2.97 / 331.0 | 2.75 / 357.5 |
-| keywords and numbers | 3.670 | 5.98 / 613.7 | 5.84 / 628.4 |
-| quoted strings and comments | 2.228 | 2.93 / 760.5 | 4.49 / 496.3 |
-| long HTML label | 80.806 | 40.53 / 1,993.7 | 8.60 / 9,396.0 |
-| long name | 4.260 | 3.31 / 1,287.0 | 2.13 / 1,999.9 |
+| short names and punctuation | 1.114 | 7.22 / 154.3 | 5.65 / 197.2 |
+| short names, spaces and line breaks | 0.983 | 2.87 / 342.5 | 2.72 / 361.4 |
+| keywords and numbers | 3.670 | 5.90 / 622.0 | 5.85 / 627.4 |
+| quoted strings and comments | 2.228 | 2.78 / 801.5 | 4.55 / 489.7 |
+| long HTML label | 80.806 | 40.98 / 1,971.8 | 8.62 / 9,374.2 |
+| long name | 4.260 | 3.32 / 1,283.1 | 2.06 / 2,067.9 |
 
 The block scanner wins on long runs, but scalar wins on quoted strings and
 comments. A faster scanner alone doesn't mean a faster parse overall: end to
@@ -188,10 +190,10 @@ use `run()`.
 
 | Metering | Cancellation | Fast | Safe | Cancel checks |
 | --- | --- | --- | --- | ---: |
-| off | off | 3.33 / 120.1 | 3.79 / 105.5 | 0 |
-| on | off | 4.15 / 96.4 | 4.33 / 92.4 | 0 |
-| off | on | 4.67 / 85.7 | 4.92 / 81.3 | 1,400,016 |
-| on | on | 5.48 / 73.0 | 5.31 / 75.3 | 1,405,484 |
+| off | off | 3.28 / 122.0 | 3.80 / 105.3 | 0 |
+| on | off | 4.06 / 98.5 | 4.23 / 94.6 | 0 |
+| off | on | 4.83 / 82.8 | 4.80 / 83.3 | 1,400,016 |
+| on | on | 5.15 / 77.7 | 5.12 / 78.1 | 1,405,484 |
 
 The cancel callback counts how often it is called but never asks to stop. So
 these numbers show the cost of checking, not how quickly a cancel takes
@@ -200,30 +202,50 @@ memory isn't timed.
 
 ## Compile-time and run-time settings
 
-The recorded settings baseline below parsed 50,000 `a;` statements (0.100 MB)
-into fixed buffers, without validation:
+The [settings benchmark](../bench/policies.zig) parses three files into fixed
+buffers, without validation:
+
+- `nodes`: 50,000 lines of `a;` (0.150 MB)
+- `edges`: 50,000 lines of `a -> b;` (0.400 MB)
+- `subgraph ends`: 50,000 lines of `{a;} -> {b;};` (0.700 MB)
+
+Each is parsed with four kinds of settings:
 
 - `fixed` uses compile-time settings.
 - `runtime_baseline` turns on run-time settings but changes nothing.
 - `runtime_override` passes the same scanner choice as a run-time setting.
+- `runtime_partial` also turns on [partial results](EDITORS.md#keep-the-finished-part-of-a-dot-file)
+  at run time.
 
-| Scanner | Settings | Fast | Safe |
-| --- | --- | --- | --- |
-| scalar | fixed | 0.814 / 122.9 | 0.924 / 108.2 |
-| scalar | runtime_baseline | 0.885 / 113.0 | 0.954 / 104.8 |
-| scalar | runtime_override | 0.885 / 113.0 | 0.955 / 104.7 |
-| block | fixed | 0.839 / 119.2 | 1.163 / 86.0 |
-| block | runtime_baseline | 1.338 / 74.7 | 1.210 / 82.7 |
-| block | runtime_override | 1.309 / 76.4 | 1.207 / 82.9 |
+Fast build:
 
-The current [settings benchmark](../bench/policies.zig) also covers edges,
-subgraph endpoints and runtime partial retention, with the longer warm-up
-described in the development check above. Its node fixture includes newlines
-(0.150 MB), so its timings are not directly comparable to this historical table.
+| Scanner | Settings | `nodes` | `edges` | `subgraph ends` |
+| --- | --- | --- | --- | --- |
+| scalar | fixed | 0.835 / 179.7 | 1.551 / 257.9 | 6.361 / 110.0 |
+| scalar | runtime_baseline | 0.944 / 158.9 | 1.767 / 226.4 | 6.666 / 105.0 |
+| scalar | runtime_override | 0.946 / 158.6 | 1.772 / 225.7 | 6.638 / 105.5 |
+| scalar | runtime_partial | 0.952 / 157.6 | 1.771 / 225.9 | 6.740 / 103.9 |
+| block | fixed | 0.858 / 174.8 | 1.687 / 237.1 | 6.309 / 111.0 |
+| block | runtime_baseline | 1.345 / 111.5 | 2.779 / 143.9 | 9.150 / 76.5 |
+| block | runtime_override | 1.333 / 112.5 | 2.777 / 144.0 | 9.154 / 76.5 |
+| block | runtime_partial | 1.357 / 110.5 | 2.783 / 143.7 | 9.224 / 75.9 |
+
+Safe build:
+
+| Scanner | Settings | `nodes` | `edges` | `subgraph ends` |
+| --- | --- | --- | --- | --- |
+| scalar | fixed | 0.972 / 154.3 | 1.667 / 240.0 | 7.179 / 97.5 |
+| scalar | runtime_baseline | 1.003 / 149.6 | 1.857 / 215.4 | 7.461 / 93.8 |
+| scalar | runtime_override | 1.000 / 150.0 | 1.851 / 216.1 | 7.428 / 94.2 |
+| scalar | runtime_partial | 1.016 / 147.6 | 1.871 / 213.8 | 7.419 / 94.4 |
+| block | fixed | 1.183 / 126.8 | 2.003 / 199.7 | 7.765 / 90.1 |
+| block | runtime_baseline | 1.223 / 122.7 | 2.384 / 167.8 | 8.368 / 83.7 |
+| block | runtime_override | 1.222 / 122.8 | 2.387 / 167.6 | 8.314 / 84.2 |
+| block | runtime_partial | 1.235 / 121.5 | 2.402 / 166.5 | 8.369 / 83.6 |
 
 These time the whole parse, not just the cost of reading the settings. Each
 row is compiled differently, so part of the difference is just different
-machine code. The file is small, so this can't tell you the cost of run-time
+machine code. The files are small, so this can't tell you the cost of run-time
 settings in general. Measure the settings and files you actually use.
 
 ## Subgraphs
@@ -235,12 +257,12 @@ each one inside the previous one.
 
 | Shape | Count | Fast | Safe | Document (MB) | Nesting space (bytes) |
 | --- | ---: | --- | --- | ---: | ---: |
-| siblings | 1,000 | 0.025 / 80.3 | 0.032 / 62.8 | 0.044 | 116 |
+| siblings | 1,000 | 0.029 / 69.2 | 0.028 / 71.7 | 0.044 | 116 |
 | nested | 1,000 | 0.029 / 69.2 | 0.033 / 60.8 | 0.044 | 116,000 |
-| siblings | 10,000 | 0.278 / 72.0 | 0.315 / 63.5 | 0.440 | 116 |
-| nested | 10,000 | 0.300 / 66.7 | 0.341 / 58.7 | 0.440 | 1,160,000 |
-| siblings | 100,000 | 2.811 / 71.2 | 3.167 / 63.2 | 4.400 | 116 |
-| nested | 100,000 | 3.080 / 64.9 | 3.377 / 59.2 | 4.400 | 11,600,000 |
+| siblings | 10,000 | 0.290 / 69.0 | 0.310 / 64.5 | 0.440 | 116 |
+| nested | 10,000 | 0.307 / 65.2 | 0.341 / 58.7 | 0.440 | 1,160,000 |
+| siblings | 100,000 | 2.930 / 68.3 | 3.169 / 63.1 | 4.400 | 116 |
+| nested | 100,000 | 3.081 / 64.9 | 3.481 / 57.5 | 4.400 | 11,600,000 |
 
 Deep nesting can't overflow the call stack, but it does need nesting space for
 every open level. 100,000 nested subgraphs need **11.6 MB** of nesting space,
@@ -250,24 +272,26 @@ allocator that grows as it goes may use more at its peak.
 ## Markup on its own
 
 The [markup benchmark](../bench/markup.zig) parses markup into fixed buffers of
-exactly the right size, with compile-time settings. Times don't include sizing
-or setting up the buffers, or any validation.
+exactly the right size, with compile-time settings in structural mode. Parsing
+in Graphviz mode, the default since 0.5.0, hasn't been timed; its name checks
+are timed under [Graphviz vocabulary checks](#graphviz-vocabulary-checks). Times
+don't include sizing or setting up the buffers, or any validation.
 
 | Fixture | Source (MB) | Fast, scalar | Fast, block | Safe, scalar | Safe, block |
 | --- | ---: | --- | --- | --- | --- |
-| flat | 0.200 | 0.584 / 342.5 | 0.609 / 328.6 | 0.638 / 313.5 | 0.664 / 301.1 |
-| mixed | 0.750 | 2.379 / 315.2 | 2.504 / 299.5 | 2.600 / 288.5 | 2.630 / 285.2 |
-| text | 1.000 | 0.465 / 2,151.3 | 0.079 / 12,631.7 | 0.633 / 1,578.9 | 0.080 / 12,534.8 |
-| deep | 0.070 | 0.241 / 290.2 | 0.256 / 273.8 | 0.265 / 263.7 | 0.277 / 253.1 |
-| attributes | 1.100 | 3.391 / 324.4 | 3.567 / 308.4 | 3.431 / 320.6 | 3.633 / 302.8 |
-| duplicates | 1.100 | 3.386 / 324.9 | 3.572 / 308.0 | 3.432 / 320.5 | 3.609 / 304.8 |
-| references | 1.700 | 3.987 / 426.4 | 4.094 / 415.2 | 4.188 / 405.9 | 4.238 / 401.1 |
-| attribute_references | 1.800 | 4.122 / 436.7 | 4.090 / 440.1 | 4.237 / 424.8 | 4.296 / 419.0 |
-| comments | 1.400 | 1.238 / 1,131.1 | 1.102 / 1,270.0 | 1.316 / 1,063.7 | 1.207 / 1,160.3 |
-| cdata | 1.550 | 1.552 / 998.5 | 1.429 / 1,084.5 | 1.745 / 888.5 | 1.571 / 986.4 |
-| prose | 1.835 | 0.982 / 1,867.8 | 0.282 / 6,500.1 | 1.231 / 1,490.3 | 0.316 / 5,801.9 |
-| long_names | 0.655 | 0.248 / 2,646.2 | 0.096 / 6,834.2 | 0.323 / 2,025.7 | 0.114 / 5,749.2 |
-| long_values | 1.965 | 1.110 / 1,770.1 | 0.310 / 6,345.2 | 1.425 / 1,378.7 | 0.329 / 5,969.1 |
+| flat | 0.200 | 0.575 / 347.8 | 0.601 / 332.5 | 0.638 / 313.3 | 0.668 / 299.5 |
+| mixed | 0.750 | 2.344 / 319.9 | 2.568 / 292.0 | 2.553 / 293.8 | 2.672 / 280.6 |
+| text | 1.000 | 0.567 / 1,764.5 | 0.080 / 12,466.8 | 0.725 / 1,380.0 | 0.079 / 12,717.8 |
+| deep | 0.070 | 0.236 / 296.6 | 0.253 / 276.9 | 0.263 / 266.1 | 0.281 / 249.1 |
+| attributes | 1.100 | 3.256 / 337.9 | 3.427 / 321.0 | 3.434 / 320.3 | 3.619 / 304.0 |
+| duplicates | 1.100 | 3.232 / 340.4 | 3.447 / 319.1 | 3.445 / 319.3 | 3.657 / 300.8 |
+| references | 1.700 | 3.926 / 433.0 | 4.090 / 415.7 | 4.170 / 407.6 | 4.241 / 400.8 |
+| attribute_references | 1.800 | 4.149 / 433.8 | 4.167 / 432.0 | 4.178 / 430.9 | 4.281 / 420.5 |
+| comments | 1.400 | 1.199 / 1,167.4 | 1.100 / 1,273.1 | 1.330 / 1,052.8 | 1.214 / 1,153.0 |
+| cdata | 1.550 | 1.505 / 1,029.7 | 1.425 / 1,087.9 | 1.705 / 909.3 | 1.579 / 981.4 |
+| prose | 1.835 | 0.996 / 1,843.2 | 0.284 / 6,470.4 | 1.378 / 1,331.2 | 0.317 / 5,795.5 |
+| long_names | 0.655 | 0.247 / 2,647.9 | 0.095 / 6,919.1 | 0.334 / 1,960.6 | 0.115 / 5,706.3 |
+| long_values | 1.965 | 1.109 / 1,771.4 | 0.304 / 6,457.9 | 1.528 / 1,285.8 | 0.332 / 5,914.6 |
 
 The fixture names match the benchmark source:
 
@@ -309,11 +333,11 @@ Fast build, scalar scanner, on the `attributes` and `prose` fixtures:
 
 | How it runs | `attributes` | `prose` |
 | --- | --- | --- |
-| fixed | 3.391 / 324.4 | 0.982 / 1,867.8 |
-| runtime_baseline | 3.412 / 322.4 | 0.979 / 1,874.7 |
-| runtime_override | 3.370 / 326.4 | 0.987 / 1,858.5 |
-| count_only | 2.953 / 372.5 | 0.951 / 1,929.0 |
-| cancellable | 5.632 / 195.3 | 5.614 / 326.9 |
+| fixed | 3.256 / 337.9 | 0.996 / 1,843.2 |
+| runtime_baseline | 3.287 / 334.7 | 0.991 / 1,852.6 |
+| runtime_override | 3.263 / 337.1 | 0.949 / 1,933.9 |
+| count_only | 2.865 / 383.9 | 0.937 / 1,958.6 |
+| cancellable | 6.070 / 181.2 | 6.091 / 301.2 |
 
 - `runtime_baseline` and `runtime_override` use the same settings as `fixed`,
   passed at run time.
@@ -331,19 +355,21 @@ diagnostics, are not timed. These fixtures are separate from the parsing ones.
 
 | Check | Source (MB) | Fast | Safe | Scratch (bytes) |
 | --- | ---: | --- | --- | ---: |
-| Duplicate attributes | 1.100 | 0.942 / 1,168.1 | 1.376 / 799.3 | 24 |
-| ASCII names | 1.400 | 1.507 / 929.1 | 1.809 / 773.7 | 0 |
-| Unicode names | 1.100 | 0.984 / 1,118.0 | 1.319 / 834.0 | 0 |
-| Reference list | 1.250 | 1.323 / 944.8 | 1.491 / 838.1 | 0 |
-| UTF-8, ASCII text | 0.500 | 0.116 / 4,328.4 | 0.139 / 3,609.4 | 0 |
-| UTF-8, Unicode text | 0.600 | 0.666 / 900.6 | 0.740 / 810.7 | 0 |
-| UTF-8, invalid bytes | 0.350 | 0.363 / 963.8 | 0.518 / 676.0 | 0 |
-| All checks together | 1.200 | 2.807 / 427.4 | 3.288 / 365.0 | 16 |
+| Duplicate attributes | 1.100 | 0.922 / 1,193.1 | 1.431 / 768.7 | 24 |
+| ASCII names | 1.400 | 1.514 / 924.7 | 1.876 / 746.1 | 0 |
+| Unicode names | 1.100 | 1.020 / 1,078.9 | 1.395 / 788.6 | 0 |
+| Reference list | 1.250 | 1.343 / 930.5 | 1.515 / 825.2 | 0 |
+| Encoding, ASCII text in UTF-8 | 0.500 | 0.117 / 4,284.3 | 0.127 / 3,929.7 | 0 |
+| Encoding, Unicode text in UTF-8 | 0.600 | 0.670 / 895.5 | 0.735 / 816.2 | 0 |
+| Encoding, invalid UTF-8 | 0.350 | 0.366 / 956.7 | 0.513 / 682.4 | 0 |
+| All checks together | 1.200 | 2.727 / 440.1 | 3.372 / 355.8 | 16 |
 
 - The duplicate fixture has 50,000 repeated keys.
 - Name checks use the XML 1.0 rules. The reference check uses the five XML
   names (`amp`, `lt`, `gt`, `quot`, `apos`).
-- "All checks together" turns on names, references, UTF-8 and duplicate keys.
+- The encoding rows use `invalid_encoding` on UTF-8 input.
+- "All checks together" turns on names, references, the encoding check and
+  duplicate keys.
 - Findings in the invalid inputs are counted and thrown away, not stored.
 
 ### Checking markup that failed to parse
@@ -355,9 +381,9 @@ the parts it can recognise, without building a tree. This is the
 
 | Fixture | Source (MB) | Fast, scalar | Safe, scalar | Scratch (bytes) |
 | --- | ---: | --- | --- | ---: |
-| complete | 0.260 | 1.092 / 238.1 | 1.254 / 207.3 | 72 |
-| bad_closer | 0.300 | 1.107 / 271.0 | 1.255 / 239.1 | 72 |
-| bad_header | 0.360 | 1.656 / 217.4 | 1.852 / 194.4 | 72 |
+| complete | 0.260 | 1.093 / 237.9 | 1.301 / 199.8 | 72 |
+| bad_closer | 0.300 | 1.118 / 268.2 | 1.307 / 229.6 | 72 |
+| bad_header | 0.360 | 1.562 / 230.4 | 1.874 / 192.1 | 72 |
 
 - `complete`: every tag is finished, though attributes and references still
   have errors.
@@ -371,7 +397,25 @@ work.
 
 ### Graphviz vocabulary checks
 
-> **Unreleased.** No numbers are recorded yet.
+This is the `--graphviz-only` run. It validates an already parsed document in
+each mode, with duplicate checking on in both. Parsing and storing diagnostics
+aren't timed.
+
+- `tables`: 10,000 copies of a small valid Graphviz table, with `<TABLE>`,
+  `<TR>`, `<TD>`, `<B>` and `<BR>` and their attributes.
+- `invalid`: 10,000 copies of an unknown element and two disallowed
+  attributes. Graphviz mode reports three errors per copy.
+
+| Input | Mode | Settings | Source (MB) | Fast | Safe | Scratch (bytes) |
+| --- | --- | --- | ---: | --- | --- | ---: |
+| tables | structural | fixed | 0.980 | 0.142 / 6,898.6 | 0.228 / 4,303.6 | 16 |
+| tables | structural | run-time | 0.980 | 0.143 / 6,854.8 | 0.230 / 4,259.0 | 16 |
+| tables | graphviz | fixed | 0.980 | 0.575 / 1,705.3 | 0.772 / 1,270.1 | 16 |
+| tables | graphviz | run-time | 0.980 | 0.658 / 1,489.0 | 0.913 / 1,073.0 | 16 |
+| invalid | structural | fixed | 0.380 | 0.034 / 11,066.5 | 0.063 / 6,056.1 | 0 |
+| invalid | structural | run-time | 0.380 | 0.035 / 10,728.7 | 0.068 / 5,625.3 | 0 |
+| invalid | graphviz | fixed | 0.380 | 0.256 / 1,484.4 | 0.361 / 1,052.3 | 0 |
+| invalid | graphviz | run-time | 0.380 | 0.340 / 1,119.2 | 0.469 / 809.8 | 0 |
 
 - Each element and attribute is looked up with a few short comparisons. The
   checks keep nothing extra in the document and allocate nothing themselves.
@@ -380,22 +424,16 @@ work.
 - `validateSource` needs no buffer for tags when duplicate checking is off.
 - A profile fixed at compile time to structural mode leaves the Graphviz checks
   and case-insensitive matching out of the program. A profile with run-time
-  settings includes both modes, which makes the program larger, so benchmark
-  it separately.
+  settings includes both modes, which makes the program larger.
 - Validation still can't run in small steps. Cancelling and stopping work as
   before.
-
-Measure them with
-`zig build bench-markup -Doptimize=ReleaseFast -- --graphviz-only`. It times the
-checks after parsing, with fixed and run-time settings and with valid and
-invalid input. Parsing and storing diagnostics aren't included.
 
 ## DOT with label checking
 
 The [composition benchmark](../bench/composition.zig) uses a DOT profile with
 the markup parser bound as its
-[label checker](LABELS.md#check-every-label-while-parsing), and calls
-`parseAndValidate`. Times include parsing the DOT, checking the labels,
+[label checker](LABELS.md#check-every-label-while-parsing), in structural mode,
+and calls `parseAndValidate`. Times include parsing the DOT, checking the labels,
 validating, and freeing the result. Both parsers use the scanner shown.
 Diagnostics are thrown away.
 
@@ -412,14 +450,14 @@ The benchmark covers both fixed and runtime policies for both parsers, labelled
 
 | Fixture | Scanner | Source (bytes) | Fast | Safe | Peak (bytes) | Allocations / resizes / remaps |
 | --- | --- | ---: | --- | --- | ---: | --- |
-| plain | scalar | 2,010 | 0.024 / 85.0 | 0.025 / 80.4 | 27,064 | 2 / 0 / 19 |
-| plain | block | 2,010 | 0.026 / 77.3 | 0.029 / 68.8 | 27,064 | 2 / 0 / 19 |
-| labels | scalar | 32,010 | 0.222 / 144.2 | 0.226 / 141.6 | 44,260 | 7 / 0 / 29 |
-| labels | block | 32,010 | 0.245 / 130.7 | 0.271 / 118.2 | 44,260 | 7 / 0 / 29 |
-| invalid | scalar | 35,010 | 0.319 / 109.6 | 0.342 / 102.4 | 44,404 | 8 / 0 / 29 |
-| invalid | block | 35,010 | 0.352 / 99.5 | 0.393 / 89.1 | 44,404 | 8 / 0 / 29 |
-| large_first | scalar | 140,029 | 1.298 / 107.9 | 1.365 / 102.6 | 1,670,604 | 5 / 0 / 55 |
-| large_first | block | 140,029 | 1.392 / 100.6 | 1.548 / 90.5 | 1,670,604 | 5 / 0 / 55 |
+| plain | scalar | 2,010 | 0.024 / 84.2 | 0.024 / 82.7 | 27,064 | 2 / 0 / 19 |
+| plain | block | 2,010 | 0.026 / 77.7 | 0.029 / 70.1 | 27,064 | 2 / 0 / 19 |
+| labels | scalar | 32,010 | 0.216 / 148.2 | 0.228 / 140.1 | 44,260 | 7 / 0 / 29 |
+| labels | block | 32,010 | 0.247 / 129.7 | 0.280 / 114.4 | 44,260 | 7 / 0 / 29 |
+| invalid | scalar | 35,010 | 0.305 / 114.6 | 0.338 / 103.7 | 44,404 | 8 / 0 / 29 |
+| invalid | block | 35,010 | 0.345 / 101.6 | 0.385 / 91.0 | 44,404 | 8 / 0 / 29 |
+| large_first | scalar | 140,029 | 1.313 / 106.7 | 1.354 / 103.4 | 1,670,604 | 5 / 0 / 55 |
+| large_first | block | 140,029 | 1.396 / 100.3 | 1.543 / 90.8 | 1,670,604 | 5 / 0 / 55 |
 
 **Peak** is the most memory the library had asked for at any one moment
 during a call, measured with a separate counting allocator. It doesn't include
@@ -447,7 +485,8 @@ confirms that everything was freed.
 
 | Benchmark | Warm-up rounds per run | Timed rounds | Operations per round |
 | --- | ---: | ---: | ---: |
-| DOT parse and validate, lexer, sessions, subgraphs, settings | 2 | 9 | 1 |
+| DOT parse and validate, lexer, sessions, subgraphs | 2 | 9 | 1 |
+| Settings | at least 150 ms | 9 | 4 |
 | Markup parsing and validation | 5 | 9 | 16 |
 | DOT with label checking | 3 | 9 | 10 |
 
@@ -467,13 +506,15 @@ intervals:
 
 | Build / scanner | Growing (ms) | Hinted (ms) |
 | --- | ---: | ---: |
-| Fast / scalar | 7.55–7.80 | 6.62–6.81 |
-| Fast / block | 8.57–8.68 | 7.57–7.74 |
-| Safe / scalar | 8.59–9.31 | 7.06–7.78 |
-| Safe / block | 9.87–12.39 | 8.14–10.94 |
+| Fast / scalar | 7.81–8.26 | 6.50–6.88 |
+| Fast / block | 8.01–8.30 | 6.77–7.27 |
+| Safe / scalar | 8.74–9.25 | 7.30–7.45 |
+| Safe / block | 9.90–10.17 | 8.14–8.51 |
 
-Short tests varied even more: the scalar, Fast, compile-time `fixed` settings
-case ranged from 0.803 to 1.280 ms. Treat small differences between settings or
+Short tests varied more. The `plain` label-checking case ranged from 0.024 to
+0.065 ms in the Fast build, and 1,000 sibling subgraphs from 0.026 to 0.035 ms.
+Some markup cases also moved between runs: plain `text` with the scalar scanner
+in a Safe build ranged from 0.636 to 0.849 ms. Treat small differences between settings or
 builds as noise, not as dependable speedups.
 
 In the settings benchmark, run-time settings are read in a way the compiler
@@ -492,6 +533,7 @@ zig build bench-subgraphs -Doptimize=ReleaseFast -Dlexer=scalar
 zig build bench-policy -Doptimize=ReleaseFast
 zig build bench-markup -Doptimize=ReleaseFast
 zig build bench-markup -Doptimize=ReleaseFast -- --scopes-only
+zig build bench-markup -Doptimize=ReleaseFast -- --graphviz-only
 zig build bench-composition -Doptimize=ReleaseFast
 zig build check-benches  # only checks that they compile
 ```
@@ -499,11 +541,7 @@ zig build check-benches  # only checks that they compile
 Repeat everything with `-Doptimize=ReleaseSafe`. Repeat the first four with
 `-Dlexer=block` too; the others already cover both scanners where it matters.
 Run each one five times and take the median. `bench-markup` also accepts
-`-- --rules-only`, `-- --validation-only` and `-- --graphviz-only` for shorter
-runs.
+`-- --rules-only` and `-- --validation-only` for shorter runs.
 
-`bench-policy` now covers nodes, edges and subgraph edge ends, with fixed
-settings, run-time settings and partial results. It warms each case for at
-least 150 ms and averages four parses per sample, so its output isn't directly
-comparable with the [settings table](#compile-time-and-run-time-settings)
-above, which used the older method.
+`bench-policy` warms each case for at least 150 ms and averages four parses per
+sample, because two short warm-up parses didn't reliably settle the first case.

@@ -10,7 +10,7 @@ Every operation tells you two things, kept separate on purpose:
 
 The library never prints or panics on bad input. Problems in the text are
 reported as diagnostics, not Zig errors. Zig errors are for mistakes in how the
-library is called or set up and, in unreleased builds, for files whose
+library is called or set up and for files that
 [can't be read in the chosen encoding](ENCODINGS.md#checks-before-parsing).
 Those are checked before parsing starts.
 
@@ -50,7 +50,7 @@ validation rejects it (`result.documentValid() == false`). You still get the
 document in this case, so tools can show or fix the problem.
 
 If parsing fails, there is **no document by default**. Editors can ask both
-parsers to keep the finished part instead (unreleased); see
+parsers to keep the finished part instead; see
 [Using it in an editor](EDITORS.md#keep-the-finished-part-of-a-dot-file). With
 that on, a failed parse can still return a document, so check the outcome or
 `documentValid()`, not whether a document exists.
@@ -87,8 +87,8 @@ Results also carry a few counts and flags:
 no diagnostic. Always check the outcome or `documentValid()`.
 
 When chosen labels are
-[checked later, in the same result](EDITORS.md#check-chosen-labels-later-in-the-same-result)
-(unreleased), `result.dot` still describes only the DOT step. The later check
+[checked later, in the same result](EDITORS.md#check-chosen-labels-later-in-the-same-result),
+`result.dot` still describes only the DOT step. The later check
 reports in `result.markup.stop`, `diagnostic_delivery`, `diagnostic_stop` and
 each label's own result. `result.documentValid()` covers both.
 
@@ -99,18 +99,18 @@ When parsing succeeds, `result.validation` holds the validation result.
 
 | Outcome | Meaning |
 | --- | --- |
-| `.completed` | All checks ran. It reports `document_valid`, `violations` (errors) and `warnings`. For an [unfinished document](EDITORS.md#keep-the-finished-part-of-a-dot-file), `coverage` (unreleased) says where the checked part ends. |
+| `.completed` | All checks ran. It reports `document_valid`, `violations` (errors) and `warnings`. For an [unfinished document](EDITORS.md#keep-the-finished-part-of-a-dot-file), `coverage` says where the checked part ends. |
 | `.error_stopped` | Stopped at the first error because of `.fail_fast`. |
 | `.diagnostic_stopped` | The diagnostic destination asked to stop, for example because the bag was full. |
 | `.insufficient_scratch` | A check needed a scratch array that was too small, so no checks ran. See [optional checks](POLICIES.md#optional-checks). |
-| `.unsupported_encoding` | (unreleased) This validator can't read the document's [encoding](ENCODINGS.md). Validate with a profile that has that reader. A UTF-8 validator can also check documents from an ASCII-only profile. |
+| `.unsupported_encoding` | This validator can't read the document's [encoding](ENCODINGS.md). Validate with a profile that has that reader. A UTF-8 validator can also check documents from an ASCII-only profile. |
 
 `documentValid()` is true only for `.completed` with `document_valid`, on a
 complete document. In every other case the document is still available, but it
 was not fully checked.
 
 Markup validation reports the same case as
-`completion = .{ .unsupported_encoding = actual }` (unreleased). Its validity
+`completion = .{ .unsupported_encoding = actual }`. Its validity
 is then unknown, never valid.
 
 ## Keep going, or stop at the first error
@@ -347,7 +347,7 @@ all. That only changes the reporting; the outcome stays `.unsupported_feature`.
 
 Everything above applies to the markup parser too, with these differences:
 
-- **Partial results (unreleased).** With `retention.partial` on, a failed parse
+- **Partial results.** With `retention.partial` on, a failed parse
   can still return the part it recognised. The outcome still reports the
   failure; check `document.state` to tell a partial document from a complete
   one. See [partial results](EDITORS.md#keep-the-finished-part-of-markup).
@@ -417,8 +417,8 @@ The full list, with summaries and hints, is in
 | `E/W.Validation.Encoding.003` | Text that isn't valid in the file's encoding (optional check) |
 | `E/W.Validation.Name.003` | A name that breaks the selected name rule (optional check) |
 | `E/W.Validation.Reference.003` | A reference missing from the selected list, like `&nbsp;` (optional check) |
-| `E/W.Validation.Tag.009` | An element Graphviz doesn't know (Graphviz mode, unreleased) |
-| `E/W.Validation.Attribute.009` | An attribute not allowed on that Graphviz element, like `COLOR` on `<B>` (Graphviz mode, unreleased) |
+| `E/W.Validation.Tag.009` | An element Graphviz doesn't know (Graphviz mode) |
+| `E/W.Validation.Attribute.009` | An attribute not allowed on that Graphviz element, like `COLOR` on `<B>` (Graphviz mode) |
 | `E/W.Profile.Feature.009` | Something the parser doesn't handle, like `<?...?>` or UTF-16 input |
 | `E.Resource.Capacity.026` | A limit or fixed buffer was full |
 | `E.Resource.Memory.026` | The allocator ran out of memory |

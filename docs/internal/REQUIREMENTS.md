@@ -1,7 +1,7 @@
 # DOT Parser Requirements
 
 Status: living requirements, amended in place (see §20 Amendments)  
-Original draft: 2026-07-13 · Last reconciled: 2026-10-04
+Original draft: 2026-07-13 · Last reconciled: 2026-10-12
 
 Requirement IDs (`R-*`) are stable and cited throughout the source code:
 content may be amended, but IDs are never renumbered, deleted, or reused.
@@ -21,10 +21,11 @@ future capabilities; their presence here does not mean the current code has them
 
 See [the decision/status index](OpenQuestions.md#current-delivery-and-unfinished-decisions),
 [markup design](MARKUP.md) and [processor contract](PROCESSOR_CONTRACT.md) for
-unfinished choices. Public guides describe the available development APIs;
-release 0.3.0 does not contain the newer markup/integration work. Stable R-* and
-Q* IDs are retained during consolidation; no requirement is waived by removing
-a completed implementation diary.
+unfinished choices. Public guides describe the APIs available in 0.5.0,
+including markup/integration, opt-in editor retention and one-call native
+encoding readers. Future requirements remain separate. Stable R-* and Q* IDs
+are retained during consolidation; no requirement is waived by removing a
+completed implementation diary.
 
 ## 1. Purpose
 

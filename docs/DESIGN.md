@@ -78,7 +78,7 @@ In UTF-8 input, the default, names can contain any byte from 0x80 to 0xFF and
 are kept exactly. Checking the encoding is optional and off by default, in
 every encoding. Nothing is normalised or converted. Columns count bytes.
 
-UTF-16 and UTF-32 input (unreleased) only has to be made of whole code units.
+UTF-16 and UTF-32 input only has to be made of whole code units.
 DOT's encoding check skips the inside of HTML-like labels; the label checker
 checks those with its own setting.
 
@@ -94,7 +94,7 @@ Tags: R-PORT-006
 
 ### Other encodings are read as they are
 
-> **Unreleased.** Not in 0.4.0.
+> **Available since 0.5.0.**
 
 UTF-16 and UTF-32 readers are chosen at compile time. They read the original
 bytes; nothing is converted to UTF-8 first. A byte order mark or the
@@ -243,7 +243,7 @@ Tags: R-FUNC-005, R-DIAG-003
 After a syntax error the parser skips to the next `;` or `}` and keeps looking.
 It stops where there is no safe place to continue, such as an unclosed quote
 or comment. By default a failed parse returns no document at all. DOT and markup
-can keep the finished part, but only when you ask (unreleased; see
+can keep the finished part, but only when you ask (see
 [partial documents for editors](#partial-documents-for-editors)).
 `.fail_fast` is available, and removes the recovery code when chosen at compile
 time.
@@ -374,7 +374,7 @@ now; the `Document` is the public result.
 buffers, and the counting pass behind `measure`. A consumer might act before a
 later error is found, so it needs an abort signal to throw away staged work.
 That is how ordinary parsing avoids returning a partial document. With partial
-results on (unreleased), the builder instead keeps what was finished when the
+results on, the builder instead keeps what was finished when the
 abort comes. The interface stays private until its shape settles.
 
 Tags: R-MOD-011
@@ -413,7 +413,7 @@ the [roadmap](ROADMAP.md#markup).
 
 ### Graphviz is the default dialect
 
-> **Unreleased.** In 0.4.0 the default is `.structural`.
+> **Changed in 0.5.0.** In 0.4.0 the default was `.structural`.
 
 The built-in markup parser has two modes. `.graphviz`, the default, checks
 Graphviz's tags and attributes and matches tag names ignoring ASCII case.
@@ -447,7 +447,7 @@ quadratic work.
 
 ### A small typo in a closing tag is treated as a typo
 
-> **Unreleased.** 0.4.0 behaves like `.exact`.
+> **Available since 0.5.0.** 0.4.0 behaves like `.exact`.
 
 By default (`closing_tag_recovery = .one_edit`), a closing tag that matches no
 open element, but is one edit away from the current element's name, is treated
@@ -474,7 +474,7 @@ as closing that element while recovering.
 
 ### Partial documents for editors
 
-> **Unreleased.** Not in 0.4.0.
+> **Available since 0.5.0.**
 
 With `retention.partial = true`, a DOT or markup parse that fails can still
 return the part it finished before the first error. The document says whether
@@ -515,7 +515,7 @@ exactly what it says.
 There is no plugin registry and no swapping at run time. Settings for every
 processor are checked once, before any work starts. During the one-call check,
 the label checker reuses one set of buffers, unless label trees are kept
-(`retention.markup`, unreleased); then each label has its own.
+(`retention.markup`); then each label has its own.
 
 **Why:** compile-time wiring lets the compiler type-check the connection and
 remove anything unused. Reusing buffers cut one test from 4,003 allocations to

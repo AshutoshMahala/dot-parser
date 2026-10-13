@@ -1,8 +1,8 @@
 # Roadmap
 
-Remaining work and the boundaries of unreleased slices. Items described as
-implemented are available in development, not 0.4.0; the other items are plans
-and can change. The linked guides describe the implemented contracts.
+Remaining work after 0.5.0. Items described as implemented are available in
+0.5.0; the other items are plans and can change. The linked guides describe
+the implemented contracts.
 
 ## DOT
 
@@ -14,7 +14,7 @@ and can change. The linked guides describe the implemented contracts.
 - **Validation in small steps**, and validation that can be cancelled.
 - **A ready-made "untrusted input" preset** for DOT, like the one markup has.
 - **Step-by-step parsing of UTF-16 and UTF-32**, and source excerpts for them
-  in boxed output. One-call parsing is done but unreleased; see
+  in boxed output. One-call parsing is available in 0.5.0; see
   [encodings](#encodings).
 - **A public event or logging interface.** The events the parser produces are
   internal for now.
@@ -29,7 +29,7 @@ other's rules.
 - **More ways to check.** DOT's `markup` setting already chooses whether labels
   are checked: `none` (report `<...>` as unsupported), `passthrough` (keep it
   unchecked) or `process` (check it with the bound label checker). How they are
-  checked is the checker's `mode`: unreleased `.graphviz` is now the default,
+  checked is the checker's `mode`: `.graphviz` is now the default,
   supplying tag and per-element attribute vocabulary checks. `.structural`
   remains available explicitly for custom vocabulary and byte-exact tag matching.
   `extended` remains planned. Graphviz child/content rules, attribute values and
@@ -46,7 +46,7 @@ other's rules.
 - **A built-in string processor** for checking quoted values inside markup.
   Today you can prepare its settings with `PolicySet` and keep positions with
   `fragment.child`, but your code must run it.
-- **More of a partial document.** Unreleased DOT and markup keep the finished
+- **More of a partial document.** DOT and markup keep the finished
   part before the first error, and DOT can keep each label's tree. Still to do:
   keeping later parts that recovery finds, with the gaps marked, and letting
   label checks inside a DOT file pause and resume.
@@ -61,7 +61,7 @@ other's rules.
 
 ## Encodings
 
-One-call parsing of UTF-16 and UTF-32 is done but unreleased; see
+One-call parsing of UTF-16 and UTF-32 is available in 0.5.0; see
 [source encodings](ENCODINGS.md). It reads the original bytes without
 converting them. Still to do:
 

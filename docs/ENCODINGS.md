@@ -1,6 +1,6 @@
 # Source encodings
 
-> **Unreleased.** Not in 0.4.0.
+> **Available since 0.5.0.**
 
 By default both parsers read UTF-8, or plain bytes. Some tools, especially on
 Windows, save files as UTF-16 or UTF-32. These settings let the parsers read

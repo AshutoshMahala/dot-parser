@@ -37,16 +37,16 @@ The built-in grammar is an XML-like subset of HTML:
 | Comments `<!-- -->` and `<![CDATA[ ]]>` | Supported, kept as their own nodes |
 | Unquoted attributes, `<br>` with no closing tag | Errors. This is XML-style, not browser HTML. |
 | `<?...?>`, `<!DOCTYPE>` | Not supported |
-| UTF-16 and UTF-32 input | Supported when turned on (unreleased). See [source encodings](ENCODINGS.md). |
+| UTF-16 and UTF-32 input | Supported when turned on. See [source encodings](ENCODINGS.md). |
 
 ### Two modes
 
 | `mode` | Use it for | Tag names | Also checks |
 | --- | --- | --- | --- |
-| `.graphviz` | Graphviz labels. The default on `main` (**unreleased**). | Matched ignoring ASCII case, as Graphviz does | [Graphviz's tags and attributes](#graphviz-vocabulary) |
+| `.graphviz` | Graphviz labels. The default since 0.5.0. | Matched ignoring ASCII case, as Graphviz does | [Graphviz's tags and attributes](#graphviz-vocabulary) |
 | `.structural` | Your own markup, or other dialects. The default in 0.4.0. | Matched exactly | Nothing beyond the grammar |
 
-To check your own markup on `main`, select structural mode:
+To check your own markup, select structural mode:
 
 ```zig
 const Structural = markup.Profile(.{ .policy = .{ .mode = .structural } });
@@ -111,13 +111,13 @@ Validation is a separate step with these checks, each `.err`, `.warning` or
 | Setting | Default | Reports |
 | --- | --- | --- |
 | `validation.duplicate_attribute` | `.err` | The same attribute twice on one element |
-| `validation.invalid_encoding` | `.off` | Text that isn't valid in the file's encoding, anywhere in the input (unreleased; `invalid_utf8` in 0.4.0) |
+| `validation.invalid_encoding` | `.off` | Text that isn't valid in the file's encoding, anywhere in the input (`invalid_utf8` in 0.4.0) |
 | `validation.names.severity` | `.off` | Names that break the rule in `names.rule` |
 | `validation.names.rule` | `.xml_1_0` | XML 1.0's rules for tag, attribute and reference names (the only rule today) |
 | `validation.references.severity` | `.off` | Named references missing from `references.catalog` |
 | `validation.references.catalog` | `.xml_predefined` | The five XML names `amp`, `lt`, `gt`, `quot`, `apos` (the only list today) |
-| `validation.graphviz.unknown_element` | `.err` in Graphviz mode | Elements Graphviz doesn't know (unreleased) |
-| `validation.graphviz.invalid_attribute` | `.err` in Graphviz mode | Attributes not allowed on that Graphviz element (unreleased) |
+| `validation.graphviz.unknown_element` | `.err` in Graphviz mode | Elements Graphviz doesn't know |
+| `validation.graphviz.invalid_attribute` | `.err` in Graphviz mode | Attributes not allowed on that Graphviz element |
 
 ```zig
 const Strict = markup.Profile(.{ .policy = .{ .validation = .{
@@ -146,7 +146,7 @@ const checked = Strict.validate(allocator, &document, bag.sink(), .{});
 
 ## Graphviz vocabulary
 
-> **Unreleased.** Not in 0.4.0. This checks tag and attribute names only, not
+> **Available since 0.5.0.** This checks tag and attribute names only, not
 > all of Graphviz's label rules.
 
 In Graphviz mode, validation checks that every element is one Graphviz knows,
@@ -250,18 +250,18 @@ By default the parser keeps going after an error to find more:
 | Problem | What it does |
 | --- | --- |
 | A closing tag with nothing open | Reports it and skips it |
-| A closing tag that doesn't match | Reports it. Closes back to an open element with exactly that name; otherwise may treat it as a typo ([see below](#closing-tag-typo-recovery), unreleased) |
+| A closing tag that doesn't match | Reports it. Closes back to an open element with exactly that name; otherwise may treat it as a typo ([see below](#closing-tag-typo-recovery)) |
 | Elements still open at the end | Reports each one |
 | A bad attribute, like a missing `=` | Reports it and skips to the end of the tag |
 | An unclosed quote, comment or CDATA | Stops; there is no safe place to continue |
 
 It never invents tags or repairs the source. By default, a failed parse returns
 no tree. To keep the part that was recognised, turn on
-[partial results](#partial-results-for-editors) (unreleased). Set `on_error = .fail_fast` to stop at the first error.
+[partial results](#partial-results-for-editors). Set `on_error = .fail_fast` to stop at the first error.
 
 ### Closing-tag typo recovery
 
-> **Unreleased.** Not in 0.4.0, which behaves like `.exact`.
+> **Available since 0.5.0.** 0.4.0 behaves like `.exact`.
 
 When a closing tag doesn't match, the parser first looks for an open element
 with exactly that name and closes back to it. If there is none,
@@ -331,7 +331,7 @@ The setting can also be changed per call when run-time settings are on.
 
 ## Partial results for editors
 
-> **Unreleased.** Not in 0.4.0.
+> **Available since 0.5.0.**
 
 With `retention.partial`, a failed parse can still return the part recognised
 before the first error, for editors that need an outline while someone types.
@@ -437,7 +437,7 @@ All three calls return results with the same fields:
 
 | Field | Meaning |
 | --- | --- |
-| `checked.parse` | The parse result. It has a document if parsing succeeded. With [partial results](#partial-results-for-editors) on (unreleased), it can also have a partial document after a failure; check `document.state`. |
+| `checked.parse` | The parse result. It has a document if parsing succeeded. With [partial results](#partial-results-for-editors) on, it can also have a partial document after a failure; check `document.state`. |
 | `checked.validation` | Validation of the document if parsing succeeded. If parsing failed and errors are being collected, validation of the parts that could be recognised. `null` after a fail-fast syntax error, unsupported input, or a stop. |
 | `checked.documentValid()` | Parsed completely and validated with no errors |
 | `checked.has_errors` | Errors were found, including a limit being reached or unsupported input reported as an error. `false` doesn't prove the input is valid or was fully checked. |
@@ -497,14 +497,14 @@ Every setting:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `.graphviz` on `main` (unreleased); `.structural` in 0.4.0 | `.graphviz` or `.structural`. See [two modes](#two-modes). |
+| `mode` | `.graphviz` | `.graphviz` or `.structural`. See [two modes](#two-modes). |
 | `limits.max_source_bytes` | 4 GiB | Largest input accepted |
 | `limits.max_nodes` | no limit | Elements, text runs, comments and CDATA sections |
 | `limits.max_attributes` | no limit | Attributes in total |
 | `limits.max_nesting` | no limit | Deepest element nesting (top-level elements are depth 1) |
 | `on_error` | `.collect` | Keep looking after an error, or `.fail_fast` |
-| `closing_tag_recovery` | `.one_edit` (unreleased) | `.exact`, `.one_edit` or `.two_edits`. See [closing-tag typo recovery](#closing-tag-typo-recovery). |
-| `retention.partial` | `false` | Keep the part recognised before a failure (unreleased). Doesn't change error handling or what is accepted. See [partial results](#partial-results-for-editors). |
+| `closing_tag_recovery` | `.one_edit` | `.exact`, `.one_edit` or `.two_edits`. See [closing-tag typo recovery](#closing-tag-typo-recovery). |
+| `retention.partial` | `false` | Keep the part recognised before a failure. Doesn't change error handling or what is accepted. See [partial results](#partial-results-for-editors). |
 | `syntax.malformed_reference` | `.reject` | `.warn` or `.accept` treat a broken `&` reference as plain text |
 | `scanner` | `.scalar` | `.block` reads with vector instructions; same results |
 | `diagnostics.fixes` | `.all` | Which suggested fixes to include: `.all`, `.machine_applicable` or `.off` |
@@ -538,7 +538,7 @@ Validation assumes these storage rules hold; it doesn't repair or certify
 caller-built pools. Debug and `ReleaseSafe` builds catch some mistakes with
 assertions.
 
-In a partial document (unreleased), `subtree_end == 0` marks an unfinished
+In a partial document, `subtree_end == 0` marks an unfinished
 element. Its kept children run to the end of `records`, and its raw span covers
 only the part of its opening tag read so far. The node views handle this for
 you: `NodeView.record()`, `span()`, `raw()` and child and root traversal treat
@@ -561,7 +561,7 @@ Run them with `zig build examples`. Each program is also installed in
 - HTML-style tags that never close, like `<br>`
 - Other name rules or reference lists, or your own
 - Step-by-step sessions for UTF-16 and UTF-32 input, and source excerpts for
-  them in boxed output. One-call parsing of those encodings is available
-  (unreleased); see [source encodings](ENCODINGS.md).
+  them in boxed output. One-call parsing of those encodings is available;
+  see [source encodings](ENCODINGS.md).
 
 See the [roadmap](ROADMAP.md#markup).

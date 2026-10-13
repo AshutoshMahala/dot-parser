@@ -32,8 +32,8 @@ one bag for DOT and your diagnostics, `result.dot`, `result.markup`, and
 
 Binding your processor turns checking on: DOT's `markup` setting defaults to
 `.process`. If a caller sets `markup = .passthrough` or `.none`, DOT doesn't run
-your processor during parsing. With `.passthrough` and `retention.markup`
-(unreleased), DOT can still run it later on
+your processor during parsing. With `.passthrough` and `retention.markup`,
+DOT can still run it later on
 [labels you choose](EDITORS.md#check-chosen-labels-later-in-the-same-result).
 See [turning checking on or off](LABELS.md#turning-checking-on-or-off).
 Your processor's own settings don't need a `mode` field; that is just how the
@@ -85,7 +85,7 @@ The compiler checks that your processor type declares all of these:
 
 ### Optional owned results
 
-> **Unreleased.** Not in 0.4.0. Only needed for DOT's `retention.markup`, which
+> **Available since 0.5.0.** Only needed for DOT's `retention.markup`, which
 > [keeps label trees](EDITORS.md#keep-the-label-trees-from-a-dot-file) and
 > checks chosen labels later. Processors without it work as before.
 
@@ -106,7 +106,7 @@ To let DOT keep each label's result, also declare:
 
 ### Supporting other source encodings
 
-> **Unreleased.** Not in 0.4.0. Only needed if the DOT profile reads
+> **Available since 0.5.0.** Only needed if the DOT profile reads
 > [UTF-16 or UTF-32](ENCODINGS.md).
 
 A processor that only declares the items above works with UTF-8 DOT files. To

@@ -1,6 +1,6 @@
 # Open design decisions
 
-Last reconciled: 2026-10-03 (documentation consolidation; current policy, markup and one-shot composition delivery reconciled).
+Last reconciled: 2026-10-12 (0.5.0 release preparation; delivered editor, encoding and Graphviz vocabulary slices reconciled).
 
 Split out of `REQUIREMENTS.md` §16 (2026-07-18). Question numbers (Q1–Q40)
 are stable: they are never renumbered, deleted, or reused, and new questions
@@ -25,15 +25,17 @@ documentation and changelog, not every implemented entry in this file.
 
 ## Current delivery and unfinished decisions
 
-This table is a navigation aid, not a new feature commitment. Implemented means
-the development tree, not necessarily release 0.3.0. No “in progress” status is
-assigned merely because a topic has been discussed.
+This table is a navigation aid, not a new feature commitment. Its implemented
+features are available in 0.5.0; remaining requirements and proposals are not
+release promises. No “in progress” status is assigned merely because a topic
+has been discussed.
 
 | Area | Implemented | Still undecided or undelivered |
 | --- | --- | --- |
 | Policies — Q35/Q36 | Typed baselines/overrides, verification, settings migration, initial lenient syntax and optional checks | Keyword-as-name contexts, optional deviation history, semantic rules and performance gates |
-| Markup — Q40 | Structural parsing/checks/recovery, local scopes, passthrough IDs | Graphviz/extended rules, dialect grammar, catalogs, summaries and partial-tree design |
-| Processors — Q40 | Custom compile-time bindings, nested policy preparation, delayed/one-shot integration and workspace reuse | Recursive/string execution, fixed/resumable composition and broader profile API |
+| Markup — Q40 | Structural parsing/checks, local scopes, Graphviz vocabulary/case matching, bounded typo recovery and partial-prefix retention | Graphviz placement/value/reference rules, extended dialects, catalogs, summaries and gap-aware partial trees |
+| Processors — Q40 | Custom compile-time bindings, nested policy preparation, delayed/one-shot integration, workspace reuse and owned label retention | Recursive/string execution, fixed/resumable composition and broader profile API |
+| Editor data | Opt-in DOT comments and partial prefixes, markup prefixes, attached label trees and scope/subtree completeness | Later recovered regions with gaps, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
 | Graph layer — Q5/Q17/Q35 | Source-shaped syntax for downstream consumers | Semantic lowering, consumer adapters and marshal/unmarshal |
@@ -784,9 +786,10 @@ is authorized by these decisions.
 **Q40 — How are HTML-like identifiers recognized, parsed and validated, and
 which markup policies are offered?**
 
-**Partially decided; delivery reconciled 2026-10-04.** Standalone structural
-markup, DOT passthrough recognition, explicit delayed processing and one-shot
-during-DOT composition are implemented. Specialized dialects and broader
+**Partially decided; delivery reconciled 2026-10-12.** Standalone markup,
+Graphviz vocabulary checks, partial-prefix retention, DOT passthrough recognition,
+explicit delayed processing and one-shot during-DOT composition are implemented.
+Full dialect rules and broader
 composition remain unfinished. Details live in [markup delivery and design](MARKUP.md)
 and the [processor contract](PROCESSOR_CONTRACT.md); public usage is in
 [markup](../MARKUP.md), [labels](../LABELS.md) and
@@ -810,7 +813,7 @@ and the [processor contract](PROCESSOR_CONTRACT.md); public usage is in
 - Outer selection (`none`, `passthrough`, `process`) is independent of the
   processor's mode. Built-in markup defaults to `mode = .graphviz`, including
   root APIs and the `standard`/`untrusted` presets; `.structural` is explicit
-  opt-in for custom vocabulary and byte-exact tag matching. The unreleased
+  opt-in for custom vocabulary and byte-exact tag matching. The 0.5.0
   `.graphviz` vocabulary slice provides element/per-element attribute checks,
   ASCII case-insensitive lookup, duplicate comparison and tag matching. This is not complete
   Graphviz compatibility; content models, values, references and automatic
@@ -933,7 +936,7 @@ need not leave a document.
 
 | Topic | Status / next decision |
 | --- | --- |
-| Graphviz validation | Agreed direction; context selection, rules, compatibility scope and costs |
+| Graphviz validation | Vocabulary delivered; label-context selection, placement, values, reference rules and their costs remain |
 | Extended vocabulary | Under discussion; concrete consumer, tags, attributes and placement |
 | Dialect parsing | Under discussion; void names/case/context, explicit closers, unquoted/empty attributes and grammar policy |
 | Custom name/reference catalogs | Further design; built-ins remain independent optional checks |
@@ -941,13 +944,13 @@ need not leave a document.
 | Deeper/string processing | Future design; nested policy preparation is implemented |
 | Profile/API redesign | Deferred discussion; workspace reuse did not decide it |
 | Summary index / caching / public events | Optional proposals; ownership, layout, budgets and event contract unresolved |
-| Partial-tree publication | Deferred; current parse results remain complete-document-only |
+| Gap-aware partial-tree publication | Prefix retention delivered; later recovered regions and explicit gaps remain |
 | Native encoding execution | Initial one-shot paths implemented; native session dispatch, metered validation and native excerpts remain |
 | Packaging/versioning | Open; an independent module does not decide separate packages/version numbers |
 | Cross-parser boundary survey | Optional follow-up, not a gate on delivered recognition |
 
-Markup/integration are post-0.3.0 development work. No next release number,
-browser compatibility or implementation schedule is established here.
+Markup and DOT share the 0.5.0 package version. Separate markup versioning,
+browser compatibility and future implementation schedules are not established here.
 Performance approval is separate from functional delivery; preserve the
 [standard-machine gate](MARKUP.md#verification-and-performance-gates).
 

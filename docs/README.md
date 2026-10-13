@@ -29,9 +29,9 @@ These work the same way in DOT and markup.
 | [Errors and diagnostics](ERRORS.md) | show errors, understand results, or apply suggested fixes |
 | [Memory](MEMORY.md) | use an arena or fixed buffers, or work with no allocator at all |
 | [Settings](POLICIES.md) | make parsing stricter or more lenient, add checks, or set limits |
-| [Source encodings](ENCODINGS.md) | Read UTF-16 or UTF-32 files without converting them (unreleased) |
+| [Source encodings](ENCODINGS.md) | Read UTF-16 or UTF-32 files without converting them |
 | [Parsing in small steps](EXECUTION.md) | spread parsing over time, or cancel it |
-| [Using it in an editor](EDITORS.md) | Keep the finished part of unfinished files, label trees and comments (unreleased) |
+| [Using it in an editor](EDITORS.md) | Keep the finished part of unfinished files, label trees and comments |
 
 ## Project
 

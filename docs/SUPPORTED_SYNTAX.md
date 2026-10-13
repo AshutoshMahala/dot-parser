@@ -26,7 +26,7 @@ few places where it differs from Graphviz on purpose are listed
 | Optional semicolons | `a -> b b -> c` | Supported, as in Graphviz |
 | Comments | `//`, `/* */`, `#` | Supported, skipped |
 | HTML-like value | `label=<<b>hi</b>>` | Supported, kept as written. See [checking HTML-like labels](LABELS.md). |
-| Leading byte order mark | UTF-8; UTF-16 and UTF-32 when turned on (unreleased) | Skipped, but left in your source buffer. See [source encodings](ENCODINGS.md). |
+| Leading byte order mark | UTF-8; UTF-16 and UTF-32 when turned on | Skipped, but left in your source buffer. See [source encodings](ENCODINGS.md). |
 | Empty statement | `a;;` | Rejected by default. [Lenient](POLICIES.md#lenient-syntax) accepts it. |
 | Long operator | `a --> b`, `a --- b` | Rejected by default. Lenient reads it as `->` / `--`. |
 | Lone dash | `a - b` | Rejected by default. Lenient reads it from the graph kind. |
@@ -34,7 +34,7 @@ few places where it differs from Graphviz on purpose are listed
 ## Names
 
 This page describes UTF-8 input, the default. UTF-16 and UTF-32 input
-(unreleased) follows the same grammar, and positions still count bytes of the
+follows the same grammar, and positions still count bytes of the
 original file; see [source encodings](ENCODINGS.md).
 
 DOT calls names *IDs*. Every form below works anywhere a name can go: graph
@@ -81,9 +81,8 @@ shows how to get the value of each form.
   any token, not only at the start of a line.
 - `/* */` comments don't nest. They end at the first `*/`.
 - Comments separate tokens. They can't split a keyword or an operator.
-- Comments are skipped by default. You can [keep them](READING_DOCUMENTS.md#comments)
-  (unreleased); the parser records their kind and position without interpreting
-  them.
+- Comments are skipped by default. You can [keep them](READING_DOCUMENTS.md#comments);
+  the parser records their kind and position without interpreting them.
 - Lines can end with LF, CRLF or a lone CR.
 - Control bytes (other than tab and line endings) are errors outside comments,
   quotes and HTML-like values. A NUL byte inside quotes is also an error.

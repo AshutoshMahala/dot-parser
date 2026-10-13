@@ -13,7 +13,7 @@ The package has two independent modules:
 - **`dot_parser`** parses DOT.
 - **`markup_parser`** parses HTML-like markup, such as Graphviz's
   `label=<<b>Hi</b>>` labels. It can check labels while DOT is parsed, or work
-  on its own with no DOT at all. On `main` (unreleased) it checks Graphviz's
+  on its own with no DOT at all. Since 0.5.0 it checks Graphviz's
   tags and attributes by default; select [structural mode](docs/MARKUP.md) for
   other markup.
 
@@ -135,7 +135,7 @@ This program is [examples/quick_start.zig](examples/quick_start.zig).
 You need Zig **0.16.0**. Add the package to your project:
 
 ```sh
-zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#v0.4.0
+zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#v0.5.0
 ```
 
 Then import the modules you need in your `build.zig`:
@@ -147,9 +147,9 @@ exe.root_module.addImport("dot_parser", dot_parser.module("dot_parser"));
 exe.root_module.addImport("markup_parser", dot_parser.module("markup_parser"));
 ```
 
-This installs the latest release, 0.4.0. These docs follow the `main` branch:
-anything marked **Unreleased** isn't in 0.4.0 yet. To use those features,
-replace `#v0.4.0` with `#main`. The [changelog](CHANGELOG.md) lists what changed
+This installs the latest release, 0.5.0. These docs follow the `main` branch:
+anything marked **Unreleased** isn't in 0.5.0 yet. To use those features,
+replace `#v0.5.0` with `#main`. The [changelog](CHANGELOG.md) lists what changed
 and what breaks.
 
 ## What it understands
@@ -180,7 +180,7 @@ It reports what the file says. It does not work out what the file means:
   or build a list of unique nodes.
 - It doesn't read files. You pass it bytes.
 - It doesn't keep whitespace or reformat files. It can
-  [keep comments](docs/READING_DOCUMENTS.md#comments) if you ask (unreleased).
+  [keep comments](docs/READING_DOCUMENTS.md#comments) if you ask.
 
 You can do all of these on top of the parsed document.
 [Why it works this way](docs/DESIGN.md) explains these choices.
@@ -213,8 +213,8 @@ You can do all of these on top of the parsed document.
 | [Memory](docs/MEMORY.md) | use an arena or fixed buffers, or work with no allocator at all |
 | [Settings](docs/POLICIES.md) | make parsing stricter or more lenient, add checks, or set limits |
 | [Parsing in small steps](docs/EXECUTION.md) | spread parsing over time, or cancel it |
-| [Using it in an editor](docs/EDITORS.md) | Keep the finished part of unfinished files, label trees and comments (unreleased) |
-| [Source encodings](docs/ENCODINGS.md) | Read UTF-16 or UTF-32 files without converting them (unreleased) |
+| [Using it in an editor](docs/EDITORS.md) | Keep the finished part of unfinished files, label trees and comments |
+| [Source encodings](docs/ENCODINGS.md) | Read UTF-16 or UTF-32 files without converting them |
 
 **Project**
 
@@ -237,7 +237,7 @@ and runs them all, and installs each one in `zig-out/bin/`.
 | [quick_start](examples/quick_start.zig) | parse, show problems, and list edges | [Getting started](docs/GETTING_STARTED.md) |
 | [parse_undigraph](examples/parse_undigraph.zig) | print every kind of statement | [Getting started](docs/GETTING_STARTED.md) |
 | [identifiers](examples/identifiers.zig) | get the real value of a quoted or joined name | [Reading](docs/READING_DOCUMENTS.md#names-spelling-versus-value) |
-| [comments](examples/comments.zig) | keep comments, with their kind and position (unreleased) | [Reading comments](docs/READING_DOCUMENTS.md#comments) |
+| [comments](examples/comments.zig) | keep comments, with their kind and position | [Reading comments](docs/READING_DOCUMENTS.md#comments) |
 | [attributes](examples/attributes.zig) | read attribute lists, defaults and assignments | [Reading](docs/READING_DOCUMENTS.md#attributes) |
 | [edge_chains](examples/edge_chains.zig) | walk chains like `a -> b -> c` | [Reading](docs/READING_DOCUMENTS.md#edges) |
 | [ports](examples/ports.zig) | read ports like `a:out:n` | [Reading](docs/READING_DOCUMENTS.md#nodes-and-ports) |
@@ -250,11 +250,11 @@ and runs them all, and installs each one in `zig-out/bin/`.
 | [bounded](examples/bounded.zig) | parse in small steps, and cancel | [Small steps](docs/EXECUTION.md) |
 | [composed_markup](examples/composed_markup.zig) | check every label while parsing DOT | [Labels](docs/LABELS.md#check-every-label-while-parsing) |
 | [delayed_markup](examples/delayed_markup.zig) | check only the labels you choose | [Labels](docs/LABELS.md#check-the-labels-you-choose) |
-| [attached_markup](examples/attached_markup.zig) | check chosen labels later and keep their trees in the DOT result (unreleased) | [Editors](docs/EDITORS.md#check-chosen-labels-later-in-the-same-result) |
+| [attached_markup](examples/attached_markup.zig) | check chosen labels later and keep their trees in the DOT result | [Editors](docs/EDITORS.md#check-chosen-labels-later-in-the-same-result) |
 | [markup](examples/markup.zig) | parse and validate markup on its own | [Markup](docs/MARKUP.md) |
-| [markup_partial](examples/markup_partial.zig) | keep the finished part of markup for editors (unreleased) | [Editors](docs/EDITORS.md#keep-the-finished-part-of-markup) |
-| [partial_documents](examples/partial_documents.zig) | keep the finished part of a DOT file and its label trees (unreleased) | [Editors](docs/EDITORS.md#keep-the-label-trees-from-a-dot-file) |
-| [graphviz_vocabulary](examples/graphviz_vocabulary.zig) | check Graphviz tags and attributes (unreleased; not the full label rules) | [Vocabulary](docs/MARKUP.md#graphviz-vocabulary) |
+| [markup_partial](examples/markup_partial.zig) | keep the finished part of markup for editors | [Editors](docs/EDITORS.md#keep-the-finished-part-of-markup) |
+| [partial_documents](examples/partial_documents.zig) | keep the finished part of a DOT file and its label trees | [Editors](docs/EDITORS.md#keep-the-label-trees-from-a-dot-file) |
+| [graphviz_vocabulary](examples/graphviz_vocabulary.zig) | check Graphviz tags and attributes (not the full label rules) | [Vocabulary](docs/MARKUP.md#graphviz-vocabulary) |
 | [custom_processor](examples/custom_processor.zig) | plug in your own label checker | [Own processor](docs/CUSTOM_PROCESSORS.md) |
 
 ## Building and testing

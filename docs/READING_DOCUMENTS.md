@@ -203,7 +203,7 @@ your program, so they are left to you:
 
 ## Comments
 
-> **Unreleased.** Not in 0.4.0.
+> **Available since 0.5.0.**
 
 Comments are skipped by default. To keep them, turn on comment retention. The
 parser then records where each comment is; it doesn't interpret or check them.
@@ -270,7 +270,7 @@ comments.
 
 ## Unfinished files
 
-> **Unreleased.** By default, a failed parse returns no document.
+> By default, a failed parse returns no document.
 
 Editors can keep the finished part of a DOT file after an error. See
 [Using it in an editor](EDITORS.md#keep-the-finished-part-of-a-dot-file).

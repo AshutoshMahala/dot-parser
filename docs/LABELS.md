@@ -36,7 +36,7 @@ checker's own settings decide **how**, through its [mode](MARKUP.md#two-modes):
 
 - In 0.4.0 the built-in checker uses `.structural`: tags must match and
   attributes must be well-formed.
-- On `main` (**unreleased**) it defaults to `.graphviz`, which also checks
+- Since 0.5.0 it defaults to `.graphviz`, which also checks
   [Graphviz's tags and attributes](MARKUP.md#graphviz-vocabulary) and matches
   tag names ignoring ASCII case. It doesn't yet check all of Graphviz's label
   rules.
@@ -52,7 +52,7 @@ them yourself, as shown [below](#check-the-labels-you-choose).
 | How | Add a label checker to your DOT profile | Parse DOT, then pass selected values to the markup parser |
 | Which values | Every `<...>` value in the file | Only the ones your code picks, such as `label` |
 | Diagnostics | One bag for DOT and labels together | Your choice of bag, separate from DOT's |
-| Label trees | Thrown away by default; [can be kept](EDITORS.md#keep-the-label-trees-from-a-dot-file) (unreleased) | Kept, if you want them |
+| Label trees | Thrown away by default; [can be kept](EDITORS.md#keep-the-label-trees-from-a-dot-file) | Kept, if you want them |
 | Memory | Allocator | Allocator or fixed buffers |
 | Best for | "Is this whole file OK?" | Tools that need control or the parsed labels |
 
@@ -99,7 +99,7 @@ If checking is off (`.passthrough` or `.none`), `documentValid()` only reflects
 the DOT and says nothing about the labels. `result.markup.requested` is then
 `false`, and `result.markup.allValid()` is also `false`, because nothing was
 checked. Look at `requested` before relying on `allValid()`.
-With `retention.markup` on (unreleased), you can
+With `retention.markup` on, you can
 [check chosen labels later](EDITORS.md#check-chosen-labels-later-in-the-same-result)
 and add them to this same result.
 
@@ -170,11 +170,11 @@ Good to know:
 - The checker reuses one set of buffers for all labels. That avoids thousands
   of small allocations, but the buffers stay as big as the largest label until
   the parse ends. [Kept label trees](EDITORS.md#keep-the-label-trees-from-a-dot-file)
-  (unreleased) each have their own buffers instead.
+  each have their own buffers instead.
 
 ### Keeping label trees for editors
 
-> **Unreleased.** Not in 0.4.0.
+> **Available since 0.5.0.**
 
 Editors can keep each checked label's tree in the result, or queue chosen
 labels and check them later as part of the same result. See

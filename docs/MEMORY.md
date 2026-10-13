@@ -125,14 +125,14 @@ for you during the parse.
 
 The parse stops with `outcome == .storage_failure` (reason `.pool_exhausted`),
 and a diagnostic names the buffer that filled up and its size. By default
-there is no document. With `retention.partial` (unreleased), the part parsed
+there is no document. With `retention.partial`, the part parsed
 before the buffer filled up can still be returned, and the outcome still
 reports the failure. See
 [Using it in an editor](EDITORS.md#keep-the-finished-part-of-a-dot-file).
 
 ## Comment storage
 
-> **Unreleased.** Not in 0.4.0.
+> **Available since 0.5.0.**
 
 When you [keep comments](READING_DOCUMENTS.md#comments)
 (`.retention = .{ .comments = true }`), they go in a buffer of their own. Size
@@ -182,13 +182,13 @@ var frames: markup.FixedParseScratch(8) = .{}; // deepest element nesting
 To check many fragments without allocating each time, reuse one
 [workspace](MARKUP.md#checking-many-fragments).
 
-With [partial results](EDITORS.md#keep-the-finished-part-of-markup) on (unreleased),
+With [partial results](EDITORS.md#keep-the-finished-part-of-markup) on,
 a markup parse that runs out of buffer space can still return the part it
 recognised, as DOT can.
 
 ## Partial-result storage
 
-> **Unreleased.** Not in 0.4.0.
+> **Available since 0.5.0.**
 
 Keeping partial documents and label trees for editors has small memory costs,
 listed in [Using it in an editor](EDITORS.md#memory).
