@@ -181,8 +181,10 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
         }
         pub fn run(document: *const syntax.Document, scratch: Scratch, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
             if (!canRead(document)) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
+            // Keep the ASCII fallback out of the UTF-8 hot path. Inlining both
+            // traversals changes register allocation in combined validation.
             if (distinguish_ascii and document.source_info.encoding == .ascii)
-                return ValidatorForEncoding(.ascii, fixed, cancellable, mode).run(document, scratch, sink, settings, hook);
+                return @call(.never_inline, ValidatorForEncoding(.ascii, fixed, cancellable, mode).run, .{ document, scratch, sink, settings, hook });
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
@@ -608,7 +610,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
         pub fn allocated(allocator: std.mem.Allocator, document: *const syntax.Document, sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
             if (!canRead(document)) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
             if (distinguish_ascii and document.source_info.encoding == .ascii)
-                return ValidatorForEncoding(.ascii, fixed, cancellable, mode).allocated(allocator, document, sink, settings, hook);
+                return @call(.never_inline, ValidatorForEncoding(.ascii, fixed, cancellable, mode).allocated, .{ allocator, document, sink, settings, hook });
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
@@ -622,7 +624,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
         pub fn reusing(allocator: std.mem.Allocator, document: *const syntax.Document, keys: *std.ArrayList(AttributeKeyScratch), sink: diagnostic.Sink, settings: Settings, hook: Hook) Result {
             if (!canRead(document)) return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
             if (distinguish_ascii and document.source_info.encoding == .ascii)
-                return ValidatorForEncoding(.ascii, fixed, cancellable, mode).reusing(allocator, document, keys, sink, settings, hook);
+                return @call(.never_inline, ValidatorForEncoding(.ascii, fixed, cancellable, mode).reusing, .{ allocator, document, keys, sink, settings, hook });
             if (!enabled(settings)) return retainedCoverage(document, .{ .validity = .valid });
             var result = initial(settings);
             if (cancelled(&result, hook)) return result;
@@ -667,6 +669,23 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                 // Keep the direct, unchunked loop when polling is compiled out.
                 while (offset.* < source.len and offset.* <= through) {
                     const at = offset.*;
+                    // Keep the length in a register for UTF-8. Returning the
+                    // general reader's length/error aggregate on every scalar
+                    // causes a stack round trip even for valid input.
+                    if (actual == .utf8) {
+                        if (source[at] < 0x80) {
+                            offset.* += 1;
+                            continue;
+                        }
+                        if (support.utf8.sequenceLength(source[at..])) |len| {
+                            offset.* += len;
+                        } else {
+                            offset.* += 1;
+                            const code: diagnostic.Code = if (rules(settings).invalid_encoding == .err) .invalid_encoding else .invalid_encoding_tolerated;
+                            if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .invalid_encoding = .{ .unit = source[at], .encoding = actual } } }, settings)) return false;
+                        }
+                        continue;
+                    }
                     const step = support.encoding.validationStep(actual, source, at);
                     offset.* += step.len;
                     if (step.invalid) |bad| {
@@ -686,6 +705,20 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                     // Finish whole scalars; sink stops inside chunks stay immediate.
                     while (cursor < end) {
                         const at = cursor;
+                        if (actual == .utf8) {
+                            if (source[at] < 0x80) {
+                                cursor += 1;
+                                continue;
+                            }
+                            if (support.utf8.sequenceLength(source[at..])) |len| {
+                                cursor += len;
+                            } else {
+                                cursor += 1;
+                                const code: diagnostic.Code = if (rules(settings).invalid_encoding == .err) .invalid_encoding else .invalid_encoding_tolerated;
+                                if (!emit(result, sink, .{ .code = code, .span = .{ .start = at, .len = 1 }, .details = .{ .invalid_encoding = .{ .unit = source[at], .encoding = actual } } }, settings)) return false;
+                            }
+                            continue;
+                        }
                         const step = support.encoding.validationStep(actual, source, at);
                         cursor += step.len;
                         if (step.invalid) |bad| {

@@ -81,6 +81,41 @@ test "UTF-8 valid boundaries and bytewise recovery do not reinterpret content" {
     }
 }
 
+test "UTF-8 fast loops match the general reader at arbitrary scope boundaries" {
+    var prng = std.Random.DefaultPrng.init(0x656e636f64696e67);
+    const random = prng.random();
+    var source: [260]u8 = undefined;
+    inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |cancellable| {
+        const p: markup.Policy = .{ .mode = .structural, .execution = .{ .cancellation = cancellable }, .validation = .{ .duplicate_attribute = .off, .invalid_encoding = .err } };
+        const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else p });
+        const options: P.Options = if (runtime) .{ .policy = p } else .{};
+        for (0..1000) |_| {
+            random.bytes(&source);
+            const start = random.uintLessThan(u32, source.len);
+            const end = random.intRangeAtMost(u32, start, source.len);
+            // No lookahead may borrow a continuation byte from the next scope.
+            const bounded = source[0..end];
+            var expected: markup.FixedDiagnosticBag(source.len + 1) = .{};
+            var at = start;
+            while (at < end) {
+                const step = markup.encoding.validationStep(.utf8, bounded, at);
+                if (step.invalid) |bad| _ = try expected.push(.{
+                    .code = .invalid_encoding,
+                    .span = .{ .start = at, .len = step.len },
+                    .details = .{ .invalid_encoding = bad },
+                });
+                at += step.len;
+            }
+            var bag: markup.FixedDiagnosticBag(source.len + 1) = .{};
+            const result = P.validateScopeIn(&source, .{ .bytes = .{ .start = start, .len = end - start } }, .{}, bag.sink(), options);
+            try equal(.complete, result.completion);
+            try equal(.complete, result.checks.invalid_encoding);
+            try equal(@as(u64, @intCast(expected.items().len)), result.errors);
+            try std.testing.expectEqualDeep(expected.items(), bag.items());
+        }
+    };
+}
+
 test "combined check policies have fixed-runtime parity and globally source-ordered findings" {
     const source = "\xff<a \xff='1' \xff='2' z='\xff' z='4'/>\xff";
     var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
