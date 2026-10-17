@@ -71,9 +71,49 @@ The choices are `.ascii`, `.utf8`, `.utf16le`, `.utf16be`, `.utf32le` and
   retries with another reader. `.encoding` can't turn on a reader that wasn't
   compiled in.
 - A byte order mark for a reader that isn't compiled in returns
-  `error.UnsupportedEncoding`; a shorter matching mark isn't tried instead.
+  `error.UnsupportedEncoding` through the encoding-selecting facade; a shorter
+  matching mark isn't tried instead. The UTF-8-only fast API retains its
+  existing return type; use preflight below for positioned admission failures.
 
 ## Checks before parsing
+
+### Positioned preflight
+
+> **Unreleased.**
+
+Every standalone or composed profile provides
+`Parser.inspectSource(source, explicit_encoding)`. `dot.inspectSource` and
+`markup.inspectSource` use their default UTF-8 capabilities. Pass `null` for
+BOM/default selection, or the same explicit encoding you will pass to parsing:
+
+```zig
+switch (Parser.inspectSource(source, null)) {
+    .selected => |info| {
+        _ = info; // encoding, BOM and selection provenance
+    },
+    .failure => |failure| {
+        try writer.print("{s}\n", .{failure.message()});
+        if (failure.span) |span|
+            try writer.print("byte offset {d}, length {d}\n", .{ span.start, span.len });
+    },
+}
+```
+
+The failure's `reason` is a typed admission error; `encoding` is the selected or
+detected reader. An unsupported BOM points at the whole mark and suggests
+saving as UTF-8 or enabling `.source_encodings`. Truncation points at the first
+byte of the incomplete final code unit. Missing encoding, unsupported explicit
+choices and oversized sources have no span. `admission.require()` returns the
+selected `Info` or the ordinary error value.
+
+Inspection reads at most four prefix bytes and allocates nothing. It neither
+checks content nor links native grammar readers into a UTF-8-only build. It is
+explicit, not extra work hidden in default parsing. `check_file` uses it so an
+unsupported BOM gets an encoding explanation instead of grammar errors.
+Native parsing still returns ordinary admission errors, not bag diagnostics;
+content-validation findings already carry their own spans.
+
+### Automatic checks in the encoding-selecting facade
 
 Before parsing, the library only checks that it can read the file. This doesn't
 scan the file or allocate:
@@ -187,6 +227,9 @@ try dot.console.render(finding, .{
 
 - Lines end at encoded LF, CRLF or CR. Columns count **bytes**, not UTF-16
   units or the characters an editor shows.
+- For optional zero-based UTF-8/UTF-16/code-point editor coordinates, use
+  [`location.textPosition`](EDITORS.md#editor-position-conversion). Stored spans
+  and ordinary diagnostic locations remain original-byte based.
 - The console renderer writes UTF-8. Tag names quoted in a message are decoded
   in a small fixed buffer.
 - For UTF-16 and UTF-32 files, boxed output currently shows compact location

@@ -4,6 +4,19 @@ Notable changes to dot-parser. During `0.x`, minor versions may break
 compatibility, including diagnostic codes and enum values. Breaking changes
 are marked; no compatibility shims are kept.
 
+## Unreleased
+
+### Added
+
+- Allocation-free logical identifier hash/equality helpers, including checked
+  document ranges and native encodings.
+- `Document.capacities()` for reusing retained DOT pool counts as growth hints.
+- Optional `location.textPosition` conversion to zero-based UTF-8, UTF-16 or
+  code-point columns without changing stored byte spans.
+- `inspectSource` on standalone and composed profiles, reporting encoding
+  admission reasons, detected encoding and offending byte spans. `check_file`
+  uses it to explain unsupported BOMs before parsing.
+
 ## 0.5.0 — 2026-10-12
 
 Changes since 0.4.0. This is an experimental, breaking minor release.

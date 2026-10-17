@@ -14,6 +14,7 @@ pub const console = @import("common/console.zig");
 
 test {
     _ = location;
+    _ = @import("common/text_position.zig");
     _ = reporting;
     _ = execution;
     _ = wdp;

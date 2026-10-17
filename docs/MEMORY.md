@@ -52,6 +52,31 @@ if (measured.capacities) |capacities| {
 With size hints, the arena reserves each list once. In the main benchmark that
 cuts the arena's memory from about 14 times the source size to about 3 times.
 
+### Reuse counts from a previous document
+
+> **Unreleased.**
+
+For edited files, you can skip the counting pass and use previous pool counts
+as growth hints:
+
+```zig
+const hints = previous_document.capacities();
+var next = dot.parseBorrowed(gpa, next_source, bag.sink(), .{
+    .document_capacities = hints,
+});
+defer next.deinit(gpa);
+```
+
+`capacities()` is an allocation-free O(1) snapshot with no borrowed pointers;
+keep it after freeing the old document if needed. It counts retained records,
+not allocation slack. Partial documents include retained staged records, not
+the discarded suffix. Nesting scratch, diagnostics and markup trees are excluded.
+
+These are hints, not limits: the next parse grows if needed. A larger previous
+document can over-reserve for a smaller new one, so hints do not guarantee lower
+peak memory. Use `measure` for exact counts of the current input, or fixed
+buffers for a hard bound. Temporary nesting space remains separate.
+
 ## Option 3: fixed buffers, no allocator
 
 For embedded systems, or whenever you want memory use to be fixed and known in

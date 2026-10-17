@@ -16,6 +16,7 @@ test {
     _ = @import("diagnostics.zig");
     _ = @import("processors.zig");
     _ = @import("measure.zig");
+    _ = @import("tooling_helpers.zig");
     _ = @import("non_ascii.zig");
     _ = @import("html_identifiers.zig");
     _ = @import("policies.zig");

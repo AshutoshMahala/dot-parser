@@ -44,6 +44,32 @@ valid UTF-8. That is an optional check in [settings](POLICIES.md#optional-checks
 If you need the decoded size first,
 `try dot.identifier.decodedLen(document.text(range))` gives it.
 
+### Comparing and indexing names
+
+> **Unreleased.**
+
+`a`, `"a"` and `"a" + ""` name the same node. Compare or hash their logical
+values without allocating a decoded buffer:
+
+```zig
+const same = try document.identifiersEqual(first_range, second_range);
+const hash = try document.hashIdentifier(first_range);
+```
+
+For standalone UTF-8/raw spellings, use `dot.identifier.eql(a, b)` and
+`dot.identifier.hash(raw)`. Both validate complete spellings. Document helpers
+also check ranges and use the document's encoding.
+`dot.identifier.ForEncoding(actual)` supplies these helpers for a known reader.
+Valid native text hashes like its decoded UTF-8 value; malformed native text
+returns `InvalidIdentifier`, like explicit decoding. UTF-8 helpers preserve
+invalid raw bytes without checking their encoding.
+
+Hashes can collide: compare values after a hash match. Hashes are not a stable
+on-disk format or a defense against malicious hash-table keys. There is no case
+folding, Unicode normalization, layout-escape interpretation or numeric
+conversion (`01` and `1` differ). Work is linear in the supplied spellings,
+on request only; nothing is cached in the tree.
+
 ## Statements
 
 `document.statements()` visits every statement in the order it was written.

@@ -66,6 +66,7 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
         const Self = @This();
         pub const declared_source_encodings = config.source_encodings;
         pub const source_capabilities = @import("parser_support").encoding.Capabilities.from(config.source_encodings);
+        pub const inspectSource = @import("parser_support").encoding.Inspector(source_capabilities).inspect;
         pub fn withSourceEncodings(comptime capabilities: @import("parser_support").encoding.Capabilities) type {
             var bound = config;
             bound.source_encodings = capabilities.list();

@@ -3,6 +3,67 @@ const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 const gpa = std.testing.allocator;
 
+test "profile source inspection reports native framing and bound capabilities" {
+    const N = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 } });
+    const M = markup.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 } });
+    const C = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{ .source_encodings = &.{.utf16} }) } });
+    try std.testing.expectEqual(dot.InputEncoding.utf16le, C.inspectSource("\xff\xfe", null).selected.encoding);
+    try std.testing.expectEqual(error.UnsupportedEncoding, markup.inspectSource("\xff\xfe", null).failure.reason);
+    inline for (.{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        const E = dot.encoding.Reader(actual);
+        var buffer: [64]u8 = undefined;
+        const source = encode(actual, "abc", &buffer, true);
+        try std.testing.expectEqual(actual, N.inspectSource(source, null).selected.encoding);
+        for (1..E.width) |tail| {
+            const truncated = source[0 .. source.len - tail];
+            const failure = N.inspectSource(truncated, actual).failure;
+            try std.testing.expectEqual(error.TruncatedCodeUnit, failure.reason);
+            try std.testing.expectEqual(actual, failure.encoding.?);
+            try std.testing.expectEqual(dot.Span{ .start = @intCast(source.len - E.width), .len = @intCast(E.width - tail) }, failure.span.?);
+            try std.testing.expectEqualDeep(failure, M.inspectSource(truncated, actual).failure);
+            try std.testing.expectError(error.TruncatedCodeUnit, N.inspectSource(truncated, actual).require());
+        }
+    }
+    // Explicit selection wins even over a conflicting/longer leading BOM.
+    try std.testing.expectEqual(dot.InputEncoding.utf8, N.inspectSource("\xff\xfe\x00\x00", .utf8).selected.encoding);
+    try std.testing.expectEqual(dot.InputEncoding.utf16le, N.inspectSource("\xff\xfe\x00\x00", .utf16le).selected.encoding);
+    const Only = dot.Profile(.{ .source_encodings = &.{.utf32} });
+    try std.testing.expectEqual(error.EncodingRequired, Only.inspectSource("", null).failure.reason);
+    try std.testing.expect(Only.inspectSource("", null).failure.span == null);
+    try std.testing.expect(Only.inspectSource("", .utf8).failure.span == null);
+}
+
+test "native name helpers match decoded UTF-8 hashes and check both ranges" {
+    inline for (.{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        const E = dot.encoding.Reader(actual);
+        const P = dot.Profile(.{ .source_encodings = &.{ .utf16, .utf32 } });
+        var buffer: [512]u8 = undefined;
+        const source = encode(actual, "graph { café😀; \"café\"+\"😀\"; café; }", &buffer, true);
+        var parsed = try P.parseBorrowed(gpa, source, dot.diagnostic.discard, .{});
+        defer parsed.deinit(gpa);
+        const document = &parsed.document.?;
+        const a = document.nodeReference(document.nodes[0].reference).?.identifier;
+        const b = document.nodeReference(document.nodes[1].reference).?.identifier;
+        const c = document.nodeReference(document.nodes[2].reference).?.identifier;
+        try std.testing.expect(try document.identifiersEqual(a, b));
+        try std.testing.expect(!try document.identifiersEqual(a, c));
+        try std.testing.expectEqual(try dot.identifier.hash("café😀"), try document.hashIdentifier(a));
+        try std.testing.expectEqual(try document.hashIdentifier(a), try document.hashIdentifier(b));
+        const bad: dot.Span = .{ .start = a.start + 1, .len = E.width };
+        try std.testing.expectError(error.InvalidIdentifier, document.hashIdentifier(bad));
+        try std.testing.expectError(error.InvalidIdentifier, document.identifiersEqual(a, bad));
+        try std.testing.expectEqual(@as(usize, 3), document.capacities().nodes);
+        // Framed but malformed native text cannot be decoded to a logical value.
+        const H = dot.identifier.ForEncoding(actual);
+        var raw: [4]u8 = undefined;
+        if (E.width == 2) std.mem.writeInt(u16, raw[0..2], 0xd800, E.endian) else std.mem.writeInt(u32, &raw, 0x110000, E.endian);
+        try std.testing.expectError(error.InvalidIdentifier, H.hash(raw[0..E.width]));
+        try std.testing.expectError(error.InvalidIdentifier, H.eql(document.text(c), raw[0..E.width]));
+        const position = try dot.location.textPosition(source, a.start + a.len, .{ .source_encoding = actual });
+        try std.testing.expectEqual(@as(u32, 15), position.character); // BOM + "graph { " + café + emoji pair.
+    }
+}
+
 test "documented markup session sizes include default typo recovery" {
     if (@import("builtin").cpu.arch != .aarch64 or @import("builtin").os.tag != .macos) return error.SkipZigTest;
     try std.testing.expectEqual(@as(usize, 440), @sizeOf(markup.Profile(.{}).Session));

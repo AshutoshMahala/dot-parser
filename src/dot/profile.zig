@@ -43,6 +43,7 @@ pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Ac
     return struct {
         pub const declared_source_encodings = config.source_encodings;
         pub const source_capabilities = @import("parser_support").encoding.Capabilities.from(config.source_encodings);
+        pub const inspectSource = @import("parser_support").encoding.Inspector(source_capabilities).inspect;
         pub const Policies = Binding;
         pub const baseline = Binding.baseline;
         pub const runtime_policy = config.runtime_policy;

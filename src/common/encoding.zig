@@ -105,13 +105,53 @@ pub const Capabilities = packed struct(u4) {
     }
 };
 
-pub const InputError = error{
+pub const AdmissionError = error{
     UnsupportedEncoding,
     EncodingRequired,
     SourceTooLarge,
     TruncatedCodeUnit,
-    Cancelled,
 };
+pub const InputError = AdmissionError || error{Cancelled};
+
+/// Admission failures are not content-validation findings. A span identifies
+/// original physical bytes when there are offending bytes: an unsupported BOM
+/// or the incomplete final code unit. Configuration/size failures have no span.
+pub const AdmissionFailure = struct {
+    reason: AdmissionError,
+    span: ?@import("location.zig").Span = null,
+    encoding: ?Actual = null,
+
+    pub fn message(self: AdmissionFailure) []const u8 {
+        return switch (self.reason) {
+            error.UnsupportedEncoding => "source encoding is not enabled; save as UTF-8 or enable the reader in .source_encodings",
+            error.EncodingRequired => "BOM-less input requires an explicit .encoding and byte order",
+            error.SourceTooLarge => "source exceeds the u32 byte-offset range",
+            error.TruncatedCodeUnit => "input ends inside a code unit of the selected encoding",
+        };
+    }
+};
+
+pub const Admission = union(enum) {
+    selected: Info,
+    failure: AdmissionFailure,
+
+    pub fn require(self: Admission) AdmissionError!Info {
+        return switch (self) {
+            .selected => |info| info,
+            .failure => |failure| failure.reason,
+        };
+    }
+};
+
+/// Bind a no-allocation, constant-time source preflight to compiled readers.
+/// It never validates content, allocates, or links a native grammar reader.
+pub fn Inspector(comptime capabilities: Capabilities) type {
+    return struct {
+        pub fn inspect(source: []const u8, explicit: ?Actual) Admission {
+            return encoding.inspect(capabilities, source, explicit);
+        }
+    };
+}
 
 pub fn bom(source: []const u8) ?Info {
     // UTF-32LE starts with the UTF-16LE signature. Longest matches win.
@@ -134,10 +174,22 @@ pub fn bom(source: []const u8) ?Info {
 /// the longest BOM, then use an enabled byte reader. BOM-less native input needs
 /// explicit byte order; no host-endian guessing, NUL heuristic or parse retries.
 pub fn select(comptime capabilities: Capabilities, source: []const u8, explicit: ?Actual) InputError!Info {
-    if (source.len > std.math.maxInt(u32)) return error.SourceTooLarge;
+    return inspect(capabilities, source, explicit).require();
+}
+
+/// Positioned counterpart to select, including for UTF-8-only profiles whose
+/// ordinary parse API deliberately has no encoding error union. Explicit input
+/// remains authoritative. Look at at most four leading bytes, never guess from
+/// content or scan for malformed sequences; those belong to validation.
+pub fn inspect(comptime capabilities: Capabilities, source: []const u8, explicit: ?Actual) Admission {
+    if (source.len > std.math.maxInt(u32)) return .{ .failure = .{ .reason = error.SourceTooLarge } };
     const detected = if (explicit == null) bom(source) else null;
-    const actual = explicit orelse if (detected) |value| value.encoding else if (capabilities.utf8) Actual.utf8 else if (capabilities.ascii) Actual.ascii else return error.EncodingRequired;
-    if (!capabilities.allows(actual)) return error.UnsupportedEncoding;
+    const actual = explicit orelse if (detected) |value| value.encoding else if (capabilities.utf8) Actual.utf8 else if (capabilities.ascii) Actual.ascii else return .{ .failure = .{ .reason = error.EncodingRequired } };
+    if (!capabilities.allows(actual)) return .{ .failure = .{
+        .reason = error.UnsupportedEncoding,
+        .encoding = actual,
+        .span = if (detected) |value| .{ .start = 0, .len = value.bomBytes() } else null,
+    } };
     const has_bom = if (explicit != null) switch (actual) {
         inline else => |selected| Reader(selected).bomLength(source) != 0,
     } else detected != null;
@@ -147,8 +199,13 @@ pub fn select(comptime capabilities: Capabilities, source: []const u8, explicit:
         .has_bom = has_bom,
     };
     const width = unitBytes(actual);
-    if (source.len % width != 0) return error.TruncatedCodeUnit;
-    return info;
+    const tail = source.len % width;
+    if (tail != 0) return .{ .failure = .{
+        .reason = error.TruncatedCodeUnit,
+        .encoding = actual,
+        .span = .{ .start = @intCast(source.len - tail), .len = @intCast(tail) },
+    } };
+    return .{ .selected = info };
 }
 
 pub const DecodeError = error{ InvalidEncoding, TruncatedEncoding };

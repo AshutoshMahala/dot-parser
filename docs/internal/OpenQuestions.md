@@ -1069,6 +1069,16 @@ contracts; native parsing does not silently normalize or replace source data.
 *(Embodied: `src/dot/lexer/`, `src/dot/validation_checks.zig`,
 [supported syntax](../SUPPORTED_SYNTAX.md); R-PORT-006.)*
 
+**Tooling additions after 0.5.0:** `Profile.inspectSource` exposes encoding
+admission reasons and original-byte spans without changing parse signatures.
+`location.textPosition` derives optional zero-based UTF-8/UTF-16/code-point
+columns, leaving byte spans and normal parsing untouched. Logical identifier
+hash/equality helpers validate on request, with no decoded allocation; native
+hashes match decoded UTF-8. `Document.capacities()` snapshots retained pool
+counts for a subsequent parse, not a prediction or memory limit. Their costs
+and malformed-input contracts are in the public encoding, editor, memory and
+document-reading guides.
+
 **Q24 — When will the first stable compatibility boundary be declared?**
 `v0.1.0` shipped after slice 2 (directed documents). It is a useful experimental
 release, not a source-API stability declaration. The stable boundary and its

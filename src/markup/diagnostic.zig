@@ -173,7 +173,7 @@ pub const Code = enum {
                 .primary = .feature,
                 .sequence = Sequence.unsupported,
                 .summary = "unsupported markup feature",
-                .hint = "this structural parser does not process declarations, processing instructions or UTF-16/32 input; supply a supported fragment",
+                .hint = "use a supported fragment; declarations and processing instructions are not processed",
             },
             .capacity_exhausted => .{
                 .severity = .err,

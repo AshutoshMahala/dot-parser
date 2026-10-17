@@ -22,23 +22,6 @@ const sources = [_][]const u8{
     @embedFile("corpus/valid/non_ascii_identifiers.dot"),
 };
 
-fn poolCounts(document: *const dot.Document) dot.DocumentCapacities {
-    return .{
-        .statements = document.order.len,
-        .nodes = document.nodes.len,
-        .edge_chains = document.edge_chains.len,
-        .scoped_edges = document.scoped_edges.len,
-        .scoped_edge_links = document.scoped_edge_links.len,
-        .edge_links = document.edge_links.len,
-        .ported_references = document.ported_references.len,
-        .subgraphs = document.subgraph_records.len,
-        .edges = document.edges.len,
-        .attributes = document.attributes.len,
-        .assignments = document.assignments.len,
-        .attribute_statements = document.attribute_statements.len,
-    };
-}
-
 test "measure reports exactly the pool sizes a retained parse uses" {
     const allocator = std.testing.allocator;
     for (sources) |source| {
@@ -51,7 +34,7 @@ test "measure reports exactly the pool sizes a retained parse uses" {
         var parsed = dot.parseBorrowed(allocator, source, bag.sink(), .{});
         defer parsed.deinit(allocator);
         try std.testing.expect(parsed.outcome == .success);
-        try std.testing.expectEqualDeep(poolCounts(&parsed.document.?), measured.capacities.?);
+        try std.testing.expectEqualDeep(parsed.document.?.capacities(), measured.capacities.?);
 
         // The hint makes the retained parse allocation-exact: no growth.
         var hinted = dot.parseBorrowed(allocator, source, bag.sink(), .{ .document_capacities = measured.capacities.? });
@@ -99,7 +82,7 @@ test "measureIn sizes fixed pools that then hold the document exactly" {
         }
         const parsed = dot.parseBorrowedIn(source, .{ .document = storage, .scratch = frames.storage() }, dot.diagnostic.discard, .{});
         try std.testing.expect(parsed.outcome == .success);
-        try std.testing.expectEqualDeep(c, poolCounts(&parsed.document.?));
+        try std.testing.expectEqualDeep(c, parsed.document.?.capacities());
     }
 }
 

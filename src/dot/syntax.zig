@@ -789,6 +789,45 @@ pub const Document = struct {
         }
     }
 
+    /// Allocation-free logical-value helpers using this document's encoding.
+    /// Ranges are checked like decodeIdentifier; hashes can collide.
+    pub fn hashIdentifier(self: *const Document, range: location.Range) error{InvalidIdentifier}!u64 {
+        const raw = try self.identifierText(range);
+        switch (self.source_info.encoding) {
+            inline else => |actual| return identifier.ForEncoding(actual).hash(raw),
+        }
+    }
+
+    pub fn identifiersEqual(self: *const Document, a: location.Range, b: location.Range) error{InvalidIdentifier}!bool {
+        const left = try self.identifierText(a);
+        const right = try self.identifierText(b);
+        switch (self.source_info.encoding) {
+            inline else => |actual| return identifier.ForEncoding(actual).eql(left, right),
+        }
+    }
+
+    /// O(1) counts of retained output pools, with no source scan or allocation.
+    /// Useful as growth hints for the next document, not upper bounds for it.
+    /// Partial documents report only retained pools (including staged owners),
+    /// not discarded suffixes, temporary nesting space or child-processor trees.
+    pub fn capacities(self: *const Document) Capacities {
+        return .{
+            .comments = if (self.comments) |items| @intCast(items.len) else 0,
+            .statements = self.order.len,
+            .nodes = self.nodes.len,
+            .edges = self.edges.len,
+            .edge_chains = self.edge_chains.len,
+            .edge_links = self.edge_links.len,
+            .scoped_edges = self.scoped_edges.len,
+            .scoped_edge_links = self.scoped_edge_links.len,
+            .ported_references = self.ported_references.len,
+            .subgraphs = self.subgraph_records.len,
+            .attributes = self.attributes.len,
+            .assignments = self.assignments.len,
+            .attribute_statements = self.attribute_statements.len,
+        };
+    }
+
     fn identifierText(self: *const Document, range: location.Range) error{InvalidIdentifier}![]const u8 {
         const width = self.source_info.unitBytes();
         if (range.start % width != 0 or range.len % width != 0 or range.start > self.source.len or range.len > self.source.len - range.start) return error.InvalidIdentifier;

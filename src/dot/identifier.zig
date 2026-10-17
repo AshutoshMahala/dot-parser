@@ -85,6 +85,23 @@ pub fn writeDecoded(raw: []const u8, writer: anytype) !void {
     while (chunks.next()) |chunk| try writer.writeAll(chunk);
 }
 
+/// Hash the logical value without allocating or materializing decoded text.
+/// Validates the whole spelling first. Equal values have equal hashes; hashes
+/// can collide and are not a stable serialization format or a security boundary.
+pub fn hash(raw: []const u8) error{InvalidIdentifier}!u64 {
+    _ = try validate(raw);
+    return @import("identifier_value.zig").hashAssumeValid(raw);
+}
+
+/// Compare logical values, not quoting, concatenation boundaries or numerals'
+/// numeric meanings. Both spellings are checked, even when their values differ.
+/// No allocation, Unicode normalization or layout-escape interpretation.
+pub fn eql(a: []const u8, b: []const u8) error{InvalidIdentifier}!bool {
+    _ = try validate(a);
+    _ = try validate(b);
+    return @import("identifier_value.zig").orderAssumeValid(a, b) == .eq;
+}
+
 fn validate(raw: []const u8) error{InvalidIdentifier}!lex.Token {
     var lexer = lex.Lexer.initRaw(raw);
     const result = lexer.next();
@@ -103,6 +120,8 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
         pub const decodedLen = @import("identifier.zig").decodedLen;
         pub const decodeInto = @import("identifier.zig").decodeInto;
         pub const writeDecoded = @import("identifier.zig").writeDecoded;
+        pub const hash = @import("identifier.zig").hash;
+        pub const eql = @import("identifier.zig").eql;
     };
     return struct {
         const E = encoding.Reader(actual);
@@ -171,6 +190,25 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
                     try writer.writeAll(out[0..len]);
                 }
             }
+        }
+        /// Hashes the UTF-8 logical value, matching the byte helper's hash for
+        /// equivalent text. Malformed native encoding is InvalidIdentifier,
+        /// just as for explicit decoding; no conversion buffer is allocated.
+        pub fn hash(raw: []const u8) error{InvalidIdentifier}!u64 {
+            const HashWriter = struct {
+                state: std.hash.Wyhash = .init(0),
+                pub fn writeAll(self: *@This(), bytes: []const u8) error{}!void {
+                    self.state.update(bytes);
+                }
+            };
+            var writer: HashWriter = .{};
+            try @This().writeDecoded(raw, &writer);
+            return writer.state.final();
+        }
+        pub fn eql(a: []const u8, b: []const u8) error{InvalidIdentifier}!bool {
+            _ = try @This().decodedLen(a);
+            _ = try @This().decodedLen(b);
+            return Values.orderAssumeValid(a, b) == .eq;
         }
     };
 }

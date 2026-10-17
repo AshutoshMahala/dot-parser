@@ -65,7 +65,7 @@ pub const Adapter = struct {
             .feature => |feature| try writer.writeAll(switch (feature) {
                 .processing_instructions => "processing instructions are not supported",
                 .declarations => "declarations are not supported",
-                .encoding => "UTF-16/32 input is not supported",
+                .encoding => "source encoding is not enabled by this UTF-8 reader",
             }),
             .capacity => |capacity| try writer.print("{s} capacity of {d} exhausted", .{ resourceText(capacity.resource), capacity.limit }),
             .reference => |problem| try writer.writeAll(switch (problem) {
@@ -92,7 +92,9 @@ pub const Adapter = struct {
         try positions.writeColonForm(d.related.?.start, writer);
     }
     pub fn hint(d: Diagnostic, positions: *Positions, writer: anytype) !void {
-        if (d.details == .expected) {
+        if (d.details == .feature and d.details.feature == .encoding) {
+            try writer.writeAll("save as UTF-8 or enable the reader in .source_encodings; inspectSource reports the encoding named by the BOM");
+        } else if (d.details == .expected) {
             switch (d.details.expected) {
                 .attribute_value => try writer.writeAll("write '&lt;' for a literal '<' inside the attribute value"),
                 .opening_quote => try writer.writeAll("enclose the entire attribute value in single or double quotes"),

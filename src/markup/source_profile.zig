@@ -13,6 +13,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
         const Self = @This();
         pub const declared_source_encodings = config.source_encodings;
         pub const source_capabilities = caps;
+        pub const inspectSource = enc.Inspector(caps).inspect;
         pub const Policies = Base.Policies;
         pub const baseline = Base.baseline;
         pub const runtime_policy = config.runtime_policy;

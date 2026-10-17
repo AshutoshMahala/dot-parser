@@ -46,21 +46,33 @@ pub fn main(init: std.process.Init) !u8 {
     else
         sample;
 
-    var bag = dot.GrowableDiagnosticBag.init(allocator, .{});
-    defer bag.deinit();
-    // Recover at safe statement boundaries to collect further problems
-    // (`--fail-fast` explicitly stops at the first).
-    const Parser = dot.Profile(.{ .runtime_policy = true });
-    var checked = try Parser.parseAndValidate(allocator, source, bag.sink(), .{
-        .policy = .{ .on_error = on_error },
-    });
-    defer checked.deinit(allocator);
-
     const stdout_file: std.Io.File = .stdout();
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_file_writer: std.Io.File.Writer = .init(stdout_file, io, &stdout_buffer);
     const stdout = &stdout_file_writer.interface;
     defer stdout.flush() catch {};
+
+    const Parser = dot.Profile(.{ .runtime_policy = true });
+    switch (Parser.inspectSource(source, null)) {
+        .selected => {},
+        .failure => |failure| {
+            try dot.presentation.writeSourceName(path orelse "sample", .unicode, stdout);
+            if (failure.span) |span| try stdout.print(": byte offset {d}", .{span.start});
+            try stdout.print(": {s}", .{failure.message()});
+            if (failure.encoding) |actual| try stdout.print(" ({s})", .{@tagName(actual)});
+            try stdout.writeAll("\n");
+            return 1;
+        },
+    }
+
+    var bag = dot.GrowableDiagnosticBag.init(allocator, .{});
+    defer bag.deinit();
+    // Recover at safe statement boundaries to collect further problems
+    // (`--fail-fast` explicitly stops at the first).
+    var checked = try Parser.parseAndValidate(allocator, source, bag.sink(), .{
+        .policy = .{ .on_error = on_error },
+    });
+    defer checked.deinit(allocator);
 
     const color: dot.console.RenderOptions.Color =
         if (stdout_file.supportsAnsiEscapeCodes(io) catch false) .ansi else .none;

@@ -41,7 +41,7 @@ The markup parser follows the same shape under `src/markup/`.
 
 | File | Purpose |
 | --- | --- |
-| `location.zig` | Byte spans, and working out line and column on demand |
+| `location.zig`, `text_position.zig` | Byte spans, lazy byte locations and optional editor-coordinate conversion |
 | `reporting.zig` | Diagnostic sinks, fixed and growable bags, fixes, stop reasons |
 | `wdp.zig` | Builds diagnostic codes and their short ids at compile time |
 | `execution.zig` | The cancel-check hook |

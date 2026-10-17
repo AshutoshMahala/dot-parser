@@ -1032,6 +1032,16 @@ bytes; a tab therefore advances it by one byte. Configurable tab stops and
 Unicode display-cell columns belong to diagnostic presentation, where the
 original line can be expanded for a terminal or editor.
 
+**Tooling helpers (implemented after 0.5.0):** optional `location.textPosition`
+derives zero-based UTF-8/UTF-16/UTF-32 columns without adding parser state or
+retained metadata. It allocates nothing and scans to the requested byte offset.
+Malformed units count coordinate-only replacements; no source repair occurs.
+`Profile.inspectSource` reports positioned admission metadata for unsupported
+BOMs and incomplete final units, with explicit-encoding precedence unchanged.
+Default parsing is not forced through this optional preflight. Current APIs
+and costs are documented in [editor support](../EDITORS.md) and
+[source encodings](../ENCODINGS.md).
+
 **Implemented presentation (2026-09-29):** the shared optional renderer shows
 printable UTF-8 in Unicode style, with pinned scalar-width tables and bounded
 display-cell mapping. Controls/format characters and invalid bytes are escaped;

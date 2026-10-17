@@ -122,6 +122,7 @@ pub fn Profile(comptime config: PolicyConfig) type {
     return @import("markup/profile.zig").Profile(@This(), config);
 }
 const Default = Profile(.{});
+pub const inspectSource = Default.inspectSource;
 pub const prepare = Default.prepare;
 pub const parseAndValidate = Default.parseAndValidate;
 pub const parseAndValidateIn = Default.parseAndValidateIn;

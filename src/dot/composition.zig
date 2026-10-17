@@ -44,6 +44,7 @@ pub fn ProfileForEncoding(comptime actual: support.encoding.Actual, comptime api
             if (@hasDecl(Child, "declared_source_encodings")) Child.declared_source_encodings else null,
         );
         pub const baseline = Binding.baseline;
+        pub const inspectSource = support.encoding.Inspector(source_capabilities).inspect;
         pub const runtime_policy = config.runtime_policy;
         pub const Policies = support.processor.PolicySet(.{ .dot = Outer, .markup = Child }).Policies;
         pub const Error = Binding.Error || Child.Policies.Error || Child.InputError;

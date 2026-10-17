@@ -17,6 +17,41 @@ This page collects the opt-in features for that:
 All of them are off by default. Their small fixed costs are listed under
 [memory](#memory).
 
+## Editor position conversion
+
+> **Unreleased.**
+
+Stored spans always count original bytes. Both `dot.location` and
+`markup.location` can derive editor coordinates on request:
+
+```zig
+const position = try dot.location.textPosition(source, byte_offset, .{
+    .source_encoding = document.source_info.encoding,
+    .column_encoding = .utf16,
+});
+// position.line and position.character are zero-based, like LSP positions.
+```
+
+Source encoding defaults to UTF-8. Column encoding defaults to `.utf16`;
+`.utf8` counts UTF-8 bytes and `.utf32` counts Unicode scalars, irrespective of
+the source encoding. These are not grapheme or display-cell columns. A tab
+counts as one, and a leading BOM counts as a scalar if present in `source`.
+Match the text your editor holds: if it strips the BOM, account for that at
+the integration boundary.
+
+LF, CRLF and standalone CR follow the ordinary physical-line policy. Malformed
+code units, including an incomplete final unit, count as one U+FFFD replacement
+each for positions only; source bytes are unchanged. Queries inside a scalar or
+code unit return `InvalidBoundary`; out-of-range offsets return `InvalidOffset`.
+Use ordinary byte locations for diagnostic spans inside malformed sequences.
+Sources beyond the u32 domain return `SourceTooLarge`; a converted column that
+cannot fit in u32 returns `PositionOverflow` instead of wrapping.
+
+This helper allocates nothing, stores no line index, and scans O(offset) per
+call. It is not work-metered or cancellable. Many arbitrary queries may warrant
+an editor-owned line index; don't recompute every token's location on each
+keystroke. Ordinary parsing, byte spans and byte columns incur no added work.
+
 ## Keep the finished part of a DOT file
 
 Turn on `retention.partial`:

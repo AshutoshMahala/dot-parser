@@ -54,6 +54,8 @@ pub const encoding = @import("parser_support").encoding;
 pub const SourceEncoding = encoding.Encoding;
 pub const InputEncoding = encoding.Actual;
 const DefaultProfile = Profile(.{});
+/// Optional positioned encoding admission, without parsing or content checks.
+pub const inspectSource = DefaultProfile.inspectSource;
 
 /// Policy-bound parsing, execution, validation and interpretation. Runtime
 /// overrides are off by default; every supported setting has full parity.

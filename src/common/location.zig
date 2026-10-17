@@ -19,9 +19,16 @@
 //! - Positions are 32-bit. A source is at most `max_source_len` bytes; the
 //!   scanner refuses longer input before reading it.
 //!
-//! This module performs no allocation and does not interpret Unicode.
+//! Byte locations perform no allocation and do not interpret Unicode.
+//! Optional textPosition derives Unicode-aware editor coordinates separately.
 
 const std = @import("std");
+const text_position = @import("text_position.zig");
+pub const ColumnEncoding = text_position.ColumnEncoding;
+pub const TextPosition = text_position.TextPosition;
+pub const TextPositionOptions = text_position.TextPositionOptions;
+pub const PositionError = text_position.PositionError;
+pub const textPosition = text_position.textPosition;
 
 /// The longest source the library scans: positions are `u32`.
 pub const max_source_len: usize = std.math.maxInt(u32);
