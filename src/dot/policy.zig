@@ -29,7 +29,8 @@ pub const Policy = struct {
     retention: struct {
         /// Keep complete comment kind/span records, without processing contents.
         comments: ?bool = null,
-        /// Publish a safe prefix on failure; never changes syntax acceptance.
+        /// Publish completed regions on failure, including safely recovered
+        /// later statements under collect. Never changes syntax acceptance.
         partial: ?bool = null,
         /// Keep owned child results during processing or explicit delayed work.
         markup: ?bool = null,

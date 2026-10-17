@@ -186,7 +186,7 @@ never healed. Its fixed-memory resumable steps share the recovery allowance.
 Under `.collect`, the parser may record a recoverable syntax diagnostic,
 synchronize at a safe grammar boundary, and continue collecting problems up to
 caller-provided diagnostic and work limits. Recovery must be best-effort and
-must not publish a partial tree by default. Opt-in DOT/markup prefix retention
+must not publish a partial tree by default. Opt-in DOT/markup retention
 follows the contract below. Unterminated
 quoted or HTML-like input, lost delimiter balance, and exhausted input may be
 unrecoverable even when recovery is enabled.
@@ -210,9 +210,10 @@ Retention is opt-in and independent of `.collect`/`.fail_fast`. Preserve complet
 constructs, unfinished containers and unavailable ranges without guessing repairs.
 Traversal/indices must remain safe, source borrowed, failure reasons unchanged,
 and salvaging a result must not require allocation or an unmetered stack walk.
-The implemented slice retains DOT/markup prefixes at the first error
-or operational stop. Recovery may continue diagnostics, but later nodes are not
-retained yet. Direct partial-document validation checks retained facts and reports
+Unreleased DOT retention continues after safely recoverable statement errors,
+keeping later completed statements and explicit skipped ranges. `.fail_fast`
+still retains only the prefix. Markup retention remains prefix-only. Direct
+partial-document validation checks retained facts and reports
 missing coverage; existing markup source/scope validation remains independent.
 Known operators of staged scoped edges inside the retained frontier are checked
 as independent source facts; validation does not publish their unfinished owners.
@@ -230,11 +231,13 @@ Attached delayed selection marks requested operands pending, processes one
 explicit source-ordered batch and updates that same result's completeness.
 Coverage describes the selected set, not unselected identifiers. No implicit
 retry after stops, source copying or runtime replacement of the bound processor.
-Later recovered regions and resumable per-scope scheduling remain future slices.
+Gap-aware markup regions and resumable per-scope scheduling remain future slices.
 
 **Current implementation:** DOT `Policy.on_error` offers `.fail_fast` and
-default `.collect`. The latter continues diagnostics after aborting staged output;
-partial retention freezes the prefix without turning rejected syntax into success.
+default `.collect`. The latter continues diagnostics after rejecting a statement;
+without partial retention, staged output is aborted as before. Opt-in DOT
+retention instead abandons that statement's staging, records the synchronization
+range and resumes output. Rejected syntax never becomes successful acceptance.
 Excluded HTML-like body identifiers can also recover: unsupported-only recovery
 remains `unsupported_feature`, while completed recovery with a syntax error yields
 `invalid_syntax`. Both parsers expose `completion` and factual u32 `syntax_errors`
@@ -569,6 +572,31 @@ Syntax commit means the whole document parsed, not that semantic validation
 passed. A consumer requiring validated atomic output must retain control of
 its staging through validation as well. A reusable staging helper is deferred
 until a concrete consumer justifies its memory and binary cost (Q29).
+
+**Unreleased public DOT output:** `Profile.Events(Sink)` binds `onEvent` and
+infallible `onAbort` at compile time. One-shot event-only output uses allocated
+or fixed nesting scratch; UTF-8 sessions share the grammar's bounded driver.
+Tentative attributes/links/references belong to a statement occurrence until
+the matching `commit_*` event or statement abort. Nested scope bodies can commit child
+statements independently; enclosing commits do not certify child validity or
+completeness. Recovery emits a skipped range before later statements; whole
+document rejection still ends with abort. Consumer stop/error is not a storage
+failure. No parser-owned whole-statement buffering or rollback of caller side
+effects is implied. Normal callbacks consume dispatch credits; infallible abort
+cleanup is excluded. Statement IDs are opening byte offsets; scope/reference
+IDs are parser-assigned occurrence ordinals. Builders, the sizing sink and user
+consumers implement the same event contract, without translation. Builder pool
+state stays private; optional compile-time scope context lives in typed scratch,
+never in event payloads. Combined tree/observer output,
+event-driven validation, composed event execution and public pull events remain
+future extensions, not claims of this slice.
+
+Opt-in recovered DOT gaps use adjacent start/end tags in the existing compact
+order pool: two slots per gap. No new pool, document descriptor, per-node or
+per-edge metadata is required. Fixed pool exhaustion or allocation failure stops
+recovery rather than hiding missing gap delivery. Terminal salvage never needs
+allocation; later recovery output can grow ordinary pools. Skipped enclosing
+statements may contain independently retained endpoint-body statements.
 
 ### R-MOD-012: Lazy behavior has explicit validity guarantees
 

@@ -16,8 +16,18 @@ test "documented current DOT layouts match native aarch64 macOS and build mode" 
         .ReleaseFast, .ReleaseSmall => .{ .session = 1120, .controlled = 1184, .scalar = 56 },
     };
     try std.testing.expectEqual(expected.session, @sizeOf(dot.Profile(.{}).Session));
+    try std.testing.expectEqual(@as(usize, 256), @sizeOf(dot.Document));
+    try std.testing.expectEqual(@as(usize, 8), @sizeOf(dot.StatementId));
+    // Zero-sized optional fields can still perturb Zig's automatic layout.
+    // Guard a few hot offsets as well as size for disabled fixed profiles.
+    const Driver = @FieldType(dot.Profile(.{}).Session, "driver");
+    const Machine = @FieldType(Driver, "machine");
+    const safety_bytes: usize = if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) 8 else 0;
+    try std.testing.expectEqual(@as(usize, 337) + safety_bytes, @offsetOf(Machine, "state"));
+    try std.testing.expectEqual(@as(usize, 264) + safety_bytes, @offsetOf(Machine, "terminal"));
+    try std.testing.expectEqual(@as(usize, 328) + safety_bytes, @offsetOf(Machine, "left"));
     try std.testing.expectEqual(expected.controlled, @sizeOf(Controlled.Session));
     try std.testing.expectEqual(expected.scalar, @sizeOf(dot.lexer.For(.scalar)));
     try std.testing.expectEqual(@as(usize, 152), @sizeOf(dot.lexer.For(.block)));
-    try std.testing.expectEqual(@as(usize, 1408), @sizeOf(dot.Profile(.{ .runtime_policy = true }).Session));
+    try std.testing.expectEqual(@as(usize, 1424), @sizeOf(dot.Profile(.{ .runtime_policy = true }).Session));
 }

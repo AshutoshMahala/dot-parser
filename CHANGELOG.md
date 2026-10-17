@@ -8,6 +8,15 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Compile-time-bound DOT event consumers via `Profile.Events(Sink)`, with
+  event-only one-shot/fixed-scratch parsing and UTF-8 sessions. Statement
+  commit/abort, nested scopes and skipped ranges allow consumer-defined output
+  without allocating the library's document pools.
+  Builders and the sizing sink consume the same public event contract; storage
+  bookkeeping remains private, with no event translation adapter.
+- Opt-in DOT partial retention now keeps later completed statements after safe
+  recovery. `skippedRanges()` exposes gaps; `unrepresented()` remains the
+  unfinished suffix. No guessed lexical boundaries or repaired source.
 - Allocation-free logical identifier hash/equality helpers, including checked
   document ranges and native encodings.
 - `Document.capacities()` for reusing retained DOT pool counts as growth hints.
@@ -16,6 +25,13 @@ are marked; no compatibility shims are kept.
 - `inspectSource` on standalone and composed profiles, reporting encoding
   admission reasons, detected encoding and offending byte spans. `check_file`
   uses it to explain unsupported BOMs before parsing.
+
+### Changed
+
+- **Breaking:** partial DOT `order` storage can contain paired `skipped_start`
+  and `skipped_end` metadata. Normal statement views hide them; use
+  `skippedRanges()` for recovery gaps. `unrepresented()` describes only an
+  unfinished suffix and can be null even when the document is partial.
 
 ## 0.5.0 — 2026-10-12
 

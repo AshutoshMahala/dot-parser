@@ -133,7 +133,7 @@ test "pending pairs links ports and trivia do not advance the represented fronti
         }
         var r = P.parseBorrowed(allocator, "digraph { x; a -> /* c */ }", discard, .{});
         defer r.deinit(allocator);
-        try equal(@as(u32, 11), r.document.?.retained_end);
+        try equal(@as(u32, @intCast(r.document.?.source.len)), r.document.?.retained_end);
     };
 }
 
@@ -174,8 +174,11 @@ test "automatic graph kind remains unknown until a directed edge or completion" 
     var bag: dot.FixedDiagnosticBag(16) = .{};
     var r = P.parseAndValidate(allocator, "graph { a -- b; x [y=; c -> d; }", bag.sink(), .{});
     defer r.deinit(allocator);
-    try expect(r.document.?.effectiveKind(P.interpretation(&r.document.?, .{})) == null);
+    try equal(dot.GraphKind.generic, r.document.?.effectiveKind(P.interpretation(&r.document.?, .{})));
     for (bag.items()) |d| try expect(d.code != .validation_restriction);
+    var unknown = P.parseBorrowed(allocator, "graph { a -- b; x [y=", discard, .{});
+    defer unknown.deinit(allocator);
+    try expect(unknown.document.?.effectiveKind(P.interpretation(&unknown.document.?, .{})) == null);
     var directed = P.parseBorrowed(allocator, "graph { a -> b; x [y=", discard, .{});
     defer directed.deinit(allocator);
     try equal(dot.GraphKind.generic, directed.document.?.effectiveKind(P.interpretation(&directed.document.?, .{})));
@@ -194,6 +197,7 @@ fn audit(doc: *const dot.Document) !void {
     for (doc.order) |id| if (doc.statement(id) == null) {
         try expect(doc.state == .partial);
         switch (id) {
+            .skipped_start, .skipped_end => {},
             .scoped_edge => |index| try expect(!doc.scoped_edges[index].complete()),
             .subgraph => |index| try equal(std.math.maxInt(u32), index),
             else => return error.UnexpectedStagedStatement,
@@ -261,13 +265,13 @@ test "DOT partial retention preserves safe scopes without claiming syntax succes
     try expect(header.document == null);
 }
 
-test "DOT partial retention freezes before recovery and leaves ambiguous text raw" {
+test "DOT partial retention continues safe recovery but leaves ambiguous text raw" {
     const cases = [_][]const u8{
         "graph { first; n [x=]; later; }",
         "graph { first; \"unterminated; fake }",
         "graph { first; /* unterminated; fake }",
     };
-    for (cases) |bytes| {
+    for (cases, 0..) |bytes, i| {
         var kept = Keep.parseBorrowed(allocator, bytes, discard, .{});
         defer kept.deinit(allocator);
         var plain = dot.parseBorrowed(allocator, bytes, discard, .{});
@@ -276,8 +280,13 @@ test "DOT partial retention freezes before recovery and leaves ambiguous text ra
         try equal(plain.completion, kept.completion);
         try equal(plain.syntax_errors, kept.syntax_errors);
         try expect(plain.document == null);
-        try equal(@as(usize, 1), kept.document.?.nodes.len);
-        try expect(kept.document.?.unrepresented().?.len != 0);
+        try equal(@as(usize, if (i == 0) 2 else 1), kept.document.?.nodes.len);
+        if (i == 0) {
+            try expect(kept.document.?.unrepresented() == null);
+            var gaps = kept.document.?.skippedRanges();
+            try equalStrings("n [x=];", kept.document.?.text(gaps.next().?.range));
+            try expect(gaps.next() == null);
+        } else try expect(kept.document.?.unrepresented().?.len != 0);
         try audit(&kept.document.?);
     }
 }
@@ -361,6 +370,100 @@ test "DOT partial validation is explicit about coverage and honors terminal stop
     var sink_stop = Keep.parseAndValidate(allocator, "digraph { a -- b; n [x=]; }", bag.sink(), .{});
     defer sink_stop.deinit(allocator);
     try expect(sink_stop.document != null and sink_stop.validation == null);
+}
+
+test "recovered regions retain later scopes attributes and independent validation" {
+    inline for (.{ .scalar, .block }) |scanner| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .retention = .{ .partial = true }, .validation = .{ .repeated_attribute = .err } } });
+        const bytes = "digraph { first; bad [old=value broken=]; subgraph s { a -> ; b [x=1 x=2]; } c; {d} -> ; e [fresh=ok]; }";
+        var bag: dot.FixedDiagnosticBag(32) = .{};
+        var keys: [32]dot.AttributeKeyScratch = undefined;
+        var result = P.parseAndValidate(allocator, bytes, bag.sink(), .{ .validation = .{ .attribute_keys = &keys } });
+        defer result.deinit(allocator);
+        const doc = &result.document.?;
+        try equal(dot.Completion.complete, result.completion);
+        try equal(@as(u32, 3), result.syntax_errors);
+        try expect(!result.documentValid());
+        try equal(@as(usize, 5), doc.nodes.len);
+        try equal(@as(u64, 1), result.validation.?.outcome.completed.violations);
+        const last = doc.attributeSlice(doc.nodes[doc.nodes.len - 1].attributes).?;
+        try equal(@as(usize, 1), last.len);
+        try equalStrings("fresh", doc.text(last[0].key));
+        var gaps = doc.skippedRanges();
+        try equal(dot.ScopeId.root, gaps.next().?.scope);
+        try equal(@as(u32, 1), @intFromEnum(gaps.next().?.scope));
+        try equal(dot.ScopeId.root, gaps.next().?.scope);
+        try expect(gaps.next() == null);
+        // A failed surrounding edge must not make its independently completed
+        // endpoint body partial. The first scope has an actual child gap.
+        try expect(!doc.scope(@enumFromInt(1)).?.scopeComplete());
+        try expect(doc.scope(@enumFromInt(2)).?.scopeComplete());
+        try equal(@as(u32, @intCast(std.mem.indexOf(u8, bytes, "bad").?)), result.validation.?.coverage.incomplete);
+        try audit(doc);
+        var pools: Pools = .{};
+        var frames: dot.FixedParseScratch(.{ .nesting = 32 }) = .{};
+        const fixed = P.parseBorrowedIn(bytes, .{ .document = pools.storage(), .scratch = frames.storage() }, discard, .{});
+        try deep(doc.*, fixed.document.?);
+        // Default retention is still off even though recovery collects.
+        var plain = dot.parseBorrowed(allocator, bytes, discard, .{});
+        defer plain.deinit(allocator);
+        try expect(plain.document == null);
+    }
+}
+
+test "gap publication is failure atomic and lexical stops leave an uncovered suffix" {
+    const bytes = "graph { a; bad [x=]; b; }";
+    var slots: [2]dot.StatementId = undefined;
+    var nodes: [2]dot.NodeStatement = undefined;
+    const stopped = Keep.parseBorrowedIn(bytes, .{ .document = .{ .statement_ids = &slots, .nodes = &nodes } }, discard, .{});
+    try equal(dot.StorageFailure.pool_exhausted, stopped.outcome.storage_failure);
+    try equal(@as(usize, 1), stopped.document.?.order.len);
+    var gaps = stopped.document.?.skippedRanges();
+    try expect(gaps.next() == null);
+    try expect(stopped.document.?.unrepresented() != null);
+    var result = Keep.parseBorrowed(allocator, "graph { a; bad [x=]; b; \"unterminated; fake; }", discard, .{});
+    defer result.deinit(allocator);
+    try equal(@as(usize, 2), result.document.?.nodes.len);
+    try equal(dot.Completion.incomplete, result.completion);
+    try expect(result.document.?.unrepresented() != null);
+}
+
+fn recoveredAllocationProbe(memory: std.mem.Allocator) !void {
+    var result = Keep.parseBorrowed(memory, "graph { a; bad [x=]; b; }", discard, .{});
+    defer result.deinit(memory);
+    if (result.document) |*doc| try audit(doc);
+    if (result.outcome == .storage_failure and result.outcome.storage_failure == .out_of_memory) return error.OutOfMemory;
+    try equal(dot.Completion.complete, result.completion);
+    try equal(@as(usize, 2), result.document.?.nodes.len);
+}
+
+test "growing recovery remains failure atomic at every allocation" {
+    try std.testing.checkAllAllocationFailures(allocator, recoveredAllocationProbe, .{});
+}
+
+test "retention changes output not grammar recovery or diagnostic findings" {
+    inline for (.{ .scalar, .block }) |scanner| {
+        const Plain = dot.Profile(.{ .policy = .{ .scanner = scanner } });
+        const Partial = dot.Profile(.{ .policy = .{ .scanner = scanner, .retention = .{ .partial = true } } });
+        for ([_][]const u8{
+            "digraph { a -> { bad [x=]; later; } -> b; c; }",
+            "graph { bad [x= { @ ; nested; } ; after; }",
+            "graph { subgraph s { bad [x= } after; }",
+            "graph {\n  subgraph s {\n    bad [x=];\n}\n",
+        }) |bytes| {
+            var a: dot.FixedDiagnosticBag(32) = .{};
+            var b: dot.FixedDiagnosticBag(32) = .{};
+            var plain = Plain.parseBorrowed(allocator, bytes, a.sink(), .{});
+            defer plain.deinit(allocator);
+            var partial = Partial.parseBorrowed(allocator, bytes, b.sink(), .{});
+            defer partial.deinit(allocator);
+            try deep(plain.outcome, partial.outcome);
+            try equal(plain.completion, partial.completion);
+            try equal(plain.syntax_errors, partial.syntax_errors);
+            try std.testing.expectEqualSlices(dot.Diagnostic, a.items(), b.items());
+            try audit(&partial.document.?);
+        }
+    }
 }
 
 test "runtime partial retention resets without stale ownership and requires bound child retention" {

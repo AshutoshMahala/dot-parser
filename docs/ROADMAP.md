@@ -16,8 +16,9 @@ the implemented contracts.
 - **Step-by-step parsing of UTF-16 and UTF-32**, and source excerpts for them
   in boxed output. One-call parsing is available in 0.5.0; see
   [encodings](#encodings).
-- **A public event or logging interface.** The events the parser produces are
-  internal for now.
+- **Broader event output.** The unreleased [public DOT events](EVENTS.md) support
+  event-only one-shot parsing and UTF-8 sessions. Combined tree/event output,
+  event-driven validation, public pull events and composed execution remain.
 
 ## Markup
 
@@ -46,10 +47,9 @@ other's rules.
 - **A built-in string processor** for checking quoted values inside markup.
   Today you can prepare its settings with `PolicySet` and keep positions with
   `fragment.child`, but your code must run it.
-- **More of a partial document.** DOT and markup keep the finished
-  part before the first error, and DOT can keep each label's tree. Still to do:
-  keeping later parts that recovery finds, with the gaps marked, and letting
-  label checks inside a DOT file pause and resume.
+- **More of a partial markup document.** Unreleased DOT retention keeps later
+  recovered statements with gaps; markup still retains its prefix. Gap-aware
+  markup trees and pausing/resuming label checks remain unfinished.
 
 ## Checking labels inside DOT
 

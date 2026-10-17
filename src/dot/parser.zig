@@ -39,18 +39,20 @@
 //! Guarantees:
 //! - Instance-owned state, no mutable globals (R-ROB-003).
 //! - Stop at unrecoverable syntax; recover body statements by default. The sink
-//!   lifecycle from `syntax_event.zig` is honored: no events before a
+//!   lifecycle from `events.zig` is honored: no events before a
 //!   supported header, abort after begin when the document cannot commit —
 //!   including the documented cleanup abort after an attempted
 //!   `beginDocument` that itself failed.
 //! - With `Policy.on_error = .collect`, a syntax error inside the body
-//!   aborts the sink once, then parsing continues for diagnostics only:
+//!   aborts an ordinary document sink once, then continues for diagnostics only.
+//!   Opt-in partial builders and public event consumers instead abort just the
+//!   unfinished statement, report skipped regions and retain later statements:
 //!   tokens are skipped to the next `;` or `}` at the same brace depth
 //!   (a skipped `{` is matched by counting), the next statement parses
 //!   normally, and every further syntax error is reported the same way.
 //!   The outcome is `invalid_syntax` if a syntax error was found, otherwise
 //!   `unsupported_feature` for excluded HTML-like identifiers. Only an opt-in
-//!   retaining sink may publish a prefix; it sees exactly one terminal event. Lexical errors resume
+//!   retaining sink may publish incomplete regions; it sees exactly one terminal event. Lexical errors resume
 //!   through `Scanner.resumeAfterFailure`; end of input, header errors,
 //!   trailing tokens and limits still stop the parse.
 //! - Iterative state-machine parsing has no recursion, so input size and shape
@@ -80,14 +82,14 @@ const lex = @import("lexer/lexer.zig");
 const scalar_lex = @import("lexer/scalar.zig");
 const block_lex = @import("lexer/block.zig");
 const execution = @import("parser_support").execution;
-const syntax_event = @import("syntax_event.zig");
+const event_types = @import("events.zig");
 const scratch_impl = @import("scratch.zig");
 const policy = @import("policy.zig");
 
 /// The parse outcome category. The diagnostics explaining a failure travel
 /// through the caller's diagnostic sink, never through this value.
 pub const Outcome = union(enum) {
-    scratch_failure: scratch_impl.Stack.Error,
+    scratch_failure: scratch_impl.For(void).Stack.Error,
     /// The document parsed completely and the event sink committed.
     success,
     /// Explicit cancellation or an observed caller request; no diagnostic.
@@ -107,6 +109,7 @@ pub const Outcome = union(enum) {
     /// The event sink refused an event. The sink owns the underlying cause,
     /// so no diagnostic is emitted for it.
     sink_failure: anyerror,
+    sink_stopped,
 };
 
 /// Whether every diagnostic emitted during a parse actually reached the
@@ -152,7 +155,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         if (info != .pointer or info.pointer.size != .one) {
             @compileError("events must be a single-item pointer to a syntax sink, e.g. `&my_sink`");
         }
-        syntax_event.assertSyntaxSink(info.pointer.child);
+        event_types.assertSink(info.pointer.child);
     }
     const Scanner = ScannerOf(metered, audited, if (fixed) |v| v.ambiguous_numeral != .off else null);
     const actual = if (@hasDecl(Scanner, "source_encoding")) Scanner.source_encoding else @import("parser_support").encoding.Actual.utf8;
@@ -161,12 +164,19 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
     const deviations_enabled = if (fixed) |value| value.syntax.acceptsDeviations() else true;
     const operators_enabled = if (fixed) |value| value.syntax.acceptsOperators() else true;
     const comments_enabled = if (fixed) |value| value.retention.comments else true;
+    // Only retaining builders and public event consumers opt into statement
+    // transactions. Ordinary parsing keeps its existing dispatch/state layout.
+    const Sink = @typeInfo(EventsPtr).pointer.child;
+    const ScopeScratch = scratch_impl.For(event_types.Context(Sink));
+    const statement_recovery = if (@hasDecl(Sink, "recover_statements")) Sink.recover_statements else true;
+    const begin_notifications = if (@hasDecl(Sink, "wants_begin_statement")) Sink.wants_begin_statement else true;
+    const transactional = statement_recovery or begin_notifications;
     return struct {
         const Self = @This();
 
         // Preserve commit's original ordinal before optional comment dispatch.
         // This order affects generated hot-path code; benchmark before changing it.
-        const Action = enum { begin, begin_subgraph, end_subgraph, subgraph_statement, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit, comment };
+        const Action = enum { begin, begin_subgraph, end_subgraph, subgraph_statement, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit, comment, begin_statement, skipped };
         const Work = struct {
             token: lex.Token = undefined,
             action: Action = undefined,
@@ -175,26 +185,36 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             completed_statements: if (metered) usize else void = if (metered) 0 else {},
             completed_pairs: if (metered) usize else void = if (metered) 0 else {},
         };
-        const Audit = struct {
-            grammar: usize = 0,
-            dispatch: usize = 0,
+        // Statement starts are strictly below the bounded source length, so the
+        // maximum u32 value is available as an absent occurrence (not a span).
+        const no_statement = std.math.maxInt(u32);
+        const Control = struct {
+            grammar: if (audited) usize else void = if (audited) 0 else {},
+            dispatch: if (audited) usize else void = if (audited) 0 else {},
+            active_statement: if (transactional) u32 else void = if (transactional) no_statement else {},
+            recovery_start: if (transactional) u32 else void = if (transactional) no_statement else {},
+            rejected: if (transactional) bool else void = if (transactional) false else {},
         };
 
         processor: Processor = if (Processor == void) {} else undefined,
         tokens: ScannerOf(metered, audited, if (fixed) |value| value.ambiguous_numeral != .off else null),
         work: if (metered or cancellable) Work else void = if (metered or cancellable) .{} else {},
         cancellation: if (cancellable) ?execution.Cancellation else void = if (cancellable) null else {},
-        audit: if (audited) Audit else void = if (audited) .{} else {},
+        // Reuse the optional control slot: even adding top-level void fields
+        // reorders Zig's auto-layout and changes disabled-profile codegen.
+        control: if (audited or transactional) Control else void = if (audited or transactional) .{} else {},
         events: EventsPtr,
         diagnostics: diagnostic.Sink,
         settings: if (fixed == null) policy.ParseSettings else void = if (fixed == null) .{} else {},
         /// Borrowed temporary storage; the machine never owns an allocator.
-        scratch: ?*scratch_impl.Stack = null,
+        scratch: ?*ScopeScratch.Stack = null,
         statements: usize = 0,
-        attributes: usize = 0,
+        // Both totals are bounded by distinct consumed bytes in a u32 source.
+        // Pack them in the former usize counter slot, with its alignment.
+        counts: extern struct { attributes: u32 = 0, references: u32 = 0 } align(@alignOf(usize)) = .{},
         comments_count: if (comments_enabled) u32 else void = if (comments_enabled) 0 else {},
         attribute_key: location.Span = undefined,
-        attribute_target: syntax_event.AttributeTarget = .graph,
+        attribute_target: event_types.AttributeTarget = .graph,
         open_bracket_span: ?location.Span = null,
         pending: enum { node, edge, edge_chain, attributes } = .node,
         delivery: DiagnosticDelivery = .complete,
@@ -213,9 +233,9 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// True once `beginDocument` has been issued; from then on every
         /// exit path must emit a terminal event.
         begun: bool = false,
-        /// True once the sink received its terminal abort. Recovery keeps
-        /// the grammar running for diagnostics after that point, with no
-        /// further events. An opt-in retaining sink may publish a safe prefix.
+        /// True once the sink received its terminal abort. Ordinary recovery
+        /// then runs for diagnostics only. Transactional sinks defer document
+        /// abort and continue after statement aborts instead.
         aborted: bool = false,
         /// Count discovered syntax rejections, independently of sink delivery.
         /// Each recovery consumes input; a terminal EOF finding ends the pass.
@@ -230,7 +250,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         terminal: ?Result = null,
 
         // Header state, accumulated until `{` completes the header.
-        kind: syntax_event.GraphKind = .undigraph,
+        kind: event_types.GraphKind = .undigraph,
         strict: bool = false,
         keyword_span: location.Span = undefined,
         name_span: ?location.Span = null,
@@ -242,18 +262,18 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// First identifier of the statement being parsed.
         left: location.Span = undefined,
         /// Operator of the edge statement being parsed.
-        operator: syntax_event.EdgeOperator = undefined,
+        operator: event_types.EdgeOperator = undefined,
         operator_span: location.Span = undefined,
         /// Right endpoint of the edge statement being parsed.
         right: location.Span = undefined,
 
-        link_operator: syntax_event.EdgeOperator = undefined,
+        link_operator: event_types.EdgeOperator = undefined,
         link_operator_span: location.Span = undefined,
 
         left_scope: ?u32 = null,
         right_scope: ?u32 = null,
-        subgraph_role: syntax_event.ScopeRole = .left,
-        completed_scope: u32 = 0,
+        subgraph_role: event_types.ScopeRole = .left,
+        scope_count: u32 = 0,
         left_port: ?u32 = null,
         right_port: ?u32 = null,
         link_port: ?u32 = null,
@@ -305,6 +325,8 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             after_attributes,
             /// Skipping to the next statement boundary after a syntax error.
             recovering,
+            starting_statement,
+            recovery_boundary,
         };
 
         fn limit(self: *const Self, comptime name: []const u8) @FieldType(@FieldType(policy.ParseSettings, "limits"), name) {
@@ -388,8 +410,8 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return .{ .tag = tag, .span = d.span };
         }
 
-        fn readOperator(self: *Self, token: lex.Token) ?syntax_event.EdgeOperator {
-            const operator: syntax_event.EdgeOperator = if (token.tag == .edge_undirected) .undirected else .directed;
+        fn readOperator(self: *Self, token: lex.Token) ?event_types.EdgeOperator {
+            const operator: event_types.EdgeOperator = if (token.tag == .edge_undirected) .undirected else .directed;
             if (operators_enabled and token.span.len != 2 * enc.width) {
                 const bare = token.span.len == enc.width;
                 if (self.acceptDeviation(if (bare) self.syntax().bare_dash.acceptance else self.syntax().long_operator, .{
@@ -558,11 +580,47 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return self.finish(.cancelled).*;
         }
 
+        fn continuesAfterError(self: *const Self) bool {
+            if (!statement_recovery) return false;
+            return if (@hasDecl(Sink, "continuesAfterError")) self.events.continuesAfterError() else true;
+        }
+
+        fn tracksStatements(self: *const Self) bool {
+            return begin_notifications or self.continuesAfterError();
+        }
+
+        fn currentScope(self: *const Self) event_types.ScopeId {
+            const stack = self.scratch orelse return .root;
+            return if (stack.len == 0) .root else stack.frames[stack.len - 1].id;
+        }
+
+        fn owner(self: *const Self) event_types.Owner {
+            return .{ .statement = @enumFromInt(self.left.start), .scope = self.currentScope() };
+        }
+
+        inline fn publish(self: *Self, comptime tag: event_types.Kind, payload: @FieldType(event_types.Event, @tagName(tag))) Done {
+            const action = self.events.onEvent(@unionInit(event_types.Event, @tagName(tag), payload)) catch |err| return self.sinkFailure(err);
+            if (action == .stop) {
+                self.abortEvents(.sink_stopped);
+                return self.finish(.sink_stopped);
+            }
+            return null;
+        }
+
         /// The sink's one terminal abort, if it has begun and not yet
         /// received one.
-        fn abortEvents(self: *Self, reason: syntax_event.AbortReason) void {
+        fn abortEvents(self: *Self, reason: event_types.AbortReason) void {
             const started = self.begun or (comments_enabled and self.comments_count != 0);
-            if (started and !self.aborted) self.events.abortDocument(reason);
+            if (transactional and started and !self.aborted) {
+                if (self.control.active_statement != no_statement) {
+                    const start = self.control.active_statement;
+                    // A terminal abort does not certify a complete source range.
+                    // Normal skipped-range events carry exact synchronization.
+                    self.events.onAbort(.{ .statement = .{ .owner = .{ .statement = @enumFromInt(start), .scope = self.currentScope() }, .span = .{ .start = start, .len = 0 }, .reason = reason } });
+                    self.control.active_statement = no_statement;
+                }
+            }
+            if (started and !self.aborted) self.events.onAbort(.{ .document = reason });
             self.aborted = self.aborted or started;
         }
 
@@ -579,7 +637,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
 
         fn transition(self: *Self, token: lex.Token) Done {
             if (comments_enabled and token.comment() != null) return self.schedule(.comment, token);
-            if (audited) self.audit.grammar += 1;
+            if (audited) self.control.grammar += 1;
             const markup = if (fixed) |value| value.markup else self.settings.markup;
             if (markup == .none and token.flags.has_html and self.state != .recovering) {
                 // Scanning already consumed the entire expression. Recovery
@@ -819,6 +877,8 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         else => return self.unexpected(.{ .end_of_input = true }, .document_epilogue, token),
                     },
                     .recovering => return self.recover(token),
+                    .starting_statement => return self.startStatementBody(token),
+                    .recovery_boundary => return self.resumeRecovery(token),
                 }
                 return null;
             }
@@ -828,6 +888,20 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// `}` ends the skip; a skipped `{` is matched by counting so the
         /// scope stack stays honest. Reaching end of input ends the parse.
         fn recover(self: *Self, token: lex.Token) Done {
+            if (!recovery_enabled) unreachable;
+            if (transactional and !self.aborted and self.continuesAfterError() and
+                ((token.tag == .semicolon and self.skip_depth == 0) or
+                    (token.tag == .right_brace and self.skip_depth == 0) or token.tag == .eof))
+            {
+                self.state = .recovery_boundary;
+                if (self.dispatchThenReplay(.skipped, token)) |result| return result;
+                if (!metered and !cancellable) return self.resumeRecovery(token);
+                return null;
+            }
+            return self.resumeRecovery(token);
+        }
+
+        fn resumeRecovery(self: *Self, token: lex.Token) Done {
             if (!recovery_enabled) unreachable;
             switch (token.tag) {
                 .semicolon => if (self.skip_depth == 0) {
@@ -839,19 +913,27 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         self.skip_depth -= 1;
                     } else if (self.nestingDepth() == 0) {
                         self.state = .epilogue;
+                        if (transactional and !self.aborted) self.retainThrough(@intCast(token.span.endOffset()));
                     } else {
+                        if (transactional and !self.aborted) {
+                            self.state = .after_subgraph;
+                            return self.schedule(.end_subgraph, token);
+                        }
                         const stack = self.scratch.?;
+                        self.noteClose(token);
                         self.leaveScope(stack.pop());
-                        self.state = .statement;
                     }
                 },
-                .eof => return self.finish(self.recoveredOutcome()),
+                .eof => {
+                    self.abortEvents(if (self.syntaxErrors() != 0) .invalid_syntax else .unsupported_feature);
+                    return self.finish(self.recoveredOutcome());
+                },
                 else => {},
             }
             return null;
         }
 
-        fn acceptKind(self: *Self, kind: syntax_event.GraphKind, token: lex.Token) void {
+        fn acceptKind(self: *Self, kind: event_types.GraphKind, token: lex.Token) void {
             self.kind = kind;
             self.keyword_span = token.span;
             self.state = .header_name;
@@ -888,6 +970,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             self.right_scope = null;
             self.pending = .node;
             self.state = .after_identifier;
+            if (transactional and !self.aborted and self.tracksStatements()) self.control.active_statement = token.span.start;
             return null;
         }
 
@@ -906,6 +989,16 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 self.state = .statement;
                 return null;
             }
+            if (begin_notifications and !self.aborted) switch (token.tag) {
+                .identifier, .left_brace, .keyword_subgraph, .keyword_graph, .keyword_node, .keyword_edge => {
+                    if (self.beginStatement(token)) |result| return result;
+                    self.state = .starting_statement;
+                    if (self.dispatchThenReplay(.begin_statement, token)) |result| return result;
+                    if (!metered and !cancellable) return self.startStatementBody(token);
+                    return null;
+                },
+                else => {},
+            };
             switch (token.tag) {
                 .identifier => return self.beginStatement(token),
                 .right_brace => {
@@ -946,15 +1039,35 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return null;
         }
 
+        fn startStatementBody(self: *Self, token: lex.Token) Done {
+            if (!transactional) unreachable;
+            self.state = .after_identifier;
+            switch (token.tag) {
+                .identifier => {},
+                .left_brace, .keyword_subgraph => return self.startSubgraph(token, .left),
+                .keyword_graph, .keyword_node, .keyword_edge => {
+                    self.pending = .attributes;
+                    self.attribute_target = switch (token.tag) {
+                        .keyword_graph => .graph,
+                        .keyword_node => .node,
+                        else => .edge,
+                    };
+                    self.state = .attribute_open;
+                },
+                else => unreachable,
+            }
+            return null;
+        }
+
         fn nestingDepth(self: *const Self) u32 {
             return if (self.scratch) |scratch| scratch.len else 0;
         }
 
-        fn firstEdge(self: *const Self) syntax_event.EdgeStatement {
+        fn firstEdge(self: *const Self) event_types.Edge {
             return .{ .left = self.left, .left_port = self.left_port, .left_scope = self.left_scope, .operator = self.operator, .operator_span = self.operator_span, .right = self.right, .right_port = self.right_port, .right_scope = self.right_scope };
         }
 
-        fn startSubgraph(self: *Self, token: lex.Token, role: syntax_event.ScopeRole) Done {
+        fn startSubgraph(self: *Self, token: lex.Token, role: event_types.ScopeRole) Done {
             self.subgraph_role = role;
             self.subgraph_start = token.span;
             self.subgraph_name = null;
@@ -972,6 +1085,9 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             const scratch = self.scratch orelse return self.scratchFailure(error.NestingStorageExhausted, token.span);
             scratch.push(.{
                 .parent_open = self.open_brace_span.?,
+                // Until begin_scope is acknowledged, the active output scope
+                // is still the parent (including a pause/cancel before dispatch).
+                .id = self.currentScope(),
                 .start = self.subgraph_start,
                 .role = self.subgraph_role,
                 .edge = if (self.subgraph_role == .left) null else if (self.subgraph_role == .link) self.firstEdge() else .{
@@ -993,7 +1109,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 @call(.auto, schedule, .{ self, .begin_subgraph, token });
         }
 
-        fn scratchFailure(self: *Self, err: scratch_impl.Stack.Error, span: location.Span) *const Result {
+        fn scratchFailure(self: *Self, err: ScopeScratch.Stack.Error, span: location.Span) *const Result {
             // The resource failure is already terminal; preserve its cause.
             const stop = self.deliver(.{
                 .code = if (err == error.OutOfMemory) .resource_memory_exhausted else .resource_capacity_exhausted,
@@ -1072,12 +1188,12 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn countAttribute(self: *Self, at: location.Span) Done {
-            if (self.attributes == self.limit("max_attributes")) return self.fail(.{
+            if (self.counts.attributes == self.limit("max_attributes")) return self.fail(.{
                 .code = .resource_capacity_exhausted,
                 .span = at,
                 .details = .{ .capacity = .{ .resource = .attributes, .limit = self.limit("max_attributes") } },
             });
-            self.attributes += 1;
+            self.counts.attributes += 1;
             return null;
         }
 
@@ -1101,13 +1217,14 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// saved spans and the cached token; there is no event queue or copying
         /// of a source-sized collection. Callback execution is a callout.
         fn dispatch(self: *Self, action: Action, token: lex.Token) Done {
-            if (audited) self.audit.dispatch += 1;
+            if (audited) self.control.dispatch += 1;
             if (self.aborted) {
                 // Recovery: the sink is terminal, so no event is attempted;
                 // only the grammar's own scope and port bookkeeping continues.
                 switch (action) {
                     .end_subgraph => {
                         const stack = self.scratch.?;
+                        self.noteClose(token);
                         self.leaveScope(stack.pop());
                     },
                     .ported_reference => switch (self.port_target) {
@@ -1121,6 +1238,17 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 return null;
             }
             switch (action) {
+                .begin_statement => {
+                    if (!begin_notifications) unreachable;
+                    if (self.publish(.begin_statement, .{ .owner = self.owner(), .start = token.span })) |result| return result;
+                },
+                .skipped => {
+                    if (!transactional) unreachable;
+                    const start = self.control.recovery_start;
+                    const end = if (token.tag == .semicolon) token.span.endOffset() else token.span.start;
+                    if (self.publish(.skipped, .{ .span = .{ .start = start, .len = @intCast(end - start) }, .scope = self.currentScope() })) |result| return result;
+                    self.control.recovery_start = no_statement;
+                },
                 .comment => {
                     if (comptime !comments_enabled) unreachable;
                     if (self.comments_count >= self.limit("max_comments")) return self.fail(.{
@@ -1129,105 +1257,141 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         .details = .{ .capacity = .{ .resource = .comments, .limit = self.limit("max_comments") } },
                     });
                     self.comments_count += 1;
-                    // Private sinks without this optional method only use
-                    // scanners that never emit comments.
-                    if (comptime @hasDecl(@typeInfo(EventsPtr).pointer.child, "comment")) {
-                        self.events.comment(token.comment().?) catch |err| return self.sinkFailure(err);
-                    } else unreachable;
+                    if (self.publish(.comment, token.comment().?)) |result| return result;
                 },
                 .begin => {
                     self.begun = true;
-                    self.events.beginDocument(.{
+                    if (self.publish(.begin_document, .{
                         .retain_comments = self.retainComments(),
                         .kind = self.kind,
                         .strict = self.strict,
                         .keyword_span = self.keyword_span,
                         .name_span = self.name_span,
-                    }) catch |err| return self.sinkFailure(err);
+                        .source_info = enc.sourceInfo(self.tokens.source),
+                    })) |result| return result;
                 },
                 .begin_subgraph => {
                     const stack = self.scratch.?;
                     const frame = &stack.frames[stack.len - 1];
-                    frame.entry = self.events.beginSubgraph(.{
+                    // Every scope consumes a distinct opening byte, and the
+                    // source length was bounded to u32 before scanning.
+                    self.scope_count += 1;
+                    const id: event_types.ScopeId = @enumFromInt(self.scope_count);
+                    if (self.publish(.begin_scope, .{
+                        .id = id,
+                        .parent = if (stack.len == 1) .root else stack.frames[stack.len - 2].id,
+                        .statement = @enumFromInt(if (frame.edge) |edge| edge.left.start else frame.start.start),
                         .start = frame.start,
                         .name = self.subgraph_name,
                         .role = frame.role,
-                        .edge = frame.edge,
+                        .edge = if (frame.edge) |prefix| value: {
+                            var edge = prefix;
+                            if (frame.role == .right) {
+                                edge.right = frame.start;
+                                edge.right_scope = @intFromEnum(id);
+                                edge.right_port = null;
+                            }
+                            break :value edge;
+                        } else null,
                         .link_operator = frame.link_operator,
                         .link_operator_span = frame.link_operator_span,
-                    }) catch |err| return self.sinkFailure(err);
+                    })) |result| return result;
+                    frame.id = id;
+                    if (comptime @hasDecl(Sink, "ScopeContext")) frame.context = self.events.suspendScope();
+                    if (transactional) self.control.active_statement = no_statement;
                 },
                 .end_subgraph => {
                     const stack = self.scratch.?;
                     const frame = stack.frames[stack.len - 1];
-                    self.events.endSubgraph(.{ .close = token.span, .entry = frame.entry }) catch |err| return self.sinkFailure(err);
+                    if (self.publish(.end_scope, .{ .id = frame.id, .close = token.span })) |result| return result;
+                    if (comptime @hasDecl(Sink, "ScopeContext")) self.events.restoreScope(frame.context);
                     _ = stack.pop();
-                    if (self.suspect_close == null) {
-                        if (leadingIndentEncoded(actual, self.tokens.source, token.span)) |close_indent| {
-                            if (lineIndentEncoded(actual, self.tokens.source, self.open_brace_span.?)) |open_indent| {
-                                if (close_indent < open_indent) self.suspect_close = token.span;
-                            }
-                        }
-                    }
-                    self.completed_scope = frame.entry.id;
+                    self.noteClose(token);
                     self.leaveScope(frame);
                 },
-                .subgraph_statement => self.events.subgraphStatement(self.completed_scope) catch |err| return self.sinkFailure(err),
-                .node => self.events.nodeStatement(.{ .identifier = self.left, .port = self.left_port }) catch |err| return self.sinkFailure(err),
-                .edge => self.events.edgeStatement(.{
-                    .left = self.left,
-                    .left_port = self.left_port,
-                    .left_scope = self.left_scope,
-                    .right_scope = self.right_scope,
-                    .operator = self.operator,
-                    .operator_span = self.operator_span,
-                    .right = self.right,
-                    .right_port = self.right_port,
-                }) catch |err| return self.sinkFailure(err),
+                .subgraph_statement => {
+                    if (self.publish(.commit_subgraph, .{ .owner = self.owner(), .value = @enumFromInt(self.left_scope.?) })) |result| return result;
+                },
+                .node => {
+                    if (self.publish(.commit_node, .{ .owner = self.owner(), .value = .{ .identifier = self.left, .port = self.left_port } })) |result| return result;
+                },
+                .edge => {
+                    if (self.publish(.commit_edge, .{ .owner = self.owner(), .value = .{
+                        .left = self.left,
+                        .left_port = self.left_port,
+                        .left_scope = self.left_scope,
+                        .right_scope = self.right_scope,
+                        .operator = self.operator,
+                        .operator_span = self.operator_span,
+                        .right = self.right,
+                        .right_port = self.right_port,
+                    } })) |result| return result;
+                },
                 .ported_reference => {
                     const identifier_span = switch (self.port_target) {
                         .left => self.left,
                         .right => self.right,
                         .link => self.link_right,
                     };
-                    const index = self.events.portedReference(.{
+                    const index = self.counts.references;
+                    if (self.publish(.ported_reference, .{ .owner = self.owner(), .id = @enumFromInt(index), .reference = .{
                         .identifier = identifier_span,
                         .first = self.port_first,
                         .second = self.port_second,
-                    }) catch |err| return self.sinkFailure(err);
+                    } })) |result| return result;
+                    self.counts.references += 1;
                     switch (self.port_target) {
                         .left => self.left_port = index,
                         .right => self.right_port = index,
                         .link => self.link_port = index,
                     }
                 },
-                .edge_link => self.events.edgeLink(.{
-                    .operator = self.link_operator,
-                    .operator_span = self.link_operator_span,
-                    .right = self.link_right,
-                    .right_port = self.link_port,
-                }) catch |err| return self.sinkFailure(err),
-                .edge_chain => self.events.edgeChainStatement(.{
-                    .left = self.left,
-                    .left_port = self.left_port,
-                    .left_scope = self.left_scope,
-                    .right_scope = self.right_scope,
-                    .operator = self.operator,
-                    .operator_span = self.operator_span,
-                    .right = self.right,
-                    .right_port = self.right_port,
-                }) catch |err| return self.sinkFailure(err),
-                .attribute_statement => self.events.attributeStatement(.{
-                    .target = self.attribute_target,
-                    .keyword_span = self.left,
-                }) catch |err| return self.sinkFailure(err),
-                .assignment => self.events.assignment(.{ .key = self.left, .value = token.span }) catch |err| return self.sinkFailure(err),
-                .attribute => self.events.attribute(.{ .key = self.attribute_key, .value = token.span }) catch |err| return self.sinkFailure(err),
+                .edge_link => {
+                    if (self.publish(.edge_link, .{ .owner = self.owner(), .link = .{
+                        .operator = self.link_operator,
+                        .operator_span = self.link_operator_span,
+                        .right = self.link_right,
+                        .right_port = self.link_port,
+                    } })) |result| return result;
+                },
+                .edge_chain => {
+                    if (self.publish(.commit_edge_chain, .{ .owner = self.owner(), .value = .{
+                        .left = self.left,
+                        .left_port = self.left_port,
+                        .left_scope = self.left_scope,
+                        .right_scope = self.right_scope,
+                        .operator = self.operator,
+                        .operator_span = self.operator_span,
+                        .right = self.right,
+                        .right_port = self.right_port,
+                    } })) |result| return result;
+                },
+                .attribute_statement => {
+                    if (self.publish(.commit_attribute_statement, .{ .owner = self.owner(), .value = .{
+                        .target = self.attribute_target,
+                        .keyword_span = self.left,
+                    } })) |result| return result;
+                },
+                .assignment => {
+                    if (self.publish(.commit_assignment, .{ .owner = self.owner(), .value = .{ .key = self.left, .value = token.span } })) |result| return result;
+                },
+                .attribute => {
+                    if (self.publish(.attribute, .{ .owner = self.owner(), .pair = .{ .key = self.attribute_key, .value = token.span } })) |result| return result;
+                },
                 .commit => {
-                    self.events.endDocument() catch |err| return self.sinkFailure(err);
+                    if (transactional and self.control.rejected) {
+                        self.retainThrough(@intCast(self.tokens.source.len));
+                        self.abortEvents(if (self.syntaxErrors() != 0) .invalid_syntax else .unsupported_feature);
+                        return self.finishComplete(self.recoveredOutcome());
+                    }
+                    if (self.publish(.end_document, {})) |result| return result;
                     return self.finish(.success);
                 },
             }
+            if (transactional) switch (action) {
+                .node, .edge, .edge_chain, .assignment, .attribute_statement, .subgraph_statement => self.control.active_statement = no_statement,
+                else => {},
+            };
             if (comptime @hasDecl(@typeInfo(EventsPtr).pointer.child, "retainThrough")) {
                 // Statement callbacks use lookahead; it must not become part of
                 // the represented prefix before its own grammar action runs.
@@ -1251,20 +1415,34 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     self.work.completed_pairs += 1;
                 },
                 .attribute => self.work.completed_pairs += 1,
-                .begin, .begin_subgraph, .end_subgraph, .commit, .edge_link, .ported_reference, .comment => {},
+                .begin, .begin_subgraph, .end_subgraph, .commit, .edge_link, .ported_reference, .comment, .begin_statement, .skipped => {},
             };
             return null;
         }
 
-        /// Restore the grammar state suspended when `frame`'s scope opened.
-        /// Shared by the normal exit and the recovering (event-less) exit;
-        /// `frame.entry` is only meaningful before the abort, so the scope
-        /// id lives on `completed_scope`, set by the caller.
-        fn leaveScope(self: *Self, frame: scratch_impl.Frame) void {
+        fn retainThrough(self: *Self, end: u32) void {
+            if (@hasDecl(Sink, "retainThrough")) self.events.retainThrough(end);
+        }
+
+        /// Closing-brace hints must not depend on the output consumer.
+        inline fn noteClose(self: *Self, token: lex.Token) void {
+            if (self.suspect_close == null) {
+                if (leadingIndentEncoded(actual, self.tokens.source, token.span)) |close_indent| {
+                    if (lineIndentEncoded(actual, self.tokens.source, self.open_brace_span.?)) |open_indent| {
+                        if (close_indent < open_indent) self.suspect_close = token.span;
+                    }
+                }
+            }
+        }
+
+        /// Restore the suspended parent statement, even during diagnostics-only
+        /// recovery. Builder-owned entries are ignored after document abort.
+        fn leaveScope(self: *Self, frame: ScopeScratch.Frame) void {
             self.open_brace_span = frame.parent_open;
+            if (transactional and !self.aborted and self.tracksStatements()) self.control.active_statement = if (frame.edge) |edge| edge.left.start else frame.start.start;
             if (frame.role == .left) {
                 self.left = frame.start;
-                self.left_scope = if (self.aborted) 0 else frame.entry.id;
+                self.left_scope = if (self.aborted) 0 else @intFromEnum(frame.id);
                 self.left_port = null;
                 self.pending = .node;
                 self.state = .after_subgraph;
@@ -1281,7 +1459,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 if (frame.role == .right) {
                     self.right = frame.start;
                     self.right_port = null;
-                    self.right_scope = if (self.aborted) 0 else frame.entry.id;
+                    self.right_scope = if (self.aborted) 0 else @intFromEnum(frame.id);
                 }
                 self.pending = if (frame.role == .right) .edge else .edge_chain;
                 self.state = .edge_terminate;
@@ -1339,29 +1517,41 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 self.warnings += 1;
             }
             const stop = self.deliver(d);
-            const reason: syntax_event.AbortReason = switch (failure.code) {
+            const reason: event_types.AbortReason = switch (failure.code) {
                 .profile_unsupported_feature => .unsupported_feature,
                 .resource_capacity_exhausted => .resource_exhausted,
                 else => .invalid_syntax,
             };
             const at_eof = failure.details == .unexpected and failure.details.unexpected.found == .end_of_input;
-            return self.failClassified(reason, stop, if (recovery_enabled) self.canRecover(is_unsupported, at_eof) else false);
+            return self.failClassified(reason, stop, if (recovery_enabled) self.canRecover(is_unsupported, at_eof) else false, failure.span);
         }
 
         // Recovery needs the failure class/boundary, not a diagnostic payload.
         // Silent unsupported input enters here without constructing one.
-        fn failClassified(self: *Self, reason: syntax_event.AbortReason, stop: ?diagnostic.StopReason, recoverable: bool) Done {
+        fn failClassified(self: *Self, reason: event_types.AbortReason, stop: ?diagnostic.StopReason, recoverable: bool, span: location.Span) Done {
             if (recovery_enabled and reason == .invalid_syntax) self.syntax_errors += 1;
             if (recovery_enabled and (reason == .invalid_syntax or reason == .unsupported_feature) and recoverable) {
                 if (stop) |requested| return self.stopDiagnostics(requested);
-                self.abortEvents(reason);
+                const already_skipping = self.state == .recovering;
+                if (transactional and !self.aborted and self.continuesAfterError()) {
+                    self.control.rejected = true;
+                    self.control.recovery_start = if (self.control.recovery_start != no_statement) self.control.recovery_start else if (self.control.active_statement != no_statement) self.control.active_statement else span.start;
+                    // Abort is infallible control-flow cleanup, not a charged
+                    // normal callback. Completed nested scope records survive.
+                    if (self.control.active_statement != no_statement) self.events.onAbort(.{ .statement = .{
+                        .owner = .{ .statement = @enumFromInt(self.control.recovery_start), .scope = self.currentScope() },
+                        .span = .{ .start = self.control.recovery_start, .len = @intCast(@max(span.endOffset(), self.control.recovery_start) - self.control.recovery_start) },
+                        .reason = reason,
+                    } });
+                    self.control.active_statement = no_statement;
+                } else self.abortEvents(reason);
                 // The diagnostic above retains the failed statement's context.
                 // Recovery abandons its attribute list; later findings must use
                 // the current scope or a newly opened list, not this stale '['.
                 self.open_bracket_span = null;
                 if (self.tokens.terminal != .none) self.tokens.resumeAfterFailure();
                 self.state = .recovering;
-                self.skip_depth = 0;
+                if (!already_skipping) self.skip_depth = 0;
                 return null;
             }
             // The terminal cause stays visible; syntax_errors retains earlier
@@ -1372,7 +1562,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 .resource_exhausted => .resource_exhausted,
                 // `fail` only handles diagnostic-classified failures; event
                 // sink failures route through `sinkFailure` exclusively.
-                .sink_failure, .scratch_failure, .cancelled, .diagnostic_stopped, .processor_stopped => unreachable,
+                .sink_failure, .sink_stopped, .scratch_failure, .cancelled, .diagnostic_stopped, .processor_stopped => unreachable,
             };
             self.abortEvents(reason);
             return self.finishReported(outcome, stop);
@@ -1617,7 +1807,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
 
         fn unsupportedAt(self: *Self, span: location.Span, feature: diagnostic.Feature) Done {
             if (self.unsupported() == .silent)
-                return self.failClassified(.unsupported_feature, null, if (recovery_enabled) self.canRecover(true, false) else false);
+                return self.failClassified(.unsupported_feature, null, if (recovery_enabled) self.canRecover(true, false) else false, span);
             return self.fail(.{
                 .code = .profile_unsupported_feature,
                 .span = span,
@@ -1796,7 +1986,7 @@ fn lineIndentEncoded(comptime actual: @import("parser_support").encoding.Actual,
 /// Shared unit-test driver for event-sink assertions, using the current machine
 /// and resolved policy schema. It is not present in consumer builds.
 pub const testing = if (@import("builtin").is_test) struct {
-    pub fn run(source: []const u8, events: anytype, diagnostics: diagnostic.Sink, settings: policy.ParseSettings, scratch: ?*scratch_impl.Stack) Result {
+    pub fn run(source: []const u8, events: anytype, diagnostics: diagnostic.Sink, settings: policy.ParseSettings, scratch: ?*scratch_impl.For(event_types.Context(@typeInfo(@TypeOf(events)).pointer.child)).Stack) Result {
         var machine: Machine(@TypeOf(events), false, false, false, scalar_lex.Scanner, null) = .{
             .tokens = scalar_lex.Scanner(false, false, null).init(source),
             .events = events,
@@ -1812,7 +2002,7 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
-const Recording = syntax_event.RecordingSink(16);
+const Recording = @import("event_test.zig").RecordingSink(16);
 const Bag = diagnostic.FixedBag(4);
 
 test "chain dispatch failures preserve budget accounting and terminal cleanup" {
@@ -1861,7 +2051,7 @@ test "cancellation during successful and failed events preserves terminal preced
         try expectEqual(at + 1, events.attempts);
         try expectEqual(@as(usize, if (!fails and at == 8) 0 else 1), events.aborts);
         try expectEqual(@as(usize, 0), diags.attempts);
-        try expectEqual(progress.work_used, machine.tokens.examinations + machine.audit.grammar + machine.audit.dispatch);
+        try expectEqual(progress.work_used, machine.tokens.examinations + machine.control.grammar + machine.control.dispatch);
         try expect(request.polls <= progress.work_used + 1);
         const polls = request.polls;
         _ = machine.advance(0);
@@ -1972,7 +2162,7 @@ test "diagnostic stop aborts output once and does not resume recovery or dispatc
 
 // Independent probes count attempted callouts, not just accepted records.
 const BudgetSink = struct {
-    records: [128]syntax_event.Event = undefined,
+    records: [128]@import("event_test.zig").Record = undefined,
     len: usize = 0,
     attempts: usize = 0,
     aborts: usize = 0,
@@ -1982,69 +2172,32 @@ const BudgetSink = struct {
     cancel_flag: ?*bool = null,
     cancel_at: ?usize = null,
 
-    fn record(self: *@This(), event: syntax_event.Event) !void {
+    fn record(self: *@This(), event: @import("event_test.zig").Record) !void {
         const attempt = self.attempts;
         self.attempts += 1;
         if (self.cancel_at == attempt) self.cancel_flag.?.* = true;
         if (self.fail_at == attempt) return error.Refused;
         self.records[self.len] = event;
         self.len += 1;
-        switch (event) {
-            .node_statement, .edge_statement, .edge_chain_statement, .attribute_statement => self.statements += 1,
-            .assignment => {
+        switch (event.event) {
+            .commit_assignment => {
                 self.statements += 1;
                 self.pairs += 1;
             },
+            .commit_node, .commit_edge, .commit_edge_chain, .commit_subgraph, .commit_attribute_statement => self.statements += 1,
             .attribute => self.pairs += 1,
             else => {},
         }
     }
-    pub fn beginDocument(self: *@This(), event: syntax_event.BeginDocument) !void {
-        try self.record(.{ .begin_document = event });
+    pub const wants_begin_statement = false;
+    pub const recover_statements = false;
+    pub fn onEvent(self: *@This(), value: event_types.Event) !event_types.Action {
+        try self.record(.{ .event = value });
+        return .proceed;
     }
-    pub fn nodeStatement(self: *@This(), event: syntax_event.NodeStatement) !void {
-        try self.record(.{ .node_statement = event });
-    }
-    pub fn edgeStatement(self: *@This(), event: syntax_event.EdgeStatement) !void {
-        try self.record(.{ .edge_statement = event });
-    }
-    pub fn beginSubgraph(self: *@This(), event: syntax_event.BeginSubgraph) !syntax_event.ScopeEntry {
-        try self.record(.{ .begin_subgraph = event });
-        return .{ .id = @intCast(self.len) };
-    }
-    pub fn subgraphStatement(self: *@This(), id: u32) !void {
-        try self.record(.{ .subgraph_statement = id });
-        self.statements += 1;
-    }
-    pub fn endSubgraph(self: *@This(), event: syntax_event.EndSubgraph) !void {
-        try self.record(.{ .end_subgraph = event });
-    }
-    pub fn portedReference(self: *@This(), event: syntax_event.PortedReference) !u32 {
-        try self.record(.{ .ported_reference = event });
-        // Recorded event indices are valid opaque handles for this test sink.
-        return @intCast(self.len - 1);
-    }
-    pub fn edgeLink(self: *@This(), event: syntax_event.EdgeLink) !void {
-        try self.record(.{ .edge_link = event });
-    }
-    pub fn edgeChainStatement(self: *@This(), event: syntax_event.EdgeStatement) !void {
-        try self.record(.{ .edge_chain_statement = event });
-    }
-    pub fn attributeStatement(self: *@This(), event: syntax_event.AttributeStatement) !void {
-        try self.record(.{ .attribute_statement = event });
-    }
-    pub fn assignment(self: *@This(), event: syntax_event.Attribute) !void {
-        try self.record(.{ .assignment = event });
-    }
-    pub fn attribute(self: *@This(), event: syntax_event.Attribute) !void {
-        try self.record(.{ .attribute = event });
-    }
-    pub fn endDocument(self: *@This()) !void {
-        try self.record(.end_document);
-    }
-    pub fn abortDocument(self: *@This(), reason: syntax_event.AbortReason) void {
+    pub fn onAbort(self: *@This(), value: event_types.Abort) void {
         self.aborts += 1;
-        self.records[self.len] = .{ .abort_document = reason };
+        self.records[self.len] = .{ .abort = value };
         self.len += 1;
     }
 };
@@ -2071,10 +2224,10 @@ const BudgetDiagnostics = struct {
 };
 
 fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool, comptime ?bool) type, source: []const u8, budgets: []const usize, settings: policy.ParseSettings, fail_at: ?usize, reject: bool) !usize {
-    var reference_frames: scratch_impl.Fixed(.{ .nesting = 32 }) = .{};
-    var frames: scratch_impl.Fixed(.{ .nesting = 32 }) = .{};
-    var reference_stack: scratch_impl.Stack = .{ .frames = reference_frames.storage().frames };
-    var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var reference_frames: scratch_impl.For(void).Fixed(.{ .nesting = 32 }) = .{};
+    var frames: scratch_impl.For(void).Fixed(.{ .nesting = 32 }) = .{};
+    var reference_stack: scratch_impl.For(void).Stack = .{ .frames = reference_frames.storage().frames };
+    var stack: scratch_impl.For(void).Stack = .{ .frames = frames.storage().frames };
     var reference: BudgetSink = .{ .fail_at = fail_at };
     var reference_diags: BudgetDiagnostics = .{ .reject = reject };
     const expected = testing.run(source, &reference, reference_diags.sink(), settings, &reference_stack);
@@ -2094,20 +2247,20 @@ fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool, co
         try expect(calls <= 16 * source.len + 128);
         const budget = budgets[calls % budgets.len];
         const reads = machine.tokens.examinations;
-        const grammar = machine.audit.grammar;
-        const dispatch = machine.audit.dispatch;
+        const grammar = machine.control.grammar;
+        const dispatch = machine.control.dispatch;
         const attempts = events.attempts;
         const aborts = events.aborts;
         const diagnostics = diags.failures();
         const before = machine.progress(0);
         const progress = machine.advance(budget);
         const examined = machine.tokens.examinations - reads;
-        try expectEqual(progress.work_used, examined + (machine.audit.grammar - grammar) + (machine.audit.dispatch - dispatch));
+        try expectEqual(progress.work_used, examined + (machine.control.grammar - grammar) + (machine.control.dispatch - dispatch));
         // After a recovered failure, dispatches keep the grammar's own
         // bookkeeping without attempting events, and several failures can
         // fall inside one budget; the end-state comparisons below still hold.
         const recovering = settings.on_error == .collect;
-        if (!recovering) try expectEqual(machine.audit.dispatch - dispatch, events.attempts - attempts);
+        if (!recovering) try expectEqual(machine.control.dispatch - dispatch, events.attempts - attempts);
         try expect(progress.work_used <= budget);
         try expect(examined <= progress.work_used);
         try expect(progress.source_frontier >= frontier);
@@ -2138,11 +2291,11 @@ fn checkBudgetPartition(comptime ScannerOf: fn (comptime bool, comptime bool, co
     try expectEqual(reference_diags.attempts, diags.attempts);
     const stopped = machine.progress(0);
     const stopped_reads = machine.tokens.examinations;
-    const stopped_audit = machine.audit;
+    const stopped_audit = machine.control;
     inline for (.{ 0, 1, std.math.maxInt(usize) }) |budget| {
         try std.testing.expectEqualDeep(stopped, machine.advance(budget));
         try expectEqual(stopped_reads, machine.tokens.examinations);
-        try std.testing.expectEqualDeep(stopped_audit, machine.audit);
+        try std.testing.expectEqualDeep(stopped_audit, machine.control);
         try expectEqual(reference.attempts, events.attempts);
         try expectEqual(reference.aborts, events.aborts);
         try expectEqual(reference_diags.attempts, diags.attempts);
@@ -2178,8 +2331,8 @@ test "lenient syntax partitions preserve events counters diagnostics and charged
         for (0..source.len + 1) |end|
             _ = try checkBudgetPartition(ScannerOf, source[0..end], &.{ 0, 1, 3 }, settings, null, false);
         var events: BudgetSink = .{};
-        var frames: scratch_impl.Fixed(.{ .nesting = 32 }) = .{};
-        var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+        var frames: scratch_impl.For(void).Fixed(.{ .nesting = 32 }) = .{};
+        var stack: scratch_impl.For(void).Stack = .{ .frames = frames.storage().frames };
         try expect(testing.run(source, &events, diagnostic.discard, settings, &stack).outcome == .success);
         for (0..events.attempts) |index|
             _ = try checkBudgetPartition(ScannerOf, source, &.{ 0, 1, 5 }, settings, index, false);
@@ -2300,7 +2453,7 @@ test "metered parser yields inside megabyte trivia and attribute values" {
 test "ordinary parser compiles out pending work and audit storage" {
     const Ordinary = Machine(*BudgetSink, false, false, false, scalar_lex.Scanner, null);
     try expect(@FieldType(Ordinary, "work") == void);
-    try expect(@FieldType(Ordinary, "audit") == void);
+    try expect(@FieldType(Ordinary, "control") == void);
     try expect(@FieldType(scalar_lex.Scanner(false, false, null), "source_frontier") == void);
     try expect(@sizeOf(Machine(*BudgetSink, false, false, false, scalar_lex.Scanner, null)) <= 512);
     try expect(@sizeOf(Machine(*BudgetSink, false, false, false, block_lex.Scanner, null)) <= 640);
@@ -2348,9 +2501,9 @@ test "empty graph commits with begin and end only, empty bag" {
 
         const recorded = events.recorded();
         try expectEqual(@as(usize, 2), recorded.len);
-        try expect(recorded[0] == .begin_document);
-        try expectEqual(syntax_event.GraphKind.undigraph, recorded[0].begin_document.kind);
-        try expect(recorded[1] == .end_document);
+        try expect((recorded[0] == .event and recorded[0].event == .begin_document));
+        try expectEqual(event_types.GraphKind.undigraph, recorded[0].event.begin_document.kind);
+        try expect((recorded[1] == .event and recorded[1].event == .end_document));
     }
 }
 
@@ -2362,10 +2515,10 @@ test "node statements are emitted in source order with borrowed spans" {
 
     const recorded = events.recorded();
     try expectEqual(@as(usize, 5), recorded.len);
-    try expectEqualStrings("a", recorded[1].node_statement.identifier.slice(source));
-    try expectEqualStrings("b", recorded[2].node_statement.identifier.slice(source));
-    try expectEqualStrings("long_name3", recorded[3].node_statement.identifier.slice(source));
-    try expect(recorded[4] == .end_document);
+    try expectEqualStrings("a", recorded[1].event.commit_node.value.identifier.slice(source));
+    try expectEqualStrings("b", recorded[2].event.commit_node.value.identifier.slice(source));
+    try expectEqualStrings("long_name3", recorded[3].event.commit_node.value.identifier.slice(source));
+    try expect((recorded[4] == .event and recorded[4].event == .end_document));
 }
 
 test "edge statements preserve both written operators (kind-agnostic)" {
@@ -2380,14 +2533,14 @@ test "edge statements preserve both written operators (kind-agnostic)" {
     const recorded = events.recorded();
     try expectEqual(@as(usize, 4), recorded.len);
 
-    const undirected = recorded[1].edge_statement;
-    try expectEqual(syntax_event.EdgeOperator.undirected, undirected.operator);
+    const undirected = recorded[1].event.commit_edge.value;
+    try expectEqual(event_types.EdgeOperator.undirected, undirected.operator);
     try expectEqualStrings("a", undirected.left.slice(source));
     try expectEqualStrings("--", undirected.operator_span.slice(source));
     try expectEqualStrings("b", undirected.right.slice(source));
 
-    const directed = recorded[2].edge_statement;
-    try expectEqual(syntax_event.EdgeOperator.directed, directed.operator);
+    const directed = recorded[2].event.commit_edge.value;
+    try expectEqual(event_types.EdgeOperator.directed, directed.operator);
     try expectEqualStrings("->", directed.operator_span.slice(source));
     try expectEqualStrings("d", directed.right.slice(source));
 }
@@ -2400,21 +2553,21 @@ test "mixed node and edge statements keep source order" {
 
     const recorded = events.recorded();
     try expectEqual(@as(usize, 5), recorded.len);
-    try expect(recorded[1] == .node_statement);
-    try expect(recorded[2] == .edge_statement);
-    try expect(recorded[3] == .node_statement);
-    try expect(recorded[4] == .end_document);
+    try expect((recorded[1] == .event and recorded[1].event == .commit_node));
+    try expect((recorded[2] == .event and recorded[2].event == .commit_edge));
+    try expect((recorded[3] == .event and recorded[3].event == .commit_node));
+    try expect((recorded[4] == .event and recorded[4].event == .end_document));
 }
 
-fn expectAborted(source: []const u8, expected_reason: syntax_event.AbortReason) !void {
+fn expectAborted(source: []const u8, expected_reason: event_types.AbortReason) !void {
     var events: Recording = .{};
     var bag: Bag = .{};
     _ = testing.run(source, &events, bag.sink(), .{}, null);
     const recorded = events.recorded();
     try expect(recorded.len >= 2);
-    try expect(recorded[0] == .begin_document);
-    try expect(recorded[recorded.len - 1] == .abort_document);
-    try expectEqual(expected_reason, recorded[recorded.len - 1].abort_document);
+    try expect((recorded[0] == .event and recorded[0].event == .begin_document));
+    try expect((recorded[recorded.len - 1] == .abort and recorded[recorded.len - 1].abort == .document));
+    try expectEqual(expected_reason, recorded[recorded.len - 1].abort.document);
 }
 
 const recovery_settings: policy.ParseSettings = .{ .on_error = .collect };
@@ -2441,19 +2594,19 @@ test "statement recovery reports every syntax error and aborts the sink once" {
     try expectEqualStrings("}", bag.items()[3].span.slice(source));
     // One begin, one abort, nothing after the abort.
     const recorded = events.recorded();
-    try expect(recorded[0] == .begin_document);
-    try expect(recorded[recorded.len - 1] == .abort_document);
+    try expect((recorded[0] == .event and recorded[0].event == .begin_document));
+    try expect((recorded[recorded.len - 1] == .abort and recorded[recorded.len - 1].abort == .document));
     var aborts: usize = 0;
     for (recorded) |event| {
-        if (event == .abort_document) aborts += 1;
+        if ((event == .abort and event.abort == .document)) aborts += 1;
     }
     try expectEqual(@as(usize, 1), aborts);
     try expectEqual(@as(usize, 0), bag.omitted);
 }
 
 test "statement recovery resumes after lexical errors and through scopes" {
-    var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
-    var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var frames: scratch_impl.For(void).Fixed(.{ .nesting = 4 }) = .{};
+    var stack: scratch_impl.For(void).Stack = .{ .frames = frames.storage().frames };
 
     const source = "digraph { a - b; c => d; subgraph s { e -> ; f } g -> ; h [k=v]; i -> { j -> ; k } }";
     var events: Recording = .{};
@@ -2484,8 +2637,8 @@ test "statement recovery stops where there is no boundary to return to" {
         .{ "digraph { a -> ; } b c", 2, Outcome.invalid_syntax },
         .{ "digraph { a -> ; b [label=<x>]; c -> ; }", 2, Outcome.invalid_syntax },
     }) |case| {
-        var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
-        var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+        var frames: scratch_impl.For(void).Fixed(.{ .nesting = 4 }) = .{};
+        var stack: scratch_impl.For(void).Stack = .{ .frames = frames.storage().frames };
 
         var events: Recording = .{};
         var bag: Bag = .{};
@@ -2519,8 +2672,8 @@ test "metered and cancellable drivers recover identically to the immediate one" 
     var request: CancellationProbe = .{};
     var events: BudgetSink = .{};
     var bag: Bag = .{};
-    var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
-    var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var frames: scratch_impl.For(void).Fixed(.{ .nesting = 4 }) = .{};
+    var stack: scratch_impl.For(void).Stack = .{ .frames = frames.storage().frames };
 
     var machine: Machine(*BudgetSink, true, true, true, scalar_lex.Scanner, null) = .{
         .tokens = scalar_lex.Scanner(true, true, null).init(source),
@@ -2622,8 +2775,8 @@ test "document headers: kind, strict, and name reach the begin event" {
     try expect(testing.run(source, &events, bag.sink(), .{}, null).outcome == .success);
     try expectEqual(@as(usize, 0), bag.items().len);
 
-    const begin = events.recorded()[0].begin_document;
-    try expectEqual(syntax_event.GraphKind.digraph, begin.kind);
+    const begin = events.recorded()[0].event.begin_document;
+    try expectEqual(event_types.GraphKind.digraph, begin.kind);
     try expect(begin.strict);
     try expectEqualStrings("digraph", begin.keyword_span.slice(source));
     try expectEqualStrings("Routes", begin.name_span.?.slice(source));
@@ -2633,8 +2786,8 @@ test "plain headers default to non-strict and unnamed" {
     var events: Recording = .{};
     var bag: Bag = .{};
     try expect(testing.run("graph { }", &events, bag.sink(), .{}, null).outcome == .success);
-    const begin = events.recorded()[0].begin_document;
-    try expectEqual(syntax_event.GraphKind.undigraph, begin.kind);
+    const begin = events.recorded()[0].event.begin_document;
+    try expectEqual(event_types.GraphKind.undigraph, begin.kind);
     try expect(!begin.strict);
     try expect(begin.name_span == null);
 }
@@ -2692,8 +2845,8 @@ test "reserved keywords where a name was needed name the keyword and context" {
 
 test "ports and attribute lists after a standalone subgraph get their own context" {
     inline for (.{ "graph { { a }:n -- b }", "graph { subgraph s { a } [x=1] }" }) |source| {
-        var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
-        var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+        var frames: scratch_impl.For(void).Fixed(.{ .nesting = 4 }) = .{};
+        var stack: scratch_impl.For(void).Stack = .{ .frames = frames.storage().frames };
         var events: Recording = .{};
         var bag: Bag = .{};
         try expect(testing.run(source, &events, bag.sink(), .{}, &stack).outcome == .invalid_syntax);
@@ -2727,8 +2880,8 @@ test "a misindented closing brace is the suspect when the input ends inside a sc
         \\}
         \\
     ;
-    var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
-    var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var frames: scratch_impl.For(void).Fixed(.{ .nesting = 4 }) = .{};
+    var stack: scratch_impl.For(void).Stack = .{ .frames = frames.storage().frames };
     var events: Recording = .{};
     var bag: Bag = .{};
     try expect(testing.run(source, &events, bag.sink(), .{}, &stack).outcome == .invalid_syntax);
@@ -2744,7 +2897,7 @@ test "a misindented closing brace is the suspect when the input ends inside a sc
 
     // Consistent indentation raises no suspicion, even when a brace is missing.
     const tidy = "digraph {\n  subgraph s {\n    a -> b;\n  }\n  b -> c;\n";
-    var tidy_stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var tidy_stack: scratch_impl.For(void).Stack = .{ .frames = frames.storage().frames };
     var tidy_events: Recording = .{};
     var tidy_bag: Bag = .{};
     try expect(testing.run(tidy, &tidy_events, tidy_bag.sink(), .{}, &tidy_stack).outcome == .invalid_syntax);
@@ -2813,8 +2966,8 @@ test "diagnostics carry the one known repair, with honest applicability" {
     try expect(bag.items()[0].fix == null);
     // A misindented closing brace makes the end-of-input insertion a guess.
     const misindented = "digraph {\n  subgraph s {\n    a -> b;\n  b -> c;\n}\n";
-    var frames: scratch_impl.Fixed(.{ .nesting = 4 }) = .{};
-    var stack: scratch_impl.Stack = .{ .frames = frames.storage().frames };
+    var frames: scratch_impl.For(void).Fixed(.{ .nesting = 4 }) = .{};
+    var stack: scratch_impl.For(void).Stack = .{ .frames = frames.storage().frames };
     var nested_events: Recording = .{};
     var nested_bag: Bag = .{};
     _ = testing.run(misindented, &nested_events, nested_bag.sink(), .{}, &stack);
@@ -2834,7 +2987,7 @@ test "ambiguous numerals warn and the parse still succeeds" {
     // Four node statements: 1, e3, 2.5, .5 — exactly Graphviz's split.
     var nodes: usize = 0;
     for (events.recorded()) |event| {
-        if (event == .node_statement) nodes += 1;
+        if ((event == .event and event.event == .commit_node)) nodes += 1;
     }
     try expectEqual(@as(usize, 4), nodes);
 }
@@ -2866,13 +3019,13 @@ test "optional semicolons: adjacent statements split correctly" {
     // a(node) b(node) c--d(edge) e(node), all without terminators.
     const recorded = events.recorded();
     try expectEqual(@as(usize, 6), recorded.len);
-    try expectEqualStrings("a", recorded[1].node_statement.identifier.slice(source));
-    try expectEqualStrings("b", recorded[2].node_statement.identifier.slice(source));
-    const edge = recorded[3].edge_statement;
+    try expectEqualStrings("a", recorded[1].event.commit_node.value.identifier.slice(source));
+    try expectEqualStrings("b", recorded[2].event.commit_node.value.identifier.slice(source));
+    const edge = recorded[3].event.commit_edge.value;
     try expectEqualStrings("c", edge.left.slice(source));
     try expectEqualStrings("d", edge.right.slice(source));
-    try expectEqualStrings("e", recorded[4].node_statement.identifier.slice(source));
-    try expect(recorded[5] == .end_document);
+    try expectEqualStrings("e", recorded[4].event.commit_node.value.identifier.slice(source));
+    try expect((recorded[5] == .event and recorded[5].event == .end_document));
 }
 
 test "mixed terminated and unterminated statements agree" {
@@ -2907,7 +3060,7 @@ test "trailing tokens after the document are invalid" {
 
     // The document must not commit: the terminal event is an abort.
     const recorded = events.recorded();
-    try expect(recorded[recorded.len - 1] == .abort_document);
+    try expect((recorded[recorded.len - 1] == .abort and recorded[recorded.len - 1].abort == .document));
 }
 
 test "truncation at token boundaries reports unexpected end of input" {
@@ -2935,8 +3088,8 @@ test "input truncated at every byte boundary fails safely" {
         // a terminal abort last.
         const recorded = events.recorded();
         if (recorded.len > 0) {
-            try expect(recorded[0] == .begin_document);
-            try expect(recorded[recorded.len - 1] == .abort_document);
+            try expect((recorded[0] == .event and recorded[0].event == .begin_document));
+            try expect((recorded[recorded.len - 1] == .abort and recorded[recorded.len - 1].abort == .document));
         }
     }
 }
@@ -3027,7 +3180,7 @@ test "disabled HTML identifiers mid-document abort as unsupported" {
         var bag: Bag = .{};
         try expect(testing.run(case[0], &events, bag.sink(), .{ .markup = .none }, null).outcome == .unsupported_feature);
         try expectEqual(case[1], bag.items()[0].details.unsupported_feature);
-        try expectEqual(syntax_event.AbortReason.unsupported_feature, events.recorded()[events.recorded().len - 1].abort_document);
+        try expectEqual(event_types.AbortReason.unsupported_feature, events.recorded()[events.recorded().len - 1].abort.document);
     }
 }
 
@@ -3054,10 +3207,10 @@ test "statement limit is a resource outcome, distinct from invalid syntax" {
     try expectEqual(@as(usize, 1), failure.details.capacity.limit);
 
     const recorded = events.recorded();
-    try expect(recorded[recorded.len - 1] == .abort_document);
+    try expect((recorded[recorded.len - 1] == .abort and recorded[recorded.len - 1].abort == .document));
     try expectEqual(
-        syntax_event.AbortReason.resource_exhausted,
-        recorded[recorded.len - 1].abort_document,
+        event_types.AbortReason.resource_exhausted,
+        recorded[recorded.len - 1].abort.document,
     );
 
     // The limit bounds statements, not documents: an empty graph passes.
@@ -3077,7 +3230,7 @@ test "zero statement limit still scans an arbitrarily large body" {
 
 test "event-sink failure aborts the document and surfaces the sink's error" {
     // Capacity 2 fits begin + one statement; the second statement fails.
-    var events: syntax_event.RecordingSink(2) = .{};
+    var events: @import("event_test.zig").RecordingSink(2) = .{};
     var bag: Bag = .{};
     const result = testing.run("graph { a; b; }", &events, bag.sink(), .{}, null);
     try expect(result.outcome == .sink_failure);
@@ -3087,15 +3240,15 @@ test "event-sink failure aborts the document and surfaces the sink's error" {
     try expectEqual(@as(usize, 0), bag.items().len);
 
     const recorded = events.recorded();
-    try expect(recorded[recorded.len - 1] == .abort_document);
+    try expect((recorded[recorded.len - 1] == .abort and recorded[recorded.len - 1].abort == .document));
     try expectEqual(
-        syntax_event.AbortReason.sink_failure,
-        recorded[recorded.len - 1].abort_document,
+        event_types.AbortReason.sink_failure,
+        recorded[recorded.len - 1].abort.document,
     );
 }
 
 test "failing beginDocument still receives the cleanup abort" {
-    var events: syntax_event.RecordingSink(0) = .{};
+    var events: @import("event_test.zig").RecordingSink(0) = .{};
     var bag: Bag = .{};
     const result = testing.run("graph { }", &events, bag.sink(), .{}, null);
     try expect(result.outcome == .sink_failure);
@@ -3105,8 +3258,8 @@ test "failing beginDocument still receives the cleanup abort" {
     const recorded = events.recorded();
     try expectEqual(@as(usize, 1), recorded.len);
     try expectEqual(
-        syntax_event.AbortReason.sink_failure,
-        recorded[0].abort_document,
+        event_types.AbortReason.sink_failure,
+        recorded[0].abort.document,
     );
 }
 
@@ -3181,28 +3334,28 @@ test "attribute pairs stream before owners and abort if any event is refused" {
     var complete: Recording = .{};
     try expect(testing.run(source, &complete, diagnostic.discard, .{}, null).outcome == .success);
     const recorded = complete.recorded();
-    try expect(recorded[0] == .begin_document);
-    try expect(recorded[1] == .attribute);
-    try expect(recorded[2] == .attribute);
-    try expect(recorded[3] == .node_statement);
-    try expect(recorded[4] == .attribute_statement);
-    try expect(recorded[5] == .assignment);
-    try expect(recorded[6] == .attribute);
-    try expect(recorded[7] == .edge_statement);
-    try expect(recorded[8] == .end_document);
+    try expect((recorded[0] == .event and recorded[0].event == .begin_document));
+    try expect((recorded[1] == .event and recorded[1].event == .attribute));
+    try expect((recorded[2] == .event and recorded[2].event == .attribute));
+    try expect((recorded[3] == .event and recorded[3].event == .commit_node));
+    try expect((recorded[4] == .event and recorded[4].event == .commit_attribute_statement));
+    try expect((recorded[5] == .event and recorded[5].event == .commit_assignment));
+    try expect((recorded[6] == .event and recorded[6].event == .attribute));
+    try expect((recorded[7] == .event and recorded[7].event == .commit_edge));
+    try expect((recorded[8] == .event and recorded[8].event == .end_document));
     inline for (0..8) |capacity| {
-        var events: syntax_event.RecordingSink(capacity) = .{};
+        var events: @import("event_test.zig").RecordingSink(capacity) = .{};
         const result = testing.run(source, &events, diagnostic.discard, .{}, null);
         try expect(result.outcome == .sink_failure);
         try expectEqual(anyerror.EventCapacityExceeded, result.outcome.sink_failure);
         try expectEqual(@as(usize, capacity + 1), events.recorded().len);
-        try expect(events.recorded()[capacity] == .abort_document);
+        try expect((events.recorded()[capacity] == .abort and events.recorded()[capacity].abort == .document));
     }
     var partial: Recording = .{};
     try expect(testing.run("graph { a[x=1 y=] }", &partial, diagnostic.discard, .{}, null).outcome == .invalid_syntax);
     try expectEqual(@as(usize, 3), partial.recorded().len);
-    try expect(partial.recorded()[1] == .attribute);
-    try expect(partial.recorded()[2] == .abort_document);
+    try expect((partial.recorded()[1] == .event and partial.recorded()[1].event == .attribute));
+    try expect((partial.recorded()[2] == .abort and partial.recorded()[2].abort == .document));
 }
 
 test "nested scope callbacks and all prefixes preserve budget partitioning" {

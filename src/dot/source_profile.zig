@@ -17,6 +17,9 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
         pub const Policies = Base.Policies;
         pub const baseline = Base.baseline;
         pub const runtime_policy = config.runtime_policy;
+        pub fn Events(comptime Sink: type) type {
+            return @import("event_profile.zig").Source(api, config, caps, Sink);
+        }
         pub const validatePolicy = Base.validatePolicy;
         pub const Options = Base.Options;
         pub const ParseOptions = dispatch.Options(Base.ParseOptions);

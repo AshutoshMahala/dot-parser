@@ -26,6 +26,7 @@ pub const Scratch = struct {
 
 fn attributeRange(document: *const syntax.Document, id: syntax.StatementId) syntax.AttributeRange {
     return switch (id) {
+        .skipped_start, .skipped_end => .{},
         .node => |i| document.nodes[i].attributes,
         .edge => |i| document.edges[i].attributes,
         .edge_chain => |i| document.edge_chains[i].first.attributes,

@@ -12,9 +12,9 @@
 //! - `location`, `diagnostic`, `console` — underlying modules, exported whole.
 //! - `lexer` — public lexical vocabulary and ordinary cursor, selected here.
 //!
-//! The syntax-event sink, low-level parser machine, and document builder remain private and
-//! provisional; they are reachable only through the façade until the
-//! contract stabilizes (docs/ARCHITECTURE.md).
+//! `Events(Sink)` / `Profile.Events(Sink)` expose compile-time consumer output.
+//! Builders use the same event contract; their storage and the low-level
+//! machine remain private.
 //!
 //! ## Ownership at a glance
 //!
@@ -30,7 +30,7 @@ const std = @import("std");
 const parser_impl = @import("dot/parser.zig");
 const syntax_impl = @import("dot/syntax.zig");
 const validate_impl = @import("dot/validate.zig");
-const scratch_impl = @import("dot/scratch.zig");
+const scratch_impl = @import("dot/scratch.zig").For(syntax_impl.Builder.ScopeContext);
 const policy_impl = @import("dot/policy.zig");
 
 pub const Policy = policy_impl.Policy;
@@ -89,6 +89,8 @@ pub const lexer = struct {
 };
 /// Explicit raw-identifier decoding into caller storage or a writer.
 pub const identifier = @import("dot/identifier.zig");
+pub const events = @import("dot/events.zig");
+pub const Events = DefaultProfile.Events;
 
 /// Default console presentation for diagnostics — one way to render, shipped
 /// out of the box. Consumers bring their own reporting by implementing
@@ -119,6 +121,7 @@ pub const EdgeOperator = syntax_impl.EdgeOperator;
 pub const ParseScratch = scratch_impl.Storage;
 pub const FixedParseScratch = scratch_impl.Fixed;
 pub const ScopeId = syntax_impl.ScopeId;
+pub const SkippedRange = syntax_impl.SkippedRange;
 pub const ScopeView = syntax_impl.ScopeView;
 pub const Subgraph = syntax_impl.Subgraph;
 pub const Traversal = syntax_impl.Traversal;
@@ -238,7 +241,7 @@ fn releaseDocument(document: *Document, allocator: std.mem.Allocator, lengths: ?
 }
 
 /// Result of `parseBorrowed`. Successful parses publish a complete document;
-/// opt-in partial retention may publish a safe prefix on failure. The caller
+/// opt-in partial retention may publish completed regions on failure. The caller
 /// owns its pools, not source bytes. Presence alone is not a success check.
 pub const ParseResult = struct {
     document: ?Document = null,
@@ -338,7 +341,7 @@ pub const measureIn = DefaultProfile.measureIn;
 pub const CheckOptions = DefaultProfile.CheckOptions;
 
 /// Result of `parseAndValidate`. Validation follows successful parsing, or
-/// retained-prefix syntax failure with collect. Operational/fail-fast stops
+/// retained-region syntax failure with collect. Operational/fail-fast stops
 /// never automatically start another stage.
 pub const CheckResult = struct {
     document: ?Document = null,
@@ -377,7 +380,7 @@ test {
     // Private, provisional modules are not exported but their unit tests
     // still run (the syntax-event sink, parser driver, and document builder stay
     // private per docs/ARCHITECTURE.md until the contract stabilizes).
-    _ = @import("dot/syntax_event.zig");
+    _ = @import("dot/events.zig");
     _ = @import("dot/parser.zig");
     _ = @import("dot/syntax.zig");
     _ = @import("dot/validate.zig");

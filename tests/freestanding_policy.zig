@@ -12,6 +12,25 @@ export fn native_dot(source: [*]const u8, len: usize) u32 {
 }
 const features = @import("policy_features");
 
+const EventCounter = struct {
+    nodes: u32 = 0,
+    pub fn onEvent(self: *@This(), event: dot.events.Event) error{}!dot.events.Action {
+        if (event == .commit_node) self.nodes += 1;
+        return .proceed;
+    }
+    pub fn onAbort(_: *@This(), _: dot.events.Abort) void {}
+};
+
+export fn event_node_count(source: [*]const u8, len: usize) u32 {
+    const Stream = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true } } }).Events(EventCounter);
+    var frames: Stream.FixedParseScratch(.{ .nesting = 8 }) = .{};
+    var counter: EventCounter = .{};
+    var session = Stream.Session.init(source[0..len], frames.storage(), &counter, dot.diagnostic.discard, .{});
+    defer session.deinit();
+    while (session.result() == null) _ = session.advance(64);
+    return counter.nodes;
+}
+
 export fn partial_scope_count(source: [*]const u8, len: usize, choice: u8) u32 {
     const P = dot.Profile(.{ .runtime_policy = features.runtime_policy, .policy = .{ .retention = .{ .partial = true } } });
     var pools: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .subgraphs = 8 }) = .{};

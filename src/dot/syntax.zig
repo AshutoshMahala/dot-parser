@@ -43,12 +43,12 @@
 
 const std = @import("std");
 const location = @import("parser_support").location;
-const syntax_event = @import("syntax_event.zig");
+const event_types = @import("events.zig");
 const identifier = @import("identifier.zig");
 
-pub const GraphKind = syntax_event.GraphKind;
+pub const GraphKind = event_types.GraphKind;
 pub const Comment = @import("comment.zig").Comment;
-pub const EdgeOperator = syntax_event.EdgeOperator;
+pub const EdgeOperator = event_types.EdgeOperator;
 pub const Completeness = @import("parser_support").Completeness;
 
 /// Statement index width. One declaration so profiles can shrink it for
@@ -65,9 +65,13 @@ pub const StatementId = union(enum) {
     scoped_edge: Index,
     assignment: Index,
     attribute_statement: Index,
+    /// Recovery metadata, not statements. Always emitted as an adjacent pair;
+    /// use skippedRanges() instead of interpreting these raw order slots.
+    skipped_start: u32,
+    skipped_end: u32,
 };
 
-pub const AttributeTarget = syntax_event.AttributeTarget;
+pub const AttributeTarget = event_types.AttributeTarget;
 
 /// Ordered key/value spelling. No defaults, deduplication, or interpretation.
 pub const Attribute = struct {
@@ -207,7 +211,11 @@ pub const Statement = union(enum) {
     attribute_statement: AttributeStatement,
 };
 
-pub const ScopeId = enum(Index) { root = 0, _ };
+pub const ScopeId = event_types.ScopeId;
+/// A failed statement or unrecognized region skipped during recovery. The
+/// interval may contain independently retained endpoint-scope statements;
+/// it does not assert that every byte within it lacks a representation.
+pub const SkippedRange = struct { range: location.Range, scope: ScopeId };
 pub const Traversal = enum { direct, recursive };
 pub const StatementRange = struct { start: Index, len: Index };
 
@@ -227,7 +235,13 @@ pub const ScopeView = struct {
 
     pub fn state(self: ScopeView) Completeness {
         if (self.id == .root) return self.document.state;
-        return if (self.document.subgraph_records[@intFromEnum(self.id) - 1].subtree_end == 0) .partial else .complete;
+        const value = self.document.subgraph_records[@intFromEnum(self.id) - 1];
+        if (value.subtree_end == 0) return .partial;
+        if (self.document.state == .complete) return .complete;
+        // Recovery markers lie in the same contiguous body interval as its
+        // statements. Do not scan unrelated sibling scopes for each query.
+        for (self.document.order[value.body.start..][0..value.body.len]) |id| if (id == .skipped_start) return .partial;
+        return .complete;
     }
     pub fn scopeComplete(self: ScopeView) bool {
         return self.state() == .complete;
@@ -412,6 +426,37 @@ pub const NodeReferenceIterator = struct {
 
 pub const ScopedStatement = struct { id: StatementId, scope: ScopeId, statement: Statement };
 
+pub const SkippedRangeIterator = struct {
+    document: *const Document,
+    index: usize = 0,
+    current_scope: ScopeId = .root,
+    scope_cursor: usize = 0,
+
+    pub fn next(self: *SkippedRangeIterator) ?SkippedRange {
+        while (self.index < self.document.order.len) {
+            while (self.current_scope != .root) {
+                const record = self.document.subgraphRecord(@intFromEnum(self.current_scope) - 1);
+                if (self.index < @as(usize, record.body.start) + record.body.len) break;
+                self.current_scope = record.parent;
+            }
+            while (self.scope_cursor < self.document.subgraph_records.len) {
+                const record = self.document.subgraphRecord(self.scope_cursor);
+                if (record.body.start > self.index) break;
+                self.scope_cursor += 1;
+                if (self.index < @as(usize, record.body.start) + record.body.len) self.current_scope = @enumFromInt(self.scope_cursor);
+            }
+            const value = self.document.order[self.index];
+            self.index += 1;
+            if (value != .skipped_start or self.index == self.document.order.len) continue;
+            const end = self.document.order[self.index];
+            if (end != .skipped_end or end.skipped_end < value.skipped_start or end.skipped_end > self.document.source.len) continue;
+            self.index += 1;
+            return .{ .range = .{ .start = value.skipped_start, .len = end.skipped_end - value.skipped_start }, .scope = self.current_scope };
+        }
+        return null;
+    }
+};
+
 pub const StatementIterator = struct {
     document: *const Document,
     index: usize = 0,
@@ -556,7 +601,20 @@ pub const Document = struct {
         return self.scopeComplete();
     }
     pub fn unrepresented(self: Document) ?location.Range {
-        return if (self.state == .complete) null else .{ .start = self.retained_end, .len = @intCast(self.source.len - self.retained_end) };
+        return if (self.state == .complete or self.retained_end == self.source.len) null else .{ .start = self.retained_end, .len = @intCast(self.source.len - self.retained_end) };
+    }
+    /// Earliest missing coverage, not a restart offset. Recovery can retain
+    /// statements after this offset; skippedRanges() describes internal gaps.
+    pub fn firstUnrepresented(self: Document) ?u32 {
+        var first: ?u32 = if (self.unrepresented()) |tail| tail.start else null;
+        var gaps = self.skippedRanges();
+        while (gaps.next()) |gap| first = @min(first orelse gap.range.start, gap.range.start);
+        return first;
+    }
+    /// Failed/skipped regions in recovery encounter order. Two compact order
+    /// slots per region, without a new pool or overhead on ordinary parses.
+    pub fn skippedRanges(self: *const Document) SkippedRangeIterator {
+        return .{ .document = self };
     }
     fn subgraphRecord(self: *const Document, index: usize) Subgraph {
         var value = self.subgraph_records[index];
@@ -679,6 +737,7 @@ pub const Document = struct {
     /// of this document (ids are publicly constructible).
     pub fn statement(self: *const Document, id: StatementId) ?Statement {
         return switch (id) {
+            .skipped_start, .skipped_end => null,
             .scoped_edge => |index| if (index < self.scoped_edges.len) blk: {
                 const owner = self.scoped_edges[index];
                 if (!owner.complete()) break :blk null;
@@ -858,8 +917,8 @@ pub fn deinitOwnedDocument(document: *Document, allocator: std.mem.Allocator) vo
     document.* = undefined;
 }
 
-/// The first consumer of the private syntax-event contract: builds a `Document`
-/// from parser events using explicit caller memory.
+/// A consumer of the shared public syntax-event contract: builds a `Document`
+/// using explicit caller memory, with storage bookkeeping kept private.
 ///
 /// ## Lifecycle
 ///
@@ -882,7 +941,27 @@ pub fn deinitOwnedDocument(document: *Document, allocator: std.mem.Allocator) vo
 ///   document.
 /// - Contract-order violations are programmer errors and assert in safe
 ///   builds.
+const SavedScope = struct { reserved_order: ?u32 = null, scoped_owner: ?u32 = null };
+
 pub const Builder = struct {
+    pub const ScopeContext = SavedScope;
+    pub const wants_begin_statement = false;
+    pub const recover_statements = false;
+    pub inline fn onEvent(self: *Builder, value: event_types.Event) Error!event_types.Action {
+        return consume(self, value);
+    }
+    pub fn onAbort(self: *Builder, value: event_types.Abort) void {
+        switch (value) {
+            .document => |reason| self.abortDocument(reason),
+            .statement => unreachable,
+        }
+    }
+    pub fn suspendScope(self: *Builder) ScopeContext {
+        return saveScope(self);
+    }
+    pub fn restoreScope(self: *Builder, saved: ScopeContext) void {
+        self.scope_state = saved;
+    }
     allocator: std.mem.Allocator,
     /// The source the parsed document borrows from; embedded into the document.
     source: []const u8,
@@ -905,7 +984,7 @@ pub const Builder = struct {
     attributes: std.ArrayList(Attribute) = .empty,
     assignments: std.ArrayList(Assignment) = .empty,
     attribute_statements: std.ArrayList(AttributeStatement) = .empty,
-    scope_state: syntax_event.ScopeState = .{},
+    scope_state: SavedScope = .{},
     pending_links: usize = 0,
     pending_attributes: usize = 0,
     phase: Phase = .idle,
@@ -1074,15 +1153,18 @@ pub const Builder = struct {
         };
     }
 
-    // --- syntax-event sink contract -------------------------------------
+    // --- Private storage operations used by onEvent ---------------------
 
-    pub fn comment(self: *Builder, value: Comment) Error!void {
+    fn comment(self: *Builder, value: Comment) Error!void {
         std.debug.assert(self.phase == .idle or self.phase == .building);
         try self.reserve(&self.comments, value.span);
         self.comments.appendAssumeCapacity(value);
     }
+    fn skippedRange(self: *Builder, span: location.Span) Error!void {
+        try appendSkippedRange(self, span);
+    }
 
-    pub fn beginDocument(self: *Builder, event: syntax_event.BeginDocument) Error!void {
+    fn beginDocument(self: *Builder, event: event_types.BeginDocument) Error!void {
         std.debug.assert(self.phase == .idle);
         self.phase = .building;
         self.retain_comments = event.retain_comments;
@@ -1092,7 +1174,7 @@ pub const Builder = struct {
         self.name = if (event.name_span) |name_span| self.range(name_span) else null;
     }
 
-    pub fn nodeStatement(self: *Builder, statement_event: syntax_event.NodeStatement) Error!void {
+    fn nodeStatement(self: *Builder, statement_event: event_types.Node) Error!void {
         std.debug.assert(self.phase == .building);
         const at = statement_event.identifier;
         const node: NodeStatement = .{
@@ -1108,7 +1190,7 @@ pub const Builder = struct {
         self.pending_attributes = self.attributes.items.len;
     }
 
-    pub fn edgeStatement(self: *Builder, statement_event: syntax_event.EdgeStatement) Error!void {
+    fn edgeStatement(self: *Builder, statement_event: event_types.Edge) Error!void {
         if (self.scope_state.scoped_owner != null or statement_event.left_scope != null or statement_event.right_scope != null)
             return finishScopedEdge(self, statement_event);
         std.debug.assert(self.phase == .building);
@@ -1128,7 +1210,7 @@ pub const Builder = struct {
         self.pending_attributes = self.attributes.items.len;
     }
 
-    pub fn edgeLink(self: *Builder, event: syntax_event.EdgeLink) Error!void {
+    fn edgeLink(self: *Builder, event: event_types.Link) Error!void {
         if (self.scope_state.scoped_owner != null) {
             try appendScopedLink(self, .{ .node = try self.reference(event.right, event.right_port) }, event.operator, event.operator_span, false);
             return;
@@ -1143,7 +1225,7 @@ pub const Builder = struct {
         self.edge_links.appendAssumeCapacity(value);
     }
 
-    pub fn edgeChainStatement(self: *Builder, event: syntax_event.EdgeStatement) Error!void {
+    fn edgeChainStatement(self: *Builder, event: event_types.Edge) Error!void {
         if (self.scope_state.scoped_owner != null or event.left_scope != null or event.right_scope != null)
             return finishScopedEdge(self, event);
         std.debug.assert(self.phase == .building and self.edge_links.items.len > self.pending_links);
@@ -1160,17 +1242,17 @@ pub const Builder = struct {
         self.pending_attributes = self.attributes.items.len;
     }
 
-    pub fn beginSubgraph(self: *Builder, event: syntax_event.BeginSubgraph) Error!syntax_event.ScopeEntry {
+    fn beginSubgraph(self: *Builder, event: event_types.BeginScope) Error!void {
         return beginScope(self, event);
     }
-    pub fn endSubgraph(self: *Builder, event: syntax_event.EndSubgraph) Error!void {
+    fn endSubgraph(self: *Builder, event: event_types.EndScope) Error!void {
         return endScope(self, event);
     }
-    pub fn subgraphStatement(self: *Builder, id: u32) Error!void {
+    fn subgraphStatement(self: *Builder, id: u32) Error!void {
         finishSubgraphStatement(self, id);
     }
 
-    pub fn portedReference(self: *Builder, event: syntax_event.PortedReference) Error!u32 {
+    fn portedReference(self: *Builder, event: event_types.PortedReference) Error!u32 {
         std.debug.assert(self.phase == .building);
         const value: PortedReference = .{
             .identifier = self.range(event.identifier),
@@ -1198,7 +1280,7 @@ pub const Builder = struct {
         return .{ .start = @intCast(self.pending_attributes), .len = @intCast(self.attributes.items.len - self.pending_attributes) };
     }
 
-    pub fn attribute(self: *Builder, event: syntax_event.Attribute) Error!void {
+    fn attribute(self: *Builder, event: event_types.Attribute) Error!void {
         std.debug.assert(self.phase == .building);
         const value: Attribute = .{ .key = self.range(event.key), .value = self.range(event.value) };
         if (self.attributes.items.len >= std.math.maxInt(Index)) {
@@ -1209,7 +1291,7 @@ pub const Builder = struct {
         self.attributes.appendAssumeCapacity(value);
     }
 
-    pub fn assignment(self: *Builder, event: syntax_event.Attribute) Error!void {
+    fn assignment(self: *Builder, event: event_types.Attribute) Error!void {
         std.debug.assert(self.phase == .building and self.pending_attributes == self.attributes.items.len);
         const value: Assignment = .{ .key = self.range(event.key), .value = self.range(event.value) };
         const index = try self.statementIndex(self.assignments.items.len, event.key);
@@ -1219,7 +1301,7 @@ pub const Builder = struct {
         self.order.appendAssumeCapacity(.{ .assignment = index });
     }
 
-    pub fn attributeStatement(self: *Builder, event: syntax_event.AttributeStatement) Error!void {
+    fn attributeStatement(self: *Builder, event: event_types.AttributeStatement) Error!void {
         std.debug.assert(self.phase == .building);
         const value: AttributeStatement = .{
             .target = event.target,
@@ -1255,14 +1337,14 @@ pub const Builder = struct {
         };
     }
 
-    pub fn endDocument(self: *Builder) Error!void {
+    fn endDocument(self: *Builder) Error!void {
         std.debug.assert(self.phase == .building and self.current_scope == .root);
         std.debug.assert(self.pendingRange().len == 0);
         std.debug.assert(self.pending_links == self.edge_links.items.len);
         self.phase = .committed;
     }
 
-    pub fn abortDocument(self: *Builder, reason: syntax_event.AbortReason) void {
+    fn abortDocument(self: *Builder, reason: event_types.AbortReason) void {
         _ = reason;
         // Release staged state (the event contract's abort semantics).
         // Terminal until `reset`; the lists stay valid so `deinit` is safe.
@@ -1307,7 +1389,8 @@ fn checkedIndex(length: usize, total: usize) error{StatementIndexOverflow}!Index
 /// for allocator-backed storage. Zero means no initial space in that pool.
 pub const Capacities = struct {
     comments: u32 = 0,
-    /// Source statements, including standalone scopes but not endpoint scopes.
+    /// Order slots, including standalone scopes but not endpoint scopes.
+    /// Partial recovery needs two additional slots per recorded skipped region.
     statements: usize = 0,
     nodes: usize = 0,
     /// Owners with two or more written edge operators.
@@ -1412,42 +1495,57 @@ pub fn FixedDocumentStorage(comptime capacities: Capacities) type {
 /// exact, never estimates. It cannot fail and never allocates; this is the
 /// "count-only dry run" behind `measure` / `measureIn` (R-MEM-003).
 pub const CountingSink = struct {
+    pub const ScopeContext = SavedScope;
+    pub const wants_begin_statement = false;
+    pub const recover_statements = false;
+    pub inline fn onEvent(self: *CountingSink, value: event_types.Event) Error!event_types.Action {
+        return consume(self, value);
+    }
+    pub fn onAbort(self: *CountingSink, _: event_types.Abort) void {
+        self.phase = .terminal;
+    }
+    pub fn suspendScope(self: *CountingSink) ScopeContext {
+        return saveScope(self);
+    }
+    pub fn restoreScope(self: *CountingSink, saved: ScopeContext) void {
+        self.scope_state = saved;
+    }
     counts: Capacities = .{},
-    scope_state: syntax_event.ScopeState = .{},
+    scope_state: SavedScope = .{},
     phase: enum { idle, building, committed, terminal } = .idle,
 
     pub const Error = error{};
 
-    pub fn comment(self: *CountingSink, _: Comment) Error!void {
+    fn comment(self: *CountingSink, _: Comment) Error!void {
         self.counts.comments += 1;
     }
 
-    pub fn beginDocument(self: *CountingSink, _: syntax_event.BeginDocument) Error!void {
+    fn beginDocument(self: *CountingSink, _: event_types.BeginDocument) Error!void {
         std.debug.assert(self.phase == .idle);
         self.phase = .building;
     }
-    pub fn nodeStatement(self: *CountingSink, _: syntax_event.NodeStatement) Error!void {
+    fn nodeStatement(self: *CountingSink, _: event_types.Node) Error!void {
         self.counts.nodes += 1;
         self.counts.statements += 1;
     }
-    pub fn edgeStatement(self: *CountingSink, event: syntax_event.EdgeStatement) Error!void {
+    fn edgeStatement(self: *CountingSink, event: event_types.Edge) Error!void {
         if (self.isScoped(event)) return self.finishScopedEdge();
         self.counts.edges += 1;
         self.counts.statements += 1;
     }
-    pub fn edgeChainStatement(self: *CountingSink, event: syntax_event.EdgeStatement) Error!void {
+    fn edgeChainStatement(self: *CountingSink, event: event_types.Edge) Error!void {
         if (self.isScoped(event)) return self.finishScopedEdge();
         self.counts.edge_chains += 1;
         self.counts.statements += 1;
     }
-    pub fn edgeLink(self: *CountingSink, _: syntax_event.EdgeLink) Error!void {
+    fn edgeLink(self: *CountingSink, _: event_types.Link) Error!void {
         if (self.scope_state.scoped_owner != null) {
             self.counts.scoped_edge_links += 1;
         } else {
             self.counts.edge_links += 1;
         }
     }
-    pub fn beginSubgraph(self: *CountingSink, event: syntax_event.BeginSubgraph) Error!syntax_event.ScopeEntry {
+    fn beginSubgraph(self: *CountingSink, event: event_types.BeginScope) Error!void {
         if (event.role == .left) {
             self.scope_state.reserved_order = @intCast(self.counts.statements);
             self.counts.statements += 1;
@@ -1455,42 +1553,34 @@ pub const CountingSink = struct {
             self.promoteEdge();
             if (event.role == .link) self.counts.scoped_edge_links += 1;
         }
-        const entry: syntax_event.ScopeEntry = .{ .id = @intCast(self.counts.subgraphs + 1), .state = self.scope_state };
         self.counts.subgraphs += 1;
-        self.scope_state = .{};
-        return entry;
     }
-    pub fn endSubgraph(self: *CountingSink, event: syntax_event.EndSubgraph) Error!void {
-        self.scope_state = event.entry.state;
-    }
-    pub fn subgraphStatement(self: *CountingSink, _: u32) Error!void {
+    fn endSubgraph(_: *CountingSink, _: event_types.EndScope) Error!void {}
+    fn subgraphStatement(self: *CountingSink, _: u32) Error!void {
         self.scope_state = .{};
     }
-    pub fn portedReference(self: *CountingSink, _: syntax_event.PortedReference) Error!u32 {
+    fn portedReference(self: *CountingSink, _: event_types.PortedReference) Error!u32 {
         const index: u32 = @intCast(self.counts.ported_references);
         self.counts.ported_references += 1;
         return index;
     }
-    pub fn attribute(self: *CountingSink, _: syntax_event.Attribute) Error!void {
+    fn attribute(self: *CountingSink, _: event_types.Attribute) Error!void {
         self.counts.attributes += 1;
     }
-    pub fn assignment(self: *CountingSink, _: syntax_event.Attribute) Error!void {
+    fn assignment(self: *CountingSink, _: event_types.Attribute) Error!void {
         self.counts.assignments += 1;
         self.counts.statements += 1;
     }
-    pub fn attributeStatement(self: *CountingSink, _: syntax_event.AttributeStatement) Error!void {
+    fn attributeStatement(self: *CountingSink, _: event_types.AttributeStatement) Error!void {
         self.counts.attribute_statements += 1;
         self.counts.statements += 1;
     }
-    pub fn endDocument(self: *CountingSink) Error!void {
+    fn endDocument(self: *CountingSink) Error!void {
         std.debug.assert(self.phase == .building);
         self.phase = .committed;
     }
-    pub fn abortDocument(self: *CountingSink, _: syntax_event.AbortReason) void {
-        self.phase = .terminal;
-    }
 
-    fn isScoped(self: *const CountingSink, event: syntax_event.EdgeStatement) bool {
+    fn isScoped(self: *const CountingSink, event: event_types.Edge) bool {
         return self.scope_state.scoped_owner != null or event.left_scope != null or event.right_scope != null;
     }
     /// Same rule as the builders' `promoteEdge`: the first subgraph
@@ -1519,6 +1609,24 @@ pub const CountingSink = struct {
 /// Lifecycle mirrors `Builder`: terminal after abort or `toDocument`,
 /// `reset(source)` rebinds for the next document reusing the same pools.
 pub const FixedBuilder = struct {
+    pub const ScopeContext = SavedScope;
+    pub const wants_begin_statement = false;
+    pub const recover_statements = false;
+    pub inline fn onEvent(self: *FixedBuilder, value: event_types.Event) Error!event_types.Action {
+        return consume(self, value);
+    }
+    pub fn onAbort(self: *FixedBuilder, value: event_types.Abort) void {
+        switch (value) {
+            .document => |reason| self.abortDocument(reason),
+            .statement => unreachable,
+        }
+    }
+    pub fn suspendScope(self: *FixedBuilder) ScopeContext {
+        return saveScope(self);
+    }
+    pub fn restoreScope(self: *FixedBuilder, saved: ScopeContext) void {
+        self.scope_state = saved;
+    }
     source: []const u8,
     storage: DocumentStorage,
     kind: GraphKind = .undigraph,
@@ -1540,7 +1648,7 @@ pub const FixedBuilder = struct {
     attributes_len: usize = 0,
     assignments_len: usize = 0,
     attribute_statements_len: usize = 0,
-    scope_state: syntax_event.ScopeState = .{},
+    scope_state: SavedScope = .{},
     pending_links: usize = 0,
     pending_attributes: usize = 0,
     phase: Phase = .idle,
@@ -1620,14 +1728,17 @@ pub const FixedBuilder = struct {
 
     // --- syntax-event sink contract -------------------------------------
 
-    pub fn comment(self: *FixedBuilder, value: Comment) Error!void {
+    fn comment(self: *FixedBuilder, value: Comment) Error!void {
         std.debug.assert(self.phase == .idle or self.phase == .building);
         try self.checkPool(self.comments_len, self.storage.comments.len, .comment_pool, value.span);
         self.storage.comments[self.comments_len] = value;
         self.comments_len += 1;
     }
+    fn skippedRange(self: *FixedBuilder, span: location.Span) Error!void {
+        try appendSkippedRange(self, span);
+    }
 
-    pub fn beginDocument(self: *FixedBuilder, event: syntax_event.BeginDocument) Error!void {
+    fn beginDocument(self: *FixedBuilder, event: event_types.BeginDocument) Error!void {
         std.debug.assert(self.phase == .idle);
         self.phase = .building;
         self.retain_comments = event.retain_comments;
@@ -1637,7 +1748,7 @@ pub const FixedBuilder = struct {
         self.name = if (event.name_span) |name_span| self.range(name_span) else null;
     }
 
-    pub fn edgeLink(self: *FixedBuilder, event: syntax_event.EdgeLink) Error!void {
+    fn edgeLink(self: *FixedBuilder, event: event_types.Link) Error!void {
         if (self.scope_state.scoped_owner != null) {
             try appendScopedLink(self, .{ .node = try self.reference(event.right, event.right_port) }, event.operator, event.operator_span, false);
             return;
@@ -1653,7 +1764,7 @@ pub const FixedBuilder = struct {
         self.edge_links_len += 1;
     }
 
-    pub fn edgeChainStatement(self: *FixedBuilder, event: syntax_event.EdgeStatement) Error!void {
+    fn edgeChainStatement(self: *FixedBuilder, event: event_types.Edge) Error!void {
         if (self.scope_state.scoped_owner != null or event.left_scope != null or event.right_scope != null)
             return finishScopedEdge(self, event);
         std.debug.assert(self.phase == .building and self.edge_links_len > self.pending_links);
@@ -1672,17 +1783,17 @@ pub const FixedBuilder = struct {
         self.pending_attributes = self.attributes_len;
     }
 
-    pub fn beginSubgraph(self: *FixedBuilder, event: syntax_event.BeginSubgraph) Error!syntax_event.ScopeEntry {
+    fn beginSubgraph(self: *FixedBuilder, event: event_types.BeginScope) Error!void {
         return beginScope(self, event);
     }
-    pub fn endSubgraph(self: *FixedBuilder, event: syntax_event.EndSubgraph) Error!void {
+    fn endSubgraph(self: *FixedBuilder, event: event_types.EndScope) Error!void {
         return endScope(self, event);
     }
-    pub fn subgraphStatement(self: *FixedBuilder, id: u32) Error!void {
+    fn subgraphStatement(self: *FixedBuilder, id: u32) Error!void {
         finishSubgraphStatement(self, id);
     }
 
-    pub fn portedReference(self: *FixedBuilder, event: syntax_event.PortedReference) Error!u32 {
+    fn portedReference(self: *FixedBuilder, event: event_types.PortedReference) Error!u32 {
         std.debug.assert(self.phase == .building);
         const value: PortedReference = .{
             .identifier = self.range(event.identifier),
@@ -1711,7 +1822,7 @@ pub const FixedBuilder = struct {
         return .{ .start = @intCast(self.pending_attributes), .len = @intCast(self.attributes_len - self.pending_attributes) };
     }
 
-    pub fn attribute(self: *FixedBuilder, event: syntax_event.Attribute) Error!void {
+    fn attribute(self: *FixedBuilder, event: event_types.Attribute) Error!void {
         std.debug.assert(self.phase == .building);
         const value: Attribute = .{ .key = self.range(event.key), .value = self.range(event.value) };
         if (self.attributes_len >= std.math.maxInt(Index)) {
@@ -1723,7 +1834,7 @@ pub const FixedBuilder = struct {
         self.attributes_len += 1;
     }
 
-    pub fn assignment(self: *FixedBuilder, event: syntax_event.Attribute) Error!void {
+    fn assignment(self: *FixedBuilder, event: event_types.Attribute) Error!void {
         std.debug.assert(self.phase == .building and self.pending_attributes == self.attributes_len);
         const value: Assignment = .{ .key = self.range(event.key), .value = self.range(event.value) };
         const index = try self.statementIndex(self.assignments_len, event.key);
@@ -1735,7 +1846,7 @@ pub const FixedBuilder = struct {
         self.order_len += 1;
     }
 
-    pub fn attributeStatement(self: *FixedBuilder, event: syntax_event.AttributeStatement) Error!void {
+    fn attributeStatement(self: *FixedBuilder, event: event_types.AttributeStatement) Error!void {
         std.debug.assert(self.phase == .building);
         const value: AttributeStatement = .{
             .target = event.target,
@@ -1782,7 +1893,7 @@ pub const FixedBuilder = struct {
         }
     }
 
-    pub fn nodeStatement(self: *FixedBuilder, statement_event: syntax_event.NodeStatement) Error!void {
+    fn nodeStatement(self: *FixedBuilder, statement_event: event_types.Node) Error!void {
         std.debug.assert(self.phase == .building);
         const at = statement_event.identifier;
         const node: NodeStatement = .{
@@ -1799,7 +1910,7 @@ pub const FixedBuilder = struct {
         self.pending_attributes = self.attributes_len;
     }
 
-    pub fn edgeStatement(self: *FixedBuilder, statement_event: syntax_event.EdgeStatement) Error!void {
+    fn edgeStatement(self: *FixedBuilder, statement_event: event_types.Edge) Error!void {
         if (self.scope_state.scoped_owner != null or statement_event.left_scope != null or statement_event.right_scope != null)
             return finishScopedEdge(self, statement_event);
         std.debug.assert(self.phase == .building);
@@ -1821,14 +1932,14 @@ pub const FixedBuilder = struct {
         self.pending_attributes = self.attributes_len;
     }
 
-    pub fn endDocument(self: *FixedBuilder) Error!void {
+    fn endDocument(self: *FixedBuilder) Error!void {
         std.debug.assert(self.phase == .building and self.current_scope == .root);
         std.debug.assert(self.pendingRange().len == 0);
         std.debug.assert(self.pending_links == self.edge_links_len);
         self.phase = .committed;
     }
 
-    pub fn abortDocument(self: *FixedBuilder, reason: syntax_event.AbortReason) void {
+    fn abortDocument(self: *FixedBuilder, reason: event_types.AbortReason) void {
         _ = reason;
         // Nothing to free — the pools are the caller's. Lengths reset so no
         // stale view escapes; terminal until `reset`.
@@ -1918,10 +2029,26 @@ fn appendPrepared(self: anytype, comptime pool: Pool, value: pool.Element()) Ind
     }
     return index;
 }
+fn appendSkippedRange(self: anytype, span: location.Span) @TypeOf(self.*).Error!void {
+    const length = poolLen(self, .order);
+    // Check before length + 1, including on 32-bit targets.
+    _ = try self.statementIndex(length, span);
+    _ = try self.statementIndex(length + 1, span);
+    // Reserve both markers before publishing either. An exhausted fixed pool
+    // or allocator terminates recovery; it never silently drops a gap.
+    if (@TypeOf(self.*) == Builder) {
+        self.order.ensureUnusedCapacity(self.allocator, 2) catch |err| {
+            self.failure_info = .{ .span = span, .capacity = null };
+            return err;
+        };
+    } else try self.checkPool(length + 1, self.storage.statement_ids.len, .statement_pool, span);
+    _ = appendPrepared(self, .order, .{ .skipped_start = span.start });
+    _ = appendPrepared(self, .order, .{ .skipped_end = @intCast(span.endOffset()) });
+}
 fn endpoint(self: anytype, span: location.Span, port: ?u32, scope: ?u32) @TypeOf(self.*).Error!Endpoint {
     return if (scope) |id| .{ .subgraph = @enumFromInt(id) } else .{ .node = try self.reference(span, port) };
 }
-fn promoteEdge(self: anytype, event: syntax_event.EdgeStatement, comptime prepared: bool) @TypeOf(self.*).Error!void {
+fn promoteEdge(self: anytype, event: event_types.Edge, comptime prepared: bool) @TypeOf(self.*).Error!void {
     if (self.scope_state.scoped_owner != null) return;
     const value: ScopedEdgeStatement = .{
         .first = .{ .left = try endpoint(self, event.left, event.left_port, event.left_scope), .right = try endpoint(self, event.right, event.right_port, event.right_scope), .operator = event.operator, .operator_range = self.range(event.operator_span), .attributes = .{ .start = unfinished_attributes, .len = 0 } },
@@ -1949,10 +2076,43 @@ fn appendScopedLink(self: anytype, right: Endpoint, operator: EdgeOperator, at: 
     updated.last_link = index;
     updated.link_count += 1;
 }
-fn beginScope(self: anytype, event: syntax_event.BeginSubgraph) @TypeOf(self.*).Error!syntax_event.ScopeEntry {
+inline fn consume(self: anytype, value: event_types.Event) @TypeOf(self.*).Error!event_types.Action {
+    switch (value) {
+        .begin_document => |header| try self.beginDocument(header),
+        .begin_statement => {},
+        .begin_scope => |scope| try self.beginSubgraph(scope),
+        .end_scope => |scope| try self.endSubgraph(scope),
+        .attribute => |pair| try self.attribute(pair.pair),
+        .edge_link => |link| try self.edgeLink(link.link),
+        .ported_reference => |reference| {
+            _ = try self.portedReference(reference.reference);
+        },
+        .commit_node => |commit| try self.nodeStatement(commit.value),
+        .commit_edge => |commit| try self.edgeStatement(commit.value),
+        .commit_edge_chain => |commit| try self.edgeChainStatement(commit.value),
+        .commit_subgraph => |commit| try self.subgraphStatement(@intFromEnum(commit.value)),
+        .commit_assignment => |commit| try self.assignment(commit.value),
+        .commit_attribute_statement => |commit| try self.attributeStatement(commit.value),
+        .skipped => |gap| if (@hasDecl(@TypeOf(self.*), "skippedRange")) {
+            try self.skippedRange(gap.span);
+        },
+        .comment => |comment| try self.comment(comment),
+        .end_document => try self.endDocument(),
+    }
+    return .proceed;
+}
+
+fn saveScope(self: anytype) SavedScope {
+    const saved = self.scope_state;
+    self.scope_state = .{};
+    return saved;
+}
+
+fn beginScope(self: anytype, event: event_types.BeginScope) @TypeOf(self.*).Error!void {
     std.debug.assert(self.phase == .building and self.pendingRange().len == 0);
     const index = try self.statementIndex(poolLen(self, .subgraphs), event.start);
     const id = index + 1;
+    std.debug.assert(id == @intFromEnum(event.id));
     // Scope entry can also promote an edge and append its continuation. Check
     // all affected pools in event order before replacing owners/link pointers.
     if (event.role == .left) {
@@ -1981,7 +2141,6 @@ fn beginScope(self: anytype, event: syntax_event.BeginSubgraph) @TypeOf(self.*).
         if (event.role == .link)
             try appendScopedLink(self, .{ .subgraph = @enumFromInt(id) }, event.link_operator.?, event.link_operator_span.?, true);
     }
-    const entry: syntax_event.ScopeEntry = .{ .id = id, .state = self.scope_state };
     _ = appendPrepared(self, .subgraphs, .{
         .parent = self.current_scope,
         .name = if (event.name) |name| self.range(name) else null,
@@ -1989,10 +2148,8 @@ fn beginScope(self: anytype, event: syntax_event.BeginSubgraph) @TypeOf(self.*).
         .body = .{ .start = @intCast(poolLen(self, .order)), .len = 0 },
     });
     self.current_scope = @enumFromInt(id);
-    self.scope_state = .{};
     self.pending_links = poolLen(self, .edge_links);
     self.pending_attributes = poolLen(self, .attributes);
-    return entry;
 }
 
 const unfinished_subgraph = std.math.maxInt(Index);
@@ -2004,19 +2161,18 @@ fn finishSubgraphStatement(self: anytype, id: u32) void {
     owner.* = .{ .subgraph = id - 1 };
     self.scope_state = .{};
 }
-fn endScope(self: anytype, event: syntax_event.EndSubgraph) @TypeOf(self.*).Error!void {
-    std.debug.assert(self.phase == .building and @intFromEnum(self.current_scope) == event.entry.id);
+fn endScope(self: anytype, event: event_types.EndScope) @TypeOf(self.*).Error!void {
+    std.debug.assert(self.phase == .building and @intFromEnum(self.current_scope) == @intFromEnum(event.id));
     std.debug.assert(self.pendingRange().len == 0);
-    const record = &poolItems(self, .subgraphs)[event.entry.id - 1];
+    const record = &poolItems(self, .subgraphs)[@intFromEnum(event.id) - 1];
     record.source.len = @intCast(event.close.endOffset() - record.source.start);
     record.body.len = @intCast(poolLen(self, .order) - record.body.start);
     record.subtree_end = @intCast(poolLen(self, .subgraphs));
     self.current_scope = record.parent;
-    self.scope_state = event.entry.state;
     self.pending_links = poolLen(self, .edge_links);
     self.pending_attributes = poolLen(self, .attributes);
 }
-fn finishScopedEdge(self: anytype, event: syntax_event.EdgeStatement) @TypeOf(self.*).Error!void {
+fn finishScopedEdge(self: anytype, event: event_types.Edge) @TypeOf(self.*).Error!void {
     std.debug.assert(self.phase == .building);
     try promoteEdge(self, event, false);
     poolItems(self, .scoped_edges)[self.scope_state.scoped_owner.?].first.attributes = self.pendingRange();
@@ -2026,8 +2182,8 @@ fn finishScopedEdge(self: anytype, event: syntax_event.EdgeStatement) @TypeOf(se
 }
 
 comptime {
-    syntax_event.assertSyntaxSink(Builder);
-    syntax_event.assertSyntaxSink(FixedBuilder);
+    event_types.assertSink(Builder);
+    event_types.assertSink(FixedBuilder);
 }
 
 // ---------------------------------------------------------------------------
@@ -2037,6 +2193,68 @@ comptime {
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
+
+const ScopeCheckpoint = struct { id: event_types.ScopeId, context: SavedScope };
+fn openForTest(builder: anytype, value: event_types.BeginScope) @TypeOf(builder.*).Error!ScopeCheckpoint {
+    var scope = value;
+    // Overflow probes deliberately fake pool lengths beyond the source domain.
+    // Keep the test payload representable; the builder must reject its count.
+    scope.id = @enumFromInt(@min(poolLen(builder, .subgraphs), std.math.maxInt(u32) - 1) + 1);
+    _ = try builder.onEvent(.{ .begin_scope = scope });
+    return .{ .id = scope.id, .context = builder.suspendScope() };
+}
+fn closeForTest(builder: anytype, saved: ScopeCheckpoint, close: location.Span) @TypeOf(builder.*).Error!void {
+    _ = try builder.onEvent(.{ .end_scope = .{ .id = saved.id, .close = close } });
+    builder.restoreScope(saved.context);
+}
+
+test "the public event stream directly builds and sizes the library document" {
+    const source = "digraph G { a:p -> b -> { subgraph inner { c:q; } d; } -> e:r [x=y]; { f; } -- g; graph [k=v]; name=value; }";
+    const scratch = @import("scratch.zig");
+    const TreeScratch = scratch.For(Builder.ScopeContext);
+    const settings = @import("policy.zig").defaults.parsing;
+    var recording: @import("event_test.zig").RecordingSink(128) = .{};
+    var event_frames: scratch.For(void).Fixed(.{ .nesting = 4 }) = .{};
+    var event_stack: scratch.For(void).Stack = .{ .frames = event_frames.storage().frames };
+    try expect(parser.testing.run(source, &recording, diagnostic.discard, settings, &event_stack).outcome == .success);
+
+    var replay = Builder.init(std.testing.allocator, source);
+    defer replay.deinit();
+    var counting: CountingSink = .{};
+    var contexts: [4]SavedScope = undefined;
+    var count_contexts: [4]SavedScope = undefined;
+    var depth: usize = 0;
+    for (recording.recorded()) |record| {
+        const value = record.event;
+        _ = try replay.onEvent(value);
+        _ = try counting.onEvent(value);
+        switch (value) {
+            .begin_scope => {
+                contexts[depth] = replay.suspendScope();
+                count_contexts[depth] = counting.suspendScope();
+                depth += 1;
+            },
+            .end_scope => {
+                depth -= 1;
+                replay.restoreScope(contexts[depth]);
+                counting.restoreScope(count_contexts[depth]);
+            },
+            else => {},
+        }
+    }
+    var document = try replay.toDocument();
+    defer deinitOwnedDocument(&document, std.testing.allocator);
+    try std.testing.expectEqualDeep(counting.counts, document.capacities());
+
+    var direct = Builder.init(std.testing.allocator, source);
+    defer direct.deinit();
+    var frames: TreeScratch.Fixed(.{ .nesting = 4 }) = .{};
+    var stack: TreeScratch.Stack = .{ .frames = frames.storage().frames };
+    try expect(parser.testing.run(source, &direct, diagnostic.discard, settings, &stack).outcome == .success);
+    var reference = try direct.toDocument();
+    defer deinitOwnedDocument(&reference, std.testing.allocator);
+    try std.testing.expectEqualDeep(reference, document);
+}
 
 test "ported index and source overflow fail before pool access and reset cleanly" {
     var pools: FixedDocumentStorage(.{}) = .{};
@@ -2076,8 +2294,8 @@ test "scope entry checks every pool before changing live records" {
     const capacities: Capacities = .{ .statements = 8, .subgraphs = 4, .scoped_edges = 4, .scoped_edge_links = 4 };
     const Pools = FixedDocumentStorage(capacities);
     const at: location.Span = .{ .start = 7, .len = 1 };
-    const edge: syntax_event.EdgeStatement = .{ .left = at, .right = at, .operator = .undirected, .operator_span = at };
-    inline for ([_]syntax_event.ScopeRole{ .left, .right, .link }) |role| inline for ([_]Pool{ .order, .subgraphs, .scoped_edges, .scoped_edge_links }) |limited| {
+    const edge: event_types.Edge = .{ .left = at, .right = at, .operator = .undirected, .operator_span = at };
+    inline for ([_]event_types.ScopeRole{ .left, .right, .link }) |role| inline for ([_]Pool{ .order, .subgraphs, .scoped_edges, .scoped_edge_links }) |limited| {
         const used = switch (role) {
             .left => limited == .order or limited == .subgraphs,
             .right => limited != .scoped_edge_links,
@@ -2088,12 +2306,12 @@ test "scope entry checks every pool before changing live records" {
             var saved_pools: Pools = .{};
             var builder = FixedBuilder.init("graph { {} -- {} -- {} }", pools.storage());
             try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } });
-            const entry: syntax_event.BeginSubgraph = .{ .start = at, .name = null, .role = role, .edge = edge, .link_operator = .undirected, .link_operator_span = at };
+            const entry: event_types.BeginScope = .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null, .role = role, .edge = edge, .link_operator = .undirected, .link_operator_span = at };
             if (role == .link) {
-                const first = try builder.beginSubgraph(.{ .start = at, .name = null, .role = .right, .edge = edge });
-                try builder.endSubgraph(.{ .entry = first, .close = at });
-                const second = try builder.beginSubgraph(entry);
-                try builder.endSubgraph(.{ .entry = second, .close = at });
+                const first = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null, .role = .right, .edge = edge });
+                try closeForTest(&builder, first, at);
+                const second = try openForTest(&builder, entry);
+                try closeForTest(&builder, second, at);
             }
             const before = builder;
             const saved = saved_pools.storage();
@@ -2101,7 +2319,7 @@ test "scope entry checks every pool before changing live records" {
                 @memcpy(@field(saved, pool.storageName())[0..poolLen(&builder, pool)], poolItems(&builder, pool));
             }
             @field(builder.storage, limited.storageName()) = @field(builder.storage, limited.storageName())[0..poolLen(&builder, limited)];
-            try std.testing.expectError(error.PoolExhausted, builder.beginSubgraph(entry));
+            try std.testing.expectError(error.PoolExhausted, openForTest(&builder, entry));
             try expectEqual(limited.resource(), builder.failure_info.?.capacity.?.resource);
             try std.testing.expectEqualDeep(before.scope_state, builder.scope_state);
             try expectEqual(before.current_scope, builder.current_scope);
@@ -2121,14 +2339,14 @@ test "scoped edge promotion does not publish its owner when order is full" {
         const at: location.Span = .{ .start = 7, .len = 1 };
         var builder = FixedBuilder.init("graph { {} -- a }", pools.storage());
         try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } });
-        const entry = try builder.beginSubgraph(.{ .start = at, .name = null });
-        try builder.endSubgraph(.{ .entry = entry, .close = at });
-        try builder.subgraphStatement(entry.id);
+        const entry = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null });
+        try closeForTest(&builder, entry, at);
+        try builder.subgraphStatement(@intFromEnum(entry.id));
         const before = builder;
-        try std.testing.expectError(error.PoolExhausted, @call(.auto, @field(FixedBuilder, method), .{ &builder, syntax_event.EdgeStatement{
+        try std.testing.expectError(error.PoolExhausted, @call(.auto, @field(FixedBuilder, method), .{ &builder, event_types.Edge{
             .left = at,
             .right = at,
-            .left_scope = entry.id,
+            .left_scope = @intFromEnum(entry.id),
             .operator = .undirected,
             .operator_span = at,
         } }));
@@ -2139,19 +2357,19 @@ test "scoped edge promotion does not publish its owner when order is full" {
     }
 }
 
-fn scopeAllocationProbe(allocator: std.mem.Allocator, role: syntax_event.ScopeRole) !void {
+fn scopeAllocationProbe(allocator: std.mem.Allocator, role: event_types.ScopeRole) !void {
     const at: location.Span = .{ .start = 7, .len = 1 };
-    const edge: syntax_event.EdgeStatement = .{ .left = at, .right = at, .operator = .undirected, .operator_span = at };
+    const edge: event_types.Edge = .{ .left = at, .right = at, .operator = .undirected, .operator_span = at };
     var builder = Builder.init(allocator, "graph { {} -- {} }");
     defer builder.deinit();
     try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } });
     if (role == .link) {
-        const entry = try builder.beginSubgraph(.{ .start = at, .name = null, .role = .right, .edge = edge });
-        try builder.endSubgraph(.{ .entry = entry, .close = at });
+        const entry = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null, .role = .right, .edge = edge });
+        try closeForTest(&builder, entry, at);
     }
     const before = builder;
     const owner = if (before.scope_state.scoped_owner) |id| before.scoped_edges.items[id] else null;
-    _ = builder.beginSubgraph(.{ .start = at, .name = null, .role = role, .edge = edge, .link_operator = .undirected, .link_operator_span = at }) catch |err| {
+    _ = openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null, .role = role, .edge = edge, .link_operator = .undirected, .link_operator_span = at }) catch |err| {
         inline for (.{ .order, .subgraphs, .scoped_edges, .scoped_edge_links }) |pool| {
             try expectEqual(poolLen(&before, pool), poolLen(&builder, pool));
         }
@@ -2165,7 +2383,7 @@ fn scopeAllocationProbe(allocator: std.mem.Allocator, role: syntax_event.ScopeRo
 }
 
 test "scope entry leaves live state unchanged at every allocation failure" {
-    for ([_]syntax_event.ScopeRole{ .left, .right, .link }) |role|
+    for ([_]event_types.ScopeRole{ .left, .right, .link }) |role|
         try std.testing.checkAllAllocationFailures(std.testing.allocator, scopeAllocationProbe, .{role});
 }
 
@@ -2566,14 +2784,14 @@ test "scope order and ID overflow are typed before narrowing or pool access" {
         var builder = FixedBuilder.init("graph{}", pools.storage());
         try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
         @field(builder, field) = std.math.maxInt(Index);
-        try std.testing.expectError(error.StatementIndexOverflow, builder.beginSubgraph(.{ .start = at, .name = null }));
+        try std.testing.expectError(error.StatementIndexOverflow, openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null }));
         try expectEqual(diagnostic.Capacity.Resource.statement_index, builder.failure_info.?.capacity.?.resource);
         builder.abortDocument(.sink_failure);
         try expectEqual(@as(usize, 0), builder.subgraphs_len);
     }
     var builder = FixedBuilder.init("graph{}", pools.storage());
     try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
-    _ = try builder.beginSubgraph(.{ .start = at, .name = null });
+    _ = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null });
     builder.abortDocument(.sink_failure);
     try expectEqual(ScopeId.root, builder.current_scope);
 }

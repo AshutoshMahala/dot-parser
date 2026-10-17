@@ -33,6 +33,13 @@ allocator-backed, fixed buffers, and counting only (for `measure`).
 `src/dot/profile.zig` applies the chosen settings and exposes the public
 functions.
 
+Unreleased `Profile.Events(Sink)` binds a consumer directly to that grammar.
+`events.zig` defines the one contract used by user consumers, document builders
+and the sizing sink; `event_profile.zig` supplies event-only drivers. There is
+no translation adapter. Builder-specific scope state stays in typed nesting
+scratch, outside event payloads. Consumer binding and private context types are
+resolved at compile time.
+
 The markup parser follows the same shape under `src/markup/`.
 
 ## Source map
@@ -63,9 +70,11 @@ The markup parser follows the same shape under `src/markup/`.
 | `lexer/scalar.zig` | The default scanner, one byte at a time |
 | `lexer/block.zig` | The opt-in scanner, 64 bytes at a time with vector instructions |
 | `parser.zig` | The grammar, as a resumable state machine |
-| `syntax_event.zig` | The private event interface between parser and builders |
+| `events.zig` | Shared public syntax-event contract used by every DOT output consumer (Unreleased) |
 | `syntax.zig` | The `Document`, its views and iterators, and its builder |
 | `parse_engine.zig` | Connects the grammar to each kind of storage |
+| `event_profile.zig` | Event-only drivers over the shared grammar (Unreleased) |
+| `event_test.zig` | Test-only recording sink for the same public contract |
 | `scratch.zig` | Temporary nesting frames |
 | `validate.zig`, `validation_checks.zig` | Validation and its individual checks |
 | `policy.zig` | The `Policy` type, presets and defaults |
@@ -117,9 +126,9 @@ During 0.x everything public may still change, but some parts are meant to
 stay internal:
 
 - **Public:** everything exported from `src/root.zig` and `src/markup.zig`.
-- **Internal:** the event interface (`syntax_event.zig`), the parser state
-  machine and the document builder. Users reach them only through the public
-  functions.
+- **Internal:** the parser state machine, document builder and its storage
+  bookkeeping. The syntax-event contract is public and shared with those
+  internal consumers.
 - No stable binary layout and no saved file format is promised.
 
 ## Tests

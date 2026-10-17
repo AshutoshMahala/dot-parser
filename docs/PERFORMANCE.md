@@ -102,7 +102,7 @@ Additional type sizes, the same in Fast and Safe builds:
 
 | Type | Size (bytes) |
 | --- | ---: |
-| DOT session with run-time settings | 1,408 |
+| DOT session with run-time settings (Unreleased) | 1,424 |
 | Markup node / attribute | 20 / 20 |
 | Markup nesting frame / attribute-key scratch entry | 12 / 8 |
 | Markup diagnostic / validation result | 36 / 32 |

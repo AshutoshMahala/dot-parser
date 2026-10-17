@@ -241,13 +241,13 @@ test "delayed storage finding keeps sink failure distinct from allocation failur
     try expect(result.markup.has_errors and result.dot.documentValid());
 }
 
-test "delayed selection uses only retained DOT prefix and does not bypass outer stops" {
+test "delayed selection includes recovered DOT values without bypassing outer stops" {
     const source = "graph { a [x=<<b/>>]; b [x=]; later [x=<<i/>>]; }";
     var result = try P.parseAndValidate(gpa, source, P.DiagnosticSink.discard, .{});
     defer result.deinit(gpa);
     try expect(!result.scopeComplete());
     try result.requestMarkup(gpa, span(source, "<<b/>>"));
-    try std.testing.expectError(error.InvalidSpan, result.requestMarkup(gpa, span(source, "<<i/>>")));
+    try result.requestMarkup(gpa, span(source, "<<i/>>"));
     try P.processPendingMarkup(gpa, &result, P.DiagnosticSink.discard, .{});
     try expect(result.markup.allValid() and !result.subtreeComplete());
     var bag: P.FixedDiagnosticBag(0) = .{};

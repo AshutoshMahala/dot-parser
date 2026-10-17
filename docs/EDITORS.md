@@ -65,7 +65,12 @@ defer result.deinit(allocator);
 if (result.document) |*document| {
     _ = document.state;           // .complete or .partial
     _ = document.scopeComplete(); // is the DOT itself complete (not: is it valid)
-    _ = document.unrepresented(); // the source the document doesn't cover, or null
+    _ = document.unrepresented(); // unfinished suffix, or null
+    var gaps = document.skippedRanges();
+    while (gaps.next()) |gap| {
+        _ = gap.range;            // failed/skipped statement or region
+        _ = gap.scope;            // containing DOT scope
+    }
     var scopes = document.subgraphs();
     while (scopes.next()) |scope| {
         _ = scope.state();        // each subgraph is complete or partial too
@@ -74,18 +79,25 @@ if (result.document) |*document| {
 }
 ```
 
-**What you get.** The usual `Document` type, read the usual way. It has every
-statement finished before the first error, and every subgraph that was opened;
+**What you get.** The usual `Document` type, read the usual way. It has retained
+completed statements and every subgraph that was opened;
 unfinished subgraphs are marked partial. A statement only appears once it is
 complete, so you never see half an edge.
 
-**Only the part before the first error is kept.** With `on_error = .collect`
-the parser keeps looking for more errors, but it doesn't add later statements
-to the document. Nothing is guessed: an unclosed quote or comment leaves the
-rest of the file uncovered, and no closing brace or name is invented.
+**Unreleased: later recovered statements are kept too.** With
+`on_error = .collect`, a failed statement is abandoned and later completed
+statements are retained after a safe synchronization boundary. With
+`.fail_fast`, only the safe prefix is kept. Partial retention remains off by
+default and does not change acceptance. Nothing is guessed: an unclosed quote
+or comment leaves the rest uncovered; no closing brace or name is invented.
 
-`unrepresented()` gives the rest of the source. It is **not** a safe place to
-restart parsing. It can be empty when only a closing `}` is missing at the end.
+`skippedRanges()` gives internal recovery gaps in encounter order. A failed
+outer edge's range may contain independently retained endpoint-body statements;
+it does not mean every byte within the range lacks a representation.
+`unrepresented()` gives only the unfinished suffix, not those gaps. It is
+**not** a safe place to restart parsing, and is null if recovery reached the
+end despite errors. A missing token at EOF has no corresponding source bytes;
+consult diagnostics and completeness as well as the ranges.
 If the file fails before a `graph` or `digraph` header has begun, there is no
 document.
 
@@ -97,7 +109,8 @@ still returns sizes only for a successful parse.
 **Complete isn't valid.** A complete document can still fail validation, and a
 partial document is never `documentValid()`. Validating a partial document
 checks only what was kept, and reports that it didn't cover everything
-(`coverage = .{ .incomplete = document.retained_end }`). `parseAndValidate`
+(`coverage.incomplete` names the earliest gap or unfinished suffix, also
+available through `document.firstUnrepresented()`). `parseAndValidate`
 validates the kept part after a syntax error when collecting errors, but not
 after a stop or a fail-fast error.
 
@@ -359,8 +372,12 @@ and column is up to you.
   kept 26–34% more memory. Exact size hints or fixed buffers avoid that.
   `result.deinit` frees everything.
 - **With fixed buffers**, nothing extra is allocated.
-- **Keeping the part after a failure** needs no extra scanning or allocation:
-  the parser returns what it had already built.
+- **Terminal salvage** needs no extra scanning or allocation. Continuing DOT
+  recovery retains later syntax normally and stores two compact order slots
+  (16 bytes on current targets) per skipped region. Growing order storage may
+  allocate; fixed-buffer callers must reserve these slots. Exhaustion stops
+  recovery honestly rather than silently losing gaps. Document, node, edge and
+  subgraph record sizes are unchanged by this extension.
 - **DOT documents are 8 bytes larger** even with partial results off, and
   allocator-owned results have one extra pointer. Node, edge and subgraph
   records are unchanged.

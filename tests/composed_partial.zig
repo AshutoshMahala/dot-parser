@@ -59,12 +59,12 @@ test "composed representation completeness is not validation success" {
     try equal(@as(u32, 1), checked.markup.rejected);
 }
 
-test "outer partial retention preserves completed child results without guessing later DOT" {
+test "outer partial retention preserves completed child results and recovered DOT" {
     var checked = try P.parseAndValidate(gpa, "graph { a [label=<<ok/>>]; b [x=]; later [label=<<after/>>]; }", P.DiagnosticSink.discard, .{});
     defer checked.deinit(gpa);
     try expect(!checked.scopeComplete() and !checked.subtreeComplete());
     try equal(dot.Completeness.partial, checked.dot.document.?.state);
-    try equal(@as(usize, 1), checked.dot.document.?.nodes.len);
+    try equal(@as(usize, 2), checked.dot.document.?.nodes.len);
     // The child pass follows scanner-recognized operands, including recovery.
     // Results are mapped by source spans, not presumed DOT statement handles.
     try equal(@as(usize, checked.markup.visited), checked.markupResults().?.len);

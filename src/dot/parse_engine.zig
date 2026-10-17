@@ -3,7 +3,7 @@
 const std = @import("std");
 const parser_impl = @import("parser.zig");
 const syntax_impl = @import("syntax.zig");
-const scratch_impl = @import("scratch.zig");
+const scratch_impl = @import("scratch.zig").For(syntax_impl.Builder.ScopeContext);
 const lexer_impl = @import("lexer/lexer.zig");
 const policy = @import("policy.zig");
 const diagnostic = @import("diagnostic.zig");
@@ -118,6 +118,7 @@ pub fn EngineWithEncoding(comptime actual: @import("parser_support").encoding.Ac
         fn publicResult(comptime T: type, result: parser_impl.Result) T {
             return .{
                 .outcome = switch (result.outcome) {
+                    .sink_stopped => unreachable,
                     .success => .success,
                     .cancelled => .cancelled,
                     .processor_stopped => .processor_stopped,
@@ -271,6 +272,7 @@ pub fn EngineWithEncoding(comptime actual: @import("parser_support").encoding.Ac
                 if (self.terminal != null) return;
                 const parsed = self.machine.terminal orelse return;
                 const outcome: ParseOutcome = switch (parsed.outcome) {
+                    .sink_stopped => unreachable, // Library builders never request a stop.
                     .success => .success,
                     .cancelled => .cancelled,
                     .processor_stopped => .processor_stopped,

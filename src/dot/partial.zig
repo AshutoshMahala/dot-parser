@@ -1,8 +1,9 @@
-//! Opt-in prefix tracking around failure-atomic builders. A failed event leaves
-//! live syntax unchanged; freezing never snapshots pools or walks nesting.
+//! Opt-in retained regions around failure-atomic builders. Statement abort
+//! abandons staging, not completed nested scopes. Terminal retention never
+//! snapshots pools or walks nesting.
 const std = @import("std");
 const syntax = @import("syntax.zig");
-const event = @import("syntax_event.zig");
+const event = @import("events.zig");
 
 pub const pools = .{ "comments", "order", "nodes", "edges", "edge_chains", "scoped_edges", "scoped_edge_links", "edge_links", "ported_references", "subgraphs", "attributes", "assignments", "attribute_statements" };
 pub const AllocationLengths = [pools.len]usize;
@@ -19,6 +20,9 @@ pub fn Builder(comptime Base: type) type {
     return struct {
         const Self = @This();
         pub const Error = Base.Error;
+        pub const ScopeContext = Base.ScopeContext;
+        pub const wants_begin_statement = false;
+        pub const recover_statements = true;
         base: Base,
         enabled: bool,
         frozen: bool = false,
@@ -42,60 +46,43 @@ pub fn Builder(comptime Base: type) type {
                 self.base.deinit();
             }
         }
-        fn call(self: *Self, comptime name: []const u8, args: anytype) @typeInfo(@TypeOf(@field(Base, name))).@"fn".return_type.? {
-            const value = @call(.auto, @field(Base, name), .{&self.base} ++ args) catch |err| {
-                self.failure_info = self.base.failure_info;
-                return err;
-            };
-            return value;
-        }
         pub fn retainThrough(self: *Self, end: u32) void {
             if (self.enabled and !self.frozen) self.retained_end = @max(self.retained_end, end);
         }
-        pub fn comment(self: *Self, value: syntax.Comment) Error!void {
-            return self.call("comment", .{value});
+        pub fn continuesAfterError(self: *const Self) bool {
+            return self.enabled;
         }
-        pub fn beginDocument(self: *Self, value: event.BeginDocument) Error!void {
-            return self.call("beginDocument", .{value});
+        fn abortStatement(self: *Self) void {
+            if (!self.enabled) return;
+            // Pending pairs/links must never attach to the next statement.
+            // Promoted edge owners and reserved scope slots remain explicitly
+            // unfinished; completed nested statements keep their stable IDs.
+            self.base.pending_attributes = if (owned) self.base.attributes.items.len else self.base.attributes_len;
+            self.base.pending_links = if (owned) self.base.edge_links.items.len else self.base.edge_links_len;
+            self.base.scope_state = .{};
         }
-        pub fn beginSubgraph(self: *Self, value: event.BeginSubgraph) Error!event.ScopeEntry {
-            return self.call("beginSubgraph", .{value});
+        pub inline fn onEvent(self: *Self, value: event.Event) Error!event.Action {
+            const action = self.base.onEvent(value) catch |err| {
+                self.failure_info = self.base.failure_info;
+                return err;
+            };
+            if (value == .skipped) self.retainThrough(@intCast(value.skipped.span.endOffset()));
+            return action;
         }
-        pub fn endSubgraph(self: *Self, value: event.EndSubgraph) Error!void {
-            return self.call("endSubgraph", .{value});
+        pub fn suspendScope(self: *Self) ScopeContext {
+            return self.base.suspendScope();
         }
-        pub fn subgraphStatement(self: *Self, value: u32) Error!void {
-            return self.call("subgraphStatement", .{value});
+        pub fn restoreScope(self: *Self, saved: ScopeContext) void {
+            self.base.restoreScope(saved);
         }
-        pub fn nodeStatement(self: *Self, value: event.NodeStatement) Error!void {
-            return self.call("nodeStatement", .{value});
+        pub fn onAbort(self: *Self, value: event.Abort) void {
+            switch (value) {
+                .statement => self.abortStatement(),
+                .document => |reason| self.abortDocument(reason),
+            }
         }
-        pub fn edgeStatement(self: *Self, value: event.EdgeStatement) Error!void {
-            return self.call("edgeStatement", .{value});
-        }
-        pub fn edgeChainStatement(self: *Self, value: event.EdgeStatement) Error!void {
-            return self.call("edgeChainStatement", .{value});
-        }
-        pub fn edgeLink(self: *Self, value: event.EdgeLink) Error!void {
-            return self.call("edgeLink", .{value});
-        }
-        pub fn portedReference(self: *Self, value: event.PortedReference) Error!u32 {
-            return self.call("portedReference", .{value});
-        }
-        pub fn attribute(self: *Self, value: event.Attribute) Error!void {
-            return self.call("attribute", .{value});
-        }
-        pub fn assignment(self: *Self, value: event.Attribute) Error!void {
-            return self.call("assignment", .{value});
-        }
-        pub fn attributeStatement(self: *Self, value: event.AttributeStatement) Error!void {
-            return self.call("attributeStatement", .{value});
-        }
-        pub fn endDocument(self: *Self) Error!void {
-            return self.call("endDocument", .{});
-        }
-        pub fn abortDocument(self: *Self, reason: event.AbortReason) void {
-            if (!self.enabled or self.base.phase != .building) return self.base.abortDocument(reason);
+        fn abortDocument(self: *Self, reason: event.AbortReason) void {
+            if (!self.enabled or self.base.phase != .building) return self.base.onAbort(.{ .document = reason });
             self.frozen = true;
             // The view resolves unfinished subgraph intervals lazily. No stack
             // unwind, guessed delimiter, pool copy or allocator call is needed.

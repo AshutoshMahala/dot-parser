@@ -26,7 +26,7 @@ documentation and changelog, not every implemented entry in this file.
 ## Current delivery and unfinished decisions
 
 This table is a navigation aid, not a new feature commitment. Its implemented
-features are available in 0.5.0; remaining requirements and proposals are not
+features are available in 0.5.0 unless explicitly marked Unreleased; remaining requirements and proposals are not
 release promises. No “in progress” status is assigned merely because a topic
 has been discussed.
 
@@ -35,7 +35,7 @@ has been discussed.
 | Policies — Q35/Q36 | Typed baselines/overrides, verification, settings migration, initial lenient syntax and optional checks | Keyword-as-name contexts, optional deviation history, semantic rules and performance gates |
 | Markup — Q40 | Structural parsing/checks, local scopes, Graphviz vocabulary/case matching, bounded typo recovery and partial-prefix retention | Graphviz placement/value/reference rules, extended dialects, catalogs, summaries and gap-aware partial trees |
 | Processors — Q40 | Custom compile-time bindings, nested policy preparation, delayed/one-shot integration, workspace reuse and owned label retention | Recursive/string execution, fixed/resumable composition and broader profile API |
-| Editor data | Opt-in DOT comments and partial prefixes, markup prefixes, attached label trees and scope/subtree completeness | Later recovered regions with gaps, incremental edits and a language-server layer |
+| Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
 | Graph layer — Q5/Q17/Q35 | Source-shaped syntax for downstream consumers | Semantic lowering, consumer adapters and marshal/unmarshal |
@@ -183,21 +183,51 @@ Subgraph endpoints are covered by Q34; ports are covered by Q32. *(Embodied: `sr
 Adjacent bracket groups are flattened into one ordered pair sequence, preserving
 written duplicate keys but not group boundaries or empty-list presence. Node,
 edge and attribute statements reference a shared pair pool; assignments have a
-separate pool. The private event seam streams pairs before their owner statement;
+separate pool. The shared event contract streams pairs before their owner statement;
 abort discards staged data by default; opt-in prefix retention preserves safe
 staged facts with explicit incomplete coverage. Both storage paths
 have explicit capacities for all attribute-slice pools (six at that slice;
 eight after Q31's chain support; nine with Q32; ten with Q33). `max_attributes` counts all pairs,
 including assignments, but does not bound lexical work. Defaults, effective-value
 resolution and compile-time feature removal remain future work. *(Embodied:
-`src/dot/parser.zig`, `src/dot/syntax_event.zig`, `src/dot/syntax.zig`, `tests/attributes.zig`.)*
+`src/dot/parser.zig`, `src/dot/events.zig`, `src/dot/syntax.zig`, `tests/attributes.zig`.)*
 
 **Q2 — Is the primary public result a syntax AST, an event stream, or equal
 support for both?**
-Both, layered: the borrowed `Document` is the public result; the syntax-event
-stream is the internal seam between parser and builders, kept private until at
-least two vertical slices exercise it. *(Embodied: `src/root.zig` façade,
-`src/dot/syntax_event.zig`.)*
+Both, layered: the borrowed `Document` remains the convenient public result.
+Unreleased `Profile.Events(Sink)` offers event-only one-shot output and UTF-8
+sessions through the same event contract used by builders and the sizing sink.
+Tentative statement pieces have commit/abort, nested scope and skipped-range
+notifications. Consumers bind at
+compile time and can ignore irrelevant events without building document pools.
+Statement IDs use byte offsets; scope/reference IDs use encounter-order
+ordinals. The parser assigns all identities; source is borrowed. Builder pool
+bookkeeping is private continuation state, not a second event protocol.
+Combined tree/event output, composed event execution, event-driven validation
+and public pull events remain
+unfinished. *(Embodied: `src/dot/events.zig`, `event_profile.zig`,
+`tests/events.zig`, [public contract](../EVENTS.md).)*
+
+The local refactor check preserves default document/session/nesting layouts,
+allocation counts, arena backing capacity and peak requested heap. A five-pair
+alternating comparison against the staged adapter implementation (Apple M4 Pro,
+Zig 0.16.0, 14 DOT workloads per storage mode) found aggregate throughput changes
+of -0.49% / 0.00% for Fast growing/fixed, +0.51% / -1.51% for Safe, and
+-1.12% / -0.02% for Small. Flat `commit_*` cases avoid the nested event/statement
+union's extra generated dispatch. Some scoped workloads still lose roughly
+4–6%; flat aggregate throughput must not be presented as proof that every
+specialization is regression-free. These are local refactor measurements, not
+a refreshed release baseline; binary file sizes also include the mixed harness.
+
+The event-only check (six fixtures, five alternating pairs, scalar/block and
+plain/metered paths) improves aggregate Fast throughput by 2.1–4.3% and Safe by
+0.7–3.2%. Its scalar plain Unicode fixture is an exception: about 8.1% slower in
+Fast and 13.7% in Safe. That remains a performance follow-up, not a cleared
+specialization. On this target a context-free event frame shrinks from 116 to
+100 bytes and its fixed-policy session by 24 bytes. Complete `Event` values grow
+from 76 to 116 bytes because scope-entry events now carry the edge prefix needed
+by every consumer; retaining whole events is a consumer-owned cost, not a hidden
+parser queue. Default tree layouts and pool memory remain unchanged.
 
 **Q3 — Must the AST preserve comments, exact quoting, whitespace, and
 separators for lossless source reproduction?**
@@ -324,7 +354,7 @@ complete syntax parsing, not semantic validity: consumers requiring validated
 output must also stage through validation. No reusable staging helper will be
 added until a concrete consumer demonstrates its need and cost; reconsider
 that helper separately from the settled ownership boundary.
-*(Embodied: `src/dot/syntax_event.zig`, builder abort paths; R-MOD-011.)*
+*(Embodied: `src/dot/events.zig`, builder abort paths; R-MOD-011.)*
 
 **Q37 — How are fix suggestions carried on diagnostics for linters?**
 **DOT implemented; reconciled 2026-09-22:** `Diagnostic.fix: ?Fix` carries an
@@ -886,9 +916,10 @@ unrepresented source ranges. Local completeness and recursive completeness diffe
 from validity and operation completion; unrequested inner processing differs
 from pending processing. An inner failure alone does not make the outer syntax
 partial. `retention.partial` is default-off and independent of `on_error`, with
-compile-time/runtime parity. No guessed delimiters or healed retained trees. Prefix
-retention reuses syntax storage and freezes at the first failure without
-an allocation or stack walk; growing DOT operations reserve constant ownership
+compile-time/runtime parity. No guessed delimiters or healed retained trees.
+Unreleased collecting DOT retention resumes after recoverable errors and records
+gaps as paired tags in existing order storage. Markup and fail-fast DOT retain
+prefixes. Terminal salvage uses no allocation or stack walk; growing DOT operations reserve constant ownership
 metadata before parsing. Direct validation reports missing coverage. Safely
 retained operators of unfinished scoped-edge owners are independent checkable
 facts before that frontier; public edge/statement views still exclude the owner.
@@ -899,7 +930,7 @@ partial-retention choices. Ordinary successful parsing remains the default
 contract. Attached delayed processing now supports an explicit source-ordered
 selection and one batch on the same composed result; pending operands are visible
 and selected-set coverage is distinct from proactive all-operand coverage.
-Later recovered regions and resumable per-inner-scope scheduling remain work
+Markup's later recovered regions and resumable per-inner-scope scheduling remain work
 in [the markup plan](MARKUP.md#recovery-and-acceptance).
 
 Boundaries, local checks and enclosing structure have different prerequisites.
@@ -943,8 +974,8 @@ need not leave a document.
 | Composed execution | Agreed direction; shared credits, cancellation, fixed scratch, reset/latching and validation scheduling |
 | Deeper/string processing | Future design; nested policy preparation is implemented |
 | Profile/API redesign | Deferred discussion; workspace reuse did not decide it |
-| Summary index / caching / public events | Optional proposals; ownership, layout, budgets and event contract unresolved |
-| Gap-aware partial-tree publication | Prefix retention delivered; later recovered regions and explicit gaps remain |
+| Summary index / caching / broader events | Optional proposals; initial public DOT event-only output is Unreleased |
+| Gap-aware partial-tree publication | DOT later regions/gaps are Unreleased; markup remains prefix-only |
 | Native encoding execution | Initial one-shot paths implemented; native session dispatch, metered validation and native excerpts remain |
 | Packaging/versioning | Open; an independent module does not decide separate packages/version numbers |
 | Cross-parser boundary survey | Optional follow-up, not a gate on delivered recognition |
@@ -1150,7 +1181,8 @@ signal stop at capacity and parsing honors that immediately. Explicit omission
 mode limits retention only. **Still open:** a broader per-class abort/report/ignore
 policy. Q36's three lenient
 acceptances are implemented and can successfully commit; recovery after a
-rejected construct remains separate and cannot publish a partial document.
+rejected construct remains separate and cannot publish a partial document by
+default; explicit retention keeps safe syntax without successful acceptance.
 *(Embodied: `Policy.on_error`,
 `tests/diagnostics.zig`, `tests/policy_settings.zig`; R-FUNC-007, R-DX-002.)*
 
@@ -1169,8 +1201,8 @@ an actual board budget remains open.
 **Q11 — Which observer events and verbosity levels are stable public API in
 version 1?**
 Policy-bound sessions, progress, metering and cancellation are implemented
-(Q27/Q35). The stable public observer/pull-event interface and verbosity contract
-remain open; implementation of the policy core does not settle them.
+(Q27/Q35). The initial public push-event interface is Unreleased (Q2); 1.0
+stability, public pull events and verbosity remain open.
 
 **Q14 — Which syntax features are compile-time selectable, and which remain
 in every parser profile?**

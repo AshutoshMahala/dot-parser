@@ -121,7 +121,7 @@ pub fn validateForEncoding(comptime actual: @import("parser_support").encoding.A
         var prefix = document.*;
         prefix.source = prefix.source[0..prefix.retained_end];
         var result = validateRetained(actual, fixed, &prefix, diagnostics, runtime, scratch);
-        result.coverage = .{ .incomplete = document.retained_end };
+        result.coverage = .{ .incomplete = document.firstUnrepresented() orelse document.retained_end };
         if (result.outcome == .completed) result.outcome.completed.document_valid = false;
         return result;
     }
@@ -261,7 +261,7 @@ const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
 const parser = @import("parser.zig");
-const syntax_event = @import("syntax_event.zig");
+const event_types = @import("events.zig");
 
 fn buildDocument(source: []const u8) !syntax.Document {
     var builder = syntax.Builder.init(std.testing.allocator, source);

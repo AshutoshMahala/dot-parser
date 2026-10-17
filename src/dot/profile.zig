@@ -47,6 +47,10 @@ pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Ac
         pub const Policies = Binding;
         pub const baseline = Binding.baseline;
         pub const runtime_policy = config.runtime_policy;
+        /// Consumer-defined streaming output instead of library document pools.
+        pub fn Events(comptime Sink: type) type {
+            return @import("event_profile.zig").Bound(actual, api, config, Sink);
+        }
         const State = if (runtime_policy) policy.Effective else void;
         const ValidationState = if (runtime_policy) policy.ValidationSettings else void;
         const Hook = if (runtime_policy or baseline.execution.cancellation) ?api.Cancellation else void;
@@ -274,7 +278,7 @@ pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Ac
             }
 
             /// Separate, unbudgeted analysis using the latched validation policy.
-            /// No result until terminal. Opt-in retention can publish a prefix.
+            /// No result until terminal. Opt-in retention can publish regions.
             pub fn validate(self: *const Self, diagnostics: api.DiagnosticSink, scratch: api.ValidationScratch) ?api.ValidationResult {
                 const parsed = self.result() orelse return null;
                 const doc = &(parsed.document orelse return null);

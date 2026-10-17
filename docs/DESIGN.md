@@ -364,18 +364,24 @@ Those timings are historical evidence for the default, not a new benchmark.
 Current, target-qualified state sizes are in
 [Performance](PERFORMANCE.md#type-sizes).
 
-### The document is built from internal events
+### One event contract builds the document or consumer-defined output
 
-The grammar emits events to an internal consumer, which builds the document.
-Consumers see *begin*, *commit* and *abort*. This event interface is private for
-now; the `Document` is the public result.
+The grammar emits the same events to our document builders, sizing sink or a
+user-provided consumer. All use `onEvent` and infallible `onAbort`; there is no
+separate builder protocol or translation adapter. Unreleased
+[DOT events](EVENTS.md) describe that contract. Pool indices, reservations and
+private saved scope state belong to the builder, not event payloads. Static
+dispatch lets builders inline event handling and omit unneeded statement-begin
+notifications without a runtime observer layer.
 
 **Why:** one grammar can then feed every builder: allocator-backed, fixed
 buffers, and the counting pass behind `measure`. A consumer might act before a
 later error is found, so it needs an abort signal to throw away staged work.
 That is how ordinary parsing avoids returning a partial document. With partial
 results on, the builder instead keeps what was finished when the
-abort comes. The interface stays private until its shape settles.
+abort comes. Public events also bracket tentative statements with commit/abort,
+so a collecting consumer can retain later statements without buffering an
+entire large attribute list before receiving it.
 
 Tags: R-MOD-011
 
@@ -477,7 +483,9 @@ as closing that element while recovering.
 > **Available since 0.5.0.**
 
 With `retention.partial = true`, a DOT or markup parse that fails can still
-return the part it finished before the first error. The document says whether
+return completed syntax. Unreleased DOT collection also retains later safely
+recovered statements and explicit gaps; markup still keeps its prefix.
+The document says whether
 it is complete, and so does each DOT subgraph and each markup node.
 `unrepresented()` gives the text the document doesn't cover. Keeping label
 trees from a DOT file is a separate choice.
