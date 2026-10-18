@@ -10,6 +10,49 @@ const D = diagnostic.Diagnostic;
 const Settings = policy.ValidationSettings;
 const none = std.math.maxInt(u32);
 
+/// Attributes and assignments each retain source order, including attributes
+/// following subgraph endpoints. Merge these two pools without an owner index,
+/// extra scratch, or a statement-order traversal that could reorder findings.
+pub fn CatalogForEncoding(comptime actual: @import("parser_support").encoding.Actual) type {
+    const enc = @import("parser_support").encoding.Reader(actual);
+    return struct {
+        document: *const syntax.Document,
+        severity: policy.RuleSeverity,
+        attribute: u32 = 0,
+        assignment: u32 = 0,
+        pub fn init(document: *const syntax.Document, settings: Settings, _: Scratch) @This() {
+            return .{ .document = document, .severity = settings.graphviz.unknown_attribute };
+        }
+        pub fn next(self: *@This()) ?D {
+            if (self.severity == .off) return null;
+            while (self.attribute < self.document.attributes.len or self.assignment < self.document.assignments.len) {
+                const take_attribute = self.attribute < self.document.attributes.len and (self.assignment == self.document.assignments.len or self.document.attributes[self.attribute].key.start < self.document.assignments[self.assignment].key.start);
+                const key = if (take_attribute) self.document.attributes[self.attribute].key else self.document.assignments[self.assignment].key;
+                if (take_attribute) self.attribute += 1 else self.assignment += 1;
+                var chunks: identifier.ForEncoding(actual).Chunks = .{ .raw = key.slice(self.document.source) };
+                var name: [18]u8 = undefined;
+                var len: usize = 0;
+                var valid = true;
+                outer: while (chunks.next()) |chunk| {
+                    var offset: usize = 0;
+                    while (offset < chunk.len) : (offset += enc.width) {
+                        const unit = enc.unit(chunk, offset);
+                        if (len == name.len or unit > 127) {
+                            valid = false;
+                            break :outer;
+                        }
+                        name[len] = @intCast(unit);
+                        len += 1;
+                    }
+                }
+                if (valid and @import("attribute_catalog.zig").lookup(name[0..len]) != null) continue;
+                return .{ .code = severityCode(self.severity, .validation_unknown_attribute, .validation_unknown_attribute_tolerated), .span = key };
+            }
+            return null;
+        }
+    };
+}
+
 /// Temporary only. Contents are unspecified after validation and may be reused.
 /// Size with requiredScratch; a working group is reused across attribute owners.
 pub const AttributeKeyScratch = struct {

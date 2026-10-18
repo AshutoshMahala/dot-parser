@@ -35,8 +35,9 @@ fn xmlStart(value: u21) bool {
     };
 }
 
-pub fn knownReference(catalog: policy.ReferenceCatalog, name: []const u8) bool {
+pub inline fn knownReference(catalog: policy.ReferenceCatalog, name: []const u8) bool {
     return switch (catalog) {
+        .graphviz => @import("graphviz_entities.zig").catalog.has(name),
         .xml_predefined => switch (name.len) {
             2 => std.mem.eql(u8, name, "lt") or std.mem.eql(u8, name, "gt"),
             3 => std.mem.eql(u8, name, "amp"),
@@ -46,10 +47,11 @@ pub fn knownReference(catalog: policy.ReferenceCatalog, name: []const u8) bool {
     };
 }
 
-pub fn knownReferenceEncoded(comptime actual: @import("parser_support").encoding.Actual, catalog: policy.ReferenceCatalog, name: []const u8) bool {
+pub inline fn knownReferenceEncoded(comptime actual: @import("parser_support").encoding.Actual, catalog: policy.ReferenceCatalog, name: []const u8) bool {
     const enc = @import("parser_support").encoding.Reader(actual);
     if (enc.width == 1) return knownReference(catalog, name);
     return switch (catalog) {
+        .graphviz => @import("graphviz_entities.zig").lookup(actual, name) != null,
         .xml_predefined => enc.asciiEqual(name, "lt", false) or enc.asciiEqual(name, "gt", false) or enc.asciiEqual(name, "amp", false) or enc.asciiEqual(name, "apos", false) or enc.asciiEqual(name, "quot", false),
     };
 }

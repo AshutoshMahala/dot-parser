@@ -1,6 +1,6 @@
 # Markup — remaining work
 
-Reconciled: 2026-10-05. This file contains unimplemented capabilities, unresolved
+Reconciled: 2026-10-17. This file contains unimplemented capabilities, unresolved
 design choices and outstanding verification, not a delivery log or a second API
 guide. R-MOD-014/015 and Q40 in [Requirements](REQUIREMENTS.md) and
 [OpenQuestions](OpenQuestions.md) remain the architectural requirements and
@@ -15,7 +15,7 @@ decision before becoming implementation work.
 
 | Work | Decisions or implementation still needed |
 | --- | --- |
-| Graphviz label validation | Child/content rules, attribute values, references, parsing compatibility and DOT context selection |
+| Graphviz label validation | DOT label-context selection, contextual color/scheme validation and pinned runtime differential verification |
 | Extended markup rules | A concrete consumer and a defined vocabulary/grammar |
 | Dialect-specific parsing | Void elements, case/context rules, unquoted/empty attributes and policy surface |
 | Custom name/reference catalogs | Compile-time binding and independently selectable rules |
@@ -40,11 +40,10 @@ label. Context selection must distinguish `n:<p>` (port `p`),
 resolution belongs to later graph semantics, not markup validation.
 
 Follow Q10's specification-first approach and pinned 16.0.0 differential
-reference. Remaining slices are content/placement/whitespace and element forms;
-attribute values, quoting and the Graphviz reference catalog; then DOT label
-context selection. ASCII-case-insensitive start/end-name matching is implemented;
-other parsing differences still need explicit contracts and verification.
-Do not mistake vocabulary success for full Graphviz compatibility. Rendering,
+reference. Remaining work is DOT label-context selection and contextual color
+validation; local values/content/reference checks are documented publicly.
+Run pinned Graphviz differential tests before claiming complete implementation
+compatibility, including its permissive numeric-prefix parsing. Rendering,
 font/image availability and graph-level port resolution remain out of scope.
 Specify each new check's diagnostics, coverage and bounded-work/storage costs.
 The extended vocabulary needs an actual consumer and explicit tag,

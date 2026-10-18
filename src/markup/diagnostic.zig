@@ -67,6 +67,7 @@ pub const Primary = enum {
     reference,
     encoding,
     identifier,
+    content,
     pub fn name(self: Primary) []const u8 {
         return switch (self) {
             .byte => "Byte",
@@ -79,6 +80,7 @@ pub const Primary = enum {
             .reference => "Reference",
             .encoding => "Encoding",
             .identifier => "Name",
+            .content => "Content",
         };
     }
 };
@@ -114,6 +116,10 @@ pub const Code = enum {
     unknown_element_tolerated,
     invalid_attribute,
     invalid_attribute_tolerated,
+    invalid_content,
+    invalid_content_tolerated,
+    invalid_value,
+    invalid_value_tolerated,
 
     const Metadata = wdp.Catalog(Component, Primary);
     pub const Info = Metadata.Info;
@@ -247,6 +253,22 @@ pub const Code = enum {
                 .summary = "attribute is not allowed on this Graphviz element",
                 .hint = "remove the attribute or use an attribute documented for this element",
             },
+            .invalid_content, .invalid_content_tolerated => .{
+                .severity = if (self == .invalid_content) .err else .warning,
+                .component = .validation,
+                .primary = .content,
+                .sequence = Sequence.invalid,
+                .summary = "content does not follow the Graphviz label grammar",
+                .hint = "follow the label's text/table grammar and the TABLE/TR/TD hierarchy",
+            },
+            .invalid_value, .invalid_value_tolerated => .{
+                .severity = if (self == .invalid_value) .err else .warning,
+                .component = .validation,
+                .primary = .attribute,
+                .sequence = Sequence.invalid,
+                .summary = "invalid Graphviz label attribute value",
+                .hint = "use the documented value or supply the required attribute",
+            },
         };
         return definition.info();
     }
@@ -268,6 +290,8 @@ pub const Details = union(enum) {
     capacity: struct { resource: Resource, limit: u32 },
     reference: ReferenceProblem,
     name: struct { context: NameContext, problem: NameProblem },
+    graphviz_content: @import("graphviz_content.zig").Problem,
+    graphviz_value: @import("graphviz_value.zig").Problem,
 };
 pub const Diagnostic = struct {
     code: Code,

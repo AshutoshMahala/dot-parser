@@ -231,7 +231,7 @@ fn stoppedResult(reason: diagnostic.StopReason, delivery: diagnostic.Delivery, e
 /// Ties use this fixed rule order: kind, operator, encoding, repeated key,
 /// port, subgraph. Filtering a stream never changes the remaining order.
 fn cursorTypes(comptime actual: @import("parser_support").encoding.Actual, comptime fixed: ?policy.ValidationSettings) type {
-    const enabled: [6]bool = if (fixed) |s| .{
+    const enabled: [7]bool = if (fixed) |s| .{
         s.restrictions.graph_kinds.undigraph != .off or s.restrictions.graph_kinds.digraph != .off or s.restrictions.graph_kinds.generic != .off,
         s.digraph.operator_mismatch != .off or
             ((s.graph.treated_as != .auto and s.graph.treated_as != .generic) and s.graph.operators.operator_mismatch != .off),
@@ -239,8 +239,9 @@ fn cursorTypes(comptime actual: @import("parser_support").encoding.Actual, compt
         s.repeated_attribute != .off,
         s.restrictions.ports != .off,
         s.restrictions.subgraphs != .off,
-    } else .{ true, true, true, true, true, true };
-    const all = .{ checks.GraphKinds, checks.Operators, checks.EncodingForEncoding(actual), checks.RepeatedAttributesForEncoding(actual), checks.Ports, checks.SubgraphsForEncoding(actual) };
+        s.graphviz.unknown_attribute != .off,
+    } else .{ true, true, true, true, true, true, true };
+    const all = .{ checks.GraphKinds, checks.Operators, checks.EncodingForEncoding(actual), checks.RepeatedAttributesForEncoding(actual), checks.Ports, checks.SubgraphsForEncoding(actual), checks.CatalogForEncoding(actual) };
     comptime var types: [all.len]type = undefined;
     comptime var count: usize = 0;
     inline for (all, enabled) |T, include| {

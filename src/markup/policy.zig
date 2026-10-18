@@ -2,8 +2,8 @@
 const std = @import("std");
 pub const RuleSeverity = enum { err, warning, off };
 pub const ScannerBackend = enum { scalar, block };
-/// Graphviz adds vocabulary checks and ASCII-case-insensitive tag matching,
-/// not complete label grammar. Extended remains unimplemented.
+/// Graphviz adds label rules and ASCII-case-insensitive tag matching.
+/// Extended remains unimplemented.
 pub const Mode = enum { structural, graphviz };
 pub const Acceptance = enum { reject, warn, accept };
 pub const OnError = @import("parser_support").execution.OnError;
@@ -16,12 +16,15 @@ pub const Fixes = @import("parser_support").reporting.Fixes;
 pub const SyntaxSettings = struct { malformed_reference: Acceptance = .reject };
 /// Optional validation rules, not parser dialects or namespace processing.
 pub const NameRule = enum { xml_1_0 };
-pub const ReferenceCatalog = enum { xml_predefined };
+pub const ReferenceCatalog = enum { xml_predefined, graphviz };
 pub const NameSettings = struct { rule: NameRule = .xml_1_0, severity: RuleSeverity = .off };
 pub const ReferenceSettings = struct { catalog: ReferenceCatalog = .xml_predefined, severity: RuleSeverity = .off };
 pub const GraphvizSettings = struct {
     unknown_element: RuleSeverity = .err,
     invalid_attribute: RuleSeverity = .err,
+    invalid_content: RuleSeverity = .err,
+    invalid_value: RuleSeverity = .err,
+    unknown_reference: RuleSeverity = .err,
 };
 pub const ValidationSettings = struct {
     on_error: OnError = .collect,
@@ -53,7 +56,7 @@ pub const Policy = struct {
         invalid_encoding: ?RuleSeverity = null,
         names: struct { rule: ?NameRule = null, severity: ?RuleSeverity = null } = .{},
         references: struct { catalog: ?ReferenceCatalog = null, severity: ?RuleSeverity = null } = .{},
-        graphviz: struct { unknown_element: ?RuleSeverity = null, invalid_attribute: ?RuleSeverity = null } = .{},
+        graphviz: struct { unknown_element: ?RuleSeverity = null, invalid_attribute: ?RuleSeverity = null, invalid_content: ?RuleSeverity = null, invalid_value: ?RuleSeverity = null, unknown_reference: ?RuleSeverity = null } = .{},
     } = .{},
     execution: struct {
         metering: ?bool = null,
@@ -158,7 +161,7 @@ pub const presets = struct {
             .invalid_encoding = defaults.validation.invalid_encoding,
             .names = .{ .rule = defaults.validation.names.rule, .severity = defaults.validation.names.severity },
             .references = .{ .catalog = defaults.validation.references.catalog, .severity = defaults.validation.references.severity },
-            .graphviz = .{ .unknown_element = .err, .invalid_attribute = .err },
+            .graphviz = .{ .unknown_element = .err, .invalid_attribute = .err, .invalid_content = .err, .invalid_value = .err, .unknown_reference = .err },
         },
         .execution = .{ .metering = false, .cancellation = false, .cancellation_interval = 1 },
     };

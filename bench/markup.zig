@@ -163,10 +163,36 @@ fn benchGraphviz(init: std.process.Init, writer: *std.Io.Writer) !void {
             });
         };
     }
+    const row = "<TR><TD ALIGN='LEFT'><B>text</B>&nbsp;</TD><TD WIDTH='25'>value</TD></TR>";
+    const rows = 10_000;
+    const source = try allocator.alloc(u8, 15 + row.len * rows);
+    @memcpy(source[0..7], "<TABLE>");
+    for (0..rows) |i| @memcpy(source[7 + i * row.len ..][0..row.len], row);
+    @memcpy(source[source.len - 8 ..], "</TABLE>");
+    var parsed = Structural.parseBorrowed(allocator, source, markup.diagnostic.discard, .{});
+    defer parsed.deinit();
+    const doc = &parsed.document.?;
+    inline for (.{ false, true }) |full| {
+        const P = markup.Profile(.{ .policy = if (full) .{} else .{ .validation = .{ .graphviz = .{ .invalid_content = .off, .invalid_value = .off, .unknown_reference = .off } } } });
+        var times: [9]u64 = undefined;
+        for (0..warmups + times.len) |round| {
+            const start = std.Io.Clock.Timestamp.now(init.io, .awake);
+            for (0..batch) |_| {
+                const checked = P.validateIn(doc, .{}, markup.diagnostic.discard, .{});
+                if (checked.completion != .complete or checked.errors != 0) return error.ValidationFailed;
+                std.mem.doNotOptimizeAway(checked);
+            }
+            const end = std.Io.Clock.Timestamp.now(init.io, .awake);
+            if (round >= warmups) times[round - warmups] = @intCast(@divTrunc(start.durationTo(end).raw.nanoseconds, batch));
+        }
+        std.mem.sort(u64, &times, {}, std.sort.asc(u64));
+        const ns: f64 = @floatFromInt(times[4]);
+        try writer.print("label_rules/{s}: source={d}, {d:.3} ms, {d:.1} MB/s, scratch=0\n", .{ if (full) "full" else "vocabulary", source.len, ns / 1e6, @as(f64, @floatFromInt(source.len)) * 1000 / ns });
+    }
 }
 
 noinline fn validateVocabulary(comptime runtime: bool, comptime mode: markup.Mode, document: *const markup.Document, scratch: markup.ValidationScratch) u64 {
-    const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = mode } });
+    const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = mode, .validation = .{ .graphviz = .{ .invalid_content = .off, .invalid_value = .off, .unknown_reference = .off } } } });
     var patch: markup.Policy = .{};
     const input: *volatile markup.Policy = &patch;
     const result = (if (runtime) P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = input.* } else .{}) catch unreachable else P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = input.* } else .{}));

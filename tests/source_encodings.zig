@@ -3,6 +3,22 @@ const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 const gpa = std.testing.allocator;
 
+test "native DOT Graphviz catalog compares logical case-sensitive keys" {
+    const P = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .policy = .{ .validation = .{ .graphviz = .{ .unknown_attribute = .warning } } } });
+    inline for (.{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        var buffer: [512]u8 = undefined;
+        const source = encode(actual, "digraph { a [\"co\"+\"lor\"=red, shpe=box]; rankdir=LR }", &buffer, true);
+        var bag: dot.FixedDiagnosticBag(4) = .{};
+        var result = try P.parseAndValidate(gpa, source, bag.sink(), .{});
+        defer result.deinit(gpa);
+        try std.testing.expect(result.documentValid());
+        try std.testing.expectEqual(@as(u64, 1), result.warnings);
+        try std.testing.expectEqual(@as(usize, 1), bag.items().len);
+        var key: [16]u8 = undefined;
+        try std.testing.expectEqualSlices(u8, encode(actual, "shpe", &key, false), bag.items()[0].span.slice(source));
+    }
+}
+
 test "profile source inspection reports native framing and bound capabilities" {
     const N = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 } });
     const M = markup.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 } });

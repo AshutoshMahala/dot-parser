@@ -1,4 +1,4 @@
-//! Standalone Graphviz vocabulary, not full Graphviz label validation.
+//! Standalone Graphviz label checks. No renderer or external resource access.
 const std = @import("std");
 const markup = @import("markup_parser");
 
@@ -15,8 +15,8 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [2048]u8 = undefined;
     var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
     const writer = &output.interface;
-    try writer.print("Graphviz vocabulary: {s}\n", .{if (result.documentValid()) "valid" else "not accepted"});
-    try writer.writeAll("Coverage: tag and attribute names; placement, values and reference catalog are not checked yet.\n");
+    try writer.print("Graphviz label: {s}\n", .{if (result.documentValid()) "valid" else "not accepted"});
+    try writer.writeAll("Checked: names, content grammar, local attribute values and references. No color-scheme, font, image or layout resolution.\n");
     const locations = try allocator.alloc(markup.location.Location, try markup.console.locationCapacity(bag.items()));
     defer allocator.free(locations);
     try markup.console.renderBoxedList(bag.items(), 0, .{ .source = source, .source_name = "label.markup" }, locations, writer);

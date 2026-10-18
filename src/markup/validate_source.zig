@@ -81,6 +81,7 @@ pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, compt
     const enc = support.encoding.Reader(actual);
     const V = validation.ValidatorForEncoding(actual, if (fixed) |f| f.validation else null, cancellable, mode);
     const Local = validation.ValidatorForEncoding(actual, if (fixed) |f| localSettings(f.validation) else null, cancellable, mode);
+    const values_enabled = mode == .graphviz and (if (fixed) |f| f.validation.graphviz.invalid_value != .off else true);
     return struct {
         const Self = @This();
         pub const Settings = if (fixed == null) policy.Effective else void;
@@ -96,10 +97,18 @@ pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, compt
             result: Result = .{},
             buffers: Buffers,
             header: ?struct { start: u32, name: Span } = null,
+            header_facts: if (values_enabled) Local.HeaderFacts else void = if (values_enabled) .{} else {},
             poller: V.Poller = .{},
             // Structural mode has only lexical gaps. Graphviz also has missing
             // owner contracts; those must not taint independent local checks.
             lexical_gap: if (mode == .graphviz) bool else void = if (mode == .graphviz) false else {},
+            attribute_gap: if (mode == .graphviz) bool else void = if (mode == .graphviz) false else {},
+            value_gap: if (mode == .graphviz) bool else void = if (mode == .graphviz) false else {},
+
+            inline fn needsHeader(self: *@This()) bool {
+                const v = effective(self.settings).validation;
+                return v.duplicate_attribute != .off;
+            }
 
             fn poll(self: *@This()) bool {
                 return self.poller.step(&self.result, self.hook);
@@ -112,6 +121,10 @@ pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, compt
                 switch (checked.completion) {
                     .complete => return true,
                     .incomplete => |at| {
+                        if (mode == .graphviz) {
+                            self.attribute_gap = self.attribute_gap or checked.checks.graphviz_attributes == .incomplete;
+                            self.value_gap = self.value_gap or checked.checks.graphviz_values == .incomplete;
+                        }
                         // Header gaps are recorded by the scanner; local checks
                         // report only independent missing vocabulary coverage.
                         validation.recordGap(&self.result, at);
@@ -157,8 +170,8 @@ pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, compt
                     self.header = null;
                     self.buffers.attributes.clearRetainingCapacity();
                 }
-                if (effective(self.settings).validation.duplicate_attribute == .off) return true;
-                const keys = self.buffers.prepare() catch |err|
+                if (!self.needsHeader()) return !values_enabled or !complete or self.merge(Local.runHeaderTrusted(self.source, h.name, self.header_facts, self.sink, if (fixed == null) localSettings(self.settings.validation) else {}));
+                const keys: []validation.AttributeKeyScratch = if (effective(self.settings).validation.duplicate_attribute == .off) &.{} else self.buffers.prepare() catch |err|
                     return self.storageFailure(err, .attribute_keys, h.name, @intCast(self.buffers.attributes.items.len), @intCast(self.buffers.keys.items.len));
                 return self.checkScope(.{ .opening_header = .{
                     .span = .{ .start = h.start, .len = end - h.start },
@@ -172,15 +185,17 @@ pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, compt
                     .open, .empty => return self.checkScope(.{ .opening_header = .{ .span = t.span, .name = t.name } }, &.{}),
                     .open_head => {
                         self.header = .{ .start = t.span.start, .name = t.name };
-                        if (effective(self.settings).validation.duplicate_attribute == .off)
+                        self.header_facts = if (values_enabled) .{} else {};
+                        if (!self.needsHeader())
                             return self.checkScope(.{ .opening_name = t.name }, &.{});
                     },
                     .attribute => {
-                        if (effective(self.settings).validation.duplicate_attribute != .off) {
+                        if (self.needsHeader()) {
                             self.buffers.append(.{ .name = t.name, .value = t.span }) catch |err|
                                 return self.storageFailure(err, .header_attributes, t.name, @as(u32, @intCast(self.buffers.attributes.items.len)) + 1, @intCast(self.buffers.attributes.capacity));
                         } else {
                             if (!self.checkAttributeVocabulary(t.name)) return false;
+                            if (values_enabled and !self.merge(Local.runValueTrusted(self.source, self.header.?.name, t.name, t.span, &self.header_facts, self.sink, if (fixed == null) localSettings(self.settings.validation) else {}, self.hook, &self.poller))) return false;
                             if (!self.checkScope(.{ .attribute_name = t.name }, &.{})) return false;
                             return self.checkScope(.{ .attribute_value = .{ .start = t.span.start + enc.width, .len = t.span.len - 2 * enc.width } }, &.{});
                         }
@@ -198,10 +213,10 @@ pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, compt
             fn finish(self: *@This()) Result {
                 const gaps = self.result.completion == .incomplete;
                 const lexical_gap = if (mode == .graphviz) self.lexical_gap else gaps;
-                inline for (.{ "duplicate_attribute", "names", "references", "graphviz_elements", "graphviz_attributes" }) |name| {
-                    const attributes = comptime std.mem.eql(u8, name, "graphviz_attributes");
+                inline for (.{ "duplicate_attribute", "names", "references", "graphviz_elements", "graphviz_attributes", "graphviz_values" }) |name| {
+                    const missing = if (mode == .structural) false else if (comptime std.mem.eql(u8, name, "graphviz_attributes")) self.attribute_gap else if (comptime std.mem.eql(u8, name, "graphviz_values")) self.value_gap else false;
                     if (@field(self.result.checks, name) != .not_run)
-                        @field(self.result.checks, name) = if (lexical_gap or (attributes and gaps)) .incomplete else .complete;
+                        @field(self.result.checks, name) = if (lexical_gap or missing) .incomplete else .complete;
                 }
                 if (!gaps and self.result.errors == 0) self.result.validity = .valid;
                 return self.result;
@@ -213,9 +228,10 @@ pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, compt
                     .duplicate_attribute = if (p.validation.duplicate_attribute == .off) .not_run else .incomplete,
                     .invalid_encoding = if (p.validation.invalid_encoding == .off) .not_run else .incomplete,
                     .names = if (p.validation.names.severity == .off) .not_run else .incomplete,
-                    .references = if (p.validation.references.severity == .off) .not_run else .incomplete,
+                    .references = if (validation.referenceSettings(mode, v).severity == .off) .not_run else .incomplete,
                     .graphviz_elements = if (mode == .structural or v.graphviz.unknown_element == .off) .not_run else .incomplete,
                     .graphviz_attributes = if (mode == .structural or v.graphviz.invalid_attribute == .off) .not_run else .incomplete,
+                    .graphviz_values = if (mode == .structural or v.graphviz.invalid_value == .off) .not_run else .incomplete,
                 };
                 if (self.source.len > p.limits.max_source_bytes) {
                     self.result.completion = .{ .source_limit = p.limits.max_source_bytes };
@@ -252,7 +268,7 @@ pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, compt
                             self.recordGap(problem.diagnostic.span.start);
                             const pending = scanner.pendingScopes();
                             if (if (pending.name_kind == .closing) null else pending.name) |name| {
-                                if (pending.name_kind == .attribute and p.validation.duplicate_attribute != .off) {
+                                if (pending.name_kind == .attribute and self.needsHeader()) {
                                     std.debug.assert(self.header != null);
                                     self.buffers.append(.{ .name = name }) catch |err| {
                                         _ = self.storageFailure(err, .header_attributes, name, @as(u32, @intCast(self.buffers.attributes.items.len)) + 1, @intCast(self.buffers.attributes.capacity));

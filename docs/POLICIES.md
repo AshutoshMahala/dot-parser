@@ -128,6 +128,7 @@ hide the result.
 | `ambiguous_numeral` | `.warning` | A number that runs into a letter or dot, like `1e3` (read as `1` and `e3`, as Graphviz does) |
 | `invalid_encoding` | `.off` | Text that isn't valid in the file's encoding, anywhere except inside HTML-like labels (`invalid_utf8` in 0.4.0) |
 | `repeated_attribute` | `.off` | The same key twice on one statement, like `[color=red, color=blue]` |
+| `graphviz.unknown_attribute` | `.off` | A key absent from the optional Graphviz attribute catalog |
 | `restrictions.graph_kinds.undigraph` | `.off` | The graph is undirected |
 | `restrictions.graph_kinds.digraph` | `.off` | The graph is directed |
 | `restrictions.graph_kinds.generic` | `.off` | The graph mixes directions (see below) |
@@ -181,6 +182,31 @@ const checked = Checks.validate(&document, bag.sink(), .{
   the number of entries it needs, before checking anything.
 - With `repeated_attribute = .off`, no scratch is needed.
 - Validation never changes the source or the document.
+
+### Optional Graphviz attribute catalog
+
+Available in Unreleased. Custom attributes are legal DOT, so this check is off
+by default. Enable it to catch spelling mistakes such as `shpe`:
+
+```zig
+const Checks = dot.Profile(.{ .policy = .{ .validation = .{
+    .graphviz = .{ .unknown_attribute = .warning },
+} } });
+```
+
+It compares logical, case-sensitive names: `color`, `"color"` and
+`"co" + "lor"` are equal. It checks attribute lists and graph assignments,
+including statements retained after recovery, in source order. No extra
+allocation or validation scratch is needed. Fixed-disabled profiles omit the
+check; runtime-enabled profiles can override its severity.
+
+`dot.attribute_catalog.lookup("shape")` returns metadata, or `null` for an
+unknown key. `entries` contains all 177 entries in the
+[Graphviz attribute table](https://graphviz.org/doc/info/attrs.html), captured
+2026-10-17. Entries expose `name`, `targets`, `type_name`, `default_value` and
+`minimum`. Types/defaults/minimums are descriptive strings, not applied graph
+semantics. This catalog does **not** yet validate DOT attribute values, resolve
+defaults, enforce target applicability, or provide color/shape suggestions.
 
 ### Graph kinds and edge operators
 
@@ -374,6 +400,7 @@ Every field of `dot.Policy`, with its default and where it is explained:
 | `validation.ambiguous_numeral` | `.err`, `.warning`, `.off` | `.warning` | [Optional checks](#optional-checks) |
 | `validation.invalid_encoding` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) (`invalid_utf8` in 0.4.0) |
 | `validation.repeated_attribute` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |
+| `validation.graphviz.unknown_attribute` | `.err`, `.warning`, `.off` | `.off` | [Graphviz catalog](#optional-graphviz-attribute-catalog) |
 | `validation.restrictions.graph_kinds.undigraph` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |
 | `validation.restrictions.graph_kinds.digraph` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |
 | `validation.restrictions.graph_kinds.generic` | `.err`, `.warning`, `.off` | `.off` | [Optional checks](#optional-checks) |

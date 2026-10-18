@@ -115,9 +115,12 @@ Validation is a separate step with these checks, each `.err`, `.warning` or
 | `validation.names.severity` | `.off` | Names that break the rule in `names.rule` |
 | `validation.names.rule` | `.xml_1_0` | XML 1.0's rules for tag, attribute and reference names (the only rule today) |
 | `validation.references.severity` | `.off` | Named references missing from `references.catalog` |
-| `validation.references.catalog` | `.xml_predefined` | The five XML names `amp`, `lt`, `gt`, `quot`, `apos` (the only list today) |
+| `validation.references.catalog` | `.xml_predefined` | XML predefined names, or `.graphviz` for HTML4 plus `apos` |
 | `validation.graphviz.unknown_element` | `.err` in Graphviz mode | Elements Graphviz doesn't know |
 | `validation.graphviz.invalid_attribute` | `.err` in Graphviz mode | Attributes not allowed on that Graphviz element |
+| `validation.graphviz.invalid_content` | `.err` in Graphviz mode | Label grammar and parent/child placement |
+| `validation.graphviz.invalid_value` | `.err` in Graphviz mode | Local value rules and required attributes |
+| `validation.graphviz.unknown_reference` | `.err` in Graphviz mode | Unknown Graphviz named references, unless an explicit reference check takes precedence |
 
 ```zig
 const Strict = markup.Profile(.{ .policy = .{ .validation = .{
@@ -146,14 +149,10 @@ const checked = Strict.validate(allocator, &document, bag.sink(), .{});
 
 ## Graphviz vocabulary
 
-> **Available since 0.5.0.** This checks tag and attribute names only, not
-> all of Graphviz's label rules.
-
-In Graphviz mode, validation checks that every element is one Graphviz knows,
-and that each attribute is allowed on its element. Graphviz mode is the default
-for the top-level `markup` functions, `markup.Profile(.{})`, both presets, and a
-markup profile bound to DOT as a label checker. These are the default settings,
-written out:
+Tag/attribute vocabulary and case-insensitive tag matching shipped in 0.5.0.
+**Unreleased adds content grammar, local attribute values and Graphviz named
+references.** Graphviz mode remains the default; structural mode does not run
+these checks.
 
 ```zig
 const Labels = markup.Profile(.{ .policy = .{
@@ -161,6 +160,9 @@ const Labels = markup.Profile(.{ .policy = .{
     .validation = .{ .graphviz = .{
         .unknown_element = .err,
         .invalid_attribute = .err,
+        .invalid_content = .err,
+        .invalid_value = .err,
+        .unknown_reference = .err,
     } },
 } });
 var result = try Labels.parseAndValidate(allocator, .{
@@ -170,78 +172,81 @@ var result = try Labels.parseAndValidate(allocator, .{
 defer result.deinit();
 ```
 
-The vocabulary follows the [Graphviz documentation for HTML-like labels](https://graphviz.org/doc/info/shapes.html#html):
+All five severities accept `.err`, `.warning` and `.off`, including runtime
+overrides. Off skips the check. Both presets restore these defaults; choose
+`.mode = .structural` for independent markup with your own vocabulary.
 
-| Elements | Allowed attributes |
+The rules follow the [Graphviz HTML-like label documentation](https://graphviz.org/doc/info/shapes.html#html):
+
+| Check | Coverage |
 | --- | --- |
-| `TABLE`, `TD` | Their documented attribute lists |
-| `FONT` | `COLOR`, `FACE`, `POINT-SIZE` |
-| `BR` | `ALIGN` |
-| `IMG` | `SCALE`, `SRC` |
-| `TR`, `I`, `B`, `U`, `O`, `SUB`, `SUP`, `S`, `HR`, `VR` | None |
+| Elements and attributes | Documented per-element vocabulary; ASCII-case-insensitive tag/attribute names and duplicate detection |
+| Label content | Text/style runs **or** one table, optionally wrapped once in FONT, I, B, U or O; tables cannot mix with other label content |
+| Tables | TABLE contains TR rows, TR contains TD cells; HR/VR occur only between rows/cells, never first, last or consecutively |
+| Cells and styles | Empty cells allowed; IMG is the sole cell content; styles contain text/BR or the permitted table form; BR/HR/VR/IMG have no content |
+| Whitespace | Nonprinting characters ignored; spaces around an unwrapped table allowed, but spaces outside its font wrapper rejected |
+| Attribute values | Alignment, booleans, SCALE, SIDES, STYLE, ROWS/COLUMNS; numeric ranges for borders, padding, spacing, spans, dimensions and gradient angle; finite POINT-SIZE |
+| Required attributes | Nonempty IMG SRC; FIXEDSIZE=TRUE requires positive WIDTH and HEIGHT |
+| References | HTML4's 252 named references plus XML `apos`, case-sensitive; numeric reference syntax/character validity remain parser checks |
 
-**How names are compared.** Tag names, attribute names, and matching a closing
-tag to its opening tag all ignore ASCII case, as Graphviz does: `<b>` and `<B>`
-are the same element, and `<B>...</b>` matches. Error recovery and the
-duplicate-attribute check use the same rule, so `COLOR` and `color` on one
-element are duplicates. Non-ASCII letters aren't case-folded, and typos aren't
-guessed. Spelling, order, values and duplicates are still kept as written.
+Reference values are decoded for checking, including numeric references in
+attribute values and whitespace. Stored values, quotes, spelling and byte spans
+are untouched. No entity expansion buffer, network access or DTD processing is
+introduced. POINT-SIZE uses 0–255 and GRADIENTANGLE 0–360, following the pinned
+[Graphviz 16.0.0 numeric rules](https://gitlab.com/graphviz/graphviz/-/blob/16.0.0/lib/common/htmllex.c).
+Numeric values must be complete numbers; Graphviz's implementation sometimes
+ignores trailing junk, which this validator does not accept as a valid number.
 
-**Settings.**
+Two existing parser forms are deliberately retained: single **or** double
+quotes, and paired empty elements such as `<BR></BR>`. The documented examples
+use double quotes and `<BR/>`, but Graphviz's XML-backed parser and
+[label grammar](https://gitlab.com/graphviz/graphviz/-/blob/16.0.0/lib/common/htmlparse.y)
+also accept these forms. Bare `<BR>` without a closer is still not accepted.
 
-- `validation.graphviz.unknown_element` and `invalid_attribute` each take
-  `.err` (default), `.warning` or `.off`, also as run-time settings.
-- They have no effect in structural mode.
-- Both presets select Graphviz mode, even on top of a structural profile. To
-  keep the untrusted limits but check your own markup, copy the preset and
-  change its mode:
+**Reference policy.** Graphviz's `unknown_reference` uses the HTML4 catalog by
+default. An explicitly enabled `validation.references` check takes precedence,
+so a consumer can deliberately select `.xml_predefined` instead. Set both
+reference severities to `.off` to skip catalog checks. `references.catalog =
+.graphviz` is also available in structural mode. XML name checks remain
+independent and opt-in.
 
-```zig
-const Custom = markup.Profile(.{ .policy = blk: {
-    var policy = markup.presets.untrusted;
-    policy.mode = .structural;
-    break :blk policy;
-} });
-```
+**Coverage.** `checks.graphviz_elements`, `graphviz_attributes`,
+`graphviz_values`, `graphviz_content` and `references` distinguish
+`.not_run`, `.incomplete` and `.complete`. An unknown element has no
+attribute/content contract: independent descendants still get checked, but
+unavailable coverage is not certified, even with `unknown_element = .off`.
+Unknown attributes similarly leave value coverage incomplete. Partial trees
+do not generate speculative missing-child errors from unfinished containers.
 
-**What "valid" means here.** `documentValid()` means valid under the checks that
-ran. It does **not** mean Graphviz will accept the label. Not checked yet:
+**Local scopes are not whole labels.** `validateScope[In]` and
+`validateSource[In]` check local headers, values and references, even after
+syntax errors. They have no nesting tree, so `graphviz_content` is
+`.not_run`; local validity is not a claim that the whole label grammar is
+valid. Use `parseAndValidate` or document `validate[In]` for that check.
+A lone `attribute_name` scope lacks an owner/value and cannot check those rules.
 
-- which tags may contain which. `<TABLE><TD/></TABLE>` passes, even though the
-  cell has no row.
-- the order of children, whitespace rules, and empty-element forms
-- the double quotes Graphviz requires, attribute values, and Graphviz's named
-  references
+**Costs and ordering.** Content checking is an allocation-free direct-child
+walk with bounded wrapper lookahead: O(nodes + inspected source bytes), no
+recursion or extra nesting stack. Value/reference checks use fixed-size state.
+Duplicate checking alone needs its existing per-header scratch. Document
+validation emits local findings first, then content-model findings; it does not
+sort or buffer diagnostics. Cancellation and sink stops apply throughout;
+validation remains run-to-completion, not credit-metered.
 
-XML name and reference checks remain separate, opt-in settings.
+**Limits of this contract.** `documentValid()` means valid under the selected
+implemented checks, not guaranteed rendering. Color names/schemes, fonts,
+image-file availability, resolved ports, layout geometry and renderer-specific
+behavior are not checked. Free-form attribute values stay free-form.
 
-**Unknown elements.** An unknown element gets one finding. Graphviz has no
-attribute list for it, so its attributes are skipped, but the elements inside
-it and the other checks still run. If it has attributes, the attribute check
-didn't cover everything. So, if nothing else is wrong, `validity` is `.unknown`
-(not `.valid`) and `documentValid()` is false. `completion` is `.incomplete`,
-pointing at the first place that wasn't checked. This happens even with
-`unknown_element = .off`. An unknown element with no attributes doesn't cause
-it. `validation.checks.graphviz_elements` and `graphviz_attributes` show whether
-each check ran fully (`.complete`), partly (`.incomplete`), or not at all
-(`.not_run`).
+**Inside DOT.** Proactive composition still checks **every** HTML-like operand,
+not only label positions. Automatic label-context selection remains separate
+work. To avoid applying label grammar to non-label IDs, select actual labels
+with [delayed processing](LABELS.md#check-the-labels-you-choose).
 
-**Parts of a document.** These checks also work with `validateIn`,
-`validateSource[In]` and `validateScope[In]`. When `validateScope` checks one
-opening tag, its attributes are checked against that tag. A lone
-`attribute_name` scope has no element to check against, so the attribute check
-reports `.not_run`. Tags that can still be recognised after a syntax error are
-checked; skipped regions are reported as not fully checked.
-
-**Inside DOT.** Checking every label while parsing DOT checks **every** `<...>`
-value, not only labels, so HTML-like values in other places get the Graphviz
-rules too. To check only labels, pick them yourself and
-[check the labels you choose](LABELS.md#check-the-labels-you-choose). Picking label positions
-automatically is planned.
-
-See [graphviz_vocabulary.zig](../examples/graphviz_vocabulary.zig) for a
-runnable example, and [Performance](PERFORMANCE.md#graphviz-vocabulary-checks)
-for what the checks cost.
+See [graphviz_vocabulary.zig](../examples/graphviz_vocabulary.zig) for a runnable
+label-checking example. The vocabulary-only benchmark explicitly disables the
+new rules; `bench-markup -- --graphviz-only` also compares vocabulary-only and
+full checks on one valid table.
 
 ## When parsing fails
 

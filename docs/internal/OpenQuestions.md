@@ -975,7 +975,7 @@ need not leave a document.
 
 | Topic | Status / next decision |
 | --- | --- |
-| Graphviz validation | Vocabulary delivered; label-context selection, placement, values, reference rules and their costs remain |
+| Graphviz validation | Label-context selection, contextual colors and pinned runtime differential verification remain; local label rules are documented in MARKUP.md |
 | Extended vocabulary | Under discussion; concrete consumer, tags, attributes and placement |
 | Dialect parsing | Under discussion; void names/case/context, explicit closers, unquoted/empty attributes and grammar policy |
 | Custom name/reference catalogs | Further design; built-ins remain independent optional checks |

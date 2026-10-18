@@ -38,8 +38,9 @@ checker's own settings decide **how**, through its [mode](MARKUP.md#two-modes):
   attributes must be well-formed.
 - Since 0.5.0 it defaults to `.graphviz`, which also checks
   [Graphviz's tags and attributes](MARKUP.md#graphviz-vocabulary) and matches
-  tag names ignoring ASCII case. It doesn't yet check all of Graphviz's label
-  rules.
+  tag names ignoring ASCII case. Unreleased also checks content placement,
+  local attribute values and named references. Color-scheme, resource and
+  layout resolution remain outside this parser.
 
 Neither mode is a browser HTML parser. Checking every label while parsing
 covers **every** `<...>` value, not only labels. To check only labels, pick

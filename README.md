@@ -254,7 +254,7 @@ and runs them all, and installs each one in `zig-out/bin/`.
 | [markup](examples/markup.zig) | parse and validate markup on its own | [Markup](docs/MARKUP.md) |
 | [markup_partial](examples/markup_partial.zig) | keep the finished part of markup for editors | [Editors](docs/EDITORS.md#keep-the-finished-part-of-markup) |
 | [partial_documents](examples/partial_documents.zig) | keep the finished part of a DOT file and its label trees | [Editors](docs/EDITORS.md#keep-the-label-trees-from-a-dot-file) |
-| [graphviz_vocabulary](examples/graphviz_vocabulary.zig) | check Graphviz tags and attributes (not the full label rules) | [Vocabulary](docs/MARKUP.md#graphviz-vocabulary) |
+| [graphviz_vocabulary](examples/graphviz_vocabulary.zig) | check Graphviz label grammar, attributes and references | [Label rules](docs/MARKUP.md#graphviz-vocabulary) |
 | [custom_processor](examples/custom_processor.zig) | plug in your own label checker | [Own processor](docs/CUSTOM_PROCESSORS.md) |
 
 ## Building and testing

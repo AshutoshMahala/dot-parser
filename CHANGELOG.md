@@ -8,6 +8,15 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Graphviz label content grammar, local attribute values/required attributes,
+  and HTML4 named-reference checks. Each has independent fixed/runtime
+  severity. Structural mode stays unaffected; local scope validation does not
+  claim whole-label content coverage. No new tree/scratch allocations.
+- Optional DOT Graphviz attribute-name checking via
+  `validation.graphviz.unknown_attribute` (default off), plus
+  `attribute_catalog.lookup`/`entries` metadata for 177 documented attributes.
+  DOT value validation and target enforcement are not part of the catalog yet.
+
 - Compile-time-bound DOT event consumers via `Profile.Events(Sink)`, with
   event-only one-shot/fixed-scratch parsing and UTF-8 sessions. Statement
   commit/abort, nested scopes and skipped ranges allow consumer-defined output
@@ -27,6 +36,10 @@ are marked; no compatibility shims are kept.
   uses it to explain unsupported BOMs before parsing.
 
 ### Changed
+
+- **Breaking:** Graphviz mode now rejects previously unchecked label content
+  and values under its default policies. The new rules can be individually
+  disabled; parsing alone still retains structurally valid input unchanged.
 
 - Add `execution.cancellation_interval` to DOT and markup policies, default 1,
   with fixed/runtime selection and unchanged work-credit metering. Larger

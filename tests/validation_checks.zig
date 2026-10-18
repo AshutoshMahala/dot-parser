@@ -7,6 +7,31 @@ const deep = std.testing.expectEqualDeep;
 const Runtime = dot.Profile(.{ .runtime_policy = true });
 const Storage = dot.FixedDocumentStorage(.{ .statements = 32, .nodes = 32, .edges = 16, .attributes = 64, .subgraphs = 16, .scoped_edges = 16, .scoped_edge_links = 16, .edge_chains = 16, .edge_links = 32, .ported_references = 32, .assignments = 16, .attribute_statements = 16 });
 
+test "optional Graphviz catalog checks logical attribute names with no scratch" {
+    const source = "digraph { own=1; a [\"co\" + \"lor\"=red, shpe=box]; a -> { b [private=2] } [unknown=3]; rankdir=LR; }";
+    inline for (.{ dot.RuleSeverity.err, .warning, .off }) |severity| {
+        const p: dot.Policy = .{ .validation = .{ .graphviz = .{ .unknown_attribute = severity } } };
+        const P = dot.Profile(.{ .policy = p });
+        var bag: dot.FixedDiagnosticBag(8) = .{};
+        var result = P.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});
+        defer result.deinit(std.testing.allocator);
+        try equal(severity != .err, result.documentValid());
+        try equal(@as(usize, if (severity == .off) 0 else 4), bag.items().len);
+        if (severity != .off) {
+            for (bag.items(), [_][]const u8{ "own", "shpe", "private", "unknown" }) |finding, name|
+                try std.testing.expectEqualStrings(name, finding.span.slice(source));
+        }
+        const runtime = try Runtime.validate(&result.document.?, dot.diagnostic.discard, .{ .policy = p });
+        try deep(result.validation.?, runtime);
+    }
+    try expect(dot.attribute_catalog.lookup("shape").?.targets.node);
+    try std.testing.expectEqualStrings("bool", dot.attribute_catalog.lookup("constraint").?.type_name);
+    try expect(dot.attribute_catalog.lookup("Shape") == null);
+    const P = dot.Profile(.{ .runtime_policy = true, .policy = .{ .validation = .{ .graphviz = .{ .unknown_attribute = .err } } } });
+    const reset = try P.Policies.prepare(.{ .policy = dot.presets.standard });
+    try equal(dot.RuleSeverity.off, reset.validation.graphviz.unknown_attribute);
+}
+
 fn checks(severity: dot.RuleSeverity) dot.Policy {
     return .{ .validation = .{
         .invalid_encoding = severity,

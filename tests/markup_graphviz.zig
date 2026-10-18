@@ -5,7 +5,8 @@ const equal = std.testing.expectEqual;
 const expect = std.testing.expect;
 const strings = std.testing.expectEqualStrings;
 const discard = markup.diagnostic.discard;
-const Graphviz = markup.Profile(.{ .policy = .{ .mode = .graphviz } });
+const vocabulary: markup.Policy = .{ .mode = .graphviz, .validation = .{ .graphviz = .{ .invalid_content = .off, .invalid_value = .off, .unknown_reference = .off } } };
+const Graphviz = markup.Profile(.{ .policy = vocabulary });
 
 test "default markup entry points use Graphviz matching and vocabulary" {
     const Default = markup.Profile(.{});
@@ -18,7 +19,9 @@ test "default markup entry points use Graphviz matching and vocabulary" {
     try equal(.complete, result.validation.?.checks.graphviz_elements);
     try equal(.complete, result.validation.?.checks.graphviz_attributes);
     try equal(result.validation.?, Default.validate(std.testing.allocator, &result.parse.document.?, discard, .{}));
-    try equal(result.validation.?, markup.validateSource(std.testing.allocator, source, discard, .{}));
+    var local_expected = result.validation.?;
+    local_expected.checks.graphviz_content = .not_run;
+    try equal(local_expected, markup.validateSource(std.testing.allocator, source, discard, .{}));
 
     var nodes: markup.FixedDocumentStorage(.{ .nodes = 3, .attributes = 1 }) = .{};
     var frames: markup.FixedParseScratch(2) = .{};
@@ -32,8 +35,8 @@ test "default markup entry points use Graphviz matching and vocabulary" {
 
     for ([_]struct { bytes: []const u8, code: markup.diagnostic.Code }{
         .{ .bytes = "<custom/>", .code = .unknown_element },
-        .{ .bytes = "<B class='x'/>", .code = .invalid_attribute },
-        .{ .bytes = "<FONT COLOR='red' color='blue'/>", .code = .duplicate_attribute },
+        .{ .bytes = "<B class='x'>text</B>", .code = .invalid_attribute },
+        .{ .bytes = "<FONT COLOR='red' color='blue'>text</FONT>", .code = .duplicate_attribute },
     }) |case| {
         var bag: markup.FixedDiagnosticBag(8) = .{};
         var rejected = try markup.parseAndValidate(std.testing.allocator, .{ .bytes = case.bytes, .origin = 0 }, bag.sink(), .{});
@@ -230,7 +233,7 @@ test "unknown owner attributes retain incomplete coverage across scopes fragment
         .invalid_encoding = .err,
         .names = .{ .severity = .err },
         .references = .{ .severity = .err },
-        .graphviz = .{ .unknown_element = .off },
+        .graphviz = .{ .invalid_content = .off, .invalid_value = .off, .unknown_reference = .off, .unknown_element = .off },
     } };
     const P = markup.Profile(.{ .policy = p });
     const Runtime = markup.Profile(.{ .runtime_policy = true });
@@ -295,7 +298,7 @@ test "unknown owner attributes retain incomplete coverage across scopes fragment
 }
 
 test "unknown owner gaps preserve independent findings and merge with lexical gaps" {
-    const P = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .graphviz, .validation = .{ .graphviz = .{ .unknown_element = .off } } } });
+    const P = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .graphviz, .validation = .{ .graphviz = .{ .invalid_content = .off, .invalid_value = .off, .unknown_reference = .off, .unknown_element = .off } } } });
     inline for (.{ .scalar, .block }) |backend| inline for (.{ .off, .err }) |duplicates| {
         var storage: markup.FixedSourceValidationScratch(2) = .{};
         for ([_][]const u8{
@@ -303,7 +306,7 @@ test "unknown owner gaps preserve independent findings and merge with lexical ga
             "<DIV a='x'/><BR BAD=0/><SPAN b='z'/>",
         }) |source| {
             var bag: markup.FixedDiagnosticBag(8) = .{};
-            const checked = (try P.validateSourceIn(source, storage.storage(), bag.sink(), .{ .policy = .{ .scanner = backend, .validation = .{ .duplicate_attribute = duplicates } } }));
+            const checked = (try P.validateSourceIn(source, storage.storage(), bag.sink(), .{ .policy = .{ .scanner = backend, .validation = .{ .graphviz = vocabulary.validation.graphviz, .duplicate_attribute = duplicates } } }));
             try equal(@as(u32, 5), checked.completion.incomplete);
             try equal(.invalid, checked.validity);
             try equal(@as(u64, 1), checked.errors);
@@ -312,7 +315,7 @@ test "unknown owner gaps preserve independent findings and merge with lexical ga
             try equal(markup.diagnostic.Code.invalid_attribute, bag.items()[0].code);
         }
         const source = "<BR ALIGN=0/><DIV a='x'/>";
-        const checked = (try P.validateSourceIn(source, storage.storage(), discard, .{ .policy = .{ .scanner = backend, .validation = .{ .duplicate_attribute = duplicates } } }));
+        const checked = (try P.validateSourceIn(source, storage.storage(), discard, .{ .policy = .{ .scanner = backend, .validation = .{ .graphviz = vocabulary.validation.graphviz, .duplicate_attribute = duplicates } } }));
         try equal(@as(u32, 10), checked.completion.incomplete);
     };
     var bag: markup.FixedDiagnosticBag(8) = .{};
@@ -334,7 +337,7 @@ test "independent severity controls have compile-time runtime and source-walk pa
     inline for (.{ .err, .warning, .off }) |element| inline for (.{ .err, .warning, .off }) |attribute| inline for (.{ .scalar, .block }) |backend| inline for (.{ .off, .err }) |duplicates| {
         const p: markup.Policy = .{ .mode = .graphviz, .scanner = backend, .validation = .{
             .duplicate_attribute = duplicates,
-            .graphviz = .{ .unknown_element = element, .invalid_attribute = attribute },
+            .graphviz = .{ .invalid_content = .off, .invalid_value = .off, .unknown_reference = .off, .unknown_element = element, .invalid_attribute = attribute },
         } };
         const P = markup.Profile(.{ .policy = p });
         var fixed_bag: markup.FixedDiagnosticBag(16) = .{};
@@ -357,8 +360,8 @@ test "independent severity controls have compile-time runtime and source-walk pa
 }
 
 test "mode and nested patches inherit independently and complete presets reset them" {
-    const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .graphviz, .validation = .{ .graphviz = .{ .unknown_element = .warning } } } });
-    const inherited = try Runtime.Policies.prepare(.{ .policy = .{ .validation = .{ .graphviz = .{ .invalid_attribute = .off } } } });
+    const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .graphviz, .validation = .{ .graphviz = .{ .invalid_content = .off, .invalid_value = .off, .unknown_reference = .off, .unknown_element = .warning } } } });
+    const inherited = try Runtime.Policies.prepare(.{ .policy = .{ .validation = .{ .graphviz = .{ .invalid_content = .off, .invalid_value = .off, .unknown_reference = .off, .invalid_attribute = .off } } } });
     try equal(.graphviz, inherited.mode);
     try equal(.warning, inherited.validation.graphviz.unknown_element);
     try equal(.off, inherited.validation.graphviz.invalid_attribute);
@@ -369,7 +372,7 @@ test "mode and nested patches inherit independently and complete presets reset t
         try equal(.err, reset.validation.graphviz.invalid_attribute);
     }
     try equal(.valid, Runtime.validatePolicy(.{ .mode = .graphviz }));
-    const Structural = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .graphviz = .{ .unknown_element = .err, .invalid_attribute = .err } } } });
+    const Structural = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .graphviz = .{ .invalid_content = .off, .invalid_value = .off, .unknown_reference = .off, .unknown_element = .err, .invalid_attribute = .err } } } });
     const checked = Structural.validateSourceIn("<custom/>", .{}, discard, .{});
     try equal(.valid, checked.validity);
     try equal(.not_run, checked.checks.graphviz_elements);
@@ -379,7 +382,7 @@ test "mode and nested patches inherit independently and complete presets reset t
 test "Graphviz headers remain independently checkable after syntax errors" {
     const source = "<TABLE BOGUS=0/><custom><BR SRC='x'/></wrong>";
     inline for (.{ .scalar, .block }) |backend| inline for (.{ .off, .err }) |duplicates| {
-        const P = markup.Profile(.{ .policy = .{ .mode = .graphviz, .scanner = backend, .validation = .{ .duplicate_attribute = duplicates } } });
+        const P = markup.Profile(.{ .policy = .{ .mode = .graphviz, .scanner = backend, .validation = .{ .graphviz = vocabulary.validation.graphviz, .duplicate_attribute = duplicates } } });
         var bag: markup.FixedDiagnosticBag(16) = .{};
         var result = try P.parseAndValidate(std.testing.allocator, .{ .bytes = source, .origin = 20 }, bag.sink(), .{});
         defer result.deinit();
@@ -508,7 +511,7 @@ test "Graphviz fixed fragment and reused workspace agree with owned results and 
 
 test "vocabulary and XML name findings keep document order without source repair" {
     const source = "<TABLE a\xff='x'/><a\xff/>";
-    const P = markup.Profile(.{ .policy = .{ .mode = .graphviz, .validation = .{ .names = .{ .severity = .err }, .invalid_encoding = .warning } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .graphviz, .validation = .{ .graphviz = vocabulary.validation.graphviz, .names = .{ .severity = .err }, .invalid_encoding = .warning } } });
     var parsed = P.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     var bag: markup.FixedDiagnosticBag(16) = .{};
@@ -529,7 +532,7 @@ test "vocabulary floods stop at the diagnostic cap and skipping a check does not
     try equal(@as(u64, 1024), checked.errors);
     try equal(@as(usize, 1024), bag.items().len);
     var zero: markup.FixedDiagnosticBag(0) = .{};
-    const Off = markup.Profile(.{ .policy = .{ .mode = .graphviz, .validation = .{ .graphviz = .{ .unknown_element = .off, .invalid_attribute = .off } } } });
+    const Off = markup.Profile(.{ .policy = .{ .mode = .graphviz, .validation = .{ .graphviz = .{ .invalid_content = .off, .invalid_value = .off, .unknown_reference = .off, .unknown_element = .off, .invalid_attribute = .off } } } });
     const skipped = Off.validateSourceIn(source, .{}, zero.sink(), .{});
     try equal(.complete, skipped.completion);
     try equal(@as(u64, 0), skipped.errors);
@@ -537,7 +540,7 @@ test "vocabulary floods stop at the diagnostic cap and skipping a check does not
 }
 
 test "warnings do not trigger fail-fast and attribute checks continue on known children" {
-    const P = markup.Profile(.{ .policy = .{ .mode = .graphviz, .on_error = .fail_fast, .validation = .{ .graphviz = .{ .unknown_element = .warning } } } });
+    const P = markup.Profile(.{ .policy = .{ .mode = .graphviz, .on_error = .fail_fast, .validation = .{ .graphviz = .{ .invalid_content = .off, .invalid_value = .off, .unknown_reference = .off, .unknown_element = .warning } } } });
     var bag: markup.FixedDiagnosticBag(8) = .{};
     const checked = P.validateSourceIn("<custom/><BR BAD='x'/><unknown/>", .{}, bag.sink(), .{});
     // Header buffering for default duplicate checking needs an attribute slot.
@@ -555,7 +558,7 @@ test "generated vocabulary headers have scalar block document and source parity"
     const tags = [_][]const u8{ "TABLE", "TaBlE", "TD", "td", "FONT", "br", "IMG", "B", "custom", "東京" };
     const names = [_][]const u8{ "WIDTH", "width", "Width", "ALIGN", "align", "CLASS", "FACE", "POINT-SIZE", "a\xff", "bogus" };
     const values = [_][]const u8{ "x", "&amp;", "&nbsp;", "&#65;" };
-    const patch: markup.Policy = .{ .mode = .graphviz, .validation = .{ .names = .{ .severity = .err }, .references = .{ .severity = .warning } } };
+    const patch: markup.Policy = .{ .mode = .graphviz, .validation = .{ .graphviz = vocabulary.validation.graphviz, .names = .{ .severity = .err }, .references = .{ .severity = .warning } } };
     const P = markup.Profile(.{ .policy = patch });
     const Runtime = markup.Profile(.{ .runtime_policy = true });
     var rng = std.Random.DefaultPrng.init(0x6a76766f636162);

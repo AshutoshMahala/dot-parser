@@ -178,6 +178,8 @@ pub const Code = enum {
     /// E/W.Validation.Attribute.035 — logical key repeated within one owner.
     validation_repeated_attribute,
     validation_repeated_attribute_tolerated,
+    validation_unknown_attribute,
+    validation_unknown_attribute_tolerated,
     /// E/W.Validation.Restriction.003 — a consumer restriction, not DOT syntax.
     validation_restriction,
     validation_restriction_tolerated,
@@ -306,6 +308,14 @@ pub const Code = enum {
                 .sequence = Sequence.repeated_attribute,
                 .summary = "attribute key occurs more than once in this statement",
                 .hint = "inspect the earlier value and the selected consumer policy; repeated keys are legal DOT and are preserved",
+            },
+            .validation_unknown_attribute, .validation_unknown_attribute_tolerated => .{
+                .severity = if (self == .validation_unknown_attribute) .err else .warning,
+                .component = .validation,
+                .primary = .attribute,
+                .sequence = Sequence.unsupported,
+                .summary = "attribute name is not in the Graphviz catalog",
+                .hint = "check the spelling, or disable this optional check for application-specific attributes; custom attributes are legal DOT",
             },
             .validation_restriction, .validation_restriction_tolerated => .{
                 .severity = if (self == .validation_restriction) .err else .warning,

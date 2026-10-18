@@ -63,7 +63,7 @@ fn digit(byte: u8, radix: u8) ?u32 {
     };
     return if (value < radix) value else null;
 }
-fn referenceCharacter(value: u32) bool {
+pub fn referenceCharacter(value: u32) bool {
     // XML 1.0 Char range, without decoding or emitting replacement bytes.
     return value == 9 or value == 10 or value == 13 or
         (value >= 0x20 and value <= 0xd7ff) or

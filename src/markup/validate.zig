@@ -36,7 +36,7 @@ pub fn FixedScratch(comptime capacity: u32) type {
         }
     };
 }
-pub const CheckStatus = enum { not_run, incomplete, complete };
+pub const CheckStatus = enum(u2) { not_run, incomplete, complete };
 pub const Result = struct {
     completion: union(enum) {
         complete,
@@ -56,13 +56,15 @@ pub const Result = struct {
         diagnostic_stopped: support.reporting.StopReason,
     } = .complete,
     validity: enum { valid, invalid, unknown } = .unknown,
-    checks: struct {
+    checks: packed struct {
         duplicate_attribute: CheckStatus = .not_run,
         invalid_encoding: CheckStatus = .not_run,
         names: CheckStatus = .not_run,
         references: CheckStatus = .not_run,
         graphviz_elements: CheckStatus = .not_run,
         graphviz_attributes: CheckStatus = .not_run,
+        graphviz_content: CheckStatus = .not_run,
+        graphviz_values: CheckStatus = .not_run,
     } = .{},
     /// Aggregate findings from independent checks, which may overlap source
     /// spans. Offsets/capacities remain u32; totals use u64, as in DOT validation.
@@ -74,7 +76,13 @@ pub const Result = struct {
 /// Shared routing predicate. Structural specializations never activate a
 /// vocabulary pass, regardless of the stored (possibly runtime) severities.
 pub inline fn vocabularyActive(comptime mode: policy.Mode, settings: policy.ValidationSettings) bool {
-    return mode == .graphviz and (settings.graphviz.unknown_element != .off or settings.graphviz.invalid_attribute != .off);
+    return mode == .graphviz and (settings.graphviz.unknown_element != .off or settings.graphviz.invalid_attribute != .off or settings.graphviz.invalid_content != .off or settings.graphviz.invalid_value != .off or settings.graphviz.unknown_reference != .off);
+}
+
+/// Explicit reference settings take precedence; otherwise Graphviz selects its
+/// HTML4 catalog. Structural profiles retain their independent opt-in check.
+pub inline fn referenceSettings(comptime mode: policy.Mode, settings: policy.ValidationSettings) policy.ReferenceSettings {
+    return if (settings.references.severity != .off or mode == .structural) settings.references else .{ .catalog = .graphviz, .severity = settings.graphviz.unknown_reference };
 }
 
 /// Internal traversal helper. Missing coverage is not a finding or a stop;
@@ -154,9 +162,11 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                 .duplicate_attribute = if (s.duplicate_attribute == .off) .not_run else .incomplete,
                 .invalid_encoding = if (!has_encoding or s.invalid_encoding == .off) .not_run else .incomplete,
                 .names = if (s.names.severity == .off) .not_run else .incomplete,
-                .references = if (s.references.severity == .off) .not_run else .incomplete,
+                .references = if (referenceSettings(mode, s).severity == .off) .not_run else .incomplete,
                 .graphviz_elements = if (mode == .structural or s.graphviz.unknown_element == .off) .not_run else .incomplete,
                 .graphviz_attributes = if (mode == .structural or s.graphviz.invalid_attribute == .off) .not_run else .incomplete,
+                .graphviz_content = if (mode == .structural or s.graphviz.invalid_content == .off) .not_run else .incomplete,
+                .graphviz_values = if (mode == .structural or s.graphviz.invalid_value == .off) .not_run else .incomplete,
             } };
         }
         fn enabled(settings: Settings) bool {
@@ -194,8 +204,11 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
 
         fn scopeInitial(scope: scopes.Scope, settings: Settings) Result {
             var result = initial(settings);
+            // A local scope has no parent/child relationships to certify.
+            result.checks.graphviz_content = .not_run;
             if (scope != .opening_header) result.checks.duplicate_attribute = .not_run;
             if (scope != .opening_header) result.checks.graphviz_attributes = .not_run;
+            if (scope != .opening_header) result.checks.graphviz_values = .not_run;
             if (scope != .opening_header and scope != .opening_name and scope != .closing_name)
                 result.checks.graphviz_elements = .not_run;
             switch (scope) {
@@ -258,6 +271,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             if (safety_checks) std.debug.assert(scopes.metadataValidForEncoding(actual, source, scope, {}));
             const end: u32 = @intCast(range.endOffset());
             var incomplete_offset = end;
+            var gaps: ContractGaps = .{};
             const bounded_source = source[0..end];
             var offset: Offset = if (has_encoding) range.start else {};
             switch (scope) {
@@ -274,34 +288,36 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                     const owner = elementKind(bounded_source, h.name, settings);
                     if (!checkElement(bounded_source, h.name, owner, &offset, poller, &result, sink, settings, hook)) return result;
                     if (!checkName(bounded_source, h.name, .element, &offset, poller, &result, sink, settings, hook)) return result;
+                    var header: HeaderFacts = .{};
                     for (h.attributes, 0..) |a, index| {
                         if (!poller.step(&result, hook)) return result;
                         if (a.value.len == 0) incomplete_offset = @min(incomplete_offset, @as(u32, @intCast(a.name.endOffset())));
                         if (required != 0 and keys[index].first != index) {
                             if (!emitDuplicate(bounded_source, a.name, h.attributes[keys[index].first].name, &offset, poller, &result, sink, settings, hook)) return result;
                         }
-                        if (!checkAttribute(bounded_source, h.name, owner, a.name, &offset, poller, &result, sink, settings, hook)) return result;
+                        if (!checkAttribute(bounded_source, h.name, owner, a.name, &gaps, &offset, poller, &result, sink, settings, hook)) return result;
+                        if (!checkValue(bounded_source, h.name, owner, a.name, a.value, &header, &gaps, poller, &result, sink, settings, hook)) return result;
                         if (!checkName(bounded_source, a.name, .attribute, &offset, poller, &result, sink, settings, hook)) return result;
-                        if (a.value.len != 0 and (rules(settings).names.severity != .off or rules(settings).references.severity != .off) and
+                        if (a.value.len != 0 and
                             !checkReferences(bounded_source, .{ .start = a.value.start + enc.width, .len = a.value.len - 2 * enc.width }, &offset, poller, &result, sink, settings, hook)) return result;
                     }
+                    if (h.complete and !checkHeader(h.name, owner, header, &gaps, &result, sink, settings)) return result;
                 },
                 .opening_name, .closing_name, .attribute_name => |name| {
                     if (scope != .attribute_name and !checkElement(bounded_source, name, elementKind(bounded_source, name, settings), &offset, poller, &result, sink, settings, hook)) return result;
                     if (!checkName(bounded_source, name, if (scope == .attribute_name) .attribute else .element, &offset, poller, &result, sink, settings, hook)) return result;
                 },
                 .text, .attribute_value => |value| {
-                    if ((rules(settings).names.severity != .off or rules(settings).references.severity != .off) and
-                        !checkReferences(bounded_source, value, &offset, poller, &result, sink, settings, hook)) return result;
+                    if (!checkReferences(bounded_source, value, &offset, poller, &result, sink, settings, hook)) return result;
                 },
                 .bytes => {},
             }
             if (!encodingThrough(bounded_source, end, &offset, poller, &result, sink, settings, hook)) return result;
             const complete = scope != .opening_header or scope.opening_header.complete;
             inline for (std.meta.fields(@TypeOf(result.checks))) |field| {
-                const attributes = comptime std.mem.eql(u8, field.name, "graphviz_attributes");
+                const missing = if (comptime std.mem.eql(u8, field.name, "graphviz_attributes")) gaps.attributes else if (comptime std.mem.eql(u8, field.name, "graphviz_values")) gaps.values else false;
                 if (@field(result.checks, field.name) != .not_run)
-                    @field(result.checks, field.name) = if (!complete or (mode == .graphviz and attributes and result.completion == .incomplete)) .incomplete else .complete;
+                    @field(result.checks, field.name) = if (!complete or missing) .incomplete else .complete;
             }
             if (report_header_gap and !complete) recordGap(&result, incomplete_offset);
             if (result.errors == 0 and complete and (mode == .structural or result.completion == .complete)) result.validity = .valid;
@@ -394,6 +410,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             var offset: Offset = if (has_encoding) 0 else {};
             var poller: Poller = .{};
             var attribute: u32 = 0;
+            var gaps: ContractGaps = .{};
             const source = document.source;
             for (document.records, 0..) |node, id| {
                 if (!poller.step(&result, hook)) return result;
@@ -414,17 +431,20 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                         const duplicates = rules(settings).duplicate_attribute != .off and count >= 2;
                         const keys = if (duplicates) scratch.attribute_keys[0..count] else scratch.attribute_keys[0..0];
                         if (duplicates) prepareKeys(document, keys, start);
+                        var header: HeaderFacts = .{};
                         for (document.attributes[start..attribute], start..) |attr, index| {
                             if (!poller.step(&result, hook)) return result;
                             if (duplicates and keys[index - start].first != index) {
                                 const first = keys[index - start].first;
                                 if (!emitDuplicate(source, attr.name, document.attributes[first].name, &offset, &poller, &result, sink, settings, hook)) return result;
                             }
-                            if (!checkAttribute(source, node.name, owner, attr.name, &offset, &poller, &result, sink, settings, hook)) return result;
+                            if (!checkAttribute(source, node.name, owner, attr.name, &gaps, &offset, &poller, &result, sink, settings, hook)) return result;
+                            if (!checkValue(source, node.name, owner, attr.name, attr.value, &header, &gaps, &poller, &result, sink, settings, hook)) return result;
                             if (!checkName(source, attr.name, .attribute, &offset, &poller, &result, sink, settings, hook)) return result;
                             // The retained value includes its original quotes.
                             if (!checkReferences(source, .{ .start = attr.value.start + enc.width, .len = attr.value.len - 2 * enc.width }, &offset, &poller, &result, sink, settings, hook)) return result;
                         }
+                        if (document.node(@enumFromInt(id)).?.headerComplete().? and !checkHeader(node.name, owner, header, &gaps, &result, sink, settings)) return result;
                     },
                     .text => if (!checkReferences(source, node.span, &offset, &poller, &result, sink, settings, hook)) return result,
                     .comment, .cdata => {},
@@ -435,13 +455,121 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             std.debug.assert(attribute == document.attributes.len);
             if (rules(settings).duplicate_attribute != .off) result.checks.duplicate_attribute = .complete;
             if (rules(settings).names.severity != .off) result.checks.names = .complete;
-            if (rules(settings).references.severity != .off) result.checks.references = .complete;
+            if (referenceSettings(mode, rules(settings)).severity != .off) result.checks.references = .complete;
             if (mode == .graphviz and rules(settings).graphviz.unknown_element != .off) result.checks.graphviz_elements = .complete;
-            if (mode == .graphviz and rules(settings).graphviz.invalid_attribute != .off and result.completion == .complete) result.checks.graphviz_attributes = .complete;
+            if (mode == .graphviz and rules(settings).graphviz.invalid_attribute != .off and !gaps.attributes) result.checks.graphviz_attributes = .complete;
+            if (mode == .graphviz and rules(settings).graphviz.invalid_value != .off and !gaps.values) result.checks.graphviz_values = .complete;
             if (!encodingThrough(source, @intCast(source.len), &offset, &poller, &result, sink, settings, hook)) return result;
+            if (mode == .graphviz and rules(settings).graphviz.invalid_content != .off) {
+                var context: ContentContext = .{ .result = &result, .poller = &poller, .sink = sink, .settings = settings, .hook = hook };
+                const Checker = @import("graphviz_content.zig").Checker(actual);
+                if (!Checker.check(document, null, &context)) return result;
+                for (document.records, 0..) |node, id| {
+                    if (!context.step()) return result;
+                    if (node.kind() == .element and !Checker.check(document, @enumFromInt(id), &context)) return result;
+                }
+                if (!context.missing) result.checks.graphviz_content = .complete;
+            }
             if (result.errors == 0 and (mode == .structural or result.completion == .complete)) result.validity = .valid;
             return result;
         }
+
+        const ContractGaps = struct { attributes: bool = false, values: bool = false };
+        const Dimension = enum { missing, positive, zero, invalid };
+        pub const HeaderFacts = struct { src: bool = false, fixed: bool = false, width: Dimension = .missing, height: Dimension = .missing };
+        pub fn runValueTrusted(source: []const u8, owner: Span, name: Span, value: Span, facts: *HeaderFacts, sink: diagnostic.Sink, settings: Settings, hook: Hook, poller: *Poller) Result {
+            var result: Result = .{};
+            var gaps: ContractGaps = .{};
+            if (mode == .graphviz and rules(settings).graphviz.invalid_value != .off) result.checks.graphviz_values = .incomplete;
+            if (!checkValue(source, owner, elementKind(source, owner, settings), name, value, facts, &gaps, poller, &result, sink, settings, hook)) return result;
+            if (result.checks.graphviz_values != .not_run and !gaps.values) result.checks.graphviz_values = .complete;
+            if (result.errors == 0 and result.completion == .complete) result.validity = .valid;
+            return result;
+        }
+        pub fn runHeaderTrusted(source: []const u8, name: Span, facts: HeaderFacts, sink: diagnostic.Sink, settings: Settings) Result {
+            var result: Result = .{};
+            var gaps: ContractGaps = .{};
+            if (mode == .graphviz and rules(settings).graphviz.invalid_value != .off) result.checks.graphviz_values = .incomplete;
+            if (!checkHeader(name, elementKind(source, name, settings), facts, &gaps, &result, sink, settings)) return result;
+            if (result.checks.graphviz_values != .not_run and !gaps.values) result.checks.graphviz_values = .complete;
+            if (result.errors == 0 and result.completion == .complete) result.validity = .valid;
+            return result;
+        }
+        inline fn checkValue(source: []const u8, owner_name: Span, owner: ?graphviz.Element, name: Span, quoted: Span, header: *HeaderFacts, gaps: *ContractGaps, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+            if (mode == .structural or rules(settings).graphviz.invalid_value == .off) return true;
+            const tag = owner orelse {
+                gaps.values = true;
+                recordGap(result, name.start);
+                return true;
+            };
+            if (!graphviz.allowsAttributeEncoded(actual, tag, name.slice(source))) {
+                gaps.values = true;
+                recordGap(result, name.start);
+                return true;
+            }
+            if (quoted.len == 0) {
+                gaps.values = true;
+                recordGap(result, @intCast(name.endOffset()));
+                return true;
+            }
+            const value = source[quoted.start + enc.width .. @as(usize, quoted.start) + quoted.len - enc.width];
+            const Values = @import("graphviz_value.zig").Checks(actual);
+            var context: ContentContext = .{ .result = result, .poller = poller, .sink = sink, .settings = settings, .hook = hook };
+            const problem = Values.check(tag, name.slice(source), value, &context);
+            if (result.completion == .cancelled) return false;
+            if (Values.named(name.slice(source), "SRC")) header.src = true;
+            if (Values.named(name.slice(source), "FIXEDSIZE")) header.fixed = Values.equals(value, "TRUE", &context);
+            if (Values.named(name.slice(source), "WIDTH")) header.width = if (problem != null) .invalid else if (Values.positiveDimension(value, &context)) .positive else .zero;
+            if (Values.named(name.slice(source), "HEIGHT")) header.height = if (problem != null) .invalid else if (Values.positiveDimension(value, &context)) .positive else .zero;
+            if (result.completion == .cancelled) return false;
+            if (problem) |p| return emitValue(result, sink, quoted, owner_name, p, settings);
+            return true;
+        }
+        inline fn checkHeader(name: Span, owner: ?graphviz.Element, header: HeaderFacts, gaps: *ContractGaps, result: *Result, sink: diagnostic.Sink, settings: Settings) bool {
+            if (mode == .structural or rules(settings).graphviz.invalid_value == .off) return true;
+            if (owner == null) {
+                gaps.values = true;
+                recordGap(result, name.start);
+                return true;
+            }
+            if (owner == .IMG and !header.src) return emitValue(result, sink, name, null, .image_source, settings);
+            if (header.fixed and (header.width == .missing or header.width == .zero or header.height == .missing or header.height == .zero)) return emitValue(result, sink, name, null, .fixed_dimensions, settings);
+            return true;
+        }
+        fn emitValue(result: *Result, sink: diagnostic.Sink, span: Span, related: ?Span, problem: @import("graphviz_value.zig").Problem, settings: Settings) bool {
+            return emit(result, sink, .{ .code = if (rules(settings).graphviz.invalid_value == .err) .invalid_value else .invalid_value_tolerated, .span = span, .related = related, .details = .{ .graphviz_value = problem } }, settings);
+        }
+
+        const ContentContext = struct {
+            result: *Result,
+            poller: *Poller,
+            sink: diagnostic.Sink,
+            settings: Settings,
+            hook: Hook,
+            missing: bool = false,
+            pub fn step(self: *@This()) bool {
+                if (cancellable and self.result.completion == .cancelled) return false;
+                return self.poller.step(self.result, self.hook);
+            }
+            pub fn unit(self: *@This()) bool {
+                if (cancellable and self.result.completion == .cancelled) return false;
+                if (!self.poller.check(self.result, self.hook)) return false;
+                self.poller.consume(enc.width);
+                return true;
+            }
+            pub fn gap(self: *@This(), at: u32) void {
+                self.missing = true;
+                recordGap(self.result, at);
+            }
+            pub fn finding(self: *@This(), span: Span, related: ?Span, problem: @import("graphviz_content.zig").Problem) bool {
+                return emit(self.result, self.sink, .{
+                    .code = if (rules(self.settings).graphviz.invalid_content == .err) .invalid_content else .invalid_content_tolerated,
+                    .span = span,
+                    .related = related,
+                    .details = .{ .graphviz_content = problem },
+                }, self.settings);
+            }
+        };
 
         /// One finding per retained name/reference name, at its first bad code
         /// point (one byte for malformed UTF-8); related identifies the full name.
@@ -491,7 +619,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
         /// malformed candidates accepted as literal text cannot become findings.
         /// Numeric candidates contain no '&'; scanning past them needs no decoding.
         inline fn checkReferences(source: []const u8, span: Span, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
-            if (mode == .graphviz and rules(settings).names.severity == .off and rules(settings).references.severity == .off) return true;
+            if (rules(settings).names.severity == .off and referenceSettings(mode, rules(settings)).severity == .off) return true;
             const bytes = span.slice(source);
             var index: u32 = 0;
             var scan = Poller.Scan.init(index, poller.*);
@@ -520,7 +648,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                 // Nested name/encoding scans share and may exhaust the budget.
                 // Flush before calling them, then reload their remainder below.
                 scan.flush(index, poller);
-                const selected = rules(settings).references;
+                const selected = referenceSettings(mode, rules(settings));
                 if (selected.severity != .off and !definitions.knownReferenceEncoded(actual, selected.catalog, name.slice(source))) {
                     // Catalog finding starts at '&', before any name finding.
                     const at = span.start + amp;
@@ -578,13 +706,14 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             if (!encodingThrough(source, name.start, offset, poller, result, sink, settings, hook)) return false;
             return emit(result, sink, .{ .code = if (severity == .err) .unknown_element else .unknown_element_tolerated, .span = name }, settings);
         }
-        inline fn checkAttribute(source: []const u8, owner_name: Span, owner: ?graphviz.Element, name: Span, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+        inline fn checkAttribute(source: []const u8, owner_name: Span, owner: ?graphviz.Element, name: Span, gaps: *ContractGaps, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
             if (mode == .structural) return true;
             const severity = rules(settings).graphviz.invalid_attribute;
             if (severity == .off) return true;
             // An unknown owner's attribute contract is unavailable. Do not
             // manufacture one error per attribute as a consequence of its name.
             const tag = owner orelse {
+                gaps.attributes = true;
                 recordGap(result, name.start);
                 return true;
             };
@@ -600,7 +729,8 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             var result: Result = .{ .checks = .{ .graphviz_attributes = .incomplete } };
             if (!poller.step(&result, hook)) return result;
             var offset: Offset = if (has_encoding) name.start else {};
-            if (!checkAttribute(source, owner, elementKind(source, owner, settings), name, &offset, poller, &result, sink, settings, hook)) return result;
+            var gaps: ContractGaps = .{};
+            if (!checkAttribute(source, owner, elementKind(source, owner, settings), name, &gaps, &offset, poller, &result, sink, settings, hook)) return result;
             if (result.completion == .complete) {
                 result.checks.graphviz_attributes = .complete;
                 if (result.errors == 0) result.validity = .valid;

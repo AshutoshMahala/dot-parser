@@ -70,6 +70,8 @@ pub const Policy = struct {
         invalid_encoding: ?RuleSeverity = null,
         /// Logical keys within one statement's combined attribute lists.
         repeated_attribute: ?RuleSeverity = null,
+        /// Optional Graphviz attribute-name catalog, not a DOT syntax rule.
+        graphviz: struct { unknown_attribute: ?RuleSeverity = null } = .{},
         restrictions: Restrictions = .{},
         /// Selected by the written graph keyword, even when treated as digraph.
         graph: Graph = .{},
@@ -104,6 +106,7 @@ pub const ValidationSettings = struct {
     /// Selected source reader, excluding delegated HTML operand bodies.
     invalid_encoding: RuleSeverity = .off,
     repeated_attribute: RuleSeverity = .off,
+    graphviz: struct { unknown_attribute: RuleSeverity = .off } = .{},
     restrictions: struct {
         graph_kinds: struct {
             undigraph: RuleSeverity = .off,
@@ -189,6 +192,7 @@ pub const presets = struct {
             .ambiguous_numeral = .warning,
             .invalid_encoding = .off,
             .repeated_attribute = .off,
+            .graphviz = .{ .unknown_attribute = .off },
             .restrictions = .{
                 .graph_kinds = .{ .undigraph = .off, .digraph = .off, .generic = .off },
                 .ports = .off,
@@ -225,6 +229,7 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
             .fixes = input.diagnostics.fixes orelse baseline.validation.fixes,
             .invalid_encoding = input.validation.invalid_encoding orelse baseline.validation.invalid_encoding,
             .repeated_attribute = input.validation.repeated_attribute orelse baseline.validation.repeated_attribute,
+            .graphviz = .{ .unknown_attribute = input.validation.graphviz.unknown_attribute orelse baseline.validation.graphviz.unknown_attribute },
             .restrictions = .{
                 .graph_kinds = .{
                     .undigraph = input.validation.restrictions.graph_kinds.undigraph orelse baseline.validation.restrictions.graph_kinds.undigraph,

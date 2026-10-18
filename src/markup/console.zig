@@ -53,6 +53,8 @@ pub const Adapter = struct {
             }
         }
         switch (d.details) {
+            .graphviz_content => |problem| try writer.writeAll(@import("graphviz_content.zig").message(problem)),
+            .graphviz_value => |problem| try writer.writeAll(@import("graphviz_value.zig").message(problem)),
             .none => try writer.writeAll(d.code.info().summary),
             .byte => |byte| {
                 if (std.ascii.isPrint(byte)) try writer.print("offending byte 0x{X:0>2} ('{c}')", .{ byte, byte }) else try writer.print("offending byte 0x{X:0>2}", .{byte});

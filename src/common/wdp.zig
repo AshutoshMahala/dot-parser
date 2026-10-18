@@ -77,14 +77,14 @@ pub fn Registry(comptime Code: type, comptime namespace: []const u8) type {
             });
         }
         pub fn compactId(code: Code) [5]u8 {
-            @setEvalBranchQuota(10000);
+            @setEvalBranchQuota(100000);
             return switch (code) {
                 inline else => |value| comptime computeCompactId(text(value)),
             };
         }
         /// Namespace hash, '-', then code hash. No runtime hashing.
         pub fn qualifiedCompactId(code: Code) [11]u8 {
-            @setEvalBranchQuota(10000);
+            @setEvalBranchQuota(100000);
             return switch (code) {
                 inline else => |value| comptime computeNamespaceHash(namespace) ++ "-".* ++ compactId(value),
             };
