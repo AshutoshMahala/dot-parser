@@ -948,14 +948,25 @@ and shared execution/reporting facilities, not parent node/element/attribute
 metadata. Regex can be consumer-supplied through that contract, without a
 mandatory engine; bounded-work/resource guarantees still need enforcement.
 
+**Shared verifier contract agreed 2026-10-18; not implemented.** Built-in checks
+are ordinary supplied implementations of the same compile-time-bound contract
+used by consumers, with typed settings, a check operation, a result separating
+failure from operational stops, and optional structured diagnostics. Named
+policy fields remain conveniences, not a second execution path or runtime
+registry. See [the shared contract](PROCESSOR_CONTRACT.md#shared-verifier-contract).
+
 **String comparison/reporting direction agreed 2026-10-18; not implemented.**
-Built-in checks default to `.case_sensitive`. `.case_insensitive` means Unicode
+Comparison-based built-ins inherit `.case_sensitive` from the string baseline,
+with optional per-check overrides. `.case_insensitive` means Unicode
 default case folding across every compiled source encoding, not ASCII-only
 lowercasing. Keep source unchanged and do not imply normalization or locale
 tailoring. Unicode folding code/tables must compile out when unused; a profile
 that permits runtime folding must retain them, while excluded functionality
 cannot be requested silently. Custom verifiers retain their own comparison
-semantics rather than receiving automatically folded input.
+semantics rather than receiving automatically folded input. Custom verifiers
+can opt into a shared comparison service at compile time; length/count checks
+need no case setting or folding machinery. Do not impose case options on every
+verifier or assume the baseline changes an independent regex/custom matcher.
 
 Simple custom predicates get a generic string-owned failure diagnostic;
 advanced verifiers can supply typed custom reporting, hints, related spans and

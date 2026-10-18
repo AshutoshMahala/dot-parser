@@ -189,7 +189,32 @@ fields and which built-ins ship in the first slice remain to be finalized;
 means allowed string values, not a DOT-specific enum or implicit type conversion.
 Simple membership checks need no string tree or regex engine.
 
-The string processor defines its custom-verifier contract. The verifier receives
+#### Shared verifier contract
+
+**Direction agreed 2026-10-18; not implemented.** Built-in `equals`, `one_of`,
+`contains` and consumer-supplied checks must use the same compile-time-bound
+verifier contract. Built-ins are supplied implementations, not a privileged
+second validation path. Convenient named policy fields may select these
+implementations without exposing extra adapter work to consumers. Do not add
+runtime function-pointer dispatch or a registry to achieve this uniformity;
+individual implementations can still specialize their algorithms at compile time.
+
+| Contract part | Responsibility |
+| --- | --- |
+| Typed settings | The check's parameters, such as an expected value or allowed-value set |
+| `check(value, settings, context)` | Execute the check; exact Zig signature remains open |
+| Result | Distinguish success, validation failure and an operational stop |
+| Optional custom diagnostics | Supply typed explanations instead of requiring the generic failure message |
+| Optional shared comparison | Explicit compile-time participation in the string processor's comparison facilities |
+
+Simple predicates may use an adapter that supplies the ordinary result and
+generic diagnostic. Structured verifiers use the same execution/reporting
+machinery and may explain their failures without a duplicate generic finding.
+The mechanism must preserve severity, validity, source mapping, sink stops and
+execution guarantees equally for built-ins and consumer code. Exact settings,
+capability declarations and result types still need definition before coding.
+
+The string processor defines this shared verifier contract. The verifier receives
 a value and string-owned policy/execution/reporting facilities, not
 `(element, element_type, attribute_name, attribute_type, attribute_value)`.
 Source ranges, source provenance/encoding, diagnostic sinks and cancellation
@@ -232,8 +257,11 @@ and a child finding must not erase a successfully parsed outer scope.
 
 **Direction agreed 2026-10-18; not implemented.** Case sensitivity is a
 string-owned comparison setting, separate from source encoding and outer
-attribute-name matching. Use one setting consistently across built-in `equals`,
-`contains` and `one_of`, rather than duplicate case-insensitive operations:
+attribute-name matching. It applies only to checks that use case-aware text
+comparison, not to every verifier. Comparison-based built-ins (`equals`,
+`contains`, `one_of`) inherit the string baseline's setting, with an optional
+per-check override. Consumers need not repeat it in every rule or choose
+separate case-insensitive versions of each operation:
 
 | Comparison | Meaning |
 | --- | --- |
@@ -266,10 +294,22 @@ runtime-policy surface must make this distinction explicit; a runtime request
 for excluded functionality must fail verification, never silently fall back to
 ASCII or exact matching. Exact public configuration syntax remains open.
 
-Custom verifiers own their comparison semantics. Do not lowercase/fold their
-input automatically or claim that the built-in comparison option changes an
-arbitrary callback. A custom/regex verifier must explicitly expose any supported
-case options through its own string-owned contract.
+Participation in shared comparison is explicit at compile time. A participating
+custom verifier may call a service conceptually like
+`context.compare.equals(value, expected)`, inheriting the selected comparison
+semantics and source-encoding support without reimplementing Unicode folding.
+This service spelling is illustrative; it must also respect the operation's
+failure/cancellation/metering contract. The capability declaration and how
+per-check settings resolve remain API design work.
+
+Checks such as value length or character count do not need a case-sensitivity
+field or folding work. Their presence must not by itself retain comparison
+state or Unicode folding code/data. Custom verifiers that do not opt into shared
+comparison own their semantics; do not lowercase/fold their input automatically
+or claim that the baseline comparison setting changes an arbitrary callback.
+A regex verifier may expose its own supported matching options rather than use
+the shared comparator. All comparison code remains inside the string layer,
+independent of outer attribute selection.
 
 #### Custom string diagnostics
 
@@ -342,6 +382,9 @@ size, state/scratch/peak memory and throughput on ASCII and non-ASCII inputs in
 each compiled encoding. Distinguish compile-time exclusion from choosing exact
 comparison at runtime. Include generic and structured custom reporting in
 disabled-check and allocation tests.
+Also compare built-in and consumer implementations through the same verifier
+path, and confirm non-comparison checks do not require folding machinery or
+per-check case configuration.
 
 ### New token spellings
 
@@ -387,6 +430,9 @@ For the new execution paths, add coverage for:
 - Generic versus custom diagnostics, severity/validity independence from sink
   filtering, no duplicate fallback finding, related/fix span mapping and
   cancellation/sink stops during custom checks.
+- Built-in/custom verifier contract parity; comparison-aware checks inherit the
+  baseline and honor per-check overrides, while non-comparison checks and
+  independent custom matchers receive no implicit folding or comparison state.
 
 Use the recorded [performance baseline](../PERFORMANCE.md) for reproducible
 comparisons and preserve the outstanding

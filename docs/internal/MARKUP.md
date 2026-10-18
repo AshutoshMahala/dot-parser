@@ -89,8 +89,12 @@ supported delegation. Element-specific/cross-attribute conditions and implicit
 markup-to-text extraction are outside the first slice; see
 [string processing](PROCESSOR_CONTRACT.md#optional-string-processor).
 
-String built-ins will default to case-sensitive comparison; optional Unicode
-case folding is independent of source encoding and must compile out when unused.
+String built-ins and custom checks will use the same
+[verifier contract](PROCESSOR_CONTRACT.md#shared-verifier-contract).
+Comparison-based checks inherit case-sensitive defaults with optional per-check
+overrides; unrelated checks need no case setting. Custom verifiers explicitly
+opt into shared comparison or keep their own semantics. Optional Unicode case
+folding is independent of source encoding and must compile out when unused.
 Custom string checks can use generic or typed custom diagnostics without
 depending on markup types; see [comparison rules](PROCESSOR_CONTRACT.md#string-comparison-rules)
 and [custom diagnostics](PROCESSOR_CONTRACT.md#custom-string-diagnostics).
