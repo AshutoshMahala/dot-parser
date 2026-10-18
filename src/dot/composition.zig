@@ -428,7 +428,15 @@ pub fn ProfileForEncoding(comptime actual: support.encoding.Actual, comptime api
         }
 
         fn parse(comptime backend: api.ScannerBackend, comptime cancellable: bool, allocator: std.mem.Allocator, source: []const u8, context: *Context, effective: Binding.State, options: DotOptions) api.ParseResult {
-            const Core = engine.EngineWithEncoding(actual, api, if (runtime_policy) null else baseline.parsing, false, cancellable, backend, *Context);
+            if (comptime runtime_policy and cancellable) {
+                if (effective.execution.cancellation_interval != 1)
+                    return parseWithPolling(backend, cancellable, false, allocator, source, context, effective, options);
+            }
+            return parseWithPolling(backend, cancellable, true, allocator, source, context, effective, options);
+        }
+
+        fn parseWithPolling(comptime backend: api.ScannerBackend, comptime cancellable: bool, comptime single_poll: bool, allocator: std.mem.Allocator, source: []const u8, context: *Context, effective: Binding.State, options: DotOptions) api.ParseResult {
+            const Core = engine.EngineWithEncoding(actual, api, if (runtime_policy) null else baseline.parsing, false, cancellable, backend, *Context, single_poll);
             return Core.parseBorrowed(allocator, source, context.dotSink(), options.parse, .{
                 .processor = context,
                 .parsing = if (runtime_policy) effective.parsing else {},

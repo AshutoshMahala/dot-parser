@@ -213,6 +213,14 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
             return self.drive(true, budget);
         }
 
+        /// One existing block/token microstep, with identical audit accounting
+        /// to drive(true, 1). A cached terminal result costs no further work.
+        pub inline fn nextStep(self: *Self) Advance {
+            // This backend's driver already inlines completely at budget 1.
+            // Keep terminal handling and audit increments in that shared body.
+            return self.drive(true, 1);
+        }
+
         /// One credit per microstep: a block classification or one bounded
         /// advance of the token machine inside the classified block.
         pub inline fn drive(self: *Self, comptime bounded: bool, budget: usize) Advance {

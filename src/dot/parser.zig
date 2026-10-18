@@ -145,10 +145,12 @@ const Progress = struct {
 /// Fixed policies capture limits/recovery in code; only scratch is retained as
 /// a resource. Runtime policies retain the resolved parse-stage settings once.
 pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool, comptime ScannerOf: fn (comptime bool, comptime bool, comptime ?bool) type, comptime fixed: ?policy.ParseSettings) type {
-    return MachineWithProcessor(EventsPtr, metered, audited, cancellable, ScannerOf, fixed, void);
+    return MachineWithProcessor(EventsPtr, metered, audited, cancellable, ScannerOf, fixed, void, false);
 }
 
-pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool, comptime ScannerOf: fn (comptime bool, comptime bool, comptime ?bool) type, comptime fixed: ?policy.ParseSettings, comptime Processor: type) type {
+/// For runtime settings, single_poll requires the caller to bind interval 1
+/// before constructing this machine. Fixed settings always own their interval.
+pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool, comptime ScannerOf: fn (comptime bool, comptime bool, comptime ?bool) type, comptime fixed: ?policy.ParseSettings, comptime Processor: type, comptime single_poll: bool) type {
     if (Processor != void and metered) @compileError("during-DOT composition is run-to-completion; child validation is not work-metered");
     comptime {
         const info = @typeInfo(EventsPtr);
@@ -512,15 +514,9 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn drive(self: *Self, comptime bounded: bool, budget: usize) usize {
-            // Select once per drive, not per byte. Runtime interval 1 retains
-            // the old constant one-credit scanner and has no countdown work.
-            if (comptime !cancellable or fixed != null)
-                return self.driveInterval(bounded, budget, if (fixed) |p| p.cancellation_interval else 1);
-            if (self.settings.cancellation_interval == 1) return self.driveInterval(bounded, budget, 1);
-            return self.driveInterval(bounded, budget, null);
-        }
-
-        fn driveInterval(self: *Self, comptime bounded: bool, budget: usize, comptime fixed_interval: ?u32) usize {
+            // Runtime profiles select the polling class at init/reset, just as
+            // they select scanner and metering. Each machine has one hot loop.
+            const fixed_interval: ?u32 = if (fixed) |p| p.cancellation_interval else if (single_poll) 1 else null;
             if (self.terminal != null) return 0;
             self.tokens.setRetainComments(self.retainComments());
             self.tokens.setNumeralCheck(self.numeralSeverity() != .off);
@@ -530,7 +526,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             while (true) {
                 // Every entry checks, including zero-budget calls. Failures and
                 // successful commits still latch before another poll.
-                if (cancellable and polling.due(interval)) {
+                if (cancellable and (fixed_interval == 1 or polling.due(interval))) {
                     if (self.cancellation) |hook| if (hook.requested()) {
                         _ = self.cancel();
                         break;
@@ -541,12 +537,17 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     .scan => {
                         // The fixed default stays a constant one-credit call.
                         // Batching never exceeds the independent caller budget.
-                        const scanned = if (cancellable)
+                        // Runtime policies also compile the batched scanner.
+                        // Give their interval-1 path an explicit single step,
+                        // sharing microstep semantics, not the general loop.
+                        const scanned = if (cancellable and fixed_interval == 1 and fixed == null)
+                            self.tokens.nextStep()
+                        else if (cancellable)
                             @call(.always_inline, Scanner.drive, .{ &self.tokens, true, if (comptime fixed_interval == 1) 1 else if (bounded) @min(remaining, polling.allowance()) else polling.allowance() })
                         else
                             self.tokens.nextBounded(remaining);
                         if (bounded) remaining -= scanned.work_used;
-                        polling.spend(scanned.work_used);
+                        if (comptime cancellable and fixed_interval != 1) polling.spend(scanned.work_used);
                         if (scanned.result) |result| switch (result) {
                             .token => |token| {
                                 if (self.forwardWarning()) {
@@ -568,14 +569,14 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     },
                     .grammar => {
                         if (bounded) remaining -= 1;
-                        polling.spend(1);
+                        if (comptime cancellable and fixed_interval != 1) polling.spend(1);
                         self.work.phase = .scan;
                         self.work.replay = false;
                         _ = self.transition(self.work.token);
                     },
                     .dispatch => {
                         if (bounded) remaining -= 1;
-                        polling.spend(1);
+                        if (comptime cancellable and fixed_interval != 1) polling.spend(1);
                         _ = self.dispatch(self.work.action, self.work.token);
                         if (self.terminal == null)
                             self.work.phase = if (self.work.replay) .grammar else .scan;

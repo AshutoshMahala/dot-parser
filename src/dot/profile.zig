@@ -89,33 +89,10 @@ pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Ac
             return if (runtime_policy) effective.validation else {};
         }
 
-        const Variant = enum(u3) {
-            scalar_immediate,
-            scalar_cancellable,
-            scalar_metered,
-            scalar_metered_cancellable,
-            block_immediate,
-            block_cancellable,
-            block_metered,
-            block_metered_cancellable,
-
-            fn metered(self: Variant) bool {
-                return @intFromEnum(self) & 2 != 0;
-            }
-            fn cancellable(self: Variant) bool {
-                return @intFromEnum(self) & 1 != 0;
-            }
-            fn backend(self: Variant) policy.ScannerBackend {
-                return if (@intFromEnum(self) & 4 != 0) .block else .scalar;
-            }
-        };
-        fn variantOf(effective: policy.Effective) Variant {
-            return @enumFromInt(@as(u3, if (effective.scanner == .block) 4 else 0) |
-                @as(u3, if (effective.execution.metering) 2 else 0) |
-                @as(u3, if (effective.execution.cancellation) 1 else 0));
-        }
+        const Variant = @import("execution_variant.zig").Variant;
+        const variantOf = Variant.from;
         fn EngineFor(comptime variant: Variant) type {
-            return engine.EngineWithEncoding(actual, api, if (runtime_policy) null else baseline.parsing, variant.metered(), variant.cancellable(), variant.backend(), void);
+            return engine.EngineWithEncoding(actual, api, if (runtime_policy) null else baseline.parsing, variant.metered(), variant.cancellable(), variant.backend(), void, variant.singlePoll());
         }
         const FixedEngine = EngineFor(variantOf(baseline));
 
@@ -204,7 +181,7 @@ pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Ac
         }
 
         /// Fixed-storage session. Policy is latched until reset. Runtime variants
-        /// use one tagged union (largest driver, not eight driver instances).
+        /// use one tagged union (the largest driver, not one of each instance).
         pub const Session = struct {
             const Self = @This();
             const Drivers = union(Variant) {
@@ -216,6 +193,10 @@ pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Ac
                 block_cancellable: EngineFor(.block_cancellable).Session,
                 block_metered: EngineFor(.block_metered).Session,
                 block_metered_cancellable: EngineFor(.block_metered_cancellable).Session,
+                scalar_batched: EngineFor(.scalar_batched).Session,
+                scalar_metered_batched: EngineFor(.scalar_metered_batched).Session,
+                block_batched: EngineFor(.block_batched).Session,
+                block_metered_batched: EngineFor(.block_metered_batched).Session,
             };
             driver: if (runtime_policy) Drivers else FixedEngine.Session,
             interpretation_policy: ValidationState,

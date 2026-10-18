@@ -15,10 +15,10 @@ pub fn Engine(comptime api: type, comptime fixed: ?policy.ParseSettings, comptim
 }
 
 pub fn EngineWithProcessor(comptime api: type, comptime fixed: ?policy.ParseSettings, comptime metering: bool, comptime cancellable: bool, comptime backend: policy.ScannerBackend, comptime Processor: type) type {
-    return EngineWithEncoding(.utf8, api, fixed, metering, cancellable, backend, Processor);
+    return EngineWithEncoding(.utf8, api, fixed, metering, cancellable, backend, Processor, false);
 }
 
-pub fn EngineWithEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime fixed: ?policy.ParseSettings, comptime metering: bool, comptime cancellable: bool, comptime backend: policy.ScannerBackend, comptime Processor: type) type {
+pub fn EngineWithEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime fixed: ?policy.ParseSettings, comptime metering: bool, comptime cancellable: bool, comptime backend: policy.ScannerBackend, comptime Processor: type, comptime single_poll: bool) type {
     return struct {
         const partial_capable = if (fixed) |p| p.retention.partial else true;
         const OwnedBuilder = if (partial_capable) partial.Builder(syntax_impl.Builder) else syntax_impl.Builder;
@@ -48,7 +48,7 @@ pub fn EngineWithEncoding(comptime actual: @import("parser_support").encoding.Ac
         }
 
         fn DriverFor(comptime Sink: type) type {
-            return parser_impl.MachineWithProcessor(Sink, metering, false, cancellable, lexer_impl.scannerForEncoding(actual, backend, if (fixed) |p| p.retention.comments else null), fixed, Processor);
+            return parser_impl.MachineWithProcessor(Sink, metering, false, cancellable, lexer_impl.scannerForEncoding(actual, backend, if (fixed) |p| p.retention.comments else null), fixed, Processor, single_poll);
         }
 
         fn drive(source: []const u8, events: anytype, diagnostics: DiagnosticSink, scratch: *scratch_impl.Stack, options: Options) parser_impl.Result {

@@ -264,6 +264,24 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
             return self.drive(true, budget);
         }
 
+        /// Exactly the same examination as drive(true, 1), without the general
+        /// budget loop. Cached terminal results still cost zero credits.
+        pub inline fn nextStep(self: *Self) Advance {
+            if (self.terminal != .none) return .{ .result = self.terminalResult(), .work_used = 0 };
+            const ready = switch (self.state) {
+                inline else => |state| ready: {
+                    const next_state = self.microstep(state);
+                    if (next_state == .ready) break :ready true;
+                    // Save in the specialized branch; carrying a narrow State
+                    // through the join adds masking/spills in optimized builds.
+                    self.state = next_state;
+                    break :ready false;
+                },
+            };
+            // Materialize at one join, never once per lexical state.
+            return .{ .result = if (ready) self.readyResult() else null, .work_used = 1 };
+        }
+
         /// One resumable scan examination per credit; `drive(true, 1)` is the
         /// cancellable parser's safe point and may suspend an unmetered scanner.
         pub fn drive(self: *Self, comptime bounded: bool, budget: usize) Advance {

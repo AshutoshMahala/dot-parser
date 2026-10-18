@@ -7,34 +7,11 @@ const lexer = @import("lexer/lexer.zig");
 const scratch = @import("scratch.zig");
 const events = @import("events.zig");
 
-const Variant = enum(u3) {
-    scalar,
-    scalar_cancel,
-    scalar_meter,
-    scalar_both,
-    block,
-    block_cancel,
-    block_meter,
-    block_both,
-    fn metered(self: Variant) bool {
-        return @intFromEnum(self) & 2 != 0;
-    }
-    fn cancellable(self: Variant) bool {
-        return @intFromEnum(self) & 1 != 0;
-    }
-    fn backend(self: Variant) policy.ScannerBackend {
-        return if (@intFromEnum(self) & 4 != 0) .block else .scalar;
-    }
-    fn from(effective: policy.Effective) Variant {
-        return @enumFromInt(@as(u3, if (effective.scanner == .block) 4 else 0) |
-            @as(u3, if (effective.execution.metering) 2 else 0) |
-            @as(u3, if (effective.execution.cancellation) 1 else 0));
-    }
-};
+const Variant = @import("execution_variant.zig").Variant;
 
 fn Core(comptime actual: support.encoding.Actual, comptime Sink: type, comptime fixed: ?policy.ParseSettings, comptime variant: Variant) type {
     const Scratch = scratch.For(events.Context(Sink));
-    const Machine = parser.Machine(*Sink, variant.metered(), false, variant.cancellable(), lexer.scannerForEncoding(actual, variant.backend(), if (fixed) |s| s.retention.comments else null), fixed);
+    const Machine = parser.MachineWithProcessor(*Sink, variant.metered(), false, variant.cancellable(), lexer.scannerForEncoding(actual, variant.backend(), if (fixed) |s| s.retention.comments else null), fixed, void, variant.singlePoll());
     return struct {
         const Self = @This();
         pub const Options = struct {
@@ -163,14 +140,18 @@ pub fn Bound(comptime actual: support.encoding.Actual, comptime api: type, compt
         pub const Session = struct {
             const Self = @This();
             const Drivers = union(Variant) {
-                scalar: Driver(.scalar),
-                scalar_cancel: Driver(.scalar_cancel),
-                scalar_meter: Driver(.scalar_meter),
-                scalar_both: Driver(.scalar_both),
-                block: Driver(.block),
-                block_cancel: Driver(.block_cancel),
-                block_meter: Driver(.block_meter),
-                block_both: Driver(.block_both),
+                scalar_immediate: Driver(.scalar_immediate),
+                scalar_cancellable: Driver(.scalar_cancellable),
+                scalar_metered: Driver(.scalar_metered),
+                scalar_metered_cancellable: Driver(.scalar_metered_cancellable),
+                block_immediate: Driver(.block_immediate),
+                block_cancellable: Driver(.block_cancellable),
+                block_metered: Driver(.block_metered),
+                block_metered_cancellable: Driver(.block_metered_cancellable),
+                scalar_batched: Driver(.scalar_batched),
+                scalar_metered_batched: Driver(.scalar_metered_batched),
+                block_batched: Driver(.block_batched),
+                block_metered_batched: Driver(.block_metered_batched),
             };
             driver: if (runtime) Drivers else Fixed,
             pub fn init(source: []const u8, frames: ParseScratch, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options) Checked(Self) {

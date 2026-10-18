@@ -135,6 +135,57 @@ test "cancellation is bounded by the interval and checked on every resume" {
     };
 }
 
+test "DOT interval one cancellation matches an exact-budget pause at every phase" {
+    inline for (.{ false, true }) |block| inline for (.{ false, true }) |runtime| {
+        const P = dot.Profile(.{ .runtime_policy = runtime, .policy = comptime policyFor(dot, block, 1) });
+        for ([_][]const u8{
+            "digraph { a[x=1]; { b; } a->b; }",
+            "graph { a[x=]; b; c; }",
+            "graph { a; b[x=\"unfinished",
+        }) |source| {
+            var full_storage: Storage(false) = .{};
+            var full_scratch: Scratch(false) = .{};
+            const started = P.Session.init(source, .{ .document = full_storage.storage(), .scratch = full_scratch.storage() }, dot.diagnostic.discard, .{});
+            var full = if (runtime) try started else started;
+            defer full.deinit();
+            const advancing = full.advance(std.math.maxInt(u32));
+            const complete = if (runtime) try advancing else advancing;
+            try expect(complete.outcome != null);
+
+            // Cross lexical, grammar, event and recovery boundaries. A poll
+            // requesting cancellation after N credits must observe precisely
+            // the state obtained by advance(N), then explicit cancellation.
+            for (0..complete.work_used + 1) |stop| {
+                var expected_storage: Storage(false) = .{};
+                var expected_scratch: Scratch(false) = .{};
+                var expected_bag: dot.FixedDiagnosticBag(32) = .{};
+                const expected_start = P.Session.init(source, .{ .document = expected_storage.storage(), .scratch = expected_scratch.storage() }, expected_bag.sink(), .{});
+                var expected = if (runtime) try expected_start else expected_start;
+                defer expected.deinit();
+                const paused = expected.advance(stop);
+                if (runtime) _ = try paused;
+                const expected_result = expected.cancel();
+
+                var actual_storage: Storage(false) = .{};
+                var actual_scratch: Scratch(false) = .{};
+                var actual_bag: dot.FixedDiagnosticBag(32) = .{};
+                var request: Request = .{ .stop_after = stop };
+                const actual_start = P.Session.init(source, .{ .document = actual_storage.storage(), .scratch = actual_scratch.storage() }, actual_bag.sink(), .{ .cancellation = request.hook() });
+                var actual = if (runtime) try actual_start else actual_start;
+                defer actual.deinit();
+                const running = actual.advance(std.math.maxInt(u32));
+                const stopped = if (runtime) try running else running;
+                try equal(stop, stopped.work_used);
+                try deep(expected_result, actual.result().?);
+                try deep(expected_bag.items(), actual_bag.items());
+                // A concrete terminal outcome wins at the last credit; no
+                // final poll may replace it with cancellation.
+                try equal(stop + @intFromBool(stop < complete.work_used), request.polls);
+            }
+        }
+    };
+}
+
 test "invalid intervals reject before work and resets preserve the existing session" {
     inline for (.{ dot, markup }) |api| {
         const P = api.Profile(.{ .runtime_policy = true, .policy = comptime policyFor(api, false, 4) });
@@ -186,18 +237,51 @@ test "event-only DOT uses the same polling interval and exact budget" {
     };
 }
 
+test "DOT runtime reset switches between one-credit and batched drivers" {
+    const Sink = struct {
+        pub fn onEvent(_: *@This(), _: dot.events.Event) error{}!dot.events.Action {
+            return .proceed;
+        }
+        pub fn onAbort(_: *@This(), _: dot.events.Abort) void {}
+    };
+    const P = dot.Profile(.{ .runtime_policy = true, .policy = comptime policyFor(dot, false, 1) });
+    inline for (.{ false, true }) |event_only| {
+        const API = if (event_only) P.Events(Sink) else P;
+        const source = "graph{/*" ++ "x" ** 8192 ++ "*/a;}";
+        var storage: Storage(false) = .{};
+        var sink: Sink = .{};
+        var session = if (event_only)
+            try API.Session.init(source, .{}, &sink, dot.diagnostic.discard, .{})
+        else
+            try API.Session.init(source, .{ .document = storage.storage() }, dot.diagnostic.discard, .{});
+        defer session.deinit();
+        for ([_]u32{ 4, 1, 64, 1 }) |interval| for ([_]dot.ScannerBackend{ .scalar, .block }) |backend| {
+            var request: Request = .{ .stop_after = 1 };
+            const patch: dot.Policy = .{ .scanner = backend, .execution = .{ .cancellation_interval = interval } };
+            if (event_only)
+                try session.reset(source, &sink, dot.diagnostic.discard, .{ .policy = patch, .cancellation = request.hook() })
+            else
+                try session.reset(source, dot.diagnostic.discard, .{ .policy = patch, .cancellation = request.hook() });
+            const progress = try session.advance(1000);
+            try equal(@as(usize, interval), progress.work_used);
+            try equal(@as(usize, 2), request.polls);
+            if (event_only) try expect(progress.result.?.outcome == .cancelled) else try expect(progress.outcome.? == .cancelled);
+        };
+    }
+}
+
 test "native one-shot readers carry fixed and runtime cancellation intervals" {
-    inline for (.{ dot, markup }) |api| inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |block| inline for (.{ .utf16le, .utf32be }) |actual| {
+    inline for (.{ dot, markup }) |api| inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |block| inline for (.{ .utf16le, .utf32be }) |actual| inline for (.{ 1, 16 }) |interval| {
         const width = if (actual == .utf16le) 2 else 4;
         const source = if (api == markup) "<!--" ++ "x" ** 8192 ++ "-->" else "graph{/*" ++ "x" ** 8192 ++ "*/a;}";
         var bytes: [source.len * width]u8 = undefined;
         for (source, 0..) |byte, i| {
             if (width == 2) std.mem.writeInt(u16, bytes[i * width ..][0..2], byte, .little) else std.mem.writeInt(u32, bytes[i * width ..][0..4], byte, .big);
         }
-        const P = api.Profile(.{ .runtime_policy = runtime, .source_encodings = &.{ .utf16, .utf32 }, .policy = comptime policyFor(api, block, 4) });
+        const P = api.Profile(.{ .runtime_policy = runtime, .source_encodings = &.{ .utf16, .utf32 }, .policy = comptime policyFor(api, block, interval) });
         var request: Request = .{ .stop_after = 2 }; // native admission, parse entry, then interval
         const measured = try P.measureIn(&bytes, .{}, api.diagnostic.discard, if (runtime)
-            .{ .encoding = actual, .policy = .{ .execution = .{ .cancellation_interval = 16 } }, .cancellation = request.hook() }
+            .{ .encoding = actual, .policy = .{ .execution = .{ .cancellation_interval = interval } }, .cancellation = request.hook() }
         else
             .{ .encoding = actual, .cancellation = request.hook() });
         try expect(measured.outcome == .cancelled);

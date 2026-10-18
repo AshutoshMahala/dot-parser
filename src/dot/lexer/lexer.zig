@@ -412,6 +412,49 @@ test "backslash parity survives a restore inside the block" {
     }
 }
 
+fn checkSingleStep(comptime backend: policy.ScannerBackend, comptime metered: bool, source: []const u8) !void {
+    const Scanner = scannerForComments(backend, true)(metered, true, true);
+    var reference = Scanner.init(source);
+    var stepped = Scanner.init(source);
+    var calls: usize = 0;
+    while (true) {
+        calls += 1;
+        try expect(calls <= 16 * (source.len + 1));
+        const expected = reference.drive(true, 1);
+        const actual = stepped.nextStep();
+        try expectEqualDeep(expected, actual);
+        try expectEqual(reference.here(), stepped.here());
+        try expectEqual(reference.examinations, stepped.examinations);
+        if (metered) try expectEqual(reference.source_frontier, stepped.source_frontier);
+        if (expected.result) |result| {
+            try expectEqualDeep(reference.takeWarning(), stepped.takeWarning());
+            if (result == .failure or result.token.tag == .eof) {
+                try expectEqualDeep(reference.drive(true, 1), stepped.nextStep());
+                if (result == .failure) {
+                    try expectEqualDeep(reference.failureDiagnostic(), stepped.failureDiagnostic());
+                    reference.resumeAfterFailure();
+                    stepped.resumeAfterFailure();
+                } else return;
+            }
+        }
+    }
+}
+
+test "single-step scanning equals one-credit driving through truncations and recovery" {
+    inline for (.{ policy.ScannerBackend.scalar, .block }) |backend| inline for (.{ false, true }) |metered| {
+        for (fixtures) |source| for (0..source.len + 1) |end| {
+            try checkSingleStep(backend, metered, source[0..end]);
+        };
+        var random = std.Random.DefaultPrng.init(0x73746570);
+        var bytes: [128]u8 = undefined;
+        for (0..500) |_| {
+            const len = random.random().uintLessThan(usize, bytes.len + 1);
+            random.random().bytes(bytes[0..len]);
+            try checkSingleStep(backend, metered, bytes[0..len]);
+        }
+    };
+}
+
 /// Bounded block scanning yields the same stream as unbounded scanning for
 /// any budget partition, and the same total work.
 fn checkBlockPartition(source: []const u8, budgets: []const usize) !usize {

@@ -203,6 +203,8 @@ memory isn't timed.
 ### Cancellation intervals (unreleased)
 
 Measured on 2026-10-17 with Zig 0.16.0 on Apple M4 Pro, 48 GiB RAM.
+The interval-relative tables below are the initial `ca71148` snapshot, before
+the interval-1 follow-up described below; they are not updated-build speedups.
 The [interval benchmark](../bench/cancellation.zig) covers intervals 1, 4, 16,
 64 and 256, both parsers/scanners, fixed/runtime policies, and metering on/off.
 It uses dense 30,000-statement inputs (DOT 0.210 MB, markup 0.300 MB) and
@@ -243,24 +245,58 @@ at resume boundaries. Measured session sizes were unchanged against the previous
 commit; the countdown is local to a drive call, with no new heap allocations or
 per-record storage. This is not a process peak-RAM measurement.
 
-**Default-path cost remains.** Separate before/after controls, both compiling
-only interval-1 cases, compare against `702d4ea`. These throughput changes average
-the two inputs and metering on/off, with cancellation enabled:
+**DOT interval-1 follow-up.** The initial implementation changed LLVM's inlining:
+sharing grammar helpers between one-credit and batched loops introduced calls
+on the runtime default's hot path. DOT now selects the polling class once at
+operation start/session init/reset. The interval-1 machine has no countdown work;
+its runtime scalar scanner executes the same single lexical microstep directly.
+Document, event-only and proactive-composition entry points share this approach.
+No work unit, polling boundary, pause budget or terminal precedence changed.
 
-| Parser / scanner | Fast fixed | Fast runtime | Safe fixed | Safe runtime |
+Matched interval-1-only builds compare `702d4ea` (pre-interval), `ca71148` and
+the follow-up. Dense and long-text inputs use five alternating runs; four extra
+30,000-statement inputs use three: nodes (`a;`), subgraph endpoints
+(`{a;}->{b;};`), ports/attributes (`a:p->b:q[x=1];`) and passthrough HTML-like
+identifiers (`a[label=<<b>x</b>>];`). The latter does not process markup.
+Warmup, sampling and budget rules are as above. Geometric mean throughput changes
+against **pre-interval `702d4ea`**, across six inputs and metering on/off:
+
+| DOT scanner | Fast fixed | Fast runtime | Safe fixed | Safe runtime |
 | --- | ---: | ---: | ---: | ---: |
-| DOT scalar | -5.3% | -7.1% | -1.8% | -7.4% |
-| DOT block | -0.2% | -4.2% | -1.3% | -5.6% |
-| Markup scalar | -0.4% | 0.0% | +0.4% | -0.6% |
-| Markup block | -0.3% | -0.5% | -1.3% | -2.3% |
+| Scalar | -0.6% | +10.9% | +1.5% | +5.4% |
+| Block | +1.0% | -0.7% | -0.1% | -0.4% |
 
-In particular, runtime DOT scalar without metering was 12.7% slower in Fast
-and 8.8% slower in Safe. Do not read the interval-relative gains as a
-regression-free before/after result. Cancellation-disabled controls averaged
--2.3%/-1.0% for DOT and +2.3%/+2.3% for markup (Fast/Safe). Code layout/inlining
-also moves results when additional profile specializations are compiled, so
-measure the actual application before selecting an interval. These remaining
-default-path costs need further investigation before a performance sign-off.
+Against the regressed `ca71148`, runtime scalar improves **20.7% Fast / 16.2%
+Safe**, and runtime block improves **5.2% / 10.0%**. Cancellation-disabled
+controls average +1.9% / -0.5% against pre-interval. Exact poll counts, metered
+credit totals and session sizes match all three versions, with no new heap
+allocation or retained-record storage.
+
+**Residual variation is not a blanket performance sign-off.** The mixed-profile
+binary still has individual slower cases: dense runtime-metered block is -6.6%
+Fast / -4.0% Safe, and fixed unmetered scalar reaches -4.5% Fast on ports.
+Separate single-profile binaries also use five alternating runs. Their dense
+input comparisons against pre-interval are:
+
+| Isolated profile | Fast | Safe |
+| --- | ---: | ---: |
+| Fixed scalar, unmetered | -3.5% | +6.6% |
+| Runtime scalar, unmetered | +8.0% | +2.2% |
+| Runtime block, unmetered | -5.0% | +0.6% |
+| Runtime block, metered | +0.1% | -1.7% |
+
+This sensitivity to the surrounding compiled profiles matters: compare the
+actual application, not just an aggregate. Assembly inspection also finds the
+same fixed scalar default hot loop structure as pre-interval, apart from
+relocated addresses and error-code mapping. We have removed the added
+default-path work, not demonstrated zero regression for every configuration.
+
+The mixed-profile benchmark's `__TEXT` grows by 29.0 KiB Fast / 32.9 KiB Safe
+against `ca71148`, from specializing runtime polling classes. This is not a
+fixed-policy-only cost: the isolated fixed scalar binary differs from
+pre-interval by only 40 bytes Fast / 48 bytes Safe of `__TEXT`. Markup is unchanged
+by this follow-up; its initial interval-1 comparisons ranged from +0.4% to -2.3%
+by configuration.
 
 Interval **1 remains the default**. Larger intervals trade responsiveness for
 fewer polls; they neither increase work budgets nor guarantee faster parsing.

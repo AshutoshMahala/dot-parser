@@ -1165,6 +1165,12 @@ not bytes/time, and never changes metering costs or budgets. Every active resume
 checks immediately, including zero-budget calls. Runtime markup policy entry
 points now propagate invalid-interval errors; invalid resets preserve prior
 state. Markup validation retains its independent polling points.
+The interval-1 DOT follow-up selects one-credit versus batched runtime machines
+at operation start/session init/reset. Document and event-only profiles share
+that selection. The default driver excludes countdown work; its specialized
+scanner entry uses the same lexical microsteps and preserves exact credits.
+Every-credit cancellation comparisons, reset between polling classes and
+single-step/one-credit scanner differential tests guard this optimization.
 Partition, cancellation-boundary, failure-precedence, lifetime and freestanding
 checks accompany the API. Ordinary-path and optional costs are recorded in
 `docs/PERFORMANCE.md` for the pre-migration implementation; policy-path comparisons

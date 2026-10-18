@@ -34,7 +34,9 @@ are marked; no compatibility shims are kept.
 - **Breaking:** runtime markup policy entry points now return configuration
   errors, including `prepare`, parsing/validation and session init/reset.
   Interval 0 is rejected; fixed-policy entry points remain compile-time checked.
-
+- Specialize DOT's interval-1 runtime driver at initialization/reset and keep
+  its single-credit scanner path separate from batched execution. No change to
+  polling frequency, work credits, cancellation precedence or session storage.
 - Reduce DOT scalar-scanner dispatch and cancellable-session overhead without
   changing event, recovery or work-budget contracts, or increasing storage.
 - **Breaking:** partial DOT `order` storage can contain paired `skipped_start`
