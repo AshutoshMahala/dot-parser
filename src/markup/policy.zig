@@ -58,6 +58,8 @@ pub const Policy = struct {
     execution: struct {
         metering: ?bool = null,
         cancellation: ?bool = null,
+        /// Positive maximum work steps between parse cancellation polls.
+        cancellation_interval: ?u32 = null,
     } = .{},
 };
 pub const Limits = struct {
@@ -76,13 +78,13 @@ pub const Effective = struct {
     limits: Limits = .{},
     syntax: SyntaxSettings = .{},
     validation: ValidationSettings = .{},
-    execution: struct { metering: bool = false, cancellation: bool = false } = .{},
+    execution: struct { metering: bool = false, cancellation: bool = false, cancellation_interval: u32 = 1 } = .{},
 
     pub fn parsing(self: Effective) ParseSettings {
-        return .{ .retain_partial = self.retention.partial, .limits = self.limits, .syntax = self.syntax, .fixes = self.diagnostics.fixes, .unsupported = self.diagnostics.unsupported, .on_error = self.on_error, .closing_tag_recovery = self.closing_tag_recovery };
+        return .{ .cancellation_interval = self.execution.cancellation_interval, .retain_partial = self.retention.partial, .limits = self.limits, .syntax = self.syntax, .fixes = self.diagnostics.fixes, .unsupported = self.diagnostics.unsupported, .on_error = self.on_error, .closing_tag_recovery = self.closing_tag_recovery };
     }
 };
-pub const ParseSettings = struct { retain_partial: bool = false, limits: Limits = .{}, syntax: SyntaxSettings = .{}, fixes: Fixes = .all, unsupported: Unsupported = .err, on_error: OnError = .collect, closing_tag_recovery: ClosingTagRecovery = .one_edit };
+pub const ParseSettings = struct { cancellation_interval: u32 = 1, retain_partial: bool = false, limits: Limits = .{}, syntax: SyntaxSettings = .{}, fixes: Fixes = .all, unsupported: Unsupported = .err, on_error: OnError = .collect, closing_tag_recovery: ClosingTagRecovery = .one_edit };
 pub const Config = struct {
     policy: Policy = .{},
     runtime_policy: bool = false,
@@ -90,12 +92,19 @@ pub const Config = struct {
     source_encodings: ?[]const @import("parser_support").encoding.Encoding = null,
 };
 pub const defaults: Effective = .{};
-pub const Check = enum { valid };
-pub const Error = error{};
+pub const Check = union(enum) { valid, invalid: Issue };
+pub const Error = error{InvalidCancellationInterval};
+pub const Issue = enum {
+    invalid_cancellation_interval,
+    pub fn asError(_: Issue) Error {
+        return error.InvalidCancellationInterval;
+    }
+};
 
-/// Every typed combination in this slice is meaningful, including zero limits.
-/// Do not invent invalid combinations merely to add a configuration error set.
-pub fn check(_: Effective, _: Policy) Check {
+/// Zero resource limits remain meaningful; zero cancellation intervals do not.
+pub fn check(effective: Effective, _: Policy) Check {
+    if (effective.execution.cancellation_interval == 0)
+        return .{ .invalid = .invalid_cancellation_interval };
     return .valid;
 }
 
@@ -151,7 +160,7 @@ pub const presets = struct {
             .references = .{ .catalog = defaults.validation.references.catalog, .severity = defaults.validation.references.severity },
             .graphviz = .{ .unknown_element = .err, .invalid_attribute = .err },
         },
-        .execution = .{ .metering = false, .cancellation = false },
+        .execution = .{ .metering = false, .cancellation = false, .cancellation_interval = 1 },
     };
 
     /// Starting budgets for untrusted fragments, not a total heap/time bound or

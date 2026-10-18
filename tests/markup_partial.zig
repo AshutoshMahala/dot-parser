@@ -123,7 +123,7 @@ test "partial retention does not change recovery outcomes findings or counters" 
             try audit(kept.document.?);
             var nodes: markup.FixedDocumentStorage(.{ .nodes = 32, .attributes = 16 }) = .{};
             var frames: markup.FixedParseScratch(16) = .{};
-            const dynamic = Runtime.parseBorrowedIn(source, .{ .document = nodes.storage(), .scratch = frames.storage() }, discard, .{ .policy = .{ .mode = .structural, .scanner = scanner, .on_error = on_error, .retention = .{ .partial = true } } });
+            const dynamic = (try Runtime.parseBorrowedIn(source, .{ .document = nodes.storage(), .scratch = frames.storage() }, discard, .{ .policy = .{ .mode = .structural, .scanner = scanner, .on_error = on_error, .retention = .{ .partial = true } } }));
             try deep(kept.document, dynamic.document);
         }
     };
@@ -222,7 +222,7 @@ test "allocation failure and exhausted fixed pools preserve only consistent reco
 
 test "workspace and runtime overrides reset partial state without retaining old source" {
     const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .retention = .{ .partial = true } } });
-    var workspace = Runtime.prepare(.{}).initWorkspace(allocator, .{});
+    var workspace = (try Runtime.prepare(.{})).initWorkspace(allocator, .{});
     defer workspace.deinit();
     const bad = try workspace.parseAndValidate(.{ .bytes = "<a x='1' x='2'>", .origin = 0 }, discard);
     try equal(markup.Completeness.partial, bad.parse.document.?.state);
@@ -230,20 +230,20 @@ test "workspace and runtime overrides reset partial state without retaining old 
     const good = try workspace.parseAndValidate(.{ .bytes = "<ok/>", .origin = 0 }, discard);
     try expect(good.documentValid());
     try strings("<ok/>", good.parse.document.?.source);
-    var off = Runtime.parseBorrowed(allocator, "<a>", discard, .{ .policy = .{ .retention = .{ .partial = false } } });
+    var off = (try Runtime.parseBorrowed(allocator, "<a>", discard, .{ .policy = .{ .retention = .{ .partial = false } } }));
     defer off.deinit();
     try expect(off.document == null);
     inline for (.{ markup.presets.standard, markup.presets.untrusted }) |preset| {
-        var reset = Runtime.parseBorrowed(allocator, "<a>", discard, .{ .policy = preset });
+        var reset = (try Runtime.parseBorrowed(allocator, "<a>", discard, .{ .policy = preset }));
         defer reset.deinit();
         try expect(reset.document == null);
     }
     var pools: markup.FixedDocumentStorage(.{ .nodes = 4 }) = .{};
     var frames: markup.FixedParseScratch(4) = .{};
-    var session = Runtime.Session.init("<a>", .{ .document = pools.storage(), .scratch = frames.storage() }, discard, .{});
+    var session = (try Runtime.Session.init("<a>", .{ .document = pools.storage(), .scratch = frames.storage() }, discard, .{}));
     defer session.deinit();
     try equal(markup.Completeness.partial, session.run().document.?.state);
-    session.reset("<b>", discard, .{ .policy = .{ .retention = .{ .partial = false } } });
+    try session.reset("<b>", discard, .{ .policy = .{ .retention = .{ .partial = false } } });
     try expect(session.run().document == null);
 }
 
@@ -323,7 +323,7 @@ test "in-parse policy limits retain exact prefixes in fixed runtime and metered 
         const fixed = P.parseBorrowedIn(case.source, memory, discard, .{});
         try deep(parsed.document, fixed.document);
         try deep(parsed.outcome, fixed.outcome);
-        var session = Runtime.Session.init(case.source, memory, discard, .{ .policy = settings });
+        var session = (try Runtime.Session.init(case.source, memory, discard, .{ .policy = settings }));
         defer session.deinit();
         var steps: u32 = 0;
         while (session.result() == null) {
@@ -336,7 +336,7 @@ test "in-parse policy limits retain exact prefixes in fixed runtime and metered 
 
         var disabled = settings;
         disabled.retention.partial = false;
-        const off = Runtime.parseBorrowedIn(case.source, memory, discard, .{ .policy = disabled });
+        const off = (try Runtime.parseBorrowedIn(case.source, memory, discard, .{ .policy = disabled }));
         try deep(parsed.outcome, off.outcome);
         try deep(parsed.counts, off.counts);
         try expect(off.document == null);
@@ -371,7 +371,7 @@ test "unsupported input retains earlier nodes regardless of reporting or error p
 
             var pools: markup.FixedDocumentStorage(.{ .nodes = 8 }) = .{};
             var frames: markup.FixedParseScratch(4) = .{};
-            const dynamic = Runtime.parseBorrowedIn(case.source, .{ .document = pools.storage(), .scratch = frames.storage() }, discard, .{ .policy = settings });
+            const dynamic = (try Runtime.parseBorrowedIn(case.source, .{ .document = pools.storage(), .scratch = frames.storage() }, discard, .{ .policy = settings }));
             try deep(parsed.outcome, dynamic.outcome);
             try deep(parsed.document, dynamic.document);
         }

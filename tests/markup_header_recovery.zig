@@ -49,7 +49,7 @@ test "header recovery preserves actual open and empty boundaries across executio
             defer std.testing.allocator.free(source);
             var frames: markup.FixedParseScratch(8) = .{};
             var bag: markup.FixedDiagnosticBag(16) = .{};
-            const measured = P.measureIn(source, frames.storage(), bag.sink(), options);
+            const measured = (if (runtime) try P.measureIn(source, frames.storage(), bag.sink(), options) else P.measureIn(source, frames.storage(), bag.sink(), options));
             try equal(markup.Outcome.invalid_syntax, measured.outcome);
             try equal(if (recovery == .collect) markup.Completion.complete else .incomplete, measured.completion);
             const errors: u32 = if (recovery == .fail_fast) 1 else if (index == headers.len - 1) 3 else 2;
@@ -61,7 +61,7 @@ test "header recovery preserves actual open and empty boundaries across executio
 
             var nodes: markup.FixedDocumentStorage(.{ .nodes = 16, .attributes = 8 }) = .{};
             var session_bag: markup.FixedDiagnosticBag(16) = .{};
-            var session = P.Session.init(source, .{ .document = nodes.storage(), .scratch = frames.storage() }, session_bag.sink(), options);
+            var session = (if (runtime) try P.Session.init(source, .{ .document = nodes.storage(), .scratch = frames.storage() }, session_bag.sink(), options) else P.Session.init(source, .{ .document = nodes.storage(), .scratch = frames.storage() }, session_bag.sink(), options));
             defer session.deinit();
             if (metered) {
                 var work: u64 = 0;
@@ -82,7 +82,7 @@ test "header recovery preserves actual open and empty boundaries across executio
             try std.testing.expectEqualSlices(markup.Diagnostic, bag.items(), session_bag.items());
             try deep(result, session.run());
             try deep(result, session.cancel());
-            session.reset("<ok/>", discard, .{});
+            if (runtime) try session.reset("<ok/>", discard, .{}) else session.reset("<ok/>", discard, .{});
             try equal(markup.Outcome.success, session.run().outcome);
         }
     };

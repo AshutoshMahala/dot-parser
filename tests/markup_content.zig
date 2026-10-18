@@ -97,7 +97,7 @@ test "malformed reference policy has fixed runtime measured and bounded parity" 
                 defer parsed.deinit();
                 var storage: Storage = .{};
                 var scratch: Scratch = .{};
-                var session = Dynamic.Session.init(wrapped, .{ .document = storage.storage(), .scratch = scratch.storage() }, b.sink(), .{ .policy = input });
+                var session = (try Dynamic.Session.init(wrapped, .{ .document = storage.storage(), .scratch = scratch.storage() }, b.sink(), .{ .policy = input }));
                 defer session.deinit();
                 var work: u64 = 0;
                 while (session.result() == null) {
@@ -379,21 +379,21 @@ test "runtime reference policy is latched and reset inherits the compiled baseli
     const P = markup.Profile(.{ .runtime_policy = true, .policy = .{ .syntax = .{ .malformed_reference = .warn }, .execution = .{ .metering = true } } });
     var storage: Storage = .{};
     var options: P.Options = .{};
-    var session = P.Session.init("&;", .{ .document = storage.storage() }, discard, options);
+    var session = (try P.Session.init("&;", .{ .document = storage.storage() }, discard, options));
     defer session.deinit();
     _ = try session.advance(1);
     options.policy.syntax.malformed_reference = .reject;
     while ((try session.advance(1)).outcome == null) {}
     try equal(@as(u32, 1), session.result().?.warnings);
-    session.reset("&;", discard, options);
+    try session.reset("&;", discard, options);
     try equal(markup.Outcome.invalid_syntax, session.run().outcome);
     try equal(@as(u32, 0), session.result().?.warnings);
-    session.reset("&;", discard, .{ .policy = .{ .syntax = .{ .malformed_reference = .accept }, .execution = .{ .metering = false } } });
+    try session.reset("&;", discard, .{ .policy = .{ .syntax = .{ .malformed_reference = .accept }, .execution = .{ .metering = false } } });
     try equal(@as(u32, 1), session.run().accepted_deviations);
     try equal(@as(u32, 0), session.result().?.warnings);
-    session.reset("&;", discard, .{});
+    try session.reset("&;", discard, .{});
     try equal(@as(u32, 1), session.run().warnings);
-    session.reset("&;", discard, .{ .policy = markup.presets.standard });
+    try session.reset("&;", discard, .{ .policy = markup.presets.standard });
     try equal(markup.Outcome.invalid_syntax, session.run().outcome);
 }
 

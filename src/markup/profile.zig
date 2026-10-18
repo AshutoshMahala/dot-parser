@@ -79,7 +79,7 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
         pub const Diagnostic = api.Diagnostic;
         pub const DiagnosticSink = api.DiagnosticSink;
         pub const CheckResult = api.FragmentResult;
-        pub const InputError = api.Fragment.Error;
+        pub const InputError = api.Fragment.Error || Binding.Error;
         pub const ParseResources = api.ParseResources;
         pub const console = api.console;
         pub const baseline = Binding.baseline;
@@ -89,6 +89,9 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
         pub const Options = OptionsFor(api, Binding);
         pub const ParseOptions = ParseOptionsFor(api, Binding);
         pub const validatePolicy = Binding.validatePolicy;
+        fn Checked(comptime T: type) type {
+            return if (runtime_policy) policy.Error!T else T;
+        }
         /// Prepared once for any number of explicitly selected raw fragments.
         /// For a PolicySet, use .{ .policies = state.path_to_markup } instead.
         /// Policies must be produced by Policies.prepare/PolicySet.prepare;
@@ -201,8 +204,8 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
             if (checked) |value| return value.errors != 0 or value.completion == .source_limit;
             return false;
         }
-        pub fn prepare(options: Options) Prepared {
-            return .{ .policies = resolve(options), .cancellation = options.cancellation };
+        pub fn prepare(options: Options) Checked(Prepared) {
+            return .{ .policies = if (runtime_policy) try resolve(options) else resolve(options), .cancellation = options.cancellation };
         }
         fn rebaseValidation(input: api.Fragment, checked: ?api.ValidationResult) ?api.ValidationResult {
             var result = checked orelse return null;
@@ -210,20 +213,18 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
             if (result.completion == .incomplete) result.completion.incomplete += input.origin;
             return result;
         }
-        pub fn parseAndValidate(allocator: std.mem.Allocator, input: api.Fragment, diagnostics: api.DiagnosticSink, options: ParseOptions) api.Fragment.Error!api.FragmentResult {
+        pub fn parseAndValidate(allocator: std.mem.Allocator, input: api.Fragment, diagnostics: api.DiagnosticSink, options: ParseOptions) InputError!api.FragmentResult {
             const opts: Options = if (runtime_policy) .{ .policy = options.policy, .cancellation = options.cancellation } else .{ .cancellation = options.cancellation };
-            return Self.prepare(opts).parseAndValidate(allocator, input, diagnostics, .{ .scratch_allocator = options.scratch_allocator });
+            const prepared = if (runtime_policy) try Self.prepare(opts) else Self.prepare(opts);
+            return prepared.parseAndValidate(allocator, input, diagnostics, .{ .scratch_allocator = options.scratch_allocator });
         }
-        pub fn parseAndValidateIn(input: api.Fragment, memory: api.ParseMemory, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink, options: Options) api.Fragment.Error!api.FixedFragmentResult {
-            return Self.prepare(options).parseAndValidateIn(input, memory, scratch, diagnostics);
+        pub fn parseAndValidateIn(input: api.Fragment, memory: api.ParseMemory, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink, options: Options) InputError!api.FixedFragmentResult {
+            const prepared = if (runtime_policy) try Self.prepare(options) else Self.prepare(options);
+            return prepared.parseAndValidateIn(input, memory, scratch, diagnostics);
         }
-        fn resolve(options: Options) State {
+        fn resolve(options: Options) Checked(State) {
             if (!runtime_policy) return {};
-            // Enforce today's infallible API at compile time. If the schema
-            // gains invalid combinations, propagate its errors instead of
-            // silently discarding them or treating them as unreachable.
-            const prepared: error{}!State = Binding.prepare(.{ .policy = options.policy });
-            return prepared catch unreachable;
+            return Binding.prepare(.{ .policy = options.policy });
         }
 
         // Execution bits match DOT; bit 8 selects Graphviz name matching once,
@@ -277,8 +278,8 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
         fn hook(comptime variant: Variant, value: Hook) Core(variant).Hook {
             return if (comptime variant.cancellation()) value else {};
         }
-        fn call(comptime method: []const u8, comptime T: type, args: anytype, options: Options) T {
-            return callPrepared(method, T, args, prepare(options));
+        fn call(comptime method: []const u8, comptime T: type, args: anytype, options: Options) Checked(T) {
+            return callPrepared(method, T, args, if (runtime_policy) try prepare(options) else prepare(options));
         }
         fn callPrepared(comptime method: []const u8, comptime T: type, args: anytype, options: Prepared) T {
             const effective = options.policies;
@@ -292,28 +293,28 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
         /// Retains source-shaped records with the caller allocator. Source stays
         /// borrowed; dispose the result explicitly. Partial-prefix output is
         /// published on failure only with retention.partial enabled.
-        pub fn parseBorrowed(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: ParseOptions) api.ParseResult {
+        pub fn parseBorrowed(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: ParseOptions) Checked(api.ParseResult) {
             const opts: Options = if (runtime_policy) .{ .policy = options.policy, .cancellation = options.cancellation } else .{ .cancellation = options.cancellation };
             return call("parseBorrowed", api.ParseResult, .{ allocator, source, diagnostics, api.ParseResources{ .scratch_allocator = options.scratch_allocator } }, opts);
         }
         /// No allocations. The source and output pools outlive the view.
-        pub fn parseBorrowedIn(source: []const u8, memory: api.ParseMemory, diagnostics: api.DiagnosticSink, options: Options) api.FixedParseResult {
+        pub fn parseBorrowedIn(source: []const u8, memory: api.ParseMemory, diagnostics: api.DiagnosticSink, options: Options) Checked(api.FixedParseResult) {
             return call("parseBorrowedIn", api.FixedParseResult, .{ source, memory, diagnostics }, options);
         }
         /// Count-only execution; output records are not materialized. On success,
         /// counts.nodes/attributes size output, max_depth is safe scratch capacity.
-        pub fn measureIn(source: []const u8, scratch: api.ParseScratch, diagnostics: api.DiagnosticSink, options: Options) api.Report {
+        pub fn measureIn(source: []const u8, scratch: api.ParseScratch, diagnostics: api.DiagnosticSink, options: Options) Checked(api.Report) {
             return call("measureIn", api.Report, .{ source, scratch, diagnostics }, options);
         }
-        pub fn measure(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: Options) api.Report {
+        pub fn measure(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: Options) Checked(api.Report) {
             return call("measure", api.Report, .{ allocator, source, diagnostics }, options);
         }
 
         fn Validator(comptime v: Variant) type {
             return validation.ValidatorForEncoding(actual, if (runtime_policy) null else baseline.validation, v.cancellation(), v.mode());
         }
-        fn validateCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
-            return validatePrepared(method, args, prepare(options));
+        fn validateCall(comptime method: []const u8, args: anytype, options: Options) Checked(api.ValidationResult) {
+            return validatePrepared(method, args, if (runtime_policy) try prepare(options) else prepare(options));
         }
         fn validatePrepared(comptime method: []const u8, args: anytype, options: Prepared) api.ValidationResult {
             const effective = options.policies;
@@ -325,29 +326,29 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
         }
         /// Independent, run-to-completion validation; never changes syntax.
         /// Parse metering does not bound this pass or its sorting/callbacks.
-        pub fn validateIn(document: *const api.Document, scratch: api.ValidationScratch, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+        pub fn validateIn(document: *const api.Document, scratch: api.ValidationScratch, diagnostics: api.DiagnosticSink, options: Options) Checked(api.ValidationResult) {
             return validateCall("run", .{ document, scratch, diagnostics }, options);
         }
         /// Allocates temporary duplicate-key scratch when needed, freed before
         /// returning. Checks other than duplicate attributes need no allocation.
-        pub fn validate(allocator: std.mem.Allocator, document: *const api.Document, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+        pub fn validate(allocator: std.mem.Allocator, document: *const api.Document, diagnostics: api.DiagnosticSink, options: Options) Checked(api.ValidationResult) {
             return validateCall("allocated", .{ allocator, document, diagnostics }, options);
         }
 
         /// Check an independently recognizable region; no enclosing tree needed.
         /// Caller-built original-source spans are checked in every build mode;
         /// invalid metadata returns invalid_scope, without source diagnostics.
-        pub fn validateScopeIn(source: []const u8, scope: api.ValidationScope, scratch: api.ValidationScratch, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+        pub fn validateScopeIn(source: []const u8, scope: api.ValidationScope, scratch: api.ValidationScratch, diagnostics: api.DiagnosticSink, options: Options) Checked(api.ValidationResult) {
             return validateCall("runScope", .{ source, scope, scratch, diagnostics }, options);
         }
-        pub fn validateScope(allocator: std.mem.Allocator, source: []const u8, scope: api.ValidationScope, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+        pub fn validateScope(allocator: std.mem.Allocator, source: []const u8, scope: api.ValidationScope, diagnostics: api.DiagnosticSink, options: Options) Checked(api.ValidationResult) {
             return validateCall("allocatedScope", .{ allocator, source, scope, diagnostics }, options);
         }
         fn SourceValidator(comptime v: Variant) type {
             return source_validation.ValidatorForInputEncoding(actual, v.backend(), if (runtime_policy) null else baseline, v.cancellation(), v.mode(), strip_bom);
         }
-        fn sourceValidationCall(comptime method: []const u8, args: anytype, options: Options) api.ValidationResult {
-            return sourceValidationPrepared(method, args, prepare(options));
+        fn sourceValidationCall(comptime method: []const u8, args: anytype, options: Options) Checked(api.ValidationResult) {
+            return sourceValidationPrepared(method, args, if (runtime_policy) try prepare(options) else prepare(options));
         }
         fn sourceValidationPrepared(comptime method: []const u8, args: anytype, options: Prepared) api.ValidationResult {
             const effective = options.policies;
@@ -360,10 +361,10 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
         /// Local validation without a Document. This does not check tag balance
         /// or replace parsing; incomplete lexical regions cannot be certified.
         /// Like document validation, this operation is not work-credit metered.
-        pub fn validateSourceIn(source: []const u8, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+        pub fn validateSourceIn(source: []const u8, scratch: api.SourceValidationScratch, diagnostics: api.DiagnosticSink, options: Options) Checked(api.ValidationResult) {
             return sourceValidationCall("run", .{ source, scratch, diagnostics }, options);
         }
-        pub fn validateSource(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: Options) api.ValidationResult {
+        pub fn validateSource(allocator: std.mem.Allocator, source: []const u8, diagnostics: api.DiagnosticSink, options: Options) Checked(api.ValidationResult) {
             return sourceValidationCall("allocated", .{ allocator, source, diagnostics }, options);
         }
 
@@ -387,8 +388,8 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
         } else Core(variantOf(baseline)).Session;
         pub const Session = struct {
             inner: Inner,
-            pub fn init(source: []const u8, memory: api.ParseMemory, diagnostics: api.DiagnosticSink, options: Options) @This() {
-                const effective = resolve(options);
+            pub fn init(source: []const u8, memory: api.ParseMemory, diagnostics: api.DiagnosticSink, options: Options) Checked(@This()) {
+                const effective = if (runtime_policy) try resolve(options) else resolve(options);
                 if (runtime_policy) switch (variantOf(effective)) {
                     inline else => |v| return .{ .inner = @unionInit(Inner, @tagName(v), Core(v).Session.init(source, memory, diagnostics, settings(v, effective), hook(v, options.cancellation))) },
                 };
@@ -424,12 +425,13 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
             }
             /// Reuses caller memory. Previous document views must be retired.
             /// Each reset inherits the compiled baseline, not the last override.
-            pub fn reset(self: *@This(), source: []const u8, diagnostics: api.DiagnosticSink, options: Options) void {
+            pub fn reset(self: *@This(), source: []const u8, diagnostics: api.DiagnosticSink, options: Options) Checked(void) {
                 const memory = if (runtime_policy) switch (self.inner) {
                     inline else => |*s| s.memory,
                 } else self.inner.memory;
+                const replacement = if (runtime_policy) try init(source, memory, diagnostics, options) else init(source, memory, diagnostics, options);
                 self.deinit();
-                self.* = init(source, memory, diagnostics, options);
+                self.* = replacement;
             }
         };
     };

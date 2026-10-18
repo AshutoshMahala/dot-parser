@@ -93,8 +93,8 @@ There are two ways to stop a session early.
 **Call `session.cancel()`** between calls. This always works.
 
 **Give it a cancel check.** Turn on `execution.cancellation` and pass a
-function that returns `true` when the work should stop. The session calls it
-before every step:
+function that returns `true` when the work should stop. By default, the session
+calls it before every step:
 
 ```zig
 const Request = struct {
@@ -131,6 +131,63 @@ The same `.cancellation` option works on the one-call functions
 
 The check is a plain function call. There are no threads, signals or timers
 inside the library. If another thread sets your flag, make it an atomic.
+
+### Cancellation interval
+
+Both parsers accept `execution.cancellation_interval`, a positive `u32`, default
+`1`. It limits the number of existing **work steps** between callback checks:
+
+```zig
+const Parser = dot.Profile(.{ .policy = .{ .execution = .{
+    .metering = true,
+    .cancellation = true,
+    .cancellation_interval = 64,
+} } }); // markup.Profile accepts the same execution settings
+```
+
+Larger intervals reduce polling overhead but can notice cancellation later.
+The minimum multiplier is **1 for both scanners**, not 64 for the block scanner.
+Scalar lexical steps examine one source code unit; block steps classify or
+process windows of up to 64 units. UTF-8 units are bytes; UTF-16/32 units are
+two/four bytes. Classification, token processing, grammar, output and recovery
+also consume steps, so the interval is **not an exact byte count or time limit**.
+It does not change block width, work-credit costs, or charge callbacks by time.
+
+- Every active `advance`/`run` call checks on entry, including `advance(0)`.
+  Small caller budgets can therefore cause more frequent checks than requested.
+- `advance(N)` still spends at most N credits, even when the interval is larger.
+  Pausing needs no cancellation request; the next call resumes normally.
+- A concrete failure or successful commit still takes precedence over a later
+  cancellation check. Finished sessions do not poll again; `cancel()` remains
+  immediate and terminal.
+- Fixed profiles specialize the interval at compile time. Runtime-enabled
+  profiles validate and resolve it once at initialization/reset; it stays fixed
+  across yields. An invalid reset preserves the existing session.
+- `0` is invalid even when cancellation is disabled. Fixed baselines fail to
+  compile; runtime patches return `error.InvalidCancellationInterval` before
+  reading input, allocating storage or calling the cancellation hook.
+- The interval applies to parsing and measurement, including event-only DOT
+  execution. Markup validation keeps its existing safe-point checks; those
+  passes are not work-metered. Inner processors use their own execution policy.
+
+Runtime override example (also valid with `markup.Profile`):
+
+```zig
+const Runtime = dot.Profile(.{ .runtime_policy = true, .policy = .{
+    .execution = .{ .metering = true, .cancellation = true },
+} });
+var session = try Runtime.Session.init(source, memory, bag.sink(), .{
+    .policy = .{ .execution = .{ .cancellation_interval = 64 } },
+    .cancellation = hook,
+});
+defer session.deinit();
+```
+
+Use `zig build bench-cancellation -Doptimize=ReleaseFast` (or `ReleaseSafe`) to
+compare intervals 1, 4, 16, 64 and 256 on both scanners and both parsers, with
+fixed/runtime policies and metering on/off. The benchmark reports throughput,
+callback counts, credits and session sizes; source/pool allocation is outside
+timing. Interval 1 remains the default, not a claim that larger is always faster.
 
 ## Rules while a session is paused
 
@@ -217,7 +274,8 @@ Run them with `zig build examples`. Each program is also installed in
 
 ## Not available yet
 
-- Validation in steps, or validation that can be cancelled.
+- Validation in steps, or cancellation during DOT validation. Markup validation
+  already checks cancellation at safe points, without work-credit metering.
 - Checking HTML-like labels in steps.
 - Feeding input in pieces. The whole input must be in memory before parsing
   starts.

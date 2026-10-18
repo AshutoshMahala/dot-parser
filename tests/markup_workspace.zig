@@ -32,7 +32,7 @@ test "all fragment storage paths agree across resets origins backends and policy
         const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{
             .mode = .structural,
         } else patch });
-        const ready = P.prepare(if (runtime) .{ .policy = patch } else .{});
+        const ready = (if (runtime) try P.prepare(if (runtime) .{ .policy = patch } else .{}) else P.prepare(if (runtime) .{ .policy = patch } else .{}));
         var workspace = ready.initWorkspace(gpa, .{});
         defer workspace.deinit();
         var storage: markup.FixedDocumentStorage(.{ .nodes = 16, .attributes = 16 }) = .{};

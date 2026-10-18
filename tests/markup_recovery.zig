@@ -94,7 +94,7 @@ test "typo policies inherit and latch across fixed runtime scanner and execution
         var reference_work: ?u64 = null;
         for ([_]u32{ 1, 7, 256 }) |budget| {
             var second: markup.FixedDiagnosticBag(8) = .{};
-            var session = Dynamic.Session.init(source, memory, second.sink(), .{ .policy = p });
+            var session = (try Dynamic.Session.init(source, memory, second.sink(), .{ .policy = p }));
             defer session.deinit();
             var work: u64 = 0;
             while (true) {
@@ -111,7 +111,7 @@ test "typo policies inherit and latch across fixed runtime scanner and execution
             try equal(markup.Outcome.invalid_syntax, expected.outcome);
             try equal(if (on_error == .fail_fast) markup.Completion.incomplete else .complete, expected.completion);
             try equal(@as(u32, if (on_error == .collect and strategy == .exact) 2 else 1), expected.syntax_errors);
-            session.reset(source, discard, .{});
+            try session.reset(source, discard, .{});
             try equal(@as(u32, 2), session.run().syntax_errors); // exact-only baseline restored
         }
     };
@@ -326,7 +326,7 @@ test "recovery has compile-time runtime scanner and execution parity, including 
         var a: markup.FixedDiagnosticBag(16) = .{};
         var b: markup.FixedDiagnosticBag(16) = .{};
         const expected = P.parseBorrowedIn(source, memory, a.sink(), .{});
-        var session = Dynamic.Session.init(source, memory, b.sink(), .{ .policy = p });
+        var session = (try Dynamic.Session.init(source, memory, b.sink(), .{ .policy = p }));
         defer session.deinit();
         if (metered) {
             var work: u64 = 0;
@@ -341,9 +341,9 @@ test "recovery has compile-time runtime scanner and execution parity, including 
         try std.testing.expectEqualSlices(markup.Diagnostic, a.items(), b.items());
         try equal(@as(u32, if (recovery == .fail_fast) 1 else 3), expected.syntax_errors);
         try equal(if (recovery == .fail_fast) markup.Completion.incomplete else .complete, expected.completion);
-        session.reset(source, discard, .{});
+        try session.reset(source, discard, .{});
         try equal(@as(u32, 1), session.run().syntax_errors); // compiled baseline restored
-        session.reset("<ok/>", discard, .{});
+        try session.reset("<ok/>", discard, .{});
         try equal(markup.Completion.complete, session.run().completion);
     };
 }

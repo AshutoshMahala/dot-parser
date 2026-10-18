@@ -60,7 +60,7 @@ fn compare(comptime acceptance: m.Acceptance, source: []const u8) !void {
                     .syntax = .{ .malformed_reference = acceptance },
                     .execution = .{ .metering = budget != 0, .cancellation = cancellable },
                 };
-                var session = Dynamic.Session.init(source, .{ .document = output.storage(), .scratch = frames.storage() }, findings.sink(), .{ .policy = patch });
+                var session = (try Dynamic.Session.init(source, .{ .document = output.storage(), .scratch = frames.storage() }, findings.sink(), .{ .policy = patch }));
                 defer session.deinit();
                 if (budget == 0) {
                     try std.testing.expectError(error.MeteringDisabled, session.advance(1));
@@ -157,13 +157,13 @@ test "block policy fixed runtime owned count-only and reset agree" {
     try equal(owned.counts, P.measureIn(source, scratch.storage(), m.diagnostic.discard, .{}).counts);
     const R = m.Profile(.{ .runtime_policy = true, .policy = .{ .scanner = .block, .execution = .{ .metering = true } } });
     var storage: Storage = .{};
-    var session = R.Session.init("<a/>", .{ .document = storage.storage(), .scratch = scratch.storage() }, m.diagnostic.discard, .{ .policy = .{ .scanner = .scalar, .execution = .{ .metering = false } } });
+    var session = (try R.Session.init("<a/>", .{ .document = storage.storage(), .scratch = scratch.storage() }, m.diagnostic.discard, .{ .policy = .{ .scanner = .scalar, .execution = .{ .metering = false } } }));
     try std.testing.expectError(error.MeteringDisabled, session.advance(1));
     try equal(m.Outcome.success, session.run().outcome);
-    session.reset("long plain text", m.diagnostic.discard, .{});
+    try session.reset("long plain text", m.diagnostic.discard, .{});
     while ((try session.advance(1)).outcome == null) {}
     try equal(m.Outcome.success, session.result().?.outcome);
-    session.reset("<a/>", m.diagnostic.discard, .{ .policy = m.presets.standard });
+    try session.reset("<a/>", m.diagnostic.discard, .{ .policy = m.presets.standard });
     try std.testing.expectError(error.MeteringDisabled, session.advance(1));
     try equal(m.Outcome.success, session.run().outcome);
 }
@@ -221,23 +221,23 @@ test "runtime reset preserves memory and selects all eight execution variants" {
     var poll: Poll = .{};
     const hook: m.Cancellation = .{ .context = &poll, .is_requested = Poll.requested };
     const source = "<a x='1'>" ++ "text" ** 64 ++ "</a>";
-    var session = Dynamic.Session.init(source, .{ .document = storage.storage(), .scratch = scratch.storage() }, m.diagnostic.discard, .{});
+    var session = (try Dynamic.Session.init(source, .{ .document = storage.storage(), .scratch = scratch.storage() }, m.diagnostic.discard, .{}));
     defer session.deinit();
     // Test every old/new pair, including abandoning unfinished work on reset.
     for (0..8) |from| {
         for (0..8) |to| {
             const old: m.Policy = .{ .scanner = if (from & 4 != 0) .block else .scalar, .execution = .{ .metering = from & 2 != 0, .cancellation = from & 1 != 0 } };
-            session.reset(source, m.diagnostic.discard, .{ .policy = old, .cancellation = hook });
+            try session.reset(source, m.diagnostic.discard, .{ .policy = old, .cancellation = hook });
             if (from & 2 != 0) _ = try session.advance(12) else _ = session.run();
             poll = .{ .stop = true };
             const next: m.Policy = .{ .scanner = if (to & 4 != 0) .block else .scalar, .execution = .{ .metering = to & 2 != 0, .cancellation = to & 1 != 0 } };
             const options: Dynamic.Options = .{ .policy = next, .cancellation = hook };
-            session.reset(source, m.diagnostic.discard, options);
+            try session.reset(source, m.diagnostic.discard, options);
             const expected: m.Outcome = if (to & 1 != 0) .cancelled else .success;
             try equal(expected, session.run().outcome);
             try equal(to & 1 != 0, poll.calls != 0);
             poll = .{};
-            session.reset(source, m.diagnostic.discard, options);
+            try session.reset(source, m.diagnostic.discard, options);
             if (to & 2 != 0) {
                 var frontier: u32 = 0;
                 var saw_block = false;

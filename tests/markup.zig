@@ -221,7 +221,7 @@ test "policy limits and storage exhaustion are separate and never publish a part
     inline for (.{ "max_source_bytes", "max_nesting", "max_nodes" }) |name| {
         var patch: markup.Policy = .{};
         @field(patch.limits, name) = 0;
-        const r = Dynamic.parseBorrowedIn("<a/>", memory, discard, .{ .policy = patch });
+        const r = (try Dynamic.parseBorrowedIn("<a/>", memory, discard, .{ .policy = patch }));
         try expect(r.outcome == .resource_limit);
         try expect(r.document == null);
     }
@@ -229,7 +229,7 @@ test "policy limits and storage exhaustion are separate and never publish a part
     const limited = Fixed.parseBorrowedIn("<a><b/></a>", memory, discard, .{});
     try equal(markup.Outcome{ .resource_limit = .{ .resource = .nesting_depth, .limit = 1 } }, limited.outcome);
     try equal(markup.Outcome.success, Structural.parseBorrowedIn("<a/>", memory, discard, .{}).outcome);
-    try equal(markup.Outcome.success, Dynamic.parseBorrowedIn("", .{}, discard, .{ .policy = .{ .limits = .{ .max_nodes = 0, .max_nesting = 0, .max_source_bytes = 0 } } }).outcome);
+    try equal(markup.Outcome.success, (try Dynamic.parseBorrowedIn("", .{}, discard, .{ .policy = .{ .limits = .{ .max_nodes = 0, .max_nesting = 0, .max_source_bytes = 0 } } })).outcome);
 }
 
 test "all budget partitions preserve records, diagnostics, counts, work and terminal state" {
@@ -286,7 +286,7 @@ test "fixed/runtime settings agree, patches inherit, resets use the compiled bas
     const memory: markup.ParseMemory = .{ .document = nodes.storage(), .scratch = frames.storage() };
     inline for (.{ false, true }) |metering| inline for (.{ false, true }) |cancellation| {
         const P = markup.Profile(.{ .policy = .{ .mode = .structural, .limits = .{ .max_nodes = 2 }, .execution = .{ .metering = metering, .cancellation = cancellation } } });
-        var dynamic = Dynamic.Session.init("<a/><b/><c/>", memory, discard, .{ .policy = .{ .execution = .{ .metering = metering, .cancellation = cancellation } } });
+        var dynamic = (try Dynamic.Session.init("<a/><b/><c/>", memory, discard, .{ .policy = .{ .execution = .{ .metering = metering, .cancellation = cancellation } } }));
         if (metering) {
             while ((try dynamic.advance(1)).outcome == null) {}
         } else {
@@ -295,9 +295,9 @@ test "fixed/runtime settings agree, patches inherit, resets use the compiled bas
         }
         const expected = P.parseBorrowedIn("<a/><b/><c/>", memory, discard, .{});
         try equal(expected.outcome, dynamic.result().?.outcome);
-        dynamic.reset("<a/><b/><c/>", discard, .{ .policy = .{ .limits = .{ .max_nodes = 3 } } });
+        try dynamic.reset("<a/><b/><c/>", discard, .{ .policy = .{ .limits = .{ .max_nodes = 3 } } });
         try equal(markup.Outcome.success, dynamic.run().outcome);
-        dynamic.reset("<a/><b/><c/>", discard, .{});
+        try dynamic.reset("<a/><b/><c/>", discard, .{});
         try expect(dynamic.run().outcome == .resource_limit);
         dynamic.deinit();
     };
@@ -328,21 +328,21 @@ test "runtime cancellation policy controls supplied hooks across operations and 
             const expected: markup.Outcome = if (enabled) .cancelled else .success;
             const options: P.Options = .{ .policy = .{ .execution = .{ .cancellation = patch } }, .cancellation = stop.hook() };
             stop.polls = 0;
-            try equal(expected, P.measureIn("<a/>", .{}, discard, options).outcome);
+            try equal(expected, (try P.measureIn("<a/>", .{}, discard, options)).outcome);
             try equal(@as(u32, if (enabled) 1 else 0), stop.polls);
             stop.polls = 0;
-            try equal(expected, P.measure(std.testing.allocator, "<a/>", discard, options).outcome);
+            try equal(expected, (try P.measure(std.testing.allocator, "<a/>", discard, options)).outcome);
             try equal(@as(u32, if (enabled) 1 else 0), stop.polls);
             stop.polls = 0;
-            try equal(expected, P.parseBorrowedIn("<a/>", memory, discard, options).outcome);
+            try equal(expected, (try P.parseBorrowedIn("<a/>", memory, discard, options)).outcome);
             try equal(@as(u32, if (enabled) 1 else 0), stop.polls);
             stop.polls = 0;
-            var owned = P.parseBorrowed(std.testing.allocator, "<a/>", discard, .{ .policy = options.policy, .cancellation = options.cancellation });
+            var owned = (try P.parseBorrowed(std.testing.allocator, "<a/>", discard, .{ .policy = options.policy, .cancellation = options.cancellation }));
             defer owned.deinit();
             try equal(expected, owned.outcome);
             try equal(@as(u32, if (enabled) 1 else 0), stop.polls);
             stop.polls = 0;
-            var session = P.Session.init("<a/>", memory, discard, options);
+            var session = (try P.Session.init("<a/>", memory, discard, options));
             try equal(@as(u32, 0), stop.polls);
             if (metered) {
                 const first = try session.advance(0);
@@ -352,11 +352,11 @@ test "runtime cancellation policy controls supplied hooks across operations and 
             try equal(expected, session.run().outcome);
             try equal(@as(u32, if (enabled) 1 else 0), stop.polls);
             stop.polls = 0;
-            session.reset("<a/>", discard, .{ .policy = .{ .execution = .{ .cancellation = !enabled } }, .cancellation = stop.hook() });
+            try session.reset("<a/>", discard, .{ .policy = .{ .execution = .{ .cancellation = !enabled } }, .cancellation = stop.hook() });
             const reset_expected: markup.Outcome = if (enabled) .success else .cancelled;
             try equal(reset_expected, session.run().outcome);
             try equal(@as(u32, if (enabled) 0 else 1), stop.polls);
-            session.reset("<a/>", discard, options);
+            try session.reset("<a/>", discard, options);
             try equal(markup.Outcome.cancelled, session.cancel().outcome);
             session.deinit();
         }
@@ -604,7 +604,7 @@ test "attribute capacities, policy parity and self-closing headers without nesti
     inline for (.{ 0, 1, 2 }) |limit| {
         const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural, .limits = .{ .max_attributes = limit } } });
         const a = Fixed.parseBorrowedIn(source, memory, discard, .{});
-        const b = Dynamic.parseBorrowedIn(source, memory, discard, .{ .policy = .{ .limits = .{ .max_attributes = limit } } });
+        const b = (try Dynamic.parseBorrowedIn(source, memory, discard, .{ .policy = .{ .limits = .{ .max_attributes = limit } } }));
         try equal(a.outcome, b.outcome);
         try equal(a.counts, b.counts);
         try equal(@as(u32, limit), a.counts.attributes);
@@ -652,13 +652,13 @@ test "independent duplicate validation, case-sensitive scope, first occurrence a
             }
         }
         // Hiding findings never changes validity; runtime patch equals fixed policy.
-        try equal(checked, Dynamic.validateIn(&doc, scratch.storage(), discard, .{ .policy = .{ .validation = .{ .duplicate_attribute = severity } } }));
+        try equal(checked, (try Dynamic.validateIn(&doc, scratch.storage(), discard, .{ .policy = .{ .validation = .{ .duplicate_attribute = severity } } })));
         try equal(checked, Fixed.validate(std.testing.allocator, &doc, discard, .{}));
         try equal(@as(usize, 9), doc.attributes.len);
     }
     const Off = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off } } });
     try expect(Off.validate(std.testing.failing_allocator, &doc, discard, .{}).completion == .complete);
-    try expect(Dynamic.validateIn(&doc, .{}, discard, .{}).checks.duplicate_attribute == .not_run);
+    try expect((try Dynamic.validateIn(&doc, .{}, discard, .{})).checks.duplicate_attribute == .not_run);
     try expect(Structural.validateIn(&doc, .{}, discard, .{}).completion == .storage_exhausted);
     try expect(Structural.validate(std.testing.failing_allocator, &doc, discard, .{}).completion == .out_of_memory);
     // Parsing under a validation-error policy still retains the complete syntax.
@@ -692,9 +692,9 @@ test "validation stops immediately on diagnostic backpressure with truthful part
     try equal(@as(u32, 1), oom.errors);
     const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     var stop: Stop = .{ .after = 0 };
-    try expect(Dynamic.validateIn(&doc, scratch.storage(), discard, .{ .cancellation = stop.hook() }).completion == .complete);
+    try expect((try Dynamic.validateIn(&doc, scratch.storage(), discard, .{ .cancellation = stop.hook() })).completion == .complete);
     try equal(@as(u32, 0), stop.polls);
-    const cancelled = Dynamic.validateIn(&doc, scratch.storage(), discard, .{ .cancellation = stop.hook(), .policy = .{ .execution = .{ .cancellation = true } } });
+    const cancelled = (try Dynamic.validateIn(&doc, scratch.storage(), discard, .{ .cancellation = stop.hook(), .policy = .{ .execution = .{ .cancellation = true } } }));
     try expect(cancelled.completion == .cancelled);
     try equal(.unknown, cancelled.validity);
 }

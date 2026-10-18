@@ -622,6 +622,15 @@ Cancellation is a terminal caller request and triggers sink abort semantics. A
 bounded-driver yield is not cancellation and remains resumable. Callers must be
 able to disable cancellation checks when they do not want their hot-path cost.
 
+DOT and markup parsing accept a positive `execution.cancellation_interval`
+(default 1), with equal compile-time/runtime policy support. It bounds existing
+work steps between polls; it does not redefine credits or permit budget overrun.
+Every active drive/resume checks on entry, even with zero credits. Intervals are
+latched until reset; invalid runtime resets must not destroy existing work.
+Validation retains its own documented safe points rather than sharing parsing's
+countdown. Larger intervals explicitly trade responsiveness for fewer checks;
+they are not byte counts or elapsed-time guarantees.
+
 ### R-MOD-014: HTML-like markup has its own optional staged subsystem
 
 HTML-like identifiers must be recognized and preserved in every position where

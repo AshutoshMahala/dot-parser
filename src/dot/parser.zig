@@ -512,15 +512,25 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn drive(self: *Self, comptime bounded: bool, budget: usize) usize {
+            // Select once per drive, not per byte. Runtime interval 1 retains
+            // the old constant one-credit scanner and has no countdown work.
+            if (comptime !cancellable or fixed != null)
+                return self.driveInterval(bounded, budget, if (fixed) |p| p.cancellation_interval else 1);
+            if (self.settings.cancellation_interval == 1) return self.driveInterval(bounded, budget, 1);
+            return self.driveInterval(bounded, budget, null);
+        }
+
+        fn driveInterval(self: *Self, comptime bounded: bool, budget: usize, comptime fixed_interval: ?u32) usize {
             if (self.terminal != null) return 0;
             self.tokens.setRetainComments(self.retainComments());
             self.tokens.setNumeralCheck(self.numeralSeverity() != .off);
             var remaining = if (bounded) budget else {};
+            var polling: execution.CancellationPolling(cancellable, fixed_interval) = .{};
+            const interval = fixed_interval orelse self.settings.cancellation_interval;
             while (true) {
-                // The entry check also covers zero-budget calls. A normal
-                // callback's next boundary is polled, but a concrete failure
-                // or successful commit is latched before another poll.
-                if (cancellable) {
+                // Every entry checks, including zero-budget calls. Failures and
+                // successful commits still latch before another poll.
+                if (cancellable and polling.due(interval)) {
                     if (self.cancellation) |hook| if (hook.requested()) {
                         _ = self.cancel();
                         break;
@@ -529,13 +539,14 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 if (bounded and remaining == 0) break;
                 switch (self.work.phase) {
                     .scan => {
-                        // Keep the one-credit bound visible to the scanner so
-                        // cancellation does not pay for a general bounded loop.
+                        // The fixed default stays a constant one-credit call.
+                        // Batching never exceeds the independent caller budget.
                         const scanned = if (cancellable)
-                            @call(.always_inline, Scanner.drive, .{ &self.tokens, true, 1 })
+                            @call(.always_inline, Scanner.drive, .{ &self.tokens, true, if (comptime fixed_interval == 1) 1 else if (bounded) @min(remaining, polling.allowance()) else polling.allowance() })
                         else
                             self.tokens.nextBounded(remaining);
                         if (bounded) remaining -= scanned.work_used;
+                        polling.spend(scanned.work_used);
                         if (scanned.result) |result| switch (result) {
                             .token => |token| {
                                 if (self.forwardWarning()) {
@@ -557,12 +568,14 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     },
                     .grammar => {
                         if (bounded) remaining -= 1;
+                        polling.spend(1);
                         self.work.phase = .scan;
                         self.work.replay = false;
                         _ = self.transition(self.work.token);
                     },
                     .dispatch => {
                         if (bounded) remaining -= 1;
+                        polling.spend(1);
                         _ = self.dispatch(self.work.action, self.work.token);
                         if (self.terminal == null)
                             self.work.phase = if (self.work.replay) .grammar else .scan;

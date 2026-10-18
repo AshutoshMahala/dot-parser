@@ -1159,6 +1159,12 @@ fixed-storage bounded parsing. `Profile.Session` independently selects metering
 and cancellation through `Policy.execution`; the hook is a borrowed
 context/non-failing predicate pair. Explicit
 cancel/deinit cleans up abandoned work, and reset reuses pools after cleanup.
+Both parsers now accept a positive `execution.cancellation_interval` (default 1)
+at compile time or through runtime patches. It bounds parse work between polls,
+not bytes/time, and never changes metering costs or budgets. Every active resume
+checks immediately, including zero-budget calls. Runtime markup policy entry
+points now propagate invalid-interval errors; invalid resets preserve prior
+state. Markup validation retains its independent polling points.
 Partition, cancellation-boundary, failure-precedence, lifetime and freestanding
 checks accompany the API. Ordinary-path and optional costs are recorded in
 `docs/PERFORMANCE.md` for the pre-migration implementation; policy-path comparisons

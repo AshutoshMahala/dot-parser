@@ -107,7 +107,7 @@ test "UTF-8 fast loops match the general reader at arbitrary scope boundaries" {
                 at += step.len;
             }
             var bag: markup.FixedDiagnosticBag(source.len + 1) = .{};
-            const result = P.validateScopeIn(&source, .{ .bytes = .{ .start = start, .len = end - start } }, .{}, bag.sink(), options);
+            const result = (if (runtime) try P.validateScopeIn(&source, .{ .bytes = .{ .start = start, .len = end - start } }, .{}, bag.sink(), options) else P.validateScopeIn(&source, .{ .bytes = .{ .start = start, .len = end - start } }, .{}, bag.sink(), options));
             try equal(.complete, result.completion);
             try equal(.complete, result.checks.invalid_encoding);
             try equal(@as(u64, @intCast(expected.items().len)), result.errors);
@@ -135,7 +135,7 @@ test "combined check policies have fixed-runtime parity and globally source-orde
             try equal(@as(@TypeOf(checked.validity), if (checked.errors == 0) .valid else .invalid), checked.validity);
             try equal(if (duplicate == .off) .not_run else .complete, checked.checks.duplicate_attribute);
             try equal(if (encoding == .off) .not_run else .complete, checked.checks.invalid_encoding);
-            try equal(checked, Dynamic.validateIn(&document, scratch.storage(), discard, .{ .policy = patch }));
+            try equal(checked, (try Dynamic.validateIn(&document, scratch.storage(), discard, .{ .policy = patch })));
             try equal(checked, Fixed.validate(std.testing.allocator, &document, discard, .{}));
             // Omission is successful delivery, never a change in validity/counts.
             var omitted: markup.reporting.FixedBag(markup.Diagnostic, 0, .omit) = .{};
@@ -151,9 +151,9 @@ test "combined check policies have fixed-runtime parity and globally source-orde
             }
         }
     }
-    const inherited = Dynamic.validateIn(&document, scratch.storage(), discard, .{});
+    const inherited = (try Dynamic.validateIn(&document, scratch.storage(), discard, .{}));
     try equal(@as(u64, 5), inherited.warnings);
-    const reset = Dynamic.validateIn(&document, scratch.storage(), discard, .{ .policy = markup.presets.standard });
+    const reset = (try Dynamic.validateIn(&document, scratch.storage(), discard, .{ .policy = markup.presets.standard }));
     try equal(.not_run, reset.checks.invalid_encoding);
     try equal(markup.validateIn(&document, scratch.storage(), discard, .{}), reset);
     try equal(.valid, Dynamic.validatePolicy(.{ .validation = .{ .invalid_encoding = .err } }));
@@ -241,7 +241,7 @@ test "UTF-8 chunk cancellation preserves known invalidity" {
     defer parsed.deinit();
     const document = parsed.document.?;
     var inactive: Stop = .{ .after = 0 };
-    try equal(.complete, Dynamic.validateIn(&document, .{}, discard, .{ .cancellation = inactive.hook() }).completion);
+    try equal(.complete, (try Dynamic.validateIn(&document, .{}, discard, .{ .cancellation = inactive.hook() })).completion);
     try equal(@as(u32, 0), inactive.polls);
     inline for (.{ .err, .warning }) |severity| {
         const Fixed = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_encoding = severity }, .execution = .{ .cancellation = true } } });
@@ -254,7 +254,7 @@ test "UTF-8 chunk cancellation preserves known invalidity" {
             try equal(@as(@TypeOf(checked.validity), if (after >= 2 and severity == .err) .invalid else .unknown), checked.validity);
             try equal(@as(u64, if (after >= 2) 1 else 0), checked.errors + checked.warnings);
             var dynamic_stop: Stop = .{ .after = after };
-            try equal(checked, Dynamic.validateIn(&document, .{}, discard, .{ .cancellation = dynamic_stop.hook(), .policy = .{ .validation = .{ .invalid_encoding = severity }, .execution = .{ .cancellation = true } } }));
+            try equal(checked, (try Dynamic.validateIn(&document, .{}, discard, .{ .cancellation = dynamic_stop.hook(), .policy = .{ .validation = .{ .invalid_encoding = severity }, .execution = .{ .cancellation = true } } })));
         }
     }
 }

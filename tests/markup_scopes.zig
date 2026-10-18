@@ -78,7 +78,7 @@ test "source scopes report duplicate attributes despite closing tag errors with 
         const options: P.Options = if (runtime) .{ .policy = .{ .scanner = backend, .validation = .{ .duplicate_attribute = .err, .references = .{ .severity = .err } }, .execution = .{ .cancellation = cancellable } } } else .{};
         var scratch: markup.FixedSourceValidationScratch(2) = .{};
         var bag: markup.FixedDiagnosticBag(8) = .{};
-        const r = P.validateSourceIn(source, scratch.storage(), bag.sink(), options);
+        const r = (if (runtime) try P.validateSourceIn(source, scratch.storage(), bag.sink(), options) else P.validateSourceIn(source, scratch.storage(), bag.sink(), options));
         try equal(.complete, r.completion); // Local coverage, NOT balanced elements.
         try equal(.invalid, r.validity);
         try equal(@as(u64, 2), r.errors);
@@ -86,7 +86,7 @@ test "source scopes report duplicate attributes despite closing tag errors with 
         try equal(.complete, r.checks.references);
         try equal(markup.diagnostic.Code.duplicate_attribute, bag.items()[0].code);
         try equal(markup.diagnostic.Code.unknown_reference, bag.items()[1].code);
-        const allocated = P.validateSource(std.testing.allocator, source, discard, options);
+        const allocated = (if (runtime) try P.validateSource(std.testing.allocator, source, discard, options) else P.validateSource(std.testing.allocator, source, discard, options));
         try std.testing.expectEqualDeep(r, allocated);
     };
 }
@@ -310,19 +310,19 @@ test "source validation shares cancellation countdown across dense scopes and he
         } } });
         var probe: Probe = .{};
         const options: P.Options = .{ .cancellation = .{ .context = &probe, .is_requested = Probe.poll } };
-        const result = P.validateSource(std.testing.allocator, source, discard, options);
+        const result = (if (runtime) try P.validateSource(std.testing.allocator, source, discard, options) else P.validateSource(std.testing.allocator, source, discard, options));
         try equal(.complete, result.completion);
         // Scanner work PLUS content/record checks, not one poll per scope.
         try expect(probe.calls > source.len / 64 and probe.calls < source.len / 16);
         for ([_]u32{ 1, 2, 20, 100 }) |stop_at| {
             probe = .{ .stop_at = stop_at };
-            const stopped = P.validateSource(std.testing.allocator, source, discard, options);
+            const stopped = (if (runtime) try P.validateSource(std.testing.allocator, source, discard, options) else P.validateSource(std.testing.allocator, source, discard, options));
             try equal(.cancelled, stopped.completion);
             try equal(stop_at, probe.calls);
         }
         if (runtime) {
             probe = .{ .stop_at = 1 };
-            const unhooked = P.validateSource(std.testing.allocator, source, discard, .{ .policy = .{ .execution = .{ .cancellation = false } }, .cancellation = options.cancellation });
+            const unhooked = (if (runtime) try P.validateSource(std.testing.allocator, source, discard, .{ .policy = .{ .execution = .{ .cancellation = false } }, .cancellation = options.cancellation }) else P.validateSource(std.testing.allocator, source, discard, .{ .policy = .{ .execution = .{ .cancellation = false } }, .cancellation = options.cancellation }));
             try equal(.complete, unhooked.completion);
             try equal(@as(u32, 0), probe.calls);
         }
@@ -336,7 +336,7 @@ test "scope severities have fixed runtime and disabled-check parity" {
             .mode = .structural,
         } else p });
         var scratch: markup.FixedSourceValidationScratch(2) = .{};
-        const r = P.validateSourceIn("<x a='1' a='2'>&bogus;</wrong>", scratch.storage(), discard, if (runtime) .{ .policy = p } else .{});
+        const r = (if (runtime) try P.validateSourceIn("<x a='1' a='2'>&bogus;</wrong>", scratch.storage(), discard, if (runtime) .{ .policy = p } else .{}) else P.validateSourceIn("<x a='1' a='2'>&bogus;</wrong>", scratch.storage(), discard, if (runtime) .{ .policy = p } else .{}));
         try equal(.complete, r.completion);
         try equal(@as(u64, if (severity == .err) 2 else 0), r.errors);
         try equal(@as(u64, if (severity == .warning) 2 else 0), r.warnings);
@@ -426,7 +426,7 @@ test "public scope metadata is checked with fixed runtime and disabled content p
             try expectInvalidScope(P, source, .{ .opening_header = header }, options);
         }
         // Empty content at EOF is a valid region, unlike an empty name.
-        const empty = P.validateScopeIn(source, .{ .bytes = .{ .start = source.len, .len = 0 } }, .{}, discard, options);
+        const empty = (if (runtime) try P.validateScopeIn(source, .{ .bytes = .{ .start = source.len, .len = 0 } }, .{}, discard, options) else P.validateScopeIn(source, .{ .bytes = .{ .start = source.len, .len = 0 } }, .{}, discard, options));
         try equal(.complete, empty.completion);
         try equal(.valid, empty.validity);
     };
@@ -478,7 +478,7 @@ test "incomplete offsets retain the earliest lexical gap despite later checks" {
             .mode = .structural,
         } else p });
         var bag: markup.FixedDiagnosticBag(8) = .{};
-        const r = P.validateSource(std.testing.allocator, source, bag.sink(), if (runtime) .{ .policy = p } else .{});
+        const r = (if (runtime) try P.validateSource(std.testing.allocator, source, bag.sink(), if (runtime) .{ .policy = p } else .{}) else P.validateSource(std.testing.allocator, source, bag.sink(), if (runtime) .{ .policy = p } else .{}));
         try equal(span(source, "0").start, r.completion.incomplete);
         try equal(.complete, r.checks.invalid_encoding);
         try equal(.incomplete, r.checks.references);

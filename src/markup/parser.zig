@@ -463,6 +463,10 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                 },
             }
         }
+        const Polling = support.execution.CancellationPolling(cancellable, if (fixed) |p| p.cancellation_interval else null);
+        fn cancellationInterval(self: *const Self) u32 {
+            return if (fixed) |p| p.cancellation_interval else self.settings.cancellation_interval;
+        }
         fn requested(self: *const Self) bool {
             return if (cancellable) (if (self.hook) |h| h.requested() else false) else false;
         }
@@ -471,8 +475,10 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
             return self.terminal.?;
         }
         pub fn run(self: *Self, stack: *scratch.Stack, sink: anytype) result.Report {
+            var polling: Polling = .{};
             while (self.terminal == null) {
-                if (self.requested()) return self.cancel(stack, sink);
+                if (polling.due(self.cancellationInterval()) and self.requested()) return self.cancel(stack, sink);
+                polling.spend(1);
                 self.step(stack, sink);
             }
             return self.terminal.?;
@@ -480,13 +486,15 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
         pub fn advance(self: *Self, stack: *scratch.Stack, sink: anytype, budget: u32) result.Progress {
             if (!metered) @compileError("metering is disabled; use run()");
             var used: u32 = 0;
+            var polling: Polling = .{};
             while (self.terminal == null) {
-                if (self.requested()) {
+                if (polling.due(self.cancellationInterval()) and self.requested()) {
                     _ = self.cancel(stack, sink);
                     break;
                 }
                 if (used == budget) break;
                 used += 1;
+                polling.spend(1);
                 self.step(stack, sink);
             }
             return .{ .outcome = if (self.terminal) |r| r.outcome else null, .work_used = used, .source_frontier = self.scanner.frontier * enc.width, .counts = self.counts, .accepted_deviations = if (deviations_enabled) self.deviations else 0, .warnings = if (warnings_enabled) self.warnings else 0, .syntax_errors = self.syntaxErrors() };

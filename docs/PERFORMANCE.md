@@ -200,6 +200,72 @@ these numbers show the cost of checking, not how quickly a cancel takes
 effect. Your own callback's work adds to it. Setting up the session and its
 memory isn't timed.
 
+### Cancellation intervals (unreleased)
+
+Measured on 2026-10-17 with Zig 0.16.0 on Apple M4 Pro, 48 GiB RAM.
+The [interval benchmark](../bench/cancellation.zig) covers intervals 1, 4, 16,
+64 and 256, both parsers/scanners, fixed/runtime policies, and metering on/off.
+It uses dense 30,000-statement inputs (DOT 0.210 MB, markup 0.300 MB) and
+1.350 MB of long quoted/text content. Markup uses structural mode; validation
+is not timed. Pools and session initialization are outside timing. Each case
+warms for at least 150 ms, then takes the median of nine samples. The numbers
+below take the median across three interleaved runs. Metered calls grant 4,096
+credits; the callback counts polls and never requests cancellation.
+
+Throughput change relative to **interval 1 in the same build**, geometric mean
+across both inputs, fixed/runtime policies and metering on/off:
+
+| Parser / scanner | Build | 4 | 16 | 64 | 256 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| DOT scalar | Fast | +45.4% | +76.3% | +82.2% | +87.9% |
+| DOT scalar | Safe | +40.3% | +65.6% | +83.2% | +85.6% |
+| DOT block | Fast | +0.4% | +3.3% | +6.2% | +6.2% |
+| DOT block | Safe | -0.7% | -0.3% | +2.8% | +4.2% |
+| Markup scalar | Fast | +6.3% | +5.7% | +9.4% | +10.5% |
+| Markup scalar | Safe | +3.8% | +3.3% | +5.2% | +6.5% |
+| Markup block | Fast | +4.9% | +4.5% | +4.6% | +4.8% |
+| Markup block | Safe | +2.2% | +2.7% | +2.2% | +4.4% |
+
+Long text drives much of DOT's gain; this is not a representative-file average.
+For context, these are actual **Fast, scalar, fixed-policy, metered** timings:
+
+| Input | Interval 1: ms / MB/s | Interval 64: ms / MB/s |
+| --- | --- | --- |
+| DOT dense | 1.763 / 119.1 | 1.346 / 156.1 |
+| DOT long text | 3.021 / 446.9 | 0.766 / 1,762.4 |
+| Markup dense | 1.567 / 191.5 | 1.403 / 213.9 |
+| Markup long text | 4.017 / 336.0 | 3.734 / 361.5 |
+
+Credits were identical at every interval. For dense DOT, interval 1/64 used
+600,161/9,522 polls but **600,015 credits** in both cases. Dense markup used
+480,153/7,618 polls and **480,036 credits**. Entry checks account for extra polls
+at resume boundaries. Measured session sizes were unchanged against the previous
+commit; the countdown is local to a drive call, with no new heap allocations or
+per-record storage. This is not a process peak-RAM measurement.
+
+**Default-path cost remains.** Separate before/after controls, both compiling
+only interval-1 cases, compare against `702d4ea`. These throughput changes average
+the two inputs and metering on/off, with cancellation enabled:
+
+| Parser / scanner | Fast fixed | Fast runtime | Safe fixed | Safe runtime |
+| --- | ---: | ---: | ---: | ---: |
+| DOT scalar | -5.3% | -7.1% | -1.8% | -7.4% |
+| DOT block | -0.2% | -4.2% | -1.3% | -5.6% |
+| Markup scalar | -0.4% | 0.0% | +0.4% | -0.6% |
+| Markup block | -0.3% | -0.5% | -1.3% | -2.3% |
+
+In particular, runtime DOT scalar without metering was 12.7% slower in Fast
+and 8.8% slower in Safe. Do not read the interval-relative gains as a
+regression-free before/after result. Cancellation-disabled controls averaged
+-2.3%/-1.0% for DOT and +2.3%/+2.3% for markup (Fast/Safe). Code layout/inlining
+also moves results when additional profile specializations are compiled, so
+measure the actual application before selecting an interval. These remaining
+default-path costs need further investigation before a performance sign-off.
+
+Interval **1 remains the default**. Larger intervals trade responsiveness for
+fewer polls; they neither increase work budgets nor guarantee faster parsing.
+See the [interval contract](EXECUTION.md#cancellation-interval).
+
 ## Compile-time and run-time settings
 
 The [settings benchmark](../bench/policies.zig) parses three files into fixed
@@ -529,6 +595,7 @@ Run one benchmark at a time, with no builds or other heavy work running:
 zig build bench -Doptimize=ReleaseFast -Dlexer=scalar
 zig build bench-lexer -Doptimize=ReleaseFast -Dlexer=scalar
 zig build bench-session -Doptimize=ReleaseFast -Dlexer=scalar
+zig build bench-cancellation -Doptimize=ReleaseFast
 zig build bench-subgraphs -Doptimize=ReleaseFast -Dlexer=scalar
 zig build bench-policy -Doptimize=ReleaseFast
 zig build bench-markup -Doptimize=ReleaseFast

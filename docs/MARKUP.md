@@ -511,11 +511,13 @@ Every setting:
 | `diagnostics.unsupported` | `.err` | How to report unsupported input: `.err`, `.warning` or `.silent` |
 | `execution.metering` | `false` | Allow parsing in small steps |
 | `execution.cancellation` | `false` | Allow cancelling through a callback |
+| `execution.cancellation_interval` | `1` | Positive work-step interval for parsing/measurement; validation keeps its existing safe points. See [execution](EXECUTION.md#cancellation-interval). |
 | `validation.*` | see [Validate](#validate) | Validation checks |
 
-Every combination of markup settings is valid, so markup calls never return a
-configuration error. `Profile.validatePolicy(patch)` exists for symmetry with
-DOT and always returns `.valid`.
+Runtime patches are checked before processing and can return
+`error.InvalidCancellationInterval` when the interval is zero. As with DOT,
+`Profile.validatePolicy(patch)` checks settings without parsing. Fixed baselines
+are checked at compile time; zero resource limits remain valid.
 
 `mode` says *how* to check. Whether labels inside a DOT file are checked at
 all is DOT's [`markup` setting](LABELS.md#what-happens-by-default). The same

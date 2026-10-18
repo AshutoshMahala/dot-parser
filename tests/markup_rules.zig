@@ -156,7 +156,7 @@ test "name catalog encoding and duplicate policies compose with source-order and
             try equal(@as(u64, 6 + (if (names == .warning) @as(u64, 5) else 0) + (if (refs == .warning) @as(u64, 3) else 0)), checked.warnings);
             try equal(if (names == .off) .not_run else .complete, checked.checks.names);
             try equal(if (refs == .off) .not_run else .complete, checked.checks.references);
-            try equal(checked, Dynamic.validateIn(&doc, scratch.storage(), runtime_bag.sink(), .{ .policy = patch }));
+            try equal(checked, (try Dynamic.validateIn(&doc, scratch.storage(), runtime_bag.sink(), .{ .policy = patch })));
             try std.testing.expectEqualDeep(bag.items(), runtime_bag.items());
             try equal(checked, Fixed.validate(std.testing.allocator, &doc, discard, .{}));
             var omit: markup.reporting.FixedBag(markup.Diagnostic, 0, .omit) = .{};
@@ -216,11 +216,11 @@ test "nested patches inherit independently and complete presets reset the new ch
     }
     try equal(.valid, Dynamic.validatePolicy(.{ .validation = .{ .names = .{ .severity = .warning }, .references = .{ .severity = .err } } }));
     var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
-    var session = Dynamic.Session.init("<\xff/>", .{ .document = output.storage() }, discard, .{ .policy = .{ .validation = .{ .names = .{ .severity = .off } } } });
+    var session = (try Dynamic.Session.init("<\xff/>", .{ .document = output.storage() }, discard, .{ .policy = .{ .validation = .{ .names = .{ .severity = .off } } } }));
     try equal(markup.Outcome.success, session.run().outcome);
-    session.reset("<\xff/>", discard, .{});
+    try session.reset("<\xff/>", discard, .{});
     try equal(markup.Outcome.success, session.run().outcome); // Validation never runs inside parsing.
-    try equal(@as(u64, 1), Dynamic.validateIn(&session.result().?.document.?, .{}, discard, .{}).errors);
+    try equal(@as(u64, 1), (try Dynamic.validateIn(&session.result().?.document.?, .{}, discard, .{})).errors);
 }
 
 test "new checks preserve stop failure scratch preflight and incomplete statuses" {
@@ -297,7 +297,7 @@ test "new checks poll inside long names and reference scans with fixed-runtime c
             try equal(.incomplete, checked.checks.names);
             try equal(.incomplete, checked.checks.references);
             var dynamic_stop: Stop = .{ .after = after };
-            try equal(checked, Dynamic.validateIn(&parsed.document.?, .{}, discard, .{ .policy = patch, .cancellation = dynamic_stop.hook() }));
+            try equal(checked, (try Dynamic.validateIn(&parsed.document.?, .{}, discard, .{ .policy = patch, .cancellation = dynamic_stop.hook() })));
         }
     }
 }
@@ -312,13 +312,13 @@ test "chunk polling crosses reference boundaries without changing findings" {
         const P = markup.Profile(.{ .runtime_policy = runtime, .policy = patch });
         inline for (.{ 0, 1, 62, 63, 64, 65, 127 }) |padding| {
             const source = "x" ** padding ++ "&amp;&" ++ "x" ** 200 ++ ";&bad&next;&東京;&\xff;tail";
-            var parsed = P.parseBorrowed(std.testing.allocator, source, discard, .{});
+            var parsed = (if (runtime) try P.parseBorrowed(std.testing.allocator, source, discard, .{}) else P.parseBorrowed(std.testing.allocator, source, discard, .{}));
             defer parsed.deinit();
             var plain: markup.FixedDiagnosticBag(16) = .{};
             var checked: markup.FixedDiagnosticBag(16) = .{};
-            const expected = P.validateIn(&parsed.document.?, .{}, plain.sink(), .{});
+            const expected = (if (runtime) try P.validateIn(&parsed.document.?, .{}, plain.sink(), .{}) else P.validateIn(&parsed.document.?, .{}, plain.sink(), .{}));
             var stop: Stop = .{ .after = std.math.maxInt(u32) };
-            const actual = P.validateIn(&parsed.document.?, .{}, checked.sink(), .{ .cancellation = stop.hook() });
+            const actual = (if (runtime) try P.validateIn(&parsed.document.?, .{}, checked.sink(), .{ .cancellation = stop.hook() }) else P.validateIn(&parsed.document.?, .{}, checked.sink(), .{ .cancellation = stop.hook() }));
             try equal(expected, actual);
             try std.testing.expectEqualDeep(plain.items(), checked.items());
             try equal(@as(u64, 5), actual.warnings);
@@ -336,9 +336,9 @@ test "long plain text reference checking polls per chunk, not per byte" {
                 .references = .{ .severity = .err },
             }, .execution = .{ .cancellation = enabled } } });
             var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
-            const parsed = P.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
+            const parsed = (if (runtime) try P.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{}) else P.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{}));
             var stop: Stop = .{ .after = std.math.maxInt(u32) };
-            const checked = P.validateIn(&parsed.document.?, .{}, discard, if (runtime or enabled) .{ .cancellation = stop.hook() } else .{});
+            const checked = (if (runtime) try P.validateIn(&parsed.document.?, .{}, discard, if (runtime or enabled) .{ .cancellation = stop.hook() } else .{}) else P.validateIn(&parsed.document.?, .{}, discard, if (runtime or enabled) .{ .cancellation = stop.hook() } else .{}));
             try equal(.complete, checked.completion);
             // Entry poll plus shared chunks: one node step and source bytes.
             try equal(@as(u32, if (enabled) 1 + (1 + source.len + 63) / 64 else 0), stop.polls);
@@ -366,7 +366,7 @@ test "dense markup shares polling work across short scans with fixed-runtime par
     // Previously 82,501 callbacks on this exact 160,000-byte input.
     try expect(never.polls > source.len / 64 and never.polls < 4_000);
     var dynamic_never: Stop = .{ .after = std.math.maxInt(u32) };
-    try equal(checked, Dynamic.validateIn(&parsed.document.?, .{}, discard, .{ .policy = patch, .cancellation = dynamic_never.hook() }));
+    try equal(checked, (try Dynamic.validateIn(&parsed.document.?, .{}, discard, .{ .policy = patch, .cancellation = dynamic_never.hook() })));
     try equal(never.polls, dynamic_never.polls);
     for ([_]u32{ 0, 1, 5, 100, 1_300 }) |after| {
         var stop: Stop = .{ .after = after };

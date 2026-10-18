@@ -75,6 +75,7 @@ These settings exist in both parsers and mean the same thing in each:
 | `scanner` | Read bytes one at a time (`.scalar`) or in 64-byte blocks (`.block`). Same results. See [two scanners](EXECUTION.md#two-scanners). | `.scalar` |
 | `execution.metering` | Allow parsing in [small steps](EXECUTION.md) | `false` |
 | `execution.cancellation` | Allow [cancelling](EXECUTION.md#cancelling) through a callback | `false` |
+| `execution.cancellation_interval` | Maximum parse work steps between cancellation polls; positive `u32` | `1` |
 | `diagnostics.fixes` | Which [suggested fixes](ERRORS.md#suggested-fixes) to include: `.all`, `.machine_applicable` or `.off` | `.all` |
 | `diagnostics.unsupported` | How to report [unsupported input](ERRORS.md#unsupported-is-not-invalid): `.err`, `.warning` or `.silent` | `.err` |
 
@@ -256,6 +257,7 @@ off. See [comments](READING_DOCUMENTS.md#comments) and
 | `scanner` | `.scalar` | Which text scanner to use. See [scanners](EXECUTION.md#two-scanners). |
 | `execution.metering` | `false` | Allow parsing in small steps. See [EXECUTION.md](EXECUTION.md). |
 | `execution.cancellation` | `false` | Allow cancelling through a callback. See [EXECUTION.md](EXECUTION.md). |
+| `execution.cancellation_interval` | `1` | Positive work-step interval, independent of metering. See [cancellation interval](EXECUTION.md#cancellation-interval). |
 | `markup` | `.process` with a label checker bound, otherwise `.passthrough` | Check HTML-like values with the label checker (`.process`), keep them unchecked (`.passthrough`), or report them as unsupported (`.none`). See [what happens by default](LABELS.md#what-happens-by-default). |
 | `diagnostics.fixes` | `.all` | Which suggested fixes to include: `.all`, `.machine_applicable` or `.off` |
 | `diagnostics.unsupported` | `.err` | How to report unsupported input: `.err`, `.warning` or `.silent` |
@@ -331,9 +333,10 @@ defer result.deinit(allocator);
 Runtime profiles keep all options in the program, so they are a little larger
 than fixed ones.
 
-Markup profiles work the same way, except that every combination of markup
-settings is valid. Their functions therefore never return a configuration
-error, even with `.runtime_policy = true`.
+Markup profiles follow the same rule: runtime policy entry points, including
+`prepare` and session initialization/reset, can return a configuration error.
+For both parsers, `execution.cancellation_interval = 0` returns
+`error.InvalidCancellationInterval`. Zero resource limits remain valid.
 
 ## Adding a label processor
 
@@ -392,6 +395,7 @@ Every field of `dot.Policy`, with its default and where it is explained:
 | `limits.max_comments` | a number | no limit | [Keeping comments](#keeping-comments) |
 | `execution.metering` | `true`, `false` | `false` | [Parsing in small steps](EXECUTION.md) |
 | `execution.cancellation` | `true`, `false` | `false` | [Cancelling](EXECUTION.md#cancelling) |
+| `execution.cancellation_interval` | `1` to `maxInt(u32)` | `1` | [Cancellation interval](EXECUTION.md#cancellation-interval) |
 | `markup` | `.none`, `.passthrough`, `.process` | `.process` with a bound processor, otherwise `.passthrough` | [Checking HTML-like labels](LABELS.md#what-happens-by-default) |
 | `diagnostics.fixes` | `.all`, `.machine_applicable`, `.off` | `.all` | [Suggested fixes](ERRORS.md#suggested-fixes) |
 | `diagnostics.unsupported` | `.err`, `.warning`, `.silent` | `.err` | [Unsupported is not invalid](ERRORS.md#unsupported-is-not-invalid) |

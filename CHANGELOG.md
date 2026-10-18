@@ -28,6 +28,13 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- Add `execution.cancellation_interval` to DOT and markup policies, default 1,
+  with fixed/runtime selection and unchanged work-credit metering. Larger
+  intervals trade cancellation responsiveness for fewer callback checks.
+- **Breaking:** runtime markup policy entry points now return configuration
+  errors, including `prepare`, parsing/validation and session init/reset.
+  Interval 0 is rejected; fixed-policy entry points remain compile-time checked.
+
 - Reduce DOT scalar-scanner dispatch and cancellable-session overhead without
   changing event, recovery or work-budget contracts, or increasing storage.
 - **Breaking:** partial DOT `order` storage can contain paired `skipped_start`

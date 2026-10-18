@@ -59,6 +59,8 @@ pub const Policy = struct {
     pub const Execution = struct {
         metering: ?bool = null,
         cancellation: ?bool = null,
+        /// Positive maximum work steps between parse cancellation polls.
+        cancellation_interval: ?u32 = null,
     };
 
     pub const Validation = struct {
@@ -138,6 +140,7 @@ pub const ParseSettings = struct {
         max_attributes: usize = @import("std").math.maxInt(usize),
     } = .{},
     on_error: OnError = .collect,
+    cancellation_interval: u32 = 1,
 };
 
 pub const SyntaxSettings = struct {
@@ -163,6 +166,7 @@ pub const Effective = struct {
     execution: struct {
         metering: bool = false,
         cancellation: bool = false,
+        cancellation_interval: u32 = 1,
     } = .{},
 };
 
@@ -201,7 +205,7 @@ pub const presets = struct {
         },
         .on_error = .collect,
         .scanner = .scalar,
-        .execution = .{ .metering = false, .cancellation = false },
+        .execution = .{ .metering = false, .cancellation = false, .cancellation_interval = 1 },
     };
     pub const lenient: Policy = blk: {
         var input = standard;
@@ -243,6 +247,7 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
             },
         },
         .parsing = .{
+            .cancellation_interval = input.execution.cancellation_interval orelse baseline.execution.cancellation_interval,
             .retention = .{
                 .comments = input.retention.comments orelse baseline.parsing.retention.comments,
                 .partial = input.retention.partial orelse baseline.parsing.retention.partial,
@@ -272,12 +277,14 @@ pub fn resolve(baseline: Effective, input: Policy) Effective {
         .execution = .{
             .metering = input.execution.metering orelse baseline.execution.metering,
             .cancellation = input.execution.cancellation orelse baseline.execution.cancellation,
+            .cancellation_interval = input.execution.cancellation_interval orelse baseline.execution.cancellation_interval,
         },
     };
 }
 
 /// Configuration errors are not DOT diagnostics and have no source location.
 pub const Error = error{
+    InvalidCancellationInterval,
     GraphOperatorMismatchNotApplicable,
     GraphOperatorReadingNotApplicable,
     MarkupProcessorRequired,
@@ -285,6 +292,7 @@ pub const Error = error{
 };
 
 pub const Issue = enum {
+    invalid_cancellation_interval,
     graph_operator_mismatch_not_applicable,
     graph_operator_reading_not_applicable,
     markup_processor_required,
@@ -292,6 +300,7 @@ pub const Issue = enum {
 
     pub fn asError(self: Issue) Error {
         return switch (self) {
+            .invalid_cancellation_interval => error.InvalidCancellationInterval,
             .graph_operator_mismatch_not_applicable => error.GraphOperatorMismatchNotApplicable,
             .graph_operator_reading_not_applicable => error.GraphOperatorReadingNotApplicable,
             .markup_processor_required => error.MarkupProcessorRequired,
@@ -310,6 +319,8 @@ pub fn check(effective: Effective, input: Policy) Check {
 }
 
 fn checkWithProcessor(comptime markup_bound: bool, effective: Effective, input: Policy) Check {
+    if (effective.execution.cancellation_interval == 0)
+        return .{ .invalid = .invalid_cancellation_interval };
     if (effective.validation.graph.treated_as == .generic or effective.validation.graph.treated_as == .auto) {
         if (input.validation.graph.operator_mismatch != null)
             return .{ .invalid = .graph_operator_mismatch_not_applicable };

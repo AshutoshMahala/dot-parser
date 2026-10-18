@@ -25,7 +25,7 @@ test "16 MiB invalid-byte floods retain at most 1024 diagnostics, including alte
         // Track only diagnostic allocations, not the caller's input buffer.
         var tracked = std.testing.FailingAllocator.init(std.testing.allocator, .{});
         var bag = markup.GrowableDiagnosticBag.init(tracked.allocator(), .{});
-        const checked = P.validateIn(&document, .{}, bag.sink(), .{});
+        const checked = (if (alternating) try P.validateIn(&document, .{}, bag.sink(), .{}) else P.validateIn(&document, .{}, bag.sink(), .{}));
         try equal(markup.reporting.StopReason.requested, checked.completion.diagnostic_stopped);
         try equal(.invalid, checked.validity);
         try equal(.complete, checked.diagnostic_delivery);
@@ -42,7 +42,7 @@ test "16 MiB invalid-byte floods retain at most 1024 diagnostics, including alte
         try equal(tracked.allocated_bytes, tracked.freed_bytes);
         // Wide factual counts remain available with a non-retaining destination.
         const prefix = Structural.parseBorrowedIn(source[0..70_000], .{ .document = output.storage() }, discard, .{});
-        const complete = P.validateIn(&prefix.document.?, .{}, discard, .{});
+        const complete = (if (alternating) try P.validateIn(&prefix.document.?, .{}, discard, .{}) else P.validateIn(&prefix.document.?, .{}, discard, .{}));
         try equal(.complete, complete.completion);
         try equal(@as(u64, if (alternating) 35_000 else 70_000), complete.errors);
     }
@@ -114,9 +114,9 @@ test "untrusted is a complete resource-only preset with runtime inheritance and 
     try equal(@as(u32, 7), patched.limits.max_nodes);
     try equal(Untrusted.baseline.limits.max_source_bytes, patched.limits.max_source_bytes);
     var nodes: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
-    var session = Dynamic.Session.init("<x/>", .{ .document = nodes.storage() }, discard, .{ .policy = .{ .limits = .{ .max_nodes = 0 } } });
+    var session = (try Dynamic.Session.init("<x/>", .{ .document = nodes.storage() }, discard, .{ .policy = .{ .limits = .{ .max_nodes = 0 } } }));
     try expect(session.run().outcome == .resource_limit);
-    session.reset("<x/>", discard, .{});
+    try session.reset("<x/>", discard, .{});
     try equal(markup.Outcome.success, session.run().outcome);
 }
 
@@ -129,7 +129,7 @@ test "untrusted source preflight rejects without reading or allocating; exact li
     try equal(expected, owned.outcome);
     try expect(owned.document == null);
     const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
-    try equal(expected, Dynamic.measureIn(unreadable, .{}, discard, .{ .policy = markup.presets.untrusted }).outcome);
+    try equal(expected, (try Dynamic.measureIn(unreadable, .{}, discard, .{ .policy = markup.presets.untrusted })).outcome);
     const source = try std.testing.allocator.alloc(u8, max);
     defer std.testing.allocator.free(source);
     @memset(source, 'x');
@@ -152,13 +152,13 @@ test "untrusted count and nesting budgets accept exact boundaries and reject the
     try equal(markup.Outcome.success, Untrusted.measureIn(nodes[0 .. nodes.len - 4], .{}, discard, .{}).outcome);
     const node_limit = Untrusted.measureIn(nodes, .{}, discard, .{});
     try equal(markup.Outcome{ .resource_limit = .{ .resource = .nodes, .limit = max_nodes } }, node_limit.outcome);
-    try equal(node_limit, Dynamic.measureIn(nodes, .{}, discard, .{ .policy = markup.presets.untrusted }));
+    try equal(node_limit, (try Dynamic.measureIn(nodes, .{}, discard, .{ .policy = markup.presets.untrusted })));
     const max_attrs = Untrusted.baseline.limits.max_attributes;
     const attrs = try repeated("<a ", "x='' ", max_attrs + 1, "/>");
     defer std.testing.allocator.free(attrs);
     const attr_limit = Untrusted.measureIn(attrs, .{}, discard, .{});
     try equal(markup.Outcome{ .resource_limit = .{ .resource = .attributes, .limit = max_attrs } }, attr_limit.outcome);
-    try equal(attr_limit, Dynamic.measureIn(attrs, .{}, discard, .{ .policy = markup.presets.untrusted }));
+    try equal(attr_limit, (try Dynamic.measureIn(attrs, .{}, discard, .{ .policy = markup.presets.untrusted })));
     // Turn the final pair into trailing whitespace, keeping the exact source size.
     @memset(attrs[3 + max_attrs * 5 ..][0..5], ' ');
     try equal(markup.Outcome.success, Untrusted.measureIn(attrs, .{}, discard, .{}).outcome);
@@ -167,5 +167,5 @@ test "untrusted count and nesting budgets accept exact boundaries and reject the
     const deep = "<a>" ** 257 ++ "</a>" ** 257;
     const depth_limit = Untrusted.measureIn(deep, frames.storage(), discard, .{});
     try equal(markup.Outcome{ .resource_limit = .{ .resource = .nesting_depth, .limit = 256 } }, depth_limit.outcome);
-    try equal(depth_limit, Dynamic.measureIn(deep, frames.storage(), discard, .{ .policy = markup.presets.untrusted }));
+    try equal(depth_limit, (try Dynamic.measureIn(deep, frames.storage(), discard, .{ .policy = markup.presets.untrusted })));
 }

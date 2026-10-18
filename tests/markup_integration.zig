@@ -80,7 +80,7 @@ test "fragment parsing validates recognizable scopes after syntax rejection with
             .mode = .structural,
         } else .{ .mode = .structural, .scanner = backend, .validation = .{ .references = .{ .severity = .err } } } });
         const options: P.Options = if (runtime) .{ .policy = .{ .scanner = backend, .validation = .{ .references = .{ .severity = .err } } } } else .{};
-        const ready = P.prepare(options);
+        const ready = (if (runtime) try P.prepare(options) else P.prepare(options));
         var bag: markup.FixedDiagnosticBag(16) = .{};
         var parsed = try ready.parseAndValidate(allocator, input, bag.sink(), .{});
         defer parsed.deinit();
@@ -174,14 +174,14 @@ test "terminal diagnostic acknowledgment survives parsing and forbids a second f
                 try equal(grown.parse.diagnostic_stop, fixed.parse.diagnostic_stop);
                 try expect(fixed.validation == null and fixed.stopped());
                 destination.calls = 0;
-                var workspace = P.prepare(.{}).initWorkspace(allocator, .{});
+                var workspace = (if (runtime) try P.prepare(.{}) else P.prepare(.{})).initWorkspace(allocator, .{});
                 defer workspace.deinit();
                 const reused = try workspace.parseAndValidate(try markup.Fragment.init(source, 17), destination.sink());
                 try equal(@as(u32, 1), destination.calls);
                 try std.testing.expectEqualDeep(fixed, reused);
                 try expect(reused.validation == null and reused.stopped());
                 destination.calls = 0;
-                var session = P.Session.init(source, memory, destination.sink(), .{});
+                var session = (if (runtime) try P.Session.init(source, memory, destination.sink(), .{}) else P.Session.init(source, memory, destination.sink(), .{}));
                 defer session.deinit();
                 while (session.result() == null) {
                     _ = if (runtime) try session.advance(1) else session.advance(1);
@@ -190,7 +190,7 @@ test "terminal diagnostic acknowledgment survives parsing and forbids a second f
                 try std.testing.expectEqualDeep(session.run(), session.cancel());
                 try equal(@as(u32, 1), destination.calls);
                 destination.calls = 0;
-                const measured = P.measureIn(source, frames.storage(), destination.sink(), .{});
+                const measured = (if (runtime) try P.measureIn(source, frames.storage(), destination.sink(), .{}) else P.measureIn(source, frames.storage(), destination.sink(), .{}));
                 try equal(reason, measured.diagnostic_stop.?);
                 try equal(@as(u32, 1), destination.calls);
             }
@@ -306,7 +306,7 @@ test "fragment validation cancellation preserves the parsed document" {
     const input = try markup.Fragment.init("<a x='1' x='2'/>", 90);
     var probe: Probe = .{};
     const hook: markup.Cancellation = .{ .context = &probe, .is_requested = Probe.poll };
-    var plain = P.parseBorrowed(allocator, input.bytes, discard, .{ .policy = .{ .execution = .{ .cancellation = true } }, .cancellation = hook });
+    var plain = (try P.parseBorrowed(allocator, input.bytes, discard, .{ .policy = .{ .execution = .{ .cancellation = true } }, .cancellation = hook }));
     defer plain.deinit();
     probe.stop_after = probe.calls;
     probe.calls = 0;

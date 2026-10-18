@@ -111,6 +111,7 @@ pub fn build(b: *std.Build) void {
     for ([_]struct { name: []const u8, message: []const u8 }{
         .{ .name = "markup_fixed_override", .message = "tests/compile_fail/markup_fixed_override.zig:3:72: error: no field named 'policy' in struct /?/" },
         .{ .name = "markup_unmetered", .message = "error: metering is disabled; use run()" },
+        .{ .name = "markup_cancellation_interval", .message = "error: invalid policy: invalid_cancellation_interval" },
         .{ .name = "markup_duplicate_diagnostic", .message = "error: duplicate diagnostic identity" },
         .{ .name = "markup_invalid_diagnostic", .message = "error: invalid diagnostic registry metadata" },
         .{ .name = "markup_extended_mode", .message = "has no member named 'extended'" },
@@ -138,6 +139,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "digraph_treatment", .message = "error: no field named 'treated_as' in struct 'dot.policy.Policy.Operators'" },
         .{ .name = "invalid_policy_mismatch", .message = "error: invalid policy: graph_operator_mismatch_not_applicable" },
         .{ .name = "invalid_policy_reading", .message = "error: invalid policy: graph_operator_reading_not_applicable" },
+        .{ .name = "cancellation_interval", .message = "error: invalid policy: invalid_cancellation_interval" },
         .{ .name = "markup_processor_required", .message = "error: invalid policy: markup_processor_required" },
         .{ .name = "fixed_parse_override", .message = "tests/compile_fail/fixed_parse_override.zig:3:41: error: no field named 'policy' in struct /?/" },
         .{ .name = "unmetered_advance", .message = "error: metering is disabled; use run()" },
@@ -337,6 +339,18 @@ pub fn build(b: *std.Build) void {
     b.step("bench-session", "Compare fixed-session execution policies")
         .dependOn(&b.addRunArtifact(session_bench).step);
 
+    const cancellation_bench = b.addExecutable(.{
+        .name = "cancellation_intervals",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/cancellation.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    b.step("bench-cancellation", "Compare cancellation intervals for both parsers")
+        .dependOn(&b.addRunArtifact(cancellation_bench).step);
+
     const subgraph_bench = b.addExecutable(.{
         .name = "subgraph_throughput",
         .root_module = b.createModule(.{
@@ -389,7 +403,7 @@ pub fn build(b: *std.Build) void {
     b.step("bench-composition", "Measure composed throughput, allocation calls and peak requested bytes")
         .dependOn(&b.addRunArtifact(composition_bench).step);
     check_benches.dependOn(&composition_bench.step);
-    for ([_]*std.Build.Step.Compile{ bench_exe, lexer_bench, session_bench, subgraph_bench, policy_bench }) |bench| {
+    for ([_]*std.Build.Step.Compile{ bench_exe, lexer_bench, session_bench, cancellation_bench, subgraph_bench, policy_bench }) |bench| {
         _ = bench.getEmittedBin();
         check_benches.dependOn(&bench.step);
     }

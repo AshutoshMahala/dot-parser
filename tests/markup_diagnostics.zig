@@ -213,7 +213,7 @@ test "markup repair filtering has compile-time runtime and scanner parity" {
                 var a: markup.FixedDiagnosticBag(4) = .{};
                 var b: markup.FixedDiagnosticBag(4) = .{};
                 const ra = Fixed.measure(std.testing.allocator, "&amp", a.sink(), .{});
-                const rb = Runtime.measure(std.testing.allocator, "&amp", b.sink(), .{ .policy = policy });
+                const rb = (try Runtime.measure(std.testing.allocator, "&amp", b.sink(), .{ .policy = policy }));
                 try std.testing.expectEqualDeep(ra, rb);
                 try std.testing.expectEqualDeep(a.items(), b.items());
                 try equal(@as(usize, 1), a.items().len);
@@ -251,13 +251,13 @@ test "markup repair filtering leaves sink stop and failure outcomes unchanged" {
     const Runtime = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .syntax = .{ .malformed_reference = .warn } } });
     for ([_]markup.reporting.Fixes{ .all, .machine_applicable, .off }) |mode| {
         var stopped: markup.FixedDiagnosticBag(1) = .{};
-        const stopped_result = Runtime.measure(std.testing.allocator, "&amp<a/>", stopped.sink(), .{ .policy = .{ .diagnostics = .{ .fixes = mode } } });
+        const stopped_result = (try Runtime.measure(std.testing.allocator, "&amp<a/>", stopped.sink(), .{ .policy = .{ .diagnostics = .{ .fixes = mode } } }));
         try equal(markup.Outcome{ .diagnostic_stopped = .requested }, stopped_result.outcome);
         try equal(markup.reporting.Delivery.complete, stopped_result.diagnostic_delivery);
         try equal(@as(u32, 1), stopped_result.warnings);
         try equal(@as(u32, 0), stopped_result.counts.nodes);
         var full: markup.FixedDiagnosticBag(0) = .{};
-        const failed = Runtime.measure(std.testing.allocator, "&amp<a/>", full.sink(), .{ .policy = .{ .diagnostics = .{ .fixes = mode } } });
+        const failed = (try Runtime.measure(std.testing.allocator, "&amp<a/>", full.sink(), .{ .policy = .{ .diagnostics = .{ .fixes = mode } } }));
         try equal(markup.Outcome{ .diagnostic_stopped = .capacity }, failed.outcome);
         try equal(markup.reporting.Delivery.failed, failed.diagnostic_delivery);
         try equal(stopped_result.warnings, failed.warnings);
@@ -300,7 +300,7 @@ test "semicolon repair eligibility uses numeric character validity in text and a
                     var a: markup.FixedDiagnosticBag(4) = .{};
                     var b: markup.FixedDiagnosticBag(4) = .{};
                     const ra = Fixed.measure(std.testing.allocator, source, a.sink(), .{});
-                    const rb = Runtime.measure(std.testing.allocator, source, b.sink(), .{ .policy = .{ .scanner = backend } });
+                    const rb = (try Runtime.measure(std.testing.allocator, source, b.sink(), .{ .policy = .{ .scanner = backend } }));
                     try std.testing.expectEqualDeep(ra, rb);
                     try std.testing.expectEqualDeep(a.items(), b.items());
                     try equal(@as(usize, 1), a.items().len);

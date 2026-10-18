@@ -169,7 +169,7 @@ noinline fn validateVocabulary(comptime runtime: bool, comptime mode: markup.Mod
     const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = mode } });
     var patch: markup.Policy = .{};
     const input: *volatile markup.Policy = &patch;
-    const result = P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = input.* } else .{});
+    const result = (if (runtime) P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = input.* } else .{}) catch unreachable else P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = input.* } else .{}));
     return if (result.completion == .complete) result.errors else std.math.maxInt(u64);
 }
 
@@ -216,7 +216,7 @@ noinline fn sourceScopes(comptime backend: markup.ScannerBackend, comptime runti
     const P = markup.Profile(.{ .runtime_policy = runtime, .policy = p });
     var patch: markup.Policy = .{};
     const input: *volatile markup.Policy = &patch;
-    return P.validateSourceIn(source, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = input.* } else .{});
+    return (if (runtime) P.validateSourceIn(source, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = input.* } else .{}) catch unreachable else P.validateSourceIn(source, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = input.* } else .{}));
 }
 
 /// Observable callback counts and post-parse latency. Plain modes guard against
@@ -275,7 +275,7 @@ noinline fn validateWithHook(comptime runtime: bool, comptime cancellable: bool,
     var input = patch;
     const opaque_patch: *volatile markup.Policy = &input;
     const hook: markup.Cancellation = .{ .context = calls, .is_requested = countPoll };
-    const result = P.validateIn(document, .{}, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.*, .cancellation = hook } else if (cancellable) .{ .cancellation = hook } else .{});
+    const result = (if (runtime) P.validateIn(document, .{}, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.*, .cancellation = hook } else if (cancellable) .{ .cancellation = hook } else .{}) catch unreachable else P.validateIn(document, .{}, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.*, .cancellation = hook } else if (cancellable) .{ .cancellation = hook } else .{}));
     return result.completion == .complete and result.validity == .valid;
 }
 
@@ -333,7 +333,7 @@ noinline fn validateRules(comptime runtime: bool, comptime patch: markup.Policy,
     var input = patch;
     const opaque_patch: *volatile markup.Policy = &input;
     const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else patch });
-    const result = P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.* } else .{});
+    const result = (if (runtime) P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.* } else .{}) catch unreachable else P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.* } else .{}));
     return if (result.completion == .complete) result.warnings else std.math.maxInt(u64);
 }
 
@@ -382,7 +382,7 @@ noinline fn validateEncoding(comptime runtime: bool, comptime combined: bool, do
     var patch = policy;
     const opaque_patch: *volatile markup.Policy = &patch;
     const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else policy });
-    const result = P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.* } else .{});
+    const result = (if (runtime) P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.* } else .{}) catch unreachable else P.validateIn(document, scratch, markup.diagnostic.discard, if (runtime) .{ .policy = opaque_patch.* } else .{}));
     return if (result.completion == .complete and result.checks.invalid_encoding == .complete) result.warnings else std.math.maxInt(u64);
 }
 
@@ -399,7 +399,7 @@ noinline fn countOnly(comptime backend: markup.ScannerBackend, source: []const u
     return if (r.outcome == .success) r.counts else .{};
 }
 noinline fn parseRuntime(comptime backend: markup.ScannerBackend, source: []const u8, memory: markup.ParseMemory, patch: markup.Policy) markup.Counts {
-    const r = RuntimeFor(backend).parseBorrowedIn(source, memory, markup.diagnostic.discard, .{ .policy = patch });
+    const r = RuntimeFor(backend).parseBorrowedIn(source, memory, markup.diagnostic.discard, .{ .policy = patch }) catch unreachable;
     return if (r.outcome == .success) r.counts else .{};
 }
 

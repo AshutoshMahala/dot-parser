@@ -21,7 +21,11 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
         pub const Diagnostic = api.Diagnostic;
         pub const DiagnosticSink = api.DiagnosticSink;
         pub const CheckResult = api.FragmentResult;
-        pub const InputError = api.Fragment.Error || enc.InputError;
+        pub const InputError = api.Fragment.Error || enc.InputError || Policies.Error;
+        const OperationError = enc.InputError || Policies.Error;
+        fn Checked(comptime T: type) type {
+            return if (runtime_policy) Policies.Error!T else T;
+        }
         pub const ParseResources = api.ParseResources;
         pub const console = api.console;
         pub const Options = dispatch.Options(Base.Options);
@@ -115,19 +119,21 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                 self.* = undefined;
             }
         };
-        pub fn prepare(options: Options) Prepared {
-            const ready = Base.prepare(dispatch.options(Base.Options, options));
+        pub fn prepare(options: Options) Checked(Prepared) {
+            const ready = if (runtime_policy) try Base.prepare(dispatch.options(Base.Options, options)) else Base.prepare(dispatch.options(Base.Options, options));
             return .{ .policies = ready.policies, .cancellation = ready.cancellation, .encoding = options.encoding };
         }
         pub fn parseAndValidate(allocator: std.mem.Allocator, input: api.Fragment, sink: api.DiagnosticSink, options: ParseOptions) InputError!api.FragmentResult {
-            return prepare(dispatch.options(Options, options)).parseAndValidate(allocator, input, sink, .{ .scratch_allocator = options.scratch_allocator });
+            const ready = if (runtime_policy) try prepare(dispatch.options(Options, options)) else prepare(dispatch.options(Options, options));
+            return ready.parseAndValidate(allocator, input, sink, .{ .scratch_allocator = options.scratch_allocator });
         }
         pub fn parseAndValidateIn(input: api.Fragment, memory: api.ParseMemory, scratch: api.SourceValidationScratch, sink: api.DiagnosticSink, options: Options) InputError!api.FixedFragmentResult {
-            return prepare(options).parseAndValidateIn(input, memory, scratch, sink);
+            const ready = if (runtime_policy) try prepare(options) else prepare(options);
+            return ready.parseAndValidateIn(input, memory, scratch, sink);
         }
 
-        fn call(comptime method: []const u8, comptime Result: type, source: []const u8, arguments: anytype, options: anytype) enc.InputError!Result {
-            const prepared = prepare(dispatch.options(Options, options));
+        fn call(comptime method: []const u8, comptime Result: type, source: []const u8, arguments: anytype, options: anytype) OperationError!Result {
+            const prepared = if (runtime_policy) try prepare(dispatch.options(Options, options)) else prepare(dispatch.options(Options, options));
             const info = try enc.select(caps, source, options.encoding);
             switch (info.encoding) {
                 inline else => |actual| if (comptime caps.allows(actual)) {
@@ -144,44 +150,45 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                     if (actual != .utf8) try dispatch.checkCancellation(prepared.admissionHook());
                     const W = worker(actual);
                     const Opt = comptime if (std.mem.eql(u8, method, "parseBorrowed")) W.ParseOptions else W.Options;
-                    var result: Result = @call(.auto, @field(W, method), arguments ++ .{dispatch.options(Opt, options)});
+                    const called = @call(.auto, @field(W, method), arguments ++ .{dispatch.options(Opt, options)});
+                    var result: Result = if (runtime_policy) try called else called;
                     if (@hasField(Result, "document")) dispatch.stamp(&result, info);
                     return result;
                 } else return error.UnsupportedEncoding,
             }
         }
-        pub fn parseBorrowed(allocator: std.mem.Allocator, source: []const u8, sink: api.DiagnosticSink, options: ParseOptions) enc.InputError!api.ParseResult {
+        pub fn parseBorrowed(allocator: std.mem.Allocator, source: []const u8, sink: api.DiagnosticSink, options: ParseOptions) OperationError!api.ParseResult {
             return call("parseBorrowed", api.ParseResult, source, .{ allocator, source, sink }, options);
         }
-        pub fn parseBorrowedIn(source: []const u8, memory: api.ParseMemory, sink: api.DiagnosticSink, options: Options) enc.InputError!api.FixedParseResult {
+        pub fn parseBorrowedIn(source: []const u8, memory: api.ParseMemory, sink: api.DiagnosticSink, options: Options) OperationError!api.FixedParseResult {
             return call("parseBorrowedIn", api.FixedParseResult, source, .{ source, memory, sink }, options);
         }
-        pub fn measure(allocator: std.mem.Allocator, source: []const u8, sink: api.DiagnosticSink, options: Options) enc.InputError!api.Report {
+        pub fn measure(allocator: std.mem.Allocator, source: []const u8, sink: api.DiagnosticSink, options: Options) OperationError!api.Report {
             return call("measure", api.Report, source, .{ allocator, source, sink }, options);
         }
-        pub fn measureIn(source: []const u8, scratch: api.ParseScratch, sink: api.DiagnosticSink, options: Options) enc.InputError!api.Report {
+        pub fn measureIn(source: []const u8, scratch: api.ParseScratch, sink: api.DiagnosticSink, options: Options) OperationError!api.Report {
             return call("measureIn", api.Report, source, .{ source, scratch, sink }, options);
         }
-        pub fn validate(allocator: std.mem.Allocator, document: *const api.Document, sink: api.DiagnosticSink, options: Options) enc.InputError!api.ValidationResult {
+        pub fn validate(allocator: std.mem.Allocator, document: *const api.Document, sink: api.DiagnosticSink, options: Options) OperationError!api.ValidationResult {
             var selected = options;
             selected.encoding = document.source_info.encoding;
             return call("validate", api.ValidationResult, document.source, .{ allocator, document, sink }, selected);
         }
-        pub fn validateIn(document: *const api.Document, scratch: api.ValidationScratch, sink: api.DiagnosticSink, options: Options) enc.InputError!api.ValidationResult {
+        pub fn validateIn(document: *const api.Document, scratch: api.ValidationScratch, sink: api.DiagnosticSink, options: Options) OperationError!api.ValidationResult {
             var selected = options;
             selected.encoding = document.source_info.encoding;
             return call("validateIn", api.ValidationResult, document.source, .{ document, scratch, sink }, selected);
         }
-        pub fn validateScope(allocator: std.mem.Allocator, source: []const u8, scope: api.ValidationScope, sink: api.DiagnosticSink, options: Options) enc.InputError!api.ValidationResult {
+        pub fn validateScope(allocator: std.mem.Allocator, source: []const u8, scope: api.ValidationScope, sink: api.DiagnosticSink, options: Options) OperationError!api.ValidationResult {
             return call("validateScope", api.ValidationResult, source, .{ allocator, source, scope, sink }, options);
         }
-        pub fn validateScopeIn(source: []const u8, scope: api.ValidationScope, scratch: api.ValidationScratch, sink: api.DiagnosticSink, options: Options) enc.InputError!api.ValidationResult {
+        pub fn validateScopeIn(source: []const u8, scope: api.ValidationScope, scratch: api.ValidationScratch, sink: api.DiagnosticSink, options: Options) OperationError!api.ValidationResult {
             return call("validateScopeIn", api.ValidationResult, source, .{ source, scope, scratch, sink }, options);
         }
-        pub fn validateSource(allocator: std.mem.Allocator, source: []const u8, sink: api.DiagnosticSink, options: Options) enc.InputError!api.ValidationResult {
+        pub fn validateSource(allocator: std.mem.Allocator, source: []const u8, sink: api.DiagnosticSink, options: Options) OperationError!api.ValidationResult {
             return call("validateSource", api.ValidationResult, source, .{ allocator, source, sink }, options);
         }
-        pub fn validateSourceIn(source: []const u8, scratch: api.SourceValidationScratch, sink: api.DiagnosticSink, options: Options) enc.InputError!api.ValidationResult {
+        pub fn validateSourceIn(source: []const u8, scratch: api.SourceValidationScratch, sink: api.DiagnosticSink, options: Options) OperationError!api.ValidationResult {
             return call("validateSourceIn", api.ValidationResult, source, .{ source, scratch, sink }, options);
         }
     };

@@ -32,9 +32,9 @@ test "validation obeys on_error independently of warning reporting and sink rete
         const P = markup.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{ .mode = .structural, .on_error = if (mode == .collect) .fail_fast else .collect } else patch });
         const options: P.Options = if (runtime) .{ .policy = patch } else .{};
         var scratch: markup.FixedSourceValidationScratch(3) = .{};
-        const doc = P.validateIn(&parsed.document.?, .{ .attribute_keys = &scratch.keys }, markup.diagnostic.discard, options);
-        const source = P.validateSourceIn(text, scratch.storage(), markup.diagnostic.discard, options);
-        const scope = P.validateScopeIn(text, header, .{ .attribute_keys = &scratch.keys }, markup.diagnostic.discard, options);
+        const doc = (if (runtime) try P.validateIn(&parsed.document.?, .{ .attribute_keys = &scratch.keys }, markup.diagnostic.discard, options) else P.validateIn(&parsed.document.?, .{ .attribute_keys = &scratch.keys }, markup.diagnostic.discard, options));
+        const source = (if (runtime) try P.validateSourceIn(text, scratch.storage(), markup.diagnostic.discard, options) else P.validateSourceIn(text, scratch.storage(), markup.diagnostic.discard, options));
+        const scope = (if (runtime) try P.validateScopeIn(text, header, .{ .attribute_keys = &scratch.keys }, markup.diagnostic.discard, options) else P.validateScopeIn(text, header, .{ .attribute_keys = &scratch.keys }, markup.diagnostic.discard, options));
         const fast = mode == .fail_fast and severity == .err;
         for ([_]markup.ValidationResult{ doc, source, scope }, 0..) |r, index| {
             try equal(if (fast) .error_stopped else .complete, std.meta.activeTag(r.completion));
@@ -99,7 +99,7 @@ test "unsupported markup is never silently accepted or automatically a batch sto
             var child = try P.parseAndValidate(allocator, try markup.Fragment.init(text, 7), bag.sink(), if (runtime) .{ .policy = patch } else .{});
             defer child.deinit();
             const fixed = try P.parseAndValidateIn(try markup.Fragment.init(text, 7), .{ .document = storage.storage() }, .{}, markup.diagnostic.discard, options);
-            const measured = P.measureIn(text, .{}, markup.diagnostic.discard, options);
+            const measured = (if (runtime) try P.measureIn(text, .{}, markup.diagnostic.discard, options) else P.measureIn(text, .{}, markup.diagnostic.discard, options));
             try std.testing.expectEqualDeep(child.parse.outcome, measured.outcome);
             try equal(child.parse.warnings, measured.warnings);
             try expect(child.parse.outcome == .unsupported_feature and child.validation == null and child.parse.document == null);
@@ -123,7 +123,7 @@ test "DOT unsupported reporting is separate from passthrough and continuation" {
         const patch: dot.Policy = .{ .scanner = scanner, .on_error = mode, .markup = .none, .diagnostics = .{ .unsupported = unsupported } };
         const P = dot.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else patch });
         var bag: dot.FixedDiagnosticBag(8) = .{};
-        const r = if (runtime) try P.measureIn(text, .{}, bag.sink(), .{ .policy = patch }) else P.measureIn(text, .{}, bag.sink(), .{});
+        const r = if (runtime) try P.measureIn(text, .{}, bag.sink(), .{ .policy = patch }) else (if (runtime) try P.measureIn(text, .{}, bag.sink(), .{}) else P.measureIn(text, .{}, bag.sink(), .{}));
         const count: usize = if (mode == .fail_fast and unsupported == .err) 1 else 2;
         try equal(dot.ParseOutcome.unsupported_feature, r.outcome);
         try equal(@as(u32, 0), r.syntax_errors);
