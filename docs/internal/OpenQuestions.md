@@ -861,9 +861,11 @@ and the [processor contract](PROCESSOR_CONTRACT.md); public usage is in
 - Standalone, delayed and during-DOT paths use the same selected implementation.
   Standalone markup depends only on shared support, not DOT records/grammar.
   Its structural grammar is XML-like, not full XML or browser HTML.
-- Graphviz validation will check vocabulary, attributes and parent/child
-  placement, only in label contexts. A `TABLE` containing a `TD` directly
-  can be balanced yet fail the required row structure.
+- Graphviz validation belongs to markup and checks vocabulary, attributes and
+  parent/child placement. A `TABLE` containing a `TD` directly can be balanced
+  yet fail the required row structure. Current composition processes every
+  HTML-like operand; future context selection belongs to delegated policy,
+  not a hard-coded DOT label-attribute rule.
 - `n:<p>` names port `p`; `label=<p>` is text `p`;
   `label=<<p>x</p>>` contains a `p` element. Port spelling is not meaningless.
   Resolving it against label declarations belongs to later graph semantics.
@@ -915,6 +917,64 @@ escaping, collisions, recovery and work; new statements/operators are outside
 the content contract. Replacing an inner parser cannot extend DOT grammar.
 Numeral boundaries remain grammar-defined; ambiguity checking stays lexical,
 not implicit numeric conversion or a promised `.string.non_ascii` API.
+
+**Delegated policy direction agreed 2026-10-17; clarified 2026-10-18; not implemented.**
+The value's syntax identifies its processor, while the parent attribute context
+may select none/passthrough/process and supply a child-owned policy at compile
+time. Thus quoted
+`label="..."` is not markup merely because its key is `label`; `label=<...>`
+may use the bound markup processor. Markup can delegate its own attribute-value
+checks independently. Owned policy defines meaning, inheritance supplies supported
+defaults, and delegation is an explicit context-local handover, not a new
+execution mode. Runtime executes the compiled arrangement without rebinding;
+selector syntax, precedence and interaction with existing runtime overrides
+remain open. Current all-HTML-operand routing is unchanged.
+
+The proposed initial selector is attribute name plus value form, with different
+delegated policies for `label`, `color`, `description`, etc. Element-specific
+selection, cross-attribute dependencies and general conditional expressions are
+deferred. The parent passes typed policies without interpreting child rules;
+markup owns its modes/custom rules, and string owns membership/text/custom checks.
+A string `one_of` does not implicitly forbid a markup value: a text-only outer
+rule must explicitly select `.none` for the markup form. A failed child check
+must not become a fallback to passthrough.
+
+A built-in string processor is a separate design/benchmark follow-up: default
+passthrough, opt-in content checks, and no replacement of mandatory host quote,
+escape or boundary handling. Candidate built-ins are `equals`, `contains` and
+`one_of`, with a compile-time custom verifier; the suggested minimum is
+`equals`/`one_of` plus custom verification. The string-owned verifier takes value
+and shared execution/reporting facilities, not parent node/element/attribute
+metadata. Regex can be consumer-supplied through that contract, without a
+mandatory engine; bounded-work/resource guarantees still need enforcement.
+
+**String comparison/reporting direction agreed 2026-10-18; not implemented.**
+Built-in checks default to `.case_sensitive`. `.case_insensitive` means Unicode
+default case folding across every compiled source encoding, not ASCII-only
+lowercasing. Keep source unchanged and do not imply normalization or locale
+tailoring. Unicode folding code/tables must compile out when unused; a profile
+that permits runtime folding must retain them, while excluded functionality
+cannot be requested silently. Custom verifiers retain their own comparison
+semantics rather than receiving automatically folded input.
+
+Simple custom predicates get a generic string-owned failure diagnostic;
+advanced verifiers can supply typed custom reporting, hints, related spans and
+fixes through compile-time-bound definitions and shared sinks. Input rejection
+remains distinct from operational errors, and severity/validity must not depend
+on diagnostic visibility. Exact comparison/capability syntax, Unicode version
+and folding details, verifier/result shapes and custom catalog integration remain
+open. See [comparison rules](PROCESSOR_CONTRACT.md#string-comparison-rules) and
+[custom diagnostics](PROCESSOR_CONTRACT.md#custom-string-diagnostics).
+
+Use logical-value checks consistently for equivalent spellings, with borrowed
+raw spans/lazy views and explicit mapping costs. Exact value/view APIs, mixed
+markup concatenations, built-in check composition and override precedence remain open.
+Checks should be reusable standalone, after parsing and through supported
+during-parse composition. A single-call API need not interleave all stages.
+These are optional application-validation facilities, not core DOT grammar or
+a mandatory linter; preserve source, scope coverage and unchanged unused paths.
+See [delegation and string work](PROCESSOR_CONTRACT.md#attribute-context-policy-delegation)
+for the decisions and performance gates before implementation.
 
 **Diagnostics, scheduling and independent outcomes**
 
@@ -975,12 +1035,13 @@ need not leave a document.
 
 | Topic | Status / next decision |
 | --- | --- |
-| Graphviz validation | Label-context selection, contextual colors and pinned runtime differential verification remain; local label rules are documented in MARKUP.md |
+| Graphviz validation | General delegated context selection, contextual colors and pinned runtime differential verification remain; local label rules are documented in MARKUP.md |
 | Extended vocabulary | Under discussion; concrete consumer, tags, attributes and placement |
 | Dialect parsing | Under discussion; void names/case/context, explicit closers, unquoted/empty attributes and grammar policy |
 | Custom name/reference catalogs | Further design; built-ins remain independent optional checks |
 | Composed execution | Agreed direction; shared credits, cancellation, fixed scratch, reset/latching and validation scheduling |
-| Deeper/string processing | Future design; nested policy preparation is implemented |
+| Delegated policies | Attribute-name/value-form selection first; child owns rules; exact syntax, precedence and runtime-override interaction remain open |
+| Deeper/string processing | Default passthrough and case-sensitive checks; Unicode folding compiled out when unused; generic/custom diagnostics agreed; value/mapping, capability and verifier APIs remain open; nested policy preparation is implemented |
 | Profile/API redesign | Deferred discussion; workspace reuse did not decide it |
 | Summary index / caching / broader events | Optional proposals; initial public DOT event-only output is Unreleased |
 | Gap-aware partial-tree publication | DOT later regions/gaps are Unreleased; markup remains prefix-only |

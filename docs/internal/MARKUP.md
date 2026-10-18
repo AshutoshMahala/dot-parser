@@ -1,6 +1,6 @@
 # Markup — remaining work
 
-Reconciled: 2026-10-17. This file contains unimplemented capabilities, unresolved
+Reconciled: 2026-10-18. This file contains unimplemented capabilities, unresolved
 design choices and outstanding verification, not a delivery log or a second API
 guide. R-MOD-014/015 and Q40 in [Requirements](REQUIREMENTS.md) and
 [OpenQuestions](OpenQuestions.md) remain the architectural requirements and
@@ -15,7 +15,7 @@ decision before becoming implementation work.
 
 | Work | Decisions or implementation still needed |
 | --- | --- |
-| Graphviz label validation | DOT label-context selection, contextual color/scheme validation and pinned runtime differential verification |
+| Graphviz label validation | General delegated context selection, contextual color/scheme validation and pinned runtime differential verification |
 | Extended markup rules | A concrete consumer and a defined vocabulary/grammar |
 | Dialect-specific parsing | Void elements, case/context rules, unquoted/empty attributes and policy surface |
 | Custom name/reference catalogs | Compile-time binding and independently selectable rules |
@@ -24,6 +24,7 @@ decision before becoming implementation work.
 | Summaries and public events | Representation, ownership, coverage and costs; proposals remain deferred |
 | Native encoding execution | Native session dispatch, metered validation and native excerpt windows |
 | Composed execution | Shared budgets, fixed memory and recursive/string scheduling; see [processor design](PROCESSOR_CONTRACT.md#remaining-design) |
+| Delegated policies / string processing | Attribute-name/value-form selection; default-passthrough standalone string checks/custom verifier; no outer AST dependency or mandatory regex; see [delegation design](PROCESSOR_CONTRACT.md#attribute-context-policy-delegation) |
 | Packaging | Whether markup should ever have a separate package/version lifecycle |
 
 ### Graphviz and extended rules
@@ -34,13 +35,15 @@ mode names. Implemented vocabulary coverage is documented in
 [standalone markup](../MARKUP.md#graphviz-vocabulary).
 
 Graphviz checking needs tag vocabulary, attributes and parent/child placement,
-not just a whitelist. It must apply only where Graphviz interprets an ID as a
-label. Context selection must distinguish `n:<p>` (port `p`),
+not just a whitelist. Future delegated policy can select processing/settings for
+label contexts without hard-coding those attribute names into DOT. Current
+composition still processes every HTML-like operand when enabled. Context
+selection must distinguish `n:<p>` (port `p`),
 `label=<p>` (text `p`) and `label=<<p>x</p>>` (an element). Port-reference
 resolution belongs to later graph semantics, not markup validation.
 
 Follow Q10's specification-first approach and pinned 16.0.0 differential
-reference. Remaining work is DOT label-context selection and contextual color
+reference. Remaining work is delegated context selection and contextual color
 validation; local values/content/reference checks are documented publicly.
 Run pinned Graphviz differential tests before claiming complete implementation
 compatibility, including its permissive numeric-prefix parsing. Rendering,
@@ -76,6 +79,23 @@ Future string processors must preserve independent scope coverage: a complete
 attribute value or text region must remain checkable despite an invalid enclosing
 structure, while unavailable bytes must not be certified. Existing scope APIs
 are documented in [local validation](../MARKUP.md#checking-a-fragment-that-failed-to-parse).
+
+The proposed string processor owns its value checks and custom-verifier contract,
+independently of markup elements or DOT nodes. Markup may select a child policy
+for an attribute value but must not make the child inspect the enclosing tree.
+Preserve markup's mandatory quote/reference syntax; optional inner passthrough
+does not disable it. Reuse checks standalone or after parsing as well as through
+supported delegation. Element-specific/cross-attribute conditions and implicit
+markup-to-text extraction are outside the first slice; see
+[string processing](PROCESSOR_CONTRACT.md#optional-string-processor).
+
+String built-ins will default to case-sensitive comparison; optional Unicode
+case folding is independent of source encoding and must compile out when unused.
+Custom string checks can use generic or typed custom diagnostics without
+depending on markup types; see [comparison rules](PROCESSOR_CONTRACT.md#string-comparison-rules)
+and [custom diagnostics](PROCESSOR_CONTRACT.md#custom-string-diagnostics).
+These proposed string settings do not change markup's existing tag/attribute
+name-comparison rules or make custom verifiers inherit case folding implicitly.
 
 SIMD batching across scopes remains an optional investigation. Define grouping,
 variable-length handling, diagnostic order and cancellation before claiming a
