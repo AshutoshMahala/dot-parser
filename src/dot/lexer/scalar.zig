@@ -289,7 +289,13 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                             const next_state = self.microstep(state);
                             if (next_state == .ready) break :scan_done;
                             if (next_state == state) continue;
-                            continue :scan next_state;
+                            if (bounded) continue :scan next_state;
+                            // Keep transitions to known states direct instead
+                            // of routing them through a computed jump table.
+                            // Bounded calls retain the compact resume dispatch.
+                            switch (next_state) {
+                                inline else => |target| continue :scan target,
+                            }
                         }
                     },
                 }
@@ -321,7 +327,8 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
         }
 
         inline fn microstep(self: *Self, comptime state: State) State {
-            var continuation = state;
+            // Return state constants directly. A mutable narrow-enum temporary
+            // introduces per-byte spills/masking with Zig 0.16/LLVM on aarch64.
             const byte = self.examine();
             switch (state) {
                 .ready => unreachable,
@@ -331,13 +338,13 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                         '#' => {
                             if (comptime comments != false) self.opener = self.cursor;
                             self.consume();
-                            continuation = .line_comment;
+                            return .line_comment;
                         },
                         '/' => {
                             self.opener = self.cursor;
                             if (self.trivia == .ordinary) self.anchor = self.cursor;
                             self.consume();
-                            continuation = .slash;
+                            return .slash;
                         },
                         else => return self.afterTrivia(byte),
                     } else return self.afterTrivia(null);
@@ -345,7 +352,7 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                 .slash => {
                     if (byte == '/' or byte == '*') {
                         self.consume();
-                        continuation = if (byte == '/') .line_comment else .block_comment;
+                        return if (byte == '/') .line_comment else .block_comment;
                     } else {
                         // The slash was lookahead, not trivia. Restore its
                         // position and classify the cached introducer.
@@ -358,7 +365,7 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                         self.consume();
                         if (b == '\r' or b == '\n') {
                             if (self.finishComment(self.cursor - 1)) return .ready;
-                            continuation = .trivia;
+                            return .trivia;
                         }
                     } else {
                         if (self.finishComment(self.cursor)) return .ready;
@@ -375,14 +382,14 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                     const closed = state == .block_star and b == '/';
                     self.consume();
                     if (closed and self.finishComment(self.cursor)) return .ready;
-                    continuation = if (closed) .trivia else if (b == '*') .block_star else .block_comment;
+                    return if (closed) .trivia else if (b == '*') .block_star else .block_comment;
                 },
                 .bare => {
                     if (byte) |b| {
                         if (isIdentifierByte(b)) {
                             self.cacheKeyword(b);
                             self.consume();
-                            return continuation;
+                            return state;
                         }
                     }
                     return self.finish(keywordTag(self.content.keyword, self.cursor - self.anchor));
@@ -395,25 +402,21 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                         },
                         '-' => {
                             self.consume();
-                            continuation = .double_dash;
-                            return continuation;
+                            return .double_dash;
                         },
                         '0'...'9' => {
                             self.consume();
-                            continuation = .integral;
-                            return continuation;
+                            return .integral;
                         },
                         '.' => {
                             self.consume();
-                            continuation = .leading_dot;
-                            return continuation;
+                            return .leading_dot;
                         },
                         ' ', '\t' => {
                             // Look past the gap: `- >` is a spaced operator.
                             self.found = b;
                             self.consume();
-                            continuation = .dash_gap;
-                            return continuation;
+                            return .dash_gap;
                         },
                         else => {},
                     };
@@ -425,7 +428,7 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                     if (byte) |b| switch (b) {
                         ' ', '\t' => {
                             self.consume();
-                            return continuation;
+                            return state;
                         },
                         '>', '-' => {
                             // `- >` / `- -`: one diagnostic over the whole
@@ -452,8 +455,7 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                     if (byte) |b| {
                         if (std.ascii.isDigit(b)) {
                             self.consume();
-                            continuation = .fraction;
-                            return continuation;
+                            return .fraction;
                         }
                     }
                     // `.` or `-.` without a digit: the numeral is incomplete.
@@ -464,12 +466,11 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                     if (byte) |b| {
                         if (std.ascii.isDigit(b)) {
                             self.consume();
-                            return continuation;
+                            return state;
                         }
                         if (state == .integral and b == '.') {
                             self.consume();
-                            continuation = .fraction;
-                            return continuation;
+                            return .fraction;
                         }
                         // Maximal munch ends the numeral here, exactly as
                         // Graphviz does — and Graphviz warns when the next
@@ -501,31 +502,29 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                     if (b == 0) return self.fail(.invalid, self.cursor, 1, b);
                     self.consume();
                     if (state == .escape) {
-                        continuation = .quoted;
+                        return .quoted;
                     } else switch (b) {
-                        '\\' => continuation = .escape,
+                        '\\' => return .escape,
                         '"' => {
                             self.part_end = self.cursor;
                             self.trivia = .after_part;
-                            continuation = .trivia;
+                            return .trivia;
                         },
                         else => {},
                     }
                 },
             }
-            return continuation;
+            return state;
         }
 
         inline fn afterTrivia(self: *Self, byte: ?u8) State {
-            var continuation: State = .trivia;
             switch (self.trivia) {
                 .after_part => {
                     if (byte != '+') return self.finishString();
                     self.consume();
                     self.trivia = .after_plus;
                     self.flags.concatenated = true;
-                    continuation = .trivia;
-                    return continuation;
+                    return .trivia;
                 },
                 .after_plus => {
                     if (byte != '"' and byte != '<') return self.fail(.concat, self.cursor, if (byte == null) 0 else 1, byte);
@@ -536,8 +535,7 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                         self.content = .{ .html_depth = 1 };
                         return .html;
                     }
-                    continuation = .quoted;
-                    return continuation;
+                    return .quoted;
                 },
                 .ordinary => {},
             }
@@ -566,25 +564,35 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                 'A'...'Z', 'a'...'z', '_', 0x80...0xff => {
                     self.content = .{ .keyword = 0 };
                     self.cacheKeyword(b);
-                    continuation = .bare;
+                    self.consume();
+                    return .bare;
                 },
-                '-' => continuation = .dash,
-                '.' => continuation = .leading_dot,
-                '0'...'9' => continuation = .integral,
+                '-' => {
+                    self.consume();
+                    return .dash;
+                },
+                '.' => {
+                    self.consume();
+                    return .leading_dot;
+                },
+                '0'...'9' => {
+                    self.consume();
+                    return .integral;
+                },
                 '"' => {
                     self.opener = self.cursor;
-                    continuation = .quoted;
+                    self.consume();
+                    return .quoted;
                 },
                 '<' => {
                     self.opener = self.cursor;
                     self.flags.has_html = true;
                     self.content = .{ .html_depth = 1 };
-                    continuation = .html;
+                    self.consume();
+                    return .html;
                 },
                 else => return self.fail(.invalid, self.cursor, 1, b),
             }
-            self.consume();
-            return continuation;
         }
 
         fn cacheKeyword(self: *Self, byte: u8) void {

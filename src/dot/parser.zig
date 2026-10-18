@@ -529,8 +529,10 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 if (bounded and remaining == 0) break;
                 switch (self.work.phase) {
                     .scan => {
+                        // Keep the one-credit bound visible to the scanner so
+                        // cancellation does not pay for a general bounded loop.
                         const scanned = if (cancellable)
-                            self.tokens.drive(true, 1)
+                            @call(.always_inline, Scanner.drive, .{ &self.tokens, true, 1 })
                         else
                             self.tokens.nextBounded(remaining);
                         if (bounded) remaining -= scanned.work_used;

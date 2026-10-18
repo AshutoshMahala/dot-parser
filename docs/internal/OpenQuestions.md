@@ -208,22 +208,30 @@ and public pull events remain
 unfinished. *(Embodied: `src/dot/events.zig`, `event_profile.zig`,
 `tests/events.zig`, [public contract](../EVENTS.md).)*
 
-The local refactor check preserves default document/session/nesting layouts,
-allocation counts, arena backing capacity and peak requested heap. A five-pair
-alternating comparison against the staged adapter implementation (Apple M4 Pro,
-Zig 0.16.0, 14 DOT workloads per storage mode) found aggregate throughput changes
-of -0.49% / 0.00% for Fast growing/fixed, +0.51% / -1.51% for Safe, and
--1.12% / -0.02% for Small. Flat `commit_*` cases avoid the nested event/statement
-union's extra generated dispatch. Some scoped workloads still lose roughly
-4–6%; flat aggregate throughput must not be presented as proof that every
-specialization is regression-free. These are local refactor measurements, not
-a refreshed release baseline; binary file sizes also include the mixed harness.
+The 2026-10-17 performance follow-up addresses the scoped-tree and scalar Unicode
+regressions from the refactor. Scalar scanning returns state constants directly
+and uses direct unbounded transitions; cancellable sessions inline the existing
+one-credit scanner call. No event, recovery, safety, cancellation-frequency or
+work-budget contract changes. A five-pair alternating comparison against
+`8c546fe` (Apple M4 Pro, Zig 0.16.0) measured these throughput gains:
 
-The event-only check (six fixtures, five alternating pairs, scalar/block and
-plain/metered paths) improves aggregate Fast throughput by 2.1–4.3% and Safe by
-0.7–3.2%. Its scalar plain Unicode fixture is an exception: about 8.1% slower in
-Fast and 13.7% in Safe. That remains a performance follow-up, not a cleared
-specialization. On this target a context-free event frame shrinks from 116 to
+| Workload | ReleaseFast | ReleaseSafe | ReleaseSmall |
+| --- | ---: | ---: | ---: |
+| DOT growable, 14-workload geometric mean | +9.8% | +13.5% | +23.3% |
+| DOT fixed pools, same workloads | +9.4% | +24.9% | +27.9% |
+| Scalar plain Unicode events | +44.5% | +35.2% | +34.8% |
+
+Default document/session/nesting layouts, allocation counts, arena backing
+capacity and peak requested heap remain unchanged; these are allocator metrics,
+not process RSS. All 781 tests pass in Debug, ReleaseSafe and ReleaseFast.
+The mixed harness still shows individual movements as low as -5.0% for Fast
+markup prose and -3.1% for Small block-scanner nested input. Standalone builds
+of those unchanged paths have identical machine-code hashes before/after,
+consistent with executable-layout or measurement effects, not added parser
+work. Aggregate gains are not a promise that every specialization is faster.
+These local checks are not a refreshed release baseline.
+
+Relative to the staged adapter, a context-free event frame shrinks from 116 to
 100 bytes and its fixed-policy session by 24 bytes. Complete `Event` values grow
 from 76 to 116 bytes because scope-entry events now carry the edge prefix needed
 by every consumer; retaining whole events is a consumer-owned cost, not a hidden

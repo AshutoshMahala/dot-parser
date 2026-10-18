@@ -28,6 +28,8 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- Reduce DOT scalar-scanner dispatch and cancellable-session overhead without
+  changing event, recovery or work-budget contracts, or increasing storage.
 - **Breaking:** partial DOT `order` storage can contain paired `skipped_start`
   and `skipped_end` metadata. Normal statement views hide them; use
   `skippedRanges()` for recovery gaps. `unrepresented()` describes only an
