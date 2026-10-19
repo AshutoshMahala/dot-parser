@@ -2,21 +2,35 @@
 const std = @import("std");
 const s = @import("string_processor");
 
-const Variant = enum { plain, budget1, budget64, run, cancel1, cancel64, runtime64, custom64 };
+const Variant = enum { plain, budget1, budget64, run, cancel1, cancel64, runtime1, runtime64, custom1, custom64, custom_step64, one_of64 };
+const StepOnlyEquals = struct {
+    pub const Settings = []const u8;
+    pub const defaults: Settings = "";
+    pub const uses_comparison = true;
+    pub const State = s.validators.Equals.State;
+    pub const step = s.validators.Equals.step;
+};
+fn isRuntime(comptime variant: Variant) bool {
+    return variant == .runtime1 or variant == .runtime64;
+}
+fn isCustom(comptime variant: Variant) bool {
+    return variant == .custom1 or variant == .custom64 or variant == .custom_step64;
+}
 fn Checker(comptime variant: Variant, comptime text: []const u8) type {
     return s.Profile(.{
-        .runtime_policy = variant == .runtime64,
-        .custom = if (variant == .custom64) s.validators.Equals else s.validators.None,
+        .runtime_policy = isRuntime(variant),
+        .custom = if (variant == .custom_step64) StepOnlyEquals else if (isCustom(variant)) s.validators.Equals else s.validators.None,
         .policy = .{
             .execution = .{
                 .metering = variant != .plain,
                 .cancellation = variant == .cancel1 or variant == .cancel64,
                 .cancellation_interval = if (variant == .cancel64) 64 else 1,
             },
-            .custom = if (variant == .custom64) text else {},
+            .custom = if (isCustom(variant)) text else {},
             .validation = .{
-                .equals = .{ .expected = text, .severity = if (variant == .custom64) .off else .err },
-                .custom = if (variant == .custom64) .err else .off,
+                .equals = .{ .expected = text, .severity = if (isCustom(variant) or variant == .one_of64) .off else .err },
+                .custom = if (isCustom(variant)) .err else .off,
+                .one_of = .{ .values = &.{ "not this", text }, .severity = if (variant == .one_of64) .err else .off },
             },
         },
     });
@@ -41,8 +55,8 @@ noinline fn run(comptime P: type, comptime variant: Variant, bytes: []const u8) 
     if (variant == .run) return .{ .valid = session.run().valid() };
     var credits: u64 = 0;
     while (true) {
-        const budget: u32 = if (variant == .budget1) 1 else 64;
-        const progress = if (variant == .runtime64) session.advance(budget) catch unreachable else session.advance(budget);
+        const budget: u32 = if (variant == .budget1 or variant == .runtime1 or variant == .custom1) 1 else 64;
+        const progress = if (comptime isRuntime(variant)) session.advance(budget) catch unreachable else session.advance(budget);
         if (progress.work_used > budget) unreachable;
         credits += progress.work_used;
         if (progress.outcome != null) break;
@@ -54,8 +68,8 @@ pub fn main(init: std.process.Init) !void {
     var output_buffer: [4096]u8 = undefined;
     var output = std.Io.File.Writer.init(.stdout(), init.io, &output_buffer);
     const writer = &output.interface;
-    try writer.writeAll("UTF-8 exact checks; processor heap=0; fixed policies unless runtime64\n");
-    inline for (.{ "Seattle", "The quick brown fox. " ** 200 }) |text| {
+    try writer.writeAll("UTF-8 exact checks; processor heap=0; fixed policies unless runtime1/runtime64\n");
+    inline for (.{ "Seattle", "The quick brown fox. " ** 200, "Straße 中文 😀" ** 64, "中文" ** 64, "😀" ** 64, ("The quick brown fox. " ** 10 ++ "中文") ** 8 }) |text| {
         const bytes = try init.gpa.dupe(u8, text);
         defer init.gpa.free(bytes);
         inline for (comptime std.meta.tags(Variant)) |variant| {

@@ -1,5 +1,7 @@
 //! Built-in and custom validators share State(Context) and step(state, value,
 //! settings, context). An optional check() supplies an unmetered fast path.
+//! Optional batch(state, value, settings, context, allowance) consumes only
+//! equivalent pending steps, without callbacks; zero leaves state unchanged.
 pub const Outcome = enum { passed, failed, stopped };
 pub const Step = enum { pending, passed, failed, stopped };
 pub fn resumable(comptime Validator: type) bool {
@@ -29,6 +31,9 @@ pub const Equals = struct {
     pub fn step(state: anytype, value: anytype, expected: Settings, context: anytype) Step {
         return context.equalsStep(&state.comparison, value, expected);
     }
+    pub fn batch(state: anytype, value: anytype, expected: Settings, context: anytype, allowance: u32) u32 {
+        return context.equalsBatch(&state.comparison, value, expected, allowance);
+    }
     pub fn validateSettings(expected: Settings) bool {
         return @import("std").unicode.utf8ValidateSlice(expected);
     }
@@ -53,6 +58,10 @@ pub const OneOf = struct {
             },
             else => |outcome| outcome,
         };
+    }
+    pub fn batch(state: anytype, value: anytype, values: Settings, context: anytype, allowance: u32) u32 {
+        if (state.candidate == values.len) return 0;
+        return context.equalsBatch(&state.comparison, value, values[state.candidate], allowance);
     }
     pub fn validateSettings(values: Settings) bool {
         for (values) |expected| if (!@import("std").unicode.utf8ValidateSlice(expected)) return false;

@@ -2,6 +2,7 @@ const support = @import("parser_support");
 const Value = @import("value.zig").Value;
 const Comparison = @import("policy.zig").Comparison;
 const Step = @import("validators.zig").Step;
+const batches = @import("batch.zig");
 
 /// No pointers into a session: states can move safely between advance calls.
 pub fn State(comptime unicode: bool) type {
@@ -54,6 +55,30 @@ pub fn State(comptime unicode: bool) type {
                 },
                 .done => return self.answer,
             }
+        }
+
+        /// Consume only consecutive pending steps. Final comparisons, invalid
+        /// arguments and non-ASCII use step(), retaining exact failure credits.
+        pub fn batch(self: *@This(), value: anytype, expected: []const u8, comparison: Comparison, allowance: u32) u32 {
+            if (allowance < batches.width or expected.len > support.location.max_source_len) return 0;
+            if (self.expected) |bound| {
+                if (bound.ptr != expected.ptr or bound.len != expected.len) return 0;
+            }
+            switch (self.phase) {
+                .encoding => {
+                    if (!batches.ascii(expected, self.checked)) return 0;
+                    self.checked += batches.width;
+                },
+                .compare => {
+                    if (comptime @TypeOf(value).encoding != .utf8 and @TypeOf(value).encoding != .ascii) return 0;
+                    if (comparison != .case_sensitive or !batches.equalAscii(value.bytes, self.left, expected, self.right)) return 0;
+                    self.left += batches.width;
+                    self.right += batches.width;
+                },
+                .done => return 0,
+            }
+            self.expected = expected;
+            return batches.width;
         }
 
         fn next(_: *@This(), comptime actual: support.encoding.Actual, bytes: []const u8, offset: *u32, pending: if (unicode) *Pending else void, comparison: Comparison) support.encoding.DecodeError!?u21 {

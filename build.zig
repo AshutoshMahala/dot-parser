@@ -123,6 +123,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "string_sync_metering", .message = "invalid policy: non_resumable_validator" },
         .{ .name = "string_cancellation_interval", .message = "invalid policy: invalid_cancellation_interval" },
         .{ .name = "string_step_comparison", .message = "resumable validators must use equalsStep" },
+        .{ .name = "string_batch_step", .message = "single-step context excludes batch operations" },
+        .{ .name = "string_batch_reporting", .message = "batch context excludes diagnostic reporting" },
     }) |fixture| {
         const rejected = b.addObject(.{ .name = fixture.name, .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("tests/compile_fail/{s}.zig", .{fixture.name})),
@@ -492,6 +494,15 @@ pub fn build(b: *std.Build) void {
     b.step("bench-string-sessions", "Measure opt-in string metering and cancellation")
         .dependOn(&b.addRunArtifact(string_sessions_bench).step);
     check_benches.dependOn(&string_sessions_bench.step);
+    const string_passthrough_bench = b.addExecutable(.{ .name = "string_passthrough_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/string_passthrough.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "string_processor", .module = strings } },
+    }) });
+    b.step("bench-string-passthrough", "Compare real DOT quote scanning with simulated string processing")
+        .dependOn(&b.addRunArtifact(string_passthrough_bench).step);
+    check_benches.dependOn(&string_passthrough_bench.step);
     const string_sizes = b.step("string-size-probes", "Install consumed exact/folding/predicate Wasm size probes");
     const wasm_check = b.addSystemCommand(&.{"node"});
     wasm_check.addFileArg(b.path("tools/check_string_sizes.mjs"));

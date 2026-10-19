@@ -88,61 +88,135 @@ unchanged; no new DOT/markup regression measurement is claimed here.
 
 ### String execution: metering and default-path check
 
-Measured on the same machine/toolchain against pre-metering `5d24d90`, with
-compilation excluded from timing. The default UTF-8 encoding-only path, with
-all content rules and execution features off, measured as follows in a paired
-ReleaseFast harness (15 measured batches after four warmups, alternating order):
+Measured on Apple M4 Pro, Zig 0.16.0, 2026-10-18 against `b59a9a0` (before bounded
+batching). Compilation is excluded from timing. The default UTF-8 encoding-only
+path, with all content rules and execution features off, measured as follows in
+a paired ReleaseFast harness (15 measured batches after four warmups, alternating
+order):
 
 | Input | Before, ns/value | After, ns/value |
 | --- | ---: | ---: |
-| 7-byte ASCII | 4.27 | 4.25 |
-| 19-byte Unicode | 8.81 | 8.65 |
-| 4,200-byte ASCII | 78.83 | 77.98 |
+| 7-byte ASCII | 4.26 | 4.28 |
+| 19-byte Unicode | 8.05 | 8.63 |
+| 4,200-byte ASCII | 80.79 | 81.36 |
 
 The default path retains bulk encoding validation and no session state/counters.
-Processor allocations remain zero, Result/Diagnostic sizes remain 24/72 bytes,
-and all three Wasm probes above remain exactly the same size.
+Standalone probes exporting default encoding, exact equality and Unicode-folded
+equality produced **identical machine-code sections before and after**, in both
+ReleaseFast and ReleaseSafe. Processor allocations remain zero, Result/Diagnostic
+sizes remain 24/72 bytes, and all three Wasm probes above remain exactly the same
+size. The paired ReleaseSafe encoding-only measurements were 5.02 → 5.02 ns,
+10.12 → 10.12 ns and 82.69 → 82.83 ns respectively.
 
-With equality enabled but execution features still off, two paired ReleaseFast
-runs put long exact checking within +0.3% and long folding between −4.5% and
-+2.0%; short cases varied by several percent (fractions of a nanosecond for
-exact checking). One ReleaseSafe paired run was +0.3% on long exact checking;
-short folding was 43.44 → 46.49 ns. Separate all-encoding executable runs had
-larger long-folding variation, including an apparent +15% that did not persist
-in the paired default-UTF-8 comparison. These are code-layout/noise-sensitive
-microbenchmarks, not proof that every optional profile is identical in speed.
+With equality enabled but execution features still off, paired long exact
+checking measured 249.35 → 251.31 ns in ReleaseFast and 311.70 → 312.18 ns in
+ReleaseSafe. Timing still depends on layout: the paired executable measured
+long folding +4.6% / +6.7%, despite the standalone probes having identical code.
+These hot-buffer microbenchmarks do not establish a universal percentage bound
+for every application/profile; no new default-path work or instructions were added.
 
 For opt-in execution, run
-`zig build bench-string-sessions -Doptimize=ReleaseFast`. The following is one
-seven-batch median run after two warmups. It includes session init, execution
-and consuming the result; inputs are allocated outside timing, and diagnostics
-are discarded. Values use exact UTF-8 equality; the large input is 4,200 bytes.
+`zig build bench-string-sessions -Doptimize=ReleaseFast`. These are medians of
+three alternating before/after runs, each with seven measured batches after two
+warmups. They include session init, execution and consuming the result; inputs
+are allocated outside timing, and diagnostics are discarded. Values use exact
+UTF-8 equality. Times below are for the 4,200-byte ASCII input, in ReleaseFast.
 
-| Execution | 7-byte value, ns | 4,200-byte value, µs | Session bytes |
+| Execution | Before, µs | After, µs | Session bytes (unchanged) |
 | --- | ---: | ---: | ---: |
-| Unmetered one-shot | 10.6 | 0.229 | none |
-| Metered, budget 1 | 92.1 | 45.43 | 128 |
-| Metered, budget 64 | 93.2 | 47.07 | 128 |
-| Session run to completion | 92.2 | 46.07 | 128 |
-| Budget 64, cancellation interval 1 | 99.4 | 46.30 | 152 |
-| Budget 64, cancellation interval 64 | 78.2 | 40.21 | 152 |
-| Budget 64, runtime policies | 89.4 | 42.02 | 256 |
-| Budget 64, Equals bound as custom | 80.6 | 39.96 | 128 |
+| Unmetered one-shot | 0.255 | 0.257 | none |
+| Metered, budget 1 | 48.01 | 46.63 | 128 |
+| Metered, budget 64 | 46.54 | 1.96 | 128 |
+| Session run to completion | 46.36 | 2.03 | 128 |
+| Budget 64, cancellation interval 1 | 47.54 | 46.74 | 152 |
+| Budget 64, cancellation interval 64 | 41.26 | 2.33 | 152 |
+| Budget 1, runtime policies | 70.70 | 51.11 | 256 |
+| Budget 64, runtime policies | 46.70 | 2.55 | 256 |
+| Budget 1, Equals bound as custom | 62.50 | 47.58 | 128 |
+| Budget 64, Equals bound as custom | 40.87 | 1.95 | 128 |
+| Budget 64, step-only custom equality | 41.20 | 33.84 | 128 |
+| Budget 64, two-candidate membership | 43.34 | 2.28 | 136 |
+
+ReleaseSafe large-ASCII budget 1 improved 65.66 → 61.31 µs, runtime-policy
+budget 1 improved 76.47 → 68.09 µs, and budget 64 improved 53.03 → 2.47 µs.
+The seven-byte budget-one check measured 95.0 → 92.4 ns in ReleaseFast and
+143.4 → 128.0 ns in ReleaseSafe.
+
+Unicode fallback checks, using the same run protocol:
+
+| Contents | ReleaseFast budget 1, before → after µs | ReleaseFast budget 64, before → after µs | ReleaseSafe budget 64, before → after µs |
+| --- | ---: | ---: | ---: |
+| 1,216-byte mixed Unicode | 11.45 → 11.27 | 11.37 → 11.44 | 12.68 → 12.67 |
+| 384-byte Chinese | 2.85 → 2.87 | 2.89 → 2.92 | 3.24 → 3.27 |
+| 256-byte emoji | 1.56 → 1.55 | 1.55 → 1.55 | 1.50 → 1.46 |
+| 1,728-byte mostly ASCII with Chinese | 18.98 → 19.11 | 19.20 → 4.70 | 22.07 → 5.31 |
 
 Session size is fixed caller-owned payload, not process RSS or total stack use;
 custom states/folding can increase it. There are no processor heap allocations.
-The two inputs cost 26 and 12,605 credits respectively, independent of budget
+The seven-byte and large-ASCII inputs cost 26 and 12,605 credits respectively, independent of budget
 partition and cancellation interval. On the large value, interval 1 polled
 12,605 times and interval 64 polled 197 times. Runtime policy preparation is
 included in these timings but is outside the credit budget.
 
-The long exact case is deliberately favorable to the bulk fast path: SIMD
-encoding validation and byte equality become separately pausable scalar steps,
-including validation of the expected argument. Its metering overhead is large,
-not merely a few percent. Increasing the budget does not restore bulk processing,
-and tiny-call/layout noise means budget 64 is not guaranteed faster than budget 1.
-Use metering for bounded responsiveness, not as a throughput optimization.
-No such step/counter overhead is added when both execution features are off.
+The fast lane groups 16 equivalent pending ASCII steps, charging all 16 credits.
+It never crosses the caller's remaining budget or next cancellation poll. Budget
+one has a direct scalar path; cancellation interval one also stays scalar.
+Failed ASCII probes fall back for a bounded group of scalar steps, avoiding a
+new overlapping probe at every Unicode character. Built-in and custom validators
+share the optional batch contract; step-only custom validators remain supported.
+Dense Unicode and folding still require scalar work, and metering remains much
+slower than unmetered bulk validation there. Use it for bounded responsiveness;
+no step/counter overhead is added when both execution features are off.
+
+### Simulated string passthrough versus processing
+
+`zig build bench-string-passthrough -Doptimize=ReleaseFast` uses the **actual DOT
+lexer** to scan one quoted identifier through EOF, then optionally hands the
+borrowed contents to the standalone string processor. Every timed variant calls
+the same scanner helper. This is a benchmark simulation, not implemented
+DOT/string composition. There is no tree construction, escape decoding,
+concatenation or retained diagnostics. Inputs contain neither escapes nor
+concatenations, so raw and logical contents agree without a copy.
+
+Apple M4 Pro, Zig 0.16.0, 2026-10-18. Median of three runs; each run has nine
+measured batches after two warmups and alternates variant order. Compilation
+and input allocation are outside timing. The default scalar scanner measured:
+
+| UTF-8 contents | Passthrough scan | Scan + encoding | Scan + encoding/equality | Scan + metered encoding/equality, budget 64 |
+| --- | ---: | ---: | ---: | ---: |
+| 7-byte ASCII | 10.13 ns | 14.89 ns | 18.47 ns | 89.06 ns |
+| 19-byte Unicode | 13.40 ns | 23.32 ns | 29.43 ns | 182.25 ns |
+| 4,200-byte ASCII | 1.409 µs | 1.515 µs | 1.671 µs | 3.501 µs |
+| 1,216-byte Unicode | 0.560 µs | 0.997 µs | 1.379 µs | 10.228 µs |
+
+The ASCII fixtures are `Seattle` and repeated `The quick brown fox. `; Unicode
+uses `Straße 中文 😀` once or repeated 64 times. Exact comparisons match the whole
+value, without case folding. All processor paths are allocation-free and use
+fixed policies, with cancellation off.
+
+For the 4,200-byte ASCII contents, these medians correspond to approximately
+**2,980 / 2,773 / 2,513 / 1,200 MB/s**, respectively (decimal content bytes; excludes
+the two quotes from the byte count, but includes scanning them in the time).
+Unmetered encoding/equality adds about 19% time over scanning; metered equality
+takes about 2.5× the scan time. Long-ASCII scalar scan medians varied from
+1.332–1.929 µs across runs, so treat these as approximate hot-buffer measurements,
+not sustained whole-file throughput or precise regression thresholds.
+
+The opt-in block scanner also runs in the harness:
+
+| Contents | Block passthrough | Block scan + encoding/equality | Block scan + metered encoding/equality |
+| --- | ---: | ---: | ---: |
+| 7-byte ASCII | 31.26 ns | 38.11 ns | 109.48 ns |
+| 19-byte Unicode | 32.48 ns | 46.16 ns | 201.73 ns |
+| 4,200-byte ASCII | 1.664 µs | 1.951 µs | 3.828 µs |
+| 1,216-byte Unicode | 0.506 µs | 1.375 µs | 10.190 µs |
+
+Passthrough does inspect bytes for quotes, escapes and host lexical restrictions;
+it is **not encoding validation**. The harness verifies that quoted `0xff` passes
+the quote scanner but fails the standalone encoding check. If a caller already
+has the bounded contents, retaining that span requires no additional contents
+scan; do not add the host scan twice. These figures cannot predict whole DOT
+parse times or the eventual costs of decoding, source mapping and integration.
 
 ## Parse and validate
 

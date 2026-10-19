@@ -179,7 +179,9 @@ The standalone first slice is implemented in `string_processor`; the current
 [public string contract](../STRINGS.md) documents borrowed contents, fixed/runtime
 policy, the shared validator contract, Unicode 17.0.0 comparison, custom reporting,
 completion and costs. Built-in `equals`/`one_of` and custom validators share the
-resumable `State`/`step` contract, with optional unmetered fast checks. Standalone
+resumable `State`/`step` contract, with optional pending-step batching and unmetered
+fast checks. Batches retain scalar credits and cannot cross budget/poll boundaries;
+their context cannot report or poll. Standalone
 sessions meter encoding and validation and support cancellation; synchronous-only
 custom validators cannot be activated under metering. This does not implement
 host selection or transfer host syntax.

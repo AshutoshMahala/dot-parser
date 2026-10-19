@@ -958,7 +958,8 @@ Host integration remains open: passthrough by default, explicit processing,
 raw-to-logical adapters, source maps, mixed concatenations, attribute routing and
 override precedence. Mandatory host quote/escape/reference/boundary checks stay
 with DOT/markup. Standalone resumable string validation is implemented through
-the same `State`/`step` contract for built-ins and custom validators; shared-budget
+the same `State`/`step` contract for built-ins and custom validators, with optional
+equivalent pending-step batching that preserves credits and cancellation; shared-budget
 composition remains unimplemented. Arbitrary custom or regex calls cannot acquire
 bounded-work guarantees merely by being compiled in; active synchronous-only
 validators are rejected under metering. No bundled regex engine is implied.

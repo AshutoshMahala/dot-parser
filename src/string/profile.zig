@@ -5,6 +5,7 @@ const diagnostics = @import("diagnostic.zig");
 const validators = @import("validators.zig");
 const Value = @import("value.zig").Value;
 const results = @import("result.zig");
+const batches = @import("batch.zig");
 
 pub fn Profile(comptime config: anytype) type {
     const C = @TypeOf(config);
@@ -22,6 +23,7 @@ pub fn Profile(comptime config: anytype) type {
         }
         if (!@hasDecl(Custom, "uses_comparison")) @compileError("validator must declare uses_comparison");
         if (@hasDecl(Custom, "State") != @hasDecl(Custom, "step")) @compileError("resumable validator must declare both State and step");
+        if (@hasDecl(Custom, "batch") and !validators.resumable(Custom)) @compileError("batch requires a resumable validator");
     }
     return struct {
         pub const Policy = Schema.Policy;
@@ -184,6 +186,22 @@ pub fn Profile(comptime config: anytype) type {
                     };
                 }
 
+                /// Batches cannot report, poll or terminate a check. Keep this
+                /// service out of step's context: one step still costs one credit.
+                fn BatchContext(comptime Validator: type) type {
+                    return struct {
+                        pub const ComparisonState = @import("compare.zig").State(folding_used);
+                        input: support.processor.Fragment,
+                        comparison: if (Validator.uses_comparison) policy.Comparison else void,
+
+                        pub fn equalsBatch(ctx: *@This(), state: *ComparisonState, value: Value(actual), expected: []const u8, allowance: u32) u32 {
+                            if (!Validator.uses_comparison) @compileError("validator must opt into uses_comparison");
+                            if (value.bytes.ptr != ctx.input.bytes.ptr or value.bytes.len != ctx.input.bytes.len or value.origin != ctx.input.origin) return 0;
+                            return state.batch(value, expected, ctx.comparison, allowance);
+                        }
+                    };
+                }
+
                 fn check(self: *Self, comptime Validator: type, settings: Validator.Settings, severity: policy.Severity, comparison: policy.Comparison, code: diagnostics.Code, state: *results.CheckState) void {
                     if (severity == .off or self.cancelled()) return;
                     state.* = .incomplete;
@@ -244,7 +262,32 @@ pub fn Profile(comptime config: anytype) type {
                     return .{ .outcome = if (self.finished) self.engine.result.completion else null, .work_used = used, .source_frontier = self.at, .stage = self.stage };
                 }
 
-                fn drive(self: *Self, comptime bounded: bool, budget: u32) results.Progress {
+                inline fn drive(self: *Self, comptime bounded: bool, budget: u32) results.Progress {
+                    if (bounded and budget == 1) return self.driveOne();
+                    if (bounded and budget < batches.width) return self.driveScalar(bounded, budget);
+                    const p = self.engine.effective();
+                    // Choose once, not once per scalar. In particular budget 1
+                    // and interval 1 never enter the batching machinery.
+                    if (cancellable and p.execution.cancellation and p.execution.cancellation_interval < batches.width)
+                        return self.driveScalar(bounded, budget);
+                    return self.driveBatched(bounded, budget);
+                }
+
+                inline fn driveOne(self: *Self) results.Progress {
+                    if (self.finished) return self.progress(0);
+                    if (cancellable and self.engine.effective().execution.cancellation and self.engine.cancelled()) {
+                        self.finished = true;
+                        return self.progress(0);
+                    }
+                    // Exactly one original step, without a loop, countdown or
+                    // batch probe. Keep tiny resumes independent of the larger
+                    // batching driver and its inlining cost.
+                    self.step();
+                    if (self.engine.result.completion != .complete) self.finished = true;
+                    return self.progress(1);
+                }
+
+                fn driveScalar(self: *Self, comptime bounded: bool, budget: u32) results.Progress {
                     if (self.finished) return self.progress(0);
                     const p = self.engine.effective();
                     var polling: support.execution.CancellationPolling(cancellable, if (runtime) null else Policies.baseline.execution.cancellation_interval) = .{};
@@ -268,6 +311,84 @@ pub fn Profile(comptime config: anytype) type {
                         // budget; the next live entry will poll before work.
                         if (bounded and used == budget) return self.progress(used);
                     }
+                }
+
+                fn driveBatched(self: *Self, comptime bounded: bool, budget: u32) results.Progress {
+                    if (self.finished) return self.progress(0);
+                    const p = self.engine.effective();
+                    var polling: support.execution.CancellationPolling(cancellable, if (runtime) null else Policies.baseline.execution.cancellation_interval) = .{};
+                    var used: u32 = 0;
+                    while (true) {
+                        if (cancellable and p.execution.cancellation and polling.due(p.execution.cancellation_interval)) {
+                            if (self.engine.cancelled()) {
+                                self.finished = true;
+                                return self.progress(used);
+                            }
+                        }
+                        if (bounded and used == budget) return self.progress(used);
+                        var allowance: u32 = if (bounded) budget - used else std.math.maxInt(u32);
+                        if (cancellable and p.execution.cancellation) allowance = @min(allowance, polling.allowance());
+                        var work = self.batch(allowance);
+                        if (self.engine.result.completion != .complete) {
+                            self.finished = true;
+                            return self.progress(used);
+                        }
+                        // A failed probe falls back for an entire bounded run,
+                        // not another overlapping ASCII probe at every scalar.
+                        // Amortize a failed probe over up to 64 scalar steps.
+                        // The caller's remaining budget and next poll still
+                        // bound this run, including budgets/intervals of one.
+                        if (work == 0) work = self.scalarRun(@min(allowance, 64));
+                        if (bounded) used += work;
+                        if (cancellable and p.execution.cancellation) polling.spend(work);
+                        if (self.finished) return self.progress(used);
+                        if (bounded and used == budget) return self.progress(used);
+                    }
+                }
+
+                fn scalarRun(self: *Self, allowance: u32) u32 {
+                    var work: u32 = 0;
+                    while (work < allowance) {
+                        self.step();
+                        work += 1;
+                        if (self.engine.result.completion != .complete) self.finished = true;
+                        if (self.finished) break;
+                    }
+                    return work;
+                }
+
+                fn batch(self: *Self, allowance: u32) u32 {
+                    if (allowance < batches.width) return 0;
+                    const p = self.engine.effective();
+                    switch (self.stage) {
+                        .encoding => {
+                            if (comptime actual != .utf8 and actual != .ascii) return 0;
+                            if (self.bad_start != null or !batches.ascii(self.engine.input.bytes, self.at)) return 0;
+                            self.at += batches.width;
+                            self.engine.result.checks.encoding = .incomplete;
+                            return batches.width;
+                        },
+                        .equals => if (equals_active) return self.ruleBatch(validators.Equals, &self.equals_state, p.equals.expected, p.equals.severity, p.equals.comparison orelse p.comparison, &self.engine.result.checks.equals, allowance),
+                        .one_of => if (one_of_active) return self.ruleBatch(validators.OneOf, &self.one_of_state, p.one_of.values, p.one_of.severity, p.one_of.comparison orelse p.comparison, &self.engine.result.checks.one_of, allowance),
+                        .custom => if (custom_active) return self.ruleBatch(Custom, &self.custom_state, p.custom, p.custom_severity, p.comparison, &self.engine.result.checks.custom, allowance),
+                        .done => unreachable,
+                    }
+                    return 0;
+                }
+
+                fn ruleBatch(self: *Self, comptime Validator: type, state: anytype, settings: Validator.Settings, severity: policy.Severity, comparison: policy.Comparison, coverage: *results.CheckState, allowance: u32) u32 {
+                    if (comptime !@hasDecl(Validator, "batch")) return 0;
+                    if (severity == .off) return 0;
+                    // Batch only pending steps. No reports, polls or terminal
+                    // outcomes may be skipped; step remains the source of truth.
+                    var context: E.BatchContext(Validator) = .{ .input = self.engine.input, .comparison = if (Validator.uses_comparison) comparison else {} };
+                    const work = Validator.batch(state, Value(actual){ .bytes = self.engine.input.bytes, .origin = self.engine.input.origin }, settings, &context, allowance);
+                    if (work > allowance) {
+                        self.engine.result.completion = .invalid_validator;
+                        return 0;
+                    }
+                    if (work != 0) coverage.* = .incomplete;
+                    return work;
                 }
 
                 fn run(self: *Self) results.Result {
@@ -374,7 +495,9 @@ pub fn Profile(comptime config: anytype) type {
                     },
                 }
             }
-            pub fn advance(self: *@This(), budget: u32) (if (runtime) error{MeteringDisabled}!results.Progress else results.Progress) {
+            // Keep constant budgets visible at the call site: the batch driver
+            // must not change inlining of the budget-one resume path.
+            pub inline fn advance(self: *@This(), budget: u32) (if (runtime) error{MeteringDisabled}!results.Progress else results.Progress) {
                 if (!runtime and !Policies.baseline.execution.metering) @compileError("advance requires execution.metering");
                 switch (self.inner) {
                     inline else => |*session, encoding| {

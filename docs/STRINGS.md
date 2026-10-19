@@ -313,7 +313,8 @@ not preemptible operations. Their execution time is not bounded by credits.
 ### Resumable custom validators
 
 Built-ins and custom validators use exactly the same `State(Context)` / `step`
-contract. For example, a custom comparison can use the shared bounded helper:
+contract, with optional `batch` and unmetered `check` fast paths. For example,
+a custom comparison can use the shared bounded helpers:
 
 ```zig
 const Match = struct {
@@ -326,6 +327,10 @@ const Match = struct {
     pub fn step(state: anytype, value: anytype, expected: Settings,
                 context: anytype) strings.Step {
         return context.equalsStep(&state.comparison, value, expected);
+    }
+    pub fn batch(state: anytype, value: anytype, expected: Settings,
+                 context: anytype, allowance: u32) u32 {
+        return context.equalsBatch(&state.comparison, value, expected, allowance);
     }
 };
 ```
@@ -347,6 +352,22 @@ Calling synchronous `context.equals` from a metered step is a compile error.
 Use `context.report` for detailed diagnostics as before; reports survive pauses
 and suppress the generic failure fallback across the whole check.
 
+An optional `batch(state, value, settings, context, allowance) u32` can replace
+**consecutive pending steps** with equivalent bounded work. Return their exact
+credit count, no greater than `allowance`. Returning zero must leave state
+unchanged and requests the scalar fallback. It must preserve the state and work
+count that repeated `step` calls would produce: do not skip reports, polls,
+terminal outcomes or other callback side effects. Overcharging is reported as
+`invalid_validator`; arbitrary trusted Zig code still owns its work bounds.
+
+The batch context deliberately exposes no `report` or `cancelled` methods. Its
+`equalsBatch` helper consumes matching ASCII runs or expected-pattern ASCII runs;
+zero leaves the original `step` to handle Unicode, folding, mismatches, malformed
+patterns and completion. This helper is not available in a single-step context.
+Both `equals` and `one_of` use this same optional contract. A validator with only
+`State`/`step` remains supported without modification. Never rely on a batch
+being called: small budgets, poll intervals and unsuitable input can bypass it.
+
 An optional `check` provides an unmetered fast path, exactly as it does for
 built-ins. It must agree with `step` on acceptance and diagnostics. A step-only
 validator also works unmetered. A check-only validator (including `Predicate`)
@@ -358,9 +379,14 @@ can call it, but it must poll `context.cancelled()` inside long work itself.
 
 With both execution features off, the one-shot path has no session state,
 credit counters or cancellation polling. Opting into metering or cancellation
-uses scalar, bounded work instead of the bulk fast path, even when calling
-`parseAndValidate` or `Session.run`. Larger budgets reduce resume overhead, not
-the work needed by the validator. Session storage includes only compiled-in
+uses bounded work, even when calling `parseAndValidate` or `Session.run`. Small
+budgets and cancellation intervals use the scalar driver directly. Larger
+allowances can combine equivalent ASCII steps without changing their credits;
+a failed batch probe falls back to a bounded scalar run instead of probing
+overlapping windows at every scalar. No batch or fallback crosses the remaining
+budget or next cancellation poll. Budget one and interval one remain scalar.
+Larger budgets can reduce both resume and per-step overhead, but do not reduce
+the charged work. Session storage includes only compiled-in
 rules and folding capability; runtime-configurable profiles retain the possible
 rule states. Storage is fixed-size and caller-owned, not proportional to input
 length or membership-list length.
@@ -379,6 +405,8 @@ tree, retained processor per value, normalization buffer or source copy.
 
 Run `zig build test-string`, `zig build bench-string -Doptimize=ReleaseFast`,
 `zig build bench-string-sessions -Doptimize=ReleaseFast`, and `zig build check-wasm`.
+`zig build bench-string-passthrough -Doptimize=ReleaseFast` compares real DOT
+quote scanning with simulated handoff to string checks; it is not host integration.
 The session benchmark reports time, credits, hook calls and state size for
 fixed/runtime policies and multiple budgets/intervals. The last command builds consumed, stripped Wasm probes
 for exact, folding and non-comparison builds and uses Node to execute their

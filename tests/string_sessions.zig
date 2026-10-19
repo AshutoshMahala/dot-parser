@@ -327,3 +327,179 @@ test "interval changes do not change credits and disabled hooks stay unused" {
         }
     }
 }
+
+const BatchMatch = struct {
+    pub const Settings = []const u8;
+    pub const defaults: Settings = "";
+    pub const uses_comparison = true;
+    pub fn State(comptime Context: type) type {
+        return struct { comparison: Context.ComparisonState = .{} };
+    }
+    pub fn step(state: anytype, value: anytype, expected: Settings, context: anytype) s.Step {
+        return context.equalsStep(&state.comparison, value, expected);
+    }
+    pub fn batch(state: anytype, value: anytype, expected: Settings, context: anytype, allowance: u32) u32 {
+        return context.equalsBatch(&state.comparison, value, expected, allowance);
+    }
+};
+
+test "batched builtin and custom checks match scalar progress at every pause" {
+    const P = s.Profile(.{ .custom = BatchMatch, .runtime_policy = true, .source_encodings = &.{ .ascii, .utf8, .utf16, .utf32 }, .unicode_case_folding = true, .policy = .{
+        .execution = .{ .metering = true },
+        .validation = .{ .custom = .warning },
+    } });
+    var random = std.Random.DefaultPrng.init(0x5ca1a6);
+    var source: [128]u8 = undefined;
+    var pattern: [128]u8 = undefined;
+    const budgets = [_]u32{ 0, 1, 2, 15, 16, 17, 31, 32, 63, 64, 65, 1000 };
+    for (0..1200) |trial| {
+        const len = random.random().uintLessThan(usize, source.len + 1);
+        @memset(source[0..len], 'a');
+        @memcpy(pattern[0..len], source[0..len]);
+        if (len > 0) switch (trial % 5) {
+            0 => source[random.random().uintLessThan(usize, len)] = 0xff,
+            1 => source[random.random().uintLessThan(usize, len)] = 'b',
+            2 => if (len >= 4) {
+                @memcpy(source[len - 4 ..][0..4], "😀");
+            },
+            3 => if (len >= 4) {
+                @memcpy(source[len - 4 ..][0..4], "ßß");
+            },
+            else => {},
+        };
+        const actual = ([_]s.ActualEncoding{ .utf8, .ascii, .utf16le, .utf16be, .utf32le, .utf32be, .utf8, .utf8 })[trial % 8];
+        const values = [_][]const u8{ "b" ** 64, pattern[0..len] };
+        const policy: P.Policy = .{
+            .comparison = if (trial % 7 == 0) .case_insensitive else .case_sensitive,
+            .on_error = if (trial % 9 == 0) .fail_fast else .collect,
+            .validation = .{
+                .equals = .{ .expected = pattern[0..len], .severity = .warning },
+                .one_of = .{ .values = &values, .severity = .err },
+            },
+            .custom = pattern[0..len],
+        };
+        var scalar_bag: P.FixedDiagnosticBag(256) = .{};
+        var batched_bag: P.FixedDiagnosticBag(256) = .{};
+        var scalar = try P.Session.init(.{ .bytes = source[0..len], .origin = 27 }, scalar_bag.sink(), .{ .encoding = actual, .policy = policy });
+        var batched = try P.Session.init(.{ .bytes = source[0..len], .origin = 27 }, batched_bag.sink(), .{ .encoding = actual, .policy = policy });
+        defer scalar.deinit();
+        defer batched.deinit();
+        for (0..2000) |_| {
+            const budget = budgets[random.random().uintLessThan(usize, budgets.len)];
+            const progress = try batched.advance(budget);
+            var expected = try scalar.advance(0);
+            var used: u32 = 0;
+            while (used < budget and expected.outcome == null) {
+                expected = try scalar.advance(1);
+                used += expected.work_used;
+            }
+            expected.work_used = used;
+            try t.expectEqualDeep(expected, progress);
+            try t.expectEqualSlices(P.Diagnostic, scalar_bag.items(), batched_bag.items());
+            if (progress.outcome != null) break;
+        } else return error.NoProgress;
+        try t.expectEqualDeep(scalar.result(), batched.result());
+    }
+}
+
+test "batching preserves cancellation at exact credit boundaries in every phase" {
+    const Hook = struct {
+        calls: u32 = 0,
+        stop_at: u32,
+        fn poll(raw: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            self.calls += 1;
+            return self.calls == self.stop_at;
+        }
+    };
+    const P = s.Profile(.{ .custom = BatchMatch, .runtime_policy = true, .policy = .{
+        .execution = .{ .metering = true },
+        .custom = "a" ** 80,
+        .validation = .{
+            .equals = .{ .expected = "a" ** 80, .severity = .err },
+            .one_of = .{ .values = &.{ "b" ** 80, "a" ** 80 }, .severity = .err },
+            .custom = .err,
+        },
+    } });
+    for ([_]u32{ 1, 2, 15, 16, 17, 31, 64, 65 }) |interval| {
+        for (1..50) |stop_at| {
+            var hook: Hook = .{ .stop_at = @intCast(stop_at) };
+            var reference = try P.Session.init(.{ .bytes = "a" ** 80, .origin = 0 }, P.Sink.discard, .{});
+            defer reference.deinit();
+            const allowed = interval * @as(u32, @intCast(stop_at - 1));
+            const expected_progress = try reference.advance(allowed);
+            const expected = reference.result() orelse reference.cancel();
+            var session = try P.Session.init(.{ .bytes = "a" ** 80, .origin = 0 }, P.Sink.discard, .{
+                .policy = .{ .execution = .{ .cancellation = true, .cancellation_interval = interval } },
+                .cancellation = .{ .context = &hook, .is_requested = Hook.poll },
+            });
+            defer session.deinit();
+            const progress = try session.advance(10_000);
+            try t.expectEqual(expected_progress.work_used, progress.work_used);
+            try t.expectEqual(expected_progress.source_frontier, progress.source_frontier);
+            try t.expectEqual(expected_progress.stage, progress.stage);
+            try t.expectEqualDeep(expected, session.result().?);
+            const calls = hook.calls;
+            _ = try session.advance(0);
+            _ = session.run();
+            try t.expectEqual(calls, hook.calls);
+        }
+    }
+}
+
+test "batch fallback preserves malformed custom pattern and sink stop credits" {
+    const P = s.Profile(.{ .custom = BatchMatch, .runtime_policy = true, .policy = .{
+        .execution = .{ .metering = true },
+        .validation = .{ .custom = .err },
+        .custom = "a" ** 64 ++ "\xff",
+    } });
+    var expected_work: ?u32 = null;
+    for ([_]u32{ 1, 15, 16, 17, 64, 1000 }) |budget| {
+        var session = try P.Session.init(.{ .bytes = "a" ** 64, .origin = 0 }, P.Sink.discard, .{});
+        defer session.deinit();
+        var total: u32 = 0;
+        while (true) {
+            const p = try session.advance(budget);
+            total += p.work_used;
+            if (p.outcome != null) break;
+        }
+        try t.expectEqual(.invalid_validator, session.result().?.completion);
+        if (expected_work) |n| try t.expectEqual(n, total) else expected_work = total;
+        var bag: P.FixedDiagnosticBag(1) = .{};
+        try session.reset(.{ .bytes = "a" ** 64 ++ "\xff", .origin = 0 }, bag.sink(), .{});
+        total = 0;
+        while (true) {
+            const p = try session.advance(budget);
+            total += p.work_used;
+            if (p.outcome != null) break;
+        }
+        try t.expectEqual(@as(u32, 66), total); // 64 ASCII, one bad byte, one report
+        try t.expectEqual(.requested, session.result().?.completion.diagnostic_stop);
+        try t.expectEqual(@as(u64, 1), session.result().?.errors);
+        try t.expectEqual(.incomplete, session.result().?.checks.encoding);
+    }
+}
+
+test "custom batch overcharging is a contract failure, not budget overflow" {
+    const Invalid = struct {
+        pub const Settings = void;
+        pub const defaults = {};
+        pub const uses_comparison = false;
+        pub fn State(comptime _: type) type {
+            return struct {};
+        }
+        pub fn step(_: anytype, _: anytype, _: void, _: anytype) s.Step {
+            return .pending;
+        }
+        pub fn batch(_: anytype, _: anytype, _: void, _: anytype, allowance: u32) u32 {
+            return allowance + 1;
+        }
+    };
+    const P = s.Profile(.{ .custom = Invalid, .policy = .{ .execution = .{ .metering = true }, .validation = .{ .custom = .err } } });
+    var session = try P.Session.init(.{ .bytes = "", .origin = 0 }, P.Sink.discard, .{});
+    while (session.advance(1).stage != .custom) {}
+    const progress = session.advance(64);
+    try t.expectEqual(@as(u32, 0), progress.work_used);
+    try t.expectEqual(.invalid_validator, progress.outcome.?);
+    try t.expect(!session.result().?.valid());
+}
