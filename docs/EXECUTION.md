@@ -67,11 +67,23 @@ A few rules make budgets predictable:
 - Running out of credits is a pause, not an error.
 - However you split the budget across calls, the result is the same.
 
+Internally, a metered scalar scanner can handle several ordinary bytes in a
+tight loop. Each examined byte still costs its own credit; scanning stops at
+the first boundary and never looks beyond the budget or the next cancellation
+poll. This is an optimization, not a larger credit unit. One-credit calls and
+the block scanner keep their existing accounting, with no extra session storage.
+
 Credits measure work, not time. They don't count time spent in your own
 callbacks (your diagnostic sink, your cancel check). DOT/markup validation,
 explicit decoding and rendering are separate steps and aren't metered.
 The standalone string processor has its own metered validation steps described
 [below](#standalone-string-validation).
+
+To compare execution costs on dense syntax and long ASCII/Unicode text, run
+`zig build bench-metering -Doptimize=ReleaseFast` (or `ReleaseSafe`). It reports
+default parsing, budgets 1/64/4096, cancellation intervals 1/64 and runtime
+policies for both scanners. Input and fixed pools are prepared before timing;
+results include credits, poll counts and session sizes. Validation is not timed.
 
 ## Standalone string validation
 

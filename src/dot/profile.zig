@@ -216,7 +216,8 @@ pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Ac
                     .interpretation_policy = validationSettings(effective),
                 };
             }
-            pub fn advance(self: *Self, budget: usize) (if (runtime_policy) AdvanceError!api.SessionProgress else api.SessionProgress) {
+            pub inline fn advance(self: *Self, budget: usize) (if (runtime_policy) AdvanceError!api.SessionProgress else api.SessionProgress) {
+                @setEvalBranchQuota(10_000); // Inlined runtime-policy variant dispatch.
                 if (runtime_policy) {
                     return switch (self.driver) {
                         inline else => |*driver, variant| if (comptime variant.metered()) driver.advance(budget) else error.MeteringDisabled,

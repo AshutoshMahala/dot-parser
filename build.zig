@@ -463,6 +463,18 @@ pub fn build(b: *std.Build) void {
     b.step("bench-policy", "Compare fixed/runtime policy costs on the standard benchmark machine")
         .dependOn(&b.addRunArtifact(policy_bench).step);
     const check_benches = b.step("check-benches", "Compile benchmarks without updating or running baselines");
+    const metering_bench = b.addExecutable(.{
+        .name = "metering_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/metering.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
+        }),
+    });
+    b.step("bench-metering", "Compare default, tiny-budget and batched parse execution")
+        .dependOn(&b.addRunArtifact(metering_bench).step);
+    check_benches.dependOn(&metering_bench.step);
     const markup_bench = b.addExecutable(.{
         .name = "markup_bench",
         .root_module = b.createModule(.{

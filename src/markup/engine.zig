@@ -37,7 +37,7 @@ pub fn EngineWithInputEncoding(comptime actual: @import("parser_support").encodi
                 _ = self.machine.run(&self.stack, &self.builder);
                 return self.result().?;
             }
-            pub fn advance(self: *@This(), budget: u32) results.Progress {
+            pub inline fn advance(self: *@This(), budget: u32) results.Progress {
                 return self.machine.advance(&self.stack, &self.builder, budget);
             }
             pub fn result(self: *const @This()) ?api.FixedParseResult {

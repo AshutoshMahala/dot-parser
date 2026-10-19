@@ -402,7 +402,8 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
                 };
                 return self.inner.run();
             }
-            pub fn advance(self: *@This(), budget: u32) (if (runtime_policy) error{MeteringDisabled}!api.Progress else api.Progress) {
+            pub inline fn advance(self: *@This(), budget: u32) (if (runtime_policy) error{MeteringDisabled}!api.Progress else api.Progress) {
+                @setEvalBranchQuota(10_000); // Inlined runtime-policy variant dispatch.
                 if (runtime_policy) return switch (self.inner) {
                     inline else => |*s, v| if (comptime v.metering()) s.advance(budget) else error.MeteringDisabled,
                 };

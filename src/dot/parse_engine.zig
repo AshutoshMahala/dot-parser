@@ -221,7 +221,7 @@ pub fn EngineWithEncoding(comptime actual: @import("parser_support").encoding.Ac
             /// At most `budget` scan/grammar/dispatch steps. Zero may observe
             /// cancellation; otherwise it yields without work. Callouts and terminal
             /// diagnostic/abort housekeeping are excluded from work credits.
-            pub fn advance(self: *Self, budget: usize) SessionProgress {
+            pub inline fn advance(self: *Self, budget: usize) SessionProgress {
                 if (!metering) @compileError("metering is disabled; use run()");
                 self.machine.events = &self.builder;
                 self.machine.scratch = &self.scratch;

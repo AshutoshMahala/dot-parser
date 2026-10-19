@@ -259,7 +259,7 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
         }
 
         // null means yield, never EOF. EOF remains an ordinary terminal token.
-        pub fn nextBounded(self: *Self, budget: usize) Advance {
+        pub inline fn nextBounded(self: *Self, budget: usize) Advance {
             if (!metered) @compileError("bounded calls require the metered scanner");
             return self.drive(true, budget);
         }
@@ -328,7 +328,8 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
             return self.cursor * enc.width;
         }
 
-        // Sole source-byte fetch site. Keyword classification uses cached bytes.
+        // Single-step fetch; quotedRun accounts identically for bounded runs.
+        // Keyword classification uses cached bytes.
         fn examine(self: *Self) ?u8 {
             if (audited) self.examinations += 1;
             const offset = self.cursor;
@@ -348,6 +349,42 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
             // Return state constants directly. A mutable narrow-enum temporary
             // introduces per-byte spills/masking with Zig 0.16/LLVM on aarch64.
             const byte = self.examine();
+            return self.microstepByte(state, byte);
+        }
+
+        const QuoteRun = struct { work: u32, next: State };
+        // A run still charges each examined byte, including its first boundary.
+        // Stop there: probing a vector past it would change pause frontiers.
+        fn quotedRun(self: *Self, allowance: usize) QuoteRun {
+            const start = self.cursor;
+            if (start >= self.source.len) return .{ .next = self.microstep(.quoted), .work = 1 };
+            const end: u32 = @intCast(start + @min(allowance, self.source.len - start));
+            for (self.source[start..end], start..) |byte, at| {
+                if (byte == 0 or byte == '"' or byte == '\\') {
+                    const work = at - start + 1;
+                    self.cursor = @intCast(at);
+                    if (metered) self.source_frontier = @max(self.source_frontier, at + 1);
+                    if (audited) self.examinations += work;
+                    return .{ .next = self.microstepByte(.quoted, byte), .work = @intCast(work) };
+                }
+            }
+            self.cursor = end;
+            if (metered) self.source_frontier = @max(self.source_frontier, end);
+            if (audited) self.examinations += end - start;
+            return .{ .next = .quoted, .work = end - start };
+        }
+
+        pub fn advanceQuoted(self: *Self, budget: usize) struct { work: u32, failed: bool } {
+            if (!metered) @compileError("quoted runs require the metered scanner");
+            std.debug.assert(budget > 0);
+            if (enc.width != 1 or self.state != .quoted or self.terminal != .none) return .{ .work = 0, .failed = false };
+            const run = self.quotedRun(budget);
+            if (run.next != .ready) self.state = run.next;
+            // A quote moves to concatenation trivia; only a failure is ready.
+            return .{ .work = run.work, .failed = run.next == .ready };
+        }
+
+        inline fn microstepByte(self: *Self, comptime state: State, byte: ?u8) State {
             switch (state) {
                 .ready => unreachable,
                 .trivia => {
@@ -931,6 +968,31 @@ test "megabyte lexical runs resume in linear work with constant state" {
         const one = try checkPartition(source, &.{1});
         try expectEqual(one, try checkPartition(source, &.{ 0, 17, 4096, 1 }));
     }
+}
+
+test "quoted runs charge every examination and stop at the first boundary" {
+    for ([_][]const u8{
+        "\"",
+        "\"plain",
+        "\"" ++ "a" ** 64 ++ "\" + \"tail\";",
+        "\"" ++ "a" ** 17 ++ "\\\"tail\";",
+        "\"" ++ "a" ** 16 ++ "\x00tail",
+        "\"Straße 中文 😀\";",
+    }) |source| for ([_]usize{ 1, 2, 15, 16, 17, 64, std.math.maxInt(usize) }) |budget| {
+        var reference = AuditedLexer.init(source);
+        _ = reference.nextBounded(1); // Opening quote.
+        var run = reference;
+        const batch = run.advanceQuoted(budget);
+        try expect(batch.work > 0 and batch.work <= budget);
+        for (0..batch.work) |_| _ = reference.nextBounded(1);
+        try expectEqual(reference.examinations, run.examinations);
+        try expectEqual(reference.source_frontier, run.source_frontier);
+        try expectEqual(reference.cursor, run.cursor);
+        try expectEqual(reference.state, run.state);
+        try expectEqual(reference.terminal, run.terminal);
+        try expectEqual(reference.trivia, run.trivia);
+        try std.testing.expectEqualDeep(reference.next(), run.next());
+    };
 }
 
 test "metering storage and source-examination instrumentation compile out" {

@@ -293,58 +293,51 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                 .blocked => self.finish(stack, sink, .invalid_syntax, null),
             }
         }
-        fn step(self: *Self, stack: *scratch.Stack, sink: anytype) void {
-            switch (self.phase) {
+        fn step(self: *Self, stack: *scratch.Stack, sink: anytype, comptime batch: bool, allowance: u32) (if (batch) u32 else void) {
+            one_step: switch (self.phase) {
                 .preflight => {
-                    if (self.scanner.source.len > self.limits().max_source_bytes) return self.capacity(stack, sink, .source_bytes, self.limits().max_source_bytes, false);
+                    if (self.scanner.source.len > self.limits().max_source_bytes) break :one_step self.capacity(stack, sink, .source_bytes, self.limits().max_source_bytes, false);
                     self.phase = .begin;
                 },
                 .begin => {
                     self.began = true;
-                    sink.begin() catch |err| return self.failure(stack, sink, err);
+                    sink.begin() catch |err| break :one_step self.failure(stack, sink, err);
                     self.phase = .scan;
                 },
-                .scan => if (self.scanner.stepReady()) {
-                    switch (self.scanner.ready) {
-                        .problem => |p| {
-                            if (recovery_enabled and self.scanner.canRecoverHeader()) {
-                                self.beginHeaderRecovery(stack, sink, p.diagnostic);
-                            } else self.finish(stack, sink, p.outcome, p.diagnostic);
-                        },
-                        .unsupported => |u| self.finish(stack, sink, .{ .unsupported_feature = u.feature }, if (self.unsupported() == .silent) null else u.finding()),
-                        .malformed_reference => |d| self.malformedReference(stack, sink, d),
-                        .token => |t| {
-                            self.token = t;
-                            self.phase = .grammar;
-                        },
+                .scan => {
+                    if (batch) {
+                        const scan = @call(.always_inline, Scanner.advance, .{ &self.scanner, allowance });
+                        if (scan.ready) self.scanned(stack, sink);
+                        return scan.work_used;
                     }
+                    if (self.scanner.stepReady()) self.scanned(stack, sink);
                 },
                 .grammar => switch (self.token.kind) {
                     .eof => {
-                        if (stack.len != 0) return self.invalid(stack, sink, .unclosed_element, self.token.span, stack.top().name);
+                        if (stack.len != 0) break :one_step self.invalid(stack, sink, .unclosed_element, self.token.span, stack.top().name);
                         self.phase = .commit;
                     },
                     .close => {
-                        if (stack.len == 0) return self.invalid(stack, sink, .unexpected_close, self.token.span, null);
-                        if (stack.top().name.len != self.token.name.len) return self.invalid(stack, sink, .mismatched_tag, self.token.name, stack.top().name);
+                        if (stack.len == 0) break :one_step self.invalid(stack, sink, .unexpected_close, self.token.span, null);
+                        if (stack.top().name.len != self.token.name.len) break :one_step self.invalid(stack, sink, .mismatched_tag, self.token.name, stack.top().name);
                         self.compare_index = 0;
                         self.phase = .compare_open;
                     },
                     .open, .empty, .text, .comment, .cdata => {
-                        if (self.counts.nodes == self.limits().max_nodes) return self.capacity(stack, sink, .nodes, self.limits().max_nodes, false);
+                        if (self.counts.nodes == self.limits().max_nodes) break :one_step self.capacity(stack, sink, .nodes, self.limits().max_nodes, false);
                         if (self.token.kind == .open or self.token.kind == .empty) {
-                            if (stack.len == self.limits().max_nesting) return self.capacity(stack, sink, .nesting_depth, self.limits().max_nesting, false);
-                            if (self.token.kind == .open) stack.push(.{ .name = self.token.name }) catch |err| return self.failure(stack, sink, err);
+                            if (stack.len == self.limits().max_nesting) break :one_step self.capacity(stack, sink, .nesting_depth, self.limits().max_nesting, false);
+                            if (self.token.kind == .open) stack.push(.{ .name = self.token.name }) catch |err| break :one_step self.failure(stack, sink, err);
                             self.phase = .open;
                         } else self.phase = .leaf;
                     },
                     .open_head => {
-                        if (self.counts.nodes == self.limits().max_nodes) return self.capacity(stack, sink, .nodes, self.limits().max_nodes, false);
-                        if (stack.len == self.limits().max_nesting) return self.capacity(stack, sink, .nesting_depth, self.limits().max_nesting, false);
+                        if (self.counts.nodes == self.limits().max_nodes) break :one_step self.capacity(stack, sink, .nodes, self.limits().max_nodes, false);
+                        if (stack.len == self.limits().max_nesting) break :one_step self.capacity(stack, sink, .nesting_depth, self.limits().max_nesting, false);
                         self.phase = .open_head;
                     },
                     .attribute => {
-                        if (self.counts.attributes == self.limits().max_attributes) return self.capacity(stack, sink, .attributes, self.limits().max_attributes, false);
+                        if (self.counts.attributes == self.limits().max_attributes) break :one_step self.capacity(stack, sink, .attributes, self.limits().max_attributes, false);
                         self.phase = .attribute;
                     },
                     .head_end => {
@@ -352,7 +345,7 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                             sink.header(self.head.handle, @intCast(self.token.span.endOffset()));
                             self.retainThrough(sink, self.token.span.endOffset());
                         }
-                        stack.push(self.head) catch |err| return self.failure(stack, sink, err);
+                        stack.push(self.head) catch |err| break :one_step self.failure(stack, sink, err);
                         self.phase = .scan;
                     },
                     .empty_end => self.phase = .empty_close,
@@ -363,7 +356,7 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                 },
                 .compare_close => {
                     if (!nameByteEqual(self.compare_byte, @intCast(enc.unit(self.scanner.source, self.token.name.start + self.compare_index))))
-                        return self.invalid(stack, sink, .mismatched_tag, self.token.name, stack.top().name);
+                        break :one_step self.invalid(stack, sink, .mismatched_tag, self.token.name, stack.top().name);
                     self.compare_index += enc.width;
                     self.phase = if (self.compare_index == self.token.name.len) .close else .compare_open;
                 },
@@ -371,9 +364,9 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                     if (!recovery_enabled) unreachable;
                     if (self.recovery_state.cursor.candidate == 0) {
                         self.beginTypoRecovery(stack);
-                        return;
+                        break :one_step;
                     }
-                    if (!self.searchCredit(stack, sink)) return;
+                    if (!self.searchCredit(stack, sink)) break :one_step;
                     self.recovery_state.cursor.candidate -= 1;
                     if (stack.frames[self.recovery_state.cursor.candidate].name.len == self.token.name.len) {
                         self.compare_index = 0;
@@ -382,7 +375,7 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                 },
                 .recover_compare => {
                     if (!recovery_enabled) unreachable;
-                    if (!self.searchCredit(stack, sink)) return;
+                    if (!self.searchCredit(stack, sink)) break :one_step;
                     const candidate = self.recovery_state.cursor.candidate;
                     const opener = stack.frames[candidate].name;
                     if (!nameByteEqual(@intCast(enc.unit(self.scanner.source, opener.start + self.compare_index)), @intCast(enc.unit(self.scanner.source, self.token.name.start + self.compare_index)))) {
@@ -404,11 +397,11 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                     if (!recovery_enabled) unreachable;
                     // open_head already enforced element/depth limits and counted
                     // this element. Only its explicit '>' adds a nesting frame.
-                    stack.push(self.head) catch |err| return self.failure(stack, sink, err);
+                    stack.push(self.head) catch |err| break :one_step self.failure(stack, sink, err);
                     self.phase = .scan;
                 },
                 .open => {
-                    const handle = if (self.writing()) sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err) else 0;
+                    const handle = if (self.writing()) sink.open(self.token.span, self.token.name) catch |err| break :one_step self.failure(stack, sink, err) else 0;
                     if (self.retaining() and self.token.kind == .open) sink.unfinished(handle);
                     self.retainThrough(sink, self.token.span.endOffset());
                     if (self.token.kind == .open) stack.top().handle = handle;
@@ -424,19 +417,19 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                         .cdata => .cdata,
                         else => unreachable,
                     };
-                    if (self.writing()) sink.leaf(kind, self.token.span) catch |err| return self.failure(stack, sink, err);
+                    if (self.writing()) sink.leaf(kind, self.token.span) catch |err| break :one_step self.failure(stack, sink, err);
                     self.retainThrough(sink, self.token.span.endOffset());
                     self.counts.nodes += 1;
                     self.phase = .scan;
                 },
                 .attribute => {
-                    if (self.writing()) sink.attribute(self.head.handle, self.token.name, self.token.span) catch |err| return self.failure(stack, sink, err);
+                    if (self.writing()) sink.attribute(self.head.handle, self.token.name, self.token.span) catch |err| break :one_step self.failure(stack, sink, err);
                     self.retainThrough(sink, self.token.span.endOffset());
                     self.counts.attributes += 1;
                     self.phase = .scan;
                 },
                 .open_head => {
-                    const handle = if (self.writing()) sink.open(self.token.span, self.token.name) catch |err| return self.failure(stack, sink, err) else 0;
+                    const handle = if (self.writing()) sink.open(self.token.span, self.token.name) catch |err| break :one_step self.failure(stack, sink, err) else 0;
                     if (self.retaining()) sink.unfinished(handle);
                     self.retainThrough(sink, self.token.span.endOffset());
                     self.head = .{ .name = self.token.name, .handle = handle };
@@ -446,26 +439,42 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                     self.phase = .scan;
                 },
                 .empty_close => {
-                    if (self.writing()) sink.close(self.head.handle, @as(u32, @intCast(self.token.span.endOffset()))) catch |err| return self.failure(stack, sink, err);
+                    if (self.writing()) sink.close(self.head.handle, @as(u32, @intCast(self.token.span.endOffset()))) catch |err| break :one_step self.failure(stack, sink, err);
                     self.retainThrough(sink, self.token.span.endOffset());
                     self.phase = .scan;
                 },
                 .close => {
-                    if (self.writing()) sink.close(stack.top().handle, @as(u32, @intCast(self.token.span.endOffset()))) catch |err| return self.failure(stack, sink, err);
+                    if (self.writing()) sink.close(stack.top().handle, @as(u32, @intCast(self.token.span.endOffset()))) catch |err| break :one_step self.failure(stack, sink, err);
                     self.retainThrough(sink, self.token.span.endOffset());
                     stack.len -= 1;
                     self.phase = .scan;
                 },
                 .commit => {
-                    if (!self.writing()) return self.finish(stack, sink, .invalid_syntax, null);
-                    sink.commit() catch |err| return self.failure(stack, sink, err);
+                    if (!self.writing()) break :one_step self.finish(stack, sink, .invalid_syntax, null);
+                    sink.commit() catch |err| break :one_step self.failure(stack, sink, err);
                     self.finish(stack, sink, .success, null);
                 },
             }
+            return if (batch) 1 else {};
         }
         const Polling = support.execution.CancellationPolling(cancellable, if (fixed) |p| p.cancellation_interval else null);
         fn cancellationInterval(self: *const Self) u32 {
             return if (fixed) |p| p.cancellation_interval else self.settings.cancellation_interval;
+        }
+        inline fn scanned(self: *Self, stack: *scratch.Stack, sink: anytype) void {
+            switch (self.scanner.ready) {
+                .problem => |p| {
+                    if (recovery_enabled and self.scanner.canRecoverHeader()) {
+                        self.beginHeaderRecovery(stack, sink, p.diagnostic);
+                    } else self.finish(stack, sink, p.outcome, p.diagnostic);
+                },
+                .unsupported => |u| self.finish(stack, sink, .{ .unsupported_feature = u.feature }, if (self.unsupported() == .silent) null else u.finding()),
+                .malformed_reference => |d| self.malformedReference(stack, sink, d),
+                .token => |t| {
+                    self.token = t;
+                    self.phase = .grammar;
+                },
+            }
         }
         fn requested(self: *const Self) bool {
             return if (cancellable) (if (self.hook) |h| h.requested() else false) else false;
@@ -479,12 +488,21 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
             while (self.terminal == null) {
                 if (polling.due(self.cancellationInterval()) and self.requested()) return self.cancel(stack, sink);
                 polling.spend(1);
-                self.step(stack, sink);
+                self.step(stack, sink, false, 1);
             }
             return self.terminal.?;
         }
-        pub fn advance(self: *Self, stack: *scratch.Stack, sink: anytype, budget: u32) result.Progress {
+        pub inline fn advance(self: *Self, stack: *scratch.Stack, sink: anytype, budget: u32) result.Progress {
+            @setEvalBranchQuota(10_000); // Specializes the bounded grammar/scanner path.
             if (!metered) @compileError("metering is disabled; use run()");
+            // Preserve the single-step path for tiny budgets, per-step polling
+            // and the already-batched block scanner. Only scalar scanning can
+            // amortize dispatch across a run without changing its credit unit.
+            if (budget == 1) return @call(.always_inline, Self.advanceWith, .{ self, false, stack, sink, @as(u32, 1) });
+            if (backend == .block or (cancellable and self.cancellationInterval() == 1)) return self.advanceWith(false, stack, sink, budget);
+            return self.advanceWith(true, stack, sink, budget);
+        }
+        fn advanceWith(self: *Self, comptime batch: bool, stack: *scratch.Stack, sink: anytype, budget: u32) result.Progress {
             var used: u32 = 0;
             var polling: Polling = .{};
             while (self.terminal == null) {
@@ -493,9 +511,17 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
                     break;
                 }
                 if (used == budget) break;
-                used += 1;
-                polling.spend(1);
-                self.step(stack, sink);
+                // A scan run may reach neither past the caller's budget nor
+                // past the next cancellation poll; grammar still costs one.
+                const allowance = if (cancellable) @min(budget - used, polling.allowance()) else budget - used;
+                const work = if (batch) @call(.always_inline, Self.step, .{ self, stack, sink, true, allowance }) else one: {
+                    if (comptime backend == .block and !cancellable) {
+                        @call(.always_inline, Self.step, .{ self, stack, sink, false, @as(u32, 1) });
+                    } else self.step(stack, sink, false, 1);
+                    break :one @as(u32, 1);
+                };
+                used += work;
+                polling.spend(work);
             }
             return .{ .outcome = if (self.terminal) |r| r.outcome else null, .work_used = used, .source_frontier = self.scanner.frontier * enc.width, .counts = self.counts, .accepted_deviations = if (deviations_enabled) self.deviations else 0, .warnings = if (warnings_enabled) self.warnings else 0, .syntax_errors = self.syntaxErrors() };
         }

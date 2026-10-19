@@ -256,6 +256,46 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime backend: p
             return true;
         }
 
+        // Compact result; the token/finding stays in scanner-owned storage.
+        const Advance = packed struct(u64) { work_used: u32, ready: bool, padding: u31 = 0 };
+        pub fn advance(self: *Self, allowance: u32) Advance {
+            if (!metered) @compileError("bounded scanning requires metering");
+            var remaining = allowance;
+            while (remaining != 0) {
+                remaining -= 1;
+                const ready = if (backend == .scalar and !self.done) blk: {
+                    const complete = @call(.always_inline, Self.stepByte, .{ self, true, &remaining });
+                    if (complete) self.ready = enc.scaled(ScanResult, self.ready);
+                    break :blk complete;
+                } else self.stepReady();
+                if (ready) return .{ .ready = true, .work_used = allowance - remaining };
+            }
+            return .{ .ready = false, .work_used = allowance };
+        }
+
+        // No speculative lookahead: the first boundary is examined and charged,
+        // exactly as stepReady would do. Keep the run out of dense-token loops.
+        noinline fn textRun(self: *Self, allowance: u32) Advance {
+            const start = self.offset;
+            const end = start + @min(allowance, @as(u32, @intCast(self.source.len)) - start);
+            for (self.source[start..end], start..) |byte, at| {
+                if (byte == '<' or byte == '&' or (byte < 0x20 and !whitespace(byte))) {
+                    self.offset = @intCast(at);
+                    if (metered) self.frontier = @max(self.frontier, self.offset + 1);
+                    const used = @as(u32, @intCast(at)) - start + 1;
+                    if (byte == '<') return .{ .ready = self.token(.text), .work_used = used };
+                    if (byte != '&') return .{ .ready = self.problem(.invalid_byte, self.offset, .{ .byte = byte }), .work_used = used };
+                    self.beginReference(.text);
+                    return .{ .ready = false, .work_used = used };
+                }
+            }
+            self.offset = end;
+            if (metered) self.frontier = @max(self.frontier, end);
+            const used = end - start;
+            if (used == allowance) return .{ .ready = false, .work_used = used };
+            return .{ .ready = self.stepReady(), .work_used = used + 1 };
+        }
+
         /// Readiness only: the token/finding stays in scanner-owned storage.
         pub fn stepReady(self: *Self) bool {
             if (self.done) {
@@ -289,11 +329,11 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime backend: p
         }
 
         fn stepNative(self: *Self) bool {
-            const ready = self.stepByte();
+            const ready = self.stepByte(false, {});
             if (ready) self.ready = enc.scaled(ScanResult, self.ready);
             return ready;
         }
-        fn stepByte(self: *Self) bool {
+        fn stepByte(self: *Self, comptime batch: bool, remaining: if (batch) *u32 else void) bool {
             if (actual == .utf8) {
                 if (self.state == .prefix) {
                     if (self.marker_index < 4 and self.marker_index < self.source.len) {
@@ -356,7 +396,16 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime backend: p
             // states. Keep one-byte stepping, including boundary lookahead.
             if (self.state == .text) {
                 if (byte == '<') return self.token(.text);
-                if (byte == '&') self.beginReference(.text) else self.offset += 1;
+                if (byte == '&') self.beginReference(.text) else {
+                    self.offset += 1;
+                    if (comptime batch and enc.width == 1) {
+                        if (remaining.* >= 16) {
+                            const run = self.textRun(remaining.*);
+                            remaining.* -= run.work_used;
+                            return run.ready;
+                        }
+                    }
+                }
                 return false;
             }
             switch (self.state) {

@@ -508,8 +508,18 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
 
         /// Private bounded driver. A credit buys a lexical examination, one
         /// grammar transition, or one normal event attempt; never two classes.
-        pub fn advance(self: *Self, budget: usize) Progress {
+        pub inline fn advance(self: *Self, budget: usize) Progress {
             if (!metered) @compileError("advance requires metering; use runToCompletion");
+            // Probe once per resume, not once per token/grammar transition.
+            // One-credit calls compile this out. Cancellable calls retain the
+            // original driver's exact polling sites.
+            if (comptime !cancellable and @hasDecl(Scanner, "advanceQuoted")) {
+                if (budget >= 16 and self.terminal == null and self.work.phase == .scan) {
+                    const run = self.tokens.advanceQuoted(budget);
+                    if (run.failed) _ = self.fail(self.tokens.failureDiagnostic());
+                    return self.progress(run.work + self.drive(true, budget - run.work));
+                }
+            }
             return self.progress(self.drive(true, budget));
         }
 
