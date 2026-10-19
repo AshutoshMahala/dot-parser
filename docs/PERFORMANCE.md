@@ -80,8 +80,8 @@ Consumed, stripped Wasm32 ReleaseSmall probes, without console rendering:
 | Unicode-folded equality | 10,091 | present |
 | Non-comparison predicate, folding capability enabled but unused | 2,833 | absent |
 
-Reproduce with `zig build string-size-probes` followed by
-`node tools/check_string_sizes.mjs`. The script executes the exports and checks
+Reproduce with `zig build check-wasm` (requires Node; also included in
+`zig build check`). The script executes the exports and checks
 table retention, not just file size. This change does not modify DOT, markup or
 shared parsing/validation code. Their existing throughput tables below are
 unchanged; no new DOT/markup regression measurement is claimed here.

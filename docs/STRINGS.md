@@ -253,10 +253,11 @@ only caller-selected bags or consumer callbacks may allocate. There is no string
 tree, retained processor per value, normalization buffer or source copy.
 
 Run `zig build test-string`, `zig build bench-string -Doptimize=ReleaseFast`, and
-`zig build string-size-probes`. The last command installs consumed, stripped
-Wasm probes for exact, folding and non-comparison builds, so size measurements
-do not accidentally measure an unused module. `node tools/check_string_sizes.mjs`
-executes their exports and verifies folding-table exclusion. DOT/markup hot paths are not
+`zig build check-wasm`. The last command builds consumed, stripped Wasm probes
+for exact, folding and non-comparison builds and uses Node to execute their
+exports and verify folding-table exclusion. `zig build check` includes these
+Wasm checks alongside the repository's other correctness/build checks, without
+running benchmarks. DOT/markup hot paths are not
 modified by this standalone module. Host dispatch, raw-to-logical adapters,
 concatenation/source mapping and shared-budget integration remain later work.
 See the [initial performance measurements](PERFORMANCE.md#standalone-strings-unreleased).

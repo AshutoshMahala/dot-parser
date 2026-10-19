@@ -66,6 +66,41 @@ pub fn build(b: *std.Build) void {
     const run_integration_tests = b.addRunArtifact(integration_tests);
 
     const test_step = b.step("test", "Run unit and public integration tests");
+    const check_tools = b.step("check-tools", "Test and compile the offline Zig Unicode generators");
+    const unicode_data = b.option([]const u8, "unicode-data", "Local Unicode 17.0.0 UCD directory for read-only regeneration checks");
+    const check_unicode = b.step("check-unicode", "Compare regenerated tables with checked-in files (-Dunicode-data=UCD)");
+    for ([_]struct { name: []const u8, source: []const u8, inputs: []const []const u8, output: []const u8 }{
+        .{ .name = "generate-console-widths", .source = "tools/generate_console_widths.zig", .inputs = &.{ "EastAsianWidth.txt", "extracted/DerivedGeneralCategory.txt" }, .output = "src/common/console_widths.zig" },
+        .{ .name = "generate-string-casefold", .source = "tools/generate_string_casefold.zig", .inputs = &.{"CaseFolding.txt"}, .output = "src/string/casefold.zig" },
+    }) |generator| {
+        const tool = b.addExecutable(.{ .name = generator.name, .root_module = b.createModule(.{
+            .root_source_file = b.path(generator.source),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }) });
+        check_tools.dependOn(&tool.step);
+        const tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path(generator.source),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }) }));
+        check_tools.dependOn(&tests.step);
+        test_step.dependOn(&tests.step);
+        const generate = b.addRunArtifact(tool);
+        if (b.args) |args| generate.addArgs(args);
+        generate.has_side_effects = true; // Explicit stdout operation, never a cached no-op.
+        b.step(generator.name, "Generate pinned Unicode Zig source on stdout; pass local input paths after --")
+            .dependOn(&generate.step);
+        if (unicode_data) |directory| {
+            const verify = b.addRunArtifact(tool);
+            for (generator.inputs) |input| verify.addFileArg(.{ .cwd_relative = b.pathJoin(&.{ directory, input }) });
+            if (generator.inputs.len == 2) verify.addFileArg(b.path("src/string/UNICODE_LICENSE.txt"));
+            verify.addArg("--check");
+            verify.addFileArg(b.path(generator.output));
+            check_unicode.dependOn(&verify.step);
+        }
+    }
+    if (unicode_data == null) check_unicode.dependOn(&b.addFail("check-unicode requires -Dunicode-data=/path/to/Unicode-17.0.0/ucd; no data is downloaded by the build").step);
     const string_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("tests/string.zig"),
         .target = target,
@@ -445,6 +480,10 @@ pub fn build(b: *std.Build) void {
         .dependOn(&b.addRunArtifact(string_bench).step);
     check_benches.dependOn(&string_bench.step);
     const string_sizes = b.step("string-size-probes", "Install consumed exact/folding/predicate Wasm size probes");
+    const wasm_check = b.addSystemCommand(&.{"node"});
+    wasm_check.addFileArg(b.path("tools/check_string_sizes.mjs"));
+    const check_wasm = b.step("check-wasm", "Execute consumed Wasm exports and check optional Unicode table retention (requires Node)");
+    check_wasm.dependOn(&wasm_check.step);
     for ([_][]const u8{ "exact", "folding", "predicate" }) |variant| {
         const wasm = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
         const shared = b.createModule(.{ .root_source_file = b.path("src/support.zig"), .target = wasm, .optimize = .ReleaseSmall });
@@ -462,6 +501,7 @@ pub fn build(b: *std.Build) void {
         probe.entry = .disabled;
         probe.rdynamic = true;
         string_sizes.dependOn(&b.addInstallArtifact(probe, .{}).step);
+        wasm_check.addArtifactArg(probe);
     }
     const composition_bench = b.addExecutable(.{
         .name = "composition_bench",
@@ -481,6 +521,9 @@ pub fn build(b: *std.Build) void {
     }
 
     const freestanding = b.step("check-freestanding", "Compile consumed session and policy profiles for RISC-V32 and Wasm32");
+    const check = b.step("check", "Run tests, examples, tool/benchmark/portable checks and Wasm execution (requires Node)");
+    for ([_]*std.Build.Step{ test_step, examples_step, check_tools, check_benches, freestanding, check_wasm }) |step| check.dependOn(step);
+    if (unicode_data != null) check.dependOn(check_unicode);
     for ([_]std.Target.Cpu.Arch{ .riscv32, .wasm32 }) |arch| {
         const portable_target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .freestanding });
         const portable_support = b.createModule(.{

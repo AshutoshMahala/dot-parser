@@ -266,11 +266,49 @@ and runs them all, and installs each one in `zig-out/bin/`.
 ## Building and testing
 
 ```sh
-zig build test                 # all tests
+zig build check                # full checks; Zig 0.16.0 and Node on PATH
+zig build test                 # Zig tests only; no Node required
 zig build examples             # build and run every example
 zig build check-freestanding   # compile for RISC-V32 and Wasm32
+zig build check-tools          # compile and test the Zig Unicode generators
+zig build check-wasm           # execute Wasm probes with Node
 zig build bench -Doptimize=ReleaseFast   # main benchmark
 ```
+
+`check` runs unit/public-API tests (including expected compile failures),
+examples, generator checks, benchmark compilation, freestanding compilation and
+Wasm export/table-retention checks. It does not run performance benchmarks,
+update baselines or download data. Node is needed only to execute Wasm; Python
+and npm packages are not required. Ordinary library builds still need only Zig.
+
+### Regenerating Unicode tables
+
+Both generators are Zig programs reading local, SHA-256-pinned Unicode 17.0.0
+files. Obtain `EastAsianWidth.txt`, `extracted/DerivedGeneralCategory.txt` and
+`CaseFolding.txt` from the [official Unicode 17.0.0 UCD](https://www.unicode.org/Public/17.0.0/ucd/),
+preserving those paths under a local UCD directory. The license is already in
+`src/string/UNICODE_LICENSE.txt` and is checked too. No build fetches these files.
+
+To compare freshly generated output with the checked-in tables without writing:
+
+```sh
+zig build check-unicode -Dunicode-data=/path/to/ucd
+# Include the same comparison in the full check:
+zig build check -Dunicode-data=/path/to/ucd
+```
+
+Without `-Dunicode-data`, `check` runs generator unit tests and compiles both
+tools, but does not claim to regenerate tables against the full upstream data.
+Each generator verifies compression across all Unicode code points before
+emitting formatted Zig. To inspect regenerated source on stdout:
+
+```sh
+zig build generate-console-widths -- /path/to/ucd/EastAsianWidth.txt /path/to/ucd/extracted/DerivedGeneralCategory.txt src/string/UNICODE_LICENSE.txt
+zig build generate-string-casefold -- /path/to/ucd/CaseFolding.txt
+```
+
+Generation is a maintainer operation, not part of normal compilation. The
+generators never overwrite repository files themselves.
 
 ## License
 
