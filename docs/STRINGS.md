@@ -110,9 +110,24 @@ and the shared comparator are always UTF-8, independent of source encoding.
 ### Comparison
 
 - `case_sensitive`: scalar-value equality, with no folding or normalization.
+- `ascii_case_insensitive`: fold only ASCII `A`–`Z` to `a`–`z`, leaving every
+  non-ASCII scalar unchanged. Locale-independent and available without
+  `unicode_case_folding`. This applies to UTF-8/16/32 contents too; it does not
+  select ASCII input encoding.
 - `case_insensitive`: Unicode **17.0.0 full default case folding** (C + F mappings,
   excluding Turkic T and simple S), including expansions such as `ß` → `ss`.
   This is neither ASCII-only matching nor locale-tailored collation.
+
+`case_sensitive` remains the default. All three choices work as the baseline,
+as per-check overrides for `equals`/`one_of`, and through the shared comparison
+helpers used by custom validators, including sessions. With runtime policies
+enabled, ASCII comparison may be selected without enabling Unicode folding.
+
+For example, ASCII comparison equates `TRUE` and `true`, but not `ellipſe` and
+`ellipse`, `É` and `é`, or `Straße` and `STRASSE`. Punctuation is not folded.
+Use it for application rules requiring ASCII-insensitive words, not as a blanket
+Graphviz attribute policy: DOT attribute names and many values are case-sensitive.
+This option does not change existing DOT keyword or markup vocabulary matching.
 
 The [pinned Unicode data](https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt)
 does not imply normalization: `é` and `e` followed by a combining acute accent
@@ -120,10 +135,12 @@ remain different. Folded scalars are streamed through bounded three-scalar
 buffers, not copied into a new string. Built-in failures highlight the original
 whole value; folding never changes its stored span or source.
 
-Exact-only profiles do not reference folding tables or use folding cursors.
-Requesting folding without `unicode_case_folding = true` is a configuration
-error. A runtime profile allowed to select folding necessarily retains its code
-and data even on exact calls. Non-comparison validators need neither a case field
+Exact/ASCII-only profiles do not reference Unicode folding tables or use Unicode
+expansion buffers. Requesting `case_insensitive` without
+`unicode_case_folding = true` is a configuration error. Fixed profiles with no
+enabled ASCII-insensitive comparison also exclude its comparison paths. A
+runtime profile allowed to select Unicode folding necessarily retains its code
+and data even on exact/ASCII calls. Non-comparison validators need neither a case field
 nor a folding capability. The generated table and Unicode license live in
 `src/string/`; its generator verifies the compressed table against the pinned
 input across the full code-point range.
@@ -394,23 +411,36 @@ length or membership-list length.
 Source encoding is checked before the enabled rules; comparisons may scan
 it again. Uncancellable UTF-8 uses the standard validator's ASCII fast path;
 malformed input then takes a locating pass for diagnostic runs. Exact UTF-8/ASCII
-comparison can use byte equality after validation; cancellable comparisons retain
-cooperative polling. Membership is a short-circuit linear search through candidates, not a
+comparison can use byte equality after validation; ASCII-insensitive comparison
+can use bytewise ASCII folding. Native readers fold only the decoded ASCII
+scalars. Metered ASCII runs can batch equivalent pending comparisons, preserving
+credits and poll boundaries; tails, mismatches and non-ASCII use scalar steps.
+Cancellable comparisons retain cooperative polling. Membership is a short-circuit
+linear search through candidates, not a
 compiled hash index. Custom settings, code and sink behavior determine their own
 additional costs. The shared comparator also verifies its UTF-8 expected argument,
-equally for built-ins and custom code; do not assume dynamic expected patterns
-are free to prepare or scan. No heap allocations occur in the processor or comparators;
+equally for built-ins and custom code. An unmetered, uncancellable exact byte match
+can reuse the input's encoding proof instead of scanning identical bytes again;
+a mismatch still checks the entire expected argument, including malformed suffixes.
+Metered/cancellable checks retain their original expected-scan credits and polling.
+Do not assume dynamic expected patterns are free to prepare or scan.
+No heap allocations occur in the processor or comparators;
 only caller-selected bags or consumer callbacks may allocate. There is no string
 tree, retained processor per value, normalization buffer or source copy.
+
+For a single before/after report, run `zig build perf-string -- --baseline HEAD`.
+It covers native comparisons and sessions in ReleaseFast/ReleaseSafe and saves
+timings, ranges, sizes and work counters; see [report options](PERFORMANCE.md#one-command-string-comparison).
 
 Run `zig build test-string`, `zig build bench-string -Doptimize=ReleaseFast`,
 `zig build bench-string-sessions -Doptimize=ReleaseFast`, and `zig build check-wasm`.
 `zig build bench-string-passthrough -Doptimize=ReleaseFast` compares real DOT
 quote scanning with simulated handoff to string checks; it is not host integration.
 The session benchmark reports time, credits, hook calls and state size for
-fixed/runtime policies and multiple budgets/intervals. The last command builds consumed, stripped Wasm probes
-for exact, folding and non-comparison builds and uses Node to execute their
-exports and verify folding-table exclusion. `zig build check` includes these
+fixed/runtime policies and multiple budgets/intervals. The last command builds
+consumed, stripped Wasm probes for exact, ASCII-insensitive, Unicode folding and
+non-comparison builds and uses Node to execute their exports and verify
+folding-table exclusion. `zig build check` includes these
 Wasm checks alongside the repository's other correctness/build checks, without
 running benchmarks. DOT/markup hot paths are not
 modified by this standalone module. Host dispatch, raw-to-logical adapters,

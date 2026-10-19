@@ -266,6 +266,53 @@ test "invalid custom comparison suffix and changing operands cannot hide across 
     }
 }
 
+test "exact byte equality reuses only a complete input encoding proof" {
+    // Deliberately omit validateSettings: the comparison service must validate
+    // a custom validator's dynamically supplied pattern itself.
+    const Dynamic = struct {
+        pub const Settings = []const u8;
+        pub const defaults: Settings = "";
+        pub const uses_comparison = true;
+        pub const State = s.validators.Equals.State;
+        pub const step = s.validators.Equals.step;
+        pub const batch = s.validators.Equals.batch;
+        pub const check = s.validators.Equals.check;
+    };
+    const P = s.Profile(.{ .custom = Dynamic, .runtime_policy = true, .policy = .{
+        .validation = .{ .custom = .err },
+    } });
+    const cases = [_]struct { input: []const u8, expected: []const u8, invalid_pattern: bool = false, valid: bool = false }{
+        .{ .input = "", .expected = "", .valid = true },
+        .{ .input = "a\x00é中文😀", .expected = "a\x00é中文😀", .valid = true },
+        .{ .input = "a" ** 128, .expected = "a" ** 128, .valid = true },
+        .{ .input = "a", .expected = "b\xff", .invalid_pattern = true },
+        .{ .input = "a" ** 128, .expected = "a" ** 127 ++ "\xff", .invalid_pattern = true },
+        .{ .input = "a", .expected = "a\xf0\x9f", .invalid_pattern = true },
+        .{ .input = "Seattle", .expected = "seattle" },
+        .{ .input = "a" ** 128, .expected = "a" ** 127 ++ "b" },
+        .{ .input = "a", .expected = "a\x00" },
+        .{ .input = "\xff", .expected = "\xff" },
+    };
+    for (cases) |case| {
+        const input: s.Fragment = .{ .bytes = case.input, .origin = 71 };
+        var fast_bag: P.FixedDiagnosticBag(4) = .{};
+        const fast = try P.parseAndValidate(input, fast_bag.sink(), .{ .policy = .{ .custom = case.expected } });
+        try t.expectEqual(case.valid, fast.valid());
+        try t.expectEqual(case.invalid_pattern, fast.completion == .invalid_validator);
+        for ([_]u32{ 1, 16, 64, 4096 }) |budget| {
+            var bag: P.FixedDiagnosticBag(4) = .{};
+            var session = try P.Session.init(input, bag.sink(), .{ .policy = .{
+                .custom = case.expected,
+                .execution = .{ .metering = true },
+            } });
+            defer session.deinit();
+            while ((try session.advance(budget)).outcome == null) {}
+            try t.expectEqualDeep(fast, session.result().?);
+            try t.expectEqualSlices(P.Diagnostic, fast_bag.items(), bag.items());
+        }
+    }
+}
+
 test "seeded arbitrary inputs have identical fast and stepped results and diagnostics" {
     const P = s.Profile(.{ .runtime_policy = true, .source_encodings = &.{ .ascii, .utf8, .utf16, .utf32 }, .unicode_case_folding = true, .policy = .{
         .comparison = .case_insensitive,
@@ -277,11 +324,12 @@ test "seeded arbitrary inputs have identical fast and stepped results and diagno
         random.random().bytes(&bytes);
         const length = random.random().uintLessThan(usize, bytes.len + 1);
         const actual = random.random().enumValue(s.ActualEncoding);
+        const comparison = random.random().enumValue(s.Comparison);
         var fast_bag: P.FixedDiagnosticBag(66) = .{};
         var slow_bag: P.FixedDiagnosticBag(66) = .{};
         const fragment = s.Fragment{ .bytes = bytes[0..length], .origin = 13 };
-        const expected = try P.parseAndValidate(fragment, fast_bag.sink(), .{ .encoding = actual });
-        var session = try P.Session.init(fragment, slow_bag.sink(), .{ .encoding = actual, .policy = .{ .execution = .{ .metering = true } } });
+        const expected = try P.parseAndValidate(fragment, fast_bag.sink(), .{ .encoding = actual, .policy = .{ .comparison = comparison } });
+        var session = try P.Session.init(fragment, slow_bag.sink(), .{ .encoding = actual, .policy = .{ .comparison = comparison, .execution = .{ .metering = true } } });
         defer session.deinit();
         var total: u32 = 0;
         while (true) {
@@ -365,12 +413,14 @@ test "batched builtin and custom checks match scalar progress at every pause" {
             3 => if (len >= 4) {
                 @memcpy(source[len - 4 ..][0..4], "ßß");
             },
-            else => {},
+            else => for (source[0..len], 0..) |*byte, i| {
+                if (i % 2 == 0) byte.* = 'A';
+            },
         };
         const actual = ([_]s.ActualEncoding{ .utf8, .ascii, .utf16le, .utf16be, .utf32le, .utf32be, .utf8, .utf8 })[trial % 8];
         const values = [_][]const u8{ "b" ** 64, pattern[0..len] };
         const policy: P.Policy = .{
-            .comparison = if (trial % 7 == 0) .case_insensitive else .case_sensitive,
+            .comparison = ([_]s.Comparison{ .case_sensitive, .case_insensitive, .ascii_case_insensitive })[trial % 3],
             .on_error = if (trial % 9 == 0) .fail_fast else .collect,
             .validation = .{
                 .equals = .{ .expected = pattern[0..len], .severity = .warning },
@@ -421,28 +471,31 @@ test "batching preserves cancellation at exact credit boundaries in every phase"
             .custom = .err,
         },
     } });
-    for ([_]u32{ 1, 2, 15, 16, 17, 31, 64, 65 }) |interval| {
-        for (1..50) |stop_at| {
-            var hook: Hook = .{ .stop_at = @intCast(stop_at) };
-            var reference = try P.Session.init(.{ .bytes = "a" ** 80, .origin = 0 }, P.Sink.discard, .{});
-            defer reference.deinit();
-            const allowed = interval * @as(u32, @intCast(stop_at - 1));
-            const expected_progress = try reference.advance(allowed);
-            const expected = reference.result() orelse reference.cancel();
-            var session = try P.Session.init(.{ .bytes = "a" ** 80, .origin = 0 }, P.Sink.discard, .{
-                .policy = .{ .execution = .{ .cancellation = true, .cancellation_interval = interval } },
-                .cancellation = .{ .context = &hook, .is_requested = Hook.poll },
-            });
-            defer session.deinit();
-            const progress = try session.advance(10_000);
-            try t.expectEqual(expected_progress.work_used, progress.work_used);
-            try t.expectEqual(expected_progress.source_frontier, progress.source_frontier);
-            try t.expectEqual(expected_progress.stage, progress.stage);
-            try t.expectEqualDeep(expected, session.result().?);
-            const calls = hook.calls;
-            _ = try session.advance(0);
-            _ = session.run();
-            try t.expectEqual(calls, hook.calls);
+    for ([_]s.Comparison{ .case_sensitive, .ascii_case_insensitive }) |comparison| {
+        const input = if (comparison == .ascii_case_insensitive) "A" ** 80 else "a" ** 80;
+        for ([_]u32{ 1, 2, 15, 16, 17, 31, 64, 65 }) |interval| {
+            for (1..50) |stop_at| {
+                var hook: Hook = .{ .stop_at = @intCast(stop_at) };
+                var reference = try P.Session.init(.{ .bytes = input, .origin = 0 }, P.Sink.discard, .{ .policy = .{ .comparison = comparison } });
+                defer reference.deinit();
+                const allowed = interval * @as(u32, @intCast(stop_at - 1));
+                const expected_progress = try reference.advance(allowed);
+                const expected = reference.result() orelse reference.cancel();
+                var session = try P.Session.init(.{ .bytes = input, .origin = 0 }, P.Sink.discard, .{
+                    .policy = .{ .comparison = comparison, .execution = .{ .cancellation = true, .cancellation_interval = interval } },
+                    .cancellation = .{ .context = &hook, .is_requested = Hook.poll },
+                });
+                defer session.deinit();
+                const progress = try session.advance(10_000);
+                try t.expectEqual(expected_progress.work_used, progress.work_used);
+                try t.expectEqual(expected_progress.source_frontier, progress.source_frontier);
+                try t.expectEqual(expected_progress.stage, progress.stage);
+                try t.expectEqualDeep(expected, session.result().?);
+                const calls = hook.calls;
+                _ = try session.advance(0);
+                _ = session.run();
+                try t.expectEqual(calls, hook.calls);
+            }
         }
     }
 }

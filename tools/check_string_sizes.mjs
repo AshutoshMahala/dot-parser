@@ -3,10 +3,10 @@
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 const paths = process.argv.slice(2);
-assert.equal(paths.length, 3, 'expected exact, folding and predicate Wasm artifact paths; use zig build check-wasm');
+assert.equal(paths.length, 4, 'expected exact, ASCII, folding and predicate Wasm artifact paths; use zig build check-wasm');
 // First generated Range: A..Z, delta +32, stride 1 (little-endian Wasm data).
 const signature = Buffer.from('410000005a0000002000000001000000', 'hex');
-for (const [index, variant] of ['exact', 'folding', 'predicate'].entries()) {
+for (const [index, variant] of ['exact', 'ascii', 'folding', 'predicate'].entries()) {
   const bytes = readFileSync(paths[index]);
   assert.equal(bytes.includes(signature), variant === 'folding', `${variant}: folding table retention`);
   const { instance } = await WebAssembly.instantiate(bytes);
@@ -16,6 +16,7 @@ for (const [index, variant] of ['exact', 'folding', 'predicate'].entries()) {
   for (const [text, expected] of [
     ['Seattle', 0],
     ['SEATTLE', variant === 'exact' ? 1 : 0],
+    ['ſeattle', variant === 'folding' || variant === 'predicate' ? 0 : 1],
     ['', 1],
     [new Uint8Array([255]), 1],
   ]) {

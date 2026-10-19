@@ -45,7 +45,8 @@ Decision status and delivery status remain separate. Preserve question IDs and
 settled rationale; the historical reconciliation log records old checkpoints,
 not the current backlog. Current user contracts are in the public guides;
 unfinished markup detail remains in [MARKUP.md](MARKUP.md) and
-[PROCESSOR_CONTRACT.md](PROCESSOR_CONTRACT.md).
+[PROCESSOR_CONTRACT.md](PROCESSOR_CONTRACT.md), with the logical-value interface
+in [STRING_INTEGRATION.md](STRING_INTEGRATION.md).
 
 ## Decided
 
@@ -954,9 +955,17 @@ tables; runtime requests for excluded folding fail policy verification. Built-in
 case overrides apply only to comparison-based rules; custom comparison participation
 is explicit. See [standalone strings](../STRINGS.md) for the actual API and costs.
 
+**ASCII comparison added 2026-10-19 (Unreleased).** `.ascii_case_insensitive`
+folds only `A`–`Z` across compiled source encodings, without Unicode tables.
+It is available in fixed/runtime policies, per-check overrides and the shared
+custom-validator helpers, including metered/cancellable sessions. Exact remains
+the default; `.case_insensitive` retains its full Unicode meaning. Hosts do not
+automatically change their existing matching rules or enable string processing.
+
 Host integration remains open: passthrough by default, explicit processing,
-raw-to-logical adapters, source maps, mixed concatenations, attribute routing and
-override precedence. Mandatory host quote/escape/reference/boundary checks stay
+implementation of logical-value adapters and source mapping, mixed
+concatenations, attribute routing and override precedence. Mandatory host
+quote/escape/reference/boundary checks stay
 with DOT/markup. Standalone resumable string validation is implemented through
 the same `State`/`step` contract for built-ins and custom validators, with optional
 equivalent pending-step batching that preserves credits and cancellation; shared-budget
@@ -964,6 +973,25 @@ composition remains unimplemented. Arbitrary custom or regex calls cannot acquir
 bounded-work guarantees merely by being compiled in; active synchronous-only
 validators are rejected under metering. No bundled regex engine is implied.
 See [remaining integration](PROCESSOR_CONTRACT.md#standalone-strings-and-remaining-host-integration).
+
+**Logical-value interface direction agreed 2026-10-19; not implemented.**
+Keep the shared `State`/`step` validator contract, with a bounded logical cursor
+and an optional borrowed contiguous fast path instead of assuming every value
+has decoded `.bytes`. Each ready scalar carries adapter-produced original-source
+location information. Long references and concatenation glue can yield pending
+progress; no arbitrary scan is hidden inside one credit. No per-character map
+or decoded whole-value allocation is mandatory.
+
+Custom findings use mapped locations, not logical offsets. Original byte
+coordinates and operand provenance survive nested processing and UTF-8/16/32;
+an enclosing highlight is not an editable content range. Logical fix intents
+are distinct from raw edits: the host owns escaping/quoting, and explicit
+materialization accounts for source encoding using caller-owned output.
+Unsupported edits preserve findings and expose their limitation; invalid custom
+locations remain contract failures, including in ReleaseFast. Exact API/layout,
+empty/insertion boundaries and prerequisite handling remain implementation
+design. See [the interface and custom-validator example](STRING_INTEGRATION.md).
+This does not deliver host routing or shared-budget composed sessions.
 
 **Diagnostics, scheduling and independent outcomes**
 

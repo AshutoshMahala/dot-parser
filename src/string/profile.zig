@@ -37,6 +37,10 @@ pub fn Profile(comptime config: anytype) type {
             (Policies.baseline.equals.severity != .off and (Policies.baseline.equals.comparison orelse Policies.baseline.comparison) == .case_insensitive) or
             (Policies.baseline.one_of.severity != .off and (Policies.baseline.one_of.comparison orelse Policies.baseline.comparison) == .case_insensitive) or
             (Custom.uses_comparison and Policies.baseline.custom_severity != .off and Policies.baseline.comparison == .case_insensitive));
+        const ascii_folding_used = runtime or
+            (Policies.baseline.equals.severity != .off and (Policies.baseline.equals.comparison orelse Policies.baseline.comparison) == .ascii_case_insensitive) or
+            (Policies.baseline.one_of.severity != .off and (Policies.baseline.one_of.comparison orelse Policies.baseline.comparison) == .ascii_case_insensitive) or
+            (Custom.uses_comparison and Policies.baseline.custom_severity != .off and Policies.baseline.comparison == .ascii_case_insensitive);
         pub const diagnostic = diagnostics.For(Custom);
         pub const Diagnostic = diagnostic.Diagnostic;
         pub const Sink = diagnostic.Sink;
@@ -116,7 +120,7 @@ pub fn Profile(comptime config: anytype) type {
                 fn Context(comptime Validator: type, comptime stepped: bool) type {
                     return struct {
                         pub const cancellation_enabled = can_cancel;
-                        pub const ComparisonState = @import("compare.zig").State(folding_used);
+                        pub const ComparisonState = @import("compare.zig").State(folding_used, ascii_folding_used);
                         engine: *Self,
                         code: diagnostics.Code,
                         comparison: if (Validator.uses_comparison) policy.Comparison else void,
@@ -144,15 +148,33 @@ pub fn Profile(comptime config: anytype) type {
                                 ctx.invalidValidator();
                                 return null;
                             }
+                            // The input has already passed encoding validation.
+                            // Exact byte equality therefore proves the UTF-8
+                            // pattern valid too. On a mismatch still validate
+                            // the WHOLE pattern before returning false: a bad
+                            // suffix must not hide behind an early mismatch.
+                            // Cooperative paths retain their original steps
+                            // and polls, including expected-pattern validation.
+                            // Keep Unicode-capable plans on their existing
+                            // comparison path; this shortcut is for exact/ASCII
+                            // plans and does not add a branch to folding loops.
+                            if (!folding_used and !can_cancel and (actual == .utf8 or actual == .ascii) and ctx.comparison == .case_sensitive) {
+                                const same = std.mem.eql(u8, value.bytes, expected);
+                                if (!same and !std.unicode.utf8ValidateSlice(expected)) {
+                                    ctx.invalidValidator();
+                                    return null;
+                                }
+                                return same;
+                            }
                             // The shared service checks its UTF-8 argument for
                             // every validator. A malformed suffix must not hide
                             // behind an early mismatch. Fixed literals may fold
-                            // away; dynamic/custom patterns incur this scan.
+                            // away; other dynamic/custom patterns incur this scan.
                             if (!std.unicode.utf8ValidateSlice(expected)) {
                                 ctx.invalidValidator();
                                 return null;
                             }
-                            return @import("compare.zig").equals(folding_used, value, expected, ctx.comparison, ctx);
+                            return @import("compare.zig").equals(folding_used, ascii_folding_used, value, expected, ctx.comparison, ctx);
                         }
                         pub fn report(ctx: *@This(), finding: diagnostic.Finding) bool {
                             if (ctx.engine.result.completion != .complete) return false;
@@ -190,14 +212,16 @@ pub fn Profile(comptime config: anytype) type {
                 /// service out of step's context: one step still costs one credit.
                 fn BatchContext(comptime Validator: type) type {
                     return struct {
-                        pub const ComparisonState = @import("compare.zig").State(folding_used);
+                        pub const ComparisonState = @import("compare.zig").State(folding_used, ascii_folding_used);
                         input: support.processor.Fragment,
                         comparison: if (Validator.uses_comparison) policy.Comparison else void,
 
                         pub fn equalsBatch(ctx: *@This(), state: *ComparisonState, value: Value(actual), expected: []const u8, allowance: u32) u32 {
                             if (!Validator.uses_comparison) @compileError("validator must opt into uses_comparison");
                             if (value.bytes.ptr != ctx.input.bytes.ptr or value.bytes.len != ctx.input.bytes.len or value.origin != ctx.input.origin) return 0;
-                            return state.batch(value, expected, ctx.comparison, allowance);
+                            // Keep fixed operands visible through the Small
+                            // batch boundary; folding itself stays shared.
+                            return @call(if (@import("builtin").mode == .ReleaseSmall) .always_inline else .auto, @TypeOf(state.*).batch, .{ state, value, expected, ctx.comparison, allowance });
                         }
                     };
                 }

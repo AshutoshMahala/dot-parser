@@ -1,6 +1,6 @@
 # Processor contract — remaining design
 
-Reconciled: 2026-10-18. This file retains only unfinished composition/API design
+Reconciled: 2026-10-19. This file retains only unfinished composition/API design
 and acceptance work. Current binding, preparation, workspace, reporting and
 ownership contracts are documented in [custom processors](../CUSTOM_PROCESSORS.md),
 [DOT integration](../LABELS.md) and [standalone markup](../MARKUP.md).
@@ -18,7 +18,7 @@ These are not available APIs or a claim that implementation is in progress.
 | Recursive / quoted-content execution | Compile-time binding; processor-owned schemas/content rules | Scheduling boundaries, selection, aggregation and host-to-string adapters |
 | Broader profile/API surface | Keep low-level ownership and costs explicit | Outer-only versus composed operations, a whole-composition `validatePolicy` entry point and convenience result/ownership choices |
 | Attribute-context policy delegation | First slice uses attribute name and value form only; parent hands over child-owned policies at compile time | Typed syntax, omitted-form behavior, precedence and interaction with existing runtime overrides |
-| String host integration | Default host passthrough; standalone checks remain independent of DOT/markup context | Logical-value adapters, source maps and measured host disabled/enabled costs |
+| String host integration | Default host passthrough; streaming logical values with original-source locations and host-owned fix spelling | Exact location/fix APIs, adapters, prerequisite coverage and measured disabled/enabled costs; [agreed direction](STRING_INTEGRATION.md) |
 | New token spellings | An inner processor cannot redefine its outer parser's lexical boundaries | A separate contract for escaping, collisions, recovery and work |
 | Source transforms / retained summaries | Explicit owners, mapping and costs; no hidden per-ID state | Decoded/transcoded maps, caching, summary layout and public events |
 
@@ -70,11 +70,12 @@ policy schemas; do not introduce runtime discovery to select an inner parser.
 The remaining division of responsibility with existing scanners is described
 [below](#standalone-strings-and-remaining-host-integration).
 
-Quoted or concatenated content needs an explicit choice of raw versus decoded
-input. If decoding changes offsets, define source maps and their ownership/costs
-before promising original-source diagnostics or fixes. Each original operand's
-origin must remain distinguishable; offsets must not be rebased repeatedly at
-each parent.
+The [logical-value interface](STRING_INTEGRATION.md) selects streamed logical
+contents for string validation, with an optional unchanged contiguous fast path.
+Original-operand provenance remains distinct; locations are not logical offsets
+and are not rebased repeatedly at each parent. Host adapters own safe fix spelling.
+Exact location/range APIs and mixed quoted/markup concatenations remain open;
+the agreed direction does not imply that source mapping is implemented.
 
 Cross-scope SIMD or parallel scheduling is only a possible later optimization.
 Do not add copying, mandatory queues or retained child arrays to prepare for it.
@@ -186,12 +187,20 @@ sessions meter encoding and validation and support cancellation; synchronous-onl
 custom validators cannot be activated under metering. This does not implement
 host selection or transfer host syntax.
 
+**Logical-value direction agreed 2026-10-19; not implemented.** The dedicated
+[string integration design](STRING_INTEGRATION.md) records the proposed bounded
+cursor, custom diagnostic/fix example, mapping safety and memory/performance
+requirements. It preserves the shared validator contract without requiring
+contiguous decoded contents or an allocated mapping table.
+
 Host integration still needs:
 
 - Raw-to-logical adapters for quotes, escapes/references, bare and numeral forms;
   equivalent logical spellings must be checked consistently.
-- Original-operand provenance and explicit maps/ownership when transformations
-  change offsets. Standalone origins apply only to contiguous, unchanged contents.
+- Original-operand provenance through adapter-produced locations, with exact
+  ranges distinguished from enclosing highlights. Standalone origins apply only
+  to contiguous, unchanged contents; logical replacements require explicit
+  host-aware materialization rather than raw byte edits.
 - A rule for quoted/markup concatenations; per-operand validation does not mean
   validation of the combined logical value. No implicit markup flattening.
 - Independent scope coverage and selection of which host-owned checks, if any,
@@ -298,6 +307,9 @@ For the new execution paths, add coverage for:
 - Generic versus custom diagnostics, severity/validity independence from sink
   filtering, no duplicate fallback finding, related/fix span mapping and
   cancellation/sink stops during custom checks.
+- The [logical-value acceptance checks](STRING_INTEGRATION.md#remaining-details-and-acceptance-tests),
+  including bounded decoding of long references/glue, original-byte locations,
+  invalid custom ranges in ReleaseFast and safe, explicit fix materialization.
 - Built-in/custom validator contract parity; comparison-aware checks inherit the
   baseline and honor per-check overrides, while non-comparison checks and
   independent custom matchers receive no implicit folding or comparison state.

@@ -26,12 +26,143 @@ test "Unicode full folding is optional, expanding, and not normalization" {
         .{ .a = "é", .b = "e\u{301}", .equal = false },
         .{ .a = "I", .b = "ı", .equal = false },
         .{ .a = "中文", .b = "中文", .equal = true },
+        .{ .a = "ellipſe", .b = "ellipse", .equal = true },
     }) |case| {
         const result = try P.parseAndValidate(.{ .bytes = case.a, .origin = 0 }, P.Sink.discard, .{ .policy = .{
             .comparison = .case_insensitive,
             .validation = .{ .equals = .{ .expected = case.b, .severity = .err } },
         } });
         try testing.expectEqual(case.equal, result.valid());
+    }
+}
+
+test "ASCII folding is opt-in, table-free and independently overridden per check" {
+    const Exact = s.Profile(.{ .policy = .{ .validation = .{ .equals = .{ .expected = "Seattle", .severity = .err } } } });
+    try testing.expectEqual(.case_sensitive, Exact.Policies.baseline.comparison);
+    try testing.expect(!(try Exact.parseAndValidate(.{ .bytes = "SEATTLE", .origin = 0 }, Exact.Sink.discard, .{})).valid());
+    const P = s.Profile(.{ .custom = s.validators.Equals, .policy = .{
+        .comparison = .ascii_case_insensitive,
+        .custom = "Seattle",
+        .validation = .{
+            .equals = .{ .expected = "Seattle", .severity = .err },
+            .one_of = .{ .values = &.{"Seattle"}, .comparison = .case_sensitive, .severity = .warning },
+            .custom = .err,
+        },
+    } });
+    const result = try P.parseAndValidate(.{ .bytes = "SEATTLE", .origin = 17 }, P.Sink.discard, .{});
+    try testing.expect(result.valid());
+    try testing.expectEqual(@as(u64, 1), result.warnings);
+    try testing.expectEqual(.complete, result.checks.custom);
+
+    const Runtime = s.Profile(.{ .runtime_policy = true });
+    try testing.expectEqual(.valid, Runtime.validatePolicy(.{ .comparison = .ascii_case_insensitive }));
+    try testing.expectEqual(.unicode_folding_disabled, Runtime.validatePolicy(.{ .comparison = .case_insensitive }).invalid);
+    try testing.expectError(error.UnicodeFoldingDisabled, Runtime.Session.init(.{ .bytes = "Seattle", .origin = 0 }, Runtime.Sink.discard, .{ .policy = .{
+        .execution = .{ .metering = true },
+        .validation = .{ .equals = .{ .expected = "Seattle", .comparison = .case_insensitive, .severity = .err } },
+    } }));
+    const PerCheck = s.Profile(.{ .policy = .{ .validation = .{
+        .equals = .{ .expected = "Seattle", .comparison = .ascii_case_insensitive, .severity = .err },
+    } } });
+    try testing.expect((try PerCheck.parseAndValidate(.{ .bytes = "SEATTLE", .origin = 0 }, PerCheck.Sink.discard, .{})).valid());
+    const Both = s.Profile(.{ .unicode_case_folding = true, .policy = .{
+        .comparison = .case_insensitive,
+        .validation = .{
+            .equals = .{ .expected = "ellipse", .severity = .err },
+            .one_of = .{ .values = &.{"ellipse"}, .comparison = .ascii_case_insensitive, .severity = .warning },
+        },
+    } });
+    const distinct = try Both.parseAndValidate(.{ .bytes = "ellipſe", .origin = 0 }, Both.Sink.discard, .{});
+    try testing.expect(distinct.valid());
+    try testing.expectEqual(@as(u64, 1), distinct.warnings);
+}
+
+test "ASCII comparison leaves non-ASCII and punctuation unchanged in every encoding and execution path" {
+    const P = s.Profile(.{ .runtime_policy = true, .custom = s.validators.Equals, .source_encodings = &.{ .ascii, .utf8, .utf16, .utf32 } });
+    const cases = [_]struct { text: []const u8, pattern: []const u8, equal: bool }{
+        .{ .text = "", .pattern = "", .equal = true },
+        .{ .text = "TrUe", .pattern = "true", .equal = true },
+        .{ .text = "aZ[\\]^_`\x00", .pattern = "Az[\\]^_`\x00", .equal = true },
+        .{ .text = "@" ** 32, .pattern = "`" ** 32, .equal = false },
+        .{ .text = "[\\]^" ** 16, .pattern = "{|}~" ** 16, .equal = false },
+        .{ .text = "AaZz" ** 32, .pattern = "aAzZ" ** 32, .equal = true },
+        .{ .text = "AZ" ** 32 ++ "!", .pattern = "az" ** 32 ++ "?", .equal = false },
+        .{ .text = "AZ" ** 32, .pattern = "az" ** 32 ++ "!", .equal = false },
+        .{ .text = "éAz😀中文", .pattern = "éaZ😀中文", .equal = true },
+        .{ .text = "\u{10ffff}\x00AZ", .pattern = "\u{10ffff}\x00az", .equal = true },
+        .{ .text = "\u{10ffff}", .pattern = "", .equal = false },
+        .{ .text = "ellipſe", .pattern = "ellipse", .equal = false },
+        .{ .text = "Straße", .pattern = "STRASSE", .equal = false },
+        .{ .text = "É", .pattern = "é", .equal = false },
+        .{ .text = "K", .pattern = "k", .equal = false },
+        .{ .text = "İ", .pattern = "i\u{307}", .equal = false },
+        .{ .text = "Σ", .pattern = "σ", .equal = false },
+    };
+    inline for (.{ s.ActualEncoding.ascii, .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        case_loop: for (cases) |case| {
+            if (actual == .ascii) {
+                for (case.text) |byte| if (!std.ascii.isAscii(byte)) continue :case_loop;
+            }
+            var buffer: [1024]u8 = undefined;
+            const input: s.Fragment = .{ .bytes = encoded(actual, case.text, &buffer), .origin = 17 };
+            const values = [_][]const u8{ "not a match", case.pattern };
+            const policy: P.Policy = .{
+                .comparison = .ascii_case_insensitive,
+                .validation = .{
+                    .equals = .{ .expected = case.pattern, .severity = .warning },
+                    .one_of = .{ .values = &values, .severity = .err },
+                    .custom = .warning,
+                },
+                .custom = case.pattern,
+            };
+            var bag: P.FixedDiagnosticBag(8) = .{};
+            const expected = try P.parseAndValidate(input, bag.sink(), .{ .encoding = actual, .policy = policy });
+            try testing.expectEqual(case.equal, expected.valid());
+            if (!case.equal) {
+                try testing.expectEqual(@as(u64, 1), expected.errors);
+                try testing.expectEqual(@as(u64, 2), expected.warnings);
+                for (bag.items()) |d| try testing.expectEqual(s.Span{ .start = 17, .len = @intCast(input.bytes.len) }, d.span);
+            }
+            var credits: ?u32 = null;
+            for ([_]u32{ 1, 2, 15, 16, 17, 64, 4096 }) |budget| {
+                var stepped_bag: P.FixedDiagnosticBag(8) = .{};
+                var patch = policy;
+                patch.execution.metering = true;
+                var session = try P.Session.init(input, stepped_bag.sink(), .{ .encoding = actual, .policy = patch });
+                defer session.deinit();
+                var total: u32 = 0;
+                while (true) {
+                    const progress = try session.advance(budget);
+                    try testing.expect(progress.work_used <= budget);
+                    total += progress.work_used;
+                    try testing.expect(total < 5000);
+                    if (progress.outcome != null) break;
+                }
+                if (credits) |n| try testing.expectEqual(n, total) else credits = total;
+                try testing.expectEqualDeep(expected, session.result().?);
+                try testing.expectEqualSlices(P.Diagnostic, bag.items(), stepped_bag.items());
+            }
+            var cancel_policy = policy;
+            cancel_policy.execution.cancellation = true;
+            try testing.expectEqualDeep(expected, try P.parseAndValidate(input, P.Sink.discard, .{ .encoding = actual, .policy = cancel_policy }));
+        }
+    }
+}
+
+test "fixed native metered custom-only ASCII comparisons need no Unicode capability" {
+    const P = s.Profile(.{ .custom = s.validators.Equals, .source_encodings = &.{ .utf8, .utf16, .utf32 }, .policy = .{
+        .comparison = .ascii_case_insensitive,
+        .execution = .{ .metering = true },
+        .custom = "TRUEé😀",
+        .validation = .{ .custom = .err },
+    } });
+    inline for (.{ s.ActualEncoding.utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        var buffer: [64]u8 = undefined;
+        var session = try P.Session.init(.{ .bytes = encoded(actual, "trueé😀", &buffer), .origin = 13 }, P.Sink.discard, .{ .encoding = actual });
+        defer session.deinit();
+        while (session.advance(1).outcome == null) {}
+        try testing.expect(session.result().?.valid());
+        try testing.expectEqual(.complete, session.result().?.checks.custom);
     }
 }
 

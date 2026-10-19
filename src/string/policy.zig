@@ -1,7 +1,13 @@
 //! String-owned settings; implementations and capabilities are bound at comptime.
 const std = @import("std");
 const support = @import("parser_support");
-pub const Comparison = enum { case_sensitive, case_insensitive };
+pub const Comparison = enum {
+    case_sensitive,
+    /// Full Unicode default case folding; requires unicode_case_folding.
+    case_insensitive,
+    /// Fold only A-Z, independently of source encoding; no Unicode tables.
+    ascii_case_insensitive,
+};
 pub const Severity = enum { off, warning, err };
 pub const Execution = struct { metering: bool = false, cancellation: bool = false, cancellation_interval: u32 = 1 };
 pub const Equals = struct {

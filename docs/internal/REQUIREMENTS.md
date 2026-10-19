@@ -801,6 +801,14 @@ a lexical-stage concern rather than an implicit numeric conversion. Processor
 checks and transformations must remain distinct; transformations use explicit
 caller-owned output rather than rewriting retained source.
 
+**String integration direction (2026-10-19; not implemented):** logical values
+use a bounded streaming interface with an optional borrowed contiguous fast
+path. Original-source locations and operand provenance accompany decoded
+content; no mandatory whole-value copy or per-character map. Custom findings
+must not use logical offsets as source offsets. Logical fix intents remain
+distinct from raw edits, with host-owned spelling and explicit caller-owned
+materialization. See [the internal interface design](STRING_INTEGRATION.md).
+
 ## 5. Memory requirements
 
 ### R-MEM-001: Explicit memory only

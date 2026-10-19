@@ -1,6 +1,7 @@
 const strings = @import("string_processor");
 const features = @import("string_features");
 const predicate = @hasDecl(features, "predicate") and features.predicate;
+const ascii = @hasDecl(features, "ascii") and features.ascii;
 const Nonempty = strings.validators.Predicate(void, {}, struct {
     fn check(value: anytype, _: void) bool {
         return value.bytes.len != 0;
@@ -10,7 +11,7 @@ const Checker = strings.Profile(.{
     .unicode_case_folding = features.folding,
     .custom = if (predicate) Nonempty else strings.validators.None,
     .policy = .{
-        .comparison = if (features.folding and !predicate) .case_insensitive else .case_sensitive,
+        .comparison = if (ascii) .ascii_case_insensitive else if (features.folding and !predicate) .case_insensitive else .case_sensitive,
         .validation = .{ .equals = .{ .expected = "Seattle", .severity = if (predicate) .off else .err }, .custom = if (predicate) .err else .off },
     },
 });

@@ -168,6 +168,72 @@ Dense Unicode and folding still require scalar work, and metering remains much
 slower than unmetered bulk validation there. Use it for bounded responsiveness;
 no step/counter overhead is added when both execution features are off.
 
+### ASCII comparison regression follow-up
+
+Measured on 2026-10-19, Apple M4 Pro, Zig 0.16.0, against `6661630`
+(before ASCII-insensitive comparison). The single-command report used three
+alternating process runs per side, seven timed batches after two warmups, and
+the same captured harness for both source trees:
+
+```sh
+zig build perf-string -- --baseline 6661630 --modes ReleaseFast,ReleaseSafe,ReleaseSmall --runs 3
+```
+
+Geometric mean **time** changes; negative means faster. These are overlapping
+groups, not quantities to add. The 18 newly available native ASCII-comparison
+cases per build have no baseline and are excluded from the means.
+
+| Matched group | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| 18 runtime-policy cases | −12.9% | −13.7% | −15.0% |
+| 36 native-encoding/comparison cases | −4.0% | −6.1% | −20.2% |
+| 84 execution/session cases, including runtime policies | −9.4% | −9.2% | −13.9% |
+
+Matching scalars and ASCII batches no longer dispatch into ASCII folding.
+The private scalar-read result fits one word, and Small builds retain useful
+comparison-loop boundaries instead of outlining tiny operations inside the loop.
+Unmetered, uncancellable exact UTF-8/ASCII checks can reuse the input's encoding
+proof for byte-identical patterns; mismatches still validate the entire pattern.
+These changes do not remove validation from metered or cancellable checks.
+
+For example, Small mixed-text one-shot equality improved from 0.869 to 0.546 µs
+against the pre-feature baseline (the initial regressed candidate measured
+1.109 µs). Small Unicode runtime-policy checks at budget 64 improved from
+24.417 to 20.226 µs. Fast long-ASCII runtime checks at budget 64 measured
+2.593 to 2.558 µs. All compared session sizes, work-credit totals and poll counts
+were unchanged; the discard-sink processor paths still allocate no heap memory.
+
+**This is not an all-green regression result.** The broad harness still flagged
+Small long-ASCII runtime/budget-64 checks at +9.5%, tiny UTF-32 exact checks at
++8.6%/+10.2%, and emoji checks with cancellation interval 64 at +7.1%.
+It also flagged a long Unicode-folded custom check in Fast at +59.1%, a short
+folded custom check in Safe at +8.7%, and Fast default-only long ASCII at +11.9%.
+Do not hide these behind the aggregate improvements or dismiss every flag as noise.
+
+Isolation changes the picture: the Fast default-only and Unicode-folded custom
+probes have byte-identical machine-code sections before and after. Default-only
+code also matches in Safe and Small. A paired default-only harness (nine timed
+batches after two warmups, alternating sides, one million calls per batch) gave:
+
+| 4,200-byte ASCII, default encoding check | Before ns/value | After ns/value |
+| --- | ---: | ---: |
+| Fast | 79.23 | 79.78 |
+| Safe | 79.62 | 79.74 |
+| Small | 87.26 | 87.19 |
+
+A longer-running isolated Small runtime/budget-64 check measured 2.86–2.87 µs
+before and 2.75–2.81 µs after, with the same 256-byte session and 12,605 credits.
+Thus the broad executable's layout/code-generation effects matter; the remaining
+mixed-profile outliers are not a demonstrated default-path algorithm change,
+but still need investigation before claiming every configuration is regression-free.
+
+There is a code-size tradeoff for enabled execution profiles: the consumed Small
+session harness grew from 321,088 to 342,248 bytes, while the native harness
+shrank from 281,048 to 258,296 bytes despite adding 18 ASCII-comparison cases.
+These are whole multi-profile executables, not library or heap sizes. Current
+consumed Small Wasm probes are 3,240 bytes for exact equality, 3,370 for ASCII
+folding and 10,247 for Unicode folding; only the last retains the Unicode table.
+
 ### Simulated string passthrough versus processing
 
 `zig build bench-string-passthrough -Doptimize=ReleaseFast` uses the **actual DOT
@@ -810,6 +876,57 @@ can't see in advance, so it can't optimize them away. That reading happens
 outside the timer.
 
 ## Running the benchmarks
+
+### One-command string comparison
+
+Use the Zig-native reporter to compare the working tree against a Git revision:
+
+```sh
+zig build perf-string -- --baseline HEAD
+zig build perf-string -- --baseline HEAD --modes ReleaseFast,ReleaseSafe,ReleaseSmall --runs 5
+zig build perf-string -- --baseline HEAD --suites sessions --modes ReleaseFast
+```
+
+The default is both `native` and `sessions`, Fast and Safe builds, three process
+runs per side. Each benchmark run uses seven timed batches after two warmups.
+`native` covers UTF-8/16LE/32LE, available comparison modes and built-in/custom
+equality. `sessions` covers UTF-8 default encoding validation, exact equality,
+runtime policies, budgets 1 and 64, cancellation intervals 1 and 64, custom
+stepped/batched validators and membership. `--help` lists the options.
+
+The runner captures both source trees and the current harness, builds everything
+with the **same compiler**, then executes one benchmark at a time in alternating
+before/after order. It reads Git objects without checking out or changing a
+branch. A baseline predating the required API fails the build explicitly; it is
+not silently treated as passing. Newly supported comparison modes are reported
+as **new**, with no invented baseline or percentage.
+
+Reports go into a new `zig-out/perf-string/<timestamp>/` directory, or a new
+directory specified by `--output`. Existing report directories are refused.
+Each report includes:
+
+- `summary.md`: group summaries and case-by-case timings and decimal MB/s.
+- `results.csv` and `raw/`: medians, observed ranges, per-run results, session
+  sizes, credit totals and cancellation poll counts.
+- `metadata.txt`, source manifests and captured harness/sources: compiler,
+  architecture/OS, revision, dirty-tree status and exact inputs to reproduce it.
+- `binaries.csv`: consumed benchmark executable sizes, **not library size**.
+
+A time increase above `--threshold` (default 5%) with non-overlapping observed
+run ranges is flagged `slower`. Overlapping ranges crossing the threshold are
+`inconclusive`. Neither this heuristic nor a geometric mean replaces inspecting
+individual cases; `within_threshold` is not a blanket no-regression guarantee.
+The suites use hot buffers and discard diagnostics. Zero processor heap
+allocations in these fixtures do not imply zero process memory, zero stack
+usage, or zero allocations with growable bags/custom callbacks. All builds
+finish before timing; avoid other heavy work while the measurements run.
+
+The existing benchmark commands remain useful for individual measurements;
+the two string benchmarks also accept `-- --csv` for machine-readable output.
+The reporter itself is tested by `zig build check-tools` and `zig build test`.
+It does not yet orchestrate DOT/markup suites, RSS sampling or Wasm size checks.
+
+### Individual benchmarks
 
 Run one benchmark at a time, with no builds or other heavy work running:
 

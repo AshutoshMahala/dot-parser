@@ -1,8 +1,9 @@
 //! Opt-in execution overhead, allocations and caller-owned session size.
 const std = @import("std");
 const s = @import("string_processor");
+const report = @import("report.zig");
 
-const Variant = enum { plain, budget1, budget64, run, cancel1, cancel64, runtime1, runtime64, custom1, custom64, custom_step64, one_of64 };
+const Variant = enum { default, plain, runtime_plain, budget1, budget64, run, cancel1, cancel64, runtime1, runtime64, custom1, custom64, custom_step64, one_of64 };
 const StepOnlyEquals = struct {
     pub const Settings = []const u8;
     pub const defaults: Settings = "";
@@ -11,7 +12,10 @@ const StepOnlyEquals = struct {
     pub const step = s.validators.Equals.step;
 };
 fn isRuntime(comptime variant: Variant) bool {
-    return variant == .runtime1 or variant == .runtime64;
+    return variant == .runtime_plain or variant == .runtime1 or variant == .runtime64;
+}
+fn isPlain(comptime variant: Variant) bool {
+    return variant == .default or variant == .plain or variant == .runtime_plain;
 }
 fn isCustom(comptime variant: Variant) bool {
     return variant == .custom1 or variant == .custom64 or variant == .custom_step64;
@@ -22,13 +26,13 @@ fn Checker(comptime variant: Variant, comptime text: []const u8) type {
         .custom = if (variant == .custom_step64) StepOnlyEquals else if (isCustom(variant)) s.validators.Equals else s.validators.None,
         .policy = .{
             .execution = .{
-                .metering = variant != .plain,
+                .metering = !isPlain(variant),
                 .cancellation = variant == .cancel1 or variant == .cancel64,
                 .cancellation_interval = if (variant == .cancel64) 64 else 1,
             },
             .custom = if (isCustom(variant)) text else {},
             .validation = .{
-                .equals = .{ .expected = text, .severity = if (isCustom(variant) or variant == .one_of64) .off else .err },
+                .equals = .{ .expected = text, .severity = if (variant == .default or isCustom(variant) or variant == .one_of64) .off else .err },
                 .custom = if (isCustom(variant)) .err else .off,
                 .one_of = .{ .values = &.{ "not this", text }, .severity = if (variant == .one_of64) .err else .off },
             },
@@ -49,7 +53,7 @@ noinline fn run(comptime P: type, comptime variant: Variant, bytes: []const u8) 
     var hook: Hook = .{};
     var options: P.Options = .{};
     if (variant == .cancel1 or variant == .cancel64) options.cancellation = .{ .context = &hook, .is_requested = Hook.poll };
-    if (variant == .plain) return .{ .valid = (P.parseAndValidate(.{ .bytes = bytes, .origin = 0 }, P.Sink.discard, options) catch unreachable).valid() };
+    if (comptime isPlain(variant)) return .{ .valid = (P.parseAndValidate(.{ .bytes = bytes, .origin = 0 }, P.Sink.discard, options) catch unreachable).valid() };
     var session = P.Session.init(.{ .bytes = bytes, .origin = 0 }, P.Sink.discard, options) catch unreachable;
     defer session.deinit();
     if (variant == .run) return .{ .valid = session.run().valid() };
@@ -68,8 +72,9 @@ pub fn main(init: std.process.Init) !void {
     var output_buffer: [4096]u8 = undefined;
     var output = std.Io.File.Writer.init(.stdout(), init.io, &output_buffer);
     const writer = &output.interface;
-    try writer.writeAll("UTF-8 exact checks; processor heap=0; fixed policies unless runtime1/runtime64\n");
-    inline for (.{ "Seattle", "The quick brown fox. " ** 200, "Straße 中文 😀" ** 64, "中文" ** 64, "😀" ** 64, ("The quick brown fox. " ** 10 ++ "中文") ** 8 }) |text| {
+    const csv = try report.csvMode(init);
+    if (csv) try writer.writeAll(report.header) else try writer.writeAll("UTF-8 exact checks (default: encoding only); processor heap=0; fixed policies unless runtime*\n");
+    inline for (.{ "Seattle", "The quick brown fox. " ** 200, "Straße 中文 😀" ** 64, "中文" ** 64, "😀" ** 64, ("The quick brown fox. " ** 10 ++ "中文") ** 8 }, .{ "short", "long_ascii", "unicode", "cjk", "emoji", "mixed" }) |text, fixture| {
         const bytes = try init.gpa.dupe(u8, text);
         defer init.gpa.free(bytes);
         inline for (comptime std.meta.tags(Variant)) |variant| {
@@ -91,9 +96,9 @@ pub fn main(init: std.process.Init) !void {
             }
             std.mem.sort(u64, &times, {}, std.sort.asc(u64));
             const ns = @as(f64, @floatFromInt(times[3])) / @as(f64, @floatFromInt(iterations));
-            try writer.print("{s} bytes={d} ns/value={d:.1} MB/s={d:.1} state={d} credits={d} polls={d}\n", .{
-                @tagName(variant),                                            bytes.len,           ns,                @as(f64, @floatFromInt(bytes.len)) * 1000 / ns,
-                if (variant == .plain) @as(usize, 0) else @sizeOf(P.Session), observation.credits, observation.polls,
+            if (csv) try report.row(writer, fixture ++ "/" ++ @tagName(variant), bytes.len, ns, if (isPlain(variant)) 0 else @sizeOf(P.Session), observation.credits, observation.polls) else try writer.print("{s} bytes={d} ns/value={d:.1} MB/s={d:.1} state={d} credits={d} polls={d}\n", .{
+                @tagName(variant),                                           bytes.len,           ns,                @as(f64, @floatFromInt(bytes.len)) * 1000 / ns,
+                if (isPlain(variant)) @as(usize, 0) else @sizeOf(P.Session), observation.credits, observation.polls,
             });
         }
     }

@@ -66,7 +66,26 @@ pub fn build(b: *std.Build) void {
     const run_integration_tests = b.addRunArtifact(integration_tests);
 
     const test_step = b.step("test", "Run unit and public integration tests");
-    const check_tools = b.step("check-tools", "Test and compile the offline Zig Unicode generators");
+    const check_tools = b.step("check-tools", "Test and compile the Zig generators and performance reporter");
+    const perf_tool = b.addExecutable(.{ .name = "perf-string", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/perf_string.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    }) });
+    check_tools.dependOn(&perf_tool.step);
+    const perf_tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/perf_string.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    }) }));
+    check_tools.dependOn(&perf_tests.step);
+    test_step.dependOn(&perf_tests.step);
+    const run_perf = b.addRunArtifact(perf_tool);
+    run_perf.addArgs(&.{ "--zig", b.graph.zig_exe, "--repo", b.pathFromRoot(".") });
+    if (b.args) |args| run_perf.addArgs(args);
+    run_perf.has_side_effects = true;
+    b.step("perf-string", "Build and compare string benchmarks against a Git revision; pass -- --help")
+        .dependOn(&run_perf.step);
     const unicode_data = b.option([]const u8, "unicode-data", "Local Unicode 17.0.0 UCD directory for read-only regeneration checks");
     const check_unicode = b.step("check-unicode", "Compare regenerated tables with checked-in files (-Dunicode-data=UCD)");
     for ([_]struct { name: []const u8, source: []const u8, inputs: []const []const u8, output: []const u8 }{
@@ -494,8 +513,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "string_processor", .module = strings }},
     }) });
-    b.step("bench-string", "Measure standalone exact/folding and custom string checks")
-        .dependOn(&b.addRunArtifact(string_bench).step);
+    const run_string_bench = b.addRunArtifact(string_bench);
+    if (b.args) |args| run_string_bench.addArgs(args);
+    b.step("bench-string", "Measure standalone exact/ASCII/Unicode and custom string checks")
+        .dependOn(&run_string_bench.step);
     check_benches.dependOn(&string_bench.step);
     const string_sessions_bench = b.addExecutable(.{ .name = "string_sessions_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/string_sessions.zig"),
@@ -503,8 +524,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "string_processor", .module = strings }},
     }) });
+    const run_string_sessions_bench = b.addRunArtifact(string_sessions_bench);
+    if (b.args) |args| run_string_sessions_bench.addArgs(args);
     b.step("bench-string-sessions", "Measure opt-in string metering and cancellation")
-        .dependOn(&b.addRunArtifact(string_sessions_bench).step);
+        .dependOn(&run_string_sessions_bench.step);
     check_benches.dependOn(&string_sessions_bench.step);
     const string_passthrough_bench = b.addExecutable(.{ .name = "string_passthrough_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/string_passthrough.zig"),
@@ -515,17 +538,18 @@ pub fn build(b: *std.Build) void {
     b.step("bench-string-passthrough", "Compare real DOT quote scanning with simulated string processing")
         .dependOn(&b.addRunArtifact(string_passthrough_bench).step);
     check_benches.dependOn(&string_passthrough_bench.step);
-    const string_sizes = b.step("string-size-probes", "Install consumed exact/folding/predicate Wasm size probes");
+    const string_sizes = b.step("string-size-probes", "Install consumed exact/ASCII/folding/predicate Wasm size probes");
     const wasm_check = b.addSystemCommand(&.{"node"});
     wasm_check.addFileArg(b.path("tools/check_string_sizes.mjs"));
     const check_wasm = b.step("check-wasm", "Execute consumed Wasm exports and check optional Unicode table retention (requires Node)");
     check_wasm.dependOn(&wasm_check.step);
-    for ([_][]const u8{ "exact", "folding", "predicate" }) |variant| {
+    for ([_][]const u8{ "exact", "ascii", "folding", "predicate" }) |variant| {
         const wasm = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
         const shared = b.createModule(.{ .root_source_file = b.path("src/support.zig"), .target = wasm, .optimize = .ReleaseSmall });
         const text = b.createModule(.{ .root_source_file = b.path("src/string.zig"), .target = wasm, .optimize = .ReleaseSmall, .imports = &.{.{ .name = "parser_support", .module = shared }} });
         const features = b.addOptions();
-        features.addOption(bool, "folding", !std.mem.eql(u8, variant, "exact"));
+        features.addOption(bool, "folding", std.mem.eql(u8, variant, "folding") or std.mem.eql(u8, variant, "predicate"));
+        features.addOption(bool, "ascii", std.mem.eql(u8, variant, "ascii"));
         features.addOption(bool, "predicate", std.mem.eql(u8, variant, "predicate"));
         const probe = b.addExecutable(.{ .name = b.fmt("string_{s}", .{variant}), .root_module = b.createModule(.{
             .root_source_file = b.path("tests/freestanding_string.zig"),

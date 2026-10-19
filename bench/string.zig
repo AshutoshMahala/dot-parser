@@ -2,15 +2,16 @@
 //! Decimal MB/s of physical source bytes, no diagnostic retention allocation.
 const std = @import("std");
 const s = @import("string_processor");
+const report = @import("report.zig");
 
-fn Checker(comptime text: []const u8, comptime folding: bool, comptime custom: bool) type {
+fn Checker(comptime text: []const u8, comptime comparison: s.Comparison, comptime custom: bool) type {
     @setEvalBranchQuota(200_000);
     return s.Profile(.{
         .source_encodings = &.{ .utf8, .utf16, .utf32 },
-        .unicode_case_folding = folding,
+        .unicode_case_folding = comparison == .case_insensitive,
         .custom = if (custom) s.validators.Equals else s.validators.None,
         .policy = .{
-            .comparison = if (folding) .case_insensitive else .case_sensitive,
+            .comparison = comparison,
             .custom = if (custom) text else {},
             .validation = .{
                 .equals = .{ .expected = text, .severity = if (custom) .off else .err },
@@ -29,15 +30,18 @@ pub fn main(init: std.process.Init) !void {
     var output_buffer: [4096]u8 = undefined;
     var output = std.Io.File.Writer.init(.stdout(), init.io, &output_buffer);
     const writer = &output.interface;
-    try writer.print("Result={d} Diagnostic={d}; processor heap allocations=0 (discard sink)\n", .{ @sizeOf(s.Result), @sizeOf(s.Diagnostic) });
-    inline for (.{ "Seattle", "Straße 中文 😀", "The quick brown fox. " ** 200 }) |text| {
+    const csv = try report.csvMode(init);
+    if (csv) try writer.writeAll(report.header) else try writer.print("Result={d} Diagnostic={d}; processor heap allocations=0 (discard sink)\n", .{ @sizeOf(s.Result), @sizeOf(s.Diagnostic) });
+    inline for (.{ "Seattle", "Straße 中文 😀", "The quick brown fox. " ** 200 }, .{ "short", "unicode", "long_ascii" }) |text, fixture| {
         inline for (.{ s.ActualEncoding.utf8, .utf16le, .utf32le }) |actual| {
             const buffer = try init.gpa.alloc(u8, text.len * 4);
             defer init.gpa.free(buffer);
             const bytes = encode(actual, text, buffer);
-            inline for (.{ false, true }) |folding| {
+            // The same harness also builds against older revisions. Newly
+            // supported comparisons become new cases, never fake regressions.
+            inline for (comptime std.meta.tags(s.Comparison)) |comparison| {
                 inline for (.{ false, true }) |custom| {
-                    const P = Checker(text, folding, custom);
+                    const P = Checker(text, comparison, custom);
                     const iterations = @max(1000, 4_000_000 / bytes.len);
                     var times: [7]u64 = undefined;
                     var accepted: usize = 0;
@@ -53,8 +57,8 @@ pub fn main(init: std.process.Init) !void {
                     if (accepted != iterations * 9) return error.RejectedValidInput;
                     std.mem.sort(u64, &times, {}, std.sort.asc(u64));
                     const ns = @as(f64, @floatFromInt(times[times.len / 2])) / @as(f64, @floatFromInt(iterations));
-                    try writer.print("{s} {s} {s} bytes={d} ns/value={d:.1} MB/s={d:.1}\n", .{
-                        @tagName(actual), if (folding) "fold" else "exact",                 if (custom) "custom" else "builtin", bytes.len,
+                    if (csv) try report.row(writer, fixture ++ "/" ++ @tagName(actual) ++ "/" ++ @tagName(comparison) ++ "/" ++ (if (custom) "custom" else "builtin"), bytes.len, ns, 0, 0, 0) else try writer.print("{s} {s} {s} bytes={d} ns/value={d:.1} MB/s={d:.1}\n", .{
+                        @tagName(actual), @tagName(comparison),                             if (custom) "custom" else "builtin", bytes.len,
                         ns,               @as(f64, @floatFromInt(bytes.len)) * 1000.0 / ns,
                     });
                 }
