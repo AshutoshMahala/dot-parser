@@ -709,7 +709,7 @@ the same `Policy` input schema for baselines and overrides. Omitted fields inher
 library defaults when defining a baseline and that compiled baseline at runtime.
 Verify the resolved policy with one pure, allocation-free checker independent of
 DOT source and storage. Fixed profiles verify during compilation; their explicit
-`validatePolicy` calls require comptime arguments and there is no runtime verifier
+`validatePolicy` calls require comptime arguments and there is no runtime validator
 or override path. Runtime-enabled profiles support preflight and automatically
 resolve/check once before a source/document operation or session init/reset.
 Real configuration failures are distinct from DOT diagnostics and must precede
@@ -911,8 +911,8 @@ the selected policy. Execution remains synchronous after a complete operand
 boundary; no thread argument, queue or implicit concurrency is introduced.
 
 Nested DOT → markup → string and sibling string settings already prepare
-independently. Automatic deeper execution and a built-in string processor remain
-future work. New token spellings need a separate lexical contract for boundaries,
+independently. A standalone string processor is now available; automatic deeper
+execution remains future work. New token spellings need a separate lexical contract for boundaries,
 escaping, collisions, recovery and work; new statements/operators are outside
 the content contract. Replacing an inner parser cannot extend DOT grammar.
 Numeral boundaries remain grammar-defined; ambiguity checking stays lexical,
@@ -939,53 +939,28 @@ A string `one_of` does not implicitly forbid a markup value: a text-only outer
 rule must explicitly select `.none` for the markup form. A failed child check
 must not become a fallback to passthrough.
 
-A built-in string processor is a separate design/benchmark follow-up: default
-passthrough, opt-in content checks, and no replacement of mandatory host quote,
-escape or boundary handling. Candidate built-ins are `equals`, `contains` and
-`one_of`, with a compile-time custom verifier; the suggested minimum is
-`equals`/`one_of` plus custom verification. The string-owned verifier takes value
-and shared execution/reporting facilities, not parent node/element/attribute
-metadata. Regex can be consumer-supplied through that contract, without a
-mandatory engine; bounded-work/resource guarantees still need enforcement.
+**Standalone strings implemented 2026-10-18.** `string_processor` accepts
+borrowed, already-bounded contents with original byte origin and selected native
+encoding. It validates encoding, then enabled equality/membership/custom checks.
+All checks share a compile-time validator contract; custom predicates receive
+generic failures, and structured validators can provide typed details, messages,
+hints, checked related spans and fixes through common bags/renderers.
+Configuration and operational failure remain separate from input validity.
 
-**Shared verifier contract agreed 2026-10-18; not implemented.** Built-in checks
-are ordinary supplied implementations of the same compile-time-bound contract
-used by consumers, with typed settings, a check operation, a result separating
-failure from operational stops, and optional structured diagnostics. Named
-policy fields remain conveniences, not a second execution path or runtime
-registry. See [the shared contract](PROCESSOR_CONTRACT.md#shared-verifier-contract).
+Case-sensitive comparison is the default. Optional Unicode 17.0.0 full default
+folding is streamed across compiled encodings, without normalization, locale
+tailoring or source mutation. Exact-only/non-comparison builds exclude folding
+tables; runtime requests for excluded folding fail policy verification. Built-in
+case overrides apply only to comparison-based rules; custom comparison participation
+is explicit. See [standalone strings](../STRINGS.md) for the actual API and costs.
 
-**String comparison/reporting direction agreed 2026-10-18; not implemented.**
-Comparison-based built-ins inherit `.case_sensitive` from the string baseline,
-with optional per-check overrides. `.case_insensitive` means Unicode
-default case folding across every compiled source encoding, not ASCII-only
-lowercasing. Keep source unchanged and do not imply normalization or locale
-tailoring. Unicode folding code/tables must compile out when unused; a profile
-that permits runtime folding must retain them, while excluded functionality
-cannot be requested silently. Custom verifiers retain their own comparison
-semantics rather than receiving automatically folded input. Custom verifiers
-can opt into a shared comparison service at compile time; length/count checks
-need no case setting or folding machinery. Do not impose case options on every
-verifier or assume the baseline changes an independent regex/custom matcher.
-
-Simple custom predicates get a generic string-owned failure diagnostic;
-advanced verifiers can supply typed custom reporting, hints, related spans and
-fixes through compile-time-bound definitions and shared sinks. Input rejection
-remains distinct from operational errors, and severity/validity must not depend
-on diagnostic visibility. Exact comparison/capability syntax, Unicode version
-and folding details, verifier/result shapes and custom catalog integration remain
-open. See [comparison rules](PROCESSOR_CONTRACT.md#string-comparison-rules) and
-[custom diagnostics](PROCESSOR_CONTRACT.md#custom-string-diagnostics).
-
-Use logical-value checks consistently for equivalent spellings, with borrowed
-raw spans/lazy views and explicit mapping costs. Exact value/view APIs, mixed
-markup concatenations, built-in check composition and override precedence remain open.
-Checks should be reusable standalone, after parsing and through supported
-during-parse composition. A single-call API need not interleave all stages.
-These are optional application-validation facilities, not core DOT grammar or
-a mandatory linter; preserve source, scope coverage and unchanged unused paths.
-See [delegation and string work](PROCESSOR_CONTRACT.md#attribute-context-policy-delegation)
-for the decisions and performance gates before implementation.
+Host integration remains open: passthrough by default, explicit processing,
+raw-to-logical adapters, source maps, mixed concatenations, attribute routing and
+override precedence. Mandatory host quote/escape/reference/boundary checks stay
+with DOT/markup. Resumable/metered string validation and shared-budget composition
+are not implemented; arbitrary custom or regex calls cannot acquire bounded-work
+guarantees merely by being compiled in. No bundled regex engine is implied.
+See [remaining integration](PROCESSOR_CONTRACT.md#standalone-strings-and-remaining-host-integration).
 
 **Diagnostics, scheduling and independent outcomes**
 
@@ -1052,7 +1027,7 @@ need not leave a document.
 | Custom name/reference catalogs | Further design; built-ins remain independent optional checks |
 | Composed execution | Agreed direction; shared credits, cancellation, fixed scratch, reset/latching and validation scheduling |
 | Delegated policies | Attribute-name/value-form selection first; child owns rules; exact syntax, precedence and runtime-override interaction remain open |
-| Deeper/string processing | Default passthrough and case-sensitive checks; Unicode folding compiled out when unused; generic/custom diagnostics agreed; value/mapping, capability and verifier APIs remain open; nested policy preparation is implemented |
+| Deeper/string processing | Default passthrough and case-sensitive checks; Unicode folding compiled out when unused; generic/custom diagnostics agreed; value/mapping, capability and validator APIs remain open; nested policy preparation is implemented |
 | Profile/API redesign | Deferred discussion; workspace reuse did not decide it |
 | Summary index / caching / broader events | Optional proposals; initial public DOT event-only output is Unreleased |
 | Gap-aware partial-tree publication | DOT later regions/gaps are Unreleased; markup remains prefix-only |

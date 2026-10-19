@@ -24,7 +24,7 @@ decision before becoming implementation work.
 | Summaries and public events | Representation, ownership, coverage and costs; proposals remain deferred |
 | Native encoding execution | Native session dispatch, metered validation and native excerpt windows |
 | Composed execution | Shared budgets, fixed memory and recursive/string scheduling; see [processor design](PROCESSOR_CONTRACT.md#remaining-design) |
-| Delegated policies / string processing | Attribute-name/value-form selection; default-passthrough standalone string checks/custom verifier; no outer AST dependency or mandatory regex; see [delegation design](PROCESSOR_CONTRACT.md#attribute-context-policy-delegation) |
+| Delegated policies / string processing | Host adapters, attribute-name/value-form selection and default-passthrough routing to standalone string checks; see [delegation design](PROCESSOR_CONTRACT.md#attribute-context-policy-delegation) |
 | Packaging | Whether markup should ever have a separate package/version lifecycle |
 
 ### Graphviz and extended rules
@@ -80,26 +80,26 @@ attribute value or text region must remain checkable despite an invalid enclosin
 structure, while unavailable bytes must not be certified. Existing scope APIs
 are documented in [local validation](../MARKUP.md#checking-a-fragment-that-failed-to-parse).
 
-The proposed string processor owns its value checks and custom-verifier contract,
+The standalone string processor owns its value checks and custom-validator contract,
 independently of markup elements or DOT nodes. Markup may select a child policy
 for an attribute value but must not make the child inspect the enclosing tree.
 Preserve markup's mandatory quote/reference syntax; optional inner passthrough
 does not disable it. Reuse checks standalone or after parsing as well as through
 supported delegation. Element-specific/cross-attribute conditions and implicit
 markup-to-text extraction are outside the first slice; see
-[string processing](PROCESSOR_CONTRACT.md#optional-string-processor).
+[string integration](PROCESSOR_CONTRACT.md#standalone-strings-and-remaining-host-integration).
 
-String built-ins and custom checks will use the same
-[verifier contract](PROCESSOR_CONTRACT.md#shared-verifier-contract).
+String built-ins and custom checks use the same
+[validator contract](../STRINGS.md#custom-validators).
 Comparison-based checks inherit case-sensitive defaults with optional per-check
-overrides; unrelated checks need no case setting. Custom verifiers explicitly
+overrides; unrelated checks need no case setting. Custom validators explicitly
 opt into shared comparison or keep their own semantics. Optional Unicode case
 folding is independent of source encoding and must compile out when unused.
 Custom string checks can use generic or typed custom diagnostics without
-depending on markup types; see [comparison rules](PROCESSOR_CONTRACT.md#string-comparison-rules)
-and [custom diagnostics](PROCESSOR_CONTRACT.md#custom-string-diagnostics).
+depending on markup types; see [comparison rules](../STRINGS.md#comparison)
+and [custom diagnostics](../STRINGS.md#shared-comparisons-and-diagnostics).
 These proposed string settings do not change markup's existing tag/attribute
-name-comparison rules or make custom verifiers inherit case folding implicitly.
+name-comparison rules or make custom validators inherit case folding implicitly.
 
 SIMD batching across scopes remains an optional investigation. Define grouping,
 variable-length handling, diagnostic order and cancellation before claiming a

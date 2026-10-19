@@ -197,7 +197,7 @@ pub fn nodeInvariant(document: *const Document, index: u32) bool {
 
 /// Local attribute metadata precondition, checked during validation/scratch sizing
 /// in safety builds. O(1), without source-byte scans or scratch allocation.
-/// Not a general syntax verifier or a public document-building API.
+/// Not a general syntax validator or a public document-building API.
 pub fn attributeInvariant(document: *const Document, index: u32) bool {
     const attribute = document.attributes[index];
     const owner = @intFromEnum(attribute.owner);

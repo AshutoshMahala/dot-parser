@@ -32,6 +32,60 @@ Reading the tables:
 - **Labels in DOT:** a file with 1,000 small labels is parsed and checked at
   about 150 MB/s, with only 7 allocations (labels in structural mode).
 
+## Standalone strings (Unreleased)
+
+Measured on 2026-10-18, Apple M4 Pro, Zig 0.16.0, ReleaseFast, using
+[`bench/string.zig`](../bench/string.zig). These are new-module baselines, not
+DOT/markup before-and-after numbers. Each cell is the median of three runs;
+each run uses seven measured batches after two warmups. Source allocation is
+outside timing. Each call verifies encoding, runs equality and consumes the
+result with a discard sink. Profiles compile UTF-8/16/32 readers, with fixed
+policies. Case folding is enabled only in the folding variants.
+
+For the same logical value, `Straße 中文 😀`:
+
+| Source encoding | Physical bytes | Exact, ns/value (MB/s) | Unicode folding, ns/value (MB/s) |
+| --- | ---: | ---: | ---: |
+| UTF-8 | 19 | 14.4 (1,319) | 119.3 (159) |
+| UTF-16LE | 24 | 55.5 (432) | 116.8 (205) |
+| UTF-32LE | 44 | 40.6 (1,084) | 102.5 (429) |
+
+MB/s counts physical bytes, so wider encodings are not directly comparable by
+throughput alone; compare ns/value too. For seven-byte ASCII `Seattle`, UTF-8
+exact checking took about 7.2 ns/value and folding 40.5 ns/value. On a 4,200-byte
+ASCII value, exact checking took about 235 ns/value (17,895 MB/s), using the
+standard validator's ASCII fast path and validated byte equality. Folding took
+about 25 µs/value, with appreciable run variation (19–29 µs): these microbenchmarks
+are not guarantees for arbitrary text or diagnostics-heavy work.
+
+The harness also binds the supplied Equals validator through the custom slot.
+It uses the same verification/comparison/reporting contract; code generation
+and timings are not promised identical. For the 19-byte UTF-8 value, exact custom
+checking took about 17.6 ns/value versus 14.4 ns for the named built-in. Membership,
+runtime-policy preparation, callbacks and retained diagnostic costs depend on
+their configuration; they are not represented by the equality table.
+
+Processor/comparator heap allocations: **zero**. Source stays borrowed, with no
+tree or decoded/folded string buffer. On this target `Result` is 24 bytes and
+the default diagnostic is 72 bytes; custom details can enlarge diagnostics.
+Growable bags and consumer callbacks can allocate independently. Folding uses
+bounded three-scalar buffers per comparison side plus cursors, not input-sized
+scratch. These are library payload/cost facts, not process RSS measurements.
+
+Consumed, stripped Wasm32 ReleaseSmall probes, without console rendering:
+
+| Probe | Module bytes | Folding table |
+| --- | ---: | --- |
+| Exact UTF-8 equality | 3,136 | absent |
+| Unicode-folded equality | 10,091 | present |
+| Non-comparison predicate, folding capability enabled but unused | 2,833 | absent |
+
+Reproduce with `zig build string-size-probes` followed by
+`node tools/check_string_sizes.mjs`. The script executes the exports and checks
+table retention, not just file size. This change does not modify DOT, markup or
+shared parsing/validation code. Their existing throughput tables below are
+unchanged; no new DOT/markup regression measurement is claimed here.
+
 ## Parse and validate
 
 The [DOT throughput benchmark](../bench/throughput.zig) uses a 2.733 MB file

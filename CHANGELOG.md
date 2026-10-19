@@ -8,6 +8,13 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Standalone `string_processor`: borrowed contents, native encoding validation,
+  `equals`/`one_of` and compile-time custom validators through one contract,
+  fixed/default-off runtime policies, common diagnostic bags/rendering, and
+  cooperative cancellation. Unicode 17.0.0 full default case folding is an
+  optional compiled capability; exact-only builds exclude its tables. No tree
+  or processor-owned allocations. DOT/markup integration remains separate work.
+
 - Graphviz label content grammar, local attribute values/required attributes,
   and HTML4 named-reference checks. Each has independent fixed/runtime
   severity. Structural mode stays unaffected; local scope validation does not

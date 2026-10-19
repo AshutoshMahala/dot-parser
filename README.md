@@ -8,7 +8,7 @@ subgraphs. It also gives clear error messages. It does not draw graphs or
 compute layouts. You decide what to build on top, for example a linter, a
 formatter, or a converter into your own graph type.
 
-The package has two independent modules:
+The package has three independent modules:
 
 - **`dot_parser`** parses DOT.
 - **`markup_parser`** parses HTML-like markup, such as Graphviz's
@@ -16,6 +16,9 @@ The package has two independent modules:
   on its own with no DOT at all. Since 0.5.0 it checks Graphviz's
   tags and attributes by default; select [structural mode](docs/MARKUP.md) for
   other markup.
+- **`string_processor`** (**Unreleased**) checks borrowed string contents with equality, allowed
+  values and compile-time custom validators. See [standalone strings](docs/STRINGS.md).
+  DOT/markup string integration is not implemented yet.
 
 > **Status: experimental (0.x).** It works and is well tested, but names may
 > still change between versions. Breaking changes are listed in the
@@ -145,6 +148,8 @@ const dot_parser = b.dependency("dot_parser", .{ .target = target, .optimize = o
 exe.root_module.addImport("dot_parser", dot_parser.module("dot_parser"));
 // Only if you check labels or parse markup:
 exe.root_module.addImport("markup_parser", dot_parser.module("markup_parser"));
+// Unreleased: only if you check standalone string contents:
+exe.root_module.addImport("string_processor", dot_parser.module("string_processor"));
 ```
 
 This installs the latest release, 0.5.0. These docs follow the `main` branch:
@@ -252,6 +257,7 @@ and runs them all, and installs each one in `zig-out/bin/`.
 | [delayed_markup](examples/delayed_markup.zig) | check only the labels you choose | [Labels](docs/LABELS.md#check-the-labels-you-choose) |
 | [attached_markup](examples/attached_markup.zig) | check chosen labels later and keep their trees in the DOT result | [Editors](docs/EDITORS.md#check-chosen-labels-later-in-the-same-result) |
 | [markup](examples/markup.zig) | parse and validate markup on its own | [Markup](docs/MARKUP.md) |
+| [string_processor](examples/string_processor.zig) | standalone string checks and a custom predicate (Unreleased) | [Strings](docs/STRINGS.md) |
 | [markup_partial](examples/markup_partial.zig) | keep the finished part of markup for editors | [Editors](docs/EDITORS.md#keep-the-finished-part-of-markup) |
 | [partial_documents](examples/partial_documents.zig) | keep the finished part of a DOT file and its label trees | [Editors](docs/EDITORS.md#keep-the-label-trees-from-a-dot-file) |
 | [graphviz_vocabulary](examples/graphviz_vocabulary.zig) | check Graphviz label grammar, attributes and references | [Label rules](docs/MARKUP.md#graphviz-vocabulary) |

@@ -27,6 +27,13 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "parser_support", .module = support }},
     });
 
+    const strings = b.addModule("string_processor", .{
+        .root_source_file = b.path("src/string.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "parser_support", .module = support }},
+    });
+
     // The default step builds (and installs) the portable static library
     // for the selected target — including freestanding targets, which have
     // no entry point for host programs. Examples and benchmarks are host
@@ -59,6 +66,35 @@ pub fn build(b: *std.Build) void {
     const run_integration_tests = b.addRunArtifact(integration_tests);
 
     const test_step = b.step("test", "Run unit and public integration tests");
+    const string_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/string.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "string_processor", .module = strings }},
+    }) });
+    const run_string_tests = b.addRunArtifact(string_tests);
+    const string_step = b.step("test-string", "Test the standalone string processor");
+    const string_unit = b.addRunArtifact(b.addTest(.{ .root_module = strings }));
+    string_step.dependOn(&string_unit.step);
+    test_step.dependOn(&string_unit.step);
+    string_step.dependOn(&run_string_tests.step);
+    test_step.dependOn(&run_string_tests.step);
+    for ([_]struct { name: []const u8, message: []const u8 }{
+        .{ .name = "string_folding_disabled", .message = "invalid policy: unicode_folding_disabled" },
+        .{ .name = "string_invalid_pattern", .message = "invalid policy: invalid_pattern_encoding" },
+        .{ .name = "string_unknown_setting", .message = "unknown string policy field: typo" },
+        .{ .name = "string_comparison_contract", .message = "validator must opt into uses_comparison" },
+    }) |fixture| {
+        const rejected = b.addObject(.{ .name = fixture.name, .root_module = b.createModule(.{
+            .root_source_file = b.path(b.fmt("tests/compile_fail/{s}.zig", .{fixture.name})),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "string_processor", .module = strings }},
+        }) });
+        rejected.expect_errors = .{ .contains = fixture.message };
+        string_step.dependOn(&rejected.step);
+        test_step.dependOn(&rejected.step);
+    }
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_integration_tests.step);
     const markup_tests = b.addTest(.{ .root_module = markup });
@@ -251,6 +287,14 @@ pub fn build(b: *std.Build) void {
     });
     examples_step.dependOn(&b.addRunArtifact(custom_processor_example).step);
     examples_step.dependOn(&b.addInstallArtifact(custom_processor_example, .{}).step);
+    const string_example = b.addExecutable(.{ .name = "string_processor", .root_module = b.createModule(.{
+        .root_source_file = b.path("examples/string_processor.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "string_processor", .module = strings }},
+    }) });
+    examples_step.dependOn(&b.addRunArtifact(string_example).step);
+    examples_step.dependOn(&b.addInstallArtifact(string_example, .{}).step);
     const example_names = [_][]const u8{
         "quick_start",
         "parse_undigraph",
@@ -391,6 +435,34 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_markup_bench.addArgs(args);
     b.step("bench-markup", "Benchmark standalone structural markup (decimal MB/s)").dependOn(&run_markup_bench.step);
     check_benches.dependOn(&markup_bench.step);
+    const string_bench = b.addExecutable(.{ .name = "string_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/string.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "string_processor", .module = strings }},
+    }) });
+    b.step("bench-string", "Measure standalone exact/folding and custom string checks")
+        .dependOn(&b.addRunArtifact(string_bench).step);
+    check_benches.dependOn(&string_bench.step);
+    const string_sizes = b.step("string-size-probes", "Install consumed exact/folding/predicate Wasm size probes");
+    for ([_][]const u8{ "exact", "folding", "predicate" }) |variant| {
+        const wasm = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
+        const shared = b.createModule(.{ .root_source_file = b.path("src/support.zig"), .target = wasm, .optimize = .ReleaseSmall });
+        const text = b.createModule(.{ .root_source_file = b.path("src/string.zig"), .target = wasm, .optimize = .ReleaseSmall, .imports = &.{.{ .name = "parser_support", .module = shared }} });
+        const features = b.addOptions();
+        features.addOption(bool, "folding", !std.mem.eql(u8, variant, "exact"));
+        features.addOption(bool, "predicate", std.mem.eql(u8, variant, "predicate"));
+        const probe = b.addExecutable(.{ .name = b.fmt("string_{s}", .{variant}), .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/freestanding_string.zig"),
+            .target = wasm,
+            .optimize = .ReleaseSmall,
+            .strip = true,
+            .imports = &.{ .{ .name = "string_processor", .module = text }, .{ .name = "string_features", .module = features.createModule() } },
+        }) });
+        probe.entry = .disabled;
+        probe.rdynamic = true;
+        string_sizes.dependOn(&b.addInstallArtifact(probe, .{}).step);
+    }
     const composition_bench = b.addExecutable(.{
         .name = "composition_bench",
         .root_module = b.createModule(.{
@@ -416,6 +488,24 @@ pub fn build(b: *std.Build) void {
             .target = portable_target,
             .optimize = .ReleaseSmall,
         });
+        const portable_strings = b.createModule(.{
+            .root_source_file = b.path("src/string.zig"),
+            .target = portable_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{.{ .name = "parser_support", .module = portable_support }},
+        });
+        for ([_]bool{ false, true }) |folding| {
+            const features = b.addOptions();
+            features.addOption(bool, "folding", folding);
+            const probe = b.addObject(.{ .name = b.fmt("string_{s}_{s}", .{ @tagName(arch), if (folding) "folding" else "exact" }), .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/freestanding_string.zig"),
+                .target = portable_target,
+                .optimize = .ReleaseSmall,
+                .imports = &.{ .{ .name = "string_processor", .module = portable_strings }, .{ .name = "string_features", .module = features.createModule() } },
+            }) });
+            _ = probe.getEmittedBin();
+            freestanding.dependOn(&probe.step);
+        }
         const reporting_probe = b.addObject(.{
             .name = b.fmt("reporting_{s}", .{@tagName(arch)}),
             .root_module = b.createModule(.{

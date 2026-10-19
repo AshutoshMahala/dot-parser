@@ -21,6 +21,12 @@ New here? Start with [Getting started](GETTING_STARTED.md).
 | [Bringing your own processor](CUSTOM_PROCESSORS.md) | plug your own label checker into DOT parsing |
 | [Markup error codes](ERRORS.md#markup-error-codes) | look up a markup error or warning |
 
+## Strings
+
+[Standalone string checks](STRINGS.md) covers equality, allowed values, custom
+verification, encodings and optional Unicode folding (**Unreleased**). It does
+not yet integrate with DOT or markup attribute processing.
+
 ## Both parsers
 
 These work the same way in DOT and markup.

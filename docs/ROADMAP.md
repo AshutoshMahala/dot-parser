@@ -1,7 +1,7 @@
 # Roadmap
 
 Remaining work after 0.5.0. Items described as implemented are available in
-0.5.0; the other items are plans and can change. The linked guides describe
+0.5.0 unless marked Unreleased; the other items are plans and can change. The linked guides describe
 the implemented contracts.
 
 ## DOT
@@ -44,9 +44,10 @@ other's rules.
   example. The plan is an explicit, compile-time dialect rule on the same
   engine, described as a defined subset, never as full browser HTML. This still
   needs its own design.
-- **A built-in string processor** for checking quoted values inside markup.
-  Today you can prepare its settings with `PolicySet` and keep positions with
-  `fragment.child`, but your code must run it.
+- **String integration** for checking values inside markup. The unreleased
+  [standalone string processor](STRINGS.md) supplies equality, membership and
+  custom checks. Host adapters, source maps and attribute-specific selection
+  are still needed; callers currently select contents and invoke it explicitly.
 - **More of a partial markup document.** Unreleased DOT retention keeps later
   recovered statements with gaps; markup still retains its prefix. Gap-aware
   markup trees and pausing/resuming label checks remain unfinished.
