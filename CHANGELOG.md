@@ -11,7 +11,11 @@ are marked; no compatibility shims are kept.
 - Standalone `string_processor`: borrowed contents, native encoding validation,
   `equals`/`one_of` and compile-time custom validators through one contract,
   fixed/default-off runtime policies, common diagnostic bags/rendering, and
-  cooperative cancellation. Unicode 17.0.0 full default case folding is an
+  resumable metering and cooperative cancellation. Built-ins and custom validators
+  share `State`/`step`, with optional unmetered fast checks; active synchronous-only
+  validators are rejected under metering. Execution settings live under
+  `policy.execution`, with positive cancellation intervals and default-off features.
+  Unicode 17.0.0 full default case folding is an
   optional compiled capability; exact-only builds exclude its tables. No tree
   or processor-owned allocations. DOT/markup integration remains separate work.
 

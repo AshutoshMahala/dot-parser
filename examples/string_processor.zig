@@ -20,4 +20,27 @@ pub fn main(init: std.process.Init) !void {
     const Description = strings.Profile(.{ .custom = Nonempty, .policy = .{ .validation = .{ .custom = .err } } });
     const checked = try Description.parseAndValidate(.{ .bytes = "borrowed contents", .origin = 0 }, Description.Sink.discard, .{});
     if (!checked.valid()) return error.InvalidDescription;
+
+    // Built-ins and consumer validators share the resumable contract.
+    const Match = struct {
+        pub const Settings = []const u8;
+        pub const defaults: Settings = "Seattle";
+        pub const uses_comparison = true;
+        pub fn State(comptime Context: type) type {
+            return struct { comparison: Context.ComparisonState = .{} };
+        }
+        pub fn step(state: anytype, value: anytype, expected: Settings, context: anytype) strings.Step {
+            return context.equalsStep(&state.comparison, value, expected);
+        }
+    };
+    const Bounded = strings.Profile(.{ .custom = Match, .policy = .{
+        .execution = .{ .metering = true },
+        .validation = .{ .custom = .err },
+    } });
+    var session = try Bounded.Session.init(.{ .bytes = source, .origin = 0 }, Bounded.Sink.discard, .{});
+    defer session.deinit();
+    while (session.advance(4).outcome == null) {
+        // The caller can run other work here before resuming this value.
+    }
+    if (!session.result().?.valid()) return error.InvalidCity;
 }

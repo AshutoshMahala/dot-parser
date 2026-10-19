@@ -86,6 +86,64 @@ table retention, not just file size. This change does not modify DOT, markup or
 shared parsing/validation code. Their existing throughput tables below are
 unchanged; no new DOT/markup regression measurement is claimed here.
 
+### String execution: metering and default-path check
+
+Measured on the same machine/toolchain against pre-metering `5d24d90`, with
+compilation excluded from timing. The default UTF-8 encoding-only path, with
+all content rules and execution features off, measured as follows in a paired
+ReleaseFast harness (15 measured batches after four warmups, alternating order):
+
+| Input | Before, ns/value | After, ns/value |
+| --- | ---: | ---: |
+| 7-byte ASCII | 4.27 | 4.25 |
+| 19-byte Unicode | 8.81 | 8.65 |
+| 4,200-byte ASCII | 78.83 | 77.98 |
+
+The default path retains bulk encoding validation and no session state/counters.
+Processor allocations remain zero, Result/Diagnostic sizes remain 24/72 bytes,
+and all three Wasm probes above remain exactly the same size.
+
+With equality enabled but execution features still off, two paired ReleaseFast
+runs put long exact checking within +0.3% and long folding between −4.5% and
++2.0%; short cases varied by several percent (fractions of a nanosecond for
+exact checking). One ReleaseSafe paired run was +0.3% on long exact checking;
+short folding was 43.44 → 46.49 ns. Separate all-encoding executable runs had
+larger long-folding variation, including an apparent +15% that did not persist
+in the paired default-UTF-8 comparison. These are code-layout/noise-sensitive
+microbenchmarks, not proof that every optional profile is identical in speed.
+
+For opt-in execution, run
+`zig build bench-string-sessions -Doptimize=ReleaseFast`. The following is one
+seven-batch median run after two warmups. It includes session init, execution
+and consuming the result; inputs are allocated outside timing, and diagnostics
+are discarded. Values use exact UTF-8 equality; the large input is 4,200 bytes.
+
+| Execution | 7-byte value, ns | 4,200-byte value, µs | Session bytes |
+| --- | ---: | ---: | ---: |
+| Unmetered one-shot | 10.6 | 0.229 | none |
+| Metered, budget 1 | 92.1 | 45.43 | 128 |
+| Metered, budget 64 | 93.2 | 47.07 | 128 |
+| Session run to completion | 92.2 | 46.07 | 128 |
+| Budget 64, cancellation interval 1 | 99.4 | 46.30 | 152 |
+| Budget 64, cancellation interval 64 | 78.2 | 40.21 | 152 |
+| Budget 64, runtime policies | 89.4 | 42.02 | 256 |
+| Budget 64, Equals bound as custom | 80.6 | 39.96 | 128 |
+
+Session size is fixed caller-owned payload, not process RSS or total stack use;
+custom states/folding can increase it. There are no processor heap allocations.
+The two inputs cost 26 and 12,605 credits respectively, independent of budget
+partition and cancellation interval. On the large value, interval 1 polled
+12,605 times and interval 64 polled 197 times. Runtime policy preparation is
+included in these timings but is outside the credit budget.
+
+The long exact case is deliberately favorable to the bulk fast path: SIMD
+encoding validation and byte equality become separately pausable scalar steps,
+including validation of the expected argument. Its metering overhead is large,
+not merely a few percent. Increasing the budget does not restore bulk processing,
+and tiny-call/layout noise means budget 64 is not guaranteed faster than budget 1.
+Use metering for bounded responsiveness, not as a throughput optimization.
+No such step/counter overhead is added when both execution features are off.
+
 ## Parse and validate
 
 The [DOT throughput benchmark](../bench/throughput.zig) uses a 2.733 MB file

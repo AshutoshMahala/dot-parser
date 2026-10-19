@@ -14,8 +14,10 @@ in one call.
 If you don't need this, ignore this page. Sessions are compiled out of
 programs that don't use them.
 
-Both parsers have sessions that work the same way. The examples here use DOT;
+DOT and markup have sessions that work the same way. The examples here use DOT;
 the markup differences are in [the markup parser](#in-the-markup-parser).
+The standalone [string validator](#standalone-string-validation) also supports
+resumption, using its own bounded validation steps.
 
 ## The basic loop
 
@@ -66,8 +68,22 @@ A few rules make budgets predictable:
 - However you split the budget across calls, the result is the same.
 
 Credits measure work, not time. They don't count time spent in your own
-callbacks (your diagnostic sink, your cancel check). Validation, decoding and
-rendering are separate steps and aren't metered at all.
+callbacks (your diagnostic sink, your cancel check). DOT/markup validation,
+explicit decoding and rendering are separate steps and aren't metered.
+The standalone string processor has its own metered validation steps described
+[below](#standalone-string-validation).
+
+## Standalone string validation
+
+`string_processor.Profile` uses the same `.policy.execution` fields (`metering`,
+`cancellation`, positive `cancellation_interval`), default-off features, and
+`Session.init/advance/run/result/cancel/reset/deinit` lifecycle. Unlike DOT and
+markup, its content validation itself is resumable: encoding, built-in checks
+and custom `State`/`step` validators all advance within the budget. No allocator
+or fixed pools are needed. With runtime policies, `advance` needs `try` and can
+return `MeteringDisabled`. See [string execution](STRINGS.md#metering-cancellation-and-sessions)
+for its credit units, custom contract, borrowed lifetimes and preparation costs.
+This does not yet connect string work to a parent DOT/markup session budget.
 
 ## Checking progress
 

@@ -21,7 +21,7 @@ pub const Cancellation = struct {
 /// Local to one drive call: every resume checks immediately, even at budget 0.
 /// Fixed interval 1 and disabled cancellation have no countdown storage/work.
 /// Callers charge existing work units, never bytes or elapsed time. Validation
-/// uses its own safe points rather than this parse countdown.
+/// in DOT/markup uses its own safe points; string validation uses metered steps.
 pub fn CancellationPolling(comptime enabled: bool, comptime fixed: ?u32) type {
     const batched = enabled and (fixed == null or fixed.? != 1);
     return struct {

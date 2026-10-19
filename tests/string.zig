@@ -1,6 +1,9 @@
 const std = @import("std");
 const s = @import("string_processor");
 const testing = std.testing;
+test {
+    _ = @import("string_sessions.zig");
+}
 test "borrowed exact and membership use all checks, warning does not reject" {
     const P = s.Profile(.{ .policy = .{ .validation = .{
         .equals = .{ .expected = "SF", .severity = .warning },
@@ -264,7 +267,7 @@ test "sink stops, capacity, allocation failure and callback failures are not val
     try testing.expectEqual(.failure, (try P.parseAndValidate(.{ .bytes = "x", .origin = 0 }, sink, .{})).completion.diagnostic_stop);
 }
 
-test "cancellation before work and inside checks, no metering promise" {
+test "cancellation before work and inside checks" {
     const Token = struct {
         remaining: u32,
         fn requested(ctx: ?*anyopaque) bool {
@@ -277,14 +280,14 @@ test "cancellation before work and inside checks, no metering promise" {
             return .{ .context = self, .is_requested = requested };
         }
     };
-    const P = s.Profile(.{ .cancellation = true, .policy = .{ .validation = .{ .equals = .{ .expected = "abcd", .severity = .err } } } });
+    const P = s.Profile(.{ .policy = .{ .execution = .{ .cancellation = true }, .validation = .{ .equals = .{ .expected = "abcd", .severity = .err } } } });
     for (0..10) |polls| {
         var token: Token = .{ .remaining = @intCast(polls) };
         const r = try P.parseAndValidate(.{ .bytes = "abcd", .origin = 0 }, P.Sink.discard, .{ .cancellation = token.token() });
         try testing.expectEqual(.cancelled, r.completion);
         try testing.expect(!r.valid());
     }
-    try testing.expect(!@hasDecl(P, "Session"));
+    try testing.expect(@hasDecl(P, "Session"));
 }
 
 test "custom result cannot erase reported failure, silently stop or bypass settings verification" {

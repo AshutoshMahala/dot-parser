@@ -4,24 +4,24 @@ const policy = @import("policy.zig");
 const diagnostics = @import("diagnostic.zig");
 const validators = @import("validators.zig");
 const Value = @import("value.zig").Value;
-const result = @import("result.zig");
+const results = @import("result.zig");
 
 pub fn Profile(comptime config: anytype) type {
     const C = @TypeOf(config);
     const Custom = if (@hasField(C, "custom")) config.custom else validators.None;
     const unicode = if (@hasField(C, "unicode_case_folding")) config.unicode_case_folding else false;
     const runtime = if (@hasField(C, "runtime_policy")) config.runtime_policy else false;
-    const cancellable = if (@hasField(C, "cancellation")) config.cancellation else false;
     const capabilities = support.encoding.Capabilities.from(if (@hasField(C, "source_encodings")) config.source_encodings else null);
     const Schema = policy.Schema(Custom, unicode);
     comptime {
         for (std.meta.fields(C)) |field| {
             if (!std.mem.eql(u8, field.name, "custom") and !std.mem.eql(u8, field.name, "policy") and
                 !std.mem.eql(u8, field.name, "unicode_case_folding") and !std.mem.eql(u8, field.name, "runtime_policy") and
-                !std.mem.eql(u8, field.name, "cancellation") and !std.mem.eql(u8, field.name, "source_encodings"))
+                !std.mem.eql(u8, field.name, "source_encodings"))
                 @compileError("unknown string profile configuration field: " ++ field.name);
         }
         if (!@hasDecl(Custom, "uses_comparison")) @compileError("validator must declare uses_comparison");
+        if (@hasDecl(Custom, "State") != @hasDecl(Custom, "step")) @compileError("resumable validator must declare both State and step");
     }
     return struct {
         pub const Policy = Schema.Policy;
@@ -30,6 +30,7 @@ pub fn Profile(comptime config: anytype) type {
             .runtime_policy = runtime,
         });
         pub const validatePolicy = Policies.validatePolicy;
+        const cancellable = runtime or Policies.baseline.execution.cancellation;
         const folding_used = unicode and (runtime or
             (Policies.baseline.equals.severity != .off and (Policies.baseline.equals.comparison orelse Policies.baseline.comparison) == .case_insensitive) or
             (Policies.baseline.one_of.severity != .off and (Policies.baseline.one_of.comparison orelse Policies.baseline.comparison) == .case_insensitive) or
@@ -47,7 +48,7 @@ pub fn Profile(comptime config: anytype) type {
         };
         pub const Error = Policies.Error || support.processor.Fragment.Error || error{ UnsupportedEncoding, EncodingRequired };
 
-        pub fn parseAndValidate(input: support.processor.Fragment, sink: Sink, options: Options) Error!result.Result {
+        pub fn parseAndValidate(input: support.processor.Fragment, sink: Sink, options: Options) Error!results.Result {
             const fragment = try support.processor.Fragment.init(input.bytes, input.origin);
             const prepared = if (runtime) try Policies.prepare(.{ .policy = options.policy }) else Policies.prepare(.{});
             // This is string CONTENT, not a file: U+FEFF is never stripped and
@@ -56,19 +57,24 @@ pub fn Profile(comptime config: anytype) type {
             switch (actual) {
                 inline else => |encoding| {
                     if (comptime !capabilities.allows(encoding)) return error.UnsupportedEncoding;
+                    const p = if (runtime) prepared else Policies.baseline;
+                    if (p.execution.metering or p.execution.cancellation) {
+                        var session = Core(encoding).init(fragment, sink, options, prepared);
+                        return session.run();
+                    }
                     return run(encoding, fragment, sink, options, prepared);
                 },
             }
         }
 
-        fn Engine(comptime actual: support.encoding.Actual) type {
+        fn Engine(comptime actual: support.encoding.Actual, comptime can_cancel: bool) type {
             return struct {
                 const Self = @This();
                 input: support.processor.Fragment,
                 sink: Sink,
                 state: Policies.State,
-                cancellation: if (cancellable) ?support.execution.Cancellation else void,
-                result: result.Result = .{},
+                cancellation: if (can_cancel) ?support.execution.Cancellation else void,
+                result: results.Result = .{},
 
                 inline fn effective(self: *const Self) Schema.Effective {
                     return if (runtime) self.state else Policies.baseline;
@@ -76,7 +82,7 @@ pub fn Profile(comptime config: anytype) type {
 
                 fn cancelled(self: *Self) bool {
                     if (self.result.completion != .complete) return true;
-                    if (cancellable) if (self.cancellation) |token| if (token.requested()) {
+                    if (can_cancel) if (self.effective().execution.cancellation) if (self.cancellation) |token| if (token.requested()) {
                         self.result.completion = .cancelled;
                         return true;
                     };
@@ -105,13 +111,23 @@ pub fn Profile(comptime config: anytype) type {
                     return true;
                 }
 
-                fn Context(comptime Validator: type) type {
+                fn Context(comptime Validator: type, comptime stepped: bool) type {
                     return struct {
-                        pub const cancellation_enabled = cancellable;
+                        pub const cancellation_enabled = can_cancel;
+                        pub const ComparisonState = @import("compare.zig").State(folding_used);
                         engine: *Self,
                         code: diagnostics.Code,
                         comparison: if (Validator.uses_comparison) policy.Comparison else void,
                         findings: u64 = 0,
+                        pub fn equalsStep(ctx: *@This(), comparison_state: *ComparisonState, value: Value(actual), expected: []const u8) validators.Step {
+                            if (!Validator.uses_comparison) @compileError("validator must opt into uses_comparison");
+                            if (ctx.engine.result.completion != .complete) return .stopped;
+                            if (value.bytes.ptr != ctx.engine.input.bytes.ptr or value.bytes.len != ctx.engine.input.bytes.len or value.origin != ctx.engine.input.origin) {
+                                ctx.invalidValidator();
+                                return .stopped;
+                            }
+                            return comparison_state.step(value, expected, ctx.comparison, ctx);
+                        }
                         pub fn cancelled(ctx: *@This()) bool {
                             return ctx.engine.cancelled();
                         }
@@ -119,6 +135,7 @@ pub fn Profile(comptime config: anytype) type {
                             if (ctx.engine.result.completion == .complete) ctx.engine.result.completion = .invalid_validator;
                         }
                         pub fn equals(ctx: *@This(), value: Value(actual), expected: []const u8) ?bool {
+                            if (stepped) @compileError("resumable validators must use equalsStep");
                             if (!Validator.uses_comparison) @compileError("validator must opt into uses_comparison");
                             if (ctx.cancelled()) return null;
                             if (value.bytes.ptr != ctx.engine.input.bytes.ptr or value.bytes.len != ctx.engine.input.bytes.len or value.origin != ctx.engine.input.origin) {
@@ -167,12 +184,23 @@ pub fn Profile(comptime config: anytype) type {
                     };
                 }
 
-                fn check(self: *Self, comptime Validator: type, settings: Validator.Settings, severity: policy.Severity, comparison: policy.Comparison, code: diagnostics.Code, state: *result.CheckState) void {
+                fn check(self: *Self, comptime Validator: type, settings: Validator.Settings, severity: policy.Severity, comparison: policy.Comparison, code: diagnostics.Code, state: *results.CheckState) void {
                     if (severity == .off or self.cancelled()) return;
                     state.* = .incomplete;
-                    var context: Context(Validator) = .{ .engine = self, .code = code, .comparison = if (Validator.uses_comparison) comparison else {} };
-                    const outcome = Validator.check(Value(actual){ .bytes = self.input.bytes, .origin = self.input.origin }, settings, &context);
-                    if (self.cancelled()) return;
+                    var context: Context(Validator, false) = .{ .engine = self, .code = code, .comparison = if (Validator.uses_comparison) comparison else {} };
+                    const value = Value(actual){ .bytes = self.input.bytes, .origin = self.input.origin };
+                    const outcome: validators.Outcome = if (@hasDecl(Validator, "check")) Validator.check(value, settings, &context) else blk: {
+                        var state_value: Validator.State(Context(Validator, false)) = .{};
+                        while (true) switch (Validator.step(&state_value, value, settings, &context)) {
+                            .pending => if (context.cancelled()) break :blk .stopped,
+                            .passed => break :blk .passed,
+                            .failed => break :blk .failed,
+                            .stopped => break :blk .stopped,
+                        };
+                    };
+                    // Preserve a concrete callback outcome before polling for
+                    // another work step; an error is not erased by a late stop.
+                    if (self.result.completion != .complete) return;
                     if (outcome == .stopped) {
                         // Returning stopped without signalling a cause is a
                         // validator contract failure, never a successful check.
@@ -186,9 +214,205 @@ pub fn Profile(comptime config: anytype) type {
             };
         }
 
-        fn run(comptime actual: support.encoding.Actual, fragment: support.processor.Fragment, sink: Sink, options: Options, prepared: Policies.State) result.Result {
+        fn Core(comptime actual: support.encoding.Actual) type {
+            const E = Engine(actual, cancellable);
+            const equals_active = runtime or Policies.baseline.equals.severity != .off;
+            const one_of_active = runtime or Policies.baseline.one_of.severity != .off;
+            const custom_active = runtime or Policies.baseline.custom_severity != .off;
+            return struct {
+                const Self = @This();
+                engine: E,
+                stage: results.Stage = .encoding,
+                finished: bool = false,
+                at: u32 = 0,
+                bad_start: ?u32 = null,
+                findings: u64 = 0,
+                equals_state: if (equals_active) validators.Equals.State(E.Context(validators.Equals, true)) else void = if (equals_active) .{} else {},
+                one_of_state: if (one_of_active) validators.OneOf.State(E.Context(validators.OneOf, true)) else void = if (one_of_active) .{} else {},
+                custom_state: if (custom_active and validators.resumable(Custom)) Custom.State(E.Context(Custom, true)) else void = if (custom_active and validators.resumable(Custom)) .{} else {},
+
+                fn init(fragment: support.processor.Fragment, sink: Sink, options: Options, prepared: Policies.State) Self {
+                    var self: Self = .{ .engine = .{ .input = fragment, .sink = sink, .state = prepared, .cancellation = options.cancellation } };
+                    const p = self.engine.effective();
+                    self.engine.result.checks.equals = if (p.equals.severity == .off) .disabled else .not_run;
+                    self.engine.result.checks.one_of = if (p.one_of.severity == .off) .disabled else .not_run;
+                    self.engine.result.checks.custom = if (p.custom_severity == .off) .disabled else .not_run;
+                    return self;
+                }
+
+                fn progress(self: *const Self, used: u32) results.Progress {
+                    return .{ .outcome = if (self.finished) self.engine.result.completion else null, .work_used = used, .source_frontier = self.at, .stage = self.stage };
+                }
+
+                fn drive(self: *Self, comptime bounded: bool, budget: u32) results.Progress {
+                    if (self.finished) return self.progress(0);
+                    const p = self.engine.effective();
+                    var polling: support.execution.CancellationPolling(cancellable, if (runtime) null else Policies.baseline.execution.cancellation_interval) = .{};
+                    var used: u32 = 0;
+                    while (true) {
+                        // Entry polls even with a zero budget; completion wins
+                        // over later cancellation and never polls again.
+                        if (cancellable and p.execution.cancellation and polling.due(p.execution.cancellation_interval)) {
+                            if (self.engine.cancelled()) {
+                                self.finished = true;
+                                return self.progress(used);
+                            }
+                        }
+                        if (bounded and used == budget) return self.progress(used);
+                        self.step();
+                        if (bounded) used += 1;
+                        if (cancellable and p.execution.cancellation) polling.spend(1);
+                        if (self.engine.result.completion != .complete) self.finished = true;
+                        if (self.finished) return self.progress(used);
+                        // Do not poll again solely to discover an exhausted
+                        // budget; the next live entry will poll before work.
+                        if (bounded and used == budget) return self.progress(used);
+                    }
+                }
+
+                fn run(self: *Self) results.Result {
+                    _ = self.drive(false, 0);
+                    return self.engine.result;
+                }
+
+                fn cancel(self: *Self) results.Result {
+                    if (!self.finished) {
+                        self.engine.result.completion = .cancelled;
+                        self.finished = true;
+                    }
+                    return self.engine.result;
+                }
+
+                fn next(self: *Self, stage: results.Stage) void {
+                    self.findings = 0;
+                    self.stage = stage;
+                    if (stage == .done) self.finished = true;
+                }
+
+                fn step(self: *Self) void {
+                    const p = self.engine.effective();
+                    switch (self.stage) {
+                        .encoding => {
+                            self.engine.result.checks.encoding = .incomplete;
+                            const bytes = self.engine.input.bytes;
+                            if (self.at < bytes.len) {
+                                const decoded = support.encoding.Reader(actual).decode(bytes, self.at) catch {
+                                    if (self.bad_start == null) self.bad_start = self.at;
+                                    self.at += @intCast(@min(support.encoding.unitBytes(actual), bytes.len - self.at));
+                                    return;
+                                };
+                                if (self.bad_start == null) {
+                                    self.at += decoded.len;
+                                    return;
+                                }
+                            }
+                            if (self.bad_start) |start| {
+                                self.bad_start = null;
+                                _ = self.engine.emit(.{ .code = .invalid_encoding, .span = .{ .start = self.engine.input.origin + start, .len = self.at - start } });
+                                return;
+                            }
+                            self.engine.result.checks.encoding = .complete;
+                            if (self.engine.result.errors != 0) {
+                                inline for (.{ "equals", "one_of", "custom" }) |field| {
+                                    if (@field(self.engine.result.checks, field) != .disabled) @field(self.engine.result.checks, field) = .unavailable;
+                                }
+                                self.next(.done);
+                            } else self.next(.equals);
+                        },
+                        .equals => if (equals_active) self.rule(validators.Equals, &self.equals_state, p.equals.expected, p.equals.severity, p.equals.comparison orelse p.comparison, if (p.equals.severity == .warning) .unequal_warning else .unequal, &self.engine.result.checks.equals, .one_of) else self.next(.one_of),
+                        .one_of => if (one_of_active) self.rule(validators.OneOf, &self.one_of_state, p.one_of.values, p.one_of.severity, p.one_of.comparison orelse p.comparison, if (p.one_of.severity == .warning) .not_one_of_warning else .not_one_of, &self.engine.result.checks.one_of, .custom) else self.next(.custom),
+                        .custom => if (custom_active) self.rule(Custom, &self.custom_state, p.custom, p.custom_severity, p.comparison, if (p.custom_severity == .warning) .custom_check_warning else .custom_check_failed, &self.engine.result.checks.custom, .done) else self.next(.done),
+                        .done => unreachable,
+                    }
+                }
+
+                fn rule(self: *Self, comptime Validator: type, state: anytype, settings: Validator.Settings, severity: policy.Severity, comparison: policy.Comparison, code: diagnostics.Code, coverage: *results.CheckState, next_stage: results.Stage) void {
+                    if (severity == .off) return self.next(next_stage);
+                    coverage.* = .incomplete;
+                    if (comptime !validators.resumable(Validator)) {
+                        // Policy preparation rejects this case under metering.
+                        // Synchronous custom code remains usable without budgets.
+                        self.engine.check(Validator, settings, severity, comparison, code, coverage);
+                        self.next(next_stage);
+                        return;
+                    }
+                    var context: E.Context(Validator, true) = .{ .engine = &self.engine, .code = code, .comparison = if (Validator.uses_comparison) comparison else {}, .findings = self.findings };
+                    const outcome = Validator.step(state, Value(actual){ .bytes = self.engine.input.bytes, .origin = self.engine.input.origin }, settings, &context);
+                    self.findings = context.findings;
+                    if (self.engine.result.completion != .complete) return;
+                    switch (outcome) {
+                        .pending => {},
+                        .stopped => context.invalidValidator(),
+                        .passed, .failed => {
+                            coverage.* = .complete;
+                            if (outcome == .failed and self.findings == 0) _ = context.report(.{});
+                            self.next(next_stage);
+                        },
+                    }
+                }
+            };
+        }
+
+        const Inner = union(support.encoding.Actual) {
+            ascii: if (capabilities.ascii) Core(.ascii) else void,
+            utf8: if (capabilities.utf8) Core(.utf8) else void,
+            utf16le: if (capabilities.utf16) Core(.utf16le) else void,
+            utf16be: if (capabilities.utf16) Core(.utf16be) else void,
+            utf32le: if (capabilities.utf32) Core(.utf32le) else void,
+            utf32be: if (capabilities.utf32) Core(.utf32be) else void,
+        };
+        pub const Session = struct {
+            inner: Inner,
+            pub fn init(input: support.processor.Fragment, sink: Sink, options: Options) Error!@This() {
+                const fragment = try support.processor.Fragment.init(input.bytes, input.origin);
+                const prepared = if (runtime) try Policies.prepare(.{ .policy = options.policy }) else Policies.prepare(.{});
+                const actual = options.encoding orelse (if (capabilities.utf8) support.encoding.Actual.utf8 else if (capabilities.ascii) .ascii else return error.EncodingRequired);
+                switch (actual) {
+                    inline else => |encoding| {
+                        if (comptime !capabilities.allows(encoding)) return error.UnsupportedEncoding;
+                        return .{ .inner = @unionInit(Inner, @tagName(encoding), Core(encoding).init(fragment, sink, options, prepared)) };
+                    },
+                }
+            }
+            pub fn advance(self: *@This(), budget: u32) (if (runtime) error{MeteringDisabled}!results.Progress else results.Progress) {
+                if (!runtime and !Policies.baseline.execution.metering) @compileError("advance requires execution.metering");
+                switch (self.inner) {
+                    inline else => |*session, encoding| {
+                        if (comptime !capabilities.allows(encoding)) unreachable;
+                        if (runtime and !session.engine.effective().execution.metering) return error.MeteringDisabled;
+                        return session.drive(true, budget);
+                    },
+                }
+            }
+            pub fn run(self: *@This()) results.Result {
+                return switch (self.inner) {
+                    inline else => |*session, encoding| if (comptime capabilities.allows(encoding)) session.run() else unreachable,
+                };
+            }
+            pub fn result(self: *const @This()) ?@import("result.zig").Result {
+                return switch (self.inner) {
+                    inline else => |*session, encoding| if (comptime capabilities.allows(encoding)) (if (session.finished) session.engine.result else null) else unreachable,
+                };
+            }
+            pub fn cancel(self: *@This()) @import("result.zig").Result {
+                return switch (self.inner) {
+                    inline else => |*session, encoding| if (comptime capabilities.allows(encoding)) session.cancel() else unreachable,
+                };
+            }
+            pub fn deinit(self: *@This()) void {
+                _ = self.cancel();
+            }
+            pub fn reset(self: *@This(), input: support.processor.Fragment, sink: Sink, options: Options) Error!void {
+                const replacement = try init(input, sink, options);
+                self.deinit();
+                self.* = replacement;
+            }
+        };
+
+        fn run(comptime actual: support.encoding.Actual, fragment: support.processor.Fragment, sink: Sink, options: Options, prepared: Policies.State) results.Result {
             const p = if (runtime) prepared else Policies.baseline;
-            var engine: Engine(actual) = .{ .input = fragment, .sink = sink, .state = prepared, .cancellation = options.cancellation };
+            _ = options;
+            var engine: Engine(actual, false) = .{ .input = fragment, .sink = sink, .state = prepared, .cancellation = {} };
             engine.result.checks.equals = if (p.equals.severity == .off) .disabled else .not_run;
             engine.result.checks.one_of = if (p.one_of.severity == .off) .disabled else .not_run;
             engine.result.checks.custom = if (p.custom_severity == .off) .disabled else .not_run;
@@ -199,7 +423,7 @@ pub fn Profile(comptime config: anytype) type {
             // The standard validator skips ASCII runs in SIMD-sized chunks.
             // Keep cooperative polling on the scalar path when enabled. On
             // malformed input, the ordinary walk below locates every bad run.
-            if (!cancellable and actual == .utf8 and std.unicode.utf8ValidateSlice(fragment.bytes)) at = @intCast(fragment.bytes.len);
+            if (actual == .utf8 and std.unicode.utf8ValidateSlice(fragment.bytes)) at = @intCast(fragment.bytes.len);
             while (at < fragment.bytes.len) {
                 if (engine.cancelled()) return engine.result;
                 const decoded = support.encoding.Reader(actual).decode(fragment.bytes, at) catch {

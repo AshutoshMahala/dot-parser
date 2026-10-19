@@ -35,7 +35,7 @@ and `City.Sink.discard` work too. A discard/filtering sink does not change valid
 Input is `Fragment{ .bytes, .origin }`. The operation checks its bounds, including
 the `u32` original-source range. `origin` is the physical byte offset of these
 contents in the original source, not a character column. Source must remain
-unchanged for the duration of the call. Do not concatenate or decode host
+unchanged for the duration of the call or session. Do not concatenate or decode host
 spellings and pretend their positions still have a simple origin offset.
 
 The first stage verifies the **entire** selected encoding, including suffixes an
@@ -178,7 +178,9 @@ const RequiredInitial = struct {
 };
 ```
 
-`Settings`, `defaults`, `uses_comparison`, and `check` are required. Optional
+`Settings`, `defaults` and `uses_comparison` are required. Supply `check` for a
+synchronous validator, or `State(Context)` and `step` for a resumable validator
+(both forms can coexist). Optional
 `validateSettings(settings) bool` must be pure, allocation-free, source-independent
 configuration verification; it must not invoke execution callbacks. Policy
 `.custom` supplies the settings, while `.validation.custom` supplies severity.
@@ -231,14 +233,137 @@ No edit is applied automatically. Any borrowed references in details or fixes
 must outlive their retained diagnostics; do not report pointers to callback-local
 buffers.
 
-## Execution and costs
+## Metering, cancellation and sessions
 
-First slice: synchronous `parseAndValidate`, no metering, resumable sessions,
-implicit threads or bounded-work claim for consumer code. Enable the optional
-hook with `.cancellation = true` and pass `options.cancellation`; built-in scans
-and comparisons poll cooperatively, as do calls to `context.cancelled()`.
-Arbitrary predicates/regex calls cannot be preempted. Policy verification and
-sink/custom callbacks are not governed by a credit budget.
+Execution uses the same policy names and session lifecycle as DOT and markup:
+
+```zig
+const Text = strings.Profile(.{ .policy = .{
+    .execution = .{
+        .metering = true,             // default false
+        .cancellation = true,         // default false; independent of metering
+        .cancellation_interval = 1,   // positive work-step count, default 1
+    },
+    .validation = .{ .equals = .{ .expected = "Seattle", .severity = .err } },
+} });
+var session = try Text.Session.init(
+    .{ .bytes = source, .origin = 0 }, bag.sink(),
+    .{ .cancellation = cancel_token }, // optional borrowed hook
+);
+defer session.deinit();
+while (true) {
+    const progress = session.advance(64);
+    // At most 64 credits used; return to your event loop here if unfinished.
+    if (progress.outcome != null) break;
+}
+const result = session.result().?;
+```
+
+`parseAndValidate` remains a single run-to-completion call. `Session.run()` also
+runs to completion without a credit limit. `advance(budget)` yields without
+restarting a check; `advance(0)` does no content work but checks cancellation at
+entry. `result()` is null until terminal, including after a pause. `cancel()`
+and `deinit()` end unfinished work without creating input-error diagnostics.
+After termination, further calls do no work or polling and keep the same result.
+`reset(fragment, sink, options)` starts a fresh operation; an invalid reset leaves
+the previous session unchanged. There is no allocation to free. Sessions can move
+between calls, but cannot be driven concurrently or reentered by a callback.
+
+With `runtime_policy = true`, execution overrides are resolved and latched at
+init/reset; `advance` returns an error union and needs `try`. It returns
+`MeteringDisabled` if metering is off. For fixed profiles, calling `advance` with
+metering off is a compile error. The top-level `strings.BoundedSession` enables
+metering with all content rules off. Cancellation lives under
+`.policy.execution.cancellation`, not a separate top-level profile setting.
+
+### Credit and cancellation guarantees
+
+One credit dispatches one bounded state-machine step. Built-in steps perform
+one of these operations:
+
+- Decode one source or expected scalar (at most four physical bytes), or advance
+  one malformed physical code unit.
+- Compare at most one scalar per side, including producing or consuming a
+  bounded Unicode-fold expansion.
+- Emit a finding, finish a check/candidate, or move to the next stage. A finishing
+  comparison may also emit its one generic failure finding within that step.
+
+Credits are **not bytes or wall-clock time**, and are not interchangeable with
+DOT/markup scanner credits. Budget one always permits progress. Partitioning the
+same work into different positive budgets does not change total charged work,
+findings or results. No scan of an entire value or candidate list is hidden in
+one built-in step. Membership retains its candidate position; folding retains its
+pending expansion across pauses. `work_used` counts this call only.
+`source_frontier` counts physical source bytes classified by the encoding pass,
+relative to the fragment; it stays at the source length while content checks
+continue. `stage` distinguishes `encoding`, `equals`, `one_of`, `custom`, `done`.
+
+When enabled, cancellation is checked on every live entry and at most
+`cancellation_interval` work steps apart. Larger intervals do not change credits
+or allow `advance` to exceed its budget. A cancelled check stays incomplete;
+scheduled later checks stay not run. A finished result wins over late cancellation.
+No clocks, threads or synchronization are created. The caller owns hook lifetime,
+thread safety, and delivery cost.
+
+Fragment/policy preparation occurs at init/reset, **outside** the work budget.
+Runtime policy verification scans effective patterns and may call custom
+`validateSettings`; this is not resumable. Sinks and hooks are synchronous callbacks,
+not preemptible operations. Their execution time is not bounded by credits.
+
+### Resumable custom validators
+
+Built-ins and custom validators use exactly the same `State(Context)` / `step`
+contract. For example, a custom comparison can use the shared bounded helper:
+
+```zig
+const Match = struct {
+    pub const Settings = []const u8;
+    pub const defaults: Settings = "Seattle";
+    pub const uses_comparison = true;
+    pub fn State(comptime Context: type) type {
+        return struct { comparison: Context.ComparisonState = .{} };
+    }
+    pub fn step(state: anytype, value: anytype, expected: Settings,
+                context: anytype) strings.Step {
+        return context.equalsStep(&state.comparison, value, expected);
+    }
+};
+```
+
+Bind it with `.custom = Match` and enable `.policy.validation.custom` as usual.
+Each `step` costs one credit and returns `pending`, `passed`, `failed` or
+`stopped`. State starts with its default field values. Those defaults must be bounded
+and must not scan input, invoke callbacks or allocate. Store progress in that state, not
+in retained context/session pointers. Do bounded work per call and yield
+`pending` when unfinished; the engine cannot enforce a time limit on arbitrary
+trusted Zig code. A custom loop or regex call does not become bounded just by
+being placed inside `step`.
+
+`equalsStep` validates its UTF-8 expected argument incrementally, then compares
+using the profile's case setting. Pass the original value and the same unchanged
+expected slice until terminal, and reset its state before a new comparison.
+Patterns and custom settings remain borrowed and must outlive the session.
+Calling synchronous `context.equals` from a metered step is a compile error.
+Use `context.report` for detailed diagnostics as before; reports survive pauses
+and suppress the generic failure fallback across the whole check.
+
+An optional `check` provides an unmetered fast path, exactly as it does for
+built-ins. It must agree with `step` on acceptance and diagnostics. A step-only
+validator also works unmetered. A check-only validator (including `Predicate`)
+is accepted unmetered but rejected by `validatePolicy`/init if active metering is
+requested; it is never silently treated as bounded. Cancellation-only execution
+can call it, but it must poll `context.cancelled()` inside long work itself.
+
+## Execution costs
+
+With both execution features off, the one-shot path has no session state,
+credit counters or cancellation polling. Opting into metering or cancellation
+uses scalar, bounded work instead of the bulk fast path, even when calling
+`parseAndValidate` or `Session.run`. Larger budgets reduce resume overhead, not
+the work needed by the validator. Session storage includes only compiled-in
+rules and folding capability; runtime-configurable profiles retain the possible
+rule states. Storage is fixed-size and caller-owned, not proportional to input
+length or membership-list length.
 
 Source encoding is checked before the enabled rules; comparisons may scan
 it again. Uncancellable UTF-8 uses the standard validator's ASCII fast path;
@@ -252,8 +377,10 @@ are free to prepare or scan. No heap allocations occur in the processor or compa
 only caller-selected bags or consumer callbacks may allocate. There is no string
 tree, retained processor per value, normalization buffer or source copy.
 
-Run `zig build test-string`, `zig build bench-string -Doptimize=ReleaseFast`, and
-`zig build check-wasm`. The last command builds consumed, stripped Wasm probes
+Run `zig build test-string`, `zig build bench-string -Doptimize=ReleaseFast`,
+`zig build bench-string-sessions -Doptimize=ReleaseFast`, and `zig build check-wasm`.
+The session benchmark reports time, credits, hook calls and state size for
+fixed/runtime policies and multiple budgets/intervals. The last command builds consumed, stripped Wasm probes
 for exact, folding and non-comparison builds and uses Node to execute their
 exports and verify folding-table exclusion. `zig build check` includes these
 Wasm checks alongside the repository's other correctness/build checks, without

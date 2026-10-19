@@ -119,6 +119,10 @@ pub fn build(b: *std.Build) void {
         .{ .name = "string_invalid_pattern", .message = "invalid policy: invalid_pattern_encoding" },
         .{ .name = "string_unknown_setting", .message = "unknown string policy field: typo" },
         .{ .name = "string_comparison_contract", .message = "validator must opt into uses_comparison" },
+        .{ .name = "string_unmetered", .message = "advance requires execution.metering" },
+        .{ .name = "string_sync_metering", .message = "invalid policy: non_resumable_validator" },
+        .{ .name = "string_cancellation_interval", .message = "invalid policy: invalid_cancellation_interval" },
+        .{ .name = "string_step_comparison", .message = "resumable validators must use equalsStep" },
     }) |fixture| {
         const rejected = b.addObject(.{ .name = fixture.name, .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("tests/compile_fail/{s}.zig", .{fixture.name})),
@@ -479,6 +483,15 @@ pub fn build(b: *std.Build) void {
     b.step("bench-string", "Measure standalone exact/folding and custom string checks")
         .dependOn(&b.addRunArtifact(string_bench).step);
     check_benches.dependOn(&string_bench.step);
+    const string_sessions_bench = b.addExecutable(.{ .name = "string_sessions_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/string_sessions.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "string_processor", .module = strings }},
+    }) });
+    b.step("bench-string-sessions", "Measure opt-in string metering and cancellation")
+        .dependOn(&b.addRunArtifact(string_sessions_bench).step);
+    check_benches.dependOn(&string_sessions_bench.step);
     const string_sizes = b.step("string-size-probes", "Install consumed exact/folding/predicate Wasm size probes");
     const wasm_check = b.addSystemCommand(&.{"node"});
     wasm_check.addFileArg(b.path("tools/check_string_sizes.mjs"));
@@ -537,6 +550,14 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseSmall,
             .imports = &.{.{ .name = "parser_support", .module = portable_support }},
         });
+        const string_session_probe = b.addObject(.{ .name = b.fmt("string_session_{s}", .{@tagName(arch)}), .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/freestanding_string_session.zig"),
+            .target = portable_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{.{ .name = "string_processor", .module = portable_strings }},
+        }) });
+        _ = string_session_probe.getEmittedBin();
+        freestanding.dependOn(&string_session_probe.step);
         for ([_]bool{ false, true }) |folding| {
             const features = b.addOptions();
             features.addOption(bool, "folding", folding);

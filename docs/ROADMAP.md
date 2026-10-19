@@ -46,7 +46,7 @@ other's rules.
   needs its own design.
 - **String integration** for checking values inside markup. The unreleased
   [standalone string processor](STRINGS.md) supplies equality, membership and
-  custom checks. Host adapters, source maps and attribute-specific selection
+  custom checks, with resumable metering and cancellation. Host adapters, source maps and attribute-specific selection
   are still needed; callers currently select contents and invoke it explicitly.
 - **More of a partial markup document.** Unreleased DOT retention keeps later
   recovered statements with gaps; markup still retains its prefix. Gap-aware

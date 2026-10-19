@@ -7,6 +7,14 @@ pub const Completion = union(enum) {
     diagnostic_stop: support.reporting.StopReason,
     invalid_validator,
 };
+pub const Stage = enum { encoding, equals, one_of, custom, done };
+pub const Progress = struct {
+    outcome: ?Completion,
+    work_used: u32,
+    /// Bytes classified by the encoding pass, relative to the fragment.
+    source_frontier: u32,
+    stage: Stage,
+};
 pub const Result = struct {
     completion: Completion = .complete,
     checks: struct {

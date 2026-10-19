@@ -178,8 +178,11 @@ Delayed caller-selected processing remains available independently.
 The standalone first slice is implemented in `string_processor`; the current
 [public string contract](../STRINGS.md) documents borrowed contents, fixed/runtime
 policy, the shared validator contract, Unicode 17.0.0 comparison, custom reporting,
-completion and costs. Built-in `equals`/`one_of` and custom validators use the same
-execution path. This does not implement host selection or transfer host syntax.
+completion and costs. Built-in `equals`/`one_of` and custom validators share the
+resumable `State`/`step` contract, with optional unmetered fast checks. Standalone
+sessions meter encoding and validation and support cancellation; synchronous-only
+custom validators cannot be activated under metering. This does not implement
+host selection or transfer host syntax.
 
 Host integration still needs:
 
@@ -192,8 +195,9 @@ Host integration still needs:
 - Independent scope coverage and selection of which host-owned checks, if any,
   transfer to a child without duplicate findings.
 - The attribute delegation precedence and omitted-form choices above.
-- Resumable/metered string validation before shared-budget execution. The current
-  standalone operation and arbitrary custom validators make no metering promise.
+- Parent scheduling/aggregation of the standalone string session, including
+  mapping its bounded-step credits to the shared-budget contract. Runtime policy
+  preparation and consumer callbacks are outside standalone execution budgets.
 
 Future host string handling defaults to passthrough, even when a processor is
 bound; explicit processing enables checks. The standalone operation explicitly

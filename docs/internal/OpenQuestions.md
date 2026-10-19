@@ -957,9 +957,11 @@ is explicit. See [standalone strings](../STRINGS.md) for the actual API and cost
 Host integration remains open: passthrough by default, explicit processing,
 raw-to-logical adapters, source maps, mixed concatenations, attribute routing and
 override precedence. Mandatory host quote/escape/reference/boundary checks stay
-with DOT/markup. Resumable/metered string validation and shared-budget composition
-are not implemented; arbitrary custom or regex calls cannot acquire bounded-work
-guarantees merely by being compiled in. No bundled regex engine is implied.
+with DOT/markup. Standalone resumable string validation is implemented through
+the same `State`/`step` contract for built-ins and custom validators; shared-budget
+composition remains unimplemented. Arbitrary custom or regex calls cannot acquire
+bounded-work guarantees merely by being compiled in; active synchronous-only
+validators are rejected under metering. No bundled regex engine is implied.
 See [remaining integration](PROCESSOR_CONTRACT.md#standalone-strings-and-remaining-host-integration).
 
 **Diagnostics, scheduling and independent outcomes**

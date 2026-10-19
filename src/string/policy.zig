@@ -3,6 +3,7 @@ const std = @import("std");
 const support = @import("parser_support");
 pub const Comparison = enum { case_sensitive, case_insensitive };
 pub const Severity = enum { off, warning, err };
+pub const Execution = struct { metering: bool = false, cancellation: bool = false, cancellation_interval: u32 = 1 };
 pub const Equals = struct {
     expected: []const u8 = "",
     severity: Severity = .off,
@@ -20,6 +21,7 @@ pub fn Schema(comptime Custom: type, comptime unicode: bool) type {
             comparison: ?Comparison = null,
             on_error: ?support.execution.OnError = null,
             diagnostics: struct { fixes: ?support.reporting.Fixes = null } = .{},
+            execution: struct { metering: ?bool = null, cancellation: ?bool = null, cancellation_interval: ?u32 = null } = .{},
             validation: struct {
                 equals: ?Equals = null,
                 one_of: ?OneOf = null,
@@ -31,24 +33,29 @@ pub fn Schema(comptime Custom: type, comptime unicode: bool) type {
             comparison: Comparison = .case_sensitive,
             on_error: support.execution.OnError = .collect,
             fixes: support.reporting.Fixes = .all,
+            execution: Execution = .{},
             equals: Equals = .{},
             one_of: OneOf = .{},
             custom_severity: Severity = .off,
             custom: Custom.Settings = Custom.defaults,
         };
         pub const defaults: Effective = .{};
-        pub const Error = error{ UnicodeFoldingDisabled, InvalidPatternEncoding, CustomValidatorRequired, InvalidCustomSettings };
+        pub const Error = error{ UnicodeFoldingDisabled, InvalidPatternEncoding, CustomValidatorRequired, InvalidCustomSettings, InvalidCancellationInterval, NonResumableValidator };
         pub const Issue = enum {
             unicode_folding_disabled,
             invalid_pattern_encoding,
             custom_validator_required,
             invalid_custom_settings,
+            invalid_cancellation_interval,
+            non_resumable_validator,
             pub fn asError(self: @This()) Error {
                 return switch (self) {
                     .unicode_folding_disabled => error.UnicodeFoldingDisabled,
                     .invalid_pattern_encoding => error.InvalidPatternEncoding,
                     .custom_validator_required => error.CustomValidatorRequired,
                     .invalid_custom_settings => error.InvalidCustomSettings,
+                    .invalid_cancellation_interval => error.InvalidCancellationInterval,
+                    .non_resumable_validator => error.NonResumableValidator,
                 };
             }
         };
@@ -58,6 +65,11 @@ pub fn Schema(comptime Custom: type, comptime unicode: bool) type {
                 .comparison = patch.comparison orelse base.comparison,
                 .on_error = patch.on_error orelse base.on_error,
                 .fixes = patch.diagnostics.fixes orelse base.fixes,
+                .execution = .{
+                    .metering = patch.execution.metering orelse base.execution.metering,
+                    .cancellation = patch.execution.cancellation orelse base.execution.cancellation,
+                    .cancellation_interval = patch.execution.cancellation_interval orelse base.execution.cancellation_interval,
+                },
                 .equals = patch.validation.equals orelse base.equals,
                 .one_of = patch.validation.one_of orelse base.one_of,
                 .custom_severity = patch.validation.custom orelse base.custom_severity,
@@ -65,6 +77,9 @@ pub fn Schema(comptime Custom: type, comptime unicode: bool) type {
             };
         }
         pub fn check(p: Effective, _: Policy) Check {
+            if (p.execution.cancellation_interval == 0) return .{ .invalid = .invalid_cancellation_interval };
+            if (p.execution.metering and p.custom_severity != .off and !@import("validators.zig").resumable(Custom))
+                return .{ .invalid = .non_resumable_validator };
             if (!unicode and (p.comparison == .case_insensitive or
                 p.equals.comparison == .case_insensitive or p.one_of.comparison == .case_insensitive))
                 return .{ .invalid = .unicode_folding_disabled };
