@@ -4,6 +4,18 @@ const dot = @import("dot_parser");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const source = "graph { a -- ; b; }";
+
+test "recovered endpoint body resumes its enclosing edge without a cascade" {
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |partial| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .retention = .{ .partial = partial } } });
+        var bag: dot.FixedDiagnosticBag(8) = .{};
+        var result = P.parseBorrowed(std.testing.allocator, "digraph { a -> { b -> } -> c; }", bag.sink(), .{});
+        defer result.deinit(std.testing.allocator);
+        try equal(dot.ParseOutcome.invalid_syntax, result.outcome);
+        try equal(@as(u32, 1), result.syntax_errors);
+        try equal(@as(usize, 1), bag.items().len);
+    };
+}
 const Reject = struct {
     fn emit(_: ?*anyopaque, _: dot.Diagnostic) dot.DiagnosticSinkError!dot.DiagnosticAction {
         return error.DiagnosticSinkFailure;

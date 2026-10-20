@@ -66,8 +66,11 @@ or `.document` (abandon all still-open work). Abort cannot fail. It does not
 undo external changes or edit the source. Stage changes until the relevant
 commit if atomic output is required. A failing/stopping commit callback is
 followed by abort, not successful acceptance.
-The statement-abort span is only the known failed prefix (possibly zero length
-on an operational stop); `skipped` supplies the full synchronized region later.
+With begin notifications enabled, a statement abort always follows its delivered
+begin. The statement-abort span is only the known failed prefix (possibly zero
+length at terminal cleanup, including syntax failure); it excludes a closing
+brace owned by the enclosing scope. `skipped` supplies the full synchronized
+region later.
 
 Transactions can nest: an edge statement can contain a subgraph endpoint whose
 body emits its own statements. Child commits survive a later parent-statement
@@ -161,6 +164,9 @@ Two optional compile-time declarations select callback work:
 `recover_statements = false` ends output at the first syntax rejection while
 the grammar may continue collecting diagnostics. Both default to true for user
 consumers; neither changes the profile's syntax/recovery policy.
+The `parser_retention` namespace is reserved for internal document bookkeeping,
+not a consumer hook. Unrelated methods named `continuesAfterError` or
+`retainThrough` have no effect on event delivery.
 
 One-shot event profiles support compiled native source encodings and original
 byte offsets. Native resumable sessions, event-driven validation, simultaneous

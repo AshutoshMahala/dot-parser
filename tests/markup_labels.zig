@@ -8,6 +8,7 @@ test "Graphviz complete labels accept documented content, references and values"
         "hello &nbsp; &copy; &alpha; &euro; &apos;",
         "<b>bold</B><BR/><I>italic</I><SUB>2</SUB><SUP>3</SUP><S>x</S><O>y</O>",
         "<BR></BR>",
+        "<TABLE CELLSPACING='-128' STYLE='rounded,\tradial'><TR><TD/></TR><HR> \t\n</HR><TR><TD/><VR> </VR><TD/></TR></TABLE>",
         " <!-- before --> <TABLE><TR><TD/></TR></TABLE> ",
         "<FONT FACE='sans' POINT-SIZE='24.0'><TABLE BORDER='255' CELLBORDER='127' CELLPADDING='255' CELLSPACING='127' ROWS='*' COLUMNS='*' STYLE='rounded, radial'><TR><TD ALIGN='TEXT' BALIGN='left' VALIGN='top' ROWSPAN='65535' COLSPAN='1' SIDES='ltRB'>a</TD><VR/><TD/></TR><HR/><TR><TD/></TR></TABLE></FONT>",
         "<TABLE WIDTH='10' HEIGHT='20' FIXEDSIZE='true'><TR><TD><IMG SRC='not-opened.png' SCALE='both'/></TD></TR></TABLE>",
@@ -33,6 +34,27 @@ test "Graphviz complete labels accept documented content, references and values"
             try equal(.complete, result.validation.?.checks.references);
         }
     }
+}
+
+test "accepted malformed references are literal text not Graphviz coverage gaps" {
+    const P = m.Profile(.{ .policy = .{ .syntax = .{ .malformed_reference = .accept } } });
+    const source = "<TABLE><TR><TD>&a#b; &#X20; &#5; &amp</TD></TR></TABLE>";
+    var result = try P.parseAndValidate(std.testing.allocator, .{ .bytes = source, .origin = 0 }, P.DiagnosticSink.discard, .{});
+    defer result.deinit();
+    try expect(result.documentValid());
+    try equal(.complete, result.validation.?.checks.graphviz_content);
+}
+
+test "Graphviz attribute reference catalog has document source and runtime parity" {
+    const source = "<TABLE TOOLTIP='&nbsp;'><TR><TD>&nbsp;</TD></TR></TABLE>";
+    const P = m.Profile(.{ .runtime_policy = true });
+    var result = try P.parseAndValidate(std.testing.allocator, .{ .bytes = source, .origin = 0 }, P.DiagnosticSink.discard, .{});
+    defer result.deinit();
+    try equal(@as(u64, 1), result.validation.?.errors);
+    const local = try P.validateSource(std.testing.allocator, source, P.DiagnosticSink.discard, .{});
+    try equal(@as(u64, 1), local.errors);
+    const override = try P.validate(std.testing.allocator, &result.parse.document.?, P.DiagnosticSink.discard, .{ .policy = .{ .validation = .{ .references = .{ .severity = .err, .catalog = .graphviz } } } });
+    try equal(@as(u64, 0), override.errors);
 }
 
 test "Graphviz content and value rejections stay independent of syntax acceptance" {
@@ -62,6 +84,11 @@ test "Graphviz content and value rejections stay independent of syntax acceptanc
         "<FONT POINT-SIZE='-2'>x</FONT>",
         "<TABLE BORDER='256'><TR><TD/></TR></TABLE>",
         "<TABLE CELLBORDER='128'><TR><TD/></TR></TABLE>",
+        "<TABLE CELLSPACING='-129'><TR><TD/></TR></TABLE>",
+        "<TABLE CELLSPACING='128'><TR><TD/></TR></TABLE>",
+        "<TABLE CELLBORDER='-1'><TR><TD/></TR></TABLE>",
+        "<TABLE STYLE='rounded,&#9;radial'><TR><TD/></TR></TABLE>",
+        "<TABLE TOOLTIP='&nbsp;'><TR><TD/></TR></TABLE>",
         "<TABLE ROWS='1'><TR><TD/></TR></TABLE>",
         "<TABLE FIXEDSIZE='TRUE'><TR><TD/></TR></TABLE>",
         "<TABLE STYLE='dotted'><TR><TD/></TR></TABLE>",

@@ -144,6 +144,10 @@ pub fn Profile(comptime config: anytype) type {
                             if (stepped) @compileError("resumable validators must use equalsStep");
                             if (!Validator.uses_comparison) @compileError("validator must opt into uses_comparison");
                             if (ctx.cancelled()) return null;
+                            if (expected.len > std.math.maxInt(u32)) {
+                                ctx.invalidValidator();
+                                return null;
+                            }
                             if (value.bytes.ptr != ctx.engine.input.bytes.ptr or value.bytes.len != ctx.engine.input.bytes.len or value.origin != ctx.engine.input.origin) {
                                 ctx.invalidValidator();
                                 return null;

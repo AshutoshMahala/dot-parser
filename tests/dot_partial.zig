@@ -11,6 +11,73 @@ const capacities: dot.DocumentCapacities = .{ .comments = 16, .statements = 64, 
 const Pools = dot.FixedDocumentStorage(capacities);
 const source = "/* lead */ digraph G { a:p:n -> b -> c; subgraph s { x [k=v]; {y} -> z -> {q} -> r; } n [a=1 b=2]; graph [rank=same]; k=v; }";
 
+test "comment retention remains capped when partial collection resumes" {
+    const P = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true, .comments = true }, .limits = .{ .max_comments = 1 } } });
+    var result = P.parseBorrowed(allocator, "graph { a -> ; /* x */ /* y */ }", discard, .{});
+    defer result.deinit(allocator);
+    try equal(dot.ParseOutcome.resource_exhausted, result.outcome);
+    try equal(@as(usize, 1), result.document.?.comments.?.len);
+}
+
+test "terminal partial validation never reads unattached attribute or port staging" {
+    inline for (.{ .scalar, .block }) |scanner| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .retention = .{ .partial = true }, .execution = .{ .metering = true }, .validation = .{
+            .graphviz = .{ .unknown_attribute = .warning },
+            .restrictions = .{ .ports = .warning },
+        } } });
+        const bytes = "graph { ok [color=red]; bad:p [colr=blue x=1]; }";
+        for (0..200) |stop| {
+            var pools: Pools = .{};
+            var frames: dot.FixedParseScratch(.{ .nesting = 32 }) = .{};
+            var session = P.Session.init(bytes, .{ .document = pools.storage(), .scratch = frames.storage() }, discard, .{});
+            defer session.deinit();
+            for (0..stop) |_| _ = session.advance(1);
+            const result = session.cancel();
+            if (result.document) |*document| {
+                const validation = P.validate(document, discard, .{});
+                try equal(@as(u64, if (document.nodes.len == 2) 3 else 0), validation.warningCount());
+            }
+        }
+    }
+}
+
+test "partial validation excludes abandoned attributes ports and late operators" {
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |runtime| {
+        const p: dot.Policy = .{ .scanner = scanner, .retention = .{ .partial = true }, .validation = .{
+            .graphviz = .{ .unknown_attribute = .warning },
+            .restrictions = .{ .ports = .warning },
+        } };
+        const P = dot.Profile(.{ .runtime_policy = runtime, .policy = if (runtime) .{} else p });
+        for ([_][]const u8{
+            "graph { a [color=red",  "graph { a [colr=red x=]; b; }",
+            "graph { a:p -> ; b; }", "graph { a -- { b } -> c [x= ; d; }",
+        }) |input| {
+            var bag: dot.FixedDiagnosticBag(32) = .{};
+            var r = if (runtime) try P.parseAndValidate(allocator, input, bag.sink(), .{ .policy = p }) else P.parseAndValidate(allocator, input, bag.sink(), .{});
+            defer r.deinit(allocator);
+            try equal(dot.ParseOutcome.invalid_syntax, r.outcome);
+            try equal(@as(u64, 0), r.validation.?.warningCount());
+            try equal(@as(u64, 0), r.validation.?.outcome.completed.violations);
+            try audit(&r.document.?);
+            var pools: Pools = .{};
+            var frames: dot.FixedParseScratch(.{ .nesting = 32 }) = .{};
+            const fixed = if (runtime) try P.parseBorrowedIn(input, .{ .document = pools.storage(), .scratch = frames.storage() }, discard, .{ .policy = p }) else P.parseBorrowedIn(input, .{ .document = pools.storage(), .scratch = frames.storage() }, discard, .{});
+            try deep(r.document.?, fixed.document.?);
+        }
+        var bag: dot.FixedDiagnosticBag(32) = .{};
+        const nested = "graph { a:p -> { b:q [colr=red]; } -> c:r [bad=1 x=]; d:s [colr=blue]; }";
+        var r = if (runtime) try P.parseAndValidate(allocator, nested, bag.sink(), .{ .policy = p }) else P.parseAndValidate(allocator, nested, bag.sink(), .{});
+        defer r.deinit(allocator);
+        try equal(@as(u64, 1), r.validation.?.outcome.completed.violations);
+        try equal(@as(u64, 5), r.validation.?.warningCount());
+        var previous: u32 = 0;
+        for (bag.items()[1..]) |d| {
+            try expect(d.span.start >= previous);
+            previous = d.span.start;
+        }
+    };
+}
+
 test "partial validation checks retained operators of unfinished scoped owners" {
     const cases = .{
         .{ "graph { a -> {b} [x=1", 1 },

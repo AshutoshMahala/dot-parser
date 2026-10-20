@@ -880,3 +880,16 @@ test "native runtime policy variants and admission cancellation are explicit" {
     try std.testing.expectError(error.Cancelled, D.parseBorrowed(gpa, source, bag.sink(), .{ .policy = .{ .execution = .{ .cancellation = true } }, .cancellation = hook }));
     try std.testing.expectEqual(@as(usize, 0), bag.items().len);
 }
+
+test "explicit UTF-8 markup selection does not redetect a foreign BOM" {
+    const P = markup.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .policy = .{ .mode = .structural } });
+    const source = "\xff\xfe<a/>";
+    var result = try P.parseBorrowed(gpa, source, markup.diagnostic.discard, .{ .encoding = .utf8 });
+    defer result.deinit();
+    try std.testing.expectEqual(markup.Outcome.success, result.outcome);
+    try std.testing.expectEqual(.explicit, result.document.?.source_info.provenance);
+    try std.testing.expectEqual(.utf8, result.document.?.source_info.encoding);
+    try std.testing.expect(!result.document.?.source_info.has_bom);
+    const checked = try P.validateSource(gpa, source, markup.diagnostic.discard, .{ .encoding = .utf8 });
+    try std.testing.expectEqual(.complete, checked.completion);
+}

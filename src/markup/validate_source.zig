@@ -74,10 +74,10 @@ pub fn Validator(comptime backend: policy.ScannerBackend, comptime fixed: ?polic
 }
 
 pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime backend: policy.ScannerBackend, comptime fixed: ?policy.Effective, comptime cancellable: bool, comptime mode: policy.Mode) type {
-    return ValidatorForInputEncoding(actual, backend, fixed, cancellable, mode, true);
+    return ValidatorForInputEncoding(actual, backend, fixed, cancellable, mode, .detect);
 }
 
-pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, comptime backend: policy.ScannerBackend, comptime fixed: ?policy.Effective, comptime cancellable: bool, comptime mode: policy.Mode, comptime strip_bom: bool) type {
+pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, comptime backend: policy.ScannerBackend, comptime fixed: ?policy.Effective, comptime cancellable: bool, comptime mode: policy.Mode, comptime framing: lexer.Framing) type {
     const enc = support.encoding.Reader(actual);
     const V = validation.ValidatorForEncoding(actual, if (fixed) |f| f.validation else null, cancellable, mode);
     const Local = validation.ValidatorForEncoding(actual, if (fixed) |f| localSettings(f.validation) else null, cancellable, mode);
@@ -247,8 +247,8 @@ pub fn ValidatorForInputEncoding(comptime actual: support.encoding.Actual, compt
                 if (!self.merge(encoded)) return self.result;
                 if (p.validation.duplicate_attribute == .off and p.validation.names.severity == .off and p.validation.references.severity == .off and !validation.vocabularyActive(mode, v))
                     return self.finish();
-                const Scanner = lexer.ScannerWithEncoding(actual, backend, false, cancellable);
-                var scanner = if (strip_bom) Scanner.init(self.source) else Scanner.initContent(self.source);
+                const Scanner = lexer.ScannerWithFraming(actual, backend, false, cancellable, framing);
+                var scanner = if (framing == .content) Scanner.initContent(self.source) else Scanner.init(self.source);
                 while (true) {
                     if (!self.poll()) return self.result;
                     if (!scanner.stepReady()) continue;

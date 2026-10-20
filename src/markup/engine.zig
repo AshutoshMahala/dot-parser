@@ -12,11 +12,11 @@ pub fn Engine(comptime api: type, comptime backend: policy.ScannerBackend, compt
 }
 
 pub fn EngineWithEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime backend: policy.ScannerBackend, comptime fixed_settings: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode) type {
-    return EngineWithInputEncoding(actual, api, backend, fixed_settings, metered, cancellable, mode, true);
+    return EngineWithInputEncoding(actual, api, backend, fixed_settings, metered, cancellable, mode, .detect);
 }
 
-pub fn EngineWithInputEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime backend: policy.ScannerBackend, comptime fixed_settings: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode, comptime strip_bom: bool) type {
-    const Machine = parser.MachineWithInputEncoding(actual, backend, fixed_settings, metered, cancellable, mode, strip_bom);
+pub fn EngineWithInputEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime backend: policy.ScannerBackend, comptime fixed_settings: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode, comptime framing: @import("lexer.zig").Framing) type {
+    const Machine = parser.MachineWithInputEncoding(actual, backend, fixed_settings, metered, cancellable, mode, framing);
     return struct {
         pub const Settings = Machine.Settings;
         pub const Hook = Machine.Hook;
@@ -58,7 +58,7 @@ pub fn EngineWithInputEncoding(comptime actual: @import("parser_support").encodi
         }
         fn encodedDocument(builder: *const syntax.Builder) ?syntax.Document {
             var document = builder.document() orelse return null;
-            document.source_info = if (strip_bom) @import("parser_support").encoding.Reader(actual).sourceInfo(builder.source) else .{ .encoding = actual, .provenance = .inherited };
+            document.source_info = if (framing != .content) @import("parser_support").encoding.Reader(actual).sourceInfo(builder.source) else .{ .encoding = actual, .provenance = .inherited };
             return document;
         }
         pub fn parseBorrowedIn(source: []const u8, memory: api.ParseMemory, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) api.FixedParseResult {

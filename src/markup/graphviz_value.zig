@@ -26,6 +26,8 @@ pub fn Reader(comptime actual: support.encoding.Actual) type {
         bytes: []const u8,
         index: usize = 0,
         failed: bool = false,
+        // XML normalizes literal attribute whitespace, not character references.
+        normalize_space: bool = false,
         /// A bounded cancellation step for every inspected code unit. Invalid
         /// or unknown references remain distinguishable from decoded content.
         pub fn next(self: *@This(), context: anytype) ?u32 {
@@ -36,24 +38,41 @@ pub fn Reader(comptime actual: support.encoding.Actual) type {
             }
             const c = enc.unit(self.bytes, self.index);
             self.index += enc.width;
-            if (c != '&') return c;
+            if (c != '&') return if (self.normalize_space and (c == '\t' or c == '\n' or c == '\r')) ' ' else c;
             const begin = self.index;
             while (self.index < self.bytes.len and enc.unit(self.bytes, self.index) != ';') : (self.index += enc.width) {
                 if (!context.unit()) {
                     self.failed = true;
                     return null;
                 }
-                const unit = enc.unit(self.bytes, self.index);
-                if (unit == '&' or unit <= ' ' or unit == '<') return '&';
+                const lexical = @import("lexer.zig");
+                const unit = enc.byteAt(self.bytes, self.index);
+                const first = enc.byteAt(self.bytes, begin);
+                const valid = if (self.index == begin)
+                    unit == '#' or lexical.isNameStart(unit)
+                else if (first == '#')
+                    (self.index == begin + enc.width and unit == 'x') or lexical.digit(unit, if (enc.byteAt(self.bytes, begin + enc.width) == 'x') 16 else 10) != null
+                else
+                    lexical.isNameContinue(unit);
+                if (!valid) {
+                    self.index = begin;
+                    return '&';
+                }
             }
-            if (self.index == self.bytes.len) return '&';
+            if (self.index == self.bytes.len) {
+                self.index = begin;
+                return '&';
+            }
             const name = self.bytes[begin..self.index];
             if (!context.unit()) {
                 self.failed = true;
                 return null;
             }
             self.index += enc.width;
-            if (name.len == 0) return '&';
+            if (name.len == 0) {
+                self.index = begin;
+                return '&';
+            }
             if (enc.unit(name, 0) != '#') return @import("graphviz_entities.zig").lookup(actual, name) orelse 0xffffffff;
             var i: usize = enc.width;
             var base: u32 = 10;
@@ -61,7 +80,10 @@ pub fn Reader(comptime actual: support.encoding.Actual) type {
                 base = 16;
                 i += enc.width;
             }
-            if (i == name.len) return '&';
+            if (i == name.len) {
+                self.index = begin;
+                return '&';
+            }
             var number: u32 = 0;
             while (i < name.len) : (i += enc.width) {
                 if (!context.unit()) {
@@ -78,7 +100,9 @@ pub fn Reader(comptime actual: support.encoding.Actual) type {
                 if (digit >= base) return '&';
                 number = number *| base +| digit;
             }
-            return if (@import("lexer.zig").referenceCharacter(number)) number else '&';
+            if (@import("lexer.zig").referenceCharacter(number)) return number;
+            self.index = begin;
+            return '&';
         }
     };
 }
@@ -91,7 +115,7 @@ pub fn Checks(comptime actual: support.encoding.Actual) type {
             return enc.asciiEqual(name, expected, true);
         }
         pub fn equals(value: []const u8, expected: []const u8, context: anytype) bool {
-            var r: R = .{ .bytes = value };
+            var r: R = .{ .bytes = value, .normalize_space = true };
             for (expected) |byte| {
                 const c = r.next(context) orelse return false;
                 if (c > 127 or std.ascii.toUpper(@intCast(c)) != byte) return false;
@@ -102,11 +126,12 @@ pub fn Checks(comptime actual: support.encoding.Actual) type {
             inline for (list) |word| if (equals(value, word, context)) return true;
             return false;
         }
-        fn integer(value: []const u8, min: u32, max: u32, context: anytype) bool {
+        fn integer(value: []const u8, min: i32, max: i32, context: anytype) bool {
             var r: R = .{ .bytes = value };
             var current = r.next(context);
             while (space(current)) current = r.next(context);
             const negative = current == '-';
+            const bound: u32 = @intCast(if (negative) @max(0, -min) else max);
             if (current == '+' or current == '-') current = r.next(context);
             var count: u32 = 0;
             var n: u32 = 0;
@@ -114,11 +139,12 @@ pub fn Checks(comptime actual: support.encoding.Actual) type {
                 if (c < '0' or c > '9') break;
                 count +|= 1;
                 n = n *| 10 +| (c - '0');
-                if (n > max) return false;
+                if (n > bound) return false;
                 current = r.next(context);
             }
             while (space(current)) current = r.next(context);
-            return !r.failed and current == null and count > 0 and n >= min and (!negative or n == 0);
+            const signed: i64 = if (negative) -@as(i64, n) else n;
+            return !r.failed and current == null and count > 0 and signed >= min and signed <= max;
         }
         fn space(c: ?u32) bool {
             return c == ' ' or c == '\t' or c == '\n' or c == '\r';
@@ -190,7 +216,8 @@ pub fn Checks(comptime actual: support.encoding.Actual) type {
             if (named(name, "COLUMNS") or named(name, "ROWS")) return if (equals(value, "*", context)) null else .separator;
             if (named(name, "POINT-SIZE")) return if (fontSize(value, context)) null else .font_size;
             if (named(name, "BORDER") or named(name, "CELLPADDING")) return if (integer(value, 0, 255, context)) null else .integer;
-            if (named(name, "CELLBORDER") or named(name, "CELLSPACING")) return if (integer(value, 0, 127, context)) null else .integer;
+            if (named(name, "CELLBORDER")) return if (integer(value, 0, 127, context)) null else .integer;
+            if (named(name, "CELLSPACING")) return if (integer(value, -128, 127, context)) null else .integer;
             if (named(name, "WIDTH") or named(name, "HEIGHT")) return if (integer(value, 0, 65535, context)) null else .integer;
             if (named(name, "COLSPAN") or named(name, "ROWSPAN")) return if (integer(value, 1, 65535, context)) null else .integer;
             if (named(name, "GRADIENTANGLE")) return if (integer(value, 0, 360, context)) null else .integer;
@@ -203,7 +230,7 @@ pub fn Checks(comptime actual: support.encoding.Actual) type {
                 return null;
             }
             if (named(name, "STYLE")) {
-                var r: R = .{ .bytes = value };
+                var r: R = .{ .bytes = value, .normalize_space = true };
                 var word: [7]u8 = undefined;
                 var len: usize = 0;
                 while (true) {

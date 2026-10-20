@@ -4,6 +4,12 @@ const testing = std.testing;
 test {
     _ = @import("string_sessions.zig");
 }
+
+test "consumer string views expose checked local spans" {
+    const value: s.Value(.utf8) = .{ .bytes = "abc", .origin = 90 };
+    try testing.expectEqual(@as(u32, 0), (try value.span()).start);
+    try testing.expectEqual(@as(u32, 3), (try value.span()).len);
+}
 test "borrowed exact and membership use all checks, warning does not reject" {
     const P = s.Profile(.{ .policy = .{ .validation = .{
         .equals = .{ .expected = "SF", .severity = .warning },

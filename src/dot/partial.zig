@@ -23,6 +23,12 @@ pub fn Builder(comptime Base: type) type {
         pub const ScopeContext = Base.ScopeContext;
         pub const wants_begin_statement = false;
         pub const recover_statements = true;
+        // Explicit internal capability: ordinary consumer methods with these
+        // names never alter parser recovery or coverage.
+        pub const parser_retention = struct {
+            pub const continuesAfterError = Self.continuesAfterError;
+            pub const retainThrough = Self.retainThrough;
+        };
         base: Base,
         enabled: bool,
         frozen: bool = false,
@@ -57,7 +63,13 @@ pub fn Builder(comptime Base: type) type {
             // Pending pairs/links must never attach to the next statement.
             // Promoted edge owners and reserved scope slots remain explicitly
             // unfinished; completed nested statements keep their stable IDs.
-            self.base.pending_attributes = if (owned) self.base.attributes.items.len else self.base.attributes_len;
+            // Attributes cannot contain nested statements. Only this tail is
+            // unattached; truncating it preserves every completed child owner.
+            if (owned) self.base.attributes.items.len = self.base.pending_attributes else self.base.attributes_len = self.base.pending_attributes;
+            if (self.base.scope_state.scoped_owner) |index| {
+                const owners = if (owned) self.base.scoped_edges.items else self.base.storage.scoped_edges;
+                owners[index].first.attributes.len = self.retained_end;
+            }
             self.base.pending_links = if (owned) self.base.edge_links.items.len else self.base.edge_links_len;
             self.base.scope_state = .{};
         }
@@ -83,6 +95,7 @@ pub fn Builder(comptime Base: type) type {
         }
         fn abortDocument(self: *Self, reason: event.AbortReason) void {
             if (!self.enabled or self.base.phase != .building) return self.base.onAbort(.{ .document = reason });
+            self.abortStatement();
             self.frozen = true;
             // The view resolves unfinished subgraph intervals lazily. No stack
             // unwind, guessed delimiter, pool copy or allocator call is needed.

@@ -35,7 +35,8 @@ pub const Equals = struct {
         return context.equalsBatch(&state.comparison, value, expected, allowance);
     }
     pub fn validateSettings(expected: Settings) bool {
-        return @import("std").unicode.utf8ValidateSlice(expected);
+        const std = @import("std");
+        return expected.len <= std.math.maxInt(u32) and std.unicode.utf8ValidateSlice(expected);
     }
     pub fn check(value: anytype, expected: Settings, context: anytype) Outcome {
         return if (context.equals(value, expected) orelse return .stopped) .passed else .failed;
@@ -64,7 +65,7 @@ pub const OneOf = struct {
         return context.equalsBatch(&state.comparison, value, values[state.candidate], allowance);
     }
     pub fn validateSettings(values: Settings) bool {
-        for (values) |expected| if (!@import("std").unicode.utf8ValidateSlice(expected)) return false;
+        for (values) |expected| if (!Equals.validateSettings(expected)) return false;
         return true;
     }
     pub fn check(value: anytype, values: Settings, context: anytype) Outcome {

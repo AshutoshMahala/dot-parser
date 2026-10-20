@@ -25,7 +25,9 @@ pub fn Value(comptime actual: support.encoding.Actual) type {
         pub fn cursor(self: @This()) Cursor {
             return .{ .bytes = self.bytes };
         }
-        pub fn span(self: @This()) support.location.Span {
+        /// Checked even for consumer-constructed values, like Cursor.next.
+        pub fn span(self: @This()) error{SourceTooLarge}!support.location.Span {
+            if (self.bytes.len > support.location.max_source_len) return error.SourceTooLarge;
             return .{ .start = 0, .len = @intCast(self.bytes.len) };
         }
     };

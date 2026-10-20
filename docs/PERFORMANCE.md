@@ -879,6 +879,8 @@ outside the timer.
 
 ### One-command string comparison
 
+> **Unreleased.**
+
 Use the Zig-native reporter to compare the working tree against a Git revision:
 
 ```sh

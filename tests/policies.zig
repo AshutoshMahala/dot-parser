@@ -4,6 +4,8 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 
 test "public graph policy matrix: fixed and runtime have identical semantics" {
+    // This test specializes the full graph/operator cross-product in one body.
+    @setEvalBranchQuota(3000);
     inline for ([_]dot.GraphTreatment{ .undigraph, .digraph, .generic, .auto }) |treatment| {
         inline for (.{ .err, .warning, .off }) |severity| {
             inline for (.{ .as_written, .conform_to_kind }) |reading| {

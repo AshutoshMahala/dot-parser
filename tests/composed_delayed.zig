@@ -10,6 +10,17 @@ const P = dot.Profile(.{
     .processors = .{ .markup = Child },
 });
 
+test "delayed selection excludes abandoned identifiers but keeps nested and recovered facts" {
+    const source = "graph { a [label=<<lost/>> x=]; b -> { c [label=<<kept/>>]; } -> d [label=<<late/>> x=]; e [label=<<after/>>]; }";
+    var result = try P.parseAndValidate(gpa, source, P.DiagnosticSink.discard, .{});
+    defer result.deinit(gpa);
+    try std.testing.expectError(error.InvalidSpan, result.requestMarkup(gpa, span(source, "<<lost/>>")));
+    try result.requestMarkup(gpa, span(source, "<<kept/>>"));
+    try std.testing.expectError(error.InvalidSpan, result.requestMarkup(gpa, span(source, "<<late/>>")));
+    try result.requestMarkup(gpa, span(source, "<<after/>>"));
+    try equal(@as(usize, 2), result.pendingMarkup().len);
+}
+
 fn span(source: []const u8, raw: []const u8) dot.location.Span {
     return .{ .start = @intCast(std.mem.indexOf(u8, source, raw).?), .len = @intCast(raw.len) };
 }

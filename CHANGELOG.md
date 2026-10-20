@@ -8,6 +8,14 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- String `.ascii_case_insensitive` comparison, independent of optional full
+  Unicode folding. Case-sensitive remains the default; ASCII-only comparisons
+  do not pull in Unicode tables.
+- `zig build perf-string` creates alternating before/after reports from one
+  command, using the same current harness and compiler for both snapshots.
+- Optional outward scalar-boundary rounding for `location.textPosition` so
+  byte-oriented diagnostic ranges can be converted to editor positions.
+
 - Standalone `string_processor`: borrowed contents, native encoding validation,
   `equals`/`one_of` and compile-time custom validators through one contract,
   fixed/default-off runtime policies, common diagnostic bags/rendering, and
@@ -48,6 +56,13 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- Recovery resumes after certified boundaries, reporting independent errors
+  previously missed while avoiding cascades when resuming an enclosing edge.
+  For example, `digraph { a -> { b -> } -> c; }` now reports the one local error,
+  not two. Partial retention does not make invalid input valid.
+- **Breaking (Unreleased API):** string `Value.span()` now returns an error union,
+  rejecting oversized consumer-constructed views rather than trapping/truncating.
+
 - **Breaking:** Graphviz mode now rejects previously unchecked label content
   and values under its default policies. The new rules can be individually
   disabled; parsing alone still retains structurally valid input unchanged.
@@ -67,6 +82,19 @@ are marked; no compatibility shims are kept.
   and `skipped_end` metadata. Normal statement views hide them; use
   `skippedRanges()` for recovery gaps. `unrepresented()` describes only an
   unfinished suffix and can be null even when the document is partial.
+
+### Fixed
+
+- Partial DOT validation excludes unattached attributes, discarded port
+  occurrences and uncertified edge operators; delayed markup selection rejects
+  identifiers outside retained syntax while allowing retained nested scopes.
+- DOT event aborts pair with delivered begins and exclude an enclosing closing
+  brace. Native events preserve encoding provenance and admission cancellation.
+- Graphviz malformed-reference coverage, attribute reference catalogs, signed
+  CELLSPACING and literal whitespace handling; catalog metadata is decoded.
+- Explicit UTF-8 markup selection no longer probes a different encoding again.
+- Oversized string patterns are rejected consistently before scanning, and
+  performance reporting handles subdirectory repositories and invalid flags/paths.
 
 ## 0.5.0 — 2026-10-12
 

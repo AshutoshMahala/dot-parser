@@ -43,7 +43,10 @@ LF, CRLF and standalone CR follow the ordinary physical-line policy. Malformed
 code units, including an incomplete final unit, count as one U+FFFD replacement
 each for positions only; source bytes are unchanged. Queries inside a scalar or
 code unit return `InvalidBoundary`; out-of-range offsets return `InvalidOffset`.
-Use ordinary byte locations for diagnostic spans inside malformed sequences.
+This can also happen at the end of a one-byte diagnostic on a valid non-ASCII
+character. Use `.boundary = .before` for a range's start and `.boundary = .after`
+for its end to round outward to scalar boundaries. The default `.strict` keeps
+the boundary error; ordinary byte locations and stored spans are unchanged.
 Sources beyond the u32 domain return `SourceTooLarge`; a converted column that
 cannot fit in u32 returns `PositionOverflow` instead of wrapping.
 
@@ -106,6 +109,11 @@ limits, run-time settings and [sessions](EXECUTION.md). A session's document is
 readable only once the session has finished, not while it is paused. `measure`
 still returns sizes only for a successful parse.
 
+`scope.state()` currently scans that scope's statement interval on partial
+documents. Querying every nested scope can be quadratic in deep outlines;
+complete-document checks are constant-time. Avoid repeated queries on every
+keystroke until a cached outline-state pass is available.
+
 **Complete isn't valid.** A complete document can still fail validation, and a
 partial document is never `documentValid()`. Validating a partial document
 checks only what was kept, and reports that it didn't cover everything
@@ -124,8 +132,8 @@ Graph-kind restrictions only apply once the kind is known.
 Use the statement and scope views; they always give a safe outline. The raw
 arrays can contain things the views hide:
 
-- attributes, port references or chain links of a statement that wasn't
-  finished
+- port references or chain links of a statement that wasn't finished;
+  unattached attribute pairs are discarded on abort
 - order entries for statements still being built. `statement(id)` returns
   `null` for those, and iterators and counts skip them.
 - a subgraph at the start of a statement only becomes a standalone statement
@@ -164,7 +172,8 @@ if (parsed.document) |document| {
   agree, because an unfinished child also leaves its parents unfinished.
   Neither says the markup is valid. The `.not_processed` state is reserved and
   isn't returned yet.
-- **Only the part before the first error is kept**, as for DOT. So a parse that
+- **Markup keeps only the part before the first error**. Unlike DOT collection,
+  it does not retain later recovered statements. So a parse that
   reached the end (`parsed.completion == .complete`) can still have a partial
   document, for example when only a closing tag is missing. Missing quotes,
   comments and closing tags are never filled in.
@@ -362,7 +371,7 @@ an error.
 Some editors and Windows tools save files as UTF-16. To parse them without
 converting, see [source encodings](ENCODINGS.md). Positions and columns are
 always counted in bytes of your source; converting them to an editor's line
-and column is up to you.
+and column is optional through [textPosition](#editor-position-conversion).
 
 ## Memory
 
@@ -406,7 +415,7 @@ Run them with `zig build examples`. Each program is also installed in
 
 ## Not available yet
 
-- Keeping parts after the first error that the parser recovered safely
+- Keeping markup parts after the first error that the parser recovered safely
 - Checking labels in small steps, with fixed buffers, or with one budget for
   DOT and its labels
 - Resumable sessions for UTF-16 and UTF-32 input

@@ -9,6 +9,7 @@ const engine = @import("parse_engine.zig");
 const validation = @import("validate.zig");
 const lex = @import("lexer/lexer.zig");
 const Parts = @import("identifier_parts.zig").Parts;
+const syntax = @import("syntax.zig");
 
 pub fn Profile(comptime api: type, comptime config: policy.Config, comptime Child: type) type {
     return ProfileForEncoding(.utf8, api, config, Child, void);
@@ -168,6 +169,7 @@ pub fn ProfileForEncoding(comptime actual: support.encoding.Actual, comptime api
                 const document = self.dot.document orelse return error.DocumentUnavailable;
                 const limit = if (document.scopeComplete()) document.source.len else document.retained_end;
                 if (range.start > limit or range.len > limit - range.start) return error.InvalidSpan;
+                if (!document.scopeComplete() and !retainedIdentifier(&document, range)) return error.InvalidSpan;
                 var parts = try @import("identifier.zig").ForEncoding(selected).parts(document.source, range);
                 if (range.start < self._delayed.selection_end) return error.SelectionOutOfOrder;
                 const first = parts;
@@ -186,6 +188,38 @@ pub fn ProfileForEncoding(comptime actual: support.encoding.Actual, comptime api
                 self.markup.requested = true;
                 self.markup.selection = .selected_operands;
                 self.markup.representation = .not_processed;
+            }
+            fn contains(outer: support.location.Span, inner: support.location.Span) bool {
+                return inner.start >= outer.start and inner.endOffset() <= outer.endOffset();
+            }
+            fn retainedPair(pool: []const syntax.Attribute, range: support.location.Span) bool {
+                var lo: usize = 0;
+                var hi = pool.len;
+                while (lo < hi) {
+                    const mid = lo + (hi - lo) / 2;
+                    if (pool[mid].key.start <= range.start) lo = mid + 1 else hi = mid;
+                }
+                if (lo == 0) return false;
+                const pair = pool[lo - 1];
+                return contains(pair.key, range) or contains(pair.value, range);
+            }
+            // Partial documents can contain completed nested scopes inside an
+            // abandoned enclosing statement. A broad skipped-range check would
+            // discard those too; select only certified identifier occurrences.
+            fn retainedIdentifier(document: *const syntax.Document, range: support.location.Span) bool {
+                if (retainedPair(document.attributes, range) or retainedPair(document.assignments, range)) return true;
+                if (document.name) |name| if (contains(name, range)) return true;
+                var scopes = document.subgraphs();
+                while (scopes.next()) |scope| if (scope.name()) |name| if (contains(name, range)) return true;
+                var refs = syntax.RetainedReferenceIterator.init(document);
+                while (refs.next()) |reference| {
+                    if (contains(reference.identifier, range)) return true;
+                    if (reference.port) |port| {
+                        if (contains(port.first, range)) return true;
+                        if (port.second) |second| if (contains(second, range)) return true;
+                    }
+                }
+                return false;
             }
             /// Source-ordered envelopes still awaiting an attempt. Borrowed;
             /// invalidated by selection, processing or deinit. No hidden traversal.

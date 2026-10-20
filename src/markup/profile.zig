@@ -31,7 +31,7 @@ fn ParseOptionsFor(comptime api: type, comptime Binding: type) type {
 // Prepared/workspace calls consume aligned fragments in the outer source reader;
 // content encoding validity remains this processor's own policy.
 fn BoundProcessor(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime config: policy.Config) type {
-    const Worker = ProfileForInputEncoding(actual, api, config, false);
+    const Worker = ProfileForInputEncoding(actual, api, config, .content);
     return struct {
         pub const declared_source_encodings = Worker.declared_source_encodings;
         pub const source_capabilities = Worker.source_capabilities;
@@ -56,10 +56,16 @@ pub fn Profile(comptime api: type, comptime config: policy.Config) type {
 }
 
 pub fn ProfileForEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime config: policy.Config) type {
-    return ProfileForInputEncoding(actual, api, config, true);
+    return ProfileForInputEncoding(actual, api, config, .detect);
 }
 
-fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime config: policy.Config, comptime strip_bom: bool) type {
+/// Admission already selected this reader. A conflicting BOM is content, not
+/// permission to override explicit encoding or reject an enabled reader.
+pub fn ProfileForSelectedEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime config: policy.Config) type {
+    return ProfileForInputEncoding(actual, api, config, .selected);
+}
+
+fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.Actual, comptime api: type, comptime config: policy.Config, comptime framing: @import("lexer.zig").Framing) type {
     @setEvalBranchQuota(10000);
     const Binding = @import("parser_support").processor.PolicyBinding(policy, .{ .policy = config.policy, .runtime_policy = config.runtime_policy });
     return struct {
@@ -270,7 +276,7 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
                 @as(u4, if (effective.execution.cancellation) 1 else 0));
         }
         fn Core(comptime variant: Variant) type {
-            return engine.EngineWithInputEncoding(actual, api, variant.backend(), if (runtime_policy) null else baseline.parsing(), variant.metering(), variant.cancellation(), variant.mode(), strip_bom);
+            return engine.EngineWithInputEncoding(actual, api, variant.backend(), if (runtime_policy) null else baseline.parsing(), variant.metering(), variant.cancellation(), variant.mode(), framing);
         }
         fn settings(comptime variant: Variant, effective: State) Core(variant).Settings {
             return if (runtime_policy) effective.parsing() else {};
@@ -345,7 +351,7 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
             return validateCall("allocatedScope", .{ allocator, source, scope, diagnostics }, options);
         }
         fn SourceValidator(comptime v: Variant) type {
-            return source_validation.ValidatorForInputEncoding(actual, v.backend(), if (runtime_policy) null else baseline, v.cancellation(), v.mode(), strip_bom);
+            return source_validation.ValidatorForInputEncoding(actual, v.backend(), if (runtime_policy) null else baseline, v.cancellation(), v.mode(), framing);
         }
         fn sourceValidationCall(comptime method: []const u8, args: anytype, options: Options) Checked(api.ValidationResult) {
             return sourceValidationPrepared(method, args, if (runtime_policy) try prepare(options) else prepare(options));

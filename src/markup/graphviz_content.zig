@@ -136,6 +136,7 @@ pub fn Checker(comptime actual: support.encoding.Actual) type {
                 }
 
                 if (parent_tag == .BR or parent_tag == .HR or parent_tag == .VR or parent_tag == .IMG) {
+                    if ((parent_tag == .HR or parent_tag == .VR) and kind == null and text_kind == .spaces) continue;
                     if (!context.finding(span, name, .expected_empty)) return false;
                     continue;
                 }

@@ -145,12 +145,12 @@ const Progress = struct {
 /// Fixed policies capture limits/recovery in code; only scratch is retained as
 /// a resource. Runtime policies retain the resolved parse-stage settings once.
 pub fn Machine(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool, comptime ScannerOf: fn (comptime bool, comptime bool, comptime ?bool) type, comptime fixed: ?policy.ParseSettings) type {
-    return MachineWithProcessor(EventsPtr, metered, audited, cancellable, ScannerOf, fixed, void, false);
+    return MachineWithProcessor(EventsPtr, metered, audited, cancellable, ScannerOf, fixed, void, false, false);
 }
 
 /// For runtime settings, single_poll requires the caller to bind interval 1
 /// before constructing this machine. Fixed settings always own their interval.
-pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool, comptime ScannerOf: fn (comptime bool, comptime bool, comptime ?bool) type, comptime fixed: ?policy.ParseSettings, comptime Processor: type, comptime single_poll: bool) type {
+pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, comptime audited: bool, comptime cancellable: bool, comptime ScannerOf: fn (comptime bool, comptime bool, comptime ?bool) type, comptime fixed: ?policy.ParseSettings, comptime Processor: type, comptime single_poll: bool, comptime source_metadata: bool) type {
     if (Processor != void and metered) @compileError("during-DOT composition is run-to-completion; child validation is not work-metered");
     comptime {
         const info = @typeInfo(EventsPtr);
@@ -191,6 +191,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         // maximum u32 value is available as an absent occurrence (not a span).
         const no_statement = std.math.maxInt(u32);
         const Control = struct {
+            source_info: if (source_metadata) @import("parser_support").encoding.Info else void = if (source_metadata) .{} else {},
             grammar: if (audited) usize else void = if (audited) 0 else {},
             dispatch: if (audited) usize else void = if (audited) 0 else {},
             active_statement: if (transactional) u32 else void = if (transactional) no_statement else {},
@@ -204,7 +205,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         cancellation: if (cancellable) ?execution.Cancellation else void = if (cancellable) null else {},
         // Reuse the optional control slot: even adding top-level void fields
         // reorders Zig's auto-layout and changes disabled-profile codegen.
-        control: if (audited or transactional) Control else void = if (audited or transactional) .{} else {},
+        control: if (audited or transactional or source_metadata) Control else void = if (audited or transactional or source_metadata) .{} else {},
         events: EventsPtr,
         diagnostics: diagnostic.Sink,
         settings: if (fixed == null) policy.ParseSettings else void = if (fixed == null) .{} else {},
@@ -608,7 +609,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
 
         fn continuesAfterError(self: *const Self) bool {
             if (!statement_recovery) return false;
-            return if (@hasDecl(Sink, "continuesAfterError")) self.events.continuesAfterError() else true;
+            return if (@hasDecl(Sink, "parser_retention")) Sink.parser_retention.continuesAfterError(self.events) else true;
         }
 
         fn tracksStatements(self: *const Self) bool {
@@ -996,7 +997,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             self.right_scope = null;
             self.pending = .node;
             self.state = .after_identifier;
-            if (transactional and !self.aborted and self.tracksStatements()) self.control.active_statement = token.span.start;
+            if (transactional and !begin_notifications and !self.aborted and self.tracksStatements()) self.control.active_statement = token.span.start;
             return null;
         }
 
@@ -1266,6 +1267,8 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             switch (action) {
                 .begin_statement => {
                     if (!begin_notifications) unreachable;
+                    // Do not abort a begin that was scheduled but never delivered.
+                    self.control.active_statement = token.span.start;
                     if (self.publish(.begin_statement, .{ .owner = self.owner(), .start = token.span })) |result| return result;
                 },
                 .skipped => {
@@ -1293,7 +1296,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         .strict = self.strict,
                         .keyword_span = self.keyword_span,
                         .name_span = self.name_span,
-                        .source_info = enc.sourceInfo(self.tokens.source),
+                        .source_info = if (source_metadata) self.control.source_info else enc.sourceInfo(self.tokens.source),
                     })) |result| return result;
                 },
                 .begin_subgraph => {
@@ -1418,7 +1421,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 .node, .edge, .edge_chain, .assignment, .attribute_statement, .subgraph_statement => self.control.active_statement = no_statement,
                 else => {},
             };
-            if (comptime @hasDecl(@typeInfo(EventsPtr).pointer.child, "retainThrough")) {
+            if (comptime @hasDecl(Sink, "parser_retention")) {
                 // Statement callbacks use lookahead; it must not become part of
                 // the represented prefix before its own grammar action runs.
                 const end = switch (action) {
@@ -1432,7 +1435,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     .comment => 0,
                     else => 0,
                 };
-                self.events.retainThrough(@intCast(end));
+                Sink.parser_retention.retainThrough(self.events, @intCast(end));
             }
             if (metered) switch (action) {
                 .node, .edge, .edge_chain, .attribute_statement, .subgraph_statement => self.work.completed_statements += 1,
@@ -1447,7 +1450,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn retainThrough(self: *Self, end: u32) void {
-            if (@hasDecl(Sink, "retainThrough")) self.events.retainThrough(end);
+            if (@hasDecl(Sink, "parser_retention")) Sink.parser_retention.retainThrough(self.events, end);
         }
 
         /// Closing-brace hints must not depend on the output consumer.
@@ -1566,7 +1569,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     // normal callback. Completed nested scope records survive.
                     if (self.control.active_statement != no_statement) self.events.onAbort(.{ .statement = .{
                         .owner = .{ .statement = @enumFromInt(self.control.recovery_start), .scope = self.currentScope() },
-                        .span = .{ .start = self.control.recovery_start, .len = @intCast(@max(span.endOffset(), self.control.recovery_start) - self.control.recovery_start) },
+                        .span = .{ .start = self.control.recovery_start, .len = @intCast(@max(if (span.len == enc.width and enc.byteAt(self.tokens.source, span.start) == '}') span.start else span.endOffset(), self.control.recovery_start) - self.control.recovery_start) },
                         .reason = reason,
                     } });
                     self.control.active_statement = no_statement;

@@ -67,7 +67,7 @@ pub const Adapter = struct {
             .feature => |feature| try writer.writeAll(switch (feature) {
                 .processing_instructions => "processing instructions are not supported",
                 .declarations => "declarations are not supported",
-                .encoding => "source encoding is not enabled by this UTF-8 reader",
+                .encoding => "byte-order mark requires a different source reader",
             }),
             .capacity => |capacity| try writer.print("{s} capacity of {d} exhausted", .{ resourceText(capacity.resource), capacity.limit }),
             .reference => |problem| try writer.writeAll(switch (problem) {
@@ -95,7 +95,7 @@ pub const Adapter = struct {
     }
     pub fn hint(d: Diagnostic, positions: *Positions, writer: anytype) !void {
         if (d.details == .feature and d.details.feature == .encoding) {
-            try writer.writeAll("save as UTF-8 or enable the reader in .source_encodings; inspectSource reports the encoding named by the BOM");
+            try writer.writeAll("select the matching reader through .source_encodings, or save as UTF-8; this raw entry point does not switch readers from a BOM");
         } else if (d.details == .expected) {
             switch (d.details.expected) {
                 .attribute_value => try writer.writeAll("write '&lt;' for a literal '<' inside the attribute value"),

@@ -299,7 +299,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                         if (!checkValue(bounded_source, h.name, owner, a.name, a.value, &header, &gaps, poller, &result, sink, settings, hook)) return result;
                         if (!checkName(bounded_source, a.name, .attribute, &offset, poller, &result, sink, settings, hook)) return result;
                         if (a.value.len != 0 and
-                            !checkReferences(bounded_source, .{ .start = a.value.start + enc.width, .len = a.value.len - 2 * enc.width }, &offset, poller, &result, sink, settings, hook)) return result;
+                            !checkReferences(bounded_source, .{ .start = a.value.start + enc.width, .len = a.value.len - 2 * enc.width }, true, &offset, poller, &result, sink, settings, hook)) return result;
                     }
                     if (h.complete and !checkHeader(h.name, owner, header, &gaps, &result, sink, settings)) return result;
                 },
@@ -308,7 +308,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                     if (!checkName(bounded_source, name, if (scope == .attribute_name) .attribute else .element, &offset, poller, &result, sink, settings, hook)) return result;
                 },
                 .text, .attribute_value => |value| {
-                    if (!checkReferences(bounded_source, value, &offset, poller, &result, sink, settings, hook)) return result;
+                    if (!checkReferences(bounded_source, value, scope == .attribute_value, &offset, poller, &result, sink, settings, hook)) return result;
                 },
                 .bytes => {},
             }
@@ -442,11 +442,11 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                             if (!checkValue(source, node.name, owner, attr.name, attr.value, &header, &gaps, &poller, &result, sink, settings, hook)) return result;
                             if (!checkName(source, attr.name, .attribute, &offset, &poller, &result, sink, settings, hook)) return result;
                             // The retained value includes its original quotes.
-                            if (!checkReferences(source, .{ .start = attr.value.start + enc.width, .len = attr.value.len - 2 * enc.width }, &offset, &poller, &result, sink, settings, hook)) return result;
+                            if (!checkReferences(source, .{ .start = attr.value.start + enc.width, .len = attr.value.len - 2 * enc.width }, true, &offset, &poller, &result, sink, settings, hook)) return result;
                         }
                         if (document.node(@enumFromInt(id)).?.headerComplete().? and !checkHeader(node.name, owner, header, &gaps, &result, sink, settings)) return result;
                     },
-                    .text => if (!checkReferences(source, node.span, &offset, &poller, &result, sink, settings, hook)) return result,
+                    .text => if (!checkReferences(source, node.span, false, &offset, &poller, &result, sink, settings, hook)) return result,
                     .comment, .cdata => {},
                 }
             }
@@ -618,7 +618,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
         /// Named references only. Reuse the scanner's byte-name predicates so
         /// malformed candidates accepted as literal text cannot become findings.
         /// Numeric candidates contain no '&'; scanning past them needs no decoding.
-        inline fn checkReferences(source: []const u8, span: Span, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
+        inline fn checkReferences(source: []const u8, span: Span, attribute: bool, offset: *Offset, poller: *Poller, result: *Result, sink: diagnostic.Sink, settings: Settings, hook: Hook) bool {
             if (rules(settings).names.severity == .off and referenceSettings(mode, rules(settings)).severity == .off) return true;
             const bytes = span.slice(source);
             var index: u32 = 0;
@@ -648,7 +648,10 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                 // Nested name/encoding scans share and may exhaust the budget.
                 // Flush before calling them, then reload their remainder below.
                 scan.flush(index, poller);
-                const selected = referenceSettings(mode, rules(settings));
+                var selected = referenceSettings(mode, rules(settings));
+                // Graphviz expands HTML4 names in text only. Attribute values
+                // reach its XML parser unchanged; explicit catalogs still win.
+                if (mode == .graphviz and attribute and rules(settings).references.severity == .off) selected.catalog = .xml_predefined;
                 if (selected.severity != .off and !definitions.knownReferenceEncoded(actual, selected.catalog, name.slice(source))) {
                     // Catalog finding starts at '&', before any name finding.
                     const at = span.start + amp;

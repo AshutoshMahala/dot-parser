@@ -90,10 +90,10 @@ pub fn Schema(comptime Custom: type, comptime unicode: bool) type {
                 p.equals.comparison == .case_insensitive or p.one_of.comparison == .case_insensitive))
                 return .{ .invalid = .unicode_folding_disabled };
             // Patterns are UTF-8 configuration, independently of source encoding.
-            if (p.equals.severity != .off and !std.unicode.utf8ValidateSlice(p.equals.expected))
+            if (p.equals.severity != .off and !@import("validators.zig").Equals.validateSettings(p.equals.expected))
                 return .{ .invalid = .invalid_pattern_encoding };
             if (p.one_of.severity != .off) for (p.one_of.values) |value| {
-                if (!std.unicode.utf8ValidateSlice(value)) return .{ .invalid = .invalid_pattern_encoding };
+                if (!@import("validators.zig").Equals.validateSettings(value)) return .{ .invalid = .invalid_pattern_encoding };
             };
             if (Custom == @import("validators.zig").None and p.custom_severity != .off)
                 return .{ .invalid = .custom_validator_required };

@@ -29,6 +29,7 @@ pub fn CatalogForEncoding(comptime actual: @import("parser_support").encoding.Ac
                 const take_attribute = self.attribute < self.document.attributes.len and (self.assignment == self.document.assignments.len or self.document.attributes[self.attribute].key.start < self.document.assignments[self.assignment].key.start);
                 const key = if (take_attribute) self.document.attributes[self.attribute].key else self.document.assignments[self.assignment].key;
                 if (take_attribute) self.attribute += 1 else self.assignment += 1;
+                if (key.endOffset() > self.document.source.len) continue;
                 var chunks: identifier.ForEncoding(actual).Chunks = .{ .raw = key.slice(self.document.source) };
                 var name: [18]u8 = undefined;
                 var len: usize = 0;
@@ -73,7 +74,7 @@ fn attributeRange(document: *const syntax.Document, id: syntax.StatementId) synt
         .node => |i| document.nodes[i].attributes,
         .edge => |i| document.edges[i].attributes,
         .edge_chain => |i| document.edge_chains[i].first.attributes,
-        .scoped_edge => |i| document.scoped_edges[i].first.attributes,
+        .scoped_edge => |i| if (document.scoped_edges[i].complete()) document.scoped_edges[i].first.attributes else .{},
         .attribute_statement => |i| document.attribute_statements[i].attributes,
         .assignment, .subgraph => .{},
     };
@@ -409,14 +410,22 @@ pub const Ports = struct {
     values: []const syntax.PortedReference,
     severity: policy.RuleSeverity,
     index: u32 = 0,
+    retained: ?syntax.RetainedReferenceIterator,
 
     pub fn init(document: *const syntax.Document, settings: Settings, _: Scratch) Ports {
-        return .{ .values = document.ported_references, .severity = settings.restrictions.ports };
+        return .{ .values = document.ported_references, .severity = settings.restrictions.ports, .retained = if (document.state == .partial) .init(document) else null };
     }
     pub fn next(self: *Ports) ?D {
-        if (self.severity == .off or self.index == self.values.len) return null;
-        const port = self.values[self.index].port;
-        self.index += 1;
+        if (self.severity == .off) return null;
+        const port = if (self.retained) |*retained| blk: {
+            while (retained.next()) |reference| if (reference.port) |port| break :blk port;
+            return null;
+        } else blk: {
+            if (self.index == self.values.len) return null;
+            const port = self.values[self.index].port;
+            self.index += 1;
+            break :blk port;
+        };
         const last = port.second orelse port.first;
         return restricted(self.severity, .{ .start = port.first.start, .len = last.start + last.len - port.first.start }, .port);
     }

@@ -16,12 +16,12 @@ pub fn Machine(comptime backend: policy.ScannerBackend, comptime fixed: ?policy.
 }
 
 pub fn MachineWithEncoding(comptime actual: support.encoding.Actual, comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode) type {
-    return MachineWithInputEncoding(actual, backend, fixed, metered, cancellable, mode, true);
+    return MachineWithInputEncoding(actual, backend, fixed, metered, cancellable, mode, .detect);
 }
 
-pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode, comptime strip_bom: bool) type {
+pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, comptime backend: policy.ScannerBackend, comptime fixed: ?policy.ParseSettings, comptime metered: bool, comptime cancellable: bool, comptime mode: policy.Mode, comptime framing: lexer.Framing) type {
     const enc = support.encoding.Reader(actual);
-    const Scanner = lexer.ScannerWithEncoding(actual, backend, metered, metered or cancellable);
+    const Scanner = lexer.ScannerWithFraming(actual, backend, metered, metered or cancellable, framing);
     const Unit = if (enc.width == 1) u8 else u32;
     const recovery_enabled = fixed == null or fixed.?.on_error == .collect;
     const one_edit_enabled = recovery_enabled and (fixed == null or fixed.?.closing_tag_recovery != .exact);
@@ -63,7 +63,7 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
         terminal: ?result.Report = null,
 
         pub fn init(source: []const u8, diagnostics: diagnostic.Sink, settings: Settings, hook: Hook) Self {
-            var self: Self = .{ .scanner = if (strip_bom) Scanner.init(source) else Scanner.initContent(source), .diagnostics = diagnostics, .settings = settings, .hook = hook };
+            var self: Self = .{ .scanner = if (framing == .content) Scanner.initContent(source) else Scanner.init(source), .diagnostics = diagnostics, .settings = settings, .hook = hook };
             // One credit per source code unit, shared across ALL ancestor
             // searches, including fuzzy comparisons and bounded DP rows. Each
             // length probe, unit comparison or <=5-cell row costs one;

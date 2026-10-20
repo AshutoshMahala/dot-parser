@@ -183,11 +183,11 @@ The rules follow the [Graphviz HTML-like label documentation](https://graphviz.o
 | Elements and attributes | Documented per-element vocabulary; ASCII-case-insensitive tag/attribute names and duplicate detection |
 | Label content | Text/style runs **or** one table, optionally wrapped once in FONT, I, B, U or O; tables cannot mix with other label content |
 | Tables | TABLE contains TR rows, TR contains TD cells; HR/VR occur only between rows/cells, never first, last or consecutively |
-| Cells and styles | Empty cells allowed; IMG is the sole cell content; styles contain text/BR or the permitted table form; BR/HR/VR/IMG have no content |
+| Cells and styles | Empty cells allowed; IMG is the sole cell content; styles contain text/BR or the permitted table form; HR/VR allow whitespace only, BR/IMG have no content |
 | Whitespace | Nonprinting characters ignored; spaces around an unwrapped table allowed, but spaces outside its font wrapper rejected |
 | Attribute values | Alignment, booleans, SCALE, SIDES, STYLE, ROWS/COLUMNS; numeric ranges for borders, padding, spacing, spans, dimensions and gradient angle; finite POINT-SIZE |
 | Required attributes | Nonempty IMG SRC; FIXEDSIZE=TRUE requires positive WIDTH and HEIGHT |
-| References | HTML4's 252 named references plus XML `apos`, case-sensitive; numeric reference syntax/character validity remain parser checks |
+| References | Text: HTML4's 252 named references plus XML `apos`; attributes: XML's five predefined names. Case-sensitive; numeric syntax/character validity remain parser checks |
 
 Reference values are decoded for checking, including numeric references in
 attribute values and whitespace. Stored values, quotes, spelling and byte spans
@@ -196,6 +196,12 @@ introduced. POINT-SIZE uses 0–255 and GRADIENTANGLE 0–360, following the pin
 [Graphviz 16.0.0 numeric rules](https://gitlab.com/graphviz/graphviz/-/blob/16.0.0/lib/common/htmllex.c).
 Numeric values must be complete numbers; Graphviz's implementation sometimes
 ignores trailing junk, which this validator does not accept as a valid number.
+CELLSPACING accepts -128–127; CELLBORDER accepts 0–127. Literal attribute tabs
+and line endings normalize to spaces for checks, while numeric references keep
+their decoded value. STYLE deliberately accepts only documented ROUNDED/RADIAL
+forms; Graphviz accepts some additional renderer-specific styles. Non-whitespace
+text directly under TABLE/TR is rejected here rather than silently dropped as
+Graphviz may do. These are deliberate strictness differences, not browser HTML.
 
 Two existing parser forms are deliberately retained: single **or** double
 quotes, and paired empty elements such as `<BR></BR>`. The documented examples
@@ -203,9 +209,10 @@ use double quotes and `<BR/>`, but Graphviz's XML-backed parser and
 [label grammar](https://gitlab.com/graphviz/graphviz/-/blob/16.0.0/lib/common/htmlparse.y)
 also accept these forms. Bare `<BR>` without a closer is still not accepted.
 
-**Reference policy.** Graphviz's `unknown_reference` uses the HTML4 catalog by
-default. An explicitly enabled `validation.references` check takes precedence,
-so a consumer can deliberately select `.xml_predefined` instead. Set both
+**Reference policy.** Graphviz's `unknown_reference` uses HTML4 for text and
+XML predefined references for attributes by default. An explicitly enabled
+`validation.references` check takes precedence for both contexts, so a consumer
+can deliberately select a different catalog. Set both
 reference severities to `.off` to skip catalog checks. `references.catalog =
 .graphviz` is also available in structural mode. XML name checks remain
 independent and opt-in.
@@ -516,10 +523,10 @@ Every setting:
 | `diagnostics.unsupported` | `.err` | How to report unsupported input: `.err`, `.warning` or `.silent` |
 | `execution.metering` | `false` | Allow parsing in small steps |
 | `execution.cancellation` | `false` | Allow cancelling through a callback |
-| `execution.cancellation_interval` | `1` | Positive work-step interval for parsing/measurement; validation keeps its existing safe points. See [execution](EXECUTION.md#cancellation-interval). |
+| `execution.cancellation_interval` (Unreleased) | `1` | Positive work-step interval for parsing/measurement; validation keeps its existing safe points. See [execution](EXECUTION.md#cancellation-interval). |
 | `validation.*` | see [Validate](#validate) | Validation checks |
 
-Runtime patches are checked before processing and can return
+**Unreleased:** runtime patches are checked before processing and can return
 `error.InvalidCancellationInterval` when the interval is zero. As with DOT,
 `Profile.validatePolicy(patch)` checks settings without parsing. Fixed baselines
 are checked at compile time; zero resource limits remain valid.

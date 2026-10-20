@@ -25,6 +25,62 @@ const Recorder = struct {
 };
 const input = "digraph G { a:p -> b -> c [x=y]; bad [x=]; d; subgraph s { e -> ; f; } g; }";
 
+test "cancellation at every credit never aborts an undelivered statement begin" {
+    inline for (.{ .scalar, .block }) |scanner| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .execution = .{ .metering = true } } }).Events(Recorder);
+        for (0..200) |credits| {
+            var frames: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
+            var log: Recorder = .{};
+            var session = P.Session.init(input, frames.storage(), &log, discard, .{});
+            defer session.deinit();
+            for (0..credits) |_| _ = session.advance(1);
+            _ = session.cancel();
+            var begun = [_]bool{false} ** input.len;
+            for (log.items()) |record| switch (record) {
+                .event => |event| if (event == .begin_statement) {
+                    begun[@intFromEnum(event.begin_statement.owner.statement)] = true;
+                },
+                .abort => |abort| if (abort == .statement) {
+                    try expect(begun[@intFromEnum(abort.statement.owner.statement)]);
+                },
+            };
+        }
+    }
+}
+
+test "recovery abort span excludes the enclosing closing brace" {
+    var log: Recorder = .{};
+    const source = "graph { a [x= }";
+    _ = dot.Events(Recorder).parse(std.testing.allocator, source, &log, discard, .{});
+    var aborted: ?dot.Span = null;
+    for (log.items()) |record| switch (record) {
+        .abort => |abort| if (abort == .statement) {
+            aborted = abort.statement.span;
+        },
+        .event => |event| if (event == .skipped) {
+            try equal(aborted.?, event.skipped.span);
+        },
+    };
+    try std.testing.expectEqualStrings("a [x= ", aborted.?.slice(source));
+}
+
+test "unrelated consumer method names are not retention hooks" {
+    const Consumer = struct {
+        pub fn onEvent(_: *@This(), _: dot.events.Event) error{}!dot.events.Action {
+            return .proceed;
+        }
+        pub fn onAbort(_: *@This(), _: dot.events.Abort) void {}
+        pub fn continuesAfterError() void {
+            @compileError("not an event hook");
+        }
+        pub fn retainThrough() void {
+            @compileError("not an event hook");
+        }
+    };
+    var consumer: Consumer = .{};
+    try equal(dot.events.Outcome.invalid_syntax, dot.Events(Consumer).parse(std.testing.allocator, input, &consumer, discard, .{}).outcome);
+}
+
 test "public events commit statements after recovery without document pools" {
     inline for (.{ .scalar, .block }) |scanner| {
         const P = dot.Profile(.{ .policy = .{ .scanner = scanner } }).Events(Recorder);
@@ -143,6 +199,7 @@ test "native events preserve byte coordinates through recovery" {
         var log: Recorder = .{};
         const result = try P.parse(std.testing.allocator, &bytes, &log, discard, .{ .encoding = actual });
         try equal(actual, result.source_info.encoding);
+        try equal(.explicit, result.source_info.provenance);
         try equal(dot.events.Outcome.invalid_syntax, result.outcome);
         var found = false;
         for (log.items()) |record| if (record == .event and record.event == .commit_node) {
@@ -152,8 +209,31 @@ test "native events preserve byte coordinates through recovery" {
             found = true;
         };
         try equal(actual, log.records[0].event.begin_document.source_info.encoding);
+        try equal(result.source_info, log.records[0].event.begin_document.source_info);
         try expect(found);
     }
+}
+
+test "native event admission cancellation precedes callbacks and honors runtime disabling" {
+    const Stop = struct {
+        fn requested(_: ?*anyopaque) bool {
+            return true;
+        }
+    };
+    const P = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16 }, .runtime_policy = true }).Events(Recorder);
+    const source = "\xff\xfeg\x00r\x00a\x00p\x00h\x00 \x00{\x00}\x00";
+    const opts: P.Options = .{ .policy = .{ .execution = .{ .cancellation = true } }, .cancellation = .{ .context = null, .is_requested = Stop.requested } };
+    var log: Recorder = .{};
+    var frames: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
+    try std.testing.expectError(error.Cancelled, P.parse(std.testing.allocator, source, &log, discard, opts));
+    try std.testing.expectError(error.Cancelled, P.parseIn(source, frames.storage(), &log, discard, opts));
+    try equal(@as(u32, 0), log.len);
+    var disabled = opts;
+    disabled.policy = .{ .execution = .{ .cancellation = false } };
+    const result = try P.parseIn(source, frames.storage(), &log, discard, disabled);
+    try equal(dot.events.Outcome.success, result.outcome);
+    try equal(.bom, result.source_info.provenance);
+    try equal(result.source_info, log.records[0].event.begin_document.source_info);
 }
 
 test "public event recovery agrees across scanners on mutated input" {

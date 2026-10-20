@@ -54,7 +54,7 @@ pub fn isNameContinue(byte: u8) bool {
 fn whitespace(byte: u8) bool {
     return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n';
 }
-fn digit(byte: u8, radix: u8) ?u32 {
+pub fn digit(byte: u8, radix: u8) ?u32 {
     const value: u32 = switch (byte) {
         '0'...'9' => byte - '0',
         'a'...'f' => byte - 'a' + 10,
@@ -76,6 +76,11 @@ pub fn Scanner(comptime backend: policy.ScannerBackend, comptime metered: bool, 
 }
 
 pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime backend: policy.ScannerBackend, comptime metered: bool, comptime bounded: bool) type {
+    return ScannerWithFraming(actual, backend, metered, bounded, .detect);
+}
+
+pub const Framing = enum { detect, selected, content };
+pub fn ScannerWithFraming(comptime actual: encoding.Actual, comptime backend: policy.ScannerBackend, comptime metered: bool, comptime bounded: bool, comptime framing: Framing) type {
     const enc = encoding.Reader(actual);
     return struct {
         const Self = @This();
@@ -345,8 +350,8 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime backend: p
                 }
                 if (self.state == .prefix_done) {
                     const p = self.prefix;
-                    if ((self.marker_index >= 2 and ((p[0] == 0xff and p[1] == 0xfe) or (p[0] == 0xfe and p[1] == 0xff))) or
-                        (self.marker_index == 4 and p[0] == 0 and p[1] == 0 and p[2] == 0xfe and p[3] == 0xff))
+                    if (framing == .detect and ((self.marker_index >= 2 and ((p[0] == 0xff and p[1] == 0xfe) or (p[0] == 0xfe and p[1] == 0xff))) or
+                        (self.marker_index == 4 and p[0] == 0 and p[1] == 0 and p[2] == 0xfe and p[3] == 0xff)))
                         return self.unsupported(.encoding, 0);
                     // A leading UTF-8 signature is not fragment text. Other occurrences
                     // are ordinary bytes. Borrowed source and physical offsets stay intact.

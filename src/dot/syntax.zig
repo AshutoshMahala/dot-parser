@@ -178,6 +178,9 @@ pub const EdgeChainView = struct { first: EdgeView, links: EdgeLinkSource };
 const no_link = std.math.maxInt(Index);
 // Impossible retained attribute index. Promotion stages an owner before its
 // endpoint body runs; only finishScopedEdge attaches a complete attribute range.
+// For an aborted owner, attributes.len instead stores its certified byte frontier
+// (zero means the terminal document frontier). Never read it as an attribute
+// count until complete() is true. This uses existing staging storage only.
 const unfinished_attributes = std.math.maxInt(u32);
 /// Only statements involving a subgraph pay for generalized storage.
 /// A node-only prefix remains in its original pool; promotion never copies it.
@@ -507,11 +510,6 @@ pub const RetainedOperatorIterator = struct {
 
     pub inline fn next(self: *RetainedOperatorIterator) ?struct { operator: EdgeOperator, operator_range: location.Range } {
         const edge = self.edges.next() orelse return null;
-        const document = self.edges.document;
-        // An incomplete scoped owner still has safely retained operator facts.
-        // Later staged links outside the frozen frontier stay unavailable. Do
-        // not expose its unfinished attribute range through an EdgeView.
-        if (document.state == .partial and edge.operator_range.endOffset() > document.retained_end) return null;
         return .{ .operator = edge.operator, .operator_range = edge.operator_range };
     }
 };
@@ -544,7 +542,17 @@ fn EdgeIteratorFor(comptime retained_operators: bool) type {
             return lo;
         }
 
-        pub fn next(self: *@This()) ?EdgeView {
+        pub inline fn next(self: *@This()) ?EdgeView {
+            if (retained_operators and self.document.state == .partial) {
+                while (self.nextRaw()) |edge| {
+                    if (edge.operator_range.endOffset() <= retainedEdgeEnd(self.document, edge)) return edge;
+                }
+                return null;
+            }
+            return self.nextRaw();
+        }
+
+        inline fn nextRaw(self: *@This()) ?EdgeView {
             if (self.prefix) |*prefix| if (prefix.next()) |edge| return edge;
             const d = self.document;
             if (!retained_operators and d.state == .partial) {
@@ -589,6 +597,59 @@ fn EdgeIteratorFor(comptime retained_operators: bool) type {
         }
     };
 }
+
+fn retainedEdgeEnd(document: *const Document, edge: EdgeView) u32 {
+    if (edge.attributes.start != unfinished_attributes) return std.math.maxInt(u32);
+    return if (edge.attributes.len != 0) edge.attributes.len else document.retained_end;
+}
+
+/// Internal source-ordered node occurrences, including certified prefixes of
+/// unfinished scoped edges. Unattached port-pool entries are never visited.
+pub const RetainedReferenceIterator = struct {
+    document: *const Document,
+    edges: EdgeIteratorFor(true),
+    node_index: usize = 0,
+    edge_reference: ?NodeReferenceView = null,
+    right: ?NodeReferenceView = null,
+    previous: ?u32 = null,
+
+    pub fn init(document: *const Document) RetainedReferenceIterator {
+        return .{ .document = document, .edges = .{ .document = document } };
+    }
+    fn endpointView(self: *RetainedReferenceIterator, endpoint_value: Endpoint, retained_end: u32) ?NodeReferenceView {
+        if (endpoint_value != .node) return null;
+        const view = self.document.nodeReference(endpoint_value.node).?;
+        const end = if (view.port) |port| (port.second orelse port.first).endOffset() else view.identifier.endOffset();
+        return if (end <= retained_end and end <= self.document.source.len) view else null;
+    }
+    pub fn next(self: *RetainedReferenceIterator) ?NodeReferenceView {
+        while (true) {
+            while (self.edge_reference == null) {
+                if (self.right) |right| {
+                    self.edge_reference = right;
+                    self.right = null;
+                    break;
+                }
+                const edge = self.edges.next() orelse break;
+                const retained_end = retainedEdgeEnd(self.document, edge);
+                self.edge_reference = self.endpointView(edge.left, retained_end);
+                self.right = self.endpointView(edge.right, retained_end);
+            }
+            const node = if (self.node_index < self.document.nodes.len) self.document.nodeReference(self.document.nodes[self.node_index].reference) else null;
+            const value = if (node != null and (self.edge_reference == null or node.?.identifier.start < self.edge_reference.?.identifier.start)) blk: {
+                self.node_index += 1;
+                break :blk node.?;
+            } else blk: {
+                const edge = self.edge_reference orelse return null;
+                self.edge_reference = null;
+                break :blk edge;
+            };
+            if (self.previous) |previous| if (value.identifier.start <= previous) continue;
+            self.previous = value.identifier.start;
+            return value;
+        }
+    }
+};
 
 /// A frozen, borrowed syntax document: complete, or an opt-in retained prefix. Immutable
 /// after `Builder.toDocument`; safe to read concurrently while its memory and

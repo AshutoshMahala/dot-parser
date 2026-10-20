@@ -270,7 +270,7 @@ zig build check                # full checks; Zig 0.16.0 and Node on PATH
 zig build test                 # Zig tests only; no Node required
 zig build examples             # build and run every example
 zig build check-freestanding   # compile for RISC-V32 and Wasm32
-zig build check-tools          # compile and test the Zig Unicode generators
+zig build check-tools          # compile/test Unicode generators and performance reporter
 zig build check-wasm           # execute Wasm probes with Node
 zig build bench -Doptimize=ReleaseFast   # main benchmark
 ```

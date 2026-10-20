@@ -67,7 +67,7 @@ A few rules make budgets predictable:
 - Running out of credits is a pause, not an error.
 - However you split the budget across calls, the result is the same.
 
-Internally, a metered scalar scanner can handle several ordinary bytes in a
+**Unreleased optimization:** a metered scalar scanner can handle several ordinary bytes in a
 tight loop. Each examined byte still costs its own credit; scanning stops at
 the first boundary and never looks beyond the budget or the next cancellation
 poll. This is an optimization, not a larger credit unit. One-credit calls and
@@ -86,6 +86,8 @@ policies for both scanners. Input and fixed pools are prepared before timing;
 results include credits, poll counts and session sizes. Validation is not timed.
 
 ## Standalone string validation
+
+> **Unreleased.**
 
 `string_processor.Profile` uses the same `.policy.execution` fields (`metering`,
 `cancellation`, positive `cancellation_interval`), default-off features, and
@@ -161,6 +163,8 @@ The check is a plain function call. There are no threads, signals or timers
 inside the library. If another thread sets your flag, make it an atomic.
 
 ### Cancellation interval
+
+> **Unreleased.** The 0.5.0 release always uses interval 1.
 
 Both parsers accept `execution.cancellation_interval`, a positive `u32`, default
 `1`. It limits the number of existing **work steps** between callback checks:

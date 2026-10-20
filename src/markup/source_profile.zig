@@ -39,7 +39,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
             return Base.forSourceEncoding(actual);
         }
         fn worker(comptime actual: enc.Actual) type {
-            return profile.ProfileForEncoding(actual, api, config);
+            return profile.ProfileForSelectedEncoding(actual, api, config);
         }
 
         pub const Prepared = struct {

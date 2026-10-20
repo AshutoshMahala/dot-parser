@@ -205,7 +205,8 @@ configuration verification; it must not invoke execution callbacks. Policy
 when a validator is bound but disabled.
 
 The value exposes borrowed `bytes`, original `origin`, its compile-time `encoding`,
-a scalar `cursor().next()` and a **local** `span()`. Raw byte length is not a
+a scalar `cursor().next()` and a checked **local** `try span()` (`SourceTooLarge`
+for consumer-constructed values exceeding the u32 domain). Raw byte length is not a
 character count. A validator sees no node, element, attribute name or host AST.
 It must not retain context pointers or mutate source. Consumer code is trusted
 Zig code: binding it at compile time is not a sandbox.
@@ -221,6 +222,9 @@ or validator failure produces `invalid_validator`, not success.
 With `uses_comparison = true`, `context.equals(value, expected_utf8)` returns
 `?bool`: null means stop. It uses the profile's comparison setting. Nonparticipating
 validators cannot call it; their original input is never silently lowercased.
+This synchronous helper is available only to the unstepped fast path. Any
+validator compiled for the session engine must use `equalsStep` instead,
+including cancellable and runtime-policy profiles with metering disabled.
 Pass the original supplied value, not a fabricated view or substring; this
 ensures comparisons reuse the verified input prerequisite. An independently
 configured regex can instead own its comparison semantics.
@@ -365,7 +369,8 @@ being placed inside `step`.
 using the profile's case setting. Pass the original value and the same unchanged
 expected slice until terminal, and reset its state before a new comparison.
 Patterns and custom settings remain borrowed and must outlive the session.
-Calling synchronous `context.equals` from a metered step is a compile error.
+Calling synchronous `context.equals` from a session-engine validator is a compile
+error, even when metering is disabled for that call.
 Use `context.report` for detailed diagnostics as before; reports survive pauses
 and suppress the generic failure fallback across the whole check.
 

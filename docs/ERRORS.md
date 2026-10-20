@@ -394,6 +394,7 @@ always prints the full form. Codes may change between 0.x versions.
 | `E/W.Validation.Operator.002` | The edge operator doesn't match the graph kind |
 | `E/W.Validation.Encoding.003` | Text that isn't valid in the file's encoding (optional check; skips HTML-like labels) |
 | `E/W.Validation.Attribute.035` | The same key twice on one statement (optional check) |
+| `E/W.Validation.Attribute.009` | Unknown DOT Graphviz attribute name (optional check; Unreleased) |
 | `E/W.Validation.Restriction.003` | Input uses something you restricted, such as ports or subgraphs (optional check) |
 | `E/W.Profile.Feature.009` | Input uses a feature your settings turned off |
 | `E.Resource.Capacity.026` | A limit or fixed buffer was full; `details` names which one |
@@ -419,6 +420,8 @@ The full list, with summaries and hints, is in
 | `E/W.Validation.Reference.003` | A reference missing from the selected list, like `&nbsp;` (optional check) |
 | `E/W.Validation.Tag.009` | An element Graphviz doesn't know (Graphviz mode) |
 | `E/W.Validation.Attribute.009` | An attribute not allowed on that Graphviz element, like `COLOR` on `<B>` (Graphviz mode) |
+| `E/W.Validation.Content.003` | Content or child placement violates the Graphviz label grammar (Unreleased) |
+| `E/W.Validation.Attribute.003` | Invalid or missing Graphviz attribute value (Unreleased) |
 | `E/W.Profile.Feature.009` | Something the parser doesn't handle, like `<?...?>` or UTF-16 input |
 | `E.Resource.Capacity.026` | A limit or fixed buffer was full |
 | `E.Resource.Memory.026` | The allocator ran out of memory |

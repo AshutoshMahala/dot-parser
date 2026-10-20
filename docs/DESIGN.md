@@ -467,7 +467,7 @@ as closing that element while recovering.
 - The guess only steers how parsing carries on. The mismatch is still reported,
   the result is still invalid, and nothing is rewritten or offered as a fix. So
   [markup recovery still never guesses a tree](#markup-recovery-never-guesses-a-tree),
-  and a partial document still stops before the first error.
+  and a partial markup document still stops before the first error.
 - An exact match always wins, and only the current element is considered, so
   correct markup is never affected and a guess can't reach far.
 - Short names are left out, because almost any short name is one edit away
@@ -487,16 +487,17 @@ return completed syntax. Unreleased DOT collection also retains later safely
 recovered statements and explicit gaps; markup still keeps its prefix.
 The document says whether
 it is complete, and so does each DOT subgraph and each markup node.
-`unrepresented()` gives the text the document doesn't cover. Keeping label
+`unrepresented()` gives the unfinished suffix; DOT's `skippedRanges()` gives
+internal gaps. Keeping label
 trees from a DOT file is a separate choice.
 
 **Why:**
 
 - Editors need it. While someone is typing, the file is unfinished most of
   the time, and an outline or highlighting still needs the part that is done.
-- Only the part before the first error is kept. After an error, the parser's
-  idea of the structure is a guess, and the library never returns a guessed
-  tree.
+- Markup keeps only the part before the first error. DOT collection can resume
+  at certified statement boundaries, retaining completed syntax and explicit
+  gaps. Neither returns a guessed or repaired tree.
 - It is opt-in and clearly marked, because a partial tree could pass for a
   complete one. The parse outcome still reports the failure, and
   `documentValid()` is always false for a partial document.

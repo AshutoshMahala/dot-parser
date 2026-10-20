@@ -48,7 +48,7 @@ pub fn EngineWithEncoding(comptime actual: @import("parser_support").encoding.Ac
         }
 
         fn DriverFor(comptime Sink: type) type {
-            return parser_impl.MachineWithProcessor(Sink, metering, false, cancellable, lexer_impl.scannerForEncoding(actual, backend, if (fixed) |p| p.retention.comments else null), fixed, Processor, single_poll);
+            return parser_impl.MachineWithProcessor(Sink, metering, false, cancellable, lexer_impl.scannerForEncoding(actual, backend, if (fixed) |p| p.retention.comments else null), fixed, Processor, single_poll, false);
         }
 
         fn drive(source: []const u8, events: anytype, diagnostics: DiagnosticSink, scratch: *scratch_impl.Stack, options: Options) parser_impl.Result {

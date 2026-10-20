@@ -46,6 +46,10 @@ const Options = struct {
                 result.show_help = true;
                 continue;
             }
+            const known = for ([_][]const u8{ "--baseline", "--modes", "--suites", "--output", "--zig", "--repo", "--runs", "--threshold" }) |option| {
+                if (std.mem.eql(u8, arg, option)) break true;
+            } else false;
+            if (!known) return error.UnknownOption;
             i += 1;
             if (i == args.len) return error.MissingOptionValue;
             const value = args[i];
@@ -75,6 +79,10 @@ fn validList(list: []const u8, allowed: []const []const u8) !void {
         if (seen & bit != 0) return error.DuplicateSelection;
         seen |= bit;
     }
+}
+
+fn outputParent(output: []const u8) error{InvalidOutputPath}![]const u8 {
+    return std.fs.path.dirname(output) orelse if (std.fs.path.isAbsolute(output)) error.InvalidOutputPath else ".";
 }
 
 const Row = struct {
@@ -163,8 +171,9 @@ const Runner = struct {
     }
     fn snapshot(self: *Runner, commit: ?[]const u8, name: []const u8) ![]const u8 {
         const root = try self.path(&.{ self.output, name });
+        const prefix = std.mem.trimEnd(u8, try self.command(&.{ "git", "rev-parse", "--show-prefix" }), "\r\n");
         const list = if (commit) |sha|
-            try self.command(&.{ "git", "ls-tree", "-rz", "--full-tree", sha, "--", "src" })
+            try self.command(&.{ "git", "ls-tree", "-rz", "--full-tree", sha, "--", try self.fmt("{s}src", .{prefix}) })
         else
             try self.command(&.{ "git", "ls-files", "-co", "--exclude-standard", "-z", "--", "src" });
         var records = std.mem.splitScalar(u8, list, 0);
@@ -173,14 +182,17 @@ const Runner = struct {
         while (records.next()) |record| {
             if (record.len == 0) continue;
             var file = record;
+            var git_file = record;
             if (commit != null) {
                 const tab = std.mem.indexOfScalar(u8, record, '\t') orelse return error.InvalidGitTree;
                 if (!std.mem.startsWith(u8, record, "100644 blob ") and !std.mem.startsWith(u8, record, "100755 blob ")) return error.NonRegularSourceFile;
-                file = record[tab + 1 ..];
+                git_file = record[tab + 1 ..];
+                if (!std.mem.startsWith(u8, git_file, prefix)) return error.InvalidSourcePath;
+                file = git_file[prefix.len..];
             }
             if (!sourcePath(file)) return error.InvalidSourcePath;
             const contents = if (commit) |sha|
-                try self.command(&.{ "git", "show", "--no-ext-diff", "--no-textconv", try self.fmt("{s}:{s}", .{ sha, file }) })
+                try self.command(&.{ "git", "show", "--no-ext-diff", "--no-textconv", try self.fmt("{s}:{s}", .{ sha, git_file }) })
             else blk: {
                 const current = try self.path(&.{ self.options.repo, file });
                 // Tracked deletions remain in ls-files. Do not resurrect them
@@ -386,7 +398,8 @@ pub fn main(init: std.process.Init) !void {
     }
     const output_name = options.output orelse try std.fmt.allocPrint(gpa, "zig-out/perf-string/{d}", .{Io.Clock.Timestamp.now(init.io, .real).raw.nanoseconds});
     const output = try std.fs.path.resolve(gpa, &.{ options.repo, output_name });
-    try Io.Dir.cwd().createDirPath(init.io, std.fs.path.dirname(output).?);
+    const parent = try outputParent(output);
+    try Io.Dir.cwd().createDirPath(init.io, parent);
     // Refuse reuse: never overwrite earlier evidence or unrelated user files.
     try Io.Dir.cwd().createDir(init.io, output, .default_dir);
     var runner: Runner = .{ .gpa = gpa, .io = init.io, .options = options, .output = output, .entries = .init(gpa) };
@@ -410,9 +423,13 @@ test "report options reject ambiguous or unbounded configurations" {
     try t.expectError(error.InvalidRuns, Options.parse(&.{ "--runs", "2" }));
     try t.expectError(error.InvalidRuns, Options.parse(&.{ "--runs", "255" }));
     try t.expectError(error.MissingOptionValue, Options.parse(&.{"--baseline"}));
+    try t.expectError(error.UnknownOption, Options.parse(&.{"--unknown"}));
     try t.expectError(error.DuplicateSelection, Options.parse(&.{ "--modes", "ReleaseFast,ReleaseFast" }));
     try t.expectError(error.InvalidSelection, Options.parse(&.{ "--suites", "native," }));
     try t.expectError(error.InvalidThreshold, Options.parse(&.{ "--threshold", "nan" }));
+    try t.expectError(error.InvalidOutputPath, outputParent("/"));
+    try t.expectEqualStrings(".", try outputParent("report"));
+    try t.expectEqualStrings("reports", try outputParent("reports/run"));
 }
 
 test "CSV rejects malformed samples and changed work counters" {
