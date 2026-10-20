@@ -68,6 +68,7 @@ pub const Adapter = struct {
                 .processing_instructions => "processing instructions are not supported",
                 .declarations => "declarations are not supported",
                 .encoding => "byte-order mark requires a different source reader",
+                .string_value => "string attribute values are disabled by this policy",
             }),
             .capacity => |capacity| try writer.print("{s} capacity of {d} exhausted", .{ resourceText(capacity.resource), capacity.limit }),
             .reference => |problem| try writer.writeAll(switch (problem) {

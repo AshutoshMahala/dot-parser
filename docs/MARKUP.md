@@ -10,6 +10,8 @@ works without the DOT parser. Use it to:
 For your own format or dialect, use [structural mode](#two-modes).
 
 To check labels inside DOT files, see [Checking HTML-like labels](LABELS.md).
+For application-specific checks on decoded attribute values, see
+[string processor integration](STRINGS.md#attribute-processing-in-dot-and-markup).
 
 > **Available since 0.4.0.** `markup_parser` is included in the same package
 > as `dot_parser`.

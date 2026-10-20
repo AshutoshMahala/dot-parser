@@ -480,8 +480,9 @@ const Summary = struct {
 
 /// All payload-specific calls are statically bound to Adapter. Annotation
 /// capacity is a processor-specific compile-time bound, not a heap allocation.
-pub fn Renderer(comptime Adapter: type) type {
+pub fn Renderer(comptime Catalog: type) type {
     return struct {
+        pub const Adapter = Catalog;
         const Diagnostic = Adapter.Item;
         const diagnostic = Adapter.registry;
         const Annotation = Adapter.Annotations.Annotation;
@@ -986,10 +987,13 @@ pub fn Renderer(comptime Adapter: type) type {
 /// payload arrays, universal diagnostic representation or per-finding rescan.
 pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
     return struct {
+        pub const Adapter = @This();
+        pub const composed = true;
         const max_locations = blk: {
             var maximum: usize = 0;
             for (std.meta.fields(@TypeOf(adapters))) |field| {
-                maximum = @max(maximum, @field(adapters, field.name).Annotations.max_count + 2);
+                const A = @field(adapters, field.name);
+                maximum = @max(maximum, if (@hasDecl(A, "composed")) A.max_locations else A.Annotations.max_count + 2);
             }
             break :blk maximum;
         };
@@ -999,43 +1003,66 @@ pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
         fn prepareLocations(items: []const Item, source: ?[]const u8, source_encoding: @import("encoding.zig").Actual, scratch: []location.Location) error{LocationScratchTooSmall}![]const location.Location {
             const bytes = source orelse return &.{};
             var count: usize = 0;
-            for (items) |item| switch (item) {
-                inline else => |d, tag| {
-                    const Adapter = @field(adapters, @tagName(tag));
-                    try addLocation(d.span.start, bytes, scratch, &count);
-                    for (Adapter.annotations(d).slice()) |annotation| try addLocation(annotation.span.start, bytes, scratch, &count);
-                    if (Adapter.fix(d)) |fix| try addLocation(fix.span.start, bytes, scratch, &count);
-                },
-            };
+            for (items) |item| try collectLocations(item, bytes, scratch, &count);
             return resolveLocations(scratch[0..count], bytes, source_encoding);
+        }
+        fn collectLocations(item: Item, bytes: []const u8, scratch: []location.Location, count: *usize) error{LocationScratchTooSmall}!void {
+            switch (item) {
+                inline else => |d, tag| {
+                    const A = @field(adapters, @tagName(tag));
+                    if (@hasDecl(A, "composed")) {
+                        try A.collectLocations(d, bytes, scratch, count);
+                    } else {
+                        try addLocation(d.span.start, bytes, scratch, count);
+                        for (A.annotations(d).slice()) |annotation| try addLocation(annotation.span.start, bytes, scratch, count);
+                        if (A.fix(d)) |fix| try addLocation(fix.span.start, bytes, scratch, count);
+                    }
+                },
+            }
+        }
+        fn renderer(comptime tag: std.meta.Tag(Item)) type {
+            const A = @field(adapters, @tagName(tag));
+            return if (@hasDecl(A, "composed")) A else Renderer(A);
         }
         pub fn render(item: Item, options: RenderOptions, writer: anytype) !void {
             switch (item) {
-                inline else => |d, tag| try Renderer(@field(adapters, @tagName(tag))).render(d, options, writer),
+                inline else => |d, tag| try renderer(tag).render(d, options, writer),
             }
         }
         pub fn renderBoxed(item: Item, number: usize, options: RenderOptions, writer: anytype) !void {
             switch (item) {
-                inline else => |d, tag| try Renderer(@field(adapters, @tagName(tag))).renderBoxed(d, number, options, writer),
+                inline else => |d, tag| try renderer(tag).renderBoxed(d, number, options, writer),
             }
         }
         pub fn renderList(items: []const Item, options: RenderOptions, scratch: []location.Location, writer: anytype) !void {
             var positions: Positions = .{ .source = options.source, .source_encoding = options.source_encoding, .style = options.style, .resolved = try prepareLocations(items, options.source, options.source_encoding, scratch) };
-            for (items) |item| switch (item) {
-                inline else => |d, tag| try Renderer(@field(adapters, @tagName(tag))).renderWith(d, options, &positions, writer),
-            };
+            for (items) |item| try renderWith(item, options, &positions, writer);
+        }
+        fn renderWith(item: Item, options: RenderOptions, positions: *Positions, writer: anytype) !void {
+            switch (item) {
+                inline else => |d, tag| try renderer(tag).renderWith(d, options, positions, writer),
+            }
+        }
+        fn renderBoxedWith(item: Item, number: usize, options: RenderOptions, positions: *Positions, writer: anytype) !void {
+            switch (item) {
+                inline else => |d, tag| try renderer(tag).renderBoxedWith(d, number, options, positions, writer),
+            }
+        }
+        fn addSummary(item: Item, summary: *Summary) void {
+            switch (item) {
+                inline else => |d, tag| {
+                    const A = @field(adapters, @tagName(tag));
+                    if (@hasDecl(A, "composed")) A.addSummary(d, summary) else summary.add(d.code.severity());
+                },
+            }
         }
         pub fn renderBoxedList(items: []const Item, omitted: u64, options: RenderOptions, scratch: []location.Location, writer: anytype) !void {
             var positions: Positions = .{ .source = options.source, .source_encoding = options.source_encoding, .style = options.style, .resolved = try prepareLocations(items, options.source, options.source_encoding, scratch) };
             var summary: Summary = .{};
             for (items, 0..) |item, index| {
                 if (index != 0) try writer.writeAll("\n");
-                switch (item) {
-                    inline else => |d, tag| {
-                        try Renderer(@field(adapters, @tagName(tag))).renderBoxedWith(d, index + 1, options, &positions, writer);
-                        summary.add(d.code.severity());
-                    },
-                }
+                try renderBoxedWith(item, index + 1, options, &positions, writer);
+                addSummary(item, &summary);
             }
             try summary.render(items.len, omitted, options, writer);
         }

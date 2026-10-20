@@ -58,7 +58,7 @@ pub fn ProfileForEncoding(comptime actual: support.encoding.Actual, comptime api
 
             pub fn span(self: @This()) support.location.Span {
                 return switch (self) {
-                    inline else => |d| d.span,
+                    inline else => |d| if (@hasDecl(@TypeOf(d), "span")) d.span() else d.span,
                 };
             }
         };

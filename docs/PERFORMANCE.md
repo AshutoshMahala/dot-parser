@@ -32,6 +32,90 @@ Reading the tables:
 - **Labels in DOT:** a file with 1,000 small labels is parsed and checked at
   about 150 MB/s, with only 7 allocations (labels in structural mode).
 
+## Attribute string integration (Unreleased)
+
+Measured on 2026-10-19 against `fb64cc9`, Apple M4 Pro, Zig 0.16.0. The same
+[`bench/string_integration.zig`](../bench/string_integration.zig) was compiled
+for both snapshots. Five alternating process runs per side; each uses nine
+timed batches after three warmups. Source construction is excluded; host
+parsing, validation, allocation and disposal are included. Diagnostics are
+discarded.
+
+### Unused-feature cost
+
+Profiles with no active string route—including a bound string processor with
+passthrough handling—resolve to the original host profile type. Tests assert
+this identity. The isolated `host-defaults` executables had **identical machine
+code sections and identical executable sizes** before/after in all three modes:
+
+| Mode | Executable bytes, before / after | Geometric mean time change, 8 fixtures |
+| --- | ---: | ---: |
+| ReleaseFast | 353,872 / 353,872 | +0.06% |
+| ReleaseSafe | 386,784 / 386,784 | +0.95% |
+| ReleaseSmall | 257,328 / 257,328 | −2.74% |
+
+These timings still contain noise: the long DOT case varied substantially
+despite identical generated code. No isolated default case crossed the report's
+5% slowdown threshold with non-overlapping run ranges. This supports an
+unchanged default path, not a universal timing guarantee.
+
+The separate mixed `integration` binary also includes active processing, so
+its code layout and optimization decisions differ from the older default-only
+binary. Its default rows changed by −0.11% / +4.04% / +19.98% in Fast / Safe /
+Small; the last result included two flagged DOT slowdowns. Those samples remain
+in the report, but this mixed comparison does not isolate unused-feature cost.
+Applications compiling both active and inactive variants should measure their
+own combination, especially with ReleaseSmall.
+
+### Enabled processing cost
+
+Each document below contains 2,000 selected `label` values and 2,000 untouched
+attributes. The selected child checks logical encoding and exact equality.
+Markup uses structural mode. These ReleaseFast cells show **ms / MB/s** for
+whole-document operations in the same candidate binary:
+
+| Host / value | Physical bytes | Bound passthrough | Process equality |
+| --- | ---: | ---: | ---: |
+| DOT / `Seattle` | 60,007 | 0.158 / 379.6 | 0.727 / 82.5 |
+| DOT / quoted concatenation | 74,007 | 0.164 / 451.0 | 0.847 / 87.3 |
+| DOT / Unicode | 84,007 | 0.160 / 525.4 | 1.167 / 72.0 |
+| DOT / long ASCII values | 4,654,007 | 1.685 / 2,761.3 | 85.856 / 54.2 |
+| Markup / `Seattle` | 66,013 | 0.139 / 476.5 | 0.527 / 125.2 |
+| Markup / reference decoding | 66,013 | 0.151 / 437.7 | 0.510 / 129.5 |
+| Markup / Unicode | 100,013 | 0.188 / 532.3 | 1.143 / 87.5 |
+| Markup / long ASCII values | 4,660,013 | 2.426 / 1,921.2 | 80.942 / 57.6 |
+
+Active logical checks are **not free**. The existing reader-bound engine uses
+bounded scalar steps and can traverse a value again for each check; it does
+not yet use standalone contiguous-string batching. Long values make this
+difference particularly visible. None of this work runs for passthrough.
+
+Allocation probes verify identical allocator-request counts and cumulative
+requested bytes for default, passthrough and processing on every fixture.
+All DOT fixtures used 3 allocations / 147,632 cumulative requested bytes;
+all markup fixtures used 4 / 138,228.
+Routing and built-in string checks allocate no extra heap storage or decoded
+copy. They do add fixed-size aggregate/cursor state. This is not a peak-stack
+or process-RSS measurement; retained diagnostics and custom callbacks have
+their own costs.
+
+A separate standalone comparison covered 54 native and 84 session cases per
+mode: aggregate time changes ranged from −0.59% to +0.40%, with no changed
+session sizes, metering credits or cancellation-poll counts.
+
+Reproduce the host study with one command:
+
+```sh
+zig build perf-string -- --baseline fb64cc9 \
+  --suites host-defaults,integration \
+  --modes ReleaseFast,ReleaseSafe,ReleaseSmall --runs 5
+```
+
+Use `--suites native,sessions` for the standalone study, or include all four
+suites in one report. `zig build bench-string-integration -Doptimize=ReleaseFast`
+also prints allocator-request totals. See [string integration](STRINGS.md#attribute-processing-in-dot-and-markup)
+for precedence, scheduling and partial-result semantics.
+
 ## Standalone strings (Unreleased)
 
 Measured on 2026-10-18, Apple M4 Pro, Zig 0.16.0, ReleaseFast, using

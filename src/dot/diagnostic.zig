@@ -589,11 +589,13 @@ pub const OperatorMismatch = struct {
 /// instead of parsing diagnostic text; this is not a cross-version wire enum.
 pub const Feature = enum {
     html_identifier,
+    string_value,
 
     /// Canonical English display name. Renderers may localize instead.
     pub fn name(self: Feature) []const u8 {
         return switch (self) {
             .html_identifier => "HTML-like identifier",
+            .string_value => "string attribute value",
         };
     }
 };

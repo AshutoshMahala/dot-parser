@@ -61,8 +61,11 @@ pub const inspectSource = DefaultProfile.inspectSource;
 
 /// Policy-bound parsing, execution, validation and interpretation. Runtime
 /// overrides are off by default; every supported setting has full parity.
-pub fn Profile(comptime config: PolicyConfig) type {
-    return @import("dot/profile.zig").Profile(@This(), config);
+pub fn Profile(comptime config: anytype) type {
+    const routing = @import("parser_support").string_routing;
+    const base = routing.hostConfig(PolicyConfig, config);
+    if (!routing.Routes(config).active) return @import("dot/profile.zig").Profile(@This(), base);
+    return @import("dot/string_profile.zig").Profile(@This(), config, base);
 }
 
 /// Library-default policy verification is compile-time-only.

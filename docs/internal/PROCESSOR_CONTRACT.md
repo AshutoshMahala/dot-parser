@@ -15,10 +15,10 @@ These are not available APIs or a claim that implementation is in progress.
 | --- | --- | --- |
 | Shared-budget composition | Child work counts against the parent budget | Metered validation, budget units, yield/resume state, cancellation propagation and failure precedence |
 | Fixed-memory during-DOT composition | Caller-owned bounded storage; exhaustion stays explicit | Resource descriptors, scratch sharing, capacities and result lifetimes |
-| Recursive / quoted-content execution | Compile-time binding; processor-owned schemas/content rules | Scheduling boundaries, selection, aggregation and host-to-string adapters |
+| Recursive / quoted-content execution | Retained-attribute string routing and one-shot nesting implemented | No-tree/event execution, shared budgets and safe logical fixes |
 | Broader profile/API surface | Keep low-level ownership and costs explicit | Outer-only versus composed operations, a whole-composition `validatePolicy` entry point and convenience result/ownership choices |
-| Attribute-context policy delegation | First slice uses attribute name and value form only; parent hands over child-owned policies at compile time | Typed syntax, omitted-form behavior, precedence and interaction with existing runtime overrides |
-| String host integration | Default host passthrough; explicit reader/validator binding, mapped findings and reader-prerequisite coverage are implemented | Host-aware fixes, automatic routing/aggregation and measured composition costs; [agreed direction](STRING_INTEGRATION.md) |
+| Attribute-context policy delegation | String routes implemented; parent hands over child-owned policies at compile time | Per-attribute markup routes and any broader selectors |
+| String host integration | Default passthrough, retained-attribute routing, nested one-shot execution and mapped findings implemented | Host-aware fixes, no-tree execution and shared-budget composition; [agreed direction](STRING_INTEGRATION.md) |
 | New token spellings | An inner processor cannot redefine its outer parser's lexical boundaries | A separate contract for escaping, collisions, recovery and work |
 | Source transforms / retained summaries | Explicit owners, mapping and costs; no hidden per-ID state | Decoded/transcoded maps, caching, summary layout and public events |
 
@@ -61,10 +61,10 @@ an explicit incomplete operation, not silent truncation or fallback allocation.
 
 ### Recursive and quoted-content execution
 
-Automatic DOT → markup → string and DOT → string execution still needs a
-scheduler and host adapters. Specify scope selection,
-ordering, stage compatibility, result aggregation and diagnostic context across
-multiple active levels. Keep implementations compile-time-bound with independent
+Automatic retained-attribute DOT → markup → string and DOT → string execution
+is implemented. Shared-budget and event/source-only execution still need a
+scheduler. Preserve stage ordering, result aggregation and original diagnostic
+coordinates across multiple active levels. Keep implementations compile-time-bound with independent
 policy schemas; do not introduce runtime discovery to select an inner parser.
 
 The remaining division of responsibility with existing scanners is described
@@ -74,8 +74,8 @@ The [logical-value interface](STRING_INTEGRATION.md) selects streamed logical
 contents for string validation, with an optional unchanged contiguous fast path.
 Original-operand provenance remains distinct; locations are not logical offsets
 and are not rebased repeatedly at each parent. Host adapters own safe fix spelling.
-Exact location/range APIs and mixed quoted/markup concatenations remain open;
-the agreed direction does not imply that source mapping is implemented.
+Scalar location mapping is implemented. Editable range APIs remain open; mixed
+quoted/markup concatenations currently leave string processing unavailable.
 
 Cross-scope SIMD or parallel scheduling is only a possible later optimization.
 Do not add copying, mandatory queues or retained child arrays to prepare for it.
@@ -97,7 +97,7 @@ bounded-composition implementation.
 
 ### Attribute-context policy delegation
 
-**Direction agreed 2026-10-17; narrowed/clarified 2026-10-18; not implemented.**
+**String routes implemented 2026-10-19; broader markup routing remains design.**
 Attribute context may select `none`, `passthrough` or `process` and supply a
 typed child policy. It does not choose the value's syntactic form:
 `label="..."` is quoted content, while `label=<...>` is markup content.
@@ -133,14 +133,15 @@ execution. A replacement processor supplies its own schema through the same
 binding contract. Custom string verification must not require parent attributes,
 node identity or element types; attribute matching stays outside that validator.
 
-Illustrative host syntax only; the attribute-routing surface does not exist yet.
-The child policy below uses the implemented standalone string schema:
+The string branch is implemented. The per-attribute markup branch below remains
+illustrative and is currently rejected at compile time. The child policy uses
+the standalone string schema:
 
 ```zig
 .attributes = .{
     .label = .{
         .string = .{
-            .process = strings.Policy{
+            .process = Text.Policy{
                 .validation = .{ .one_of = .{ .values = &.{ "SF", "Seattle" }, .severity = .err } },
             },
         },
@@ -160,13 +161,14 @@ string but tells DOT nothing about whether an empty markup operand is allowed.
 A failed selected child rule must not fall back to passthrough as though
 no rule matched.
 
-Before implementing, decide selector syntax and host-owned name-comparison
-rules, when the required attribute context becomes available, handling of
-omitted form branches, duplicate rule definitions, and precedence between
-child baselines, inheritance, delegation and permitted runtime overrides.
-Existing runtime-policy support is not removed by this direction; its interaction
-with delegated settings remains undecided. Do not promise zero matching cost
-merely because the rule set is compile-time-bound.
+Implemented precedence: explicit attribute string rule, otherwise host default,
+otherwise passthrough. Child settings resolve baseline → delegated patch →
+enabled per-operation runtime patch. Routing itself is compile-time configuration.
+DOT matches logical attribute names exactly; markup follows exact structural or
+ASCII-insensitive Graphviz matching, rejecting ambiguous folded selectors.
+Retained values run after host validation, with original-coordinate findings.
+Per-attribute markup routing still needs a scheduling contract with proactive
+operand callbacks; it must not be silently accepted without execution.
 
 Current composition still processes every HTML-like operand when processing is
 enabled. Do not introduce a hard-coded `label`/`headlabel` selection rule as an
@@ -197,19 +199,18 @@ connects them to validators and checked primary/related findings, with metering,
 cancellation and typed unavailable-input outcomes. Raw edits are rejected on
 decoded host values; safe logical fix materialization remains pending.
 
-Host integration still needs:
+Remaining host integration:
 
-- Automatic selection/dispatch of the implemented reader-bound validators, so
-  quotes, escapes/references, bare and numeral forms use the selected policy.
+- Source/event-only selection when no retained document is published.
 - Original-operand provenance through adapter-produced locations, with exact
   ranges distinguished from enclosing highlights. Standalone origins apply only
   to contiguous, unchanged contents; logical replacements require explicit
   host-aware materialization rather than raw byte edits.
-- A rule for quoted/markup concatenations; per-operand validation does not mean
-  validation of the combined logical value. No implicit markup flattening.
+- Any future processing of mixed quoted/markup concatenations; current requested
+  string coverage is unavailable, without implicit markup flattening.
 - Independent scope coverage and selection of which host-owned checks, if any,
   transfer to a child without duplicate findings.
-- The attribute delegation precedence and omitted-form choices above.
+- Per-attribute markup selection, independently of the implemented string rules.
 - Parent scheduling/aggregation of the standalone string session, including
   mapping its bounded-step credits to the shared-budget contract. Runtime policy
   preparation and consumer callbacks are outside standalone execution budgets.

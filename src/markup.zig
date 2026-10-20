@@ -121,8 +121,11 @@ pub const ParseResult = struct {
         self.document = null;
     }
 };
-pub fn Profile(comptime config: PolicyConfig) type {
-    return @import("markup/profile.zig").Profile(@This(), config);
+pub fn Profile(comptime config: anytype) type {
+    const routing = @import("parser_support").string_routing;
+    const base = routing.hostConfig(PolicyConfig, config);
+    if (!routing.Routes(config).active) return @import("markup/profile.zig").Profile(@This(), base);
+    return @import("markup/string_profile.zig").Profile(@This(), config, base);
 }
 const Default = Profile(.{});
 pub const inspectSource = Default.inspectSource;

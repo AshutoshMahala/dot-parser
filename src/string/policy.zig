@@ -46,6 +46,16 @@ pub fn Schema(comptime Custom: type, comptime unicode: bool) type {
             custom: Custom.Settings = Custom.defaults,
         };
         pub const defaults: Effective = .{};
+        pub fn asPolicy(p: Effective) Policy {
+            return .{
+                .comparison = p.comparison,
+                .on_error = p.on_error,
+                .diagnostics = .{ .fixes = p.fixes },
+                .execution = .{ .metering = p.execution.metering, .cancellation = p.execution.cancellation, .cancellation_interval = p.execution.cancellation_interval },
+                .validation = .{ .equals = p.equals, .one_of = p.one_of, .custom = p.custom_severity },
+                .custom = p.custom,
+            };
+        }
         pub const Error = error{ UnicodeFoldingDisabled, InvalidPatternEncoding, CustomValidatorRequired, InvalidCustomSettings, InvalidCancellationInterval, NonResumableValidator };
         pub const Issue = enum {
             unicode_folding_disabled,

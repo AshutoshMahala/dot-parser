@@ -26,6 +26,28 @@ pub fn Profile(comptime config: anytype) type {
         if (@hasDecl(Custom, "batch") and !validators.resumable(Custom)) @compileError("batch requires a resumable validator");
     }
     return struct {
+        pub const declared_source_encodings = if (@hasField(C, "source_encodings")) config.source_encodings else null;
+        pub const source_capabilities = capabilities;
+        /// Compile-time delegation preserves the validator and capability set.
+        pub fn withPolicy(comptime patch: anytype) type {
+            const effective = Schema.resolve(Policies.baseline, coerce(Policy, patch));
+            return Profile(.{
+                .custom = Custom,
+                .unicode_case_folding = unicode,
+                .runtime_policy = runtime,
+                .source_encodings = declared_source_encodings,
+                .policy = Schema.asPolicy(effective),
+            });
+        }
+        pub fn withSourceEncodings(comptime caps: support.encoding.Capabilities) type {
+            return Profile(.{
+                .custom = Custom,
+                .unicode_case_folding = unicode,
+                .runtime_policy = runtime,
+                .source_encodings = caps.list(),
+                .policy = Schema.asPolicy(Policies.baseline),
+            });
+        }
         pub const Policy = Schema.Policy;
         pub const Policies = support.processor.PolicyBinding(Schema, .{
             .policy = if (@hasField(C, "policy")) coerce(Schema.Policy, config.policy) else .{},

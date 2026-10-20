@@ -8,6 +8,17 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Opt-in attribute string processing for DOT and markup, including nested
+  DOT → markup → string and delayed retained-document checks. Explicit attribute
+  rules override the host default; omission stays passthrough. Child-owned
+  delegated policies and enabled runtime patches use the existing validators,
+  logical readers and original-source diagnostics. Shared bags/renderers retain
+  all processor payloads. Default/pass-only profiles keep the original host
+  type; routing adds no processor-owned heap allocation. Shared-budget
+  composition and host-aware logical fixes remain deferred.
+- `perf-string --suites host-defaults,integration` compares isolated host
+  defaults, bound passthrough and active attribute processing with one
+  alternating before/after report.
 - Shared, opt-in logical readers for plain string contents, DOT identifiers and
   markup text/attribute contents. Fixed-state, bounded steps decode native
   encodings, DOT lexical quoting/concatenation and markup references while
@@ -30,7 +41,7 @@ are marked; no compatibility shims are kept.
   `policy.execution`, with positive cancellation intervals and default-off features.
   Unicode 17.0.0 full default case folding is an
   optional compiled capability; exact-only builds exclude its tables. No tree
-  or processor-owned allocations. DOT/markup integration remains separate work.
+  or processor-owned allocations. Optional host integration is described above.
 
 - Graphviz label content grammar, local attribute values/required attributes,
   and HTML4 named-reference checks. Each has independent fixed/runtime

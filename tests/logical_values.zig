@@ -1,4 +1,7 @@
 const std = @import("std");
+test {
+    _ = @import("string_integration.zig");
+}
 const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 const strings = @import("string_processor");

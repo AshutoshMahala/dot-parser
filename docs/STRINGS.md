@@ -7,7 +7,8 @@ markup. It does not recognize quotes, unescape text, expand references, remove
 a BOM, normalize text, or build a tree. `"SF"` (including its quotes), `&amp;`
 and `\n` are literal contents on the standalone path. Explicit
 [logical-reader binding](#validating-logical-values) supports decoded host values;
-automatic DOT/markup execution and attribute-based selection are not implemented.
+[attribute processing](#attribute-processing-in-dot-and-markup) connects it to
+DOT and markup with default passthrough.
 
 ```zig
 const strings = @import("string_processor");
@@ -450,7 +451,8 @@ folding-table exclusion. `zig build check` includes these
 Wasm checks alongside the repository's other correctness/build checks, without
 running benchmarks. DOT/markup hot paths are not
 modified by this standalone module. Explicit logical-reader binding is available
-below; automatic host dispatch and shared-budget composition remain later work.
+below, followed by optional automatic host dispatch. Shared-budget composition
+remains later work.
 See the [initial performance measurements](PERFORMANCE.md#standalone-strings-unreleased).
 
 ## Logical readers
@@ -691,8 +693,9 @@ optional validator batches. There is no decoded-value allocation or source-sized
 mapping table. Sessions retain the initial reader, input-pass cursor, and active
 validator cursors; inspect `@sizeOf(Label.Session)` for a chosen profile. Checks
 and `one_of` candidates can traverse/decode the input again. Diagnostic bags
-retain their caller-selected memory cost. Automatic attribute dispatch, shared
-DOT/markup/string budgets and host-aware fixes are later slices.
+retain their caller-selected memory cost. Automatic attribute dispatch is
+available below; shared DOT/markup/string budgets and host-aware fixes remain
+separate work.
 
 Run `zig build bench-logical-strings -Doptimize=ReleaseFast` for explicit binding
 costs (plain/DOT/markup, short/long/Unicode/glue-heavy inputs, run/budget-one/
@@ -700,3 +703,163 @@ budget-64, session bytes and credits). `-- --csv` produces the repository's
 benchmark CSV format. Use `zig build perf-string -- --baseline HEAD` to compare
 the existing standalone paths before/after a change; these are distinct studies,
 not a claim that bound scalar execution has the same cost as contiguous input.
+
+## Attribute processing in DOT and markup
+
+**Unreleased.** Both hosts support compile-time string routing. Binding a string
+processor does **not** enable it: the default is `.passthrough`. Only `.process`
+invokes the child; `.none` and `.passthrough` are host decisions.
+
+```zig
+const Text = strings.Profile(.{});
+const city_policy = Text.Policy{
+    .validation = .{
+        .one_of = .{ .values = &.{ "SF", "Seattle" }, .severity = .err },
+    },
+};
+const Parser = dot.Profile(.{
+    .processors = .{ .string = Text },
+    .policy = .{
+        .string = .passthrough,
+        .attributes = .{
+            .label = .{ .string = .{ .process = city_policy } },
+            .description = .{ .string = .passthrough },
+            .restricted = .{ .string = .none },
+        },
+    },
+});
+var bag = Parser.GrowableDiagnosticBag.init(allocator, .{});
+defer bag.deinit();
+var result = try Parser.parseAndValidate(
+    allocator, "graph { a[label=\"Sea\" + \"ttle\"] }", bag.sink(), .{},
+);
+defer result.deinit(allocator);
+std.debug.assert(result.documentValid());
+```
+
+The same `.processors.string`, `.policy.string` and `.policy.attributes` fields
+work in `markup.Profile`. Its input remains a fragment and its result uses
+`deinit()` without an allocator argument. Markup supplies decoded attribute
+contents: `A&amp;B` becomes `A&B`, with findings pointing back to the original
+reference spelling. Binding that markup profile into DOT also runs its string
+checks, including through reused workspaces and delayed markup processing.
+All stages can use one composed bag and renderer.
+
+### Selection and precedence
+
+| Situation | Selected handling |
+| --- | --- |
+| Attribute has an explicit `.string` rule | That rule, including explicit `.none` or `.passthrough` |
+| Attribute entry omits `.string`, or no entry matches | Host `.policy.string` |
+| Host `.policy.string` omitted | `.passthrough`, even with a processor bound |
+| `.process` | Child baseline, with no delegated changes |
+| `.{ .process = child_policy }` | Child baseline overridden by the supplied child policy |
+| Child runtime policies enabled | Operation's `.string.policy` overrides each selected delegated baseline |
+
+Delegation uses the child's normal policy resolution: for built-in strings,
+`equals` and `one_of` settings replace their respective settings records rather
+than implicitly merging their members. Unspecified checks and other policy
+branches inherit. Processor implementations, route names and route choices
+are compile-time bindings, not a runtime registry. Runtime host policies stay
+under `.dot` (DOT) or `.markup` (markup); child runtime patches and cancellation
+hooks are under `.string`. A delegated policy can enable child cancellation.
+The host alone selects the source encoding; the child cannot reinterpret it.
+
+DOT matches logical attribute names exactly, including quoted/concatenated
+keys. It visits written attribute pairs and standalone assignments, without
+applying graph defaults or merging declarations. Markup matches names exactly
+in structural mode and ASCII-insensitively in Graphviz mode. Ambiguous
+ASCII-insensitive route names are rejected at compile time when Graphviz mode
+is available. Route names are UTF-8 configuration, independent of source
+encoding.
+
+String rules select attribute **values**, not identifiers elsewhere, markup
+text nodes, comments or attribute names. A pure HTML-like DOT value belongs to
+the markup path and never reaches a string validator. Mixed quoted/HTML
+concatenations cannot be flattened: `.process` records unavailable string
+coverage; `.none` rejects the string form according to the host's unsupported
+severity. This slice does not add per-attribute `.markup` routing; existing
+global markup handling is unchanged, and unsupported routing fields are
+compile-time errors.
+
+`.none` needs no processor binding. The host's `diagnostics.unsupported`
+controls error, warning or silent continuation. Silent handling constructs no
+diagnostic. Neither rejection nor a failed child check falls back to another
+route.
+
+### Results, scheduling and costs
+
+Active routing profiles return `result.host` (the existing host result) and
+`result.string` (a constant-size aggregate). `result.documentValid()` requires
+both host acceptance and complete, error-free requested string work.
+`result.scopeComplete()` still describes the outer document alone.
+
+The string report exposes `processed`, `passed`, `passthrough`, `unsupported`,
+`unavailable`, error/warning totals, delivery/stop status and the first typed
+unavailable-input location. `complete` means the selected attribute traversal
+finished on a complete host tree, not that every string check passed. No
+per-attribute result array or decoded string storage is retained.
+
+These are synchronous stages: host parsing/validation runs first, then strings
+visit retained attributes in source order. Ordinary host validation errors do
+not suppress strings under `collect`. Host fail-fast and operational stops
+prevent later stages. A child's fail-fast stops that value; a collecting host
+continues other values. Sink stops, cancellation and invalid-validator failures
+stop the batch. Diagnostic order follows stage order, not a global source sort.
+
+Partial trees check their retained attributes but leave string coverage
+incomplete. With no retained tree, automatic string work does not run; this is
+not reported as successfully checked input. Tree-independent attribute checking
+after discarded syntax, event-stream checking and shared-budget composed
+sessions remain future work.
+
+Use `Parser.Outer` for the underlying host API. For DOT with markup bound this
+is the existing markup composition, not a new DOT-only session facade.
+Explicit delayed
+string checking is allocation-free:
+
+```zig
+// DOT document, same routed profile and diagnostic type:
+const checked = try Parser.processStrings(&document, bag.sink(), .{});
+// Markup additionally takes the original fragment origin:
+const checked_markup = try MarkupParser.processStrings(
+    &markup_document, original_origin, markup_bag.sink(), .{},
+);
+```
+
+These calls return a separate report; they do not mutate an earlier result.
+Documents must obey the same trusted representation contract as other document
+validation APIs. Raw values and their source remain borrowed.
+
+Markup reference and whitespace rules remain host-owned. Graphviz attributes
+use XML-predefined references by default (HTML4 text references are a different
+scope); an explicitly enabled reference-catalog rule supplies that catalog.
+Graphviz literal attribute whitespace is normalized, while numeric references
+keep their decoded character. Accepted malformed references remain literal.
+Unresolved references cannot pass a string check merely because host reporting
+was disabled; they leave string coverage unavailable without a duplicate finding.
+
+Profiles with no active routes return the original host profile type: no
+string traversal, aggregate, diagnostic union or processor state is added.
+Active routes add matching and logical-reader validation work, fixed-size
+aggregate/session state and a diagnostic union sized for its largest payload.
+The library adds no heap allocation for routing or built-in string checks;
+host pools, diagnostic bags and consumer callbacks retain their own costs.
+Markup keeps its fixed-pool and reusable-workspace entry points. DOT's composed
+operation remains allocator-backed; existing outer-only sessions are unchanged.
+
+Run `zig build bench-string-integration -Doptimize=ReleaseFast` for default,
+passthrough and enabled costs, including allocator-request totals. For an
+alternating before/after report:
+
+```sh
+zig build perf-string -- --baseline HEAD --suites host-defaults,integration \
+  --modes ReleaseFast,ReleaseSafe,ReleaseSmall --runs 5
+```
+
+`host-defaults` builds only the existing host operations on both sides, keeping
+enabled processors out of the binary-size/default-path comparison.
+`integration` also builds the enabled routes; newly introduced passthrough/
+process rows are marked new, not given a fabricated baseline. Keeping these
+suites separate avoids confusing changes in mixed-benchmark code layout with
+costs paid by an application that never enables strings.

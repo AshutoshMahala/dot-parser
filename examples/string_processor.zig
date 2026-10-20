@@ -54,4 +54,21 @@ pub fn main(init: std.process.Init) !void {
     const DotName = City.WithReader(dot.identifier.LogicalReader(.utf8));
     const name = try dot.identifier.LogicalReader(.utf8).init(.{ .bytes = "\"Sea\" + \"ttle\"", .origin = 200 });
     if (!(try DotName.parseAndValidate(name, bag.sink(), .{})).valid()) return error.InvalidCity;
+
+    // Automatic attribute routing, one operation and one shared bag.
+    const Labels = markup.Profile(.{
+        .processors = .{ .string = City },
+        .policy = .{ .mode = .structural, .attributes = .{
+            .title = .{ .string = .process },
+        } },
+    });
+    const Parser = dot.Profile(.{
+        .processors = .{ .string = City, .markup = Labels },
+        .policy = .{ .attributes = .{ .label = .{ .string = .process } } },
+    });
+    var combined_bag = Parser.GrowableDiagnosticBag.init(init.gpa, .{});
+    defer combined_bag.deinit();
+    var combined = try Parser.parseAndValidate(init.gpa, "graph { a[label=\"Sea\"+\"ttle\"]; b[label=<<x title='S&#70;'/>>] }", combined_bag.sink(), .{});
+    defer combined.deinit(init.gpa);
+    if (!combined.documentValid()) return error.InvalidCity;
 }

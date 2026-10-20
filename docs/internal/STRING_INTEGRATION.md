@@ -2,10 +2,11 @@
 
 **Direction agreed 2026-10-19; explicit validator binding implemented.** Shared
 bounded plain/DOT/markup readers expose scalar locations and borrowed fast paths;
-`Profile.WithReader` now connects them to built-in/custom validators, sessions and
-mapped findings. See [logical readers](../STRINGS.md#logical-readers) and
-[binding](../STRINGS.md#validating-logical-values). Automatic host execution,
-range selection and host-aware fixes remain design. Unimplemented syntax below
+`Profile.WithReader` connects them to built-in/custom validators, sessions and
+mapped findings. Retained-attribute routing and one-shot/delayed host execution
+are implemented, including DOT → markup → string. See
+[host integration](../STRINGS.md#attribute-processing-in-dot-and-markup).
+Range selection and host-aware fixes remain design. Unimplemented syntax below
 is illustrative. The current
 standalone API remains documented in [STRINGS.md](../STRINGS.md); host routing,
 policy delegation and composition constraints remain in
@@ -28,10 +29,11 @@ defaults to passthrough even when a processor is bound.
 
 Reuse host decoding rules rather than inventing a second interpretation. DOT
 layout escapes are not expanded by this interface. Mixed quoted/markup
-concatenations still need a selection contract; this decision does not authorize
-tag stripping or markup flattening. Unknown or malformed references must not be
-silently invented as decoded characters. Host/child prerequisite coverage and
-avoidance of duplicate findings still need implementation design.
+concatenations leave requested string processing unavailable; pure HTML operands
+stay on the markup path. No tag stripping or markup flattening is performed.
+Unknown or malformed references must not be silently invented as decoded
+characters. Unavailable logical input leaves child coverage unavailable without
+duplicating the host's syntax/reference diagnostics.
 
 Implement in slices:
 
@@ -40,9 +42,11 @@ Implement in slices:
    Reader adapters, validator binding and mapped primary/related findings are
    implemented. Safe edit mapping remains. Existing standalone byte-oriented
    validators still work on standalone values; portable validators use readStep.
-2. Attribute-name/value-form routing for DOT and markup, with default passthrough
-   and child-owned policies. Keep one shared diagnostic destination available.
-3. Single-call `parseAndValidate` and explicit delayed execution. Shared-budget
+2. Implemented string attribute routing for DOT and markup, with default
+   passthrough, child-owned delegated policies and a shared diagnostic destination.
+   Per-attribute markup routes remain future work.
+3. Implemented single-call `parseAndValidate` and explicit `processStrings` over
+   retained documents. No-tree/source/event routing remains. Shared-budget
    composed sessions remain separate work; a synchronous call must not claim
    resumable composition merely because the standalone child can be metered.
 
@@ -229,15 +233,17 @@ location in `input_failure`, and unavailable check coverage without duplicating
 host diagnostics. Bound sessions use scalar steps with invariant credits across
 budget partitions, cancellation intervals and movable state; plain standalone
 batching/credits are unchanged. Raw fixes are rejected in bound reporting until
-safe host-aware materialization exists. Automatic host routing and aggregate
-coverage are not implemented by this slice.
+safe host-aware materialization exists. Automatic string routing reports
+constant-size aggregate coverage without retaining per-value results.
 
-The streaming/mapping direction is decided. Before shipping, define the exact
-location/selection representation, empty-value and insertion boundaries,
+The streaming/mapping direction is decided. Before adding logical edits, define
+the range-selection representation, empty-value and insertion boundaries,
 cross-operand range helpers, fix-materialization outcomes, and malformed or
-unresolved input prerequisites. Attribute routing precedence/runtime interaction
-and mixed quoted/markup concatenations remain open in the processor contract.
-This document does not silently settle those independent choices.
+unresolved input prerequisites. The implemented routing precedence is explicit
+attribute string rule → host string default → passthrough. Delegated child
+policies override child baselines; enabled runtime child patches override the
+delegated settings. Mixed concatenations are unavailable to string processing,
+never implicitly flattened. Shared-budget and no-tree execution remain open.
 
 Test standalone/bound built-ins and custom validators through the same interface.
 Include complete escape/reference highlights, native encodings, empty operands,

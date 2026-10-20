@@ -224,7 +224,9 @@ pub fn build(b: *std.Build) void {
         .{ .name = "markup_cancellation_interval", .message = "error: invalid policy: invalid_cancellation_interval" },
         .{ .name = "markup_duplicate_diagnostic", .message = "error: duplicate diagnostic identity" },
         .{ .name = "markup_invalid_diagnostic", .message = "error: invalid diagnostic registry metadata" },
-        .{ .name = "markup_extended_mode", .message = "has no member named 'extended'" },
+        .{ .name = "markup_extended_mode", .message = "error: no field named 'extended' in enum 'markup.policy.Mode'" },
+        .{ .name = "markup_string_processor_required", .message = "error: .process requires .processors.string" },
+        .{ .name = "markup_ambiguous_routes", .message = "error: ambiguous ASCII-insensitive attribute routes: TITLE and title" },
     }) |fixture| {
         const rejected = b.addObject(.{
             .name = fixture.name,
@@ -554,6 +556,19 @@ pub fn build(b: *std.Build) void {
     b.step("bench-logical-strings", "Measure reader-bound string checks, credits and session storage")
         .dependOn(&run_logical_bench.step);
     check_benches.dependOn(&logical_bench.step);
+    const integration_options = b.addOptions();
+    integration_options.addOption(bool, "default_only", b.option(bool, "string-default-only", "Compile only the integration benchmark's default host paths") orelse false);
+    const integration_bench = b.addExecutable(.{ .name = "string_integration_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/string_integration.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{ .{ .name = "string_processor", .module = strings }, .{ .name = "markup_parser", .module = markup }, .{ .name = "dot_parser", .module = mod } },
+    }) });
+    integration_bench.root_module.addOptions("integration_options", integration_options);
+    const run_integration_bench = b.addRunArtifact(integration_bench);
+    if (b.args) |args| run_integration_bench.addArgs(args);
+    b.step("bench-string-integration", "Compare host defaults, passthrough and routed string checks").dependOn(&run_integration_bench.step);
+    check_benches.dependOn(&integration_bench.step);
     const string_passthrough_bench = b.addExecutable(.{ .name = "string_passthrough_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/string_passthrough.zig"),
         .target = target,

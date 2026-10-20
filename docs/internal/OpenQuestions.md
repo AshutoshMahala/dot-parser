@@ -34,7 +34,7 @@ has been discussed.
 | --- | --- | --- |
 | Policies — Q35/Q36 | Typed baselines/overrides, verification, settings migration, initial lenient syntax and optional checks | Keyword-as-name contexts, optional deviation history, semantic rules and performance gates |
 | Markup — Q40 | Structural parsing/checks, local scopes, Graphviz vocabulary/case matching, bounded typo recovery and partial-prefix retention | Graphviz placement/value/reference rules, extended dialects, catalogs, summaries and gap-aware partial trees |
-| Processors — Q40 | Custom compile-time bindings, nested policy preparation, delayed/one-shot integration, workspace reuse and owned label retention | Recursive/string execution, fixed/resumable composition and broader profile API |
+| Processors — Q40 | Custom compile-time bindings, delayed/one-shot integration, retained-attribute string routing, workspace reuse and owned label retention | No-tree string execution, fixed/resumable composition and broader profile API |
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
@@ -911,15 +911,16 @@ verification. Switching outer selection leaves the child policy unchanged.
 the selected policy. Execution remains synchronous after a complete operand
 boundary; no thread argument, queue or implicit concurrency is introduced.
 
-Nested DOT → markup → string and sibling string settings already prepare
-independently. A standalone string processor is now available; automatic deeper
-execution remains future work. New token spellings need a separate lexical contract for boundaries,
+Nested DOT → markup → string and sibling string attribute processing are
+implemented as synchronous retained-document stages, with shared diagnostics.
+Shared-budget and no-tree execution remain future work.
+New token spellings need a separate lexical contract for boundaries,
 escaping, collisions, recovery and work; new statements/operators are outside
 the content contract. Replacing an inner parser cannot extend DOT grammar.
 Numeral boundaries remain grammar-defined; ambiguity checking stays lexical,
 not implicit numeric conversion or a promised `.string.non_ascii` API.
 
-**Delegated policy direction agreed 2026-10-17; clarified 2026-10-18; not implemented.**
+**Delegated string policy implemented 2026-10-19; broader markup routing remains design.**
 The value's syntax identifies its processor, while the parent attribute context
 may select none/passthrough/process and supply a child-owned policy at compile
 time. Thus quoted
@@ -928,8 +929,10 @@ may use the bound markup processor. Markup can delegate its own attribute-value
 checks independently. Owned policy defines meaning, inheritance supplies supported
 defaults, and delegation is an explicit context-local handover, not a new
 execution mode. Runtime executes the compiled arrangement without rebinding;
-selector syntax, precedence and interaction with existing runtime overrides
-remain open. Current all-HTML-operand routing is unchanged.
+explicit attribute string rules override host defaults (passthrough if omitted).
+Child baselines resolve delegated patches, then enabled runtime child patches.
+Current all-HTML-operand routing is unchanged; per-attribute markup branches
+remain unimplemented and are rejected rather than ignored.
 
 The proposed initial selector is attribute name plus value form, with different
 delegated policies for `label`, `color`, `description`, etc. Element-specific
@@ -962,9 +965,10 @@ custom-validator helpers, including metered/cancellable sessions. Exact remains
 the default; `.case_insensitive` retains its full Unicode meaning. Hosts do not
 automatically change their existing matching rules or enable string processing.
 
-Host integration remains open: passthrough by default, automatic processing,
-host-aware fixes, mixed
-concatenations, attribute routing and override precedence. Mandatory host
+Retained-attribute host integration is implemented: passthrough by default,
+automatic and delayed string checks, shared bags and explicit coverage.
+Host-aware fixes, no-tree execution and shared budgets remain open. Mixed
+concatenations leave string coverage unavailable. Mandatory host
 quote/escape/reference/boundary checks stay
 with DOT/markup. Standalone resumable string validation is implemented through
 the same `State`/`step` contract for built-ins and custom validators, with optional
@@ -1062,8 +1066,8 @@ need not leave a document.
 | Dialect parsing | Under discussion; void names/case/context, explicit closers, unquoted/empty attributes and grammar policy |
 | Custom name/reference catalogs | Further design; built-ins remain independent optional checks |
 | Composed execution | Agreed direction; shared credits, cancellation, fixed scratch, reset/latching and validation scheduling |
-| Delegated policies | Attribute-name/value-form selection first; child owns rules; exact syntax, precedence and runtime-override interaction remain open |
-| Deeper/string processing | Default passthrough and case-sensitive checks; Unicode folding compiled out when unused; generic/custom diagnostics agreed; value/mapping, capability and validator APIs remain open; nested policy preparation is implemented |
+| Delegated policies | String attribute routing, precedence and runtime child patches implemented; per-attribute markup routing remains open |
+| Deeper/string processing | Default passthrough, logical readers, mapped findings and retained-attribute nesting implemented; no-tree execution, safe fixes and shared budgets remain open |
 | Profile/API redesign | Deferred discussion; workspace reuse did not decide it |
 | Summary index / caching / broader events | Optional proposals; initial public DOT event-only output is Unreleased |
 | Gap-aware partial-tree publication | DOT later regions/gaps are Unreleased; markup remains prefix-only |

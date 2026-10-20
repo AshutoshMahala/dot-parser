@@ -10,7 +10,7 @@ const help =
     \\zig build perf-string -- [options]
     \\  --baseline REF       Git commit/ref to compare with (default HEAD)
     \\  --modes LIST         ReleaseFast,ReleaseSafe,ReleaseSmall (default Fast,Safe)
-    \\  --suites LIST        native,sessions (default both)
+    \\  --suites LIST        native,sessions,integration,host-defaults (default native,sessions)
     \\  --runs N             Repeated process runs, odd 3..31 (default 3)
     \\  --threshold PERCENT  Flag median time increases above this (default 5)
     \\  --output DIRECTORY   New report directory; existing directories refused
@@ -21,6 +21,8 @@ const help =
     \\results.csv, metadata.txt, source snapshots and raw per-run CSVs.
     \\Native covers UTF-8/16/32, exact/available folding modes, built-in/custom.
     \\Sessions covers default, runtime policies, metering and cancellation.
+    \\Integration covers host defaults, bound passthrough and attribute processing.
+    \\Host-defaults isolates default-only binaries without enabled routing variants.
     \\These are hot-buffer microbenchmarks, not RSS or diagnostic-heavy workloads.
     \\No downloads, branch switches, commits, or library changes. Requires Git.
     \\
@@ -62,7 +64,7 @@ const Options = struct {
             } else return error.UnknownOption;
         }
         try validList(result.modes, &.{ "ReleaseFast", "ReleaseSafe", "ReleaseSmall" });
-        try validList(result.suites, &.{ "native", "sessions" });
+        try validList(result.suites, &.{ "native", "sessions", "integration", "host-defaults" });
         if (result.baseline.len == 0) return error.EmptyBaseline;
         return result;
     }
@@ -224,17 +226,21 @@ const Runner = struct {
         try Io.Dir.cwd().createDirPath(self.io, try self.path(&.{ self.output, "bin" }));
         // Freeze the harness too: a later working-tree edit cannot change one
         // side of a comparison halfway through compilation.
-        for ([_][]const u8{ "string.zig", "string_sessions.zig", "report.zig" }) |file| {
+        for ([_][]const u8{ "string.zig", "string_sessions.zig", "string_integration.zig", "report.zig" }) |file| {
             const bytes = try Io.Dir.cwd().readFileAlloc(self.io, try self.path(&.{ self.options.repo, "bench", file }), self.gpa, .limited(1024 * 1024));
             try self.save(try self.path(&.{ "harness", file }), bytes);
         }
+        try self.save("harness/default_only.zig", "pub const default_only = true;\n");
+        try self.save("harness/all_routes.zig", "pub const default_only = false;\n");
         var modes = std.mem.splitScalar(u8, self.options.modes, ',');
         while (modes.next()) |mode| {
             var suites = std.mem.splitScalar(u8, self.options.suites, ',');
             while (suites.next()) |suite| {
                 for (roots, [_][]const u8{ "before", "after" }) |root, variant| {
                     std.debug.print("Building {s} / {s} / {s}\n", .{ mode, suite, variant });
-                    _ = try self.command(&.{ self.options.zig, "build-exe", "-O", mode, "-fstrip", "--dep", "string_processor", try self.fmt("-Mroot={s}", .{try self.path(&.{ self.output, "harness", if (std.mem.eql(u8, suite, "native")) "string.zig" else "string_sessions.zig" })}), "--dep", "parser_support", try self.fmt("-Mstring_processor={s}/src/string.zig", .{root}), try self.fmt("-Mparser_support={s}/src/support.zig", .{root}), try self.fmt("-femit-bin={s}", .{try self.binary(mode, suite, variant)}) });
+                    const harness = if (std.mem.eql(u8, suite, "native")) "string.zig" else if (std.mem.eql(u8, suite, "sessions")) "string_sessions.zig" else "string_integration.zig";
+                    const integration_config = if (std.mem.eql(u8, suite, "host-defaults")) "default_only.zig" else "all_routes.zig";
+                    _ = try self.command(&.{ self.options.zig, "build-exe", "-O", mode, "-fstrip", "--dep", "string_processor", "--dep", "dot_parser", "--dep", "markup_parser", "--dep", "integration_options", try self.fmt("-Mroot={s}", .{try self.path(&.{ self.output, "harness", harness })}), "--dep", "parser_support", try self.fmt("-Mstring_processor={s}/src/string.zig", .{root}), "--dep", "parser_support", try self.fmt("-Mdot_parser={s}/src/root.zig", .{root}), "--dep", "parser_support", try self.fmt("-Mmarkup_parser={s}/src/markup.zig", .{root}), try self.fmt("-Mparser_support={s}/src/support.zig", .{root}), try self.fmt("-Mintegration_options={s}", .{try self.path(&.{ self.output, "harness", integration_config })}), try self.fmt("-femit-bin={s}", .{try self.binary(mode, suite, variant)}) });
                     const stat = try Io.Dir.cwd().statFile(self.io, try self.binary(mode, suite, variant), .{});
                     try sizes.writer.print("{s},{s},{s},{d}\n", .{ mode, suite, variant, stat.size });
                 }
@@ -290,8 +296,8 @@ const Runner = struct {
         var csv: Io.Writer.Allocating = .init(self.gpa);
         var md: Io.Writer.Allocating = .init(self.gpa);
         try csv.writer.writeAll("case,status,before_ns,after_ns,time_change_percent,before_MBps,after_MBps,before_min_ns,before_max_ns,after_min_ns,after_max_ns,before_session_bytes,after_session_bytes,before_credits,after_credits,before_polls,after_polls\n");
-        try md.writer.print("# String performance comparison\n\nBaseline: `{s}`; candidate: captured working tree.\n\n{d} process runs per side, each using seven timed batches after two warmups. Compilation and input allocation are outside timing. Positive changes mean **more time / slower**, not throughput gain. Threshold: {d:.1}%.\n\n", .{ self.options.baseline, self.options.runs, self.options.threshold });
-        try md.writer.writeAll("`slower` means the medians exceed the threshold and the observed run ranges do not overlap; it is a candidate regression, not statistical proof. `inconclusive` means a threshold crossing with overlapping ranges. `within_threshold` is not a guarantee of no regression. New/removed cases are excluded from aggregate changes.\n\nProcessor heap allocations are zero for these discard-sink fixtures (no caller allocations included). Session bytes are caller-owned session size, not total stack or process RSS; zero means the benchmark uses a one-shot call. Credits and polls are factual counters, not elapsed-time estimates.\n\n## Summary\n\n| Mode / suite | Matched | Geometric mean time change | Slower | Inconclusive | New / removed | State/counter changes |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+        try md.writer.print("# String performance comparison\n\nBaseline: `{s}`; candidate: captured working tree.\n\n{d} process runs per side. Native/session harnesses use seven timed batches after two warmups; integration uses nine after three warmups. Compilation and input construction are outside timing. Integration includes host parsing, validation, allocation and disposal. Positive changes mean **more time / slower**, not throughput gain. Threshold: {d:.1}%.\n\n", .{ self.options.baseline, self.options.runs, self.options.threshold });
+        try md.writer.writeAll("`slower` means the medians exceed the threshold and the observed run ranges do not overlap; it is a candidate regression, not statistical proof. `inconclusive` means a threshold crossing with overlapping ranges. `within_threshold` is not a guarantee of no regression. New/removed cases are excluded from aggregate changes.\n\nStandalone string processor heap allocations are zero for these discard-sink fixtures. Integration allocates host pools; its separate accounting probe verifies that routed checks add no allocator requests or cumulative requested bytes over the same host parse. This is not process RSS or a peak-memory measurement. Session bytes are caller-owned session size, not total stack; zero means a one-shot call without a reported session size. Integration counters are zero because the composed operation is not metered. Credits and polls for session fixtures are factual counters, not elapsed-time estimates.\n\n## Summary\n\n| Mode / suite | Matched | Geometric mean time change | Slower | Inconclusive | New / removed | State/counter changes |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
         var modes = std.mem.splitScalar(u8, self.options.modes, ',');
         while (modes.next()) |mode| {
             var suites = std.mem.splitScalar(u8, self.options.suites, ',');
@@ -325,7 +331,7 @@ const Runner = struct {
                 try md.writer.print("| {s} / {s} | {d} | {d:.2}% | {d} | {d} | {d} / {d} | {d} |\n", .{ mode, suite, matched, (@exp(log_ratio / @as(f64, @floatFromInt(matched))) - 1) * 100, slower, noisy, added, removed, counters });
             }
         }
-        try md.writer.writeAll("\n## Cases\n\nAll times are ns/value; MB/s uses physical source bytes and decimal MB. Wide encodings must be compared by time as well as bytes/s. Raw per-run medians and full counters are retained in `results.csv` and `raw/`.\n\n| Case | Status | Before ns | After ns | Time change | Before MB/s | After MB/s |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |\n");
+        try md.writer.writeAll("\n## Cases\n\nAll times are ns/value; an integration value is one complete document (2,000 selected attributes), not one string. MB/s uses physical source bytes and decimal MB. Wide encodings must be compared by time as well as bytes/s. Raw per-run medians and full counters are retained in `results.csv` and `raw/`.\n\n| Case | Status | Before ns | After ns | Time change | Before MB/s | After MB/s |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |\n");
         for (entries) |entry| {
             const b = entry.samples[0];
             const a = entry.samples[1];
@@ -420,6 +426,8 @@ test "report options reject ambiguous or unbounded configurations" {
     const t = std.testing;
     const o = try Options.parse(&.{ "--baseline", "v0.5.0", "--runs", "5", "--modes", "ReleaseSmall", "--suites", "sessions" });
     try t.expectEqual(@as(u8, 5), o.runs);
+    const hosts = try Options.parse(&.{ "--suites", "host-defaults,integration" });
+    try t.expectEqualStrings("host-defaults,integration", hosts.suites);
     try t.expectError(error.InvalidRuns, Options.parse(&.{ "--runs", "2" }));
     try t.expectError(error.InvalidRuns, Options.parse(&.{ "--runs", "255" }));
     try t.expectError(error.MissingOptionValue, Options.parse(&.{"--baseline"}));

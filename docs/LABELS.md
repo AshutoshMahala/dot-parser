@@ -12,6 +12,10 @@ This page shows how to check what is inside those labels while you parse DOT
 files. To parse HTML-like markup without DOT, see
 [Parsing markup on its own](MARKUP.md).
 
+For optional string-value checks in DOT or inside markup attributes, see
+[attribute string processing](STRINGS.md#attribute-processing-in-dot-and-markup).
+Those checks default to passthrough and can share this pipeline's diagnostic bag.
+
 > **Available since 0.4.0.** Label checking and the `markup_parser` module
 > are included in the package.
 

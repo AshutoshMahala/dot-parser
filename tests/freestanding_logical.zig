@@ -53,3 +53,20 @@ export fn validate_logical(source: [*]const u8, length: u32, origin: u32, budget
     const progress = session.advance(budget);
     return progress.work_used +% progress.source_frontier;
 }
+
+export fn validate_markup_strings(source: [*]const u8, length: u32) u32 {
+    const P = markup.Profile(.{
+        .processors = .{ .string = strings.Profile(.{}) },
+        .policy = .{ .mode = .structural, .attributes = .{
+            .label = .{ .string = .{ .process = .{ .validation = .{ .equals = .{ .expected = "A&B", .severity = .err } } } } },
+        } },
+    });
+    var storage: markup.FixedDocumentStorage(.{ .nodes = 8, .attributes = 8 }) = .{};
+    var scratch: markup.FixedParseScratch(8) = .{};
+    var keys: [8]markup.AttributeKeyScratch = undefined;
+    const result = P.parseAndValidateIn(.{ .bytes = source[0..length], .origin = 0 }, .{
+        .document = storage.storage(),
+        .scratch = scratch.storage(),
+    }, .{ .attribute_keys = &keys }, P.DiagnosticSink.discard, .{}) catch return 0;
+    return result.string.processed +% @intFromBool(result.documentValid());
+}
