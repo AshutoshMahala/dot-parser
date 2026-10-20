@@ -90,8 +90,14 @@ pub fn For(comptime Custom: type) type {
             detail: ?Detail = null,
             fix: ?Fix = null,
         };
-        /// All spans are local to the borrowed value, checked and rebased once.
+        /// Local spans are checked/rebased once; at/related_at are already in
+        /// original-source coordinates. Bound readers require the latter and
+        /// reject raw edits until host-aware fix materialization is available.
         pub const Finding = struct {
+            /// Original-source locations from value.location()/readStep().
+            /// Do not combine these with their local-coordinate counterparts.
+            at: ?support.logical.SourceLocation = null,
+            related_at: ?support.logical.SourceLocation = null,
             span: ?support.location.Span = null,
             related: ?support.location.Span = null,
             detail: ?Detail = null,

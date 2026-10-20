@@ -41,3 +41,15 @@ export fn read_logical(source: [*]const u8, length: u32, origin: u32, actual: u8
         },
     }
 }
+
+export fn validate_logical(source: [*]const u8, length: u32, origin: u32, budget: u32) u32 {
+    const P = strings.Profile(.{ .policy = .{ .execution = .{ .metering = true }, .validation = .{
+        .equals = .{ .expected = "A&B", .severity = .err },
+    } } });
+    const R = markup.LogicalReader(.utf8);
+    const B = P.WithReader(R);
+    const reader = R.init(.{ .bytes = source[0..length], .origin = origin }, .{}) catch return 0;
+    var session = B.Session.init(reader, P.Sink.discard, .{}) catch return 0;
+    const progress = session.advance(budget);
+    return progress.work_used +% progress.source_frontier;
+}

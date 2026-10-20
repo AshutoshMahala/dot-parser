@@ -365,7 +365,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("examples/string_processor.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "string_processor", .module = strings }},
+        .imports = &.{ .{ .name = "string_processor", .module = strings }, .{ .name = "markup_parser", .module = markup }, .{ .name = "dot_parser", .module = mod } },
     }) });
     examples_step.dependOn(&b.addRunArtifact(string_example).step);
     examples_step.dependOn(&b.addInstallArtifact(string_example, .{}).step);
@@ -543,6 +543,17 @@ pub fn build(b: *std.Build) void {
     b.step("bench-string-sessions", "Measure opt-in string metering and cancellation")
         .dependOn(&run_string_sessions_bench.step);
     check_benches.dependOn(&string_sessions_bench.step);
+    const logical_bench = b.addExecutable(.{ .name = "logical_strings_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/logical_strings.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{ .{ .name = "string_processor", .module = strings }, .{ .name = "markup_parser", .module = markup }, .{ .name = "dot_parser", .module = mod } },
+    }) });
+    const run_logical_bench = b.addRunArtifact(logical_bench);
+    if (b.args) |args| run_logical_bench.addArgs(args);
+    b.step("bench-logical-strings", "Measure reader-bound string checks, credits and session storage")
+        .dependOn(&run_logical_bench.step);
+    check_benches.dependOn(&logical_bench.step);
     const string_passthrough_bench = b.addExecutable(.{ .name = "string_passthrough_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/string_passthrough.zig"),
         .target = target,

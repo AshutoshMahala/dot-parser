@@ -5,8 +5,9 @@
 `string_processor` checks borrowed string **contents** independently of DOT and
 markup. It does not recognize quotes, unescape text, expand references, remove
 a BOM, normalize text, or build a tree. `"SF"` (including its quotes), `&amp;`
-and `\n` are literal contents. DOT/markup integration and attribute-based
-selection are not implemented yet.
+and `\n` are literal contents on the standalone path. Explicit
+[logical-reader binding](#validating-logical-values) supports decoded host values;
+automatic DOT/markup execution and attribute-based selection are not implemented.
 
 ```zig
 const strings = @import("string_processor");
@@ -50,7 +51,7 @@ are not rejected merely because a host language might forbid them.
 
 | Field | Meaning |
 | --- | --- |
-| `completion` | `complete`, `fail_fast`, `cancelled`, `diagnostic_stop(reason)`, or `invalid_validator` |
+| `completion` | `complete`, `fail_fast`, `cancelled`, `diagnostic_stop(reason)`, or `invalid_validator`; reader-bound operations can also return `input_unavailable` |
 | `checks.encoding/equals/one_of/custom` | `disabled`, `not_run`, `incomplete`, `complete`, or `unavailable` |
 | `errors`, `warnings` | Factual findings, independent of diagnostic visibility |
 | `delivery` | Whether attempted diagnostic delivery succeeded |
@@ -448,9 +449,8 @@ non-comparison builds and uses Node to execute their exports and verify
 folding-table exclusion. `zig build check` includes these
 Wasm checks alongside the repository's other correctness/build checks, without
 running benchmarks. DOT/markup hot paths are not
-modified by this standalone module. Opt-in logical readers are available below;
-connecting them to validators, host dispatch and shared-budget composition
-remain later work.
+modified by this standalone module. Explicit logical-reader binding is available
+below; automatic host dispatch and shared-budget composition remain later work.
 See the [initial performance measurements](PERFORMANCE.md#standalone-strings-unreleased).
 
 ## Logical readers
@@ -514,8 +514,8 @@ whole-value highlights. `reader.location()` supplies the whole original input,
 including DOT quotes and concatenation glue; an empty markup/raw value has a
 zero-length location at its origin. A DOT empty string has an enclosing location
 covering its quotes. **Neither kind authorizes a raw text edit.** Cross-operand
-selection helpers, insertion-boundary validation, host-aware fix materialization
-and mapped custom-validator reporting remain future integration work.
+selection helpers, insertion-boundary validation and host-aware fix materialization
+remain future integration work. Mapped custom findings are supported below.
 
 `contiguous()` returns optional borrowed, unchanged contents with their encoding
 and location. It does not validate them or scan to discover a fast path. Plain
@@ -556,8 +556,147 @@ be copied/moved between steps without pointers into the reader itself.
 
 Callers may pause between steps or check cancellation before another step.
 These are reader steps, **not a redefinition of existing parser/string-session
-credits**. The readers do not implement a scheduler or automatic polling. Existing
-validator `Value`, session metering, polling and batching are unchanged. Wiring
-this reader contract into their logical-value interface is the next slice.
+credits**. The readers themselves do not implement a scheduler or automatic
+polling. The explicit binding below adds string-session scheduling without
+changing standalone credit accounting or batching.
 Run `zig build test-logical` for mapping, native encodings, bounded progress and
 host-decoder parity tests.
+
+## Validating logical values
+
+> **Unreleased.** Explicit binding; not automatic DOT/markup attribute routing.
+
+Bind the reader type at compile time to reuse a string profile's checks, policy,
+diagnostics and execution settings:
+
+```zig
+const Text = strings.Profile(.{ .policy = .{ .validation = .{
+    .equals = .{ .expected = "A&B", .severity = .err },
+} } });
+const Label = Text.WithReader(markup.LogicalReader(.utf8));
+const reader = try markup.LogicalReader(.utf8).init(
+    .{ .bytes = "A&amp;B", .origin = 100 }, .{},
+);
+var bag: Text.FixedDiagnosticBag(8) = .{};
+const result = try Label.parseAndValidate(reader, bag.sink(), .{});
+std.debug.assert(result.valid());
+```
+
+`Text.WithReader(dot.identifier.LogicalReader(.utf8))` also reads quoted
+concatenations as one value. `Text.WithReader(strings.LogicalReader(.utf8))`
+uses the same interface on already-logical contents. Bound native encodings must
+be enabled by the string profile's `source_encodings`; a conflicting explicit
+`Options.encoding` is rejected. No encoding is guessed or converted.
+
+Each call starts a fresh traversal, even if the supplied reader was previously
+advanced. Its source and host options are retained. The reader contract adds
+`encoding_kind`, `fragment()` and checked `restarted()`; third-party reader
+implementations must obey the same bounded-work, immutable-source and movable
+state contract. Compile-time binding does not sandbox custom Zig code.
+
+### One validator interface
+
+The same `State(Context)` / `step` and optional synchronous `check` contract is
+used for plain and host-decoded values. Built-in equality/membership also use
+this interface, including ASCII-only and full Unicode folding. Patterns remain
+UTF-8 configuration independently of source encoding.
+
+Portable custom validators use `value.location()`, `value.contiguous()` and
+`context.readStep(&cursor, value)`. A `Context.Cursor` starts as `.{}` and retains
+fixed-size traversal state. `readStep` returns `pending`, `scalar` (codepoint plus
+original-source location), `end` or `stopped`. Do not treat `pending` as EOF. The
+session step context allows at most one `readStep` per validator step; a second call is an
+`invalid_validator` contract failure. Custom work beyond the supplied services
+must still be bounded. Comparison helpers retain their `equalsStep`/`equals`
+contract; never compare `contiguous().bytes` without respecting its encoding.
+
+```zig
+const NoAmpersands = struct {
+    pub const Settings = void;
+    pub const defaults: Settings = {};
+    pub const uses_comparison = false;
+    pub fn State(comptime Context: type) type {
+        return struct { cursor: Context.Cursor = .{} };
+    }
+    pub fn step(state: anytype, value: anytype, _: Settings,
+                context: anytype) strings.Step {
+        return switch (context.readStep(&state.cursor, value)) {
+            .pending => .pending,
+            .stopped => .stopped,
+            .end => .passed,
+            .scalar => |item| blk: {
+                if (item.codepoint == '&' and
+                    !context.report(.{ .at = item.location }))
+                    break :blk .stopped;
+                break :blk .pending;
+            },
+        };
+    }
+};
+```
+
+Bind with `.custom = NoAmpersands` and `.policy.validation.custom = .err`.
+This example runs unchanged on standalone values or any bound reader. Existing
+standalone-only validators using `value.bytes`/`cursor()` remain valid there;
+decoded host values deliberately do not expose raw spelling as logical bytes.
+Do not retain the value view/context or their pointers across calls. Retain
+cursors and source locations in validator state instead.
+
+### Findings and unavailable input
+
+Use `Finding.at` and `related_at` for original-source locations. They are
+**not rebased again**. A finding on the `&` above spans all of `&amp;`; native
+spans include the physical bytes of every code unit. Omitted `at` highlights the
+whole original value (including DOT quotes/glue). `detail`, severity, fail-fast,
+sink stops and generic-failure suppression work as for standalone strings.
+
+Both standalone and bound contexts check location bounds, segment origin and
+native code-unit alignment even in ReleaseFast. Combining `at` with local `span`,
+or `related_at` with local `related`, is invalid. Bound contexts reject local
+`span`/`related` and raw `fix` offers: those cannot safely describe logical host
+edits. This includes offers filtered by `diagnostics.fixes`. Locations are
+highlights, not proof of editability; these checks do not certify that a
+hand-fabricated location came from the reader. Host-aware logical replacements
+and their materialization are not exposed yet.
+
+Before running checks, the binding traverses the **whole logical input**. An
+unresolved reference, invalid encoding/framing or unsupported operand produces
+`completion = .input_unavailable` and a typed `result.input_failure` with its
+original location. Requested checks become `unavailable`, `checks.encoding`
+stays `incomplete`, and `valid()` is false. No string finding is fabricated for
+this prerequisite failure: the host owns syntax/reference reporting. A completed
+prerequisite covers the logical reader's domain, not skipped DOT comment bytes
+or full host grammar. This prevents an early equality mismatch or empty `one_of`
+from hiding an invalid suffix. Standalone `Result` has no failure payload cost.
+
+### Sessions and costs
+
+The bound type exposes `Session.init`, `advance`, `run`, `result`, `cancel`,
+`reset` and `deinit`, following standalone string-session rules. Enable
+`.execution.metering` to advance by budgets; runtime policy overrides remain
+opt-in. Reset validates its replacement before discarding existing progress.
+
+One bound input-pass credit performs at most one reader step. A comparison step
+performs at most one reader step plus bounded pattern/scalar/folding work, or
+one pattern-validation step. Long references and concatenation comments yield;
+they are not hidden behind one credit. Credit totals are independent of budget
+partitioning. Cancellation is polled at entry and the configured interval;
+completed operations remain terminal. `source_frontier` is the input pass's
+physical-byte high-water mark, not a count of decoded characters or completed
+checks. Reference replay never moves it backwards.
+
+The existing standalone optimized/batched path remains separate at compile time.
+Reader-bound execution currently uses scalar stepping and does not invoke
+optional validator batches. There is no decoded-value allocation or source-sized
+mapping table. Sessions retain the initial reader, input-pass cursor, and active
+validator cursors; inspect `@sizeOf(Label.Session)` for a chosen profile. Checks
+and `one_of` candidates can traverse/decode the input again. Diagnostic bags
+retain their caller-selected memory cost. Automatic attribute dispatch, shared
+DOT/markup/string budgets and host-aware fixes are later slices.
+
+Run `zig build bench-logical-strings -Doptimize=ReleaseFast` for explicit binding
+costs (plain/DOT/markup, short/long/Unicode/glue-heavy inputs, run/budget-one/
+budget-64, session bytes and credits). `-- --csv` produces the repository's
+benchmark CSV format. Use `zig build perf-string -- --baseline HEAD` to compare
+the existing standalone paths before/after a change; these are distinct studies,
+not a claim that bound scalar execution has the same cost as contiguous input.

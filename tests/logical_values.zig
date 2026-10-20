@@ -5,6 +5,10 @@ const strings = @import("string_processor");
 const t = std.testing;
 const logical = strings.logical;
 
+test {
+    _ = @import("logical_validation.zig");
+}
+
 fn collect(reader: anytype, output: []u8) ![]const u8 {
     var used: usize = 0;
     var steps: usize = 0;

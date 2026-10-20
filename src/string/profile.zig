@@ -65,7 +65,7 @@ pub fn Profile(comptime config: anytype) type {
                     if (comptime !capabilities.allows(encoding)) return error.UnsupportedEncoding;
                     const p = if (runtime) prepared else Policies.baseline;
                     if (p.execution.metering or p.execution.cancellation) {
-                        var session = Core(encoding).init(fragment, sink, options, prepared);
+                        var session = Core(encoding, void).init(fragment, sink, options, prepared, {});
                         return session.run();
                     }
                     return run(encoding, fragment, sink, options, prepared);
@@ -73,14 +73,82 @@ pub fn Profile(comptime config: anytype) type {
             }
         }
 
-        fn Engine(comptime actual: support.encoding.Actual, comptime can_cancel: bool) type {
+        /// Bind a logical reader at compile time. Input is an initialized reader;
+        /// each operation restarts it, preserving its source and host options.
+        pub fn WithReader(comptime Reader: type) type {
+            const actual = Reader.encoding_kind;
+            if (!capabilities.allows(actual)) @compileError("logical reader encoding is not enabled in source_encodings");
+            const BoundCore = Core(actual, Reader);
+            return struct {
+                pub const Result = results.For(true);
+                pub const Session = struct {
+                    core: BoundCore,
+                    pub fn init(input: Reader, sink: Sink, options: Options) Error!@This() {
+                        if (options.encoding) |selected| if (selected != actual) return error.UnsupportedEncoding;
+                        const reader = try input.restarted();
+                        const fragment = try support.processor.Fragment.init(reader.fragment().bytes, reader.fragment().origin);
+                        const prepared = if (runtime) try Policies.prepare(.{ .policy = options.policy }) else Policies.prepare(.{});
+                        return .{ .core = BoundCore.init(fragment, sink, options, prepared, reader) };
+                    }
+                    pub inline fn advance(self: *@This(), budget: u32) (if (runtime) error{MeteringDisabled}!results.Progress else results.Progress) {
+                        if (!runtime and !Policies.baseline.execution.metering) @compileError("advance requires execution.metering");
+                        if (runtime and !self.core.engine.effective().execution.metering) return error.MeteringDisabled;
+                        return self.core.drive(true, budget);
+                    }
+                    pub fn run(self: *@This()) Result {
+                        return self.core.run();
+                    }
+                    pub fn result(self: *const @This()) ?Result {
+                        return if (self.core.finished) self.core.engine.result else null;
+                    }
+                    pub fn cancel(self: *@This()) Result {
+                        return self.core.cancel();
+                    }
+                    pub fn deinit(self: *@This()) void {
+                        _ = self.cancel();
+                    }
+                    pub fn reset(self: *@This(), input: Reader, sink: Sink, options: Options) Error!void {
+                        const replacement = try init(input, sink, options);
+                        self.deinit();
+                        self.* = replacement;
+                    }
+                };
+                pub fn parseAndValidate(input: Reader, sink: Sink, options: Options) Error!Result {
+                    var session = try @This().Session.init(input, sink, options);
+                    return session.run();
+                }
+            };
+        }
+
+        fn Engine(comptime actual: support.encoding.Actual, comptime can_cancel: bool, comptime Reader: type) type {
+            const mapped = Reader != void;
+            const InputValue = if (mapped) @import("value.zig").LogicalValue(Reader) else Value(actual);
+            const ContentReader = if (mapped) Reader else support.logical.Reader(actual);
             return struct {
                 const Self = @This();
                 input: support.processor.Fragment,
+                reader: Reader,
                 sink: Sink,
                 state: Policies.State,
                 cancellation: if (can_cancel) ?support.execution.Cancellation else void,
-                result: results.Result = .{},
+                result: results.For(mapped) = .{},
+
+                // These are view construction/identity, not work stages. Keep
+                // them transparent to the existing raw-input specializations.
+                inline fn inputValue(self: *const Self) InputValue {
+                    return if (mapped) .{ .reader = &self.reader } else .{ .bytes = self.input.bytes, .origin = self.input.origin };
+                }
+                inline fn owns(self: *const Self, v: InputValue) bool {
+                    return if (mapped) v.reader == &self.reader else v.bytes.ptr == self.input.bytes.ptr and v.bytes.len == self.input.bytes.len and v.origin == self.input.origin;
+                }
+                fn unavailable(self: *Self, failure: support.logical.Failure) void {
+                    if (!mapped) unreachable;
+                    self.result.input_failure = failure;
+                    self.result.completion = .input_unavailable;
+                    inline for (.{ "equals", "one_of", "custom" }) |field| {
+                        if (@field(self.result.checks, field) != .disabled) @field(self.result.checks, field) = .unavailable;
+                    }
+                }
 
                 inline fn effective(self: *const Self) Schema.Effective {
                     return if (runtime) self.state else Policies.baseline;
@@ -120,15 +188,44 @@ pub fn Profile(comptime config: anytype) type {
                 fn Context(comptime Validator: type, comptime stepped: bool) type {
                     return struct {
                         pub const cancellation_enabled = can_cancel;
-                        pub const ComparisonState = @import("compare.zig").State(folding_used, ascii_folding_used);
+                        pub const Cursor = struct { reader: ?ContentReader = null };
+                        pub const ComparisonState = if (mapped)
+                            @import("compare_logical.zig").State(Cursor, folding_used, ascii_folding_used)
+                        else
+                            @import("compare.zig").State(folding_used, ascii_folding_used);
+                        pub const Read = union(enum) { pending, scalar: support.logical.Scalar, end, stopped };
                         engine: *Self,
                         code: diagnostics.Code,
                         comparison: if (Validator.uses_comparison) policy.Comparison else void,
                         findings: u64 = 0,
-                        pub fn equalsStep(ctx: *@This(), comparison_state: *ComparisonState, value: Value(actual), expected: []const u8) validators.Step {
+                        read_used: if (stepped) bool else void = if (stepped) false else {},
+                        pub fn readStep(ctx: *@This(), cursor: *Cursor, v: InputValue) Read {
+                            if (ctx.engine.result.completion != .complete) return .stopped;
+                            if (!ctx.engine.owns(v) or (stepped and ctx.read_used)) {
+                                ctx.invalidValidator();
+                                return .stopped;
+                            }
+                            if (stepped) ctx.read_used = true;
+                            if (cursor.reader == null) cursor.reader = if (mapped) ctx.engine.reader else ContentReader.init(ctx.engine.input) catch unreachable;
+                            const input = cursor.reader.?.fragment();
+                            if (input.bytes.ptr != ctx.engine.input.bytes.ptr or input.bytes.len != ctx.engine.input.bytes.len or input.origin != ctx.engine.input.origin) {
+                                ctx.invalidValidator();
+                                return .stopped;
+                            }
+                            return switch (cursor.reader.?.step()) {
+                                .pending => .pending,
+                                .scalar => |item| .{ .scalar = item },
+                                .end => .end,
+                                .failure => |failure| blk: {
+                                    if (mapped) ctx.engine.unavailable(failure) else ctx.invalidValidator();
+                                    break :blk .stopped;
+                                },
+                            };
+                        }
+                        pub fn equalsStep(ctx: *@This(), comparison_state: *ComparisonState, value: InputValue, expected: []const u8) validators.Step {
                             if (!Validator.uses_comparison) @compileError("validator must opt into uses_comparison");
                             if (ctx.engine.result.completion != .complete) return .stopped;
-                            if (value.bytes.ptr != ctx.engine.input.bytes.ptr or value.bytes.len != ctx.engine.input.bytes.len or value.origin != ctx.engine.input.origin) {
+                            if (!ctx.engine.owns(value)) {
                                 ctx.invalidValidator();
                                 return .stopped;
                             }
@@ -140,7 +237,7 @@ pub fn Profile(comptime config: anytype) type {
                         pub fn invalidValidator(ctx: *@This()) void {
                             if (ctx.engine.result.completion == .complete) ctx.engine.result.completion = .invalid_validator;
                         }
-                        pub fn equals(ctx: *@This(), value: Value(actual), expected: []const u8) ?bool {
+                        pub fn equals(ctx: *@This(), value: InputValue, expected: []const u8) ?bool {
                             if (stepped) @compileError("resumable validators must use equalsStep");
                             if (!Validator.uses_comparison) @compileError("validator must opt into uses_comparison");
                             if (ctx.cancelled()) return null;
@@ -148,9 +245,21 @@ pub fn Profile(comptime config: anytype) type {
                                 ctx.invalidValidator();
                                 return null;
                             }
-                            if (value.bytes.ptr != ctx.engine.input.bytes.ptr or value.bytes.len != ctx.engine.input.bytes.len or value.origin != ctx.engine.input.origin) {
+                            if (!ctx.engine.owns(value)) {
                                 ctx.invalidValidator();
                                 return null;
+                            }
+                            if (mapped) {
+                                var state: ComparisonState = .{};
+                                while (true) {
+                                    if (ctx.cancelled()) return null;
+                                    switch (ctx.equalsStep(&state, value, expected)) {
+                                        .pending => {},
+                                        .passed => return true,
+                                        .failed => return false,
+                                        .stopped => return null,
+                                    }
+                                }
                             }
                             // The input has already passed encoding validation.
                             // Exact byte equality therefore proves the UTF-8
@@ -182,32 +291,60 @@ pub fn Profile(comptime config: anytype) type {
                         }
                         pub fn report(ctx: *@This(), finding: diagnostic.Finding) bool {
                             if (ctx.engine.result.completion != .complete) return false;
+                            // Raw-local spans/edits cannot describe a decoded
+                            // host value. Source locations are highlights only;
+                            // host-aware replacement materialization is separate.
+                            if ((finding.at != null and finding.span != null) or
+                                (finding.related_at != null and finding.related != null) or
+                                (mapped and (finding.span != null or finding.related != null or finding.fix != null)))
+                            {
+                                ctx.invalidValidator();
+                                return false;
+                            }
                             const fragment = ctx.engine.input;
                             var d: Diagnostic = .{
                                 .code = ctx.code,
-                                .span = fragment.rebase(finding.span orelse .{ .start = 0, .len = @intCast(fragment.bytes.len) }) catch {
-                                    ctx.invalidValidator();
-                                    return false;
-                                },
+                                .span = if (finding.at) |at| ctx.sourceSpan(at) orelse return false else if (mapped)
+                                    ctx.sourceSpan(ctx.engine.reader.location()) orelse return false
+                                else
+                                    fragment.rebase(finding.span orelse .{ .start = 0, .len = @intCast(fragment.bytes.len) }) catch {
+                                        ctx.invalidValidator();
+                                        return false;
+                                    },
                                 .detail = finding.detail,
                             };
+                            if (finding.related_at) |at| d.related = ctx.sourceSpan(at) orelse return false;
                             if (finding.related) |span| d.related = fragment.rebase(span) catch {
                                 ctx.invalidValidator();
                                 return false;
                             };
                             if (finding.fix) |fix| {
-                                var mapped = fix;
-                                mapped.span = fragment.rebase(fix.span) catch {
+                                var rebased = fix;
+                                rebased.span = fragment.rebase(fix.span) catch {
                                     ctx.invalidValidator();
                                     return false;
                                 };
-                                if (ctx.engine.effective().fixes.allows(fix.applicability)) d.fix = mapped;
+                                if (ctx.engine.effective().fixes.allows(fix.applicability)) d.fix = rebased;
                             }
                             ctx.findings = std.math.add(u64, ctx.findings, 1) catch {
                                 ctx.invalidValidator();
                                 return false;
                             };
                             return ctx.engine.emit(d);
+                        }
+                        fn sourceSpan(ctx: *@This(), at: support.logical.SourceLocation) ?support.location.Span {
+                            const fragment = ctx.engine.input;
+                            const end: u64 = @as(u64, fragment.origin) + fragment.bytes.len;
+                            const unit = support.encoding.unitBytes(actual);
+                            if (at.span.start < fragment.origin or @as(u64, at.span.start) + at.span.len > end or
+                                at.segment_start < fragment.origin or at.segment_start > at.span.start or
+                                (at.span.start - fragment.origin) % unit != 0 or at.span.len % unit != 0 or
+                                (at.segment_start - fragment.origin) % unit != 0)
+                            {
+                                ctx.invalidValidator();
+                                return null;
+                            }
+                            return at.span;
                         }
                     };
                 }
@@ -234,7 +371,7 @@ pub fn Profile(comptime config: anytype) type {
                     if (severity == .off or self.cancelled()) return;
                     state.* = .incomplete;
                     var context: Context(Validator, false) = .{ .engine = self, .code = code, .comparison = if (Validator.uses_comparison) comparison else {} };
-                    const value = Value(actual){ .bytes = self.input.bytes, .origin = self.input.origin };
+                    const value = self.inputValue();
                     const outcome: validators.Outcome = if (@hasDecl(Validator, "check")) Validator.check(value, settings, &context) else blk: {
                         var state_value: Validator.State(Context(Validator, false)) = .{};
                         while (true) switch (Validator.step(&state_value, value, settings, &context)) {
@@ -260,14 +397,16 @@ pub fn Profile(comptime config: anytype) type {
             };
         }
 
-        fn Core(comptime actual: support.encoding.Actual) type {
-            const E = Engine(actual, cancellable);
+        fn Core(comptime actual: support.encoding.Actual, comptime Reader: type) type {
+            const mapped = Reader != void;
+            const E = Engine(actual, cancellable, Reader);
             const equals_active = runtime or Policies.baseline.equals.severity != .off;
             const one_of_active = runtime or Policies.baseline.one_of.severity != .off;
             const custom_active = runtime or Policies.baseline.custom_severity != .off;
             return struct {
                 const Self = @This();
                 engine: E,
+                input_cursor: Reader,
                 stage: results.Stage = .encoding,
                 finished: bool = false,
                 at: u32 = 0,
@@ -277,8 +416,8 @@ pub fn Profile(comptime config: anytype) type {
                 one_of_state: if (one_of_active) validators.OneOf.State(E.Context(validators.OneOf, true)) else void = if (one_of_active) .{} else {},
                 custom_state: if (custom_active and validators.resumable(Custom)) Custom.State(E.Context(Custom, true)) else void = if (custom_active and validators.resumable(Custom)) .{} else {},
 
-                fn init(fragment: support.processor.Fragment, sink: Sink, options: Options, prepared: Policies.State) Self {
-                    var self: Self = .{ .engine = .{ .input = fragment, .sink = sink, .state = prepared, .cancellation = options.cancellation } };
+                fn init(fragment: support.processor.Fragment, sink: Sink, options: Options, prepared: Policies.State, reader: Reader) Self {
+                    var self: Self = .{ .engine = .{ .input = fragment, .reader = reader, .sink = sink, .state = prepared, .cancellation = options.cancellation }, .input_cursor = reader };
                     const p = self.engine.effective();
                     self.engine.result.checks.equals = if (p.equals.severity == .off) .disabled else .not_run;
                     self.engine.result.checks.one_of = if (p.one_of.severity == .off) .disabled else .not_run;
@@ -292,6 +431,7 @@ pub fn Profile(comptime config: anytype) type {
 
                 inline fn drive(self: *Self, comptime bounded: bool, budget: u32) results.Progress {
                     if (bounded and budget == 1) return self.driveOne();
+                    if (mapped) return self.driveScalar(bounded, budget);
                     if (bounded and budget < batches.width) return self.driveScalar(bounded, budget);
                     const p = self.engine.effective();
                     // Choose once, not once per scalar. In particular budget 1
@@ -419,12 +559,12 @@ pub fn Profile(comptime config: anytype) type {
                     return work;
                 }
 
-                fn run(self: *Self) results.Result {
+                fn run(self: *Self) results.For(mapped) {
                     _ = self.drive(false, 0);
                     return self.engine.result;
                 }
 
-                fn cancel(self: *Self) results.Result {
+                fn cancel(self: *Self) results.For(mapped) {
                     if (!self.finished) {
                         self.engine.result.completion = .cancelled;
                         self.finished = true;
@@ -443,6 +583,21 @@ pub fn Profile(comptime config: anytype) type {
                     switch (self.stage) {
                         .encoding => {
                             self.engine.result.checks.encoding = .incomplete;
+                            if (mapped) {
+                                switch (self.input_cursor.step()) {
+                                    .pending, .scalar => {},
+                                    .failure => |failure| self.engine.unavailable(failure),
+                                    .end => {
+                                        self.engine.result.checks.encoding = .complete;
+                                        self.next(.equals);
+                                    },
+                                }
+                                // Accepted malformed references may replay a
+                                // spelling. Publish a high-water mark, not a
+                                // cursor that appears to move backwards.
+                                self.at = @max(self.at, self.input_cursor.position());
+                                return;
+                            }
                             const bytes = self.engine.input.bytes;
                             if (self.at < bytes.len) {
                                 const decoded = support.encoding.Reader(actual).decode(bytes, self.at) catch {
@@ -486,7 +641,7 @@ pub fn Profile(comptime config: anytype) type {
                         return;
                     }
                     var context: E.Context(Validator, true) = .{ .engine = &self.engine, .code = code, .comparison = if (Validator.uses_comparison) comparison else {}, .findings = self.findings };
-                    const outcome = Validator.step(state, Value(actual){ .bytes = self.engine.input.bytes, .origin = self.engine.input.origin }, settings, &context);
+                    const outcome = Validator.step(state, self.engine.inputValue(), settings, &context);
                     self.findings = context.findings;
                     if (self.engine.result.completion != .complete) return;
                     switch (outcome) {
@@ -503,12 +658,12 @@ pub fn Profile(comptime config: anytype) type {
         }
 
         const Inner = union(support.encoding.Actual) {
-            ascii: if (capabilities.ascii) Core(.ascii) else void,
-            utf8: if (capabilities.utf8) Core(.utf8) else void,
-            utf16le: if (capabilities.utf16) Core(.utf16le) else void,
-            utf16be: if (capabilities.utf16) Core(.utf16be) else void,
-            utf32le: if (capabilities.utf32) Core(.utf32le) else void,
-            utf32be: if (capabilities.utf32) Core(.utf32be) else void,
+            ascii: if (capabilities.ascii) Core(.ascii, void) else void,
+            utf8: if (capabilities.utf8) Core(.utf8, void) else void,
+            utf16le: if (capabilities.utf16) Core(.utf16le, void) else void,
+            utf16be: if (capabilities.utf16) Core(.utf16be, void) else void,
+            utf32le: if (capabilities.utf32) Core(.utf32le, void) else void,
+            utf32be: if (capabilities.utf32) Core(.utf32be, void) else void,
         };
         pub const Session = struct {
             inner: Inner,
@@ -519,7 +674,7 @@ pub fn Profile(comptime config: anytype) type {
                 switch (actual) {
                     inline else => |encoding| {
                         if (comptime !capabilities.allows(encoding)) return error.UnsupportedEncoding;
-                        return .{ .inner = @unionInit(Inner, @tagName(encoding), Core(encoding).init(fragment, sink, options, prepared)) };
+                        return .{ .inner = @unionInit(Inner, @tagName(encoding), Core(encoding, void).init(fragment, sink, options, prepared, {})) };
                     },
                 }
             }
@@ -563,7 +718,7 @@ pub fn Profile(comptime config: anytype) type {
         fn run(comptime actual: support.encoding.Actual, fragment: support.processor.Fragment, sink: Sink, options: Options, prepared: Policies.State) results.Result {
             const p = if (runtime) prepared else Policies.baseline;
             _ = options;
-            var engine: Engine(actual, false) = .{ .input = fragment, .sink = sink, .state = prepared, .cancellation = {} };
+            var engine: Engine(actual, false, void) = .{ .input = fragment, .reader = {}, .sink = sink, .state = prepared, .cancellation = {} };
             engine.result.checks.equals = if (p.equals.severity == .off) .disabled else .not_run;
             engine.result.checks.one_of = if (p.one_of.severity == .off) .disabled else .not_run;
             engine.result.checks.custom = if (p.custom_severity == .off) .disabled else .not_run;

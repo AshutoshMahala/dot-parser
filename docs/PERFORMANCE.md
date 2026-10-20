@@ -943,6 +943,7 @@ zig build bench-markup -Doptimize=ReleaseFast
 zig build bench-markup -Doptimize=ReleaseFast -- --scopes-only
 zig build bench-markup -Doptimize=ReleaseFast -- --graphviz-only
 zig build bench-composition -Doptimize=ReleaseFast
+zig build bench-logical-strings -Doptimize=ReleaseFast
 zig build check-benches  # only checks that they compile
 ```
 

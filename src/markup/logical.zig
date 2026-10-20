@@ -17,6 +17,7 @@ pub fn Reader(comptime actual: support.encoding.Actual) type {
     const E = support.encoding.Reader(actual);
     return struct {
         const Self = @This();
+        pub const encoding_kind = actual;
         contents: logical.Reader(actual),
         options: Options,
         state: enum { content, start, name, number_start, hex_start, decimal, hex } = .content,
@@ -26,6 +27,12 @@ pub fn Reader(comptime actual: support.encoding.Actual) type {
 
         pub fn init(input: support.processor.Fragment, options: Options) support.processor.Fragment.Error!Self {
             return .{ .contents = try logical.Reader(actual).init(input), .options = options };
+        }
+        pub fn fragment(self: *const Self) support.processor.Fragment {
+            return self.contents.input;
+        }
+        pub fn restarted(self: *const Self) support.processor.Fragment.Error!Self {
+            return init(self.fragment(), self.options);
         }
         pub fn location(self: *const Self) logical.SourceLocation {
             var loc = self.contents.location();

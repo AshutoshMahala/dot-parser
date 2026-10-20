@@ -18,7 +18,8 @@ The package has three independent modules:
   other markup.
 - **`string_processor`** (**Unreleased**) checks borrowed string contents with equality, allowed
   values and compile-time custom validators. See [standalone strings](docs/STRINGS.md).
-  DOT/markup string integration is not implemented yet.
+  Explicit [logical-reader binding](docs/STRINGS.md#validating-logical-values)
+  supports decoded DOT/markup values; automatic attribute routing is not implemented yet.
 
 > **Status: experimental (0.x).** It works and is well tested, but names may
 > still change between versions. Breaking changes are listed in the

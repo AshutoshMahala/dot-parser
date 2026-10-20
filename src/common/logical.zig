@@ -35,6 +35,7 @@ pub fn Reader(comptime actual: encoding.Actual) type {
     const E = encoding.Reader(actual);
     return struct {
         const Self = @This();
+        pub const encoding_kind = actual;
         input: Fragment,
         offset: u32 = 0,
         segment_start: u32,
@@ -45,6 +46,13 @@ pub fn Reader(comptime actual: encoding.Actual) type {
 
         pub fn init(input: Fragment) Fragment.Error!Self {
             return .{ .input = try Fragment.init(input.bytes, input.origin), .segment_start = input.origin };
+        }
+        pub fn fragment(self: *const Self) Fragment {
+            return self.input;
+        }
+        /// A fresh traversal, retaining the source but no progress or failure.
+        pub fn restarted(self: *const Self) Fragment.Error!Self {
+            return init(self.input);
         }
         pub fn location(self: *const Self) SourceLocation {
             return .{ .span = .{ .start = self.input.origin, .len = @intCast(self.input.bytes.len) }, .segment_start = self.input.origin };

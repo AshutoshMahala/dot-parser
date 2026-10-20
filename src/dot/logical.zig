@@ -8,6 +8,7 @@ pub fn Reader(comptime actual: support.encoding.Actual) type {
     const E = support.encoding.Reader(actual);
     return struct {
         const Self = @This();
+        pub const encoding_kind = actual;
         contents: logical.Reader(actual),
         state: enum { initial, unquoted, quoted, escape, preserved_tail, continuation_cr, gap, slash, line_comment, block_comment, block_star, done } = .initial,
         needs_operand: bool = false,
@@ -17,6 +18,12 @@ pub fn Reader(comptime actual: support.encoding.Actual) type {
 
         pub fn init(input: support.processor.Fragment) support.processor.Fragment.Error!Self {
             return .{ .contents = try logical.Reader(actual).init(input) };
+        }
+        pub fn fragment(self: *const Self) support.processor.Fragment {
+            return self.contents.input;
+        }
+        pub fn restarted(self: *const Self) support.processor.Fragment.Error!Self {
+            return init(self.fragment());
         }
         pub fn location(self: *const Self) logical.SourceLocation {
             var loc = self.contents.location();

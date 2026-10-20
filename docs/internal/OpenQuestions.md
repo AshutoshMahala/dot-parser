@@ -962,8 +962,8 @@ custom-validator helpers, including metered/cancellable sessions. Exact remains
 the default; `.case_insensitive` retains its full Unicode meaning. Hosts do not
 automatically change their existing matching rules or enable string processing.
 
-Host integration remains open: passthrough by default, explicit processing,
-validator binding to the implemented logical readers, mapped reporting/fixes, mixed
+Host integration remains open: passthrough by default, automatic processing,
+host-aware fixes, mixed
 concatenations, attribute routing and override precedence. Mandatory host
 quote/escape/reference/boundary checks stay
 with DOT/markup. Standalone resumable string validation is implemented through
@@ -974,10 +974,12 @@ bounded-work guarantees merely by being compiled in; active synchronous-only
 validators are rejected under metering. No bundled regex engine is implied.
 See [remaining integration](PROCESSOR_CONTRACT.md#standalone-strings-and-remaining-host-integration).
 
-**Logical-value interface direction agreed 2026-10-19; reader foundation implemented.**
+**Logical-value interface direction agreed 2026-10-19; explicit binding implemented.**
 Plain/DOT/markup readers now expose bounded steps, scalar locations with operand
-provenance and optional borrowed contents. Validator/context binding and mapped
-diagnostic/fix reporting below remain design, not an implemented API.
+provenance and optional borrowed contents. `Profile.WithReader` connects validators
+and sessions to those readers, with checked original-coordinate primary/related
+findings and typed `input_unavailable` prerequisites. Host-aware fixes below remain
+design, not an implemented API; bound contexts reject raw edit offers.
 Keep the shared `State`/`step` validator contract, with a bounded logical cursor
 and an optional borrowed contiguous fast path instead of assuming every value
 has decoded `.bytes`. Each ready scalar carries adapter-produced original-source
@@ -991,8 +993,8 @@ an enclosing highlight is not an editable content range. Logical fix intents
 are distinct from raw edits: the host owns escaping/quoting, and explicit
 materialization accounts for source encoding using caller-owned output.
 Unsupported edits preserve findings and expose their limitation; invalid custom
-locations remain contract failures, including in ReleaseFast. Exact API/layout,
-empty/insertion boundaries and prerequisite handling remain implementation
+locations remain contract failures, including in ReleaseFast. Range/edit API,
+empty/insertion boundaries and host prerequisite aggregation remain implementation
 design. See [the interface and custom-validator example](STRING_INTEGRATION.md).
 This does not deliver host routing or shared-budget composed sessions.
 

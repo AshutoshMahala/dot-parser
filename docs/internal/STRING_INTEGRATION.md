@@ -1,10 +1,12 @@
 # String integration — logical values and source mapping
 
-**Direction agreed 2026-10-19; reader foundation implemented.** Shared bounded
-plain/DOT/markup readers now expose scalar locations and borrowed fast paths;
-see the implemented [reader contract](../STRINGS.md#logical-readers). Automatic
-host execution, mapped validator reporting/fixes and the value/context interface
-below remain design, not available APIs. Names and layouts below are illustrative. The current
+**Direction agreed 2026-10-19; explicit validator binding implemented.** Shared
+bounded plain/DOT/markup readers expose scalar locations and borrowed fast paths;
+`Profile.WithReader` now connects them to built-in/custom validators, sessions and
+mapped findings. See [logical readers](../STRINGS.md#logical-readers) and
+[binding](../STRINGS.md#validating-logical-values). Automatic host execution,
+range selection and host-aware fixes remain design. Unimplemented syntax below
+is illustrative. The current
 standalone API remains documented in [STRINGS.md](../STRINGS.md); host routing,
 policy delegation and composition constraints remain in
 [PROCESSOR_CONTRACT.md](PROCESSOR_CONTRACT.md).
@@ -35,8 +37,9 @@ Implement in slices:
 
 1. Logical-value adapters and original-source diagnostic/fix mapping, with the
    same validator interface for standalone contents and host values.
-   Reader adapters are implemented; validator binding and safe edit mapping
-   remain. Existing standalone validators are unchanged.
+   Reader adapters, validator binding and mapped primary/related findings are
+   implemented. Safe edit mapping remains. Existing standalone byte-oriented
+   validators still work on standalone values; portable validators use readStep.
 2. Attribute-name/value-form routing for DOT and markup, with default passthrough
    and child-owned policies. Keep one shared diagnostic destination available.
 3. Single-call `parseAndValidate` and explicit delayed execution. Shared-budget
@@ -47,8 +50,8 @@ Implement in slices:
 
 Keep `State(Context)` / `step(state, value, settings, context)` and the optional
 unmetered `check` path. Built-ins and custom validators use the same contract.
-Replace the assumption that all logical contents are available in `.bytes` with
-an optional borrowed fast path and an incremental cursor:
+The implemented binding replaces the assumption that all logical contents are
+available in `.bytes` with an optional borrowed fast path and incremental cursor:
 
 ```zig
 value.contiguous(); // ?BorrowedContents: unchanged logical contents, if available
@@ -91,7 +94,9 @@ their work must be explicitly accounted for before shared-budget execution ships
 index or a promise of an editable range. The reader foundation now represents
 this with an original-byte `span`, a `segment_start` identifying the operand's
 opening delimiter/content start, and `mapping = exact | enclosing`. These
-contain no pointers into cursor state. Checked custom selections, range helpers
+contain no pointers into cursor state. Primary/related bounds, segment origins
+and native alignment are checked in ReleaseFast too. These checks do not prove
+fabricated locations came from a reader or grant edit permission. Range helpers
 and fix materialization remain implementation design; no struct-size guarantee
 is made.
 
@@ -121,7 +126,8 @@ borrowed custom detail/replacement text must outlive their retained uses.
 
 ## Custom diagnostics and fixes
 
-Illustrative resumable validator, not a compilable example of the current API:
+Illustrative resumable validator: readStep/report locations are implemented,
+but the logical replacement offer below remains future API:
 
 ```zig
 const NoAmpersands = struct {
@@ -216,6 +222,15 @@ be defined before exposing the API.
   and peak memory. No default-path non-regression claim without measurements.
 
 ## Remaining details and acceptance tests
+
+Implemented prerequisites: reader binding traverses the whole logical value
+before checks. A reader failure returns `input_unavailable`, its typed original
+location in `input_failure`, and unavailable check coverage without duplicating
+host diagnostics. Bound sessions use scalar steps with invariant credits across
+budget partitions, cancellation intervals and movable state; plain standalone
+batching/credits are unchanged. Raw fixes are rejected in bound reporting until
+safe host-aware materialization exists. Automatic host routing and aggregate
+coverage are not implemented by this slice.
 
 The streaming/mapping direction is decided. Before shipping, define the exact
 location/selection representation, empty-value and insertion boundaries,

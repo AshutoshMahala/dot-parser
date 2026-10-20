@@ -25,10 +25,34 @@ pub fn Value(comptime actual: support.encoding.Actual) type {
         pub fn cursor(self: @This()) Cursor {
             return .{ .bytes = self.bytes };
         }
+        /// Location of an admitted validator view. Like reader state, manually
+        /// fabricated views must obey Fragment's source/coordinate contract.
+        /// For an unchecked consumer slice, validate Fragment.init first.
+        pub fn location(self: @This()) support.logical.SourceLocation {
+            return .{ .span = .{ .start = self.origin, .len = @intCast(self.bytes.len) }, .segment_start = self.origin };
+        }
+        pub fn contiguous(self: @This()) ?support.logical.BorrowedContents {
+            return .{ .bytes = self.bytes, .encoding = actual, .location = self.location() };
+        }
         /// Checked even for consumer-constructed values, like Cursor.next.
         pub fn span(self: @This()) error{SourceTooLarge}!support.location.Span {
             if (self.bytes.len > support.location.max_source_len) return error.SourceTooLarge;
             return .{ .start = 0, .len = @intCast(self.bytes.len) };
+        }
+    };
+}
+
+/// Ephemeral view supplied to a validator. Cursors own their traversal state;
+/// never retain this view or a pointer into the calling session across yields.
+pub fn LogicalValue(comptime Reader: type) type {
+    return struct {
+        pub const encoding = Reader.encoding_kind;
+        reader: *const Reader,
+        pub fn location(self: @This()) support.logical.SourceLocation {
+            return self.reader.location();
+        }
+        pub fn contiguous(self: @This()) ?support.logical.BorrowedContents {
+            return self.reader.contiguous();
         }
     };
 }

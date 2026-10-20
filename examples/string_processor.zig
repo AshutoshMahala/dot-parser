@@ -1,5 +1,7 @@
 const std = @import("std");
 const strings = @import("string_processor");
+const markup = @import("markup_parser");
+const dot = @import("dot_parser");
 const City = strings.Profile(.{ .policy = .{ .validation = .{
     .one_of = .{ .values = &.{ "SF", "Seattle" }, .severity = .err },
 } } });
@@ -43,4 +45,13 @@ pub fn main(init: std.process.Init) !void {
         // The caller can run other work here before resuming this value.
     }
     if (!session.result().?.valid()) return error.InvalidCity;
+
+    // Explicit host-reader binding: this does not enable automatic attributes.
+    // Both spellings below are checked as the logical string "Seattle".
+    const Label = City.WithReader(markup.LogicalReader(.utf8));
+    const label = try markup.LogicalReader(.utf8).init(.{ .bytes = "Sea&#116;tle", .origin = 100 }, .{});
+    if (!(try Label.parseAndValidate(label, bag.sink(), .{})).valid()) return error.InvalidCity;
+    const DotName = City.WithReader(dot.identifier.LogicalReader(.utf8));
+    const name = try dot.identifier.LogicalReader(.utf8).init(.{ .bytes = "\"Sea\" + \"ttle\"", .origin = 200 });
+    if (!(try DotName.parseAndValidate(name, bag.sink(), .{})).valid()) return error.InvalidCity;
 }
