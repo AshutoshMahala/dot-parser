@@ -448,6 +448,116 @@ non-comparison builds and uses Node to execute their exports and verify
 folding-table exclusion. `zig build check` includes these
 Wasm checks alongside the repository's other correctness/build checks, without
 running benchmarks. DOT/markup hot paths are not
-modified by this standalone module. Host dispatch, raw-to-logical adapters,
-concatenation/source mapping and shared-budget integration remain later work.
+modified by this standalone module. Opt-in logical readers are available below;
+connecting them to validators, host dispatch and shared-budget composition
+remain later work.
 See the [initial performance measurements](PERFORMANCE.md#standalone-strings-unreleased).
+
+## Logical readers
+
+> **Unreleased.** A shared reader foundation, not automatic string processing.
+
+These allocation-free readers expose the same `step()`, `location()`,
+`contiguous()` and `position()` interface. Select the actual encoding, including
+byte order, at compile time. Supply a borrowed `Fragment` with its **original**
+byte origin. Initialization checks coordinates without scanning or BOM detection.
+
+| Reader | Input and interpretation |
+| --- | --- |
+| `strings.LogicalReader(actual)` | Already-logical contents; no unescaping, reference decoding or BOM stripping |
+| `dot.identifier.LogicalReader(actual)` | One host-selected identifier expression; removes DOT quoting, escaped quotes, line continuations and concatenation glue; preserves layout/unknown escapes |
+| `markup.LogicalReader(actual)` | One text or attribute-content scope **without delimiters**; decodes numeric and selected named references |
+
+The shared types are available as `strings.logical`, `dot.logical` and
+`markup.logical`. A caller can use one generic consumption loop for all three:
+
+```zig
+var reader = try markup.LogicalReader(.utf8).init(
+    .{ .bytes = "A&amp;B", .origin = 100 },
+    .{},
+);
+while (true) {
+    switch (reader.step()) {
+        .pending => {},
+        .scalar => |item| {
+            // Characters: A, &, B. The '&' span is { start = 101, len = 5 }.
+            consume(item.codepoint, item.location);
+        },
+        .end => break,
+        .failure => |problem| {
+            handleReadFailure(problem);
+            break;
+        },
+    }
+}
+```
+
+`consume` and `handleReadFailure` are application callbacks in this illustration,
+not library functions. Readers do not emit diagnostics or decide severity.
+Failures distinguish `invalid_encoding`, `invalid_syntax`,
+`unresolved_reference` and `unsupported_form`. They are terminal; repeated calls
+return the same failure without further work. Previously delivered characters
+are only a prefix, not a successfully resolved whole value. Successful EOF is
+likewise stable. DOT's reader is not an identifier grammar validator: select
+one value using the host parser, or validate its syntax independently. Malformed
+caller input still cannot cause out-of-bounds reads.
+
+### Mapping and borrowed contents
+
+Each scalar carries its original physical byte `span`, including the complete
+escape/reference spelling, and `segment_start` identifying its operand's opening
+quote or content start. Native UTF-16/32 coordinates remain physical bytes.
+`Fragment.child` composes origins once; never add enclosing origins again.
+
+`SourceLocation.mapping` distinguishes exact item spellings from enclosing
+whole-value highlights. `reader.location()` supplies the whole original input,
+including DOT quotes and concatenation glue; an empty markup/raw value has a
+zero-length location at its origin. A DOT empty string has an enclosing location
+covering its quotes. **Neither kind authorizes a raw text edit.** Cross-operand
+selection helpers, insertion-boundary validation, host-aware fix materialization
+and mapped custom-validator reporting remain future integration work.
+
+`contiguous()` returns optional borrowed, unchanged contents with their encoding
+and location. It does not validate them or scan to discover a fast path. Plain
+contents and unquoted DOT values can return a view; quoted DOT values and nonempty
+markup conservatively return null. Null means use `step()`, not allocate a
+decoded string. No tree, mapping array or decoded buffer is created. Source must
+remain immutable and outlive readers and retained locations/views. Reader fields
+are implementation state: initialize through `init` and do not modify them.
+
+### Host rules and bounded work
+
+Markup options are explicit because a raw content fragment has no enclosing
+profile/context. `references` defaults to `.xml_predefined`; `.graphviz` enables
+the existing HTML4-plus-`apos` catalog. Names are case-sensitive. Unknown names
+remain unresolved, not invented text or replacement characters. Numeric
+references use the existing markup character-validity rules and saturating
+accumulation. There is no recursive expansion, DTD or external entity lookup.
+
+`malformed_reference` defaults to `.reject`. With `.warn` or `.accept`, malformed
+spellings are read literally, matching host syntax acceptance; the **host** owns
+any warning. `normalize_attribute_whitespace` defaults to false. Set it to true
+for the existing Graphviz attribute-check behavior: literal tabs/CR/LF become
+spaces, but numeric references keep their decoded characters. CDATA contents
+should use the plain reader instead of the reference-decoding reader.
+
+DOT HTML-like operands return `unsupported_form`, including in mixed
+concatenations. The reader never strips tags, flattens markup or expands DOT
+layout escapes. Comments between quoted operands are skipped, one unit at a
+time; encoding checks on skipped comment contents remain the host's responsibility.
+
+Each step consumes at most one physical source code unit, with fixed-size scalar
+decoding (at most four bytes) or fixed-catalog lookup. Multi-unit scalars, long
+references and concatenation glue yield `pending`. Accepted malformed references
+may replay their spelling as literal text, so `position()` is a traversal cursor,
+**not** a monotonic validation frontier or work counter. Replay remains linear.
+No step scans an arbitrarily long name or comment. State is fixed-size and can
+be copied/moved between steps without pointers into the reader itself.
+
+Callers may pause between steps or check cancellation before another step.
+These are reader steps, **not a redefinition of existing parser/string-session
+credits**. The readers do not implement a scheduler or automatic polling. Existing
+validator `Value`, session metering, polling and batching are unchanged. Wiring
+this reader contract into their logical-value interface is the next slice.
+Run `zig build test-logical` for mapping, native encodings, bounded progress and
+host-decoder parity tests.

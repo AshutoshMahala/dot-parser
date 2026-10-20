@@ -77,7 +77,7 @@ if (parsed.document) |document| {
         var attributes = node.attributes();
         while (attributes.next()) |attribute| {
             _ = attribute.name();
-            _ = attribute.value(); // without quotes, not decoded
+            _ = attribute.value(); // without quotes, not decoded; see LogicalReader below
         }
         var children = node.children();
         while (children.next()) |child| _ = child;
@@ -99,6 +99,14 @@ attributes, deepest nesting) and the same `completion`, `syntax_errors` and
 `warnings` fields as DOT results. Like DOT, the document points into your
 source, so keep the source alive while you use it. `parsed.deinit()` frees the
 tree, never your source or bag.
+
+**Unreleased:** `markup.LogicalReader(actual)` decodes selected text or
+attribute contents incrementally, without changing these raw views. It returns
+logical characters with original-source spans, including the complete spelling
+of references such as `&amp;`. Supply contents without quote/tag delimiters and
+select their reference rules explicitly. See
+[logical readers](STRINGS.md#logical-readers). This does not enable automatic
+string validation or attribute routing.
 
 ## Validate
 

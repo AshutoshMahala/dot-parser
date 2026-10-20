@@ -91,6 +91,7 @@ pub const lexer = struct {
 };
 /// Explicit raw-identifier decoding into caller storage or a writer.
 pub const identifier = @import("dot/identifier.zig");
+pub const logical = @import("parser_support").logical;
 pub const events = @import("dot/events.zig");
 pub const Events = DefaultProfile.Events;
 

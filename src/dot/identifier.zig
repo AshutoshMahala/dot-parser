@@ -6,6 +6,8 @@
 //! numerals. Repeated calls repeat linear work. Output memory is caller-owned.
 
 const std = @import("std");
+/// Incremental logical contents with shared original-source locations.
+pub const LogicalReader = @import("logical.zig").Reader;
 const lex = @import("lexer/lexer.zig");
 const Chunks = @import("identifier_value.zig").Chunks;
 const encoding = @import("parser_support").encoding;

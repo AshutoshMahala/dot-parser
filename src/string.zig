@@ -13,6 +13,9 @@ pub const validators = @import("string/validators.zig");
 pub const Outcome = validators.Outcome;
 pub const Step = validators.Step;
 pub const Value = @import("string/value.zig").Value;
+/// Shared logical-reader contract; contents-only reader for standalone values.
+pub const logical = support.logical;
+pub const LogicalReader = logical.Reader;
 pub const Result = @import("string/result.zig").Result;
 pub const Completion = @import("string/result.zig").Completion;
 pub const Progress = @import("string/result.zig").Progress;

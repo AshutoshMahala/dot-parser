@@ -8,6 +8,11 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Shared, opt-in logical readers for plain string contents, DOT identifiers and
+  markup text/attribute contents. Fixed-state, bounded steps decode native
+  encodings, DOT lexical quoting/concatenation and markup references while
+  preserving original-byte locations and operand provenance. No decoded copy,
+  automatic processing, validator API change or metering-policy change.
 - String `.ascii_case_insensitive` comparison, independent of optional full
   Unicode folding. Case-sensitive remains the default; ASCII-only comparisons
   do not pull in Unicode tables.

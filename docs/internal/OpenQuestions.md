@@ -963,7 +963,7 @@ the default; `.case_insensitive` retains its full Unicode meaning. Hosts do not
 automatically change their existing matching rules or enable string processing.
 
 Host integration remains open: passthrough by default, explicit processing,
-implementation of logical-value adapters and source mapping, mixed
+validator binding to the implemented logical readers, mapped reporting/fixes, mixed
 concatenations, attribute routing and override precedence. Mandatory host
 quote/escape/reference/boundary checks stay
 with DOT/markup. Standalone resumable string validation is implemented through
@@ -974,7 +974,10 @@ bounded-work guarantees merely by being compiled in; active synchronous-only
 validators are rejected under metering. No bundled regex engine is implied.
 See [remaining integration](PROCESSOR_CONTRACT.md#standalone-strings-and-remaining-host-integration).
 
-**Logical-value interface direction agreed 2026-10-19; not implemented.**
+**Logical-value interface direction agreed 2026-10-19; reader foundation implemented.**
+Plain/DOT/markup readers now expose bounded steps, scalar locations with operand
+provenance and optional borrowed contents. Validator/context binding and mapped
+diagnostic/fix reporting below remain design, not an implemented API.
 Keep the shared `State`/`step` validator contract, with a bounded logical cursor
 and an optional borrowed contiguous fast path instead of assuming every value
 has decoded `.bytes`. Each ready scalar carries adapter-produced original-source

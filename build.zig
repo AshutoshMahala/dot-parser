@@ -204,6 +204,20 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(both_parsers).step);
+    const logical_tests = b.addRunArtifact(b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/logical_values.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "dot_parser", .module = mod },
+                .{ .name = "markup_parser", .module = markup },
+                .{ .name = "string_processor", .module = strings },
+            },
+        }),
+    }));
+    b.step("test-logical", "Test shared logical-value readers and source mapping").dependOn(&logical_tests.step);
+    test_step.dependOn(&logical_tests.step);
     for ([_]struct { name: []const u8, message: []const u8 }{
         .{ .name = "markup_fixed_override", .message = "tests/compile_fail/markup_fixed_override.zig:3:72: error: no field named 'policy' in struct /?/" },
         .{ .name = "markup_unmetered", .message = "error: metering is disabled; use run()" },
@@ -640,6 +654,21 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseSmall,
             .imports = &.{.{ .name = "parser_support", .module = portable_support }},
         });
+        const logical_probe = b.addObject(.{
+            .name = b.fmt("logical_{s}", .{@tagName(arch)}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/freestanding_logical.zig"),
+                .target = portable_target,
+                .optimize = .ReleaseSmall,
+                .imports = &.{
+                    .{ .name = "dot_parser", .module = portable },
+                    .{ .name = "markup_parser", .module = portable_markup },
+                    .{ .name = "string_processor", .module = portable_strings },
+                },
+            }),
+        });
+        _ = logical_probe.getEmittedBin();
+        freestanding.dependOn(&logical_probe.step);
         const console_probe = b.addObject(.{
             .name = b.fmt("console_{s}", .{@tagName(arch)}),
             .root_module = b.createModule(.{

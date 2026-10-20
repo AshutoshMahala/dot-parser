@@ -8,6 +8,7 @@ pub const processor = @import("common/processor.zig");
 pub const stack = @import("common/stack.zig");
 pub const utf8 = @import("common/utf8.zig");
 pub const encoding = @import("common/encoding.zig");
+pub const logical = @import("common/logical.zig");
 pub const source_dispatch = @import("common/source_dispatch.zig");
 pub const wdp = @import("common/wdp.zig");
 pub const console = @import("common/console.zig");

@@ -44,6 +44,13 @@ valid UTF-8. That is an optional check in [settings](POLICIES.md#optional-checks
 If you need the decoded size first,
 `try dot.identifier.decodedLen(document.text(range))` gives it.
 
+For incremental logical characters with original-source locations, the
+**unreleased** `dot.identifier.LogicalReader(actual)` accepts one selected
+identifier expression. It has fixed state and needs no decoded buffer. Unlike
+the raw identifier decoder, it requires valid character encoding and explicitly
+stops at HTML-like operands instead of exposing their body as string contents.
+See the [shared reader contract](STRINGS.md#logical-readers).
+
 ### Comparing and indexing names
 
 > **Unreleased.**

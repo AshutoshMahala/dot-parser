@@ -18,7 +18,7 @@ These are not available APIs or a claim that implementation is in progress.
 | Recursive / quoted-content execution | Compile-time binding; processor-owned schemas/content rules | Scheduling boundaries, selection, aggregation and host-to-string adapters |
 | Broader profile/API surface | Keep low-level ownership and costs explicit | Outer-only versus composed operations, a whole-composition `validatePolicy` entry point and convenience result/ownership choices |
 | Attribute-context policy delegation | First slice uses attribute name and value form only; parent hands over child-owned policies at compile time | Typed syntax, omitted-form behavior, precedence and interaction with existing runtime overrides |
-| String host integration | Default host passthrough; streaming logical values with original-source locations and host-owned fix spelling | Exact location/fix APIs, adapters, prerequisite coverage and measured disabled/enabled costs; [agreed direction](STRING_INTEGRATION.md) |
+| String host integration | Default host passthrough; bounded logical readers and item locations are implemented | Validator binding, checked custom locations/fixes, prerequisite coverage and measured composition costs; [agreed direction](STRING_INTEGRATION.md) |
 | New token spellings | An inner processor cannot redefine its outer parser's lexical boundaries | A separate contract for escaping, collisions, recovery and work |
 | Source transforms / retained summaries | Explicit owners, mapping and costs; no hidden per-ID state | Decoded/transcoded maps, caching, summary layout and public events |
 
@@ -187,16 +187,19 @@ sessions meter encoding and validation and support cancellation; synchronous-onl
 custom validators cannot be activated under metering. This does not implement
 host selection or transfer host syntax.
 
-**Logical-value direction agreed 2026-10-19; not implemented.** The dedicated
+**Logical-value direction agreed 2026-10-19; reader foundation implemented.** The dedicated
 [string integration design](STRING_INTEGRATION.md) records the proposed bounded
 cursor, custom diagnostic/fix example, mapping safety and memory/performance
 requirements. It preserves the shared validator contract without requiring
-contiguous decoded contents or an allocated mapping table.
+contiguous decoded contents or an allocated mapping table. Plain/DOT/markup
+readers now share bounded steps and original-source item locations. Connecting
+them to validators and mapped diagnostics/fixes is still pending; existing
+standalone validators are unchanged.
 
 Host integration still needs:
 
-- Raw-to-logical adapters for quotes, escapes/references, bare and numeral forms;
-  equivalent logical spellings must be checked consistently.
+- Bind the implemented raw-to-logical readers to validation, so quotes,
+  escapes/references, bare and numeral forms are checked consistently.
 - Original-operand provenance through adapter-produced locations, with exact
   ranges distinguished from enclosing highlights. Standalone origins apply only
   to contiguous, unchanged contents; logical replacements require explicit

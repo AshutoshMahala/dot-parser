@@ -1,7 +1,10 @@
 # String integration — logical values and source mapping
 
-**Direction agreed 2026-10-19; not implemented.** This is an internal design,
-not an available API. Names and layouts below are illustrative. The current
+**Direction agreed 2026-10-19; reader foundation implemented.** Shared bounded
+plain/DOT/markup readers now expose scalar locations and borrowed fast paths;
+see the implemented [reader contract](../STRINGS.md#logical-readers). Automatic
+host execution, mapped validator reporting/fixes and the value/context interface
+below remain design, not available APIs. Names and layouts below are illustrative. The current
 standalone API remains documented in [STRINGS.md](../STRINGS.md); host routing,
 policy delegation and composition constraints remain in
 [PROCESSOR_CONTRACT.md](PROCESSOR_CONTRACT.md).
@@ -32,6 +35,8 @@ Implement in slices:
 
 1. Logical-value adapters and original-source diagnostic/fix mapping, with the
    same validator interface for standalone contents and host values.
+   Reader adapters are implemented; validator binding and safe edit mapping
+   remain. Existing standalone validators are unchanged.
 2. Attribute-name/value-form routing for DOT and markup, with default passthrough
    and child-owned policies. Keep one shared diagnostic destination available.
 3. Single-call `parseAndValidate` and explicit delayed execution. Shared-budget
@@ -83,10 +88,12 @@ their work must be explicitly accounted for before shared-budget execution ships
 ## Locations and provenance
 
 `SourceLocation` is an adapter-produced location, not a logical byte/character
-index or a promise of an editable range. Its representation must preserve original
-operand provenance and distinguish exact source selections from enclosing
-highlights. Exact layout and range-construction helpers remain implementation
-design, not a committed struct size.
+index or a promise of an editable range. The reader foundation now represents
+this with an original-byte `span`, a `segment_start` identifying the operand's
+opening delimiter/content start, and `mapping = exact | enclosing`. These
+contain no pointers into cursor state. Checked custom selections, range helpers
+and fix materialization remain implementation design; no struct-size guarantee
+is made.
 
 | Logical item | Original source location |
 | --- | --- |
