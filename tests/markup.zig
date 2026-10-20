@@ -123,7 +123,7 @@ test "source-shaped forest, borrowed text, arbitrary names and child traversal" 
     const doc = parsed.document.?;
     try expect(doc.source.ptr == source.ptr);
     try equal(@as(u32, 7), doc.nodeCount());
-    try expect(doc.node(@enumFromInt(100)) == null);
+    try expect(doc.node(@fromBackingInt(@intCast(100))) == null);
     var roots = doc.roots();
     try strings("before", roots.next().?.raw());
     const widget = roots.next().?;
@@ -423,9 +423,9 @@ fn allocationCase(allocator: std.mem.Allocator, source: []const u8) !void {
     try expect(parsed.outcome == .success or parsed.outcome == .invalid_syntax);
 }
 test "all allocation failures release grown output and nesting, including later syntax failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{"<a><b><c><d/><e/><f/><g/><h/><i/><j/><k/><l/></c></b></a>"});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{"<a><b><c><d/><e/><f/><g/><h/><i/><j/><k/><l/></wrong>"});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{"<!--start--><a x='&custom;'><b><![CDATA[<raw>]]>&amp;<c/></b></a><!--end-->"});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocationCase, .{"<a><b><c><d/><e/><f/><g/><h/><i/><j/><k/><l/></c></b></a>"});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocationCase, .{"<a><b><c><d/><e/><f/><g/><h/><i/><j/><k/><l/></wrong>"});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocationCase, .{"<!--start--><a x='&custom;'><b><![CDATA[<raw>]]>&amp;<c/></b></a><!--end-->"});
 }
 
 test "owned results trim in place or retain visible slack without allocation or failure" {
@@ -442,7 +442,7 @@ test "owned results trim in place or retain visible slack without allocation or 
         try equal(markup.Outcome.success, parsed.outcome);
         try equal(@as(usize, 1), tracked.allocations);
         try expect(!tracked.has_induced_failure);
-        try strings("<a/>", parsed.document.?.node(@enumFromInt(0)).?.raw());
+        try strings("<a/>", parsed.document.?.node(@fromBackingInt(@intCast(0))).?.raw());
         try equal(tracked.allocated_bytes - tracked.freed_bytes, parsed.retainedBytes());
         if (refuse_resize) {
             try expect(parsed.retainedBytes() > @sizeOf(markup.Node));
@@ -711,8 +711,8 @@ fn attributeAllocationCase(allocator: std.mem.Allocator) !void {
     try equal(.invalid, checked.validity);
 }
 test "attribute allocation failures, validation scratch and long values are safe" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, attributeAllocationCase, .{});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{"<a x='1' y='2' z='3' a='4' b='5' c='6' d='7' e='8' f='9' g='10' h='11' i='12'><b/></wrong>"});
+    try @import("allocation_failures.zig").check(std.testing.allocator, attributeAllocationCase, .{});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocationCase, .{"<a x='1' y='2' z='3' a='4' b='5' c='6' d='7' e='8' f='9' g='10' h='11' i='12'><b/></wrong>"});
     const len = 32_768;
     const source = try std.testing.allocator.alloc(u8, len + 9);
     defer std.testing.allocator.free(source);

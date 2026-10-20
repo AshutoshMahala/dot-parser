@@ -70,19 +70,22 @@ pub fn build(b: *std.Build) void {
     const perf_tool = b.addExecutable(.{ .name = "perf-string", .root_module = b.createModule(.{
         .root_source_file = b.path("tools/perf_string.zig"),
         .target = b.graph.host,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
     }) });
     check_tools.dependOn(&perf_tool.step);
     const perf_tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("tools/perf_string.zig"),
         .target = b.graph.host,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
     }) }));
     check_tools.dependOn(&perf_tests.step);
     test_step.dependOn(&perf_tests.step);
     const run_perf = b.addRunArtifact(perf_tool);
-    run_perf.addArgs(&.{ "--zig", b.graph.zig_exe, "--repo", b.pathFromRoot(".") });
-    if (b.args) |args| run_perf.addArgs(args);
+    run_perf.addArg("--zig");
+    run_perf.addFileArg(.zig_exe);
+    run_perf.addArg("--repo");
+    run_perf.addDirectoryArg2(b.path("."), .{});
+    run_perf.addPassthruArgs();
     run_perf.has_side_effects = true;
     b.step("perf-string", "Build and compare string benchmarks against a Git revision; pass -- --help")
         .dependOn(&run_perf.step);
@@ -95,7 +98,7 @@ pub fn build(b: *std.Build) void {
         const tool = b.addExecutable(.{ .name = generator.name, .root_module = b.createModule(.{
             .root_source_file = b.path(generator.source),
             .target = b.graph.host,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
         }) });
         check_tools.dependOn(&tool.step);
         const tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
@@ -106,13 +109,13 @@ pub fn build(b: *std.Build) void {
         check_tools.dependOn(&tests.step);
         test_step.dependOn(&tests.step);
         const generate = b.addRunArtifact(tool);
-        if (b.args) |args| generate.addArgs(args);
+        generate.addPassthruArgs();
         generate.has_side_effects = true; // Explicit stdout operation, never a cached no-op.
         b.step(generator.name, "Generate pinned Unicode Zig source on stdout; pass local input paths after --")
             .dependOn(&generate.step);
         if (unicode_data) |directory| {
             const verify = b.addRunArtifact(tool);
-            for (generator.inputs) |input| verify.addFileArg(.{ .cwd_relative = b.pathJoin(&.{ directory, input }) });
+            for (generator.inputs) |input| verify.addFileArg(b.graph.cwdRelativePath(b.pathJoin(&.{ directory, input })));
             if (generator.inputs.len == 2) verify.addFileArg(b.path("src/string/UNICODE_LICENSE.txt"));
             verify.addArg("--check");
             verify.addFileArg(b.path(generator.output));
@@ -177,7 +180,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_markup_integration.step);
     // Assertion failures terminate a process, not a normal Zig test. Never run
     // corrupt-representation probes with runtime safety disabled.
-    if (optimize == .Debug or optimize == .ReleaseSafe) {
+    if (optimize == .debug or optimize == .safe) {
         const invariants = b.addExecutable(.{
             .name = "markup-invariants",
             .root_module = b.createModule(.{
@@ -255,6 +258,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "markup_processor_required", .message = "error: invalid policy: markup_processor_required" },
         .{ .name = "fixed_parse_override", .message = "tests/compile_fail/fixed_parse_override.zig:3:41: error: no field named 'policy' in struct /?/" },
         .{ .name = "unmetered_advance", .message = "error: metering is disabled; use run()" },
+        .{ .name = "events_early_flag", .message = "error: wants_early_events must be a comptime bool" },
         .{ .name = "processor_fixed_override", .message = "tests/compile_fail/processor_fixed_override.zig:4:35: error: no field named 'policy' in struct /?/" },
         .{ .name = "processor_invalid_binding", .message = "error: configured processor profile must expose Policies" },
         .{ .name = "processor_invalid_infallible_schema", .message = "error: infallible policy schema must declare a valid-only Check" },
@@ -413,7 +417,7 @@ pub fn build(b: *std.Build) void {
     bench_options.addOption([]const u8, "lexer", lexer_choice);
     const bench_options_module = bench_options.createModule();
 
-    // Throughput baseline (R-PERF-004). `zig build bench -Doptimize=ReleaseFast`.
+    // Throughput baseline (R-PERF-004). `zig build bench -Doptimize=fast`.
     const bench_exe = b.addExecutable(.{
         .name = "throughput",
         .root_module = b.createModule(.{
@@ -498,6 +502,18 @@ pub fn build(b: *std.Build) void {
     b.step("bench-policy", "Compare fixed/runtime policy costs on the standard benchmark machine")
         .dependOn(&b.addRunArtifact(policy_bench).step);
     const check_benches = b.step("check-benches", "Compile benchmarks without updating or running baselines");
+    const identifier_bench = b.addExecutable(.{
+        .name = "identifier_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/identifiers.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "dot_parser", .module = mod }},
+        }),
+    });
+    b.step("bench-identifiers", "Compare checked and parser-certified names in an event-only reference index")
+        .dependOn(&b.addRunArtifact(identifier_bench).step);
+    check_benches.dependOn(&identifier_bench.step);
     const metering_bench = b.addExecutable(.{
         .name = "metering_bench",
         .root_module = b.createModule(.{
@@ -520,7 +536,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_markup_bench = b.addRunArtifact(markup_bench);
-    if (b.args) |args| run_markup_bench.addArgs(args);
+    run_markup_bench.addPassthruArgs();
     b.step("bench-markup", "Benchmark standalone structural markup (decimal MB/s)").dependOn(&run_markup_bench.step);
     check_benches.dependOn(&markup_bench.step);
     const string_bench = b.addExecutable(.{ .name = "string_bench", .root_module = b.createModule(.{
@@ -530,7 +546,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "string_processor", .module = strings }},
     }) });
     const run_string_bench = b.addRunArtifact(string_bench);
-    if (b.args) |args| run_string_bench.addArgs(args);
+    run_string_bench.addPassthruArgs();
     b.step("bench-string", "Measure standalone exact/ASCII/Unicode and custom string checks")
         .dependOn(&run_string_bench.step);
     check_benches.dependOn(&string_bench.step);
@@ -541,7 +557,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "string_processor", .module = strings }},
     }) });
     const run_string_sessions_bench = b.addRunArtifact(string_sessions_bench);
-    if (b.args) |args| run_string_sessions_bench.addArgs(args);
+    run_string_sessions_bench.addPassthruArgs();
     b.step("bench-string-sessions", "Measure opt-in string metering and cancellation")
         .dependOn(&run_string_sessions_bench.step);
     check_benches.dependOn(&string_sessions_bench.step);
@@ -552,7 +568,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{ .{ .name = "string_processor", .module = strings }, .{ .name = "markup_parser", .module = markup }, .{ .name = "dot_parser", .module = mod } },
     }) });
     const run_logical_bench = b.addRunArtifact(logical_bench);
-    if (b.args) |args| run_logical_bench.addArgs(args);
+    run_logical_bench.addPassthruArgs();
     b.step("bench-logical-strings", "Measure reader-bound string checks, credits and session storage")
         .dependOn(&run_logical_bench.step);
     check_benches.dependOn(&logical_bench.step);
@@ -566,7 +582,7 @@ pub fn build(b: *std.Build) void {
     }) });
     integration_bench.root_module.addOptions("integration_options", integration_options);
     const run_integration_bench = b.addRunArtifact(integration_bench);
-    if (b.args) |args| run_integration_bench.addArgs(args);
+    run_integration_bench.addPassthruArgs();
     b.step("bench-string-integration", "Compare host defaults, passthrough and routed string checks").dependOn(&run_integration_bench.step);
     check_benches.dependOn(&integration_bench.step);
     const string_passthrough_bench = b.addExecutable(.{ .name = "string_passthrough_bench", .root_module = b.createModule(.{
@@ -585,8 +601,8 @@ pub fn build(b: *std.Build) void {
     check_wasm.dependOn(&wasm_check.step);
     for ([_][]const u8{ "exact", "ascii", "folding", "predicate" }) |variant| {
         const wasm = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
-        const shared = b.createModule(.{ .root_source_file = b.path("src/support.zig"), .target = wasm, .optimize = .ReleaseSmall });
-        const text = b.createModule(.{ .root_source_file = b.path("src/string.zig"), .target = wasm, .optimize = .ReleaseSmall, .imports = &.{.{ .name = "parser_support", .module = shared }} });
+        const shared = b.createModule(.{ .root_source_file = b.path("src/support.zig"), .target = wasm, .optimize = .small });
+        const text = b.createModule(.{ .root_source_file = b.path("src/string.zig"), .target = wasm, .optimize = .small, .imports = &.{.{ .name = "parser_support", .module = shared }} });
         const features = b.addOptions();
         features.addOption(bool, "folding", std.mem.eql(u8, variant, "folding") or std.mem.eql(u8, variant, "predicate"));
         features.addOption(bool, "ascii", std.mem.eql(u8, variant, "ascii"));
@@ -594,7 +610,7 @@ pub fn build(b: *std.Build) void {
         const probe = b.addExecutable(.{ .name = b.fmt("string_{s}", .{variant}), .root_module = b.createModule(.{
             .root_source_file = b.path("tests/freestanding_string.zig"),
             .target = wasm,
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
             .strip = true,
             .imports = &.{ .{ .name = "string_processor", .module = text }, .{ .name = "string_features", .module = features.createModule() } },
         }) });
@@ -629,18 +645,18 @@ pub fn build(b: *std.Build) void {
         const portable_support = b.createModule(.{
             .root_source_file = b.path("src/support.zig"),
             .target = portable_target,
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
         });
         const portable_strings = b.createModule(.{
             .root_source_file = b.path("src/string.zig"),
             .target = portable_target,
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
             .imports = &.{.{ .name = "parser_support", .module = portable_support }},
         });
         const string_session_probe = b.addObject(.{ .name = b.fmt("string_session_{s}", .{@tagName(arch)}), .root_module = b.createModule(.{
             .root_source_file = b.path("tests/freestanding_string_session.zig"),
             .target = portable_target,
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
             .imports = &.{.{ .name = "string_processor", .module = portable_strings }},
         }) });
         _ = string_session_probe.getEmittedBin();
@@ -651,7 +667,7 @@ pub fn build(b: *std.Build) void {
             const probe = b.addObject(.{ .name = b.fmt("string_{s}_{s}", .{ @tagName(arch), if (folding) "folding" else "exact" }), .root_module = b.createModule(.{
                 .root_source_file = b.path("tests/freestanding_string.zig"),
                 .target = portable_target,
-                .optimize = .ReleaseSmall,
+                .optimize = .small,
                 .imports = &.{ .{ .name = "string_processor", .module = portable_strings }, .{ .name = "string_features", .module = features.createModule() } },
             }) });
             _ = probe.getEmittedBin();
@@ -662,7 +678,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("tests/freestanding_reporting.zig"),
                 .target = portable_target,
-                .optimize = .ReleaseSmall,
+                .optimize = .small,
                 .imports = &.{.{ .name = "parser_support", .module = portable_support }},
             }),
         });
@@ -671,13 +687,13 @@ pub fn build(b: *std.Build) void {
         const portable = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = portable_target,
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
             .imports = &.{.{ .name = "parser_support", .module = portable_support }},
         });
         const portable_markup = b.createModule(.{
             .root_source_file = b.path("src/markup.zig"),
             .target = portable_target,
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
             .imports = &.{.{ .name = "parser_support", .module = portable_support }},
         });
         const logical_probe = b.addObject(.{
@@ -685,7 +701,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("tests/freestanding_logical.zig"),
                 .target = portable_target,
-                .optimize = .ReleaseSmall,
+                .optimize = .small,
                 .imports = &.{
                     .{ .name = "dot_parser", .module = portable },
                     .{ .name = "markup_parser", .module = portable_markup },
@@ -700,7 +716,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("tests/freestanding_console.zig"),
                 .target = portable_target,
-                .optimize = .ReleaseSmall,
+                .optimize = .small,
                 .imports = &.{.{ .name = "markup_parser", .module = portable_markup }},
             }),
         });
@@ -714,7 +730,7 @@ pub fn build(b: *std.Build) void {
                 .root_module = b.createModule(.{
                     .root_source_file = b.path("tests/freestanding_policy.zig"),
                     .target = portable_target,
-                    .optimize = .ReleaseSmall,
+                    .optimize = .small,
                     .imports = &.{
                         .{ .name = "dot_parser", .module = portable },
                         .{ .name = "policy_features", .module = options.createModule() },
@@ -728,7 +744,7 @@ pub fn build(b: *std.Build) void {
                 .root_module = b.createModule(.{
                     .root_source_file = b.path("tests/freestanding_markup.zig"),
                     .target = portable_target,
-                    .optimize = .ReleaseSmall,
+                    .optimize = .small,
                     .imports = &.{
                         .{ .name = "markup_parser", .module = portable_markup },
                         .{ .name = "policy_features", .module = options.createModule() },
@@ -748,7 +764,7 @@ pub fn build(b: *std.Build) void {
                     .root_module = b.createModule(.{
                         .root_source_file = b.path("tests/freestanding_session.zig"),
                         .target = portable_target,
-                        .optimize = .ReleaseSmall,
+                        .optimize = .small,
                         .imports = &.{
                             .{ .name = "dot_parser", .module = portable },
                             .{ .name = "execution_features", .module = options.createModule() },

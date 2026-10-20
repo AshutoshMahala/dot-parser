@@ -439,9 +439,9 @@ For a single before/after report, run `zig build perf-string -- --baseline HEAD`
 It covers native comparisons and sessions in ReleaseFast/ReleaseSafe and saves
 timings, ranges, sizes and work counters; see [report options](PERFORMANCE.md#one-command-string-comparison).
 
-Run `zig build test-string`, `zig build bench-string -Doptimize=ReleaseFast`,
-`zig build bench-string-sessions -Doptimize=ReleaseFast`, and `zig build check-wasm`.
-`zig build bench-string-passthrough -Doptimize=ReleaseFast` compares real DOT
+Run `zig build test-string`, `zig build bench-string -Doptimize=fast`,
+`zig build bench-string-sessions -Doptimize=fast`, and `zig build check-wasm`.
+`zig build bench-string-passthrough -Doptimize=fast` compares real DOT
 quote scanning with simulated handoff to string checks; it is not host integration.
 The session benchmark reports time, credits, hook calls and state size for
 fixed/runtime policies and multiple budgets/intervals. The last command builds
@@ -687,22 +687,34 @@ completed operations remain terminal. `source_frontier` is the input pass's
 physical-byte high-water mark, not a count of decoded characters or completed
 checks. Reference replay never moves it backwards.
 
-The existing standalone optimized/batched path remains separate at compile time.
-Reader-bound execution currently uses scalar stepping and does not invoke
-optional validator batches. There is no decoded-value allocation or source-sized
-mapping table. Sessions retain the initial reader, input-pass cursor, and active
+The standalone path remains separate at compile time. Reader-bound execution can
+group 16 unchanged ASCII steps using the same optional validator batch contract.
+Each consumed byte still costs its original credit. A batch never crosses the
+remaining budget or next cancellation poll, and never skips a terminal step,
+finding, reference, escape or pending Unicode fold. Short inputs, small budgets,
+native UTF-16/32 and readers without batch support keep scalar execution.
+
+Reader batching is optional: `asciiRun()` borrows an unchanged ASCII run without
+advancing; `skipAscii(count)` commits only a checked run and otherwise returns
+false without mutation. Only bytes equivalent to one ordinary scalar step each
+may be exposed. The built-in readers expose 16 bytes at a time. Custom readers
+need neither method; custom validators without `batch` keep their `step` path.
+
+There is no decoded-value allocation or source-sized mapping table. Sessions
+retain the initial reader, input-pass cursor, and active
 validator cursors; inspect `@sizeOf(Label.Session)` for a chosen profile. Checks
 and `one_of` candidates can traverse/decode the input again. Diagnostic bags
 retain their caller-selected memory cost. Automatic attribute dispatch is
 available below; shared DOT/markup/string budgets and host-aware fixes remain
 separate work.
 
-Run `zig build bench-logical-strings -Doptimize=ReleaseFast` for explicit binding
+Run `zig build bench-logical-strings -Doptimize=fast` for explicit binding
 costs (plain/DOT/markup, short/long/Unicode/glue-heavy inputs, run/budget-one/
 budget-64, session bytes and credits). `-- --csv` produces the repository's
-benchmark CSV format. Use `zig build perf-string -- --baseline HEAD` to compare
-the existing standalone paths before/after a change; these are distinct studies,
-not a claim that bound scalar execution has the same cost as contiguous input.
+benchmark CSV format. Use `zig build perf-string -- --baseline HEAD --suites
+logical,native,sessions` to compare bound and standalone paths before/after a
+change. Bound execution still has reader/provenance work that contiguous input
+does not.
 
 ## Attribute processing in DOT and markup
 
@@ -848,13 +860,13 @@ host pools, diagnostic bags and consumer callbacks retain their own costs.
 Markup keeps its fixed-pool and reusable-workspace entry points. DOT's composed
 operation remains allocator-backed; existing outer-only sessions are unchanged.
 
-Run `zig build bench-string-integration -Doptimize=ReleaseFast` for default,
+Run `zig build bench-string-integration -Doptimize=fast` for default,
 passthrough and enabled costs, including allocator-request totals. For an
 alternating before/after report:
 
 ```sh
 zig build perf-string -- --baseline HEAD --suites host-defaults,integration \
-  --modes ReleaseFast,ReleaseSafe,ReleaseSmall --runs 5
+  --modes fast,safe,small --runs 5
 ```
 
 `host-defaults` builds only the existing host operations on both sides, keeping

@@ -45,7 +45,7 @@ pub fn State(comptime unicode: bool, comptime ascii: bool) type {
                 .compare => {
                     // Keep the two reads local in Small, but leave the larger
                     // step/driver boundaries and speed builds to the optimizer.
-                    const read_call: @import("std").builtin.CallModifier = if (@import("builtin").mode == .ReleaseSmall) .always_inline else .auto;
+                    const read_call: @import("std").builtin.CallModifier = if (@import("builtin").mode == .small) .always_inline else .auto;
                     const a = @call(read_call, next, .{ unicode, @TypeOf(value).encoding, value.bytes, &self.left, if (unicode) &self.left_fold else {}, comparison });
                     if (a == .invalid) {
                         context.invalidValidator();
@@ -61,7 +61,7 @@ pub fn State(comptime unicode: bool, comptime ascii: bool) type {
                     // per operand on every pending step. Unicode expansion
                     // remains in next(), since it can change cursor progress.
                     const same = a == b or (ascii and comparison == .ascii_case_insensitive and
-                        a != .end and b != .end and foldAscii(@intFromEnum(a)) == foldAscii(@intFromEnum(b)));
+                        a != .end and b != .end and foldAscii(@backingInt(a)) == foldAscii(@backingInt(b)));
                     if (same and a != .end) return .pending;
                     self.phase = .done;
                     self.answer = if (same) .passed else .failed;
@@ -119,12 +119,12 @@ fn next(comptime unicode: bool, comptime actual: support.encoding.Actual, bytes:
         }
         const scalar = pending.values[pending.at];
         pending.at += 1;
-        return @enumFromInt(scalar);
+        return @fromBackingInt(@intCast(scalar));
     }
     var cursor: Value(actual).Cursor = .{ .bytes = bytes, .offset = offset.* };
     const scalar = (cursor.next() catch return .invalid) orelse return .end;
     offset.* = cursor.offset;
-    return @enumFromInt(scalar);
+    return @fromBackingInt(@intCast(scalar));
 }
 
 inline fn foldAscii(cp: u21) u21 {
@@ -189,7 +189,7 @@ fn compare(left: anytype, right: anytype, context: anytype) ?bool {
     // it into every profile lets the machine outliner extract tiny sequences
     // from the hot loop (including native decoding), adding calls per scalar.
     // Speed-optimized builds retain their usual inlining choices.
-    if (@import("builtin").mode == .ReleaseSmall and !@TypeOf(context.*).cancellation_enabled) {
+    if (@import("builtin").mode == .small and !@TypeOf(context.*).cancellation_enabled) {
         const same = @call(.never_inline, compareUnpolled, .{ left.*, right.* });
         if (same == null) context.invalidValidator();
         return same;

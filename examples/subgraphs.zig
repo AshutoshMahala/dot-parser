@@ -27,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
     var scopes = document.subgraphs();
     while (scopes.next()) |scope| {
         try writer.print("scope {d}, parent {d}, name {s}\n", .{
-            @intFromEnum(scope.id),                                          @intFromEnum(scope.parent().?),
+            @backingInt(scope.id),                                           @backingInt(scope.parent().?),
             if (scope.name()) |name| document.text(name) else "(anonymous)",
         });
         // Direct edges exclude nested scopes; recursive edges include them.
@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     var statements = document.statements();
     while (statements.nextScoped()) |item| {
         try writer.print("{s} in scope {d}\n", .{
-            @tagName(item.statement), @intFromEnum(item.scope),
+            @tagName(item.statement), @backingInt(item.scope),
         });
     }
     try writer.flush();

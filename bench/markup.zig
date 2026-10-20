@@ -54,9 +54,9 @@ pub fn main(init: std.process.Init) !void {
             @memset(source.items, 'x');
         } else {
             const item = comptime blk: {
-                if (std.mem.eql(u8, name, "prose")) break :blk "<p>" ++ "The quick brown fox jumps over the lazy dog. " ** 8 ++ "</p>";
-                if (std.mem.eql(u8, name, "long_names")) break :blk "<" ++ "name" ** 32 ++ "/>";
-                if (std.mem.eql(u8, name, "long_values")) break :blk "<a x='" ++ "value " ** 64 ++ "'/>";
+                if (std.mem.eql(u8, name, "prose")) break :blk "<p>" ++ std.mem.asBytes(&@as([8]["The quick brown fox jumps over the lazy dog. ".len]u8, @splat("The quick brown fox jumps over the lazy dog. ".*))) ++ "</p>";
+                if (std.mem.eql(u8, name, "long_names")) break :blk "<" ++ std.mem.asBytes(&@as([32]["name".len]u8, @splat("name".*))) ++ "/>";
+                if (std.mem.eql(u8, name, "long_values")) break :blk "<a x='" ++ std.mem.asBytes(&@as([64]["value ".len]u8, @splat("value ".*))) ++ "'/>";
                 if (std.mem.eql(u8, name, "flat")) break :blk "<a/>";
                 if (std.mem.eql(u8, name, "attributes")) break :blk "<a x='1' y=\"2\" z='3'/>";
                 if (std.mem.eql(u8, name, "duplicates")) break :blk "<a x='1' y=\"2\" x='3'/>";

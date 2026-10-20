@@ -9,8 +9,8 @@ const csv_header = "case,bytes,ns_per_value,session_bytes,credits,polls";
 const help =
     \\zig build perf-string -- [options]
     \\  --baseline REF       Git commit/ref to compare with (default HEAD)
-    \\  --modes LIST         ReleaseFast,ReleaseSafe,ReleaseSmall (default Fast,Safe)
-    \\  --suites LIST        native,sessions,integration,host-defaults (default native,sessions)
+    \\  --modes LIST         fast,safe,small (default fast,safe)
+    \\  --suites LIST        native,sessions,logical,integration,host-defaults (default native,sessions)
     \\  --runs N             Repeated process runs, odd 3..31 (default 3)
     \\  --threshold PERCENT  Flag median time increases above this (default 5)
     \\  --output DIRECTORY   New report directory; existing directories refused
@@ -19,8 +19,10 @@ const help =
     \\Builds the SAME current harness against both source snapshots with the same
     \\compiler. Runs serially, alternating before/after. Writes summary.md,
     \\results.csv, metadata.txt, source snapshots and raw per-run CSVs.
+    \\Both revisions must support that compiler (including Zig 0.17 syntax).
     \\Native covers UTF-8/16/32, exact/available folding modes, built-in/custom.
     \\Sessions covers default, runtime policies, metering and cancellation.
+    \\Logical covers reader-bound equality, tiny budgets, references and glue.
     \\Integration covers host defaults, bound passthrough and attribute processing.
     \\Host-defaults isolates default-only binaries without enabled routing variants.
     \\These are hot-buffer microbenchmarks, not RSS or diagnostic-heavy workloads.
@@ -30,7 +32,7 @@ const help =
 
 const Options = struct {
     baseline: []const u8 = "HEAD",
-    modes: []const u8 = "ReleaseFast,ReleaseSafe",
+    modes: []const u8 = "fast,safe",
     suites: []const u8 = "native,sessions",
     runs: u8 = 3,
     threshold: f64 = 5,
@@ -63,8 +65,8 @@ const Options = struct {
                 if (!std.math.isFinite(result.threshold) or result.threshold < 0) return error.InvalidThreshold;
             } else return error.UnknownOption;
         }
-        try validList(result.modes, &.{ "ReleaseFast", "ReleaseSafe", "ReleaseSmall" });
-        try validList(result.suites, &.{ "native", "sessions", "integration", "host-defaults" });
+        try validList(result.modes, &.{ "fast", "safe", "small" });
+        try validList(result.suites, &.{ "native", "sessions", "logical", "integration", "host-defaults" });
         if (result.baseline.len == 0) return error.EmptyBaseline;
         return result;
     }
@@ -226,7 +228,7 @@ const Runner = struct {
         try Io.Dir.cwd().createDirPath(self.io, try self.path(&.{ self.output, "bin" }));
         // Freeze the harness too: a later working-tree edit cannot change one
         // side of a comparison halfway through compilation.
-        for ([_][]const u8{ "string.zig", "string_sessions.zig", "string_integration.zig", "report.zig" }) |file| {
+        for ([_][]const u8{ "string.zig", "string_sessions.zig", "logical_strings.zig", "string_integration.zig", "report.zig" }) |file| {
             const bytes = try Io.Dir.cwd().readFileAlloc(self.io, try self.path(&.{ self.options.repo, "bench", file }), self.gpa, .limited(1024 * 1024));
             try self.save(try self.path(&.{ "harness", file }), bytes);
         }
@@ -238,7 +240,7 @@ const Runner = struct {
             while (suites.next()) |suite| {
                 for (roots, [_][]const u8{ "before", "after" }) |root, variant| {
                     std.debug.print("Building {s} / {s} / {s}\n", .{ mode, suite, variant });
-                    const harness = if (std.mem.eql(u8, suite, "native")) "string.zig" else if (std.mem.eql(u8, suite, "sessions")) "string_sessions.zig" else "string_integration.zig";
+                    const harness = if (std.mem.eql(u8, suite, "native")) "string.zig" else if (std.mem.eql(u8, suite, "sessions")) "string_sessions.zig" else if (std.mem.eql(u8, suite, "logical")) "logical_strings.zig" else "string_integration.zig";
                     const integration_config = if (std.mem.eql(u8, suite, "host-defaults")) "default_only.zig" else "all_routes.zig";
                     _ = try self.command(&.{ self.options.zig, "build-exe", "-O", mode, "-fstrip", "--dep", "string_processor", "--dep", "dot_parser", "--dep", "markup_parser", "--dep", "integration_options", try self.fmt("-Mroot={s}", .{try self.path(&.{ self.output, "harness", harness })}), "--dep", "parser_support", try self.fmt("-Mstring_processor={s}/src/string.zig", .{root}), "--dep", "parser_support", try self.fmt("-Mdot_parser={s}/src/root.zig", .{root}), "--dep", "parser_support", try self.fmt("-Mmarkup_parser={s}/src/markup.zig", .{root}), try self.fmt("-Mparser_support={s}/src/support.zig", .{root}), try self.fmt("-Mintegration_options={s}", .{try self.path(&.{ self.output, "harness", integration_config })}), try self.fmt("-femit-bin={s}", .{try self.binary(mode, suite, variant)}) });
                     const stat = try Io.Dir.cwd().statFile(self.io, try self.binary(mode, suite, variant), .{});
@@ -296,7 +298,7 @@ const Runner = struct {
         var csv: Io.Writer.Allocating = .init(self.gpa);
         var md: Io.Writer.Allocating = .init(self.gpa);
         try csv.writer.writeAll("case,status,before_ns,after_ns,time_change_percent,before_MBps,after_MBps,before_min_ns,before_max_ns,after_min_ns,after_max_ns,before_session_bytes,after_session_bytes,before_credits,after_credits,before_polls,after_polls\n");
-        try md.writer.print("# String performance comparison\n\nBaseline: `{s}`; candidate: captured working tree.\n\n{d} process runs per side. Native/session harnesses use seven timed batches after two warmups; integration uses nine after three warmups. Compilation and input construction are outside timing. Integration includes host parsing, validation, allocation and disposal. Positive changes mean **more time / slower**, not throughput gain. Threshold: {d:.1}%.\n\n", .{ self.options.baseline, self.options.runs, self.options.threshold });
+        try md.writer.print("# String performance comparison\n\nBaseline: `{s}`; candidate: captured working tree.\n\n{d} process runs per side. Native/session harnesses use seven timed batches after two warmups; logical uses five after two; integration/host-defaults use nine after three. Compilation and input construction are outside timing. Integration includes host parsing, validation, allocation and disposal. Positive changes mean **more time / slower**, not throughput gain. Threshold: {d:.1}%.\n\n", .{ self.options.baseline, self.options.runs, self.options.threshold });
         try md.writer.writeAll("`slower` means the medians exceed the threshold and the observed run ranges do not overlap; it is a candidate regression, not statistical proof. `inconclusive` means a threshold crossing with overlapping ranges. `within_threshold` is not a guarantee of no regression. New/removed cases are excluded from aggregate changes.\n\nStandalone string processor heap allocations are zero for these discard-sink fixtures. Integration allocates host pools; its separate accounting probe verifies that routed checks add no allocator requests or cumulative requested bytes over the same host parse. This is not process RSS or a peak-memory measurement. Session bytes are caller-owned session size, not total stack; zero means a one-shot call without a reported session size. Integration counters are zero because the composed operation is not metered. Credits and polls for session fixtures are factual counters, not elapsed-time estimates.\n\n## Summary\n\n| Mode / suite | Matched | Geometric mean time change | Slower | Inconclusive | New / removed | State/counter changes |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
         var modes = std.mem.splitScalar(u8, self.options.modes, ',');
         while (modes.next()) |mode| {
@@ -424,15 +426,17 @@ pub fn main(init: std.process.Init) !void {
 
 test "report options reject ambiguous or unbounded configurations" {
     const t = std.testing;
-    const o = try Options.parse(&.{ "--baseline", "v0.5.0", "--runs", "5", "--modes", "ReleaseSmall", "--suites", "sessions" });
+    const o = try Options.parse(&.{ "--baseline", "v0.5.0", "--runs", "5", "--modes", "small", "--suites", "sessions" });
     try t.expectEqual(@as(u8, 5), o.runs);
     const hosts = try Options.parse(&.{ "--suites", "host-defaults,integration" });
     try t.expectEqualStrings("host-defaults,integration", hosts.suites);
+    const logical = try Options.parse(&.{ "--suites", "logical" });
+    try t.expectEqualStrings("logical", logical.suites);
     try t.expectError(error.InvalidRuns, Options.parse(&.{ "--runs", "2" }));
     try t.expectError(error.InvalidRuns, Options.parse(&.{ "--runs", "255" }));
     try t.expectError(error.MissingOptionValue, Options.parse(&.{"--baseline"}));
     try t.expectError(error.UnknownOption, Options.parse(&.{"--unknown"}));
-    try t.expectError(error.DuplicateSelection, Options.parse(&.{ "--modes", "ReleaseFast,ReleaseFast" }));
+    try t.expectError(error.DuplicateSelection, Options.parse(&.{ "--modes", "fast,fast" }));
     try t.expectError(error.InvalidSelection, Options.parse(&.{ "--suites", "native," }));
     try t.expectError(error.InvalidThreshold, Options.parse(&.{ "--threshold", "nan" }));
     try t.expectError(error.InvalidOutputPath, outputParent("/"));

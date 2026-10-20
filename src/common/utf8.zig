@@ -24,7 +24,7 @@ pub inline fn sequenceLength(bytes: []const u8) ?u3 {
     // Safe length-only consumers benefit from seeing the scalar checks without
     // an error-union call/return. Fast/Small and scalar-valued consumers keep
     // the compiler's normal inlining decision; forcing it there costs throughput.
-    const scalar_call: std.builtin.CallModifier = if (@import("builtin").mode == .ReleaseSafe) .always_inline else .auto;
+    const scalar_call: std.builtin.CallModifier = if (@import("builtin").mode == .safe) .always_inline else .auto;
     return if (decodeWith(scalar_call, bytes)) |value| value.len else null;
 }
 

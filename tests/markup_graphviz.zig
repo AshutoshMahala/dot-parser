@@ -444,7 +444,7 @@ test "vocabulary findings honor fail-fast sink stops and cancellation" {
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| {
         const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = .graphviz, .scanner = backend, .execution = .{ .cancellation = true }, .validation = .{ .duplicate_attribute = .off } } });
         var probe: Probe = .{};
-        const cancelled = (if (runtime) try P.validateSourceIn("<BR SRC='x'/>" ** 1024, .{}, discard, .{ .cancellation = .{ .context = &probe, .is_requested = Probe.poll } }) else P.validateSourceIn("<BR SRC='x'/>" ** 1024, .{}, discard, .{ .cancellation = .{ .context = &probe, .is_requested = Probe.poll } }));
+        const cancelled = (if (runtime) try P.validateSourceIn(std.mem.asBytes(&@as([1024]["<BR SRC='x'/>".len]u8, @splat("<BR SRC='x'/>".*))), .{}, discard, .{ .cancellation = .{ .context = &probe, .is_requested = Probe.poll } }) else P.validateSourceIn(std.mem.asBytes(&@as([1024]["<BR SRC='x'/>".len]u8, @splat("<BR SRC='x'/>".*))), .{}, discard, .{ .cancellation = .{ .context = &probe, .is_requested = Probe.poll } }));
         try equal(.cancelled, cancelled.completion);
         try equal(@as(u32, 5), probe.count);
         try equal(.incomplete, cancelled.checks.graphviz_attributes);
@@ -524,7 +524,7 @@ test "vocabulary and XML name findings keep document order without source repair
 }
 
 test "vocabulary floods stop at the diagnostic cap and skipping a check does not construct findings" {
-    const source = "<custom/>" ** 2048;
+    const source = std.mem.asBytes(&@as([2048]["<custom/>".len]u8, @splat("<custom/>".*)));
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
     defer bag.deinit();
     const checked = Graphviz.validateSourceIn(source, .{}, bag.sink(), .{});

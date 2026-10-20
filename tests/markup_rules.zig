@@ -282,10 +282,10 @@ test "new checks poll inside long names and reference scans with fixed-runtime c
     const P = markup.Profile(.{ .policy = patch });
     const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural } });
     for ([_][]const u8{
-        "<" ++ "東京" ** 1000 ++ "/>",
-        "<\xff/>" ++ "x" ** 10_000,
-        "&" ++ "x" ** 10_000 ++ ";",
-        "&" ++ "x" ** 10_000,
+        "<" ++ std.mem.asBytes(&@as([1000]["東京".len]u8, @splat("東京".*))) ++ "/>",
+        "<\xff/>" ++ &@as([10_000]u8, @splat('x')),
+        "&" ++ &@as([10_000]u8, @splat('x')) ++ ";",
+        "&" ++ &@as([10_000]u8, @splat('x')),
     }) |source| {
         var parsed = P.parseBorrowed(std.testing.allocator, source, discard, .{});
         defer parsed.deinit();
@@ -311,7 +311,7 @@ test "chunk polling crosses reference boundaries without changing findings" {
         }, .execution = .{ .cancellation = true } };
         const P = markup.Profile(.{ .runtime_policy = runtime, .policy = patch });
         inline for (.{ 0, 1, 62, 63, 64, 65, 127 }) |padding| {
-            const source = "x" ** padding ++ "&amp;&" ++ "x" ** 200 ++ ";&bad&next;&東京;&\xff;tail";
+            const source = &@as([padding]u8, @splat('x')) ++ "&amp;&" ++ &@as([200]u8, @splat('x')) ++ ";&bad&next;&東京;&\xff;tail";
             var parsed = (if (runtime) try P.parseBorrowed(std.testing.allocator, source, discard, .{}) else P.parseBorrowed(std.testing.allocator, source, discard, .{}));
             defer parsed.deinit();
             var plain: markup.FixedDiagnosticBag(16) = .{};
@@ -328,7 +328,7 @@ test "chunk polling crosses reference boundaries without changing findings" {
 }
 
 test "long plain text reference checking polls per chunk, not per byte" {
-    const source = "x" ** 100_000;
+    const source = &@as([100_000]u8, @splat('x'));
     inline for (.{ false, true }) |runtime| {
         inline for (.{ false, true }) |enabled| {
             const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = .structural, .validation = .{
@@ -347,7 +347,7 @@ test "long plain text reference checking polls per chunk, not per byte" {
 }
 
 test "dense markup shares polling work across short scans with fixed-runtime parity" {
-    const source = "<a x='1' y='2'/>" ** 10_000;
+    const source = std.mem.asBytes(&@as([10_000]["<a x='1' y='2'/>".len]u8, @splat("<a x='1' y='2'/>".*)));
     const patch: markup.Policy = .{ .mode = .structural, .validation = .{
         .duplicate_attribute = .off,
         .invalid_encoding = .err,
@@ -378,7 +378,7 @@ test "dense markup shares polling work across short scans with fixed-runtime par
 }
 
 test "encoding revisits stay cancellable after a completed reference scan" {
-    const source = "x" ** 10_000;
+    const source = &@as([10_000]u8, @splat('x'));
     const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{
         .duplicate_attribute = .off,
         .invalid_encoding = .err,
@@ -452,7 +452,7 @@ test "new checks finish empty input and preserve completed checks when trailing 
 }
 
 test "new validation floods obey the default diagnostic cap without allocating scratch" {
-    const source = "&missing;" ** 2048;
+    const source = std.mem.asBytes(&@as([2048]["&missing;".len]u8, @splat("&missing;".*)));
     var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});

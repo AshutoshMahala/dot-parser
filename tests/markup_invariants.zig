@@ -15,7 +15,7 @@ pub fn main(init: std.process.Init) !void {
         var nodes = [_]markup.Node{
             .{ .span = .{ .start = 0, .len = 15 }, .name = .{ .start = 1, .len = 1 }, .subtree_end = 3 },
             .{ .span = .{ .start = 3, .len = 8 }, .name = .{ .start = 4, .len = 1 }, .subtree_end = 3 },
-            .{ .span = .{ .start = 6, .len = 1 }, .name = .{ .start = @intFromEnum(markup.NodeKind.text), .len = 0 }, .subtree_end = 3 },
+            .{ .span = .{ .start = 6, .len = 1 }, .name = .{ .start = @backingInt(markup.NodeKind.text), .len = 0 }, .subtree_end = 3 },
         };
         const document: markup.Document = .{ .source = "<a><b>x</b></a>", .records = &nodes, .attributes = &.{} };
         switch (case) {
@@ -24,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
             7 => nodes[0].subtree_end = 4, // end outside the pool
             else => return error.UnknownCase,
         }
-        var children = document.node(@enumFromInt(0)).?.children();
+        var children = document.node(@fromBackingInt(@intCast(0))).?.children();
         armed = true;
         _ = children.next(); // Must assert on the first step, not a later OOB read.
         std.process.exit(1);
@@ -44,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
         1 => output.attributes[0].value.len = 1,
         2 => output.nodes[1].name = .{ .start = 5, .len = 0 },
         3 => output.nodes[1].span.len = std.math.maxInt(u32),
-        4 => output.attributes[1].owner = @enumFromInt(99),
+        4 => output.attributes[1].owner = @fromBackingInt(@intCast(99)),
         else => return error.UnknownCase,
     }
     armed = true;

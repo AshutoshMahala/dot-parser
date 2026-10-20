@@ -25,6 +25,8 @@ pub const BorrowedContents = struct {
     encoding: encoding.Actual,
     location: SourceLocation,
 };
+/// Maximum scalar-equivalent run offered by the optional reader batch contract.
+pub const ascii_width = 16;
 
 /// Content only: no BOM removal, escapes, normalization or host grammar. Each
 /// step consumes at most one physical code unit; assembling a UTF-8 scalar or
@@ -63,6 +65,23 @@ pub fn Reader(comptime actual: encoding.Actual) type {
         }
         pub fn position(self: *const Self) u32 {
             return self.offset;
+        }
+        /// A bounded, unchanged ASCII run at the current cursor. No input is
+        /// consumed; empty means use step(). No terminal/failure is skipped.
+        pub inline fn asciiRun(self: *const Self) []const u8 {
+            if (comptime actual != .utf8 and actual != .ascii) return &.{};
+            if (self.failure != null or self.buffered != 0 or self.offset >= self.input.bytes.len or
+                self.input.bytes.len - self.offset < ascii_width) return &.{};
+            const bytes = self.input.bytes[self.offset..][0..ascii_width];
+            const block: @Vector(ascii_width, u8) = bytes.*;
+            return if (@reduce(.Or, block) & 0x80 == 0) bytes else &.{};
+        }
+        /// Checked commit: equivalent to count scalar-producing step() calls.
+        /// These bytes remain borrowed; no caller-provided span is trusted.
+        pub inline fn skipAscii(self: *Self, count: u32) bool {
+            if (count == 0 or count > self.asciiRun().len) return false;
+            self.offset += count;
+            return true;
         }
         pub fn step(self: *Self) Step {
             if (self.failure) |f| return .{ .failure = f };

@@ -261,7 +261,7 @@ test "duplicate keys use decoded HTML operands including empty parts" {
 }
 
 test "bounded sessions preserve HTML continuation and reset runtime patches" {
-    const source = "graph { \"x\" + <<b>" ++ "x" ** 150 ++ "</b>>; }";
+    const source = "graph { \"x\" + <<b>" ++ &@as([150]u8, @splat('x')) ++ "</b>>; }";
     inline for (.{ .scalar, .block }) |backend| {
         const P = dot.Profile(.{ .runtime_policy = true, .policy = .{ .scanner = backend, .execution = .{ .metering = true } } });
         var storage: dot.FixedDocumentStorage(.{ .statements = 2, .nodes = 2 }) = .{};

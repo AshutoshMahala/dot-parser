@@ -409,7 +409,7 @@ test "markup excerpts use display widths while locations keep original byte colu
         var writer = std.Io.Writer.fixed(&storage);
         try markup.console.renderBoxed(.{ .code = .unexpected_byte, .span = .{ .start = case.start, .len = case.len }, .details = .{ .byte = '!' } }, 1, .{ .source = case.source }, &writer);
         var expected_storage: [128]u8 = undefined;
-        const expected = try std.fmt.bufPrint(&expected_storage, "│   │ {s}{s} offending byte", .{ (" " ** 32)[0..case.padding], ("^" ** 16)[0..case.marks] });
+        const expected = try std.fmt.bufPrint(&expected_storage, "│   │ {s}{s} offending byte", .{ (&@as([32]u8, @splat(' ')))[0..case.padding], (&@as([16]u8, @splat('^')))[0..case.marks] });
         try contains(writer.buffered(), expected);
         var location_storage: [64]u8 = undefined;
         try contains(writer.buffered(), try std.fmt.bufPrint(&location_storage, "<input>:1:{d}", .{case.start + 1}));
@@ -417,7 +417,7 @@ test "markup excerpts use display widths while locations keep original byte colu
 }
 
 test "UTF-8 clipping partial spans and truncated sources render safely in both styles" {
-    const source = ("é中文" ** 16) ++ "!\xff";
+    const source = (std.mem.asBytes(&@as([16]["é中文".len]u8, @splat("é中文".*)))) ++ "!\xff";
     var storage: [8192]u8 = undefined;
     inline for (.{ .unicode, .ascii }) |style| {
         for (0..source.len + 1) |end| {
@@ -434,7 +434,7 @@ test "UTF-8 clipping partial spans and truncated sources render safely in both s
 }
 
 test "source-aware tag names remain bounded and cannot inject terminal controls" {
-    const source = "é\x1b\u{202e}\n\t" ++ ("中" ** 100);
+    const source = "é\x1b\u{202e}\n\t" ++ (std.mem.asBytes(&@as([100]["中".len]u8, @splat("中".*))));
     const finding: markup.Diagnostic = .{
         .code = .mismatched_tag,
         .span = .{ .start = 0, .len = source.len },

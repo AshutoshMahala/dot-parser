@@ -31,8 +31,8 @@ fn allocated(allocator: std.mem.Allocator, hinted: bool) !void {
     try expect(result.outcome == .success);
 }
 test "subgraph allocation and ownership transfer failures release all pools and scratch" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocated, .{false});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocated, .{true});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocated, .{false});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocated, .{true});
 }
 test "scopes retain occurrences and source order with direct and recursive views" {
     const source = "digraph G { x subgraph s { a:p->b->c[k=v] {c->d} rank=same } subgraph s {} subgraph {} subgraph \"\" {} subgraph -1 {} y }";
@@ -51,7 +51,7 @@ test "scopes retain occurrences and source order with direct and recursive views
     try equal(@as(usize, 0), count(root.edges(.direct)));
     try equal(@as(usize, 3), count(root.edges(.recursive)));
     try equal(@as(usize, 7), count(root.nodeReferences(.recursive)));
-    try expect(doc.scope(@enumFromInt(7)) == null);
+    try expect(doc.scope(@fromBackingInt(@intCast(7))) == null);
     var scopes = doc.subgraphs();
     const first = scopes.next().?;
     try equal(dot.ScopeId.root, first.parent().?);
@@ -74,7 +74,7 @@ test "scopes retain occurrences and source order with direct and recursive views
     var statements = doc.statements();
     for (expected_scopes) |id| {
         const item = statements.nextScoped().?;
-        try equal(id, @intFromEnum(item.scope));
+        try equal(id, @backingInt(item.scope));
         try deep(doc.statement(item.id).?, item.statement);
     }
     try expect(statements.nextScoped() == null);
@@ -320,11 +320,11 @@ test "generated scope trees match independent parent and direct-child accounting
         try equal(statements, doc.statementCount());
         try equal(@as(usize, scope_count), doc.subgraph_records.len);
         var it = doc.statements();
-        for (expected_scopes[0..statements]) |parent| try equal(parent, @intFromEnum(it.nextScoped().?.scope));
+        for (expected_scopes[0..statements]) |parent| try equal(parent, @backingInt(it.nextScoped().?.scope));
         try expect(it.nextScoped() == null);
         for (0..scope_count + 1) |id| {
-            const scope = doc.scope(@enumFromInt(id)).?;
-            if (id != 0) try equal(parents[id], @intFromEnum(scope.parent().?));
+            const scope = doc.scope(@fromBackingInt(@intCast(id))).?;
+            if (id != 0) try equal(parents[id], @backingInt(scope.parent().?));
             try equal(expected_children[id], count(scope.statements(.direct)));
         }
     }

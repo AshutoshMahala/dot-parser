@@ -9,8 +9,8 @@ pub const Element = enum(u4) { TABLE, TR, TD, FONT, BR, IMG, I, B, U, O, SUB, SU
 /// byte walk. Names are borrowed, never case-normalized in retained storage.
 pub fn element(name: []const u8) ?Element {
     if (name.len > 5) return null;
-    inline for (std.meta.fields(Element)) |field| {
-        if (std.ascii.eqlIgnoreCase(name, field.name)) return @enumFromInt(field.value);
+    inline for (@typeInfo(Element).@"enum".field_names) |field| {
+        if (std.ascii.eqlIgnoreCase(name, field)) return @field(Element, field);
     }
     return null;
 }
@@ -19,8 +19,8 @@ pub fn elementEncoded(comptime actual: @import("parser_support").encoding.Actual
     const enc = @import("parser_support").encoding.Reader(actual);
     if (enc.width == 1) return element(name);
     if (name.len > 5 * enc.width) return null;
-    inline for (std.meta.fields(Element)) |field| {
-        if (enc.asciiEqual(name, field.name, true)) return @enumFromInt(field.value);
+    inline for (@typeInfo(Element).@"enum".field_names) |field| {
+        if (enc.asciiEqual(name, field, true)) return @field(Element, field);
     }
     return null;
 }

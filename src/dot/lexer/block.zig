@@ -43,7 +43,7 @@ pub const block_len = 64;
 /// 0.16; chunks of the native width do not.)
 const chunk_len = @min(std.simd.suggestVectorLength(u8) orelse 16, block_len);
 const Chunk = @Vector(chunk_len, u8);
-const ChunkMask = std.meta.Int(.unsigned, chunk_len);
+const ChunkMask = @Int(.unsigned, chunk_len);
 const Block = [block_len]u8;
 
 pub const Lexer = Scanner(false, false, true);

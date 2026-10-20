@@ -28,9 +28,9 @@ pub fn main(init: std.process.Init) !void {
         const measured = dot.measure(allocator, source, dot.diagnostic.discard, .{});
         const capacities = measured.capacities orelse return error.MeasureFailed;
         var memory: dot.ParseMemory = .{ .document = .{ .statement_ids = &.{}, .nodes = &.{}, .edges = &.{} } };
-        inline for (@typeInfo(dot.DocumentStorage).@"struct".fields) |field| {
-            const capacity = @field(capacities, if (std.mem.eql(u8, field.name, "statement_ids")) "statements" else field.name);
-            @field(memory.document, field.name) = try allocator.alloc(std.meta.Child(field.type), capacity);
+        inline for (@typeInfo(dot.DocumentStorage).@"struct".field_names) |field| {
+            const capacity = @field(capacities, if (std.mem.eql(u8, field, "statement_ids")) "statements" else field);
+            @field(memory.document, field) = try allocator.alloc(std.meta.Child(@FieldType(dot.DocumentStorage, field)), capacity);
         }
         var scratch: dot.FixedParseScratch(.{ .nesting = 1 }) = .{};
         memory.scratch = scratch.storage();

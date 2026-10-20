@@ -37,7 +37,7 @@ pub fn main(init: std.process.Init) !void {
             try writer.print("  label at byte {d}: complete={any}\n", .{ child.envelope.start, child.result.subtreeComplete() });
             if (child.result.parse.document) |document| {
                 for (0..document.nodeCount()) |index| {
-                    const node = document.node(@enumFromInt(index)).?;
+                    const node = document.node(@fromBackingInt(@intCast(index))).?;
                     try writer.print("    {s}: {s}\n", .{ node.name() orelse "text", @tagName(node.state()) });
                 }
             }

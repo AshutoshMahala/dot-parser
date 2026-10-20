@@ -529,7 +529,7 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
 }
 
 test "code-unit recovery allowance survives partitioning and cancellation in every reader" {
-    const text = "<aa>" ** 40 ++ "</ab>" ** 40;
+    const text = std.mem.asBytes(&@as([40]["<aa>".len]u8, @splat("<aa>".*))) ++ std.mem.asBytes(&@as([40]["</ab>".len]u8, @splat("</ab>".*)));
     const Request = struct {
         stop: bool = false,
         polls: u32 = 0,

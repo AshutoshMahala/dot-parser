@@ -5,16 +5,16 @@ file, reports problems, and reads the result.
 
 ## 1. Add the package
 
-You need Zig 0.16.0.
+The development version requires Zig 0.17.0.
 
 ```sh
-zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#v0.5.0
+zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#main
 ```
 
-This installs the latest release, 0.5.0. The docs follow the `main` branch:
-anything marked **Unreleased** isn't in 0.5.0 yet. To use those features, use
-`#main` instead of `#v0.5.0`. See the [changelog](../CHANGELOG.md) for breaking
-changes from 0.4.0.
+This selects the development branch, which these docs follow. For the latest
+tagged release, use `#v0.5.0` with Zig 0.16.0 instead. Anything marked
+**Unreleased**, including the 0.17 migration, isn't in that release.
+See the [changelog](../CHANGELOG.md) for breaking changes.
 
 In your `build.zig`, import the `dot_parser` module into your program:
 
@@ -109,7 +109,7 @@ while (statements.next()) |statement| switch (statement) {
     },
     .edge => |edge| std.debug.print("edge using {s}\n", .{edge.operator.lexeme()}),
     .edge_chain => |chain| std.debug.print("chain of {d} edges\n", .{document.edgeLinkCount(chain) + 1}),
-    .subgraph => |id| std.debug.print("subgraph #{d}\n", .{@intFromEnum(id)}),
+    .subgraph => |id| std.debug.print("subgraph #{d}\n", .{@backingInt(id)}),
     .assignment => |assignment| std.debug.print("{s} = {s}\n", .{
         document.text(assignment.key), document.text(assignment.value),
     }),

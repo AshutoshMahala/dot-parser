@@ -59,6 +59,204 @@ fn partition(comptime P: type, reader: anytype, options: P.Options) !void {
     }
 }
 
+/// Same reader without its optional batch service: a semantic/credit oracle.
+fn ScalarOnly(comptime R: type) type {
+    return struct {
+        inner: R,
+        pub const encoding_kind = R.encoding_kind;
+        pub fn fragment(self: *const @This()) s.Fragment {
+            return self.inner.fragment();
+        }
+        pub fn restarted(self: *const @This()) s.Fragment.Error!@This() {
+            return .{ .inner = try self.inner.restarted() };
+        }
+        pub fn location(self: *const @This()) s.logical.SourceLocation {
+            return self.inner.location();
+        }
+        pub fn contiguous(self: *const @This()) ?s.logical.BorrowedContents {
+            return self.inner.contiguous();
+        }
+        pub fn position(self: *const @This()) u32 {
+            return self.inner.position();
+        }
+        pub fn step(self: *@This()) s.logical.Step {
+            return self.inner.step();
+        }
+    };
+}
+
+fn compareBatches(comptime P: type, reader: anytype, options: P.Options, budget: u32) !void {
+    const R = @TypeOf(reader);
+    var a_bag: P.FixedDiagnosticBag(16) = .{};
+    var b_bag: P.FixedDiagnosticBag(16) = .{};
+    var batched = try P.WithReader(R).Session.init(reader, a_bag.sink(), options);
+    defer batched.deinit();
+    var scalar = try P.WithReader(ScalarOnly(R)).Session.init(.{ .inner = reader }, b_bag.sink(), options);
+    defer scalar.deinit();
+    while (true) {
+        const a = try batched.advance(budget);
+        const b = try scalar.advance(budget);
+        try t.expectEqualDeep(b, a); // stage, frontier, stop and credits at EVERY yield
+        try t.expectEqualDeep(b_bag.items(), a_bag.items());
+        if (a.outcome != null) break;
+    }
+    try t.expectEqualDeep(scalar.result(), batched.result());
+}
+
+test "logical ASCII batches match scalar steps at boundaries, failures and folds" {
+    const P = s.Profile(.{ .runtime_policy = true, .unicode_case_folding = true, .custom = s.validators.Equals, .policy = .{
+        .execution = .{ .metering = true },
+        .validation = .{ .equals = .{ .expected = &@as([80]u8, @splat('a')), .severity = .err }, .one_of = .{ .values = &.{ &@as([80]u8, @splat('b')), &@as([80]u8, @splat('a')) }, .severity = .warning }, .custom = .warning },
+        .custom = &@as([80]u8, @splat('a')),
+    } });
+    const sources = [_][]const u8{
+        &@as([80]u8, @splat('a')),
+        &@as([80]u8, @splat('A')),
+        &@as([32]u8, @splat('a')) ++ "ß" ++ &@as([48]u8, @splat('a')),
+        &@as([16]u8, @splat('a')) ++ "&amp;" ++ &@as([48]u8, @splat('a')),
+        &@as([32]u8, @splat('a')) ++ "&#65;" ++ &@as([48]u8, @splat('a')),
+        &@as([48]u8, @splat('a')) ++ "&" ++ &@as([32]u8, @splat('z')) ++ " x", // accepted malformed spelling replay
+        &@as([48]u8, @splat('a')) ++ "&unknown;",
+        &@as([48]u8, @splat('a')) ++ "\xff",
+        &@as([80]u8, @splat('a')) ++ "\xe2\x82", // buffered, truncated scalar at EOF
+        &@as([16]u8, @splat('a')) ++ "\t\r\n" ++ &@as([48]u8, @splat('a')),
+    };
+    for (sources) |source| {
+        for ([_]u32{ 1, 15, 16, 17, 31, 64, 257 }) |budget| {
+            for ([_]s.Comparison{ .case_sensitive, .ascii_case_insensitive, .case_insensitive }) |comparison| {
+                const options: P.Options = .{ .policy = .{ .comparison = comparison } };
+                try compareBatches(P, try s.LogicalReader(.utf8).init(.{ .bytes = source, .origin = 7 }), options, budget);
+                try compareBatches(P, try markup.LogicalReader(.utf8).init(.{ .bytes = source, .origin = 7 }, .{ .malformed_reference = .accept, .normalize_attribute_whitespace = true }), options, budget);
+            }
+        }
+    }
+    for ([_][]const u8{
+        "\"" ++ &@as([80]u8, @splat('a')) ++ "\"",
+        "\"" ++ &@as([32]u8, @splat('a')) ++ "\" + /* glue */ \"" ++ &@as([48]u8, @splat('a')) ++ "\"",
+        "\"" ++ &@as([16]u8, @splat('a')) ++ "\\\r\n" ++ &@as([64]u8, @splat('a')) ++ "\"",
+        "\"" ++ &@as([16]u8, @splat('a')) ++ "\\\"" ++ &@as([64]u8, @splat('a')) ++ "\"",
+        "\"" ++ &@as([16]u8, @splat('a')) ++ "\\n" ++ &@as([64]u8, @splat('a')) ++ "\"",
+        "\"" ++ &@as([80]u8, @splat('a')), // missing quote remains a prerequisite failure
+    }) |source| {
+        for ([_]u32{ 1, 15, 16, 17, 64, 257 }) |budget| {
+            try compareBatches(P, try dot.identifier.LogicalReader(.utf8).init(.{ .bytes = source, .origin = 7 }), .{}, budget);
+        }
+    }
+}
+
+test "logical batching preserves cancellation polls and exact stopping frontiers" {
+    const P = s.Profile(.{ .runtime_policy = true, .policy = .{
+        .execution = .{ .metering = true, .cancellation = true },
+        .validation = .{ .equals = .{ .expected = &@as([160]u8, @splat('a')), .severity = .err } },
+    } });
+    const Probe = struct {
+        calls: u32 = 0,
+        stop: u32,
+        fn requested(raw: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            self.calls += 1;
+            return self.calls == self.stop;
+        }
+    };
+    const reader = try markup.LogicalReader(.utf8).init(.{ .bytes = &@as([160]u8, @splat('a')), .origin = 13 }, .{});
+    for ([_]u32{ 1, 7, 16, 17, 32, 65 }) |interval| {
+        for ([_]u32{ 1, 15, 16, 17, 64, 1024 }) |budget| {
+            for ([_]u32{ 1, 2, 3, 7, 13, 40, 1000 }) |stop| {
+                var pa: Probe = .{ .stop = stop };
+                var pb: Probe = .{ .stop = stop };
+                var a = try P.WithReader(@TypeOf(reader)).Session.init(reader, P.Sink.discard, .{
+                    .policy = .{ .execution = .{ .cancellation_interval = interval } },
+                    .cancellation = .{ .context = &pa, .is_requested = Probe.requested },
+                });
+                var b = try P.WithReader(ScalarOnly(@TypeOf(reader))).Session.init(.{ .inner = reader }, P.Sink.discard, .{
+                    .policy = .{ .execution = .{ .cancellation_interval = interval } },
+                    .cancellation = .{ .context = &pb, .is_requested = Probe.requested },
+                });
+                while (true) {
+                    const x = try a.advance(budget);
+                    const y = try b.advance(budget);
+                    try t.expectEqualDeep(y, x);
+                    try t.expectEqual(pb.calls, pa.calls);
+                    if (x.outcome != null) break;
+                }
+                try t.expectEqualDeep(b.result(), a.result());
+            }
+        }
+    }
+}
+
+test "logical ASCII batches resume after Unicode fold expansions on either side" {
+    inline for (comptime .{
+        .{ &@as([32]u8, @splat('a')) ++ "ß" ++ &@as([64]u8, @splat('a')), &@as([32]u8, @splat('A')) ++ "SS" ++ &@as([64]u8, @splat('A')) },
+        .{ &@as([32]u8, @splat('a')) ++ "SS" ++ &@as([64]u8, @splat('a')), &@as([32]u8, @splat('A')) ++ "ß" ++ &@as([64]u8, @splat('A')) },
+    }) |pair| {
+        const P = s.Profile(.{ .runtime_policy = true, .unicode_case_folding = true, .policy = .{
+            .execution = .{ .metering = true },
+            .comparison = .case_insensitive,
+            .validation = .{ .equals = .{ .expected = pair[1], .severity = .err } },
+        } });
+        const reader = try markup.LogicalReader(.utf8).init(.{ .bytes = pair[0], .origin = 13 }, .{});
+        for ([_]u32{ 1, 16, 17, 64, 257 }) |budget| try compareBatches(P, reader, .{}, budget);
+        try t.expect((try P.WithReader(@TypeOf(reader)).parseAndValidate(reader, P.Sink.discard, .{})).valid());
+    }
+}
+
+test "batch fallback cannot hide an invalid dynamic pattern suffix" {
+    const Dynamic = struct {
+        pub const Settings = []const u8;
+        pub const defaults: Settings = &@as([64]u8, @splat('a')) ++ "\xff";
+        pub const uses_comparison = true;
+        pub const State = s.validators.Equals.State;
+        pub const step = s.validators.Equals.step;
+        pub const batch = s.validators.Equals.batch;
+        // Deliberately dynamic: no validateSettings prerequisite.
+    };
+    const P = s.Profile(.{ .custom = Dynamic, .runtime_policy = true, .policy = .{
+        .execution = .{ .metering = true },
+        .validation = .{ .custom = .err },
+    } });
+    const reader = try markup.LogicalReader(.utf8).init(.{ .bytes = &@as([96]u8, @splat('b')), .origin = 9 }, .{});
+    for ([_]u32{ 1, 16, 64, 4096 }) |budget| try compareBatches(P, reader, .{}, budget);
+    const result = try P.WithReader(@TypeOf(reader)).parseAndValidate(reader, P.Sink.discard, .{});
+    try t.expectEqual(.invalid_validator, result.completion);
+}
+
+test "ASCII reader commits are checked and leave rejected runs untouched" {
+    var plain = try s.LogicalReader(.utf8).init(.{ .bytes = &@as([16]u8, @splat('a')) ++ "\xff", .origin = 0 });
+    try t.expect(!plain.skipAscii(17));
+    try t.expect(!plain.skipAscii(0));
+    try t.expectEqual(0, plain.position());
+    try t.expect(plain.skipAscii(16));
+    try t.expect(!plain.skipAscii(1));
+    try t.expectEqual(16, plain.position());
+    try t.expectEqual(.failure, std.meta.activeTag(plain.step()));
+    var normalized = try markup.LogicalReader(.utf8).init(.{ .bytes = &@as([15]u8, @splat('a')) ++ "\t", .origin = 0 }, .{ .normalize_attribute_whitespace = true });
+    try t.expect(!normalized.skipAscii(16));
+    try t.expectEqual(0, normalized.position());
+    var quoted = try dot.identifier.LogicalReader(.utf8).init(.{ .bytes = "\"" ++ &@as([15]u8, @splat('a')) ++ "\\n\"", .origin = 0 });
+    _ = quoted.step(); // opening delimiter
+    try t.expect(!quoted.skipAscii(16));
+    try t.expectEqual(1, quoted.position());
+}
+
+test "logical batches and scalar readers agree around every block boundary" {
+    const P = s.Profile(.{ .runtime_policy = true, .policy = .{
+        .execution = .{ .metering = true },
+        .validation = .{ .equals = .{ .expected = &@as([96]u8, @splat('a')), .severity = .err } },
+    } });
+    var source: [98]u8 = @splat('a');
+    source[0] = '"';
+    source[97] = '"';
+    for (0..96) |index| {
+        for ([_]u8{ 0, '"', '\\', '&', '\t', '\r', 0xc3, 0xff }) |byte| {
+            source[index + 1] = byte;
+            try compareBatches(P, try dot.identifier.LogicalReader(.utf8).init(.{ .bytes = &source, .origin = 11 }), .{}, 31);
+            try compareBatches(P, try markup.LogicalReader(.utf8).init(.{ .bytes = source[1..97], .origin = 11 }, .{ .malformed_reference = .accept, .normalize_attribute_whitespace = true }), .{}, 31);
+            source[index + 1] = 'a';
+        }
+    }
+}
+
 test "logical budgets, moving sessions, runtime overrides, and folding agree" {
     const P = s.Profile(.{ .runtime_policy = true, .unicode_case_folding = true, .policy = .{
         .execution = .{ .metering = true },
@@ -69,9 +267,9 @@ test "logical budgets, moving sessions, runtime overrides, and folding agree" {
     try t.expect((try P.WithReader(@TypeOf(reader)).parseAndValidate(reader, P.Sink.discard, .{ .policy = .{ .comparison = .case_insensitive } })).valid());
     try partition(P, reader, .{}); // ordinary case-sensitive mismatch
     try partition(P, reader, .{ .policy = .{ .comparison = .ascii_case_insensitive } });
-    const long = try dot.identifier.LogicalReader(.utf8).init(.{ .bytes = "\"STR\" + /*" ++ "x" ** 800 ++ "*/ \"ASSE😀\"", .origin = 11 });
+    const long = try dot.identifier.LogicalReader(.utf8).init(.{ .bytes = "\"STR\" + /*" ++ &@as([800]u8, @splat('x')) ++ "*/ \"ASSE😀\"", .origin = 11 });
     try partition(P, long, .{});
-    const replay = try markup.LogicalReader(.utf8).init(.{ .bytes = "x&" ++ "a" ** 800 ++ " z", .origin = 5 }, .{ .malformed_reference = .accept });
+    const replay = try markup.LogicalReader(.utf8).init(.{ .bytes = "x&" ++ &@as([800]u8, @splat('a')) ++ " z", .origin = 5 }, .{ .malformed_reference = .accept });
     try partition(P, replay, .{});
     const Empty = s.Profile(.{ .runtime_policy = true, .policy = .{ .execution = .{ .metering = true }, .validation = .{ .equals = .{ .expected = "", .severity = .err }, .one_of = .{ .values = &.{}, .severity = .warning } } } });
     try partition(Empty, try dot.identifier.LogicalReader(.utf8).init(.{ .bytes = "\"\" + \"\"", .origin = 0 }), .{});
@@ -82,7 +280,7 @@ test "native logical findings retain physical offsets" {
         .execution = .{ .metering = true },
         .validation = .{ .equals = .{ .expected = "B", .severity = .warning } },
     } });
-    inline for (.{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+    inline for (comptime .{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
         const E = dot.encoding.Reader(actual);
         var bytes: [24]u8 = @splat(0);
         for ("&#65;", 0..) |byte, i| {
@@ -237,7 +435,7 @@ test "bound fail-fast sink stops cancellation and transactional reset" {
         }
     };
     var hook: Hook = .{};
-    var session = try B.Session.init(try R.init(.{ .bytes = "&#" ++ "0" ** 200 ++ "65;", .origin = 0 }, .{}), P.Sink.discard, .{ .cancellation = .{ .context = &hook, .is_requested = Hook.poll } });
+    var session = try B.Session.init(try R.init(.{ .bytes = "&#" ++ &@as([200]u8, @splat('0')) ++ "65;", .origin = 0 }, .{}), P.Sink.discard, .{ .cancellation = .{ .context = &hook, .is_requested = Hook.poll } });
     _ = try session.advance(10);
     try t.expectEqual(@as(u32, 10), hook.calls);
     try t.expectError(error.InvalidCancellationInterval, session.reset(reader, P.Sink.discard, .{ .policy = .{ .execution = .{ .cancellation_interval = 0 } } }));
@@ -336,7 +534,7 @@ test "generated entity streams match standalone comparison results" {
 
 test "native custom locations include entire reference and surrogate pair" {
     const P = s.Profile(.{ .custom = NoAmpersands, .source_encodings = &.{ .utf16, .utf32 }, .policy = .{ .validation = .{ .custom = .err } } });
-    inline for (.{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+    inline for (comptime .{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
         const E = dot.encoding.Reader(actual);
         var bytes: [20]u8 = @splat(0);
         for ("&amp;", 0..) |byte, i| bytes[i * E.width + if (actual == .utf16be or actual == .utf32be) E.width - 1 else 0] = byte;
@@ -376,7 +574,7 @@ test "comparison stops while still inside reference spelling" {
         }
     };
     var hook: Hook = .{};
-    var session = try P.WithReader(R).Session.init(try R.init(.{ .bytes = "&#" ++ "0" ** 200 ++ "65;", .origin = 0 }, .{}), P.Sink.discard, .{ .cancellation = .{ .context = &hook, .is_requested = Hook.poll } });
+    var session = try P.WithReader(R).Session.init(try R.init(.{ .bytes = "&#" ++ &@as([200]u8, @splat('0')) ++ "65;", .origin = 0 }, .{}), P.Sink.discard, .{ .cancellation = .{ .context = &hook, .is_requested = Hook.poll } });
     while (session.advance(1).stage == .encoding) {}
     const before = hook.calls;
     try t.expectEqual(null, session.advance(10).outcome); // pattern + prefix of reference

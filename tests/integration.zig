@@ -819,13 +819,9 @@ test "markup-disabled corpus names the exact unsupported feature" {
 
 // ---------------------------------------------------------------------------
 // Fuzzing (docs/ARCHITECTURE.md test level 4). Runs as a smoke test in a
-// normal `zig build test`. Verified real-fuzzing invocation on Zig 0.16.0:
+// normal `zig build test`. For a longer run with the current compiler:
 //
-//     zig build -Doptimize=ReleaseFast test --fuzz=1000
-//
-// (The Debug fuzz runner in Zig 0.16.0 fails with a StackTrace type
-// mismatch inside std's test runner — a toolchain issue, not a library
-// one; use the ReleaseFast form above.)
+//     zig build -Doptimize=fast test --fuzz=1000
 // ---------------------------------------------------------------------------
 
 test "fuzz: arbitrary bytes terminate without crashing, leaking, or diverging" {

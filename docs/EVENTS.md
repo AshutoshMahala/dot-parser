@@ -46,6 +46,7 @@ parsing with partial retention off.
 | `commit_*` | That statement's own envelope completed, with a typed `.value` (see below) |
 | `skipped` | A failed/unrecognized region was skipped to a synchronization boundary |
 | `comment` | A complete comment, only with `retention.comments` enabled |
+| `identifier`, `statement_head`, `document_name`, `subgraph_name` | Opt-in early observations for outlines; see below |
 | `end_document` | Whole-document syntax commit attempt; successful acknowledgment finishes parsing |
 
 Commit cases are flat event tags, not another tagged union inside an event:
@@ -83,9 +84,64 @@ concatenation lookahead. They do not belong to statement transactions. A failure
 after pre-header comment delivery can produce document abort without a header.
 No callbacks follow document abort or successful document commit.
 
+With early observations enabled, a complete document name can also arrive
+before `begin_document`. Failure after that observation produces document abort,
+even if the opening `{` never arrives.
+
 `onEvent` returns `.proceed` or `.stop`, or a consumer-defined error. The result
 distinguishes `.event_stopped` and `.event_failure` from syntax, diagnostic and
 nesting-storage failures. No consumer error is relabeled as out-of-memory.
+
+## Outline while typing
+
+Declare this on your consumer, using the **same** `onEvent`/`onAbort` interface:
+
+```zig
+pub const wants_early_events = true; // compile-time opt-in; default false
+```
+
+This exposes recognized names before a statement completes. For example,
+`graph { alpha [label="unfinished` delivers `identifier` for `alpha` and a
+`statement_head` of `.node`, but no `commit_node`. An editor can retain that
+observation as a provisional outline entry while still reporting the syntax
+error. Ordinary consumers receive neither of these extra callbacks.
+The shared `Event` type gains the four tags below even when the consumer opts
+out: existing exhaustive switches must handle them or add `else => {}`.
+
+| Event | Payload and timing |
+| --- | --- |
+| `identifier` | `owner`, complete identifier `span`, and `role`: `.statement_start`, `.edge_right` or `.edge_link`. Port suffixes are separate existing `ported_reference` events. |
+| `statement_head` | `owner`, first-token `start`, and recognized `kind`: `.node`, `.edge`, `.assignment`, `.graph_attributes`, `.node_attributes`, `.edge_attributes` or `.subgraph`. At most once per statement occurrence. |
+| `document_name` | Complete `name`, `kind`, `strict`, `keyword_span` and `source_info`, before the document's opening brace. |
+| `subgraph_name` | Complete `name`, `keyword_span`, `owner` and endpoint `role`, before its opening brace. No `ScopeId` is allocated until the body opens. |
+
+A statement-leading identifier is not yet necessarily a node: `a` can become
+`a = value` or `a -> b`. The head refines its role when syntax establishes it:
+`[` identifies a node, `=` an assignment, and the first edge operator an edge.
+A bare node gets its head at a valid statement boundary. At EOF, `graph { a`
+exposes the identifier but does not guess the statement's eventual kind.
+A named subgraph may later become an edge endpoint; its standalone `.subgraph`
+head is emitted only after its body and non-edge lookahead are recognized.
+
+Correlate observations with later events using `owner` and source spans; do not
+create a second node when the matching commit arrives. Names use original byte
+coordinates and borrow the unchanged input. `document_name.source_info` makes
+encoding available even before `begin_document`. IDs remain local to one parse,
+not stable identities across edits.
+
+These are provisional facts, not commits, repairs or a partial document tree.
+Commit/abort semantics are unchanged. An outline may deliberately keep an
+aborted observation marked provisional; an atomic graph/index must discard it.
+Complete lexical names qualify for `identifier.assumeParsed`, even when their
+enclosing statement fails. An unfinished quote, HTML-like token, concatenation
+or comment is not guessed into a name; unfinished-token previews remain deferred.
+
+There is no event queue, additional nesting frame or parser-owned outline.
+Enabled callbacks each consume a separate dispatch credit and obey existing
+cancellation polling, including a pause between a head and its commit.
+Callback execution is still consumer work. Metering units and cancellation
+intervals do not change. The opt-in does not enable `retention.partial` or alter
+syntax acceptance/recovery.
 
 ## Recovery and retained output
 
@@ -110,6 +166,37 @@ type. IDs are not renumbered when a statement aborts.
 Source must remain alive and unchanged for any retained spans.
 `begin_document.source_info` and the terminal result carry the selected source
 encoding/BOM information, so native consumers need not infer it from spans.
+
+## Indexing recognized names
+
+The raw `identifier.hash`/`eql` helpers check the spelling each time because they
+also accept arbitrary caller input. When an event already identifies a complete
+identifier, a consumer can skip that check without retaining a `Document`:
+
+```zig
+// Inside a UTF-8 consumer's onEvent:
+.commit_node => |node| {
+    const name = dot.identifier.assumeParsed(node.value.identifier.slice(self.source));
+    const hash = name.hash() catch unreachable; // UTF-8 preserves raw bytes.
+    // Store name/hash in your index; use name.eql(other) on hash matches.
+},
+```
+
+`assumeParsed` borrows the source with an explicit syntax-validity precondition.
+It does not validate a span or make a provisional statement valid. Use only
+identifier fields from events, not `begin_statement.start` (which can be a
+keyword or brace), `skipped.span`, or an unfinished token. For native input,
+select `identifier.ForEncoding(actual)` from the document-begin encoding
+(or `document_name.source_info` for an early header name).
+Those native helpers can reject malformed encoding: propagate `InvalidIdentifier`
+through a fallible callback instead of treating it as unreachable.
+No event fields or parser storage are added; index memory belongs to the consumer.
+Hashing/comparison in callbacks is consumer work, not parser-session credits.
+
+`zig build bench-identifiers -Doptimize=fast` compares the checked and
+trusted paths in an event-only name index, with source generation and identical
+table reservation outside timing. It reports parse-plus-index time, decimal
+MB/s and index storage. Use `ReleaseSafe` or `ReleaseSmall` for those modes.
 
 ## Sessions and encodings
 
@@ -159,11 +246,13 @@ Use the bound profile's `ParseScratch`/`FixedParseScratch` for fixed event
 storage: its frame type includes only that consumer's context. Ordinary
 consumers have no private context, so their nesting frames are smaller than
 tree-builder frames. No extra allocation or identity lookup table is needed.
-Two optional compile-time declarations select callback work:
+Optional compile-time declarations select callback work:
 `wants_begin_statement = false` omits begin notifications, and
 `recover_statements = false` ends output at the first syntax rejection while
 the grammar may continue collecting diagnostics. Both default to true for user
-consumers; neither changes the profile's syntax/recovery policy.
+consumers. `wants_early_events = true` adds the early observations above and
+defaults to false, independently of begin notifications. None changes the
+profile's syntax/recovery policy.
 The `parser_retention` namespace is reserved for internal document bookkeeping,
 not a consumer hook. Unrelated methods named `continuesAfterError` or
 `retainThrough` have no effect on event delivery.

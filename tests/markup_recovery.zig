@@ -7,7 +7,7 @@ const deep = std.testing.expectEqualDeep;
 const discard = markup.diagnostic.discard;
 
 test "collect is the markup recovery default and presets expose the same two choices" {
-    try equal(@as(usize, 2), std.meta.fields(markup.OnError).len);
+    try equal(@as(usize, 2), std.meta.fieldNames(markup.OnError).len);
     try equal(markup.OnError.collect, markup.Profile(.{}).baseline.on_error);
     try equal(markup.OnError.collect, markup.presets.standard.on_error.?);
     try equal(markup.OnError.collect, markup.presets.untrusted.on_error.?);
@@ -349,7 +349,7 @@ test "recovery has compile-time runtime scanner and execution parity, including 
 }
 
 test "ancestor searches are collectively source-bounded and partition-independent" {
-    const source = "<aa>" ** 128 ++ "</ab>" ** 128;
+    const source = std.mem.asBytes(&@as([128]["<aa>".len]u8, @splat("<aa>".*))) ++ std.mem.asBytes(&@as([128]["</ab>".len]u8, @splat("</ab>".*)));
     var reference_work: ?u64 = null;
     inline for (.{ .scalar, .block }) |scanner| {
         const P = markup.Profile(.{ .policy = .{ .scanner = scanner, .execution = .{ .metering = true } } });
@@ -450,7 +450,7 @@ test "mutated fragments preserve recovery results across scanners and budget par
 }
 
 fn allocateRecovery(allocator: std.mem.Allocator) !void {
-    const source = "</bad>" ++ "<a>" ** 64 ++ "</a>" ** 64;
+    const source = "</bad>" ++ std.mem.asBytes(&@as([64]["<a>".len]u8, @splat("<a>".*))) ++ std.mem.asBytes(&@as([64]["</a>".len]u8, @splat("</a>".*)));
     var r = markup.parseBorrowed(allocator, source, discard, .{});
     defer r.deinit();
     try equal(@as(u32, 1), r.syntax_errors);
@@ -461,5 +461,5 @@ fn allocateRecovery(allocator: std.mem.Allocator) !void {
 }
 
 test "scratch growth failures after output abort clean up and preserve rejection" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocateRecovery, .{});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocateRecovery, .{});
 }

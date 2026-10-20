@@ -81,25 +81,25 @@ pub fn main(init: std.process.Init) !void {
                 for (0..9) |round| {
                     inline for (comptime std.meta.tags(Mode)) |slot| {
                         // Reverse order between rounds; no parallel timing.
-                        const i = if (round % 2 == 0) @intFromEnum(slot) else 7 - @intFromEnum(slot);
-                        switch (@as(Mode, @enumFromInt(i))) {
+                        const i = if (round % 2 == 0) @backingInt(slot) else 7 - @backingInt(slot);
+                        switch (@as(Mode, @fromBackingInt(@intCast(i)))) {
                             inline else => |mode| {
                                 const start = std.Io.Clock.Timestamp.now(init.io, .awake);
                                 var observation: Observation = undefined;
                                 for (0..4) |_| observation = try run(api, block, mode, source.items, memory);
                                 const stop = std.Io.Clock.Timestamp.now(init.io, .awake);
-                                observations[@intFromEnum(mode)] = observation;
-                                if (round >= 2) samples[@intFromEnum(mode)][round - 2] = @intCast(@divTrunc(start.durationTo(stop).raw.nanoseconds, 4));
+                                observations[@backingInt(mode)] = observation;
+                                if (round >= 2) samples[@backingInt(mode)][round - 2] = @intCast(@divTrunc(start.durationTo(stop).raw.nanoseconds, 4));
                             },
                         }
                     }
                 }
                 inline for (comptime std.meta.tags(Mode)) |mode| {
-                    const index = @intFromEnum(mode);
+                    const index = @backingInt(mode);
                     std.mem.sort(u64, &samples[index], {}, std.sort.asc(u64));
                     const ns = samples[index][3];
                     const observation = observations[index];
-                    if (mode != .plain and observation.credits != observations[@intFromEnum(Mode.budget1)].credits) return error.ChangedCredits;
+                    if (mode != .plain and observation.credits != observations[@backingInt(Mode.budget1)].credits) return error.ChangedCredits;
                     try w.print("{s},{s},{s},{s},{d},{d},{d:.2},{d},{d},{d}\n", .{
                         if (is_markup) "markup" else "dot",                                             fixture,             if (block) "block" else "scalar", @tagName(mode),                            source.items.len, ns,
                         @as(f64, @floatFromInt(source.items.len)) * 1000 / @as(f64, @floatFromInt(ns)), observation.credits, observation.polls,                @sizeOf(Parser(api, block, mode).Session),

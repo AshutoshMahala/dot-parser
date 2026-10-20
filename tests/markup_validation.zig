@@ -236,7 +236,7 @@ const Stop = struct {
 
 test "UTF-8 chunk cancellation preserves known invalidity" {
     const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_encoding = .warning } } });
-    const source = "\xff" ++ "東京" ** 1000;
+    const source = "\xff" ++ std.mem.asBytes(&@as([1000]["東京".len]u8, @splat("東京".*)));
     var parsed = Structural.parseBorrowed(std.testing.allocator, source, discard, .{});
     defer parsed.deinit();
     const document = parsed.document.?;
@@ -263,7 +263,7 @@ test "encoding chunk boundaries preserve whole scalars and immediate sink stops"
     const P = markup.Profile(.{ .policy = .{ .mode = .structural, .validation = .{ .duplicate_attribute = .off, .invalid_encoding = .err }, .execution = .{ .cancellation = true } } });
     inline for (.{ "x", "é", "東", "😀" }) |scalar| {
         inline for (.{ 61, 62, 63, 64, 65 }) |padding| {
-            const source = "x" ** padding ++ scalar ++ "\xff" ++ "x" ** 256;
+            const source = &@as([padding]u8, @splat('x')) ++ scalar ++ "\xff" ++ &@as([256]u8, @splat('x'));
             var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
             const parsed = P.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
             var stop: Stop = .{ .after = 2 };
@@ -282,7 +282,7 @@ test "encoding chunk boundaries preserve whole scalars and immediate sink stops"
             try std.testing.expect(never.polls <= 3);
         }
     }
-    const source = "x" ** 100_000;
+    const source = &@as([100_000]u8, @splat('x'));
     var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
     const parsed = P.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
     var never: Stop = .{ .after = std.math.maxInt(u32) };

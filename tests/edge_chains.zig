@@ -229,8 +229,8 @@ fn allocations(allocator: std.mem.Allocator, hinted: bool) !void {
 }
 
 test "all chain allocation and transfer failure points clean up" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocations, .{false});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocations, .{true});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocations, .{false});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocations, .{true});
 }
 
 test "all chain corpus prefixes agree across storage paths" {

@@ -119,7 +119,7 @@ test "delayed selection attaches independent child trees and marks pending work"
     try equal(before, result.dot.document.?.nodes.ptr);
     const children = result.markupResults().?;
     try expect(children[0].result.subtreeComplete() and !children[1].result.subtreeComplete());
-    try std.testing.expectEqualStrings("r", children[1].result.parse.document.?.node(@enumFromInt(0)).?.name().?);
+    try std.testing.expectEqualStrings("r", children[1].result.parse.document.?.node(@fromBackingInt(@intCast(0))).?.name().?);
     for (bag.items()) |item| {
         try expect(item == .markup);
         try expect(item.span().start >= children[1].input.origin);
@@ -312,7 +312,7 @@ fn allocationProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "delayed queues and child ownership survive every allocation failure" {
-    try std.testing.checkAllAllocationFailures(gpa, allocationProbe, .{});
+    try @import("allocation_failures.zig").check(gpa, allocationProbe, .{});
 }
 
 test "delayed custom owning processor preflights policy and preserves input failures" {

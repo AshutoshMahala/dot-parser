@@ -163,7 +163,7 @@ test "header synchronization respects diagnostic stops before scanning its tail"
         var bag: markup.FixedDiagnosticBag(1) = .{};
         var nodes: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
         const sink: markup.DiagnosticSink = if (reject) .{ .context = null, .emit_fn = Reject.emit } else bag.sink();
-        var session = P.Session.init("<a x=0" ++ "x" ** 512 ++ "/>", .{ .document = nodes.storage() }, sink, .{});
+        var session = P.Session.init("<a x=0" ++ &@as([512]u8, @splat('x')) ++ "/>", .{ .document = nodes.storage() }, sink, .{});
         defer session.deinit();
         var last: markup.Progress = undefined;
         while (session.result() == null) last = session.advance(1);
@@ -206,7 +206,7 @@ test "header recovery cancellation and partitions remain bounded on long tails" 
             return self.stop;
         }
     };
-    const source = "<a x=0 q='" ++ ">" ** 4096 ++ "'/><b/>";
+    const source = "<a x=0 q='" ++ &@as([4096]u8, @splat('>')) ++ "'/><b/>";
     var request: Request = .{};
     var nodes: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
     var bag: markup.FixedDiagnosticBag(4) = .{};
@@ -273,7 +273,7 @@ test "header recovery is invariant across every truncation and block alignment" 
 }
 
 fn allocationRecovery(allocator: std.mem.Allocator) !void {
-    const source = "<a x=0>" ** 32 ++ "</a>" ** 32;
+    const source = std.mem.asBytes(&@as([32]["<a x=0>".len]u8, @splat("<a x=0>".*))) ++ std.mem.asBytes(&@as([32]["</a>".len]u8, @splat("</a>".*)));
     var r = markup.parseBorrowed(allocator, source, discard, .{});
     defer r.deinit();
     if (r.outcome == .out_of_memory) return error.OutOfMemory;
@@ -284,5 +284,5 @@ fn allocationRecovery(allocator: std.mem.Allocator) !void {
 }
 
 test "allocation failures during recovered header nesting release all scratch" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationRecovery, .{});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocationRecovery, .{});
 }

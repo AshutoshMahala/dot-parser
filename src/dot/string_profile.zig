@@ -141,7 +141,18 @@ pub fn Profile(comptime api: type, comptime config: anytype, comptime base_confi
         fn checkValue(comptime actual: support.encoding.Actual, comptime index: usize, source: []const u8, span: api.Span, transport: *T, report: *routing.Report, settings: policy.Effective, options: Options) !void {
             // A value with HTML operands belongs to the markup path. Mixed
             // expressions cannot be flattened or certified as a logical string.
-            var parts = try @import("identifier.zig").ForEncoding(actual).parts(source, span);
+            // Retained attribute expressions have already passed DOT grammar.
+            // Use the same trusted operand iterator as other document walks,
+            // rather than tokenizing the complete spelling a second time.
+            // Public identifier.parts still validates arbitrary caller input.
+            const input = try support.processor.Fragment.fromSource(source, span);
+            const first = support.encoding.Reader(actual).byteAt(input.bytes, 0);
+            var parts: @import("identifier_parts.zig").ForEncoding(actual).Parts = .{
+                .input = input,
+                // Only wrapped operands can concatenate. Bare/numeral values
+                // must not be mistaken for concatenation glue and rescanned.
+                .compound = first == '"' or first == '<',
+            };
             var html = false;
             var text = false;
             while (parts.next()) |part| {

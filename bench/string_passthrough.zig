@@ -78,16 +78,16 @@ pub fn main(init: std.process.Init) !void {
     var output = std.Io.File.Writer.init(.stdout(), init.io, &output_buffer);
     const writer = &output.interface;
     try writer.writeAll("DOT quote scan + optional string checks; UTF-8; discard sink; processor heap=0\nMB/s uses content bytes (excludes two quotes); no host tree or unescaping\n");
-    inline for (.{ dot.ScannerBackend.scalar, .block }) |backend| {
+    inline for (comptime .{ dot.ScannerBackend.scalar, .block }) |backend| {
         // Exercise the distinction: quote passthrough accepts this non-NUL byte,
         // whereas the standalone processor must report malformed UTF-8.
         const malformed = try scan(backend, "\"\xff\"");
         if ((try strings.parseAndValidate(malformed, strings.Sink.discard, .{})).valid()) return error.MissedEncodingError;
-        inline for (.{
+        inline for (comptime .{
             .{ "short-ascii", "Seattle" },
             .{ "short-unicode", "Straße 中文 😀" },
-            .{ "long-ascii", "The quick brown fox. " ** 200 },
-            .{ "long-unicode", "Straße 中文 😀" ** 64 },
+            .{ "long-ascii", std.mem.asBytes(&@as([200]["The quick brown fox. ".len]u8, @splat("The quick brown fox. ".*))) },
+            .{ "long-unicode", std.mem.asBytes(&@as([64]["Straße 中文 😀".len]u8, @splat("Straße 中文 😀".*))) },
         }) |fixture| {
             const text = fixture[1];
             const source = try init.gpa.dupe(u8, "\"" ++ text ++ "\"");

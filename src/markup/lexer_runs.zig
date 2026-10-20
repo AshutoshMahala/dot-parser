@@ -12,7 +12,7 @@ pub const Run = struct {
 };
 const width = @min(std.simd.suggestVectorLength(u8) orelse 16, 64);
 const Bytes = @Vector(width, u8);
-const Bits = std.meta.Int(.unsigned, width);
+const Bits = @Int(.unsigned, width);
 
 fn splat(value: u8) Bytes {
     return @splat(value);

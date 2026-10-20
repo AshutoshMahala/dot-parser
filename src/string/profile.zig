@@ -15,11 +15,11 @@ pub fn Profile(comptime config: anytype) type {
     const capabilities = support.encoding.Capabilities.from(if (@hasField(C, "source_encodings")) config.source_encodings else null);
     const Schema = policy.Schema(Custom, unicode);
     comptime {
-        for (std.meta.fields(C)) |field| {
-            if (!std.mem.eql(u8, field.name, "custom") and !std.mem.eql(u8, field.name, "policy") and
-                !std.mem.eql(u8, field.name, "unicode_case_folding") and !std.mem.eql(u8, field.name, "runtime_policy") and
-                !std.mem.eql(u8, field.name, "source_encodings"))
-                @compileError("unknown string profile configuration field: " ++ field.name);
+        for (@typeInfo(C).@"struct".field_names) |name| {
+            if (!std.mem.eql(u8, name, "custom") and !std.mem.eql(u8, name, "policy") and
+                !std.mem.eql(u8, name, "unicode_case_folding") and !std.mem.eql(u8, name, "runtime_policy") and
+                !std.mem.eql(u8, name, "source_encodings"))
+                @compileError("unknown string profile configuration field: " ++ name);
         }
         if (!@hasDecl(Custom, "uses_comparison")) @compileError("validator must declare uses_comparison");
         if (@hasDecl(Custom, "State") != @hasDecl(Custom, "step")) @compileError("resumable validator must declare both State and step");
@@ -234,7 +234,7 @@ pub fn Profile(comptime config: anytype) type {
                                 ctx.invalidValidator();
                                 return .stopped;
                             }
-                            return switch (cursor.reader.?.step()) {
+                            return switch (@call(if (mapped and ContentReader == support.logical.Reader(actual)) .always_inline else .auto, ContentReader.step, .{&cursor.reader.?})) {
                                 .pending => .pending,
                                 .scalar => |item| .{ .scalar = item },
                                 .end => .end,
@@ -375,16 +375,19 @@ pub fn Profile(comptime config: anytype) type {
                 /// service out of step's context: one step still costs one credit.
                 fn BatchContext(comptime Validator: type) type {
                     return struct {
-                        pub const ComparisonState = @import("compare.zig").State(folding_used, ascii_folding_used);
+                        pub const ComparisonState = Context(Validator, true).ComparisonState;
                         input: support.processor.Fragment,
+                        reader: if (mapped) *const Reader else void = if (mapped) undefined else {},
                         comparison: if (Validator.uses_comparison) policy.Comparison else void,
 
-                        pub fn equalsBatch(ctx: *@This(), state: *ComparisonState, value: Value(actual), expected: []const u8, allowance: u32) u32 {
+                        pub fn equalsBatch(ctx: *@This(), state: *ComparisonState, value: InputValue, expected: []const u8, allowance: u32) u32 {
                             if (!Validator.uses_comparison) @compileError("validator must opt into uses_comparison");
-                            if (value.bytes.ptr != ctx.input.bytes.ptr or value.bytes.len != ctx.input.bytes.len or value.origin != ctx.input.origin) return 0;
+                            if (mapped) {
+                                if (value.reader != ctx.reader) return 0;
+                            } else if (value.bytes.ptr != ctx.input.bytes.ptr or value.bytes.len != ctx.input.bytes.len or value.origin != ctx.input.origin) return 0;
                             // Keep fixed operands visible through the Small
                             // batch boundary; folding itself stays shared.
-                            return @call(if (@import("builtin").mode == .ReleaseSmall) .always_inline else .auto, @TypeOf(state.*).batch, .{ state, value, expected, ctx.comparison, allowance });
+                            return @call(if (@import("builtin").mode == .small) .always_inline else .auto, @TypeOf(state.*).batch, .{ state, value, expected, ctx.comparison, allowance });
                         }
                     };
                 }
@@ -421,6 +424,7 @@ pub fn Profile(comptime config: anytype) type {
 
         fn Core(comptime actual: support.encoding.Actual, comptime Reader: type) type {
             const mapped = Reader != void;
+            const mapped_batch = mapped and (actual == .utf8 or actual == .ascii) and @hasDecl(Reader, "asciiRun") and @hasDecl(Reader, "skipAscii");
             const E = Engine(actual, cancellable, Reader);
             const equals_active = runtime or Policies.baseline.equals.severity != .off;
             const one_of_active = runtime or Policies.baseline.one_of.severity != .off;
@@ -453,7 +457,10 @@ pub fn Profile(comptime config: anytype) type {
 
                 inline fn drive(self: *Self, comptime bounded: bool, budget: u32) results.Progress {
                     if (bounded and budget == 1) return self.driveOne();
-                    if (mapped) return self.driveScalar(bounded, budget);
+                    if (mapped and !mapped_batch) return self.driveScalar(bounded, budget);
+                    // Short logical values cannot amortize batch probes and
+                    // host-boundary tails. Keep their existing scalar driver.
+                    if (mapped and self.engine.input.bytes.len < 64) return self.driveScalar(bounded, budget);
                     if (bounded and budget < batches.width) return self.driveScalar(bounded, budget);
                     const p = self.engine.effective();
                     // Choose once, not once per scalar. In particular budget 1
@@ -472,7 +479,7 @@ pub fn Profile(comptime config: anytype) type {
                     // Exactly one original step, without a loop, countdown or
                     // batch probe. Keep tiny resumes independent of the larger
                     // batching driver and its inlining cost.
-                    self.step();
+                    self.step(false);
                     if (self.engine.result.completion != .complete) self.finished = true;
                     return self.progress(1);
                 }
@@ -492,7 +499,7 @@ pub fn Profile(comptime config: anytype) type {
                             }
                         }
                         if (bounded and used == budget) return self.progress(used);
-                        self.step();
+                        self.step(false);
                         if (bounded) used += 1;
                         if (cancellable and p.execution.cancellation) polling.spend(1);
                         if (self.engine.result.completion != .complete) self.finished = true;
@@ -539,7 +546,7 @@ pub fn Profile(comptime config: anytype) type {
                 fn scalarRun(self: *Self, allowance: u32) u32 {
                     var work: u32 = 0;
                     while (work < allowance) {
-                        self.step();
+                        self.step(mapped);
                         work += 1;
                         if (self.engine.result.completion != .complete) self.finished = true;
                         if (self.finished) break;
@@ -552,6 +559,13 @@ pub fn Profile(comptime config: anytype) type {
                     const p = self.engine.effective();
                     switch (self.stage) {
                         .encoding => {
+                            if (mapped) {
+                                if (comptime !mapped_batch) return 0;
+                                if (!self.input_cursor.skipAscii(batches.width)) return 0;
+                                self.at = @max(self.at, self.input_cursor.position());
+                                self.engine.result.checks.encoding = .incomplete;
+                                return batches.width;
+                            }
                             if (comptime actual != .utf8 and actual != .ascii) return 0;
                             if (self.bad_start != null or !batches.ascii(self.engine.input.bytes, self.at)) return 0;
                             self.at += batches.width;
@@ -571,8 +585,8 @@ pub fn Profile(comptime config: anytype) type {
                     if (severity == .off) return 0;
                     // Batch only pending steps. No reports, polls or terminal
                     // outcomes may be skipped; step remains the source of truth.
-                    var context: E.BatchContext(Validator) = .{ .input = self.engine.input, .comparison = if (Validator.uses_comparison) comparison else {} };
-                    const work = Validator.batch(state, Value(actual){ .bytes = self.engine.input.bytes, .origin = self.engine.input.origin }, settings, &context, allowance);
+                    var context: E.BatchContext(Validator) = .{ .input = self.engine.input, .reader = if (mapped) &self.engine.reader else {}, .comparison = if (Validator.uses_comparison) comparison else {} };
+                    const work = Validator.batch(state, self.engine.inputValue(), settings, &context, allowance);
                     if (work > allowance) {
                         self.engine.result.completion = .invalid_validator;
                         return 0;
@@ -600,13 +614,17 @@ pub fn Profile(comptime config: anytype) type {
                     if (stage == .done) self.finished = true;
                 }
 
-                fn step(self: *Self) void {
+                fn step(self: *Self, comptime batch_fallback: bool) void {
+                    // Separate the logical fallback's instantiation so its
+                    // extra caller does not change tiny/scalar-driver inlining.
+                    // This is not runtime state; standalone uses only false.
+                    _ = batch_fallback;
                     const p = self.engine.effective();
                     switch (self.stage) {
                         .encoding => {
                             self.engine.result.checks.encoding = .incomplete;
                             if (mapped) {
-                                switch (self.input_cursor.step()) {
+                                switch (@call(if (Reader == support.logical.Reader(actual)) .always_inline else .auto, Reader.step, .{&self.input_cursor})) {
                                     .pending, .scalar => {},
                                     .failure => |failure| self.engine.unavailable(failure),
                                     .end => {
@@ -797,14 +815,14 @@ fn coerce(comptime T: type, comptime input: anytype) T {
         .optional => |o| if (@TypeOf(input) == @TypeOf(null)) null else coerce(o.child, input),
         .@"struct" => |s| blk: {
             var value: T = undefined;
-            for (std.meta.fields(@TypeOf(input))) |field| {
-                if (!@hasField(T, field.name)) @compileError("unknown string policy field: " ++ field.name);
+            for (@typeInfo(@TypeOf(input)).@"struct".field_names) |name| {
+                if (!@hasField(T, name)) @compileError("unknown string policy field: " ++ name);
             }
-            for (s.fields) |field| {
-                @field(value, field.name) = if (@hasField(@TypeOf(input), field.name))
-                    coerce(field.type, @field(input, field.name))
+            for (s.field_names, s.field_types, s.field_attrs) |name, Field, attrs| {
+                @field(value, name) = if (@hasField(@TypeOf(input), name))
+                    coerce(Field, @field(input, name))
                 else
-                    field.defaultValue() orelse @compileError("missing string policy field: " ++ field.name);
+                    attrs.defaultValue(Field) orelse @compileError("missing string policy field: " ++ name);
             }
             break :blk value;
         },

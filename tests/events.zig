@@ -3,6 +3,9 @@ const dot = @import("dot_parser");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const discard = dot.diagnostic.discard;
+test {
+    _ = @import("early_events.zig");
+}
 const Record = union(enum) { event: dot.events.Event, abort: dot.events.Abort };
 const Recorder = struct {
     records: [256]Record = undefined,
@@ -35,13 +38,13 @@ test "cancellation at every credit never aborts an undelivered statement begin" 
             defer session.deinit();
             for (0..credits) |_| _ = session.advance(1);
             _ = session.cancel();
-            var begun = [_]bool{false} ** input.len;
+            var begun: [input.len]bool = @splat(false);
             for (log.items()) |record| switch (record) {
                 .event => |event| if (event == .begin_statement) {
-                    begun[@intFromEnum(event.begin_statement.owner.statement)] = true;
+                    begun[@backingInt(event.begin_statement.owner.statement)] = true;
                 },
                 .abort => |abort| if (abort == .statement) {
-                    try expect(begun[@intFromEnum(abort.statement.owner.statement)]);
+                    try expect(begun[@backingInt(abort.statement.owner.statement)]);
                 },
             };
         }
@@ -264,16 +267,16 @@ test "scope and reference identities belong to the shared syntax stream" {
     for (log.items()) |record| if (record == .event) switch (record.event) {
         .begin_scope => |scope| {
             scope_count += 1;
-            try equal(scope_count, @intFromEnum(scope.id));
-            try equal(if (scope_count == 1) @as(u32, 0) else 1, @intFromEnum(scope.parent));
+            try equal(scope_count, @backingInt(scope.id));
+            try equal(if (scope_count == 1) @as(u32, 0) else 1, @backingInt(scope.parent));
             if (scope.role == .right) {
-                try equal(@intFromEnum(scope.id), scope.edge.?.right_scope.?);
+                try equal(@backingInt(scope.id), scope.edge.?.right_scope.?);
                 try equal(scope.start, scope.edge.?.right);
                 try equal(@as(?u32, 0), scope.edge.?.left_port);
             }
         },
         .ported_reference => |reference| {
-            try equal(reference_count, @intFromEnum(reference.id));
+            try equal(reference_count, @backingInt(reference.id));
             reference_count += 1;
         },
         .commit_edge_chain => |commit| {

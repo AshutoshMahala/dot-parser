@@ -18,21 +18,21 @@ pub const Variant = enum(u4) {
     block_metered_batched = 15,
 
     pub fn metered(self: Variant) bool {
-        return @intFromEnum(self) & 2 != 0;
+        return @backingInt(self) & 2 != 0;
     }
     pub fn cancellable(self: Variant) bool {
-        return @intFromEnum(self) & 1 != 0;
+        return @backingInt(self) & 1 != 0;
     }
     pub fn backend(self: Variant) policy.ScannerBackend {
-        return if (@intFromEnum(self) & 4 != 0) .block else .scalar;
+        return if (@backingInt(self) & 4 != 0) .block else .scalar;
     }
     pub fn singlePoll(self: Variant) bool {
-        return @intFromEnum(self) & 8 == 0;
+        return @backingInt(self) & 8 == 0;
     }
     pub fn from(effective: policy.Effective) Variant {
-        return @enumFromInt(@as(u4, if (effective.scanner == .block) 4 else 0) |
+        return @fromBackingInt(@intCast(@as(u4, if (effective.scanner == .block) 4 else 0) |
             @as(u4, if (effective.execution.metering) 2 else 0) |
             @as(u4, if (effective.execution.cancellation) 1 else 0) |
-            @as(u4, if (effective.execution.cancellation and effective.execution.cancellation_interval != 1) 8 else 0));
+            @as(u4, if (effective.execution.cancellation and effective.execution.cancellation_interval != 1) 8 else 0)));
     }
 };

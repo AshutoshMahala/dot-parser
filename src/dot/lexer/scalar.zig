@@ -753,8 +753,8 @@ test "unbounded next on a metered scanner resumes saved continuation" {
 }
 
 test "one-credit calls expose every lexical continuation and trivia mode" {
-    var states = std.EnumSet(AuditedLexer.State).initEmpty();
-    var trivia_modes = std.EnumSet(AuditedLexer.Trivia).initEmpty();
+    var states = std.EnumSet(AuditedLexer.State).empty;
+    var trivia_modes = std.EnumSet(AuditedLexer.Trivia).empty;
     for ([_][]const u8{
         "<x>+<<y>>;",
         " \r\n#x\r//y\n/*z**/a;",
@@ -773,10 +773,10 @@ test "one-credit calls expose every lexical continuation and trivia mode" {
             }
         }
     }
-    var persistent_states = std.EnumSet(AuditedLexer.State).initFull();
+    var persistent_states = std.EnumSet(AuditedLexer.State).full;
     persistent_states.remove(.ready);
     try expectEqual(persistent_states, states);
-    try expectEqual(std.EnumSet(AuditedLexer.Trivia).initFull(), trivia_modes);
+    try expectEqual(std.EnumSet(AuditedLexer.Trivia).full, trivia_modes);
 }
 
 test "random byte streams preserve bounded partition equivalence" {
@@ -901,8 +901,8 @@ test "zero credits leave every nonterminal continuation unchanged" {
             const zero = lexer.nextBounded(0);
             try expectEqual(@as(?Result, null), zero.result);
             try expectEqual(@as(usize, 0), zero.work_used);
-            inline for (std.meta.fields(@TypeOf(lexer))) |field| {
-                if (comptime std.mem.eql(u8, field.name, "content")) {
+            inline for (comptime std.meta.fieldNames(@TypeOf(lexer))) |field| {
+                if (comptime std.mem.eql(u8, field, "content")) {
                     // Only these states resume using the union's saved value.
                     // Other states leave it dormant until a new part overwrites it.
                     switch (before.state) {
@@ -910,7 +910,7 @@ test "zero credits leave every nonterminal continuation unchanged" {
                         .html => try expectEqual(before.content.html_depth, lexer.content.html_depth),
                         else => {},
                     }
-                } else try expectEqual(@field(before, field.name), @field(lexer, field.name));
+                } else try expectEqual(@field(before, field), @field(lexer, field));
             }
             const one = lexer.nextBounded(1);
             try expectEqual(@as(usize, 1), one.work_used);
@@ -974,9 +974,9 @@ test "quoted runs charge every examination and stop at the first boundary" {
     for ([_][]const u8{
         "\"",
         "\"plain",
-        "\"" ++ "a" ** 64 ++ "\" + \"tail\";",
-        "\"" ++ "a" ** 17 ++ "\\\"tail\";",
-        "\"" ++ "a" ** 16 ++ "\x00tail",
+        "\"" ++ &@as([64]u8, @splat('a')) ++ "\" + \"tail\";",
+        "\"" ++ &@as([17]u8, @splat('a')) ++ "\\\"tail\";",
+        "\"" ++ &@as([16]u8, @splat('a')) ++ "\x00tail",
         "\"Straße 中文 😀\";",
     }) |source| for ([_]usize{ 1, 2, 15, 16, 17, 64, std.math.maxInt(usize) }) |budget| {
         var reference = AuditedLexer.init(source);

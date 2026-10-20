@@ -46,8 +46,8 @@ test "composed partial child leaves outer syntax complete and retains independen
     try equal(children[0].envelope.start + 1, children[0].input.origin);
     try equal(markup.Completeness.partial, children[0].result.parse.document.?.state);
     try equal(markup.Completeness.complete, children[1].result.parse.document.?.state);
-    try strings("root", children[0].result.parse.document.?.node(@enumFromInt(0)).?.name().?);
-    try strings("ok", children[1].result.parse.document.?.node(@enumFromInt(0)).?.name().?);
+    try strings("root", children[0].result.parse.document.?.node(@fromBackingInt(@intCast(0))).?.name().?);
+    try strings("ok", children[1].result.parse.document.?.node(@fromBackingInt(@intCast(0))).?.name().?);
 }
 
 test "composed representation completeness is not validation success" {
@@ -135,5 +135,5 @@ fn allocationProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "composed child and outer buffers survive all allocation failure sites" {
-    try std.testing.checkAllAllocationFailures(gpa, allocationProbe, .{});
+    try @import("allocation_failures.zig").check(gpa, allocationProbe, .{});
 }

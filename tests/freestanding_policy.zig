@@ -31,6 +31,30 @@ export fn event_node_count(source: [*]const u8, len: usize) u32 {
     return counter.nodes;
 }
 
+const Outline = struct {
+    pub const wants_early_events = true;
+    names: u32 = 0,
+    pub fn onEvent(self: *@This(), event: dot.events.Event) error{}!dot.events.Action {
+        switch (event) {
+            .identifier, .document_name, .subgraph_name => self.names += 1,
+            else => {},
+        }
+        return .proceed;
+    }
+    // Editor deliberately keeps observations as provisional after rejection.
+    pub fn onAbort(_: *@This(), _: dot.events.Abort) void {}
+};
+
+export fn early_outline_names(source: [*]const u8, len: usize) u32 {
+    const P = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } }).Events(Outline);
+    var frames: P.FixedParseScratch(.{ .nesting = 8 }) = .{};
+    var outline: Outline = .{};
+    var session = P.Session.init(source[0..len], frames.storage(), &outline, dot.diagnostic.discard, .{});
+    defer session.deinit();
+    while (session.result() == null) _ = session.advance(1);
+    return outline.names;
+}
+
 export fn partial_scope_count(source: [*]const u8, len: usize, choice: u8) u32 {
     const P = dot.Profile(.{ .runtime_policy = features.runtime_policy, .policy = .{ .retention = .{ .partial = true } } });
     var pools: dot.FixedDocumentStorage(.{ .statements = 8, .nodes = 8, .subgraphs = 8 }) = .{};
@@ -74,12 +98,12 @@ const Profile = dot.Profile(.{
 export fn prepare_profiles(choice: u8) usize {
     const Set = dot.processor.PolicySet(.{ .dot = Profile });
     const prepared = Set.prepare(if (features.runtime_policy) .{ .dot = .{ .policy = .{ .scanner = if (choice == 0) .scalar else .block } } } else .{}) catch return 9;
-    if (features.runtime_policy) return @intFromEnum(prepared.dot.scanner);
+    if (features.runtime_policy) return @backingInt(prepared.dot.scanner);
     return @sizeOf(Set.State);
 }
 
 export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
-    const input: dot.Policy = .{ .markup = if (choice & 1 == 0) .none else .passthrough, .diagnostics = .{ .fixes = if (choice & 2 == 0) .off else .machine_applicable, .unsupported = @enumFromInt(choice % 3) }, .scanner = if (choice & 1 == 0) .scalar else .block, .execution = .{ .metering = choice & 2 != 0, .cancellation = choice & 4 != 0 }, .limits = .{ .max_statements = @as(usize, choice) + 1, .max_attributes = choice }, .on_error = if (choice & 8 == 0) .fail_fast else .collect, .validation = .{
+    const input: dot.Policy = .{ .markup = if (choice & 1 == 0) .none else .passthrough, .diagnostics = .{ .fixes = if (choice & 2 == 0) .off else .machine_applicable, .unsupported = @fromBackingInt(@intCast(choice % 3)) }, .scanner = if (choice & 1 == 0) .scalar else .block, .execution = .{ .metering = choice & 2 != 0, .cancellation = choice & 4 != 0 }, .limits = .{ .max_statements = @as(usize, choice) + 1, .max_attributes = choice }, .on_error = if (choice & 8 == 0) .fail_fast else .collect, .validation = .{
         .ambiguous_numeral = if (choice & 16 == 0) .warning else .err,
         .invalid_encoding = if (choice & 32 == 0) .off else .warning,
         .repeated_attribute = if (choice & 64 == 0) .off else .err,
@@ -129,9 +153,9 @@ export fn check_graph(source: [*]const u8, len: usize, choice: u8) usize {
         Profile.interpretation(doc, options) catch return 103
     else
         Profile.interpretation(doc, options);
-    var total: usize = @intFromEnum(doc.effectiveKind(view).?);
+    var total: usize = @backingInt(doc.effectiveKind(view).?);
     var edges = doc.edgeIterator();
-    while (edges.next()) |edge| total +%= @intFromEnum(edge.effectiveOperator(doc, view));
+    while (edges.next()) |edge| total +%= @backingInt(edge.effectiveOperator(doc, view));
     if (checked.outcome != .completed) return 105;
     return @truncate(@as(u64, total) +% checked.outcome.completed.violations +% checked.outcome.completed.warnings +% bag.items().len);
 }
@@ -169,7 +193,7 @@ export fn session_policy(source: [*]const u8, len: usize, choice: u8, limit: u32
     // Clear overrides: this must start from the compiled defaults again.
     session.reset("graph {}", dot.diagnostic.discard, .{}) catch return 102;
     if (session.run().outcome != .success) return 103;
-    return count + result.accepted_deviations + result.warnings + @intFromEnum(session.result().?.document.?.effectiveKind(session.interpretation().?).?);
+    return count + result.accepted_deviations + result.warnings + @backingInt(session.result().?.document.?.effectiveKind(session.interpretation().?).?);
 }
 
 // Compile and consume a fixed lenient profile on both freestanding targets too.

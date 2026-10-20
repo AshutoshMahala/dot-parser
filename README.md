@@ -138,10 +138,10 @@ This program is [examples/quick_start.zig](examples/quick_start.zig).
 
 ## Install
 
-You need Zig **0.16.0**. Add the package to your project:
+The development version requires Zig **0.17.0**. Add it to your project:
 
 ```sh
-zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#v0.5.0
+zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#main
 ```
 
 Then import the modules you need in your `build.zig`:
@@ -155,10 +155,10 @@ exe.root_module.addImport("markup_parser", dot_parser.module("markup_parser"));
 exe.root_module.addImport("string_processor", dot_parser.module("string_processor"));
 ```
 
-This installs the latest release, 0.5.0. These docs follow the `main` branch:
-anything marked **Unreleased** isn't in 0.5.0 yet. To use those features,
-replace `#v0.5.0` with `#main`. The [changelog](CHANGELOG.md) lists what changed
-and what breaks.
+This selects the development branch, which these docs follow. For the latest
+tagged release, use `#v0.5.0` with Zig **0.16.0** instead; anything marked
+**Unreleased**, including the 0.17 migration, isn't in that release.
+The [changelog](CHANGELOG.md) lists what changed and what breaks.
 
 ## What it understands
 
@@ -269,13 +269,13 @@ and runs them all, and installs each one in `zig-out/bin/`.
 ## Building and testing
 
 ```sh
-zig build check                # full checks; Zig 0.16.0 and Node on PATH
+zig build check                # full checks; Zig 0.17.0 and Node on PATH
 zig build test                 # Zig tests only; no Node required
 zig build examples             # build and run every example
 zig build check-freestanding   # compile for RISC-V32 and Wasm32
 zig build check-tools          # compile/test Unicode generators and performance reporter
 zig build check-wasm           # execute Wasm probes with Node
-zig build bench -Doptimize=ReleaseFast   # main benchmark
+zig build bench -Doptimize=fast   # main benchmark
 ```
 
 `check` runs unit/public-API tests (including expected compile failures),

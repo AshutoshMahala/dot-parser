@@ -67,7 +67,7 @@ test "endpoint scopes retain syntax without expansion and preserve nested owners
     const scopes = [_]u32{ 0, 1, 2, 3, 3, 0, 4, 0 };
     // Statement traversal is owner-first, while operators use lexical order.
     var statements = doc.statements();
-    for (scopes) |scope| try equal(scope, @intFromEnum(statements.nextScoped().?.scope));
+    for (scopes) |scope| try equal(scope, @backingInt(statements.nextScoped().?.scope));
     try expect(statements.next() == null);
     try equal(@as(usize, 36), @sizeOf(dot.EdgeStatement));
     try equal(@as(usize, 20), @sizeOf(dot.EdgeLink));
@@ -127,8 +127,8 @@ fn allocations(allocator: std.mem.Allocator, hinted: bool) !void {
     try expect(result.outcome == .success);
 }
 test "generalized pool allocation and handoff failures release all storage" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocations, .{false});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocations, .{true});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocations, .{false});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocations, .{true});
 }
 
 test "new fixed pools report exact exhaustion and never publish partial output" {

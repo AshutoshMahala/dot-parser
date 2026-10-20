@@ -630,7 +630,7 @@ const edge_operators = diagnostic.ExpectedSet.init(.{
 fn writeExpectedSet(set: diagnostic.ExpectedSet, writer: anytype) !void {
     const group_statement = set.supersetOf(statement_starters);
     const group_operator = set.supersetOf(edge_operators);
-    var names: [@typeInfo(diagnostic.SyntaxItem).@"enum".fields.len]?[]const u8 = undefined;
+    var names: [@typeInfo(diagnostic.SyntaxItem).@"enum".field_names.len]?[]const u8 = undefined;
     var total: usize = 0;
     var statement_named = false;
     var operator_named = false;
@@ -1003,7 +1003,7 @@ test "excerpt tabs and underline padding use the same eight-cell stops" {
 }
 
 test "long lines are clamped to a window around the span" {
-    const source = "graph { " ++ ("x" ** 80) ++ " -- b; }";
+    const source = "graph { " ++ (&@as([80]u8, @splat('x'))) ++ " -- b; }";
     var buffer: [2048]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
 
@@ -1021,7 +1021,7 @@ test "long lines are clamped to a window around the span" {
     try expect(std.mem.indexOf(u8, text, "…") != null);
     try expect(std.mem.indexOf(u8, text, "^^ expected ';'") != null);
     // The 80-byte identifier must not be shown whole.
-    try expect(std.mem.indexOf(u8, text, "x" ** 61) == null);
+    try expect(std.mem.indexOf(u8, text, &@as([61]u8, @splat('x'))) == null);
 }
 
 test "CR-only line endings excerpt the same line the tracker counted" {

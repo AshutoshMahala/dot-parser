@@ -54,7 +54,7 @@ test "bounded runs preserve every public pause across quote text and reference b
                 var bytes: [512]u8 = undefined;
                 const open = if (api == markup) "<a>" else "graph{a[x=\"";
                 const close = if (api == markup) "</a><b/>" else "\"];b;}";
-                const tail = "z" ** 80;
+                const tail = &@as([80]u8, @splat('z'));
                 @memcpy(bytes[0..open.len], open);
                 @memset(bytes[open.len..][0..offset], 'a');
                 @memcpy(bytes[open.len + offset ..][0..insert.len], insert);
@@ -92,7 +92,7 @@ test "bounded text runs stop at the original cancellation boundary" {
         const P = api.Profile(.{ .policy = policy, .runtime_policy = runtime });
         const Storage = if (api == markup) api.FixedDocumentStorage(.{ .nodes = 32, .attributes = 32 }) else api.FixedDocumentStorage(.{ .statements = 32, .nodes = 32, .attributes = 32 });
         const Scratch = if (api == markup) api.FixedParseScratch(8) else api.FixedParseScratch(.{ .nesting = 8 });
-        const source = if (api == markup) "<a>" ++ "x" ** 100 ++ "&amp;" ++ "z" ** 256 ++ "</a>" else "graph{a[x=\"" ++ "x" ** 100 ++ "\\\"" ++ "z" ** 256 ++ "\"];}";
+        const source = if (api == markup) "<a>" ++ &@as([100]u8, @splat('x')) ++ "&amp;" ++ &@as([256]u8, @splat('z')) ++ "</a>" else "graph{a[x=\"" ++ &@as([100]u8, @splat('x')) ++ "\\\"" ++ &@as([256]u8, @splat('z')) ++ "\"];}";
         for (1..5) |stop| {
             var a_storage: Storage = .{};
             var b_storage: Storage = .{};

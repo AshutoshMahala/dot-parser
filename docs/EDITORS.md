@@ -9,6 +9,7 @@ outline, highlighting and errors for the part that is done.
 
 This page collects the opt-in features for that:
 
+- [observing complete names before statements finish](EVENTS.md#outline-while-typing) (Unreleased)
 - keeping the finished part of a DOT file, or of markup
 - keeping the trees of HTML-like labels, and checking chosen labels later
 - keeping comments
@@ -56,6 +57,13 @@ an editor-owned line index; don't recompute every token's location on each
 keystroke. Ordinary parsing, byte spans and byte columns incur no added work.
 
 ## Keep the finished part of a DOT file
+
+For an outline **before a statement finishes**, use the Unreleased
+[early event observations](EVENTS.md#outline-while-typing) with
+`Consumer.wants_early_events = true`. Complete names can be exposed even when
+their statement never commits, without retaining the library's tree. This is
+separate from the partial-document option below; unfinished-token previews are
+not yet supported.
 
 Turn on `retention.partial`:
 

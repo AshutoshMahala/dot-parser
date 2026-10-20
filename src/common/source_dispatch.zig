@@ -3,18 +3,19 @@ const std = @import("std");
 const encoding = @import("encoding.zig");
 
 pub fn Options(comptime Base: type) type {
-    const fields = std.meta.fields(Base);
-    var names: [fields.len + 1][:0]const u8 = undefined;
-    var types: [fields.len + 1]type = undefined;
-    var attrs: [fields.len + 1]std.builtin.Type.StructField.Attributes = undefined;
-    for (fields, 0..) |field, i| {
-        names[i] = field.name;
-        types[i] = field.type;
-        attrs[i] = .{ .default_value_ptr = field.default_value_ptr };
+    const fields = @typeInfo(Base).@"struct";
+    const count = fields.field_names.len;
+    var names: [count + 1][:0]const u8 = undefined;
+    var types: [count + 1]type = undefined;
+    var attrs: [count + 1]std.lang.Type.Struct.FieldAttributes = undefined;
+    for (fields.field_names, fields.field_types, fields.field_attrs, 0..) |name, T, attr, i| {
+        names[i] = name;
+        types[i] = T;
+        attrs[i] = .{ .default_value_ptr = attr.default_value_ptr };
     }
-    names[fields.len] = "encoding";
-    types[fields.len] = ?encoding.Actual;
-    attrs[fields.len] = .{ .default_value_ptr = &@as(?encoding.Actual, null) };
+    names[count] = "encoding";
+    types[count] = ?encoding.Actual;
+    attrs[count] = .{ .default_value_ptr = &@as(?encoding.Actual, null) };
     return @Struct(.auto, null, &names, &types, &attrs);
 }
 
@@ -22,10 +23,11 @@ pub fn Options(comptime Base: type) type {
 pub fn options(comptime T: type, value: anytype) T {
     if (T == @TypeOf(value)) return value;
     var result: T = .{};
-    inline for (std.meta.fields(T)) |field| {
-        if (@hasField(@TypeOf(value), field.name)) {
-            const v = @field(value, field.name);
-            @field(result, field.name) = if (field.type == @TypeOf(v)) v else options(field.type, v);
+    const fields = @typeInfo(T).@"struct";
+    inline for (fields.field_names, fields.field_types) |name, Field| {
+        if (@hasField(@TypeOf(value), name)) {
+            const v = @field(value, name);
+            @field(result, name) = if (Field == @TypeOf(v)) v else options(Field, v);
         }
     }
     return result;

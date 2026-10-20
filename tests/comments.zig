@@ -192,7 +192,7 @@ fn allocationCase(gpa: std.mem.Allocator, bytes: []const u8) !void {
 
 test "retained comments release on allocation failure and syntax abort before or after header" {
     for ([_][]const u8{ source, "/*prefix*/wat", "graph{/*before*/a->;/*after*/b}", "graph{}/*unterminated" }) |bytes| {
-        try std.testing.checkAllAllocationFailures(allocator, allocationCase, .{bytes});
+        try @import("allocation_failures.zig").check(allocator, allocationCase, .{bytes});
     }
 }
 
@@ -249,7 +249,7 @@ test "cancelling inside a large comment stops promptly and reset clears retained
         const P = dot.Profile(.{ .policy = .{ .retention = .{ .comments = true }, .scanner = backend, .execution = .{ .cancellation = true, .metering = true } } });
         var stop: Stop = .{};
         var pools: dot.FixedDocumentStorage(.{ .comments = 2 }) = .{};
-        var session = P.Session.init("//lead\n/*" ++ "x" ** 8192 ++ "*/graph{}", .{ .document = pools.storage() }, discard, .{ .cancellation = .{ .context = &stop, .is_requested = Stop.poll } });
+        var session = P.Session.init("//lead\n/*" ++ &@as([8192]u8, @splat('x')) ++ "*/graph{}", .{ .document = pools.storage() }, discard, .{ .cancellation = .{ .context = &stop, .is_requested = Stop.poll } });
         defer session.deinit();
         var frontier: usize = 0;
         while (session.result() == null) {

@@ -49,7 +49,7 @@ test "16 MiB invalid-byte floods retain at most 1024 diagnostics, including alte
 }
 
 test "default bag bounds duplicate floods without mutating the completed tree" {
-    const source = "<a " ++ "x='0' " ** 2049 ++ "/>";
+    const source = "<a " ++ std.mem.asBytes(&@as([2049]["x='0' ".len]u8, @splat("x='0' ".*))) ++ "/>";
     var output: markup.FixedDocumentStorage(.{ .nodes = 1, .attributes = 2049 }) = .{};
     var scratch: markup.FixedValidationScratch(2049) = .{};
     const parsed = Structural.parseBorrowedIn(source, .{ .document = output.storage() }, discard, .{});
@@ -75,7 +75,7 @@ test "default bag bounds tolerated-reference floods and latched sessions do no m
     var bag = markup.GrowableDiagnosticBag.init(std.testing.allocator, .{});
     defer bag.deinit();
     var output: markup.FixedDocumentStorage(.{ .nodes = 1 }) = .{};
-    var session = P.Session.init("& " ** 2048, .{ .document = output.storage() }, bag.sink(), .{});
+    var session = P.Session.init(std.mem.asBytes(&@as([2048]["& ".len]u8, @splat("& ".*))), .{ .document = output.storage() }, bag.sink(), .{});
     while (session.result() == null) _ = session.advance(7);
     const result = session.result().?;
     try equal(markup.reporting.StopReason.requested, result.outcome.diagnostic_stopped);
@@ -89,9 +89,9 @@ test "default bag bounds tolerated-reference floods and latched sessions do no m
 }
 
 test "untrusted is a complete resource-only preset with runtime inheritance and reset" {
-    inline for (std.meta.fields(@TypeOf(markup.presets.untrusted.limits))) |field| {
-        try expect(@field(markup.presets.untrusted.limits, field.name) != null);
-        try expect(@field(markup.presets.untrusted.limits, field.name).? < std.math.maxInt(u32));
+    inline for (comptime std.meta.fieldNames(@TypeOf(markup.presets.untrusted.limits))) |field| {
+        try expect(@field(markup.presets.untrusted.limits, field) != null);
+        try expect(@field(markup.presets.untrusted.limits, field).? < std.math.maxInt(u32));
     }
     const Dynamic = markup.Profile(.{ .runtime_policy = true, .policy = markup.presets.untrusted });
     const HostileBaseline = markup.Profile(.{ .runtime_policy = true, .policy = .{
@@ -163,8 +163,8 @@ test "untrusted count and nesting budgets accept exact boundaries and reject the
     @memset(attrs[3 + max_attrs * 5 ..][0..5], ' ');
     try equal(markup.Outcome.success, Untrusted.measureIn(attrs, .{}, discard, .{}).outcome);
     var frames: markup.FixedParseScratch(256) = .{};
-    try equal(markup.Outcome.success, Untrusted.measureIn("<a>" ** 256 ++ "</a>" ** 256, frames.storage(), discard, .{}).outcome);
-    const deep = "<a>" ** 257 ++ "</a>" ** 257;
+    try equal(markup.Outcome.success, Untrusted.measureIn(std.mem.asBytes(&@as([256]["<a>".len]u8, @splat("<a>".*))) ++ std.mem.asBytes(&@as([256]["</a>".len]u8, @splat("</a>".*))), frames.storage(), discard, .{}).outcome);
+    const deep = std.mem.asBytes(&@as([257]["<a>".len]u8, @splat("<a>".*))) ++ std.mem.asBytes(&@as([257]["</a>".len]u8, @splat("</a>".*)));
     const depth_limit = Untrusted.measureIn(deep, frames.storage(), discard, .{});
     try equal(markup.Outcome{ .resource_limit = .{ .resource = .nesting_depth, .limit = 256 } }, depth_limit.outcome);
     try equal(depth_limit, (try Dynamic.measureIn(deep, frames.storage(), discard, .{ .policy = markup.presets.untrusted })));

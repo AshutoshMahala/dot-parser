@@ -17,9 +17,9 @@ pub const Node = struct {
     pub fn kind(self: Node) Kind {
         if (self.name.len != 0) return .element;
         return switch (self.name.start) {
-            @intFromEnum(Kind.text) => .text,
-            @intFromEnum(Kind.comment) => .comment,
-            @intFromEnum(Kind.cdata) => .cdata,
+            @backingInt(Kind.text) => .text,
+            @backingInt(Kind.comment) => .comment,
+            @backingInt(Kind.cdata) => .cdata,
             else => unreachable, // Invalid trusted representation, not input syntax.
         };
     }
@@ -82,7 +82,7 @@ pub const Document = struct {
         return @intCast(self.records.len);
     }
     pub fn node(self: Document, id: NodeId) ?NodeView {
-        if (@intFromEnum(id) >= self.records.len) return null;
+        if (@backingInt(id) >= self.records.len) return null;
         return .{ .document = self, .id = id };
     }
     pub fn roots(self: Document) Iterator {
@@ -93,7 +93,7 @@ pub const NodeView = struct {
     document: Document,
     id: NodeId,
     pub fn record(self: NodeView) Node {
-        var node = self.document.records[@intFromEnum(self.id)];
+        var node = self.document.records[@backingInt(self.id)];
         if (node.subtree_end == 0) {
             std.debug.assert(self.document.state == .partial and node.name.len != 0);
             node.subtree_end = self.document.nodeCount();
@@ -102,7 +102,7 @@ pub const NodeView = struct {
         return node;
     }
     pub fn state(self: NodeView) Completeness {
-        return if (self.document.records[@intFromEnum(self.id)].subtree_end == 0) .partial else .complete;
+        return if (self.document.records[@backingInt(self.id)].subtree_end == 0) .partial else .complete;
     }
     pub fn scopeComplete(self: NodeView) bool {
         return self.state() == .complete;
@@ -114,7 +114,7 @@ pub const NodeView = struct {
     /// Header completeness is independent of the element's missing closer.
     /// Leaves do not have an opening header.
     pub fn headerComplete(self: NodeView) ?bool {
-        const node = self.document.records[@intFromEnum(self.id)];
+        const node = self.document.records[@backingInt(self.id)];
         if (node.kind() != .element) return null;
         if (node.subtree_end != 0) return true;
         const raw_header = node.span.slice(self.document.source);
@@ -148,7 +148,7 @@ pub const NodeView = struct {
         return if (r.kind() == .element) r.name.slice(self.document.source) else null;
     }
     pub fn children(self: NodeView) Iterator {
-        return .{ .document = self.document, .next_index = @intFromEnum(self.id) + 1, .end = self.record().subtree_end };
+        return .{ .document = self.document, .next_index = @backingInt(self.id) + 1, .end = self.record().subtree_end };
     }
     /// O(log A) lookup into the sparse pool, then O(1) per iterator step.
     /// Requires Document's globally owner-sorted attribute pool. This lookup
@@ -159,7 +159,7 @@ pub const NodeView = struct {
         var hi: u32 = @intCast(pool.len);
         while (lo < hi) {
             const mid = lo + (hi - lo) / 2;
-            if (@intFromEnum(pool[mid].owner) < @intFromEnum(self.id)) lo = mid + 1 else hi = mid;
+            if (@backingInt(pool[mid].owner) < @backingInt(self.id)) lo = mid + 1 else hi = mid;
         }
         return .{ .document = self.document, .owner = self.id, .index = lo };
     }
@@ -178,7 +178,7 @@ pub fn nodeInvariant(document: *const Document, index: u32) bool {
     const width: usize = document.source_info.unitBytes();
     const raw = document.records[index];
     if (!markerValid(document, raw)) return false;
-    const node = (document.node(@enumFromInt(index)) orelse return false).record();
+    const node = (document.node(@fromBackingInt(@intCast(index))) orelse return false).record();
     if (node.span.len == 0 or node.span.start % width != 0 or node.span.len % width != 0 or node.span.endOffset() > document.source.len or
         node.subtree_end <= index or node.subtree_end > document.records.len) return false;
     if (index > 0 and document.records[index - 1].span.start >= node.span.start) return false;
@@ -188,9 +188,9 @@ pub fn nodeInvariant(document: *const Document, index: u32) bool {
     // Inspect the discriminator before calling kind(); invalid metadata is a
     // precondition failure, never silently interpreted as a text leaf.
     return switch (node.name.start) {
-        @intFromEnum(Kind.text) => true,
-        @intFromEnum(Kind.comment) => node.span.len >= 7 * width,
-        @intFromEnum(Kind.cdata) => node.span.len >= 12 * width,
+        @backingInt(Kind.text) => true,
+        @backingInt(Kind.comment) => node.span.len >= 7 * width,
+        @backingInt(Kind.cdata) => node.span.len >= 12 * width,
         else => false,
     };
 }
@@ -200,7 +200,7 @@ pub fn nodeInvariant(document: *const Document, index: u32) bool {
 /// Not a general syntax validator or a public document-building API.
 pub fn attributeInvariant(document: *const Document, index: u32) bool {
     const attribute = document.attributes[index];
-    const owner = @intFromEnum(attribute.owner);
+    const owner = @backingInt(attribute.owner);
     if (owner >= document.records.len) return false;
     const raw = document.records[owner];
     if (!markerValid(document, raw)) return false;
@@ -212,7 +212,7 @@ pub fn attributeInvariant(document: *const Document, index: u32) bool {
         attribute.value.endOffset() > node.span.endOffset()) return false;
     if (index > 0) {
         const previous = document.attributes[index - 1];
-        if (@intFromEnum(previous.owner) > owner or previous.value.endOffset() > attribute.name.start) return false;
+        if (@backingInt(previous.owner) > owner or previous.value.endOffset() > attribute.name.start) return false;
     }
     return true;
 }
@@ -260,7 +260,7 @@ pub const Iterator = struct {
     pub fn next(self: *Iterator) ?NodeView {
         std.debug.assert(self.next_index <= self.end and self.end <= self.document.records.len);
         if (self.next_index == self.end) return null;
-        const id: NodeId = @enumFromInt(self.next_index);
+        const id: NodeId = @fromBackingInt(@intCast(self.next_index));
         const subtree_end = self.document.node(id).?.record().subtree_end;
         // Fail at the corrupt interval, before leaving this iterator's boundary
         // or looping forever. These are preconditions, not a document audit.
@@ -300,10 +300,10 @@ pub const Builder = struct {
     }
     pub fn leaf(self: *Builder, kind: Kind, span: Span) Error!void {
         std.debug.assert(kind != .element);
-        _ = try self.append(.{ .span = span, .name = .{ .start = @intFromEnum(kind), .len = 0 }, .subtree_end = @intCast(self.list.items.len + 1) });
+        _ = try self.append(.{ .span = span, .name = .{ .start = @backingInt(kind), .len = 0 }, .subtree_end = @intCast(self.list.items.len + 1) });
     }
     pub fn attribute(self: *Builder, owner: u32, name: Span, value: Span) Error!void {
-        const record: Attribute = .{ .owner = @enumFromInt(owner), .name = name, .value = value };
+        const record: Attribute = .{ .owner = @fromBackingInt(@intCast(owner)), .name = name, .value = value };
         if (self.allocator) |a| try self.attributes.append(a, record) else {
             if (self.attributes.items.len == self.attributes.capacity) return error.AttributeStorageExhausted;
             self.attributes.appendAssumeCapacity(record);
@@ -391,19 +391,19 @@ test "attribute metadata precondition rejects interleaved owners and invalid spa
         .{ .span = S.span("<b y='2' z='3'/>"), .name = S.span("b"), .subtree_end = 2 },
     };
     const original = [_]Attribute{
-        .{ .owner = @enumFromInt(0), .name = S.span("x"), .value = S.span("'1'") },
-        .{ .owner = @enumFromInt(1), .name = S.span("y"), .value = S.span("'2'") },
-        .{ .owner = @enumFromInt(1), .name = S.span("z"), .value = S.span("'3'") },
+        .{ .owner = @fromBackingInt(@intCast(0)), .name = S.span("x"), .value = S.span("'1'") },
+        .{ .owner = @fromBackingInt(@intCast(1)), .name = S.span("y"), .value = S.span("'2'") },
+        .{ .owner = @fromBackingInt(@intCast(1)), .name = S.span("z"), .value = S.span("'3'") },
     };
     var attributes = original;
     const doc: Document = .{ .source = source, .records = &nodes, .attributes = &attributes };
     for (0..3) |i| try std.testing.expect(attributeInvariant(&doc, @intCast(i)));
     // Source spans remain ordered and lie within a's raw span, but ownership
     // 0,1,0 violates the contiguous-owner contract the validator depends on.
-    attributes[2].owner = @enumFromInt(0);
+    attributes[2].owner = @fromBackingInt(@intCast(0));
     try std.testing.expect(!attributeInvariant(&doc, 2));
     attributes = original;
-    attributes[2].owner = @enumFromInt(99);
+    attributes[2].owner = @fromBackingInt(@intCast(99));
     try std.testing.expect(!attributeInvariant(&doc, 2));
     attributes = original;
     attributes[2].value.len = std.math.maxInt(u32);
@@ -423,7 +423,7 @@ test "node and attribute invariants share unfinished-marker checks" {
     const source = "<a x='1'>";
     const original: Node = .{ .span = .{ .start = 0, .len = source.len }, .name = .{ .start = 1, .len = 1 }, .subtree_end = 0 };
     var nodes = [_]Node{original};
-    const attributes = [_]Attribute{.{ .owner = @enumFromInt(0), .name = .{ .start = 3, .len = 1 }, .value = .{ .start = 5, .len = 3 } }};
+    const attributes = [_]Attribute{.{ .owner = @fromBackingInt(@intCast(0)), .name = .{ .start = 3, .len = 1 }, .value = .{ .start = 5, .len = 3 } }};
     const baseline: Document = .{ .source = source, .records = &nodes, .attributes = &attributes, .state = .partial, .retained_end = source.len };
     try std.testing.expect(nodeInvariant(&baseline, 0));
     try std.testing.expect(attributeInvariant(&baseline, 0));
@@ -443,7 +443,7 @@ test "node and attribute invariants share unfinished-marker checks" {
 }
 
 test "node metadata rejects invalid leaf discriminators and out-of-bounds spans" {
-    var nodes = [_]Node{.{ .span = .{ .start = 0, .len = 4 }, .name = .{ .start = @intFromEnum(Kind.text), .len = 0 }, .subtree_end = 1 }};
+    var nodes = [_]Node{.{ .span = .{ .start = 0, .len = 4 }, .name = .{ .start = @backingInt(Kind.text), .len = 0 }, .subtree_end = 1 }};
     const doc: Document = .{ .source = "text", .records = &nodes, .attributes = &.{} };
     try std.testing.expect(nodeInvariant(&doc, 0));
     const original = nodes[0];

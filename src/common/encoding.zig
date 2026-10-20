@@ -362,12 +362,12 @@ pub fn Reader(comptime actual: Actual) type {
                 return result;
             }
             switch (@typeInfo(T)) {
-                .@"struct" => |info| inline for (info.fields) |field| {
-                    if (!field.is_comptime) @field(result, field.name) = scaled(field.type, @field(value, field.name));
+                .@"struct" => |info| inline for (info.field_names, info.field_types, info.field_attrs) |name, Field, attrs| {
+                    if (!attrs.@"comptime") @field(result, name) = scaled(Field, @field(value, name));
                 },
                 .@"union" => |info| if (info.tag_type != null) {
-                    inline for (info.fields) |field| if (std.meta.activeTag(value) == @field(info.tag_type.?, field.name)) {
-                        return @unionInit(T, field.name, scaled(field.type, @field(value, field.name)));
+                    inline for (info.field_names, info.field_types) |name, Field| if (std.meta.activeTag(value) == @field(info.tag_type.?, name)) {
+                        return @unionInit(T, name, scaled(Field, @field(value, name)));
                     };
                 },
                 .optional => |info| if (value) |v| {

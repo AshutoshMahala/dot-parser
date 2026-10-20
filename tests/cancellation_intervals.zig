@@ -109,7 +109,7 @@ test "cancellation is bounded by the interval and checked on every resume" {
         const api = if (is_markup) markup else dot;
         const p = comptime policyFor(api, block, interval);
         const P = api.Profile(.{ .runtime_policy = runtime, .policy = p });
-        const source = if (is_markup) "<!--" ++ "x" ** 8192 ++ "--><a/>" else "graph{/*" ++ "x" ** 8192 ++ "*/a;}";
+        const source = if (is_markup) "<!--" ++ &@as([8192]u8, @splat('x')) ++ "--><a/>" else "graph{/*" ++ &@as([8192]u8, @splat('x')) ++ "*/a;}";
         var storage: Storage(is_markup) = .{};
         var scratch: Scratch(is_markup) = .{};
         var request: Request = .{ .stop_after = 1 };
@@ -226,7 +226,7 @@ test "event-only DOT uses the same polling interval and exact budget" {
         const P = dot.Profile(.{ .runtime_policy = runtime, .policy = comptime policyFor(dot, block, 64) }).Events(Sink);
         var sink: Sink = .{};
         var request: Request = .{ .stop_after = 1 };
-        const started = P.Session.init("graph{/*" ++ "x" ** 8192 ++ "*/a;}", .{}, &sink, dot.diagnostic.discard, .{ .cancellation = request.hook() });
+        const started = P.Session.init("graph{/*" ++ &@as([8192]u8, @splat('x')) ++ "*/a;}", .{}, &sink, dot.diagnostic.discard, .{ .cancellation = request.hook() });
         var session = if (runtime) try started else started;
         defer session.deinit();
         const advancing = session.advance(1000);
@@ -247,7 +247,7 @@ test "DOT runtime reset switches between one-credit and batched drivers" {
     const P = dot.Profile(.{ .runtime_policy = true, .policy = comptime policyFor(dot, false, 1) });
     inline for (.{ false, true }) |event_only| {
         const API = if (event_only) P.Events(Sink) else P;
-        const source = "graph{/*" ++ "x" ** 8192 ++ "*/a;}";
+        const source = "graph{/*" ++ &@as([8192]u8, @splat('x')) ++ "*/a;}";
         var storage: Storage(false) = .{};
         var sink: Sink = .{};
         var session = if (event_only)
@@ -273,7 +273,7 @@ test "DOT runtime reset switches between one-credit and batched drivers" {
 test "native one-shot readers carry fixed and runtime cancellation intervals" {
     inline for (.{ dot, markup }) |api| inline for (.{ false, true }) |runtime| inline for (.{ false, true }) |block| inline for (.{ .utf16le, .utf32be }) |actual| inline for (.{ 1, 16 }) |interval| {
         const width = if (actual == .utf16le) 2 else 4;
-        const source = if (api == markup) "<!--" ++ "x" ** 8192 ++ "-->" else "graph{/*" ++ "x" ** 8192 ++ "*/a;}";
+        const source = if (api == markup) "<!--" ++ &@as([8192]u8, @splat('x')) ++ "-->" else "graph{/*" ++ &@as([8192]u8, @splat('x')) ++ "*/a;}";
         var bytes: [source.len * width]u8 = undefined;
         for (source, 0..) |byte, i| {
             if (width == 2) std.mem.writeInt(u16, bytes[i * width ..][0..2], byte, .little) else std.mem.writeInt(u32, bytes[i * width ..][0..4], byte, .big);

@@ -41,6 +41,22 @@ pub fn Reader(comptime actual: support.encoding.Actual) type {
         pub fn position(self: *const Self) u32 {
             return self.contents.position();
         }
+        pub inline fn asciiRun(self: *const Self) []const u8 {
+            if (self.failure != null or (self.state != .unquoted and self.state != .quoted)) return &.{};
+            const bytes = self.contents.asciiRun();
+            if (bytes.len == 0 or self.state == .unquoted) return bytes;
+            const block: @Vector(logical.ascii_width, u8) = bytes[0..logical.ascii_width].*;
+            // Quotes, escapes and NUL must retain their individual steps.
+            if (@reduce(.Or, (block == @as(@Vector(logical.ascii_width, u8), @splat('"'))) |
+                (block == @as(@Vector(logical.ascii_width, u8), @splat('\\'))) |
+                (block == @as(@Vector(logical.ascii_width, u8), @splat(0))))) return &.{};
+            return bytes;
+        }
+        pub inline fn skipAscii(self: *Self, count: u32) bool {
+            if (count == 0 or count > self.asciiRun().len) return false;
+            self.contents.offset += count;
+            return true;
+        }
         pub fn step(self: *Self) logical.Step {
             if (self.failure) |f| return .{ .failure = f };
             if (self.state == .done) return .end;
@@ -165,7 +181,9 @@ pub fn Reader(comptime actual: support.encoding.Actual) type {
                 },
                 else => {},
             }
-            return self.contents.step();
+            // Fuse the leaf decode/location result into the host step. Keep
+            // the larger host and validation state machines independently sized.
+            return @call(.always_inline, logical.Reader(actual).step, .{&self.contents});
         }
         fn emit(self: *const Self, c: u21, start: u32, len: u32) logical.Step {
             return .{ .scalar = .{ .codepoint = c, .location = .{

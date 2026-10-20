@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
         .{ "short IDs/trivia", "a b\tc\r\nd -- e;\n" },
         .{ "keywords/numerals", "graph digraph strict subgraph node edge 1 -2 .3 -.4 5.6 " },
         .{ "quotes/comments", "\"a\"+\"b\" /*comment*/ \"c\\\"d\" //line\n" },
-        .{ "long HTML label", "<<" ++ "text &amp; \\ bytes " ** 64 ++ "<b>nested</b>>>" },
+        .{ "long HTML label", "<<" ++ std.mem.asBytes(&@as([64]["text &amp; \\ bytes ".len]u8, @splat("text &amp; \\ bytes ".*))) ++ "<b>nested</b>>>" },
         .{ "long identifier", "abcdefghijklmnopqrstuvwxyz_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ;" },
     };
     inline for (cases) |entry| {
@@ -59,7 +59,7 @@ noinline fn scan(source: []const u8) !u64 {
     while (true) switch (lexer.next()) {
         .failure => return error.InvalidFixture,
         .token => |token| {
-            checksum +%= @intFromEnum(token.tag);
+            checksum +%= @backingInt(token.tag);
             checksum +%= token.span.start;
             checksum +%= token.span.len;
             if (token.tag == .eof) return checksum;

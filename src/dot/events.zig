@@ -79,6 +79,21 @@ pub const BeginScope = struct {
     link_operator_span: ?location.Span = null,
 };
 pub const EndScope = struct { id: ScopeId, close: location.Span };
+/// Early observations describe recognized syntax, not accepted statements.
+/// A statement-leading identifier can still become an assignment key; its role
+/// is refined by statement_head. Neither endpoint role includes its port suffix.
+pub const IdentifierRole = enum { statement_start, edge_right, edge_link };
+pub const StatementKind = enum { node, edge, assignment, graph_attributes, node_attributes, edge_attributes, subgraph };
+pub const StatementHead = struct { owner: Owner, kind: StatementKind, start: location.Span };
+pub const Identifier = struct { owner: Owner, span: location.Span, role: IdentifierRole };
+pub const DocumentName = struct {
+    kind: GraphKind,
+    strict: bool,
+    keyword_span: location.Span,
+    name: location.Span,
+    source_info: @import("parser_support").encoding.Info,
+};
+pub const SubgraphName = struct { owner: Owner, keyword_span: location.Span, name: location.Span, role: ScopeRole };
 pub const Event = union(enum) {
     begin_document: BeginDocument,
     begin_statement: struct { owner: Owner, start: location.Span },
@@ -98,6 +113,12 @@ pub const Event = union(enum) {
     skipped: Skipped,
     comment: @import("comment.zig").Comment,
     end_document,
+    /// Opt-in with Sink.wants_early_events = true. Names are complete lexical
+    /// expressions, never unfinished-token previews. No scope/body is opened.
+    identifier: Identifier,
+    statement_head: StatementHead,
+    document_name: DocumentName,
+    subgraph_name: SubgraphName,
 };
 
 /// All output consumers implement this same contract, including the library's
@@ -107,7 +128,7 @@ pub fn assertSink(comptime Sink: type) void {
     comptime {
         checkMethod(Sink, "onEvent", Event, Action, true);
         checkMethod(Sink, "onAbort", Abort, void, false);
-        for (.{ "wants_begin_statement", "recover_statements" }) |name| {
+        for (.{ "wants_begin_statement", "recover_statements", "wants_early_events" }) |name| {
             if (@hasDecl(Sink, name) and @TypeOf(@field(Sink, name)) != bool)
                 @compileError(name ++ " must be a comptime bool");
         }
@@ -117,8 +138,8 @@ pub fn assertSink(comptime Sink: type) void {
                 @compileError("ScopeContext requires suspendScope and restoreScope");
             const save = @typeInfo(@TypeOf(Sink.suspendScope)).@"fn";
             const restore = @typeInfo(@TypeOf(Sink.restoreScope)).@"fn";
-            if (save.params.len != 1 or save.params[0].type != *Sink or save.return_type != Sink.ScopeContext or
-                restore.params.len != 2 or restore.params[0].type != *Sink or restore.params[1].type != Sink.ScopeContext or restore.return_type != void)
+            if (save.param_types.len != 1 or save.param_types[0] != *Sink or save.return_type != Sink.ScopeContext or
+                restore.param_types.len != 2 or restore.param_types[0] != *Sink or restore.param_types[1] != Sink.ScopeContext or restore.return_type != void)
                 @compileError("scope continuation requires suspendScope(*Self) ScopeContext and restoreScope(*Self, ScopeContext) void");
         }
     }
@@ -129,7 +150,7 @@ fn checkMethod(comptime Sink: type, comptime name: []const u8, comptime Argument
     const method = @typeInfo(@TypeOf(@field(Sink, name)));
     if (method != .@"fn") @compileError(name ++ " must be a function");
     const f = method.@"fn";
-    if (f.params.len != 2 or f.params[0].type != *Sink or f.params[1].type != Argument)
+    if (f.param_types.len != 2 or f.param_types[0] != *Sink or f.param_types[1] != Argument)
         @compileError(name ++ " must take (*Self, " ++ @typeName(Argument) ++ ")");
     const Return = f.return_type orelse @compileError(name ++ " must have a return type");
     if (fallible) {

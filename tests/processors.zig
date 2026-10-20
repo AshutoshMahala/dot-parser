@@ -177,7 +177,7 @@ test "DOT validation stops on capacity/OOM and preserves committed outer documen
 }
 
 test "default growable bag bounds DOT validation floods and explicit unlimited completes" {
-    const source = "graph {" ++ "a -> b;" ** 2048 ++ "}";
+    const source = "graph {" ++ std.mem.asBytes(&@as([2048]["a -> b;".len]u8, @splat("a -> b;".*))) ++ "}";
     var bag = dot.GrowableDiagnosticBag.init(std.testing.allocator, .{});
     defer bag.deinit();
     var parsed = dot.parseAndValidate(std.testing.allocator, source, bag.sink(), .{});

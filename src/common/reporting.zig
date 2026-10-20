@@ -31,7 +31,7 @@ pub const Severity = enum(u4) {
 
     /// WDP priority, 0 (trace) through 8 (error).
     pub fn priority(self: Severity) u4 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 
     /// Only E and B block the operation that reported them (WDP part 1 §5).

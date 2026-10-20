@@ -39,10 +39,10 @@
 //! Guarantees:
 //! - Instance-owned state, no mutable globals (R-ROB-003).
 //! - Stop at unrecoverable syntax; recover body statements by default. The sink
-//!   lifecycle from `events.zig` is honored: no events before a
-//!   supported header, abort after begin when the document cannot commit —
-//!   including the documented cleanup abort after an attempted
-//!   `beginDocument` that itself failed.
+//!   lifecycle from `events.zig` is honored: abort after delivered output when
+//!   the document cannot commit, including an attempted begin_document that
+//!   itself failed. Opt-in comments and early document names may precede the
+//!   complete header; ordinary syntax events still require its opening brace.
 //! - With `Policy.on_error = .collect`, a syntax error inside the body
 //!   aborts an ordinary document sink once, then continues for diagnostics only.
 //!   Opt-in partial builders and public event consumers instead abort just the
@@ -172,13 +172,22 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
     const ScopeScratch = scratch_impl.For(event_types.Context(Sink));
     const statement_recovery = if (@hasDecl(Sink, "recover_statements")) Sink.recover_statements else true;
     const begin_notifications = if (@hasDecl(Sink, "wants_begin_statement")) Sink.wants_begin_statement else true;
-    const transactional = statement_recovery or begin_notifications;
+    const early_notifications = if (@hasDecl(Sink, "wants_early_events")) Sink.wants_early_events else false;
+    const transactional = statement_recovery or begin_notifications or early_notifications;
     return struct {
         const Self = @This();
 
         // Preserve commit's original ordinal before optional comment dispatch.
         // This order affects generated hot-path code; benchmark before changing it.
-        const Action = enum { begin, begin_subgraph, end_subgraph, subgraph_statement, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit, comment, begin_statement, skipped };
+        const AllAction = enum { begin, begin_subgraph, end_subgraph, subgraph_statement, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit, comment, begin_statement, skipped, name_left, name_right, name_link, document_name, subgraph_name, head_node, head_edge, head_assignment, head_attributes, head_node_commit, head_subgraph_commit };
+        const CoreAction = blk: {
+            // Keep the disabled driver's original tag range/bit width. Merely
+            // unreachable extra switch arms change Zig/LLVM's hot-loop code.
+            const count = @backingInt(AllAction.name_left);
+            const Tag = std.math.IntFittingRange(0, count - 1);
+            break :blk @Enum(Tag, .exhaustive, std.meta.fieldNames(AllAction)[0..count], &std.simd.iota(Tag, count));
+        };
+        const Action = if (early_notifications) AllAction else CoreAction;
         const Work = struct {
             token: lex.Token = undefined,
             action: Action = undefined,
@@ -197,6 +206,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             active_statement: if (transactional) u32 else void = if (transactional) no_statement else {},
             recovery_start: if (transactional) u32 else void = if (transactional) no_statement else {},
             rejected: if (transactional) bool else void = if (transactional) false else {},
+            early_started: if (early_notifications) bool else void = if (early_notifications) false else {},
         };
 
         processor: Processor = if (Processor == void) {} else undefined,
@@ -588,9 +598,16 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     .dispatch => {
                         if (bounded) remaining -= 1;
                         if (comptime cancellable and fixed_interval != 1) polling.spend(1);
-                        _ = self.dispatch(self.work.action, self.work.token);
-                        if (self.terminal == null)
+                        if (comptime early_notifications) {
+                            // An early head can schedule its existing commit.
+                            // Keep them separate dispatches/credits/poll sites.
                             self.work.phase = if (self.work.replay) .grammar else .scan;
+                            _ = self.dispatch(self.work.action, self.work.token);
+                        } else {
+                            _ = self.dispatch(self.work.action, self.work.token);
+                            if (self.terminal == null)
+                                self.work.phase = if (self.work.replay) .grammar else .scan;
+                        }
                     },
                     .terminal => unreachable,
                 }
@@ -613,7 +630,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn tracksStatements(self: *const Self) bool {
-            return begin_notifications or self.continuesAfterError();
+            return begin_notifications or early_notifications or self.continuesAfterError();
         }
 
         fn currentScope(self: *const Self) event_types.ScopeId {
@@ -622,7 +639,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn owner(self: *const Self) event_types.Owner {
-            return .{ .statement = @enumFromInt(self.left.start), .scope = self.currentScope() };
+            return .{ .statement = @fromBackingInt(@intCast(self.left.start)), .scope = self.currentScope() };
         }
 
         inline fn publish(self: *Self, comptime tag: event_types.Kind, payload: @FieldType(event_types.Event, @tagName(tag))) Done {
@@ -637,13 +654,13 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// The sink's one terminal abort, if it has begun and not yet
         /// received one.
         fn abortEvents(self: *Self, reason: event_types.AbortReason) void {
-            const started = self.begun or (comments_enabled and self.comments_count != 0);
+            const started = self.begun or (comments_enabled and self.comments_count != 0) or (early_notifications and self.control.early_started);
             if (transactional and started and !self.aborted) {
                 if (self.control.active_statement != no_statement) {
                     const start = self.control.active_statement;
                     // A terminal abort does not certify a complete source range.
                     // Normal skipped-range events carry exact synchronization.
-                    self.events.onAbort(.{ .statement = .{ .owner = .{ .statement = @enumFromInt(start), .scope = self.currentScope() }, .span = .{ .start = start, .len = 0 }, .reason = reason } });
+                    self.events.onAbort(.{ .statement = .{ .owner = .{ .statement = @fromBackingInt(@intCast(start)), .scope = self.currentScope() }, .span = .{ .start = start, .len = 0 }, .reason = reason } });
                     self.control.active_statement = no_statement;
                 }
             }
@@ -701,6 +718,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         .identifier => {
                             self.name_span = token.span;
                             self.state = .header_open;
+                            if (early_notifications) return self.schedule(.document_name, token);
                         },
                         .left_brace => return self.beginBody(token),
                         // Unquoted keywords are not valid names (Graphviz
@@ -718,6 +736,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         .identifier => {
                             self.subgraph_name = token.span;
                             self.state = .subgraph_open;
+                            if (early_notifications) return self.schedule(.subgraph_name, token);
                         },
                         .left_brace => return self.beginSubgraphBody(token),
                         else => return self.unexpected(.{ .identifier = true, .left_brace = true }, .subgraph_header, token),
@@ -731,6 +750,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             self.operator = self.readOperator(token) orelse return self.done();
                             self.operator_span = token.span;
                             self.state = .edge_right;
+                            if (early_notifications) return self.schedule(.head_edge, token);
                         } else if (token.tag == .colon or token.tag == .left_bracket) {
                             // `{ a }:n` / `{ a } [x=1]`: a rule violation the
                             // renderer can state, not merely an expected set.
@@ -740,7 +760,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             return self.unexpected(expected, .subgraph_suffix, token);
                         } else {
                             self.state = .completed;
-                            if (self.dispatchThenReplay(.subgraph_statement, token)) |result| return result;
+                            if (self.dispatchThenReplay(if (early_notifications) .head_subgraph_commit else .subgraph_statement, token)) |result| return result;
                             if (!metered and !cancellable) return self.continueAfterStatement(token);
                             return null;
                         }
@@ -758,12 +778,17 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             if (self.left_port != null) return self.unexpected(nodeEndExpected(false), .statement, token);
                             if (self.countAttribute(self.left)) |result| return result;
                             self.state = .assignment_value;
+                            if (early_notifications) return self.schedule(.head_assignment, token);
                         },
-                        .left_bracket => self.openAttributes(token),
+                        .left_bracket => {
+                            self.openAttributes(token);
+                            if (early_notifications) return self.schedule(.head_node, token);
+                        },
                         .edge_undirected, .edge_directed => {
                             self.operator = self.readOperator(token) orelse return self.done();
                             self.operator_span = token.span;
                             self.state = .edge_right;
+                            if (early_notifications) return self.schedule(.head_edge, token);
                         },
                         else => return if (metered or cancellable or fixed == null)
                             self.finishPending(token, nodeEndExpected(self.left_port == null), .statement)
@@ -777,6 +802,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             self.right_scope = null;
                             self.pending = .edge;
                             self.state = .edge_terminate;
+                            if (early_notifications) return self.schedule(.name_right, token);
                         },
                         .left_brace, .keyword_subgraph => return self.startSubgraph(token, .right),
                         else => return self.unexpected(.{ .identifier = true, .left_brace = true, .subgraph_keyword = true }, .edge_endpoint, token),
@@ -806,6 +832,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             self.link_right = token.span;
                             self.link_port = null;
                             self.state = .chain_after_identifier;
+                            if (early_notifications) return self.schedule(.name_link, token);
                         },
                         .left_brace, .keyword_subgraph => return self.startSubgraph(token, .link),
                         else => return self.unexpected(.{ .identifier = true, .left_brace = true, .subgraph_keyword = true }, .edge_endpoint, token),
@@ -1027,7 +1054,11 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 else => {},
             };
             switch (token.tag) {
-                .identifier => return self.beginStatement(token),
+                .identifier => {
+                    if (!early_notifications) return self.beginStatement(token);
+                    if (self.beginStatement(token)) |result| return result;
+                    return self.schedule(.name_left, token);
+                },
                 .right_brace => {
                     if (self.nestingDepth() == 0) {
                         self.state = .epilogue;
@@ -1052,6 +1083,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         else => .edge,
                     };
                     self.state = .attribute_open;
+                    if (early_notifications) return self.schedule(.head_attributes, token);
                 },
                 else => return self.unexpected(.{
                     .identifier = true,
@@ -1070,7 +1102,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             if (!transactional) unreachable;
             self.state = .after_identifier;
             switch (token.tag) {
-                .identifier => {},
+                .identifier => if (early_notifications) return self.schedule(.name_left, token),
                 .left_brace, .keyword_subgraph => return self.startSubgraph(token, .left),
                 .keyword_graph, .keyword_node, .keyword_edge => {
                     self.pending = .attributes;
@@ -1080,6 +1112,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         else => .edge,
                     };
                     self.state = .attribute_open;
+                    if (early_notifications) return self.schedule(.head_attributes, token);
                 },
                 else => unreachable,
             }
@@ -1177,7 +1210,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 else => return self.unexpected(expected, context, token),
             }
             const action: Action = switch (self.pending) {
-                .node => .node,
+                .node => if (early_notifications and self.state == .after_identifier) .head_node_commit else .node,
                 .edge => .edge,
                 .edge_chain => .edge_chain,
                 .attributes => .attribute_statement,
@@ -1243,12 +1276,12 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// One charged normal callback in the bounded driver. Payloads reuse
         /// saved spans and the cached token; there is no event queue or copying
         /// of a source-sized collection. Callback execution is a callout.
-        fn dispatch(self: *Self, action: Action, token: lex.Token) Done {
+        fn dispatch(self: *Self, pending_action: Action, token: lex.Token) Done {
             if (audited) self.control.dispatch += 1;
             if (self.aborted) {
                 // Recovery: the sink is terminal, so no event is attempted;
                 // only the grammar's own scope and port bookkeeping continues.
-                switch (action) {
+                switch (pending_action) {
                     .end_subgraph => {
                         const stack = self.scratch.?;
                         self.noteClose(token);
@@ -1264,6 +1297,10 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 }
                 return null;
             }
+            if (comptime early_notifications) {
+                if (@backingInt(pending_action) >= @backingInt(Action.name_left)) return self.dispatchEarly(pending_action, token);
+            }
+            const action: CoreAction = @fromBackingInt(@intCast(@backingInt(pending_action)));
             switch (action) {
                 .begin_statement => {
                     if (!begin_notifications) unreachable;
@@ -1305,11 +1342,11 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     // Every scope consumes a distinct opening byte, and the
                     // source length was bounded to u32 before scanning.
                     self.scope_count += 1;
-                    const id: event_types.ScopeId = @enumFromInt(self.scope_count);
+                    const id: event_types.ScopeId = @fromBackingInt(@intCast(self.scope_count));
                     if (self.publish(.begin_scope, .{
                         .id = id,
                         .parent = if (stack.len == 1) .root else stack.frames[stack.len - 2].id,
-                        .statement = @enumFromInt(if (frame.edge) |edge| edge.left.start else frame.start.start),
+                        .statement = @fromBackingInt(@intCast(if (frame.edge) |edge| edge.left.start else frame.start.start)),
                         .start = frame.start,
                         .name = self.subgraph_name,
                         .role = frame.role,
@@ -1317,7 +1354,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             var edge = prefix;
                             if (frame.role == .right) {
                                 edge.right = frame.start;
-                                edge.right_scope = @intFromEnum(id);
+                                edge.right_scope = @backingInt(id);
                                 edge.right_port = null;
                             }
                             break :value edge;
@@ -1339,7 +1376,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     self.leaveScope(frame);
                 },
                 .subgraph_statement => {
-                    if (self.publish(.commit_subgraph, .{ .owner = self.owner(), .value = @enumFromInt(self.left_scope.?) })) |result| return result;
+                    if (self.publish(.commit_subgraph, .{ .owner = self.owner(), .value = @fromBackingInt(@intCast(self.left_scope.?)) })) |result| return result;
                 },
                 .node => {
                     if (self.publish(.commit_node, .{ .owner = self.owner(), .value = .{ .identifier = self.left, .port = self.left_port } })) |result| return result;
@@ -1363,7 +1400,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         .link => self.link_right,
                     };
                     const index = self.counts.references;
-                    if (self.publish(.ported_reference, .{ .owner = self.owner(), .id = @enumFromInt(index), .reference = .{
+                    if (self.publish(.ported_reference, .{ .owner = self.owner(), .id = @fromBackingInt(@intCast(index)), .reference = .{
                         .identifier = identifier_span,
                         .first = self.port_first,
                         .second = self.port_second,
@@ -1449,6 +1486,57 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return null;
         }
 
+        fn dispatchEarly(self: *Self, action: Action, token: lex.Token) Done {
+            if (!early_notifications) unreachable;
+            switch (action) {
+                .name_left, .name_right, .name_link => return self.publish(.identifier, .{
+                    .owner = self.owner(),
+                    .span = token.span,
+                    .role = switch (action) {
+                        .name_left => .statement_start,
+                        .name_right => .edge_right,
+                        .name_link => .edge_link,
+                        else => unreachable,
+                    },
+                }),
+                .document_name => {
+                    // A delivered name requires cleanup even before a header's
+                    // opening brace. Scheduling alone must not set this flag.
+                    self.control.early_started = true;
+                    return self.publish(.document_name, .{
+                        .kind = self.kind,
+                        .strict = self.strict,
+                        .keyword_span = self.keyword_span,
+                        .name = token.span,
+                        .source_info = if (source_metadata) self.control.source_info else enc.sourceInfo(self.tokens.source),
+                    });
+                },
+                .subgraph_name => return self.publish(.subgraph_name, .{ .owner = self.owner(), .keyword_span = self.subgraph_start, .name = token.span, .role = self.subgraph_role }),
+                .head_node, .head_edge, .head_assignment, .head_attributes, .head_node_commit, .head_subgraph_commit => {
+                    if (self.publish(.statement_head, .{
+                        .owner = self.owner(),
+                        .start = self.left,
+                        .kind = switch (action) {
+                            .head_node, .head_node_commit => .node,
+                            .head_edge => .edge,
+                            .head_assignment => .assignment,
+                            .head_subgraph_commit => .subgraph,
+                            .head_attributes => switch (self.attribute_target) {
+                                .graph => .graph_attributes,
+                                .node => .node_attributes,
+                                .edge => .edge_attributes,
+                            },
+                            else => unreachable,
+                        },
+                    })) |result| return result;
+                    if (action == .head_node_commit) return self.schedule(.node, token);
+                    if (action == .head_subgraph_commit) return self.schedule(.subgraph_statement, token);
+                    return null;
+                },
+                else => unreachable,
+            }
+        }
+
         fn retainThrough(self: *Self, end: u32) void {
             if (@hasDecl(Sink, "parser_retention")) Sink.parser_retention.retainThrough(self.events, end);
         }
@@ -1471,7 +1559,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             if (transactional and !self.aborted and self.tracksStatements()) self.control.active_statement = if (frame.edge) |edge| edge.left.start else frame.start.start;
             if (frame.role == .left) {
                 self.left = frame.start;
-                self.left_scope = if (self.aborted) 0 else @intFromEnum(frame.id);
+                self.left_scope = if (self.aborted) 0 else @backingInt(frame.id);
                 self.left_port = null;
                 self.pending = .node;
                 self.state = .after_subgraph;
@@ -1488,7 +1576,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 if (frame.role == .right) {
                     self.right = frame.start;
                     self.right_port = null;
-                    self.right_scope = if (self.aborted) 0 else @intFromEnum(frame.id);
+                    self.right_scope = if (self.aborted) 0 else @backingInt(frame.id);
                 }
                 self.pending = if (frame.role == .right) .edge else .edge_chain;
                 self.state = .edge_terminate;
@@ -1534,9 +1622,9 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         /// Report a failure diagnostic through the caller's sink, honoring
-        /// the event lifecycle: abort follows begin; nothing is emitted
-        /// before a supported header. Returns null when the parse continues
-        /// in recovery (the caller resynchronizes), else the terminal result.
+        /// the event lifecycle: abort follows delivered output (including
+        /// opt-in observations before a complete header). Returns null when
+        /// recovery continues (the caller resynchronizes), else the terminal result.
         fn fail(self: *Self, failure: diagnostic.Diagnostic) Done {
             var d = failure;
             if (d.fix == null) d.fix = self.lexicalFix(d);
@@ -1568,7 +1656,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     // Abort is infallible control-flow cleanup, not a charged
                     // normal callback. Completed nested scope records survive.
                     if (self.control.active_statement != no_statement) self.events.onAbort(.{ .statement = .{
-                        .owner = .{ .statement = @enumFromInt(self.control.recovery_start), .scope = self.currentScope() },
+                        .owner = .{ .statement = @fromBackingInt(@intCast(self.control.recovery_start)), .scope = self.currentScope() },
                         .span = .{ .start = self.control.recovery_start, .len = @intCast(@max(if (span.len == enc.width and enc.byteAt(self.tokens.source, span.start) == '}') span.start else span.endOffset(), self.control.recovery_start) - self.control.recovery_start) },
                         .reason = reason,
                     } });
@@ -2092,8 +2180,8 @@ test "cancellation during successful and failed events preserves terminal preced
 test "cancellation can stop every lexical continuation and execution phase" {
     const Scanner = scalar_lex.Scanner(true, true, null);
     const State = @FieldType(Scanner, "state");
-    var states = std.EnumSet(State).initEmpty();
-    var phases = std.EnumSet(Phase).initEmpty();
+    var states = std.EnumSet(State).empty;
+    var phases = std.EnumSet(Phase).empty;
     const sources = [_][]const u8{
         " \r\n#x\r//y\n/*z**/graph {a;}",
         "graph {a\xff;}",
@@ -2127,10 +2215,10 @@ test "cancellation can stop every lexical continuation and execution phase" {
         try expectEqual(reads, machine.tokens.examinations);
         try expectEqual(@as(usize, if (begun) 1 else 0), events.aborts);
     };
-    var expected_states = std.EnumSet(State).initFull();
+    var expected_states = std.EnumSet(State).full;
     expected_states.remove(.ready);
     try expectEqual(expected_states, states);
-    var expected_phases = std.EnumSet(Phase).initFull();
+    var expected_phases = std.EnumSet(Phase).full;
     expected_phases.remove(.terminal);
     try expectEqual(expected_phases, phases);
 }
@@ -3251,7 +3339,7 @@ test "statement limit is a resource outcome, distinct from invalid syntax" {
 test "zero statement limit still scans an arbitrarily large body" {
     // The statement limit is output capacity, not a work budget: the body
     // is whitespace-only, so the parser scans it linearly and succeeds.
-    const source = "graph {" ++ (" " ** 4096) ++ "\n}";
+    const source = "graph {" ++ (&@as([4096]u8, @splat(' '))) ++ "\n}";
     var events: Recording = .{};
     var bag: Bag = .{};
     try expect(testing.run(source, &events, bag.sink(), .{ .limits = .{ .max_statements = 0 } }, null).outcome == .success);

@@ -202,7 +202,7 @@ test "all encodings share logical values and physical-byte locations" {
 }
 
 test "bounded steps can pause and move inside scalars long references and glue" {
-    const zeros = "0" ** 4096;
+    const zeros = &@as([4096]u8, @splat('0'));
     var reader = try markup.LogicalReader(.utf8).init(.{ .bytes = "&#" ++ zeros ++ "65;Z", .origin = 1 }, .{});
     for (0..2000) |_| {
         const before = reader.position();
@@ -214,7 +214,7 @@ test "bounded steps can pause and move inside scalars long references and glue" 
     try t.expectEqual('A', (try scalar(&moved)).codepoint);
     try t.expectEqual('Z', (try scalar(&moved)).codepoint);
     try t.expectEqual(.end, moved.step());
-    var dot_reader = try dot.identifier.LogicalReader(.utf8).init(.{ .bytes = "\"a\" /*" ++ ("x" ** 4096) ++ "*/ + \"😀\"", .origin = 0 });
+    var dot_reader = try dot.identifier.LogicalReader(.utf8).init(.{ .bytes = "\"a\" /*" ++ (&@as([4096]u8, @splat('x'))) ++ "*/ + \"😀\"", .origin = 0 });
     _ = try scalar(&dot_reader);
     for (0..2000) |_| {
         const before = dot_reader.position();

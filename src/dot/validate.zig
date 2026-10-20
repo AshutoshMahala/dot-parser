@@ -164,15 +164,16 @@ fn validateRetained(
     }
 
     const Cursors = cursorTypes(actual, fixed);
-    const fields = @typeInfo(Cursors).@"struct".fields;
+    const fields = @typeInfo(Cursors).@"struct".field_names;
     var cursors: Cursors = undefined;
     var pending: [fields.len]?diagnostic.Diagnostic = undefined;
     inline for (fields, 0..) |field, index| {
-        @field(cursors, field.name) = if (field.type == checks.RepeatedAttributesForEncoding(actual))
-            field.type.init(document, settings, scratch, plan)
+        const Cursor = @FieldType(Cursors, field);
+        @field(cursors, field) = if (Cursor == checks.RepeatedAttributesForEncoding(actual))
+            Cursor.init(document, settings, scratch, plan)
         else
-            field.type.init(document, settings, scratch);
-        pending[index] = @field(cursors, field.name).next();
+            Cursor.init(document, settings, scratch);
+        pending[index] = @field(cursors, field).next();
     }
     var errors: u64 = 0;
     var warnings: u64 = 0;
@@ -196,7 +197,7 @@ fn validateRetained(
             return .{ .outcome = .{ .error_stopped = prefixCounts(errors, warnings, &pending, index) }, .diagnostic_delivery = .complete };
         }
         inline for (fields, 0..) |field, at| {
-            if (index == at) pending[at] = @field(cursors, field.name).next();
+            if (index == at) pending[at] = @field(cursors, field).next();
         }
     }
     return .{
@@ -250,7 +251,7 @@ fn cursorTypes(comptime actual: @import("parser_support").encoding.Actual, compt
             count += 1;
         }
     }
-    return std.meta.Tuple(types[0..count]);
+    return @Tuple(types[0..count]);
 }
 
 // ---------------------------------------------------------------------------

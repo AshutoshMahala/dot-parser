@@ -22,7 +22,7 @@ pub fn main(init: std.process.Init) !void {
     // Source-order inspection. Node views also support safe child/root traversal;
     // don't interpret unfinished raw pool intervals as completed subtrees.
     for (0..document.nodeCount()) |index| {
-        const node = document.node(@enumFromInt(index)).?;
+        const node = document.node(@fromBackingInt(@intCast(index))).?;
         try writer.print("  {s}: {s}, observed bytes {d}..{d}\n", .{ node.name() orelse "text", @tagName(node.state()), node.span().start, node.span().endOffset() });
     }
     if (document.unrepresented()) |tail| try writer.print("unrepresented: {s}\n", .{tail.slice(source)});

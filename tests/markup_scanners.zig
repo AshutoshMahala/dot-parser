@@ -220,7 +220,7 @@ test "runtime reset preserves memory and selects all eight execution variants" {
     var scratch: Scratch = .{};
     var poll: Poll = .{};
     const hook: m.Cancellation = .{ .context = &poll, .is_requested = Poll.requested };
-    const source = "<a x='1'>" ++ "text" ** 64 ++ "</a>";
+    const source = "<a x='1'>" ++ std.mem.asBytes(&@as([64]["text".len]u8, @splat("text".*))) ++ "</a>";
     var session = (try Dynamic.Session.init(source, .{ .document = storage.storage(), .scratch = scratch.storage() }, m.diagnostic.discard, .{}));
     defer session.deinit();
     // Test every old/new pair, including abandoning unfinished work on reset.

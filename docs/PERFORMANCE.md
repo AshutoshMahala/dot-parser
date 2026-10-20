@@ -7,6 +7,12 @@ numbers as a rough guide: your files, hardware and settings will give different
 results.
 [How these were measured](#how-these-were-measured) has the details.
 
+The development toolchain is now Zig 0.17.0. Tables labelled Zig 0.16.0 are
+historical measurements, not claims about 0.17 performance. Current build
+commands use `fast`, `safe` and `small` (previously `ReleaseFast`,
+`ReleaseSafe` and `ReleaseSmall`). Re-measure with the same compiler on both
+sides when comparing revisions.
+
 Reading the tables:
 
 - **MB** means 1,000,000 bytes, and **MB/s** means MB per second.
@@ -59,20 +65,21 @@ despite identical generated code. No isolated default case crossed the report's
 5% slowdown threshold with non-overlapping run ranges. This supports an
 unchanged default path, not a universal timing guarantee.
 
-The separate mixed `integration` binary also includes active processing, so
+The original mixed `integration` binary also included active processing, so
 its code layout and optimization decisions differ from the older default-only
 binary. Its default rows changed by −0.11% / +4.04% / +19.98% in Fast / Safe /
 Small; the last result included two flagged DOT slowdowns. Those samples remain
 in the report, but this mixed comparison does not isolate unused-feature cost.
-Applications compiling both active and inactive variants should measure their
-own combination, especially with ReleaseSmall.
+The follow-up below addresses the DOT mixed-profile regression. Applications
+compiling both active and inactive variants should still measure their own
+combination, especially with ReleaseSmall.
 
 ### Enabled processing cost
 
 Each document below contains 2,000 selected `label` values and 2,000 untouched
 attributes. The selected child checks logical encoding and exact equality.
 Markup uses structural mode. These ReleaseFast cells show **ms / MB/s** for
-whole-document operations in the same candidate binary:
+whole-document operations in the initial candidate binary:
 
 | Host / value | Physical bytes | Bound passthrough | Process equality |
 | --- | ---: | ---: | ---: |
@@ -85,10 +92,10 @@ whole-document operations in the same candidate binary:
 | Markup / Unicode | 100,013 | 0.188 / 532.3 | 1.143 / 87.5 |
 | Markup / long ASCII values | 4,660,013 | 2.426 / 1,921.2 | 80.942 / 57.6 |
 
-Active logical checks are **not free**. The existing reader-bound engine uses
-bounded scalar steps and can traverse a value again for each check; it does
-not yet use standalone contiguous-string batching. Long values make this
-difference particularly visible. None of this work runs for passthrough.
+These are the initial integration measurements, before the optimization below.
+That version used scalar reader-bound steps throughout. Active logical checks
+are still **not free** and can traverse a value again for each check, but unchanged
+ASCII runs can now batch equivalent steps. None of this work runs for passthrough.
 
 Allocation probes verify identical allocator-request counts and cumulative
 requested bytes for default, passthrough and processing on every fixture.
@@ -111,10 +118,159 @@ zig build perf-string -- --baseline fb64cc9 \
   --modes ReleaseFast,ReleaseSafe,ReleaseSmall --runs 5
 ```
 
-Use `--suites native,sessions` for the standalone study, or include all four
-suites in one report. `zig build bench-string-integration -Doptimize=ReleaseFast`
+Use `--suites native,sessions` for the standalone study, and `logical` for
+explicit reader-bound sessions; all five suites can share one report.
+`zig build bench-string-integration -Doptimize=ReleaseFast`
 also prints allocator-request totals. See [string integration](STRINGS.md#attribute-processing-in-dot-and-markup)
 for precedence, scheduling and partial-result semantics.
+
+### Reader-bound processing follow-up (2026-10-20)
+
+Compared against `b58db00` with Zig 0.16.0 on the same ARM64 Mac. Three
+alternating process runs per side; the integration harness and accounting
+method above are unchanged. Each long-ASCII document contains 2,000 checked
+values: 4,654,007 source bytes for DOT and 4,660,013 for markup.
+
+| Mode / host | Before ms / MB/s | After ms / MB/s |
+| --- | ---: | ---: |
+| ReleaseFast / DOT | 82.731 / 56.25 | 8.226 / 565.76 |
+| ReleaseFast / markup | 79.920 / 58.31 | 6.548 / 711.68 |
+| ReleaseSafe / DOT | 93.026 / 50.03 | 9.597 / 484.93 |
+| ReleaseSafe / markup | 88.529 / 52.64 | 7.932 / 587.49 |
+| ReleaseSmall / DOT | 200.408 / 23.22 | 13.173 / 353.30 |
+| ReleaseSmall / markup | 206.417 / 22.58 | 11.761 / 396.21 |
+
+The logical prerequisite and equality passes now group 16 unchanged ASCII
+steps. They retain the original credits and do not cross a budget, cancellation
+poll, decoding boundary or terminal transition. References, escapes, folding
+expansions and short values still use scalar work. Only the encoding-reader
+leaf is forced inline; the larger state machines remain independently compiled.
+
+The mixed-profile ReleaseSmall regression also had a separate cause: routing
+called the public, input-validating identifier iterator on already parsed
+attribute values. Besides scanning those values again, that extra scanner
+caller changed the optimizer's sharing decisions for ordinary DOT parsing.
+Internal document traversal now uses trusted operands directly; public
+identifier helpers still validate arbitrary input.
+
+These are the **default DOT rows inside the mixed-profile binary**, which also
+contains active string processing:
+
+| Value fixture | Before ms | After ms | Time change |
+| --- | ---: | ---: | ---: |
+| Short | 0.237 | 0.175 | −26.1% |
+| Concatenated | 0.251 | 0.198 | −21.1% |
+| Unicode | 0.250 | 0.188 | −24.9% |
+| Long ASCII | 3.356 | 1.738 | −48.2% |
+
+The isolated `host-defaults`, standalone `native` and standalone `sessions`
+executables have identical before/after machine-code hashes in Fast, Safe and
+Small. The isolated default executable sizes also remain identical. Some
+timings still cross the report threshold despite identical code: repeated runs
+of the **same** Small default-only executable put the long DOT case in two
+bands (candidate 1.602–2.254 ms; baseline 1.753–2.281 ms). Those timing flags
+are not evidence of a changed default implementation.
+The mixed Fast long-DOT default/passthrough rows also flagged roughly 35–37%
+in the first report. Three further alternating runs of those unchanged binaries
+gave 1.555–1.563 ms before and 1.531–1.718 ms after: the original large flag did
+not persist. Keep the raw variation separate from the repeatable Small recovery.
+
+No measured session sizes, credits or poll counts changed. The bound equality
+sessions remain 344 bytes for plain readers and 464 for DOT/markup readers.
+Integration's allocation-count/requested-byte parity checks still pass; this
+is not a peak-stack or RSS claim. The mixed integration executable is unchanged
+in size for Fast/Safe; Small grows from 316,560 to 334,416 bytes, **17,856 bytes**
+for this multi-profile harness. Unused-feature binaries do not pay that cost.
+
+This is not a blanket win on every enabled-reader workload. The Small logical
+suite still flags comment-heavy DOT at about 8–10% more time (roughly 7 µs/value)
+and explicit plain-reader Unicode binding at 12–14% (about 0.08–0.09 µs/value).
+The latter is `WithReader(LogicalReader(...))`, not standalone string parsing.
+These non-target control cases remain recorded, not hidden by the long-value
+gains. The final suite has no flagged Small end-to-end integration slowdowns.
+
+Reproduce the complete comparison:
+
+```sh
+zig build perf-string -- --baseline b58db00 \
+  --suites host-defaults,integration,logical,native,sessions \
+  --modes ReleaseFast,ReleaseSafe,ReleaseSmall --runs 3
+```
+
+## Parser-recognized names (Unreleased)
+
+Measured on this machine with Zig 0.16.0 on 2026-10-20 using
+`zig build bench-identifiers -Doptimize=ReleaseFast` (and `ReleaseSafe` /
+`ReleaseSmall`). Each fixture contains 10,000 node statements and 1,000 unique
+names. The event consumer builds a hash-based reference index, without a syntax
+tree. Source generation and equal table reservations are outside timing.
+Numbers are medians of nine alternating samples, four parses per sample.
+
+| Name spelling | ReleaseFast checked → trusted | ReleaseSafe checked → trusted | ReleaseSmall checked → trusted |
+| --- | ---: | ---: | ---: |
+| Quoted | 0.647 → 0.460 ms | 0.728 → 0.502 ms | 1.254 → 0.776 ms |
+| Concatenated | 0.944 → 0.639 ms | 1.029 → 0.700 ms | 1.621 → 1.029 ms |
+| Unicode quoted | 0.914 → 0.647 ms | 0.981 → 0.677 ms | 1.651 → 1.001 ms |
+| Long quoted (10.36 MB input) | 23.818 → 14.421 ms | 23.689 → 14.442 ms | 37.271 → 17.417 ms |
+
+Here “trusted” means `identifier.assumeParsed(raw)` on complete identifier fields
+delivered by the parser. It skips repeated syntax checks, not logical-value
+hashing/equality. Across all six fixtures (also bare and escaped names),
+parse-plus-index time fell 24–40% in Fast, 29–40% in Safe and 33–53% in Small.
+These are indexing-workload results, **not** a speedup to ordinary parsing.
+Both paths reserved 43,032 bytes in one allocation for the index, with no
+allocations during parsing. The helper itself is one borrowed slice and adds
+no parser/event/document storage. The existing checked helpers are unchanged.
+Before/after builds of the fixed/runtime-policy benchmark had identical machine
+code in ReleaseFast, ReleaseSafe and ReleaseSmall when the new API was unused.
+
+## Early outline events (Unreleased)
+
+Checked on 2026-10-20, Apple M4 Pro, Zig 0.16.0, against a working-tree
+snapshot immediately before adding early observations (including the recognized
+name helpers above). The unchanged `bench/policies.zig` and `bench/metering.zig`
+harnesses produced **identical machine-code sections before/after** in
+ReleaseFast, ReleaseSafe and ReleaseSmall. This covers both scanners, fixed and
+runtime policies, ordinary parsing, one-credit/batched metering and cancellation
+intervals 1 and 64. Disabled early events add no session storage or allocation.
+
+The fixed/runtime-policy harness executable sizes were 616,520 → 616,520 bytes
+(Fast), 665,848 → 665,848 (Safe), and 428,368 → 428,360 (Small). Three alternating
+process runs per side showed no default-path regression attributable to the
+feature. Identical code still has timing noise, especially in short long-text
+microbenchmarks; timing variation is not a claimed speedup. The event-only name
+index also retained identical Fast/Small machine code; its Safe build changed
+slightly, with no measured slowdown across its six fixtures.
+An additional same-executable-path session rerun had much larger timing swings,
+including broad Safe slowdowns. The Safe binaries' entire contents up to their
+code signatures were byte-identical, not just their code sections. These runs
+therefore cannot establish a feature-induced slowdown or a precise percentage
+guarantee; use the code-generation comparison as the disabled-path evidence.
+
+**Enabling** `wants_early_events` does add work. A fixed-scratch event consumer
+counting callbacks on 10,000 `a[x=1];` statements (80,010 bytes, including a named
+header) measured the following in ReleaseFast. Nine alternating timed batches
+of four parses followed three warmup batches; source construction was excluded.
+
+| Execution | Scalar off → on | Block off → on |
+| --- | ---: | ---: |
+| Unmetered | 0.552 → 0.586 ms | 0.528 → 0.823 ms |
+| One-credit resumes | 1.286 → 1.423 ms | 1.297 → 1.511 ms |
+| 4,096-credit resumes | 0.568 → 0.623 ms | 0.708 → 0.711 ms |
+| 4,096-credit resumes, cancellation interval 1 | 0.644 → 0.690 ms | 0.693 → 0.729 ms |
+
+That opt-in delivered 50,003 callbacks instead of 30,002. Metered work increased
+by exactly the 20,001 added callbacks: 230,020 → 250,021 scalar credits and
+191,263 → 211,264 block credits, independently of resume budget. No credits were
+coarsened or polling sites removed. Consumer callback execution remains outside
+parser work-credit accounting, not a wall-clock time guarantee.
+
+On this target the opt-in still fits existing session padding: scalar session
+sizes remain 448 / 488 / 512 bytes (plain / metered / metered+cancellable), block
+544 / 584 / 608. A single event-consumer nesting frame remains 100 bytes and
+`Event` remains 116 bytes. The parser stores no event list or provisional tree;
+retaining outline entries costs whatever the consumer chooses to store. These
+are target-specific layout observations, not a stable ABI or RSS measurement.
 
 ## Standalone strings (Unreleased)
 
@@ -434,7 +590,7 @@ comment retention off, no comment records are allocated. With it on, each
 comment takes 12 bytes, plus spare room in growing lists unless you give exact
 sizes or fixed buffers. The comment text itself is never copied.
 
-Additional type sizes, the same in Fast and Safe builds:
+Additional type sizes in the Zig 0.16 baseline, the same in Fast and Safe builds:
 
 | Type | Size (bytes) |
 | --- | ---: |
@@ -446,6 +602,15 @@ Additional type sizes, the same in Fast and Safe builds:
 | Markup `Document` | 56 |
 | Markup node / attribute view | 64 / 64 |
 | Markup root/child iterator / attribute iterator | 64 / 64 |
+
+**Zig 0.17 development layouts:** the two `ArrayList` safety locks in the
+markup builder add 16 bytes in `debug` and `safe`: default / bounded /
+run-time sessions are **456 / 464 / 544 bytes**. With exact closing-tag
+recovery, default / bounded are **448 / 456 bytes**. `fast` and `small`
+retain the sizes above. These are constant session costs, not per-node
+allocations; DOT's guarded session and scanner sizes are unchanged.
+Other growable builders/workspaces also inherit the per-list safety-lock
+overhead; these locks are compiled out in `fast` and `small`.
 
 Changes since 0.4.0 to these sizes:
 
@@ -969,8 +1134,8 @@ Use the Zig-native reporter to compare the working tree against a Git revision:
 
 ```sh
 zig build perf-string -- --baseline HEAD
-zig build perf-string -- --baseline HEAD --modes ReleaseFast,ReleaseSafe,ReleaseSmall --runs 5
-zig build perf-string -- --baseline HEAD --suites sessions --modes ReleaseFast
+zig build perf-string -- --baseline HEAD --modes fast,safe,small --runs 5
+zig build perf-string -- --baseline HEAD --suites sessions --modes fast
 ```
 
 The default is both `native` and `sessions`, Fast and Safe builds, three process
@@ -979,11 +1144,17 @@ runs per side. Each benchmark run uses seven timed batches after two warmups.
 equality. `sessions` covers UTF-8 default encoding validation, exact equality,
 runtime policies, budgets 1 and 64, cancellation intervals 1 and 64, custom
 stepped/batched validators and membership. `--help` lists the options.
+The optional `logical` suite compares plain/DOT/markup logical readers on
+short, long, Unicode and glue/reference-heavy values, including budgets 1 and
+64 and exact credit/session-size accounting. It uses five timed batches after
+two warmups. `integration` and `host-defaults` use nine after three.
 
 The runner captures both source trees and the current harness, builds everything
 with the **same compiler**, then executes one benchmark at a time in alternating
 before/after order. It reads Git objects without checking out or changing a
-branch. A baseline predating the required API fails the build explicitly; it is
+branch. Both snapshots must support the selected compiler: a pre-migration
+Zig 0.16 snapshot cannot be compared using the 0.17 reporter without porting
+that snapshot first. A baseline predating the required API fails the build explicitly; it is
 not silently treated as passing. Newly supported comparison modes are reported
 as **new**, with no invented baseline or percentage.
 
@@ -1017,21 +1188,21 @@ It does not yet orchestrate DOT/markup suites, RSS sampling or Wasm size checks.
 Run one benchmark at a time, with no builds or other heavy work running:
 
 ```sh
-zig build bench -Doptimize=ReleaseFast -Dlexer=scalar
-zig build bench-lexer -Doptimize=ReleaseFast -Dlexer=scalar
-zig build bench-session -Doptimize=ReleaseFast -Dlexer=scalar
-zig build bench-cancellation -Doptimize=ReleaseFast
-zig build bench-subgraphs -Doptimize=ReleaseFast -Dlexer=scalar
-zig build bench-policy -Doptimize=ReleaseFast
-zig build bench-markup -Doptimize=ReleaseFast
-zig build bench-markup -Doptimize=ReleaseFast -- --scopes-only
-zig build bench-markup -Doptimize=ReleaseFast -- --graphviz-only
-zig build bench-composition -Doptimize=ReleaseFast
-zig build bench-logical-strings -Doptimize=ReleaseFast
+zig build bench -Doptimize=fast -Dlexer=scalar
+zig build bench-lexer -Doptimize=fast -Dlexer=scalar
+zig build bench-session -Doptimize=fast -Dlexer=scalar
+zig build bench-cancellation -Doptimize=fast
+zig build bench-subgraphs -Doptimize=fast -Dlexer=scalar
+zig build bench-policy -Doptimize=fast
+zig build bench-markup -Doptimize=fast
+zig build bench-markup -Doptimize=fast -- --scopes-only
+zig build bench-markup -Doptimize=fast -- --graphviz-only
+zig build bench-composition -Doptimize=fast
+zig build bench-logical-strings -Doptimize=fast
 zig build check-benches  # only checks that they compile
 ```
 
-Repeat everything with `-Doptimize=ReleaseSafe`. Repeat the first four with
+Repeat everything with `-Doptimize=safe`. Repeat the first four with
 `-Dlexer=block` too; the others already cover both scanners where it matters.
 Run each one five times and take the median. `bench-markup` also accepts
 `-- --rules-only` and `-- --validation-only` for shorter runs.

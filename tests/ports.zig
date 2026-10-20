@@ -175,8 +175,8 @@ fn allocations(allocator: std.mem.Allocator, hinted: bool) !void {
 }
 
 test "ported allocation and ownership transfer failures release all pools" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocations, .{false});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocations, .{true});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocations, .{false});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocations, .{true});
 }
 
 test "port storage remains compact and accessors reject out of bounds handles" {

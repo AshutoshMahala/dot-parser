@@ -253,16 +253,16 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
             graphviz_block_metered,
             graphviz_block_both,
             fn metering(v: Variant) bool {
-                return @intFromEnum(v) & 2 != 0;
+                return @backingInt(v) & 2 != 0;
             }
             fn cancellation(v: Variant) bool {
-                return @intFromEnum(v) & 1 != 0;
+                return @backingInt(v) & 1 != 0;
             }
             fn backend(v: Variant) policy.ScannerBackend {
-                return if (@intFromEnum(v) & 4 != 0) .block else .scalar;
+                return if (@backingInt(v) & 4 != 0) .block else .scalar;
             }
             fn mode(v: Variant) policy.Mode {
-                return if (@intFromEnum(v) & 8 != 0) .graphviz else .structural;
+                return if (@backingInt(v) & 8 != 0) .graphviz else .structural;
             }
         };
         fn variantOf(effective: policy.Effective) Variant {
@@ -270,10 +270,10 @@ fn ProfileForInputEncoding(comptime actual: @import("parser_support").encoding.A
                 .structural => 0,
                 .graphviz => 8,
             };
-            return @enumFromInt(mode_bit |
+            return @fromBackingInt(@intCast(mode_bit |
                 @as(u4, if (effective.scanner == .block) 4 else 0) |
                 @as(u4, if (effective.execution.metering) 2 else 0) |
-                @as(u4, if (effective.execution.cancellation) 1 else 0));
+                @as(u4, if (effective.execution.cancellation) 1 else 0)));
         }
         fn Core(comptime variant: Variant) type {
             return engine.EngineWithInputEncoding(actual, api, variant.backend(), if (runtime_policy) null else baseline.parsing(), variant.metering(), variant.cancellation(), variant.mode(), framing);

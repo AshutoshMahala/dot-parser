@@ -289,7 +289,7 @@ fn allocations(a: std.mem.Allocator) !void {
     }
 }
 test "delayed integration releases all storage at every allocation failure point" {
-    try std.testing.checkAllAllocationFailures(allocator, allocations, .{});
+    try @import("allocation_failures.zig").check(allocator, allocations, .{});
 }
 
 test "fragment validation cancellation preserves the parsed document" {

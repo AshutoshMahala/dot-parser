@@ -14,17 +14,58 @@ test "logical name hashes and equality match decoding across operand boundaries"
         "\"é\"",
         "<<B>x</B>>",     "\"<B>x</B>\"",
     };
+    try std.testing.expectEqual(@sizeOf([]const u8), @sizeOf(dot.identifier.Parsed));
     for (spellings) |a| for (spellings) |b| {
         var left: [128]u8 = undefined;
         var right: [128]u8 = undefined;
         const expected = std.mem.eql(u8, try dot.identifier.decodeInto(a, &left), try dot.identifier.decodeInto(b, &right));
         try std.testing.expectEqual(expected, try dot.identifier.eql(a, b));
+        const parsed_a = dot.identifier.assumeParsed(a);
+        const parsed_b = dot.identifier.assumeParsed(b);
+        try std.testing.expectEqual(expected, try parsed_a.eql(parsed_b));
+        try std.testing.expectEqual(try dot.identifier.hash(a), try parsed_a.hash());
         if (expected) try std.testing.expectEqual(try dot.identifier.hash(a), try dot.identifier.hash(b));
     };
     for ([_][]const u8{ "", "graph", " a", "a ", "a b", "1e3", "\"a", "\"a\"+", "\"a\" /*" }) |bad| {
         try std.testing.expectError(error.InvalidIdentifier, dot.identifier.hash(bad));
         try std.testing.expectError(error.InvalidIdentifier, dot.identifier.eql("different", bad));
         try std.testing.expectError(error.InvalidIdentifier, dot.identifier.eql(bad, "different"));
+    }
+}
+
+test "event consumers index parser-recognized names without a document" {
+    const Consumer = struct {
+        source: []const u8,
+        names: [4]dot.identifier.Parsed = undefined,
+        count: usize = 0,
+        aborts: usize = 0,
+
+        pub fn onEvent(self: *@This(), event: dot.events.Event) error{}!dot.events.Action {
+            switch (event) {
+                .commit_node => |node| {
+                    self.names[self.count] = dot.identifier.assumeParsed(node.value.identifier.slice(self.source));
+                    self.count += 1;
+                },
+                else => {},
+            }
+            return .proceed;
+        }
+        pub fn onAbort(self: *@This(), _: dot.events.Abort) void {
+            self.aborts += 1;
+        }
+    };
+    const source = "graph { a; \"a\"+\"\"; broken[x=]; \"a\"; different; }";
+    var consumer: Consumer = .{ .source = source };
+    const P = dot.Events(Consumer);
+    var scratch: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
+    const result = P.parseIn(source, scratch.storage(), &consumer, dot.diagnostic.discard, .{});
+    try std.testing.expect(result.outcome == .invalid_syntax);
+    try std.testing.expect(consumer.aborts != 0);
+    try std.testing.expectEqual(@as(usize, 4), consumer.count);
+    for (consumer.names[0..3]) |name| {
+        try std.testing.expect(try name.eql(consumer.names[0]));
+        try std.testing.expectEqual(try consumer.names[0].hash(), try name.hash());
+        try std.testing.expect(!try name.eql(consumer.names[3]));
     }
 }
 

@@ -12,7 +12,7 @@ const Plain = markup.Profile(.{ .policy = .{ .mode = .structural } });
 fn audit(document: markup.Document) !void {
     try expect(document.retained_end <= document.source.len);
     for (0..document.records.len) |index| {
-        const node = document.node(@enumFromInt(index)).?;
+        const node = document.node(@fromBackingInt(@intCast(index))).?;
         const record = node.record();
         try expect(record.span.len != 0);
         try expect(record.span.endOffset() <= document.source.len);
@@ -34,14 +34,14 @@ fn audit(document: markup.Document) !void {
         while (children.next()) |child| {
             count += 1;
             try expect(count <= document.records.len);
-            try expect(@intFromEnum(child.id) > index);
+            try expect(@backingInt(child.id) > index);
             try expect(child.record().subtree_end <= record.subtree_end);
         }
     }
     var roots = document.roots();
     var end: u32 = 0;
     while (roots.next()) |root| {
-        try equal(end, @intFromEnum(root.id));
+        try equal(end, @backingInt(root.id));
         end = root.record().subtree_end;
     }
     try equal(document.nodeCount(), end);
@@ -57,11 +57,11 @@ test "partial markup keeps completed children and attributes in unfinished conta
     try expect(!doc.scopeComplete() and !doc.subtreeComplete());
     try audit(doc);
     try equal(@as(u32, 4), doc.nodeCount());
-    const root = doc.node(@enumFromInt(0)).?;
+    const root = doc.node(@fromBackingInt(@intCast(0))).?;
     try expect(!root.scopeComplete() and root.headerComplete().?);
-    try expect(doc.node(@enumFromInt(1)).?.subtreeComplete());
-    try expect(doc.node(@enumFromInt(2)).?.scopeComplete());
-    const child = doc.node(@enumFromInt(3)).?;
+    try expect(doc.node(@fromBackingInt(@intCast(1))).?.subtreeComplete());
+    try expect(doc.node(@fromBackingInt(@intCast(2))).?.scopeComplete());
+    const child = doc.node(@fromBackingInt(@intCast(3))).?;
     try expect(!child.scopeComplete() and !child.headerComplete().?);
     var attrs = child.attributes();
     try strings("ok", attrs.next().?.value());
@@ -99,7 +99,7 @@ test "complete representation differs from validity and valid empty input" {
     var missing = Keep.parseBorrowed(allocator, "<a>", discard, .{});
     defer missing.deinit();
     try equal(@as(u32, 0), missing.document.?.unrepresented().?.len);
-    try expect(!missing.document.?.node(@enumFromInt(0)).?.scopeComplete());
+    try expect(!missing.document.?.node(@fromBackingInt(@intCast(0))).?.scopeComplete());
 }
 
 test "partial retention does not change recovery outcomes findings or counters" {
@@ -209,7 +209,7 @@ fn allocationCase(gpa: std.mem.Allocator, source: []const u8) !void {
 }
 test "allocation failure and exhausted fixed pools preserve only consistent records" {
     for ([_][]const u8{ "<a x='1'><b/>text<c y='2'/></a>", "<a x='1'><b/>text<c y='2' z='", "<a x='1' x='2'><b/></wrong>" }) |source| {
-        try std.testing.checkAllAllocationFailures(allocator, allocationCase, .{source});
+        try @import("allocation_failures.zig").check(allocator, allocationCase, .{source});
         for (0..6) |capacity| for (0..3) |attrs| for (0..3) |depth| {
             var nodes: [6]markup.Node = undefined;
             var attributes: [3]markup.Attribute = undefined;
@@ -366,8 +366,8 @@ test "unsupported input retains earlier nodes regardless of reporting or error p
                 try equal(@as(u32, 7), bag.items()[0].span.start);
             }
             try expectPrefix(parsed.document.?, 7, 2, 0);
-            try expect(parsed.document.?.node(@enumFromInt(0)).?.headerComplete().?);
-            try expect(parsed.document.?.node(@enumFromInt(1)).?.subtreeComplete());
+            try expect(parsed.document.?.node(@fromBackingInt(@intCast(0))).?.headerComplete().?);
+            try expect(parsed.document.?.node(@fromBackingInt(@intCast(1))).?.subtreeComplete());
 
             var pools: markup.FixedDocumentStorage(.{ .nodes = 8 }) = .{};
             var frames: markup.FixedParseScratch(4) = .{};

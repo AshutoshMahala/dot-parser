@@ -42,8 +42,8 @@ pub const Buffers = struct {
     pub fn init(storage: Scratch, allocator: ?std.mem.Allocator) @This() {
         return .{
             .allocator = allocator,
-            .attributes = .{ .items = storage.attributes[0..0], .capacity = storage.attributes.len },
-            .keys = .{ .items = storage.attribute_keys, .capacity = storage.attribute_keys.len },
+            .attributes = .initBuffer(storage.attributes),
+            .keys = .fromOwnedSlice(storage.attribute_keys),
         };
     }
     pub fn deinit(self: *@This()) void {

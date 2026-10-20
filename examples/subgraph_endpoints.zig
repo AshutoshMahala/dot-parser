@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
     }
     var scopes = document.subgraphs();
     while (scopes.next()) |scope| {
-        try writer.print("scope {d} written nodes:", .{@intFromEnum(scope.id)});
+        try writer.print("scope {d} written nodes:", .{@backingInt(scope.id)});
         var references = scope.nodeReferences(.recursive);
         while (references.next()) |reference| {
             try writer.print(" {s}", .{document.text(document.nodeReference(reference).?.identifier)});
@@ -40,6 +40,6 @@ fn writeEndpoint(document: *const dot.Document, endpoint: dot.Endpoint, writer: 
                 if (port.second) |second| try writer.print(":{s}", .{document.text(second)});
             }
         },
-        .subgraph => |id| try writer.print("scope#{d}", .{@intFromEnum(id)}),
+        .subgraph => |id| try writer.print("scope#{d}", .{@backingInt(id)}),
     }
 }

@@ -42,17 +42,17 @@ pub fn main(init: std.process.Init) !void {
     const writer = &output.interface;
     const csv = try report.csvMode(init);
     if (csv) try writer.writeAll(report.header) else try writer.writeAll("Logical UTF-8 equality; processing heap=0; throughput counts source bytes, not decoded bytes\n");
-    inline for (.{
+    inline for (comptime .{
         .{ "short", "A&B", "\"A\" + \"&B\"", "A&amp;B" },
-        .{ "long", "A&B " ** 512, "\"" ++ "A&B " ** 512 ++ "\"", "A&amp;B " ** 512 },
+        .{ "long", std.mem.asBytes(&@as([512]["A&B ".len]u8, @splat("A&B ".*))), "\"" ++ std.mem.asBytes(&@as([512]["A&B ".len]u8, @splat("A&B ".*))) ++ "\"", std.mem.asBytes(&@as([512]["A&amp;B ".len]u8, @splat("A&amp;B ".*))) },
         .{ "unicode", "Straße 中文 😀", "\"Straße \" + \"中文 😀\"", "Stra&#223;e 中文 &#x1f600;" },
-        .{ "glue", "AB", "\"A\" /*" ++ "comment " ** 512 ++ "*/ + \"B\"", "A&#" ++ "0" ** 4096 ++ "66;" },
+        .{ "glue", "AB", "\"A\" /*" ++ std.mem.asBytes(&@as([512]["comment ".len]u8, @splat("comment ".*))) ++ "*/ + \"B\"", "A&#" ++ &@as([4096]u8, @splat('0')) ++ "66;" },
     }) |fixture| {
         const P = s.Profile(.{ .policy = .{ .execution = .{ .metering = true }, .validation = .{
             .equals = .{ .expected = fixture[1], .severity = .err },
         } } });
         inline for (std.enums.values(Host)) |host| {
-            const source = try init.gpa.dupe(u8, fixture[1 + @intFromEnum(host)]);
+            const source = try init.gpa.dupe(u8, fixture[1 + @backingInt(host)]);
             defer init.gpa.free(source);
             inline for (std.enums.values(Mode)) |mode| {
                 const observation = run(P, host, mode, source);

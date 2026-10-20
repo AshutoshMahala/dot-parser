@@ -591,6 +591,14 @@ never in event payloads. Combined tree/observer output,
 event-driven validation, composed event execution and public pull events remain
 future extensions, not claims of this slice.
 
+An opt-in event consumer can also observe complete names and recognized heads
+before enclosing syntax completes (`wants_early_events`, default false).
+These are provisional observations with the same source coordinates and owner
+identities, not successful commits or guessed unfinished tokens. They share the
+same event interface, dispatch credits and cancellation contract. A delivered
+document-name prefix can require terminal abort before document-begin. The
+consumer owns any retained outline; ordinary tree parsing adds no such output.
+
 Opt-in recovered DOT gaps use adjacent start/end tags in the existing compact
 order pool: two slots per gap. No new pool, document descriptor, per-node or
 per-edge metadata is required. Fixed pool exhaustion or allocation failure stops
@@ -935,7 +943,7 @@ Before declaring performance complete, the project must define benchmarks for:
 - Fixed-capacity failure paths.
 
 Initial measured baselines are recorded in `docs/PERFORMANCE.md` and are
-reproducible via `zig build bench -Doptimize=ReleaseFast`. Concrete numeric
+reproducible via `zig build bench -Doptimize=fast`. Concrete numeric
 *budgets* (pass/fail thresholds per profile) are still to be decided.
 
 ### R-PERF-005: Define what “do not pay” means

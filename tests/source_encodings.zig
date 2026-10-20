@@ -71,24 +71,83 @@ test "native name helpers match decoded UTF-8 hashes and check both ranges" {
         try std.testing.expectEqual(@as(usize, 3), document.capacities().nodes);
         // Framed but malformed native text cannot be decoded to a logical value.
         const H = dot.identifier.ForEncoding(actual);
+        const parsed_a = H.assumeParsed(document.text(a));
+        const parsed_b = H.assumeParsed(document.text(b));
+        const parsed_c = H.assumeParsed(document.text(c));
+        try std.testing.expect(try parsed_a.eql(parsed_b));
+        try std.testing.expect(!try parsed_a.eql(parsed_c));
+        try std.testing.expectEqual(try document.hashIdentifier(a), try parsed_a.hash());
+        try std.testing.expectEqual(try parsed_a.hash(), try parsed_b.hash());
         var raw: [4]u8 = undefined;
         if (E.width == 2) std.mem.writeInt(u16, raw[0..2], 0xd800, E.endian) else std.mem.writeInt(u32, &raw, 0x110000, E.endian);
         try std.testing.expectError(error.InvalidIdentifier, H.hash(raw[0..E.width]));
         try std.testing.expectError(error.InvalidIdentifier, H.eql(document.text(c), raw[0..E.width]));
+        // The parser accepts framed malformed native characters with encoding
+        // validation off. The trusted syntax path must not assume valid Unicode.
+        var malformed_buffer: [128]u8 = undefined;
+        const malformed_source = encode(actual, "graph { x; }", &malformed_buffer, false);
+        @memcpy(malformed_buffer[8 * E.width ..][0..E.width], raw[0..E.width]);
+        var malformed_parse = try P.parseBorrowed(gpa, malformed_source, dot.diagnostic.discard, .{ .encoding = actual });
+        defer malformed_parse.deinit(gpa);
+        try std.testing.expect(malformed_parse.outcome == .success);
+        const malformed_document = &malformed_parse.document.?;
+        const malformed_range = malformed_document.nodeReference(malformed_document.nodes[0].reference).?.identifier;
+        const malformed = H.assumeParsed(malformed_document.text(malformed_range));
+        try std.testing.expectError(error.InvalidIdentifier, malformed.hash());
+        try std.testing.expectError(error.InvalidIdentifier, parsed_c.eql(malformed));
+        try std.testing.expectError(error.InvalidIdentifier, malformed.eql(parsed_c));
         const position = try dot.location.textPosition(source, a.start + a.len, .{ .source_encoding = actual });
         try std.testing.expectEqual(@as(u32, 15), position.character); // BOM + "graph { " + café + emoji pair.
     }
 }
 
+test "parser-certified names preserve escape and concatenation semantics across encodings" {
+    inline for (.{ .ascii, .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+        const H = dot.identifier.ForEncoding(actual);
+        const P = dot.Profile(.{ .source_encodings = &.{ .ascii, .utf8, .utf16, .utf32 } });
+        const spellings = [_][]const u8{
+            "\"a\"/*gap*/+\"\"",
+            "a",
+            "\"a\\\r\nb\"",
+            "<ab>",
+            "\"a\"+<>+\"b\"",
+            "\"a\\\"b\"",
+            "\"a\\nb\"",
+            "\"\"",
+            "<>",
+            "-01.50",
+        };
+        for (spellings) |a| for (spellings) |b| {
+            var text: [256]u8 = undefined;
+            const raw = try std.fmt.bufPrint(&text, "graph {{ {s}; {s}; }}", .{ a, b });
+            var buffer: [1024]u8 = undefined;
+            const source = encode(actual, raw, &buffer, false);
+            var parsed = try P.parseBorrowed(gpa, source, dot.diagnostic.discard, .{ .encoding = actual });
+            defer parsed.deinit(gpa);
+            try std.testing.expect(parsed.outcome == .success);
+            const document = &parsed.document.?;
+            const left = document.text(document.nodeReference(document.nodes[0].reference).?.identifier);
+            const right = document.text(document.nodeReference(document.nodes[1].reference).?.identifier);
+            const trusted_left = H.assumeParsed(left);
+            const trusted_right = H.assumeParsed(right);
+            try std.testing.expectEqual(try H.hash(left), try trusted_left.hash());
+            try std.testing.expectEqual(try dot.identifier.hash(a), try trusted_left.hash());
+            try std.testing.expectEqual(try H.eql(left, right), try trusted_left.eql(trusted_right));
+        };
+    }
+}
+
 test "documented markup session sizes include default typo recovery" {
     if (@import("builtin").cpu.arch != .aarch64 or @import("builtin").os.tag != .macos) return error.SkipZigTest;
-    try std.testing.expectEqual(@as(usize, 440), @sizeOf(markup.Profile(.{}).Session));
-    try std.testing.expectEqual(@as(usize, 448), @sizeOf(markup.BoundedSession));
-    try std.testing.expectEqual(@as(usize, 528), @sizeOf(markup.Profile(.{ .runtime_policy = true }).Session));
+    // Zig 0.17 adds one SafetyLock to each of the builder's two ArrayLists.
+    const safety_bytes: usize = if (@import("builtin").mode.runtimeSafety()) 16 else 0;
+    try std.testing.expectEqual(@as(usize, 440) + safety_bytes, @sizeOf(markup.Profile(.{}).Session));
+    try std.testing.expectEqual(@as(usize, 448) + safety_bytes, @sizeOf(markup.BoundedSession));
+    try std.testing.expectEqual(@as(usize, 528) + safety_bytes, @sizeOf(markup.Profile(.{ .runtime_policy = true }).Session));
     const Exact = markup.Profile(.{ .policy = .{ .closing_tag_recovery = .exact } });
     const ExactBounded = markup.Profile(.{ .policy = .{ .closing_tag_recovery = .exact, .execution = .{ .metering = true } } });
-    try std.testing.expectEqual(@as(usize, 432), @sizeOf(Exact.Session));
-    try std.testing.expectEqual(@as(usize, 440), @sizeOf(ExactBounded.Session));
+    try std.testing.expectEqual(@as(usize, 432) + safety_bytes, @sizeOf(Exact.Session));
+    try std.testing.expectEqual(@as(usize, 440) + safety_bytes, @sizeOf(ExactBounded.Session));
 }
 
 test "native partial validation checks retained scoped operators at physical offsets" {
@@ -198,7 +257,7 @@ test "scope cancellation precedes malformed header metadata through source facad
 }
 
 test "scope metadata audits poll before reaching a malformed late attribute" {
-    const source = "<a" ++ " x='1'" ** 130 ++ ">";
+    const source = "<a" ++ std.mem.asBytes(&@as([130][" x='1'".len]u8, @splat(" x='1'".*))) ++ ">";
     var attributes: [130]markup.ScopeAttribute = undefined;
     for (&attributes, 0..) |*attribute, i| attribute.* = .{
         .name = .{ .start = @intCast(3 + 6 * i), .len = 1 },
@@ -270,7 +329,7 @@ test "native inline rendering clips long names only once" {
     inline for (.{ .utf16le, .utf32be }) |actual| {
         const M = markup.Profile(.{ .source_encodings = &.{ .utf16, .utf32 }, .policy = .{ .mode = .structural } });
         var buffer: [512]u8 = undefined;
-        const bytes = encode(actual, "<" ++ "x" ** 100 ++ "></y>", &buffer, false);
+        const bytes = encode(actual, "<" ++ &@as([100]u8, @splat('x')) ++ "></y>", &buffer, false);
         var bag: markup.FixedDiagnosticBag(16) = .{};
         var parsed = try M.parseBorrowed(gpa, bytes, bag.sink(), .{ .encoding = actual });
         defer parsed.deinit();
@@ -511,7 +570,7 @@ test "UTF-8 byte validators respect ASCII provenance even when validity was not 
 }
 
 test "markup recovery allowance uses source code units across native readers and policies" {
-    const text = "<aa>" ** 40 ++ "</ab>" ** 40;
+    const text = std.mem.asBytes(&@as([40]["<aa>".len]u8, @splat("<aa>".*))) ++ std.mem.asBytes(&@as([40]["</ab>".len]u8, @splat("</ab>".*)));
     inline for (.{ false, true }) |runtime| inline for (.{ .scalar, .block }) |scanner| {
         const M = markup.Profile(.{
             .source_encodings = &.{ .ascii, .utf8, .utf16, .utf32 },

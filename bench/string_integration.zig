@@ -5,7 +5,7 @@ const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 const strings = @import("string_processor");
 const report = @import("report.zig");
-const integrated = !@import("integration_options").default_only and @typeInfo(@TypeOf(dot.Profile)).@"fn".params[0].type == null;
+const integrated = !@import("integration_options").default_only and @typeInfo(@TypeOf(dot.Profile)).@"fn".param_types[0] == null;
 const Mode = enum { default, passthrough, process };
 const n = 2000;
 
@@ -45,12 +45,12 @@ pub fn main(init: std.process.Init) !void {
     const w = &output.interface;
     const csv = try report.csvMode(init);
     if (csv) try w.writeAll(report.header);
-    inline for (.{ dot, markup }) |api| {
-        inline for (.{
+    inline for (comptime .{ dot, markup }) |api| {
+        inline for (comptime .{
             .{ "short", "Seattle", "\"Seattle\"", "'Seattle'" },
             .{ "decoded", "A&B", "\"A\"/*join*/+\"&B\"", "'A&amp;B'" },
             .{ "unicode", "Straße 中文 😀", "\"Straße 中文 😀\"", "'Straße 中文 &#x1f600;'" },
-            .{ "long", "abcdefgh " ** 256, "\"" ++ "abcdefgh " ** 256 ++ "\"", "'" ++ "abcdefgh " ** 256 ++ "'" },
+            .{ "long", std.mem.asBytes(&@as([256]["abcdefgh ".len]u8, @splat("abcdefgh ".*))), "\"" ++ std.mem.asBytes(&@as([256]["abcdefgh ".len]u8, @splat("abcdefgh ".*))) ++ "\"", "'" ++ std.mem.asBytes(&@as([256]["abcdefgh ".len]u8, @splat("abcdefgh ".*))) ++ "'" },
         }) |fixture| {
             var source: std.ArrayList(u8) = .empty;
             defer source.deinit(init.gpa);
@@ -65,18 +65,18 @@ pub fn main(init: std.process.Init) !void {
             for (0..12) |round| {
                 inline for (0..3) |slot| {
                     const index = if (round % 2 == 0) slot else 2 - slot;
-                    switch (@as(Mode, @enumFromInt(index))) {
+                    switch (@as(Mode, @fromBackingInt(@intCast(index)))) {
                         inline else => |mode| if (comptime integrated or mode == .default) {
                             const begin = std.Io.Clock.Timestamp.now(init.io, .awake);
                             for (0..3) |_| try run(api, mode, fixture[1], init.gpa, source.items);
                             const duration = begin.durationTo(std.Io.Clock.Timestamp.now(init.io, .awake)).raw.nanoseconds;
-                            if (round >= 3) times[@intFromEnum(mode)][round - 3] = @intCast(@divTrunc(duration, 3));
+                            if (round >= 3) times[@backingInt(mode)][round - 3] = @intCast(@divTrunc(duration, 3));
                         },
                     }
                 }
             }
             inline for (comptime std.meta.tags(Mode)) |mode| if (comptime integrated or mode == .default) {
-                const samples = &times[@intFromEnum(mode)];
+                const samples = &times[@backingInt(mode)];
                 std.mem.sort(u64, samples, {}, std.sort.asc(u64));
                 const ns: f64 = @floatFromInt(samples[4]);
                 const id = comptime (if (api == dot) "dot/" else "markup/") ++ fixture[0] ++ "/" ++ @tagName(mode);

@@ -44,14 +44,14 @@ export fn parse_markup(source: [*]const u8, len: usize, limit: u32, stop: *u8) u
     var frames: markup.FixedParseScratch(8) = .{};
     var keys: markup.FixedValidationScratch(32) = .{};
     const hook: markup.Cancellation = .{ .context = stop, .is_requested = stopped };
-    var session = (if (features.runtime_policy) P.Session.init(source[0..len], .{ .document = storage.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .on_error = @enumFromInt(limit % 2), .diagnostics = .{ .unsupported = @enumFromInt(limit % 3) }, .limits = .{ .max_nodes = limit }, .syntax = .{ .malformed_reference = @enumFromInt(limit % 3) } }, .cancellation = hook } else .{ .cancellation = hook }) catch return 0 else P.Session.init(source[0..len], .{ .document = storage.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .on_error = @enumFromInt(limit % 2), .diagnostics = .{ .unsupported = @enumFromInt(limit % 3) }, .limits = .{ .max_nodes = limit }, .syntax = .{ .malformed_reference = @enumFromInt(limit % 3) } }, .cancellation = hook } else .{ .cancellation = hook }));
+    var session = (if (features.runtime_policy) P.Session.init(source[0..len], .{ .document = storage.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .on_error = @fromBackingInt(@intCast(limit % 2)), .diagnostics = .{ .unsupported = @fromBackingInt(@intCast(limit % 3)) }, .limits = .{ .max_nodes = limit }, .syntax = .{ .malformed_reference = @fromBackingInt(@intCast(limit % 3)) } }, .cancellation = hook } else .{ .cancellation = hook }) catch return 0 else P.Session.init(source[0..len], .{ .document = storage.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .on_error = @fromBackingInt(@intCast(limit % 2)), .diagnostics = .{ .unsupported = @fromBackingInt(@intCast(limit % 3)) }, .limits = .{ .max_nodes = limit }, .syntax = .{ .malformed_reference = @fromBackingInt(@intCast(limit % 3)) } }, .cancellation = hook } else .{ .cancellation = hook }));
     defer session.deinit();
     while (true) {
         const p = if (features.runtime_policy) session.advance(1) catch return 0 else session.advance(1);
         if (p.outcome != null) break;
     }
     const r = session.result().?;
-    if (r.outcome != .success) return r.syntax_errors +% @intFromEnum(r.completion);
+    if (r.outcome != .success) return r.syntax_errors +% @backingInt(r.completion);
     var total = r.counts.nodes +% r.accepted_deviations +% r.warnings;
     var roots = r.document.?.roots();
     while (roots.next()) |node| {
@@ -61,7 +61,7 @@ export fn parse_markup(source: [*]const u8, len: usize, limit: u32, stop: *u8) u
         while (attributes.next()) |attribute| total +%= @intCast(attribute.value().len);
     }
     const doc = r.document.?;
-    const checked = (if (features.runtime_policy) P.validateIn(&doc, keys.storage(), markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .duplicate_attribute = .warning, .invalid_encoding = @enumFromInt(limit % 3), .names = .{ .severity = @enumFromInt(limit % 3) }, .references = .{ .severity = @enumFromInt(limit % 3) } } }, .cancellation = hook } else .{ .cancellation = hook }) catch return 0 else P.validateIn(&doc, keys.storage(), markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .duplicate_attribute = .warning, .invalid_encoding = @enumFromInt(limit % 3), .names = .{ .severity = @enumFromInt(limit % 3) }, .references = .{ .severity = @enumFromInt(limit % 3) } } }, .cancellation = hook } else .{ .cancellation = hook }));
+    const checked = (if (features.runtime_policy) P.validateIn(&doc, keys.storage(), markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .duplicate_attribute = .warning, .invalid_encoding = @fromBackingInt(@intCast(limit % 3)), .names = .{ .severity = @fromBackingInt(@intCast(limit % 3)) }, .references = .{ .severity = @fromBackingInt(@intCast(limit % 3)) } } }, .cancellation = hook } else .{ .cancellation = hook }) catch return 0 else P.validateIn(&doc, keys.storage(), markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .duplicate_attribute = .warning, .invalid_encoding = @fromBackingInt(@intCast(limit % 3)), .names = .{ .severity = @fromBackingInt(@intCast(limit % 3)) }, .references = .{ .severity = @fromBackingInt(@intCast(limit % 3)) } } }, .cancellation = hook } else .{ .cancellation = hook }));
     if (checked.completion != .complete) return 0;
     total +%= @truncate(checked.errors +% checked.warnings);
     if (features.runtime_policy) session.reset("<x/>", markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .execution = .{ .metering = false } } } else .{}) catch return 0 else session.reset("<x/>", markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .execution = .{ .metering = false } } } else .{});
@@ -88,7 +88,7 @@ export fn check_markup_fragment(source: [*]const u8, len: usize, origin: u32, st
 
 export fn check_graphviz_vocabulary(source: [*]const u8, len: usize, severity: u32) u32 {
     const G = markup.Profile(.{ .runtime_policy = features.runtime_policy, .policy = .{ .mode = .graphviz, .validation = .{ .duplicate_attribute = .off } } });
-    const checked = (if (features.runtime_policy) G.validateSourceIn(source[0..len], .{}, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .graphviz = .{ .unknown_element = @enumFromInt(severity % 3), .invalid_attribute = @enumFromInt(severity % 3) } } } } else .{}) catch return 0 else G.validateSourceIn(source[0..len], .{}, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .graphviz = .{ .unknown_element = @enumFromInt(severity % 3), .invalid_attribute = @enumFromInt(severity % 3) } } } } else .{}));
+    const checked = (if (features.runtime_policy) G.validateSourceIn(source[0..len], .{}, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .graphviz = .{ .unknown_element = @fromBackingInt(@intCast(severity % 3)), .invalid_attribute = @fromBackingInt(@intCast(severity % 3)) } } } } else .{}) catch return 0 else G.validateSourceIn(source[0..len], .{}, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .validation = .{ .graphviz = .{ .unknown_element = @fromBackingInt(@intCast(severity % 3)), .invalid_attribute = @fromBackingInt(@intCast(severity % 3)) } } } } else .{}));
     return if (checked.completion == .complete) @truncate(checked.errors +% checked.warnings) else 0;
 }
 
@@ -96,6 +96,6 @@ export fn parse_graphviz_fragment(source: [*]const u8, len: usize, mode: u32) u3
     const G = markup.Profile(.{ .runtime_policy = features.runtime_policy, .policy = .{ .mode = .graphviz } });
     var nodes: markup.FixedDocumentStorage(.{ .nodes = 16, .attributes = 16 }) = .{};
     var frames: markup.FixedParseScratch(8) = .{};
-    const parsed = (if (features.runtime_policy) G.parseBorrowedIn(source[0..len], .{ .document = nodes.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .mode = @enumFromInt(mode % 2) } } else .{}) catch return 0 else G.parseBorrowedIn(source[0..len], .{ .document = nodes.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .mode = @enumFromInt(mode % 2) } } else .{}));
+    const parsed = (if (features.runtime_policy) G.parseBorrowedIn(source[0..len], .{ .document = nodes.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .mode = @fromBackingInt(@intCast(mode % 2)) } } else .{}) catch return 0 else G.parseBorrowedIn(source[0..len], .{ .document = nodes.storage(), .scratch = frames.storage() }, markup.diagnostic.discard, if (features.runtime_policy) .{ .policy = .{ .mode = @fromBackingInt(@intCast(mode % 2)) } } else .{}));
     return if (parsed.outcome == .success) parsed.counts.nodes else 0;
 }

@@ -32,15 +32,15 @@ pub fn main(init: std.process.Init) !void {
     const writer = &output.interface;
     const csv = try report.csvMode(init);
     if (csv) try writer.writeAll(report.header) else try writer.print("Result={d} Diagnostic={d}; processor heap allocations=0 (discard sink)\n", .{ @sizeOf(s.Result), @sizeOf(s.Diagnostic) });
-    inline for (.{ "Seattle", "Straße 中文 😀", "The quick brown fox. " ** 200 }, .{ "short", "unicode", "long_ascii" }) |text, fixture| {
-        inline for (.{ s.ActualEncoding.utf8, .utf16le, .utf32le }) |actual| {
+    inline for (comptime .{ "Seattle", "Straße 中文 😀", std.mem.asBytes(&@as([200]["The quick brown fox. ".len]u8, @splat("The quick brown fox. ".*))) }, .{ "short", "unicode", "long_ascii" }) |text, fixture| {
+        inline for (comptime .{ s.ActualEncoding.utf8, .utf16le, .utf32le }) |actual| {
             const buffer = try init.gpa.alloc(u8, text.len * 4);
             defer init.gpa.free(buffer);
             const bytes = encode(actual, text, buffer);
             // The same harness also builds against older revisions. Newly
             // supported comparisons become new cases, never fake regressions.
             inline for (comptime std.meta.tags(s.Comparison)) |comparison| {
-                inline for (.{ false, true }) |custom| {
+                inline for (comptime .{ false, true }) |custom| {
                     const P = Checker(text, comparison, custom);
                     const iterations = @max(1000, 4_000_000 / bytes.len);
                     var times: [7]u64 = undefined;

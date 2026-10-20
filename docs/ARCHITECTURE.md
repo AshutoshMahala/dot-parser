@@ -193,7 +193,7 @@ zig build test-markup          # markup only, without building DOT
 zig build examples             # build and run all examples
 zig build check-freestanding   # RISC-V32 and Wasm32 compile checks
 zig build check-benches        # compile benchmarks without running them
-zig build -Doptimize=ReleaseFast test --fuzz=1000   # longer fuzzing
+zig build -Doptimize=fast test --fuzz=1000   # longer fuzzing
 ```
 
 Benchmarks are listed in [Performance](PERFORMANCE.md#running-the-benchmarks).

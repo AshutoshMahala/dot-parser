@@ -238,7 +238,7 @@ pub const ScopeView = struct {
 
     pub fn state(self: ScopeView) Completeness {
         if (self.id == .root) return self.document.state;
-        const value = self.document.subgraph_records[@intFromEnum(self.id) - 1];
+        const value = self.document.subgraph_records[@backingInt(self.id) - 1];
         if (value.subtree_end == 0) return .partial;
         if (self.document.state == .complete) return .complete;
         // Recovery markers lie in the same contiguous body interval as its
@@ -263,14 +263,14 @@ pub const ScopeView = struct {
         return if (self.id == .root) location.Range{ .start = 0, .len = if (self.document.state == .partial) self.document.retained_end else @intCast(self.document.source.len) } else self.record().source;
     }
     fn record(self: ScopeView) Subgraph {
-        return self.document.subgraphRecord(@intFromEnum(self.id) - 1);
+        return self.document.subgraphRecord(@backingInt(self.id) - 1);
     }
     pub fn statements(self: ScopeView, traversal: Traversal) ScopedStatementIterator {
         const body = if (self.id == .root) StatementRange{ .start = 0, .len = @intCast(self.document.order.len) } else self.record().body;
-        return .{ .document = self.document, .index = body.start, .end = @as(usize, body.start) + body.len, .traversal = traversal, .scope_cursor = @intFromEnum(self.id), .scope_end = if (self.id == .root) self.document.subgraph_records.len else self.record().subtree_end };
+        return .{ .document = self.document, .index = body.start, .end = @as(usize, body.start) + body.len, .traversal = traversal, .scope_cursor = @backingInt(self.id), .scope_end = if (self.id == .root) self.document.subgraph_records.len else self.record().subtree_end };
     }
     pub fn subgraphs(self: ScopeView, traversal: Traversal) ChildScopeIterator {
-        return .{ .document = self.document, .index = @intFromEnum(self.id), .end = if (self.id == .root) self.document.subgraph_records.len else self.record().subtree_end, .traversal = traversal };
+        return .{ .document = self.document, .index = @backingInt(self.id), .end = if (self.id == .root) self.document.subgraph_records.len else self.record().subtree_end, .traversal = traversal };
     }
     pub fn edges(self: ScopeView, traversal: Traversal) ScopedEdgeIterator {
         const range = self.sourceRange().?;
@@ -278,7 +278,7 @@ pub const ScopeView = struct {
         const end: usize = @intCast(range.endOffset());
         var edges_it = self.document.edgeIterator();
         edges_it.seek(start);
-        return .{ .edges = edges_it, .scope_id = self.id, .current_scope = self.id, .scope_cursor = @intFromEnum(self.id), .end = end, .traversal = traversal };
+        return .{ .edges = edges_it, .scope_id = self.id, .current_scope = self.id, .scope_cursor = @backingInt(self.id), .end = end, .traversal = traversal };
     }
     /// Written references, including edge-only nodes. Duplicates remain; a chain
     /// middle is visited once. This is not resolved node membership.
@@ -293,7 +293,7 @@ pub const SubgraphIterator = struct {
     pub fn next(self: *SubgraphIterator) ?ScopeView {
         if (self.index == self.document.subgraph_records.len) return null;
         self.index += 1;
-        return .{ .document = self.document, .id = @enumFromInt(self.index) };
+        return .{ .document = self.document, .id = @fromBackingInt(@intCast(self.index)) };
     }
 };
 
@@ -330,7 +330,7 @@ pub const ChildScopeIterator = struct {
     traversal: Traversal,
     pub fn next(self: *ChildScopeIterator) ?ScopeView {
         if (self.index >= self.end) return null;
-        const id: ScopeId = @enumFromInt(self.index + 1);
+        const id: ScopeId = @fromBackingInt(@intCast(self.index + 1));
         self.index = if (self.traversal == .direct) self.document.subgraphRecord(self.index).subtree_end else self.index + 1;
         return self.document.scope(id);
     }
@@ -374,7 +374,7 @@ pub const ScopedEdgeIterator = struct {
             if (offset >= self.end) break;
             if (self.traversal == .recursive) return edge;
             while (self.current_scope != self.scope_id) {
-                const record = self.edges.document.subgraphRecord(@intFromEnum(self.current_scope) - 1);
+                const record = self.edges.document.subgraphRecord(@backingInt(self.current_scope) - 1);
                 if (offset < @as(usize, record.source.start) + record.source.len) break;
                 self.current_scope = record.parent;
             }
@@ -383,7 +383,7 @@ pub const ScopedEdgeIterator = struct {
                 if (record.source.start > offset) break;
                 self.scope_cursor += 1;
                 if (offset < @as(usize, record.source.start) + record.source.len)
-                    self.current_scope = @enumFromInt(self.scope_cursor);
+                    self.current_scope = @fromBackingInt(@intCast(self.scope_cursor));
             }
             if (self.current_scope == self.scope_id) return edge;
         }
@@ -438,7 +438,7 @@ pub const SkippedRangeIterator = struct {
     pub fn next(self: *SkippedRangeIterator) ?SkippedRange {
         while (self.index < self.document.order.len) {
             while (self.current_scope != .root) {
-                const record = self.document.subgraphRecord(@intFromEnum(self.current_scope) - 1);
+                const record = self.document.subgraphRecord(@backingInt(self.current_scope) - 1);
                 if (self.index < @as(usize, record.body.start) + record.body.len) break;
                 self.current_scope = record.parent;
             }
@@ -446,7 +446,7 @@ pub const SkippedRangeIterator = struct {
                 const record = self.document.subgraphRecord(self.scope_cursor);
                 if (record.body.start > self.index) break;
                 self.scope_cursor += 1;
-                if (self.index < @as(usize, record.body.start) + record.body.len) self.current_scope = @enumFromInt(self.scope_cursor);
+                if (self.index < @as(usize, record.body.start) + record.body.len) self.current_scope = @fromBackingInt(@intCast(self.scope_cursor));
             }
             const value = self.document.order[self.index];
             self.index += 1;
@@ -471,7 +471,7 @@ pub const StatementIterator = struct {
     pub fn nextScoped(self: *StatementIterator) ?ScopedStatement {
         while (self.index < self.document.order.len) {
             while (self.current_scope != .root) {
-                const record = self.document.subgraphRecord(@intFromEnum(self.current_scope) - 1);
+                const record = self.document.subgraphRecord(@backingInt(self.current_scope) - 1);
                 if (self.index < @as(usize, record.body.start) + record.body.len) break;
                 self.current_scope = record.parent;
             }
@@ -480,7 +480,7 @@ pub const StatementIterator = struct {
                 if (record.body.start > self.index) break;
                 self.scope_cursor += 1;
                 if (self.index < @as(usize, record.body.start) + record.body.len)
-                    self.current_scope = @enumFromInt(self.scope_cursor);
+                    self.current_scope = @fromBackingInt(@intCast(self.scope_cursor));
             }
             const id = self.document.order[self.index];
             self.index += 1;
@@ -737,7 +737,7 @@ pub const Document = struct {
     /// O(1) checked scope lookup. Root is zero; subgraph IDs are one-based
     /// occurrences in opening/source order, independent of names.
     pub fn scope(self: *const Document, id: ScopeId) ?ScopeView {
-        if (@intFromEnum(id) > self.subgraph_records.len) return null;
+        if (@backingInt(id) > self.subgraph_records.len) return null;
         return .{ .document = self, .id = id };
     }
     pub fn subgraphs(self: *const Document) SubgraphIterator {
@@ -806,7 +806,7 @@ pub const Document = struct {
                 break :blk Statement{ .edge_chain = .{ .first = owner.first, .links = .{ .scoped = index } } };
             } else null,
             .subgraph => |index| if (index < self.subgraph_records.len)
-                Statement{ .subgraph = @enumFromInt(index + 1) }
+                Statement{ .subgraph = @fromBackingInt(@intCast(index + 1)) }
             else
                 null,
             .node => |index| if (index < self.nodes.len)
@@ -2107,7 +2107,7 @@ fn appendSkippedRange(self: anytype, span: location.Span) @TypeOf(self.*).Error!
     _ = appendPrepared(self, .order, .{ .skipped_end = @intCast(span.endOffset()) });
 }
 fn endpoint(self: anytype, span: location.Span, port: ?u32, scope: ?u32) @TypeOf(self.*).Error!Endpoint {
-    return if (scope) |id| .{ .subgraph = @enumFromInt(id) } else .{ .node = try self.reference(span, port) };
+    return if (scope) |id| .{ .subgraph = @fromBackingInt(@intCast(id)) } else .{ .node = try self.reference(span, port) };
 }
 fn promoteEdge(self: anytype, event: event_types.Edge, comptime prepared: bool) @TypeOf(self.*).Error!void {
     if (self.scope_state.scoped_owner != null) return;
@@ -2140,7 +2140,7 @@ fn appendScopedLink(self: anytype, right: Endpoint, operator: EdgeOperator, at: 
 inline fn consume(self: anytype, value: event_types.Event) @TypeOf(self.*).Error!event_types.Action {
     switch (value) {
         .begin_document => |header| try self.beginDocument(header),
-        .begin_statement => {},
+        .begin_statement, .identifier, .statement_head, .document_name, .subgraph_name => {},
         .begin_scope => |scope| try self.beginSubgraph(scope),
         .end_scope => |scope| try self.endSubgraph(scope),
         .attribute => |pair| try self.attribute(pair.pair),
@@ -2151,10 +2151,12 @@ inline fn consume(self: anytype, value: event_types.Event) @TypeOf(self.*).Error
         .commit_node => |commit| try self.nodeStatement(commit.value),
         .commit_edge => |commit| try self.edgeStatement(commit.value),
         .commit_edge_chain => |commit| try self.edgeChainStatement(commit.value),
-        .commit_subgraph => |commit| try self.subgraphStatement(@intFromEnum(commit.value)),
+        .commit_subgraph => |commit| try self.subgraphStatement(@backingInt(commit.value)),
         .commit_assignment => |commit| try self.assignment(commit.value),
         .commit_attribute_statement => |commit| try self.attributeStatement(commit.value),
-        .skipped => |gap| if (@hasDecl(@TypeOf(self.*), "skippedRange")) {
+        // Only retained builders store gaps. Keep their storage methods private;
+        // Zig 0.17's @hasDecl deliberately sees public declarations only.
+        .skipped => |gap| if (@TypeOf(self.*) != CountingSink) {
             try self.skippedRange(gap.span);
         },
         .comment => |comment| try self.comment(comment),
@@ -2173,7 +2175,7 @@ fn beginScope(self: anytype, event: event_types.BeginScope) @TypeOf(self.*).Erro
     std.debug.assert(self.phase == .building and self.pendingRange().len == 0);
     const index = try self.statementIndex(poolLen(self, .subgraphs), event.start);
     const id = index + 1;
-    std.debug.assert(id == @intFromEnum(event.id));
+    std.debug.assert(id == @backingInt(event.id));
     // Scope entry can also promote an edge and append its continuation. Check
     // all affected pools in event order before replacing owners/link pointers.
     if (event.role == .left) {
@@ -2200,7 +2202,7 @@ fn beginScope(self: anytype, event: event_types.BeginScope) @TypeOf(self.*).Erro
         }
         try promoteEdge(self, edge, true);
         if (event.role == .link)
-            try appendScopedLink(self, .{ .subgraph = @enumFromInt(id) }, event.link_operator.?, event.link_operator_span.?, true);
+            try appendScopedLink(self, .{ .subgraph = @fromBackingInt(@intCast(id)) }, event.link_operator.?, event.link_operator_span.?, true);
     }
     _ = appendPrepared(self, .subgraphs, .{
         .parent = self.current_scope,
@@ -2208,7 +2210,7 @@ fn beginScope(self: anytype, event: event_types.BeginScope) @TypeOf(self.*).Erro
         .source = self.range(event.start),
         .body = .{ .start = @intCast(poolLen(self, .order)), .len = 0 },
     });
-    self.current_scope = @enumFromInt(id);
+    self.current_scope = @fromBackingInt(@intCast(id));
     self.pending_links = poolLen(self, .edge_links);
     self.pending_attributes = poolLen(self, .attributes);
 }
@@ -2223,9 +2225,9 @@ fn finishSubgraphStatement(self: anytype, id: u32) void {
     self.scope_state = .{};
 }
 fn endScope(self: anytype, event: event_types.EndScope) @TypeOf(self.*).Error!void {
-    std.debug.assert(self.phase == .building and @intFromEnum(self.current_scope) == @intFromEnum(event.id));
+    std.debug.assert(self.phase == .building and @backingInt(self.current_scope) == @backingInt(event.id));
     std.debug.assert(self.pendingRange().len == 0);
-    const record = &poolItems(self, .subgraphs)[@intFromEnum(event.id) - 1];
+    const record = &poolItems(self, .subgraphs)[@backingInt(event.id) - 1];
     record.source.len = @intCast(event.close.endOffset() - record.source.start);
     record.body.len = @intCast(poolLen(self, .order) - record.body.start);
     record.subtree_end = @intCast(poolLen(self, .subgraphs));
@@ -2260,7 +2262,7 @@ fn openForTest(builder: anytype, value: event_types.BeginScope) @TypeOf(builder.
     var scope = value;
     // Overflow probes deliberately fake pool lengths beyond the source domain.
     // Keep the test payload representable; the builder must reject its count.
-    scope.id = @enumFromInt(@min(poolLen(builder, .subgraphs), std.math.maxInt(u32) - 1) + 1);
+    scope.id = @fromBackingInt(@intCast(@min(poolLen(builder, .subgraphs), std.math.maxInt(u32) - 1) + 1));
     _ = try builder.onEvent(.{ .begin_scope = scope });
     return .{ .id = scope.id, .context = builder.suspendScope() };
 }
@@ -2367,9 +2369,9 @@ test "scope entry checks every pool before changing live records" {
             var saved_pools: Pools = .{};
             var builder = FixedBuilder.init("graph { {} -- {} -- {} }", pools.storage());
             try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } });
-            const entry: event_types.BeginScope = .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null, .role = role, .edge = edge, .link_operator = .undirected, .link_operator_span = at };
+            const entry: event_types.BeginScope = .{ .id = .root, .parent = .root, .statement = @fromBackingInt(@intCast(at.start)), .start = at, .name = null, .role = role, .edge = edge, .link_operator = .undirected, .link_operator_span = at };
             if (role == .link) {
-                const first = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null, .role = .right, .edge = edge });
+                const first = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @fromBackingInt(@intCast(at.start)), .start = at, .name = null, .role = .right, .edge = edge });
                 try closeForTest(&builder, first, at);
                 const second = try openForTest(&builder, entry);
                 try closeForTest(&builder, second, at);
@@ -2400,14 +2402,14 @@ test "scoped edge promotion does not publish its owner when order is full" {
         const at: location.Span = .{ .start = 7, .len = 1 };
         var builder = FixedBuilder.init("graph { {} -- a }", pools.storage());
         try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } });
-        const entry = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null });
+        const entry = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @fromBackingInt(@intCast(at.start)), .start = at, .name = null });
         try closeForTest(&builder, entry, at);
-        try builder.subgraphStatement(@intFromEnum(entry.id));
+        try builder.subgraphStatement(@backingInt(entry.id));
         const before = builder;
         try std.testing.expectError(error.PoolExhausted, @call(.auto, @field(FixedBuilder, method), .{ &builder, event_types.Edge{
             .left = at,
             .right = at,
-            .left_scope = @intFromEnum(entry.id),
+            .left_scope = @backingInt(entry.id),
             .operator = .undirected,
             .operator_span = at,
         } }));
@@ -2425,12 +2427,12 @@ fn scopeAllocationProbe(allocator: std.mem.Allocator, role: event_types.ScopeRol
     defer builder.deinit();
     try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } });
     if (role == .link) {
-        const entry = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null, .role = .right, .edge = edge });
+        const entry = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @fromBackingInt(@intCast(at.start)), .start = at, .name = null, .role = .right, .edge = edge });
         try closeForTest(&builder, entry, at);
     }
     const before = builder;
     const owner = if (before.scope_state.scoped_owner) |id| before.scoped_edges.items[id] else null;
-    _ = openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null, .role = role, .edge = edge, .link_operator = .undirected, .link_operator_span = at }) catch |err| {
+    _ = openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @fromBackingInt(@intCast(at.start)), .start = at, .name = null, .role = role, .edge = edge, .link_operator = .undirected, .link_operator_span = at }) catch |err| {
         inline for (.{ .order, .subgraphs, .scoped_edges, .scoped_edge_links }) |pool| {
             try expectEqual(poolLen(&before, pool), poolLen(&builder, pool));
         }
@@ -2845,14 +2847,14 @@ test "scope order and ID overflow are typed before narrowing or pool access" {
         var builder = FixedBuilder.init("graph{}", pools.storage());
         try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
         @field(builder, field) = std.math.maxInt(Index);
-        try std.testing.expectError(error.StatementIndexOverflow, openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null }));
+        try std.testing.expectError(error.StatementIndexOverflow, openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @fromBackingInt(@intCast(at.start)), .start = at, .name = null }));
         try expectEqual(diagnostic.Capacity.Resource.statement_index, builder.failure_info.?.capacity.?.resource);
         builder.abortDocument(.sink_failure);
         try expectEqual(@as(usize, 0), builder.subgraphs_len);
     }
     var builder = FixedBuilder.init("graph{}", pools.storage());
     try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
-    _ = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @enumFromInt(at.start), .start = at, .name = null });
+    _ = try openForTest(&builder, .{ .id = .root, .parent = .root, .statement = @fromBackingInt(@intCast(at.start)), .start = at, .name = null });
     builder.abortDocument(.sink_failure);
     try expectEqual(ScopeId.root, builder.current_scope);
 }

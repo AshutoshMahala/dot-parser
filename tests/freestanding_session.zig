@@ -24,7 +24,7 @@ fn consume(comptime metering: bool, comptime cancellation: bool, source: [*]cons
         _ = session.run();
     }
     const result = session.result().?;
-    return @intFromEnum(std.meta.activeTag(result.outcome)) + if (result.document) |doc| doc.statementCount() else @as(usize, 0);
+    return @backingInt(std.meta.activeTag(result.outcome)) + if (result.document) |doc| doc.statementCount() else @as(usize, 0);
 }
 
 export fn parse_session(source: [*]const u8, len: usize, flag: *u8) usize {

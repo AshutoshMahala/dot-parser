@@ -271,7 +271,7 @@ fn audit(doc: *const dot.Document) !void {
         }
     };
     for (0..doc.subgraph_records.len + 1) |index| {
-        const scope = doc.scope(@enumFromInt(index)).?;
+        const scope = doc.scope(@fromBackingInt(@intCast(index))).?;
         try expect(scope.sourceRange().?.endOffset() <= doc.source.len);
         if (scope.name()) |name| _ = doc.text(name);
         inline for (.{ .direct, .recursive }) |traversal| {
@@ -280,7 +280,7 @@ fn audit(doc: *const dot.Document) !void {
             while (children.next()) |child| {
                 count += 1;
                 try expect(count <= doc.subgraph_records.len);
-                try expect(@intFromEnum(child.id) > index);
+                try expect(@backingInt(child.id) > index);
             }
             var statements = scope.statements(traversal);
             count = 0;
@@ -318,8 +318,8 @@ test "DOT partial retention preserves safe scopes without claiming syntax succes
     const doc = &parsed.document.?;
     try equal(dot.Completeness.partial, doc.state);
     try expect(!doc.scopeComplete() and !doc.subtreeComplete());
-    try expect(doc.scope(@enumFromInt(1)).?.scopeComplete());
-    try expect(!doc.scope(@enumFromInt(2)).?.scopeComplete());
+    try expect(doc.scope(@fromBackingInt(@intCast(1))).?.scopeComplete());
+    try expect(!doc.scope(@fromBackingInt(@intCast(2))).?.scopeComplete());
     try equal(@as(usize, 2), doc.nodes.len);
     try equal(@as(usize, 1), doc.edges.len);
     try audit(doc);
@@ -396,11 +396,11 @@ test "DOT partial sessions safely freeze at every work boundary and reset" {
 }
 
 test "DOT partial failure-atomic events handle exhaustion of every fixed pool" {
-    inline for (@typeInfo(dot.DocumentCapacities).@"struct".fields) |field| {
+    inline for (@typeInfo(dot.DocumentCapacities).@"struct".field_names) |field| {
         for ([_][]const u8{ source, "digraph { a:p -> b -> c -> {d} -> e -> {f} -> {g} -> h; }" }) |bytes| for (0..5) |limit| {
             var pools: Pools = .{};
             var storage = pools.storage();
-            const name = comptime if (std.mem.eql(u8, field.name, "statements")) "statement_ids" else field.name;
+            const name = comptime if (std.mem.eql(u8, field, "statements")) "statement_ids" else field;
             @field(storage, name) = @field(storage, name)[0..limit];
             var frames: dot.FixedParseScratch(.{ .nesting = 32 }) = .{};
             const parsed = Keep.parseBorrowedIn(bytes, .{ .document = storage, .scratch = frames.storage() }, discard, .{});
@@ -420,7 +420,7 @@ fn allocationProbe(a: std.mem.Allocator) !void {
 }
 
 test "DOT partial ownership survives allocation failures without allocating to salvage" {
-    try std.testing.checkAllAllocationFailures(allocator, allocationProbe, .{});
+    try @import("allocation_failures.zig").check(allocator, allocationProbe, .{});
 }
 
 test "DOT partial validation is explicit about coverage and honors terminal stops" {
@@ -458,13 +458,13 @@ test "recovered regions retain later scopes attributes and independent validatio
         try equalStrings("fresh", doc.text(last[0].key));
         var gaps = doc.skippedRanges();
         try equal(dot.ScopeId.root, gaps.next().?.scope);
-        try equal(@as(u32, 1), @intFromEnum(gaps.next().?.scope));
+        try equal(@as(u32, 1), @backingInt(gaps.next().?.scope));
         try equal(dot.ScopeId.root, gaps.next().?.scope);
         try expect(gaps.next() == null);
         // A failed surrounding edge must not make its independently completed
         // endpoint body partial. The first scope has an actual child gap.
-        try expect(!doc.scope(@enumFromInt(1)).?.scopeComplete());
-        try expect(doc.scope(@enumFromInt(2)).?.scopeComplete());
+        try expect(!doc.scope(@fromBackingInt(@intCast(1))).?.scopeComplete());
+        try expect(doc.scope(@fromBackingInt(@intCast(2))).?.scopeComplete());
         try equal(@as(u32, @intCast(std.mem.indexOf(u8, bytes, "bad").?)), result.validation.?.coverage.incomplete);
         try audit(doc);
         var pools: Pools = .{};
@@ -505,7 +505,7 @@ fn recoveredAllocationProbe(memory: std.mem.Allocator) !void {
 }
 
 test "growing recovery remains failure atomic at every allocation" {
-    try std.testing.checkAllAllocationFailures(allocator, recoveredAllocationProbe, .{});
+    try @import("allocation_failures.zig").check(allocator, recoveredAllocationProbe, .{});
 }
 
 test "retention changes output not grammar recovery or diagnostic findings" {

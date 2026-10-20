@@ -493,7 +493,7 @@ test "no HTML allocates no child buffers and repeated operands reuse one workspa
     try equal(composed_allocator.allocated_bytes, composed_allocator.freed_bytes);
 
     var repeated_allocator = std.testing.FailingAllocator.init(gpa, .{});
-    const source = "graph {" ++ "a[label=<<b x='1' y='2'>text</b>>];" ** 1000 ++ "}";
+    const source = "graph {" ++ std.mem.asBytes(&@as([1000]["a[label=<<b x='1' y='2'>text</b>>];".len]u8, @splat("a[label=<<b x='1' y='2'>text</b>>];".*))) ++ "}";
     var repeated = try P.parseAndValidate(repeated_allocator.allocator(), source, P.DiagnosticSink.discard, .{});
     try expect(repeated.documentValid());
     try equal(@as(u32, 1000), repeated.markup.valid);
@@ -569,7 +569,7 @@ fn allocationCase(allocator: std.mem.Allocator) !void {
     try expect(checked.documentValid());
 }
 test "every composed allocation failure frees active child and outer storage" {
-    try std.testing.checkAllAllocationFailures(gpa, allocationCase, .{});
+    try @import("allocation_failures.zig").check(gpa, allocationCase, .{});
 }
 
 test "mixed rendering keeps original fix coordinates and works with incomplete source" {

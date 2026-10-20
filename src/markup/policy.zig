@@ -124,18 +124,18 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
     if (patch.diagnostics.fixes) |value| result.diagnostics.fixes = value;
     if (patch.diagnostics.unsupported) |value| result.diagnostics.unsupported = value;
     if (patch.syntax.malformed_reference) |value| result.syntax.malformed_reference = value;
-    inline for (std.meta.fields(@TypeOf(patch.limits))) |field| {
-        if (@field(patch.limits, field.name)) |value| @field(result.limits, field.name) = value;
+    inline for (comptime std.meta.fieldNames(@TypeOf(patch.limits))) |field| {
+        if (@field(patch.limits, field)) |value| @field(result.limits, field) = value;
     }
-    inline for (std.meta.fields(@TypeOf(patch.execution))) |field| {
-        if (@field(patch.execution, field.name)) |value| @field(result.execution, field.name) = value;
+    inline for (comptime std.meta.fieldNames(@TypeOf(patch.execution))) |field| {
+        if (@field(patch.execution, field)) |value| @field(result.execution, field) = value;
     }
     if (patch.validation.duplicate_attribute) |v| result.validation.duplicate_attribute = v;
     if (patch.validation.invalid_encoding) |v| result.validation.invalid_encoding = v;
     inline for (.{ "names", "references", "graphviz" }) |group| {
-        inline for (std.meta.fields(@TypeOf(@field(patch.validation, group)))) |field| {
-            if (@field(@field(patch.validation, group), field.name)) |value|
-                @field(@field(result.validation, group), field.name) = value;
+        inline for (comptime std.meta.fieldNames(@TypeOf(@field(patch.validation, group)))) |field| {
+            if (@field(@field(patch.validation, group), field)) |value|
+                @field(@field(result.validation, group), field) = value;
         }
     }
     return result;
@@ -179,13 +179,13 @@ pub const presets = struct {
             .max_attributes = 200_000,
             .max_nesting = 256,
         };
-        for (std.meta.fields(@TypeOf(input.limits))) |field| {
-            if (!@hasField(@TypeOf(budgets), field.name))
-                @compileError("untrusted preset needs an explicit budget for " ++ field.name);
-            const value: u32 = @field(budgets, field.name);
+        for (std.meta.fieldNames(@TypeOf(input.limits))) |field| {
+            if (!@hasField(@TypeOf(budgets), field))
+                @compileError("untrusted preset needs an explicit budget for " ++ field);
+            const value: u32 = @field(budgets, field);
             if (value == std.math.maxInt(u32))
-                @compileError("untrusted preset needs a finite budget for " ++ field.name);
-            @field(input.limits, field.name) = value;
+                @compileError("untrusted preset needs a finite budget for " ++ field);
+            @field(input.limits, field) = value;
         }
         break :blk input;
     };

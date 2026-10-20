@@ -1,7 +1,8 @@
 //! Explicit, allocation-free decoding of supported identifier expressions.
 //!
 //! Raw spelling stays in the document. These helpers validate one complete
-//! identifier (no leading/trailing trivia), then decode on demand. They do
+//! identifier (no leading/trailing trivia), then decode on demand. `assumeParsed`
+//! explicitly skips syntax validation for parser-recognized spellings. Helpers do
 //! not cache results, interpret layout escapes, normalize encoding, or convert
 //! numerals. Repeated calls repeat linear work. Output memory is caller-owned.
 
@@ -104,6 +105,68 @@ pub fn eql(a: []const u8, b: []const u8) error{InvalidIdentifier}!bool {
     return @import("identifier_value.zig").orderAssumeValid(a, b) == .eq;
 }
 
+/// A borrowed name with parser-certified syntax, not a cached/decoded string.
+pub const Parsed = ParsedForEncoding(.utf8);
+
+/// Skip syntax revalidation of one complete parser-recognized identifier.
+/// The caller guarantees that raw is exactly an identifier spelling from a
+/// parser event or retained document, and stays alive and unchanged. Arbitrary
+/// text, partial tokens, skipped regions and statement spans do not qualify.
+/// This is an unchecked precondition, not a way to validate input. Use hash/eql
+/// above for arbitrary bytes. No allocation, source copy or cached hash.
+pub fn assumeParsed(raw: []const u8) Parsed {
+    return .{ .raw = raw };
+}
+
+fn ParsedForEncoding(comptime actual: encoding.Actual) type {
+    return struct {
+        raw: []const u8,
+        const Self = @This();
+        const E = encoding.Reader(actual);
+        const Values = @import("identifier_value.zig").ForEncoding(actual);
+
+        /// Same logical-value hash as the checked helper, without lexing again.
+        /// Native text is still decoded with encoding checks: accepted syntax
+        /// alone does not certify Unicode validity. UTF-8 retains arbitrary bytes.
+        pub fn hash(self: Self) error{InvalidIdentifier}!u64 {
+            if (comptime actual == .utf8) return Values.hashAssumeValid(self.raw);
+            var chunks: Values.Chunks = .{ .raw = self.raw };
+            var state = std.hash.Wyhash.init(0);
+            var out: [4]u8 = undefined;
+            while (chunks.next()) |chunk| {
+                var at: usize = 0;
+                while (at < chunk.len) {
+                    const scalar = E.decode(chunk, at) catch return error.InvalidIdentifier;
+                    at += scalar.len;
+                    const len = std.unicode.utf8Encode(scalar.scalar, &out) catch return error.InvalidIdentifier;
+                    state.update(out[0..len]);
+                }
+            }
+            return state.final();
+        }
+
+        /// Compare names using the same source encoding. No normalization,
+        /// layout escapes or entity expansion. Hash equality is not sufficient.
+        pub fn eql(self: Self, other: Self) error{InvalidIdentifier}!bool {
+            if (comptime actual != .utf8) {
+                // Preserve the checked API's rejection of malformed native
+                // text on either side, even when the logical values differ.
+                for ([_][]const u8{ self.raw, other.raw }) |raw| {
+                    var chunks: Values.Chunks = .{ .raw = raw };
+                    while (chunks.next()) |chunk| {
+                        var at: usize = 0;
+                        while (at < chunk.len) {
+                            const scalar = E.decode(chunk, at) catch return error.InvalidIdentifier;
+                            at += scalar.len;
+                        }
+                    }
+                }
+            }
+            return Values.orderAssumeValid(self.raw, other.raw) == .eq;
+        }
+    };
+}
+
 fn validate(raw: []const u8) error{InvalidIdentifier}!lex.Token {
     var lexer = lex.Lexer.initRaw(raw);
     const result = lexer.next();
@@ -124,11 +187,19 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
         pub const writeDecoded = @import("identifier.zig").writeDecoded;
         pub const hash = @import("identifier.zig").hash;
         pub const eql = @import("identifier.zig").eql;
+        pub const Parsed = @import("identifier.zig").Parsed;
+        pub const assumeParsed = @import("identifier.zig").assumeParsed;
     };
     return struct {
         const E = encoding.Reader(actual);
         const Values = @import("identifier_value.zig").ForEncoding(actual);
         pub const Parts = @import("identifier_parts.zig").ForEncoding(actual).Parts;
+        pub const Parsed = ParsedForEncoding(actual);
+        /// Same syntax/source-lifetime precondition as identifier.assumeParsed;
+        /// raw must use this reader's encoding and contain whole code units.
+        pub fn assumeParsed(raw: []const u8) @This().Parsed {
+            return .{ .raw = raw };
+        }
         fn checked(raw: []const u8) error{InvalidIdentifier}!lex.Token {
             if (raw.len % E.width != 0) return error.InvalidIdentifier;
             var scanner = lex.scalar.ScannerWithEncoding(actual, false, false, true, false).initRaw(raw);
@@ -247,9 +318,9 @@ test "decode preserves numeral identity and only removes DOT lexical escapes" {
 
 test "decoding rejects invalid expressions without changing output" {
     inline for (.{ "", "graph", " a", "a ", "a b", "1e3", "\"a", "\"a\"+", "\"a\"+b", "\"a\x00b\"", "\"a\" /*" }) |raw| {
-        var output = [_]u8{0x55} ** 16;
+        var output: [16]u8 = @splat(0x55);
         try std.testing.expectError(error.InvalidIdentifier, decodeInto(raw, &output));
-        try std.testing.expectEqualSlices(u8, &([_]u8{0x55} ** 16), &output);
+        try std.testing.expectEqualSlices(u8, &@as([16]u8, @splat(0x55)), &output);
         var writer = std.Io.Writer.fixed(&output);
         try std.testing.expectError(error.InvalidIdentifier, writeDecoded(raw, &writer));
         try std.testing.expectEqual(@as(usize, 0), writer.buffered().len);
@@ -257,9 +328,9 @@ test "decoding rejects invalid expressions without changing output" {
 }
 
 test "output capacity and aliasing are explicit and failure atomic" {
-    var output = [_]u8{0x55} ** 4;
+    var output: [4]u8 = @splat(0x55);
     try std.testing.expectError(error.NoSpaceLeft, decodeInto("\"hello\"", &output));
-    try std.testing.expectEqualSlices(u8, &([_]u8{0x55} ** 4), &output);
+    try std.testing.expectEqualSlices(u8, &@as([4]u8, @splat(0x55)), &output);
     try std.testing.expectEqualStrings("abcd", try decodeInto("\"ab\"+\"cd\"", &output));
     try std.testing.expectEqualStrings("", try decodeInto("\"\"", &.{}));
     var source = "\"abc\"".*;
@@ -270,7 +341,7 @@ test "output capacity and aliasing are explicit and failure atomic" {
 }
 
 test "long quoted identifiers use caller storage without token-size buffers" {
-    var raw = [_]u8{'a'} ** 65538;
+    var raw: [65538]u8 = @splat('a');
     raw[0] = '"';
     raw[raw.len - 1] = '"';
     var output: [65536]u8 = undefined;

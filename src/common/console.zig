@@ -150,7 +150,7 @@ test "excerpt windows match full-line selection without walking whole lines" {
         pub const registry = struct {};
         pub const Annotations = A;
     });
-    const source = "a" ** 90 ++ "\r\nbé中" ++ "x" ** 120 ++ "\rc\n";
+    const source = &@as([90]u8, @splat('a')) ++ "\r\nbé中" ++ &@as([120]u8, @splat('x')) ++ "\rc\n";
     for (0..source.len + 1) |offset| {
         inline for (.{ .ascii, .unicode }) |style| {
             var first = offset;
@@ -446,7 +446,7 @@ const Summary = struct {
     worst: Severity = .trace,
 
     fn add(self: *@This(), severity: Severity) void {
-        if (@intFromEnum(severity) > @intFromEnum(self.worst)) self.worst = severity;
+        if (@backingInt(severity) > @backingInt(self.worst)) self.worst = severity;
         switch (severity) {
             .err, .blocked, .critical => self.errors += 1,
             .warning => self.warnings += 1,
@@ -991,8 +991,8 @@ pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
         pub const composed = true;
         const max_locations = blk: {
             var maximum: usize = 0;
-            for (std.meta.fields(@TypeOf(adapters))) |field| {
-                const A = @field(adapters, field.name);
+            for (std.meta.fieldNames(@TypeOf(adapters))) |field| {
+                const A = @field(adapters, field);
                 maximum = @max(maximum, if (@hasDecl(A, "composed")) A.max_locations else A.Annotations.max_count + 2);
             }
             break :blk maximum;

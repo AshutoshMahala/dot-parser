@@ -160,7 +160,7 @@ test "cancellation entry, intervals, terminal results and no cancellation diagno
     };
     const P = s.Profile(.{ .runtime_policy = true, .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
     var hook: Hook = .{};
-    var session = try P.Session.init(.{ .bytes = "a" ** 100, .origin = 0 }, P.Sink.discard, .{ .cancellation = hook.token(), .policy = .{ .execution = .{ .cancellation_interval = 8 } } });
+    var session = try P.Session.init(.{ .bytes = &@as([100]u8, @splat('a')), .origin = 0 }, P.Sink.discard, .{ .cancellation = hook.token(), .policy = .{ .execution = .{ .cancellation_interval = 8 } } });
     try t.expectEqual(@as(u32, 0), hook.calls); // init does not scan or poll
     _ = try session.advance(3);
     try t.expectEqual(@as(u32, 1), hook.calls);
@@ -284,12 +284,12 @@ test "exact byte equality reuses only a complete input encoding proof" {
     const cases = [_]struct { input: []const u8, expected: []const u8, invalid_pattern: bool = false, valid: bool = false }{
         .{ .input = "", .expected = "", .valid = true },
         .{ .input = "a\x00é中文😀", .expected = "a\x00é中文😀", .valid = true },
-        .{ .input = "a" ** 128, .expected = "a" ** 128, .valid = true },
+        .{ .input = &@as([128]u8, @splat('a')), .expected = &@as([128]u8, @splat('a')), .valid = true },
         .{ .input = "a", .expected = "b\xff", .invalid_pattern = true },
-        .{ .input = "a" ** 128, .expected = "a" ** 127 ++ "\xff", .invalid_pattern = true },
+        .{ .input = &@as([128]u8, @splat('a')), .expected = &@as([127]u8, @splat('a')) ++ "\xff", .invalid_pattern = true },
         .{ .input = "a", .expected = "a\xf0\x9f", .invalid_pattern = true },
         .{ .input = "Seattle", .expected = "seattle" },
-        .{ .input = "a" ** 128, .expected = "a" ** 127 ++ "b" },
+        .{ .input = &@as([128]u8, @splat('a')), .expected = &@as([127]u8, @splat('a')) ++ "b" },
         .{ .input = "a", .expected = "a\x00" },
         .{ .input = "\xff", .expected = "\xff" },
     };
@@ -356,13 +356,13 @@ test "interval changes do not change credits and disabled hooks stay unused" {
     };
     const P = s.Profile(.{ .runtime_policy = true, .policy = .{
         .execution = .{ .metering = true },
-        .validation = .{ .equals = .{ .expected = "x" ** 100, .severity = .err } },
+        .validation = .{ .equals = .{ .expected = &@as([100]u8, @splat('x')), .severity = .err } },
     } });
     var total: ?u32 = null;
     for ([_]bool{ false, true }) |enabled| {
         for ([_]u32{ 1, 4, 64, std.math.maxInt(u32) }) |interval| {
             var hook: Hook = .{};
-            var session = try P.Session.init(.{ .bytes = "x" ** 100, .origin = 0 }, P.Sink.discard, .{
+            var session = try P.Session.init(.{ .bytes = &@as([100]u8, @splat('x')), .origin = 0 }, P.Sink.discard, .{
                 .policy = .{ .execution = .{ .cancellation = enabled, .cancellation_interval = interval } },
                 .cancellation = .{ .context = &hook, .is_requested = Hook.poll },
             });
@@ -418,7 +418,7 @@ test "batched builtin and custom checks match scalar progress at every pause" {
             },
         };
         const actual = ([_]s.ActualEncoding{ .utf8, .ascii, .utf16le, .utf16be, .utf32le, .utf32be, .utf8, .utf8 })[trial % 8];
-        const values = [_][]const u8{ "b" ** 64, pattern[0..len] };
+        const values = [_][]const u8{ &@as([64]u8, @splat('b')), pattern[0..len] };
         const policy: P.Policy = .{
             .comparison = ([_]s.Comparison{ .case_sensitive, .case_insensitive, .ascii_case_insensitive })[trial % 3],
             .on_error = if (trial % 9 == 0) .fail_fast else .collect,
@@ -464,15 +464,15 @@ test "batching preserves cancellation at exact credit boundaries in every phase"
     };
     const P = s.Profile(.{ .custom = BatchMatch, .runtime_policy = true, .policy = .{
         .execution = .{ .metering = true },
-        .custom = "a" ** 80,
+        .custom = &@as([80]u8, @splat('a')),
         .validation = .{
-            .equals = .{ .expected = "a" ** 80, .severity = .err },
-            .one_of = .{ .values = &.{ "b" ** 80, "a" ** 80 }, .severity = .err },
+            .equals = .{ .expected = &@as([80]u8, @splat('a')), .severity = .err },
+            .one_of = .{ .values = &.{ &@as([80]u8, @splat('b')), &@as([80]u8, @splat('a')) }, .severity = .err },
             .custom = .err,
         },
     } });
     for ([_]s.Comparison{ .case_sensitive, .ascii_case_insensitive }) |comparison| {
-        const input = if (comparison == .ascii_case_insensitive) "A" ** 80 else "a" ** 80;
+        const input = if (comparison == .ascii_case_insensitive) &@as([80]u8, @splat('A')) else &@as([80]u8, @splat('a'));
         for ([_]u32{ 1, 2, 15, 16, 17, 31, 64, 65 }) |interval| {
             for (1..50) |stop_at| {
                 var hook: Hook = .{ .stop_at = @intCast(stop_at) };
@@ -504,11 +504,11 @@ test "batch fallback preserves malformed custom pattern and sink stop credits" {
     const P = s.Profile(.{ .custom = BatchMatch, .runtime_policy = true, .policy = .{
         .execution = .{ .metering = true },
         .validation = .{ .custom = .err },
-        .custom = "a" ** 64 ++ "\xff",
+        .custom = &@as([64]u8, @splat('a')) ++ "\xff",
     } });
     var expected_work: ?u32 = null;
     for ([_]u32{ 1, 15, 16, 17, 64, 1000 }) |budget| {
-        var session = try P.Session.init(.{ .bytes = "a" ** 64, .origin = 0 }, P.Sink.discard, .{});
+        var session = try P.Session.init(.{ .bytes = &@as([64]u8, @splat('a')), .origin = 0 }, P.Sink.discard, .{});
         defer session.deinit();
         var total: u32 = 0;
         while (true) {
@@ -519,7 +519,7 @@ test "batch fallback preserves malformed custom pattern and sink stop credits" {
         try t.expectEqual(.invalid_validator, session.result().?.completion);
         if (expected_work) |n| try t.expectEqual(n, total) else expected_work = total;
         var bag: P.FixedDiagnosticBag(1) = .{};
-        try session.reset(.{ .bytes = "a" ** 64 ++ "\xff", .origin = 0 }, bag.sink(), .{});
+        try session.reset(.{ .bytes = &@as([64]u8, @splat('a')) ++ "\xff", .origin = 0 }, bag.sink(), .{});
         total = 0;
         while (true) {
             const p = try session.advance(budget);

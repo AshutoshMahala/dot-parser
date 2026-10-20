@@ -18,7 +18,7 @@ pub fn PolicyBinding(comptime Schema: type, comptime config: struct {
         // a currently-valid baseline cannot make an invalid-capable Check infallible.
         if (Schema.Error == error{}) {
             const Check = @TypeOf(checked);
-            if (std.meta.fields(Check).len != 1 or !@hasField(Check, "valid"))
+            if (std.meta.fieldNames(Check).len != 1 or !@hasField(Check, "valid"))
                 @compileError("infallible policy schema must declare a valid-only Check");
         }
         if (Schema.Error == error{}) switch (checked) {
@@ -62,9 +62,9 @@ pub fn PolicyBinding(comptime Schema: type, comptime config: struct {
 /// profile's prepare method may scan input, allocate or invoke consumer callbacks.
 /// Stage/resource compatibility will be checked by the future stage composition.
 pub fn PolicySet(comptime profiles: anytype) type {
-    const fields = std.meta.fields(@TypeOf(profiles));
+    const fields = std.meta.fieldNames(@TypeOf(profiles));
     inline for (fields) |field| {
-        const Profile = @field(profiles, field.name);
+        const Profile = @field(profiles, field);
         if (@TypeOf(Profile) != type or !@hasDecl(Profile, "Policies"))
             @compileError("configured processor profile must expose Policies");
     }
@@ -74,7 +74,7 @@ pub fn PolicySet(comptime profiles: anytype) type {
         pub const State = namedFields(profiles, "State", false);
         pub const Error = blk: {
             var errors: type = error{};
-            for (fields) |field| errors = errors || @field(profiles, field.name).Policies.Error;
+            for (fields) |field| errors = errors || @field(profiles, field).Policies.Error;
             break :blk errors;
         };
 
@@ -85,7 +85,7 @@ pub fn PolicySet(comptime profiles: anytype) type {
             pub const State = Self.State;
             pub const Error = Self.Error;
             pub const runtime_policy = blk: {
-                for (fields) |field| if (@field(profiles, field.name).Policies.runtime_policy) break :blk true;
+                for (fields) |field| if (@field(profiles, field).Policies.runtime_policy) break :blk true;
                 break :blk false;
             };
             pub fn prepare(options: Self.Options) (if (runtime_policy) Self.Error!Self.State else Self.State) {
@@ -97,11 +97,11 @@ pub fn PolicySet(comptime profiles: anytype) type {
         pub fn prepare(options: Options) Error!State {
             var result: State = undefined;
             inline for (fields) |field| {
-                const Binding = @field(profiles, field.name).Policies;
-                @field(result, field.name) = if (Binding.runtime_policy)
-                    try Binding.prepare(@field(options, field.name))
+                const Binding = @field(profiles, field).Policies;
+                @field(result, field) = if (Binding.runtime_policy)
+                    try Binding.prepare(@field(options, field))
                 else
-                    Binding.prepare(@field(options, field.name));
+                    Binding.prepare(@field(options, field));
             }
             return result;
         }
@@ -109,11 +109,11 @@ pub fn PolicySet(comptime profiles: anytype) type {
 }
 
 fn namedFields(comptime profiles: anytype, comptime member: []const u8, comptime defaults: bool) type {
-    const fields = std.meta.fields(@TypeOf(profiles));
+    const fields = std.meta.fieldNames(@TypeOf(profiles));
     var types: [fields.len]type = undefined;
-    var attrs: [fields.len]std.builtin.Type.StructField.Attributes = undefined;
+    var attrs: [fields.len]std.lang.Type.Struct.FieldAttributes = undefined;
     for (fields, 0..) |field, i| {
-        const T = @field(@field(profiles, field.name).Policies, member);
+        const T = @field(@field(profiles, field).Policies, member);
         types[i] = T;
         attrs[i] = .{
             .default_value_ptr = if (defaults) @as(*const T, &@as(T, .{})) else null,

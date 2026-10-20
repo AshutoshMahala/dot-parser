@@ -74,7 +74,8 @@ pub fn main(init: std.process.Init) !void {
     const writer = &output.interface;
     const csv = try report.csvMode(init);
     if (csv) try writer.writeAll(report.header) else try writer.writeAll("UTF-8 exact checks (default: encoding only); processor heap=0; fixed policies unless runtime*\n");
-    inline for (.{ "Seattle", "The quick brown fox. " ** 200, "Straße 中文 😀" ** 64, "中文" ** 64, "😀" ** 64, ("The quick brown fox. " ** 10 ++ "中文") ** 8 }, .{ "short", "long_ascii", "unicode", "cjk", "emoji", "mixed" }) |text, fixture| {
+    const mixed = comptime std.mem.asBytes(&@as([10]["The quick brown fox. ".len]u8, @splat("The quick brown fox. ".*))) ++ "中文";
+    inline for (comptime .{ "Seattle", std.mem.asBytes(&@as([200]["The quick brown fox. ".len]u8, @splat("The quick brown fox. ".*))), std.mem.asBytes(&@as([64]["Straße 中文 😀".len]u8, @splat("Straße 中文 😀".*))), std.mem.asBytes(&@as([64]["中文".len]u8, @splat("中文".*))), std.mem.asBytes(&@as([64]["😀".len]u8, @splat("😀".*))), std.mem.asBytes(&@as([8][mixed.len]u8, @splat(mixed.*))) }, .{ "short", "long_ascii", "unicode", "cjk", "emoji", "mixed" }) |text, fixture| {
         const bytes = try init.gpa.dupe(u8, text);
         defer init.gpa.free(bytes);
         inline for (comptime std.meta.tags(Variant)) |variant| {

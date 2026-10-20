@@ -197,7 +197,7 @@ test "Graphviz coverage gaps do not taint independent checks or duplicate value 
 }
 
 test "Graphviz value scans stop at cancellation and malformed-reference acceptance stays literal" {
-    const source = "<TABLE BORDER='" ++ "0" ** 4096 ++ "'><TR><TD/></TR></TABLE>";
+    const source = "<TABLE BORDER='" ++ &@as([4096]u8, @splat('0')) ++ "'><TR><TD/></TR></TABLE>";
     var parsed = m.parseBorrowed(std.testing.allocator, source, m.diagnostic.discard, .{});
     defer parsed.deinit();
     const Probe = struct {

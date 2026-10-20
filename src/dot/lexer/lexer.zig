@@ -234,7 +234,7 @@ test "HTML depth and contents are lexical and token metadata stays compact" {
 
 test "HTML block boundaries and bounded partitions preserve the same stream" {
     var buffer: [512]u8 = undefined;
-    const body = "<<a>" ++ "x" ** 130 ++ "</a>>+\"b\\\"c\" ; <z>";
+    const body = "<<a>" ++ &@as([130]u8, @splat('x')) ++ "</a>>+\"b\\\"c\" ; <z>";
     for (0..64) |shift| {
         @memset(buffer[0..shift], ' ');
         @memcpy(buffer[shift..][0..body.len], body);

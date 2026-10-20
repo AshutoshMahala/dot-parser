@@ -80,7 +80,7 @@ The standalone string processor has its own metered validation steps described
 [below](#standalone-string-validation).
 
 To compare execution costs on dense syntax and long ASCII/Unicode text, run
-`zig build bench-metering -Doptimize=ReleaseFast` (or `ReleaseSafe`). It reports
+`zig build bench-metering -Doptimize=fast` (or `safe`). It reports
 default parsing, budgets 1/64/4096, cancellation intervals 1/64 and runtime
 policies for both scanners. Input and fixed pools are prepared before timing;
 results include credits, poll counts and session sizes. Validation is not timed.
@@ -215,7 +215,7 @@ var session = try Runtime.Session.init(source, memory, bag.sink(), .{
 defer session.deinit();
 ```
 
-Use `zig build bench-cancellation -Doptimize=ReleaseFast` (or `ReleaseSafe`) to
+Use `zig build bench-cancellation -Doptimize=fast` (or `safe`) to
 compare intervals 1, 4, 16, 64 and 256 on both scanners and both parsers, with
 fixed/runtime policies and metering on/off. The benchmark reports throughput,
 callback counts, credits and session sizes; source/pool allocation is outside

@@ -10,23 +10,23 @@ pub const Mode = enum { none, passthrough, process };
 pub fn hostConfig(comptime T: type, comptime config: anytype) T {
     @setEvalBranchQuota(10000);
     var result: T = .{};
-    inline for (std.meta.fields(@TypeOf(config))) |field| {
-        const value = @field(config, field.name);
-        if (comptime std.mem.eql(u8, field.name, "policy")) {
+    inline for (comptime std.meta.fieldNames(@TypeOf(config))) |field| {
+        const value = @field(config, field);
+        if (comptime std.mem.eql(u8, field, "policy")) {
             if (@TypeOf(value) == @FieldType(T, "policy")) {
                 result.policy = value;
                 continue;
             }
-            inline for (std.meta.fields(@TypeOf(value))) |leaf| {
-                if (comptime std.mem.eql(u8, leaf.name, "string") or std.mem.eql(u8, leaf.name, "attributes")) continue;
-                @field(result.policy, leaf.name) = coerce(@FieldType(@TypeOf(result.policy), leaf.name), @field(value, leaf.name));
+            inline for (comptime std.meta.fieldNames(@TypeOf(value))) |leaf| {
+                if (comptime std.mem.eql(u8, leaf, "string") or std.mem.eql(u8, leaf, "attributes")) continue;
+                @field(result.policy, leaf) = coerce(@FieldType(@TypeOf(result.policy), leaf), @field(value, leaf));
             }
-        } else if (comptime std.mem.eql(u8, field.name, "processors")) {
-            inline for (std.meta.fields(@TypeOf(value))) |leaf| {
-                if (comptime std.mem.eql(u8, leaf.name, "string")) continue;
-                @field(result.processors, leaf.name) = @field(value, leaf.name);
+        } else if (comptime std.mem.eql(u8, field, "processors")) {
+            inline for (comptime std.meta.fieldNames(@TypeOf(value))) |leaf| {
+                if (comptime std.mem.eql(u8, leaf, "string")) continue;
+                @field(result.processors, leaf) = @field(value, leaf);
             }
-        } else @field(result, field.name) = coerce(@FieldType(T, field.name), value);
+        } else @field(result, field) = coerce(@FieldType(T, field), value);
     }
     return result;
 }
@@ -37,8 +37,8 @@ pub fn coerce(comptime T: type, value: anytype) T {
     if (@typeInfo(T) == .optional) return coerce(@typeInfo(T).optional.child, value);
     if (@typeInfo(T) == .@"struct" and @typeInfo(@TypeOf(value)) == .@"struct") {
         var result: T = .{};
-        inline for (std.meta.fields(@TypeOf(value))) |field|
-            @field(result, field.name) = coerce(@FieldType(T, field.name), @field(value, field.name));
+        inline for (comptime std.meta.fieldNames(@TypeOf(value))) |field|
+            @field(result, field) = coerce(@FieldType(T, field), @field(value, field));
         return result;
     }
     return value;
@@ -54,23 +54,23 @@ pub fn Routes(comptime config: anytype) type {
     const p = if (@hasField(@TypeOf(config), "policy")) config.policy else .{};
     const fallback = if (@hasField(@TypeOf(p), "string")) p.string else .passthrough;
     const attributes = if (@hasField(@TypeOf(p), "attributes")) p.attributes else .{};
-    const fields = std.meta.fields(@TypeOf(attributes));
+    const fields = std.meta.fieldNames(@TypeOf(attributes));
     return struct {
         pub const count = fields.len + 1;
         pub fn rule(comptime index: usize) @TypeOf(if (index == 0) fallback else selected(index - 1)) {
             return if (index == 0) fallback else selected(index - 1);
         }
-        fn selected(comptime index: usize) @TypeOf(if (@hasField(@TypeOf(@field(attributes, fields[index].name)), "string")) @field(attributes, fields[index].name).string else fallback) {
-            const item = @field(attributes, fields[index].name);
+        fn selected(comptime index: usize) @TypeOf(if (@hasField(@TypeOf(@field(attributes, fields[index])), "string")) @field(attributes, fields[index]).string else fallback) {
+            const item = @field(attributes, fields[index]);
             // Other value-form routes must not be silently accepted as implemented.
-            inline for (std.meta.fields(@TypeOf(item))) |field|
-                if (comptime !std.mem.eql(u8, field.name, "string")) @compileError("attribute routing currently supports only .string");
+            inline for (comptime std.meta.fieldNames(@TypeOf(item))) |field|
+                if (comptime !std.mem.eql(u8, field, "string")) @compileError("attribute routing currently supports only .string");
             return if (@hasField(@TypeOf(item), "string")) item.string else fallback;
         }
         pub fn mode(comptime index: usize) Mode {
             const r = rule(index);
-            if (@TypeOf(r) == @TypeOf(.enum_literal) or @typeInfo(@TypeOf(r)) == .@"enum") return @enumFromInt(@intFromEnum(@as(Mode, r)));
-            if (@hasField(@TypeOf(r), "process") and std.meta.fields(@TypeOf(r)).len == 1) return .process;
+            if (@TypeOf(r) == @TypeOf(.enum_literal) or @typeInfo(@TypeOf(r)) == .@"enum") return @fromBackingInt(@intCast(@backingInt(@as(Mode, r))));
+            if (@hasField(@TypeOf(r), "process") and @typeInfo(@TypeOf(r)).@"struct".field_names.len == 1) return .process;
             @compileError("string route must be .none, .passthrough or .{ .process = child_policy }");
         }
         pub const active = blk: {
@@ -82,14 +82,14 @@ pub fn Routes(comptime config: anytype) type {
             break :blk false;
         };
         pub fn name(comptime index: usize) []const u8 {
-            return fields[index - 1].name;
+            return fields[index - 1];
         }
         pub fn checkNames(comptime insensitive: bool) void {
             for (fields, 0..) |field, i| {
-                if (!std.unicode.utf8ValidateSlice(field.name)) @compileError("attribute route names must be UTF-8");
+                if (!std.unicode.utf8ValidateSlice(field)) @compileError("attribute route names must be UTF-8");
                 if (insensitive) for (fields[0..i]) |other| {
-                    if (std.ascii.eqlIgnoreCase(field.name, other.name))
-                        @compileError("ambiguous ASCII-insensitive attribute routes: " ++ field.name ++ " and " ++ other.name);
+                    if (std.ascii.eqlIgnoreCase(field, other))
+                        @compileError("ambiguous ASCII-insensitive attribute routes: " ++ field ++ " and " ++ other);
                 };
             }
         }

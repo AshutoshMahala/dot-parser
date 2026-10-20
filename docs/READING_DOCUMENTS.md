@@ -77,6 +77,33 @@ folding, Unicode normalization, layout-escape interpretation or numeric
 conversion (`01` and `1` differ). Work is linear in the supplied spellings,
 on request only; nothing is cached in the tree.
 
+#### Names already recognized by the parser
+
+For identifier spellings from parser events or retained document records,
+`assumeParsed` skips the redundant syntax check:
+
+```zig
+// These ranges must identify complete parser-recognized identifiers.
+const first = dot.identifier.assumeParsed(document.text(first_range));
+const second = dot.identifier.assumeParsed(document.text(second_range));
+const hash = try first.hash();
+const same = try first.eql(second);
+```
+
+This is an explicit **unchecked precondition**, not an input-validation function.
+Do not use it on arbitrary bytes, incomplete tokens, whole statement spans or
+skipped recovery regions. Keep the original source alive and unchanged.
+A `Parsed` value contains only a borrowed slice; it neither allocates nor caches
+a decoded value or hash. The checked functions above are unchanged.
+You can retain compact source ranges and construct these views only when needed.
+
+For native input, use `dot.identifier.ForEncoding(actual).assumeParsed(raw)`,
+selecting the document's encoding (or `begin_document.source_info.encoding`
+for events). Both operands of `eql` use the same encoding. Native decoding still
+rejects malformed characters with `InvalidIdentifier`; skipping the DOT syntax
+check does not turn off encoding checks needed to compute the logical value.
+UTF-8/raw-byte behavior is unchanged. See [event-only indexing](EVENTS.md#indexing-recognized-names).
+
 ## Statements
 
 `document.statements()` visits every statement in the order it was written.

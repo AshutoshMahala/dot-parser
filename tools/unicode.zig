@@ -57,9 +57,9 @@ pub fn checkPath(args: []const []const u8, input_count: usize) !?[]const u8 {
 }
 
 pub fn format(gpa: Allocator, bytes: []const u8) ![]u8 {
-    const source = try gpa.dupeZ(u8, bytes);
+    const source = try gpa.dupeSentinel(u8, bytes, 0);
     defer gpa.free(source);
-    var ast = try std.zig.Ast.parse(gpa, source, .zig);
+    var ast = try std.zig.Ast.parse(gpa, source, .{ .mode = .zig });
     defer ast.deinit(gpa);
     if (ast.errors.len != 0) return error.InvalidGeneratedZig;
     return ast.renderAlloc(gpa);

@@ -230,9 +230,12 @@ be defined before exposing the API.
 Implemented prerequisites: reader binding traverses the whole logical value
 before checks. A reader failure returns `input_unavailable`, its typed original
 location in `input_failure`, and unavailable check coverage without duplicating
-host diagnostics. Bound sessions use scalar steps with invariant credits across
-budget partitions, cancellation intervals and movable state; plain standalone
-batching/credits are unchanged. Raw fixes are rejected in bound reporting until
+host diagnostics. Bound sessions preserve scalar-step credits across budget
+partitions, cancellation intervals and movable state. Optional checked reader
+ASCII runs and validator batches group equivalent pending steps without crossing
+polls, budgets, host decoding boundaries or terminal transitions. Readers without
+these optional methods retain scalar execution; no cursor state or heap storage
+is added. Plain standalone batching/credits are unchanged. Raw fixes are rejected in bound reporting until
 safe host-aware materialization exists. Automatic string routing reports
 constant-size aggregate coverage without retaining per-value results.
 

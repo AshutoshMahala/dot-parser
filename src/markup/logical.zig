@@ -47,9 +47,28 @@ pub fn Reader(comptime actual: support.encoding.Actual) type {
         pub fn position(self: *const Self) u32 {
             return self.contents.position();
         }
+        pub inline fn asciiRun(self: *const Self) []const u8 {
+            if (self.failure != null or self.state != .content) return &.{};
+            const bytes = self.contents.asciiRun();
+            if (bytes.len == 0) return bytes;
+            const V = @Vector(logical.ascii_width, u8);
+            const block: V = bytes[0..logical.ascii_width].*;
+            if (@reduce(.Or, block == @as(V, @splat('&')))) return &.{};
+            if (self.options.normalize_attribute_whitespace and
+                @reduce(.Or, (block == @as(V, @splat('\r'))) |
+                    (block == @as(V, @splat('\n'))) | (block == @as(V, @splat('\t'))))) return &.{};
+            return bytes;
+        }
+        pub inline fn skipAscii(self: *Self, count: u32) bool {
+            if (count == 0 or count > self.asciiRun().len) return false;
+            self.contents.offset += count;
+            return true;
+        }
         pub fn step(self: *Self) logical.Step {
             if (self.failure) |f| return .{ .failure = f };
-            const read = self.contents.step();
+            // Avoid an intermediate decoded-location return across this leaf
+            // boundary without forcing the whole host state machine inline.
+            const read = @call(.always_inline, logical.Reader(actual).step, .{&self.contents});
             const item = switch (read) {
                 .pending => return .pending,
                 .failure => |f| {

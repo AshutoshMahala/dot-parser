@@ -14,8 +14,8 @@ const Span = support.location.Span;
 const scopes = @import("scope.zig");
 const graphviz = @import("graphviz.zig");
 const safety_checks = switch (@import("builtin").mode) {
-    .Debug, .ReleaseSafe => true,
-    .ReleaseFast, .ReleaseSmall => false,
+    .debug, .safe => true,
+    .fast, .small => false,
 };
 
 /// During sorting these are records. After sorting, the two columns have
@@ -128,7 +128,7 @@ fn requirement(document: *const syntax.Document) Requirement {
             largest_owner = attribute.owner;
         }
     }
-    return if (maximum < 2) .{} else .{ .count = maximum, .span = document.records[@intFromEnum(largest_owner)].name };
+    return if (maximum < 2) .{} else .{ .count = maximum, .span = document.records[@backingInt(largest_owner)].name };
 }
 
 pub fn Validator(comptime fixed: ?policy.ValidationSettings, comptime cancellable: bool, comptime mode: policy.Mode) type {
@@ -222,8 +222,8 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             return result;
         }
         fn scopeRequested(result: Result) bool {
-            inline for (std.meta.fields(@TypeOf(result.checks))) |field| {
-                if (@field(result.checks, field.name) != .not_run) return true;
+            inline for (comptime std.meta.fieldNames(@TypeOf(result.checks))) |field| {
+                if (@field(result.checks, field) != .not_run) return true;
             }
             return false;
         }
@@ -314,10 +314,10 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             }
             if (!encodingThrough(bounded_source, end, &offset, poller, &result, sink, settings, hook)) return result;
             const complete = scope != .opening_header or scope.opening_header.complete;
-            inline for (std.meta.fields(@TypeOf(result.checks))) |field| {
-                const missing = if (comptime std.mem.eql(u8, field.name, "graphviz_attributes")) gaps.attributes else if (comptime std.mem.eql(u8, field.name, "graphviz_values")) gaps.values else false;
-                if (@field(result.checks, field.name) != .not_run)
-                    @field(result.checks, field.name) = if (!complete or missing) .incomplete else .complete;
+            inline for (comptime std.meta.fieldNames(@TypeOf(result.checks))) |field| {
+                const missing = if (comptime std.mem.eql(u8, field, "graphviz_attributes")) gaps.attributes else if (comptime std.mem.eql(u8, field, "graphviz_values")) gaps.values else false;
+                if (@field(result.checks, field) != .not_run)
+                    @field(result.checks, field) = if (!complete or missing) .incomplete else .complete;
             }
             if (report_header_gap and !complete) recordGap(&result, incomplete_offset);
             if (result.errors == 0 and complete and (mode == .structural or result.completion == .complete)) result.validity = .valid;
@@ -353,11 +353,11 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                 .complete, .incomplete => recordGap(&result, document.retained_end),
                 else => {},
             }
-            inline for (std.meta.fields(@TypeOf(result.checks))) |field| {
+            inline for (comptime std.meta.fieldNames(@TypeOf(result.checks))) |field| {
                 // Encoding is independent of syntax if every source byte was read.
-                const all_bytes = comptime std.mem.eql(u8, field.name, "invalid_encoding");
-                if (@field(result.checks, field.name) == .complete and !(all_bytes and document.retained_end == document.source.len))
-                    @field(result.checks, field.name) = .incomplete;
+                const all_bytes = comptime std.mem.eql(u8, field, "invalid_encoding");
+                if (@field(result.checks, field) == .complete and !(all_bytes and document.retained_end == document.source.len))
+                    @field(result.checks, field) = .incomplete;
             }
             if (result.validity == .valid) result.validity = .unknown;
             return result;
@@ -421,7 +421,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                         if (!checkElement(source, node.name, owner, &offset, &poller, &result, sink, settings, hook)) return result;
                         if (!checkName(source, node.name, .element, &offset, &poller, &result, sink, settings, hook)) return result;
                         const start = attribute;
-                        while (attribute < document.attributes.len and @intFromEnum(document.attributes[attribute].owner) == id) : (attribute += 1) {
+                        while (attribute < document.attributes.len and @backingInt(document.attributes[attribute].owner) == id) : (attribute += 1) {
                             // Duplicate-enabled validation already checked these
                             // during sizing, before any sorting/span access.
                             if (safety_checks and rules(settings).duplicate_attribute == .off)
@@ -444,7 +444,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                             // The retained value includes its original quotes.
                             if (!checkReferences(source, .{ .start = attr.value.start + enc.width, .len = attr.value.len - 2 * enc.width }, true, &offset, &poller, &result, sink, settings, hook)) return result;
                         }
-                        if (document.node(@enumFromInt(id)).?.headerComplete().? and !checkHeader(node.name, owner, header, &gaps, &result, sink, settings)) return result;
+                        if (document.node(@fromBackingInt(@intCast(id))).?.headerComplete().? and !checkHeader(node.name, owner, header, &gaps, &result, sink, settings)) return result;
                     },
                     .text => if (!checkReferences(source, node.span, false, &offset, &poller, &result, sink, settings, hook)) return result,
                     .comment, .cdata => {},
@@ -466,7 +466,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                 if (!Checker.check(document, null, &context)) return result;
                 for (document.records, 0..) |node, id| {
                     if (!context.step()) return result;
-                    if (node.kind() == .element and !Checker.check(document, @enumFromInt(id), &context)) return result;
+                    if (node.kind() == .element and !Checker.check(document, @fromBackingInt(@intCast(id)), &context)) return result;
                 }
                 if (!context.missing) result.checks.graphviz_content = .complete;
             }

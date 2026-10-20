@@ -204,6 +204,10 @@ compile time and can ignore irrelevant events without building document pools.
 Statement IDs use byte offsets; scope/reference IDs use encounter-order
 ordinals. The parser assigns all identities; source is borrowed. Builder pool
 bookkeeping is private continuation state, not a second event protocol.
+Opt-in `Sink.wants_early_events` now delivers complete identifier expressions,
+recognized statement heads and named header prefixes for provisional outlines
+through that same interface. Commit/abort and metering remain separate from
+these observations. Unfinished-token previews remain deferred.
 Combined tree/event output, composed event execution, event-driven validation
 and public pull events remain
 unfinished. *(Embodied: `src/dot/events.zig`, `event_profile.zig`,
@@ -274,7 +278,7 @@ later policy axes per R-MOD-009. *(Embodied: `parseBorrowed`/`parseBorrowedIn`
 signatures.)*
 
 **Q8 — Which implementation language and minimum toolchain version?**
-Zig, minimum 0.16.0. *(Embodied: `build.zig.zon`.)*
+Zig, minimum 0.17.0 (updated 2026-10-20). *(Embodied: `build.zig.zon`.)*
 
 **Q9 — Is serialization required in version 1?**
 No. *(Embodied: non-goals §14.)*

@@ -203,7 +203,7 @@ fn allocatedScopes(allocator: std.mem.Allocator) !void {
     try equal(@as(u64, 2), r.errors);
 }
 test "source scope allocation failures release both reusable buffers" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocatedScopes, .{});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocatedScopes, .{});
 }
 
 test "scope scanning is invariant across every source truncation and backend" {
@@ -257,7 +257,7 @@ fn allocatedHeaderScope(allocator: std.mem.Allocator) !void {
     try equal(@as(u64, 1), r.errors);
 }
 test "standalone header scope allocation is optional and failure safe" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocatedHeaderScope, .{});
+    try @import("allocation_failures.zig").check(std.testing.allocator, allocatedHeaderScope, .{});
     const r = All.validateScope(std.testing.failing_allocator, "&bogus;", .{ .attribute_value = .{ .start = 0, .len = 7 } }, discard, .{});
     try equal(.complete, r.completion);
     try equal(@as(u64, 1), r.errors);
@@ -301,7 +301,7 @@ test "source validation shares cancellation countdown across dense scopes and he
             return self.calls >= self.stop_at;
         }
     };
-    const source = "<a x='1' y='2'/>" ** 10000;
+    const source = std.mem.asBytes(&@as([10000]["<a x='1' y='2'/>".len]u8, @splat("<a x='1' y='2'/>".*)));
     inline for (.{ .scalar, .block }) |backend| inline for (.{ false, true }) |runtime| inline for (.{ .off, .err }) |duplicate| {
         const P = markup.Profile(.{ .runtime_policy = runtime, .policy = .{ .mode = .structural, .scanner = backend, .execution = .{ .cancellation = true }, .validation = .{
             .duplicate_attribute = duplicate,
@@ -446,7 +446,7 @@ test "oversized scope descriptors are rejected before source or attribute reads"
 }
 
 test "public metadata audit honors cancellation even with content checks off" {
-    const source = [_]u8{'x'} ** 257;
+    const source: [257]u8 = @splat('x');
     var attributes: [256]markup.ScopeAttribute = undefined;
     for (&attributes, 1..) |*a, index| a.* = .{ .name = .{ .start = @intCast(index), .len = 1 } };
     const Stop = struct {

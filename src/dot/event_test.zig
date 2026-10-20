@@ -37,7 +37,7 @@ pub fn RecordingSink(comptime capacity: usize) type {
 
 const header: events.BeginDocument = .{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } };
 const node: events.Event = .{ .commit_node = .{
-    .owner = .{ .statement = @enumFromInt(8), .scope = .root },
+    .owner = .{ .statement = @fromBackingInt(@intCast(8)), .scope = .root },
     .value = .{ .identifier = .{ .start = 8, .len = 1 } },
 } };
 

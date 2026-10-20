@@ -38,6 +38,31 @@ test "DOT per-attribute precedence logical keys concatenation and delayed checks
     try std.testing.expectEqualDeep(result.string, again);
 }
 
+test "retained DOT operand routing handles comments HTML and native encodings" {
+    const P = dot.Profile(.{
+        .source_encodings = &.{ .utf8, .utf16, .utf32 },
+        .processors = .{ .string = Text },
+        .policy = .{ .string = .{ .process = city } },
+    });
+    const raw = "graph { a[x=\"Sea\"/*glue*/+\"ttle\" y=SF z=<<b/>>+<> mixed=\"SF\"+<<b/>>]; }";
+    inline for (.{ dot.InputEncoding.utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |encoding| {
+        const width = switch (encoding) {
+            .utf8 => 1,
+            .utf16le, .utf16be => 2,
+            else => 4,
+        };
+        var source: [raw.len * width]u8 = @splat(0);
+        for (raw, 0..) |byte, i| source[i * width + (if (encoding == .utf16be or encoding == .utf32be) width - 1 else 0)] = byte;
+        var result = try P.parseAndValidate(a, &source, P.DiagnosticSink.discard, .{ .dot = .{ .encoding = encoding } });
+        defer result.deinit(a);
+        try std.testing.expect(result.host.documentValid());
+        try std.testing.expectEqual(2, result.string.processed);
+        try std.testing.expectEqual(2, result.string.passed);
+        try std.testing.expectEqual(1, result.string.unavailable);
+        try std.testing.expectEqualDeep(result.string, try P.processStrings(&result.host.document.?, P.DiagnosticSink.discard, .{}));
+    }
+}
+
 test "markup default processing, explicit bypass, omitted branch inherits" {
     const P = markup.Profile(.{
         .processors = .{ .string = Text },

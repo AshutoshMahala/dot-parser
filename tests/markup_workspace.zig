@@ -49,8 +49,8 @@ test "all fragment storage paths agree across resets origins backends and policy
             const fixed = try ready.parseAndValidateIn(fragment, .{ .document = storage.storage(), .scratch = frames.storage() }, scratch.storage(), fixed_bag.sink());
             try std.testing.expectEqualDeep(fixed, reused);
             try std.testing.expectEqualDeep(expected_bag.items(), fixed_bag.items());
-            inline for (@typeInfo(markup.FixedParseResult).@"struct".fields) |field| {
-                try std.testing.expectEqualDeep(@field(owned.parse, field.name), @field(reused.parse, field.name));
+            inline for (@typeInfo(markup.FixedParseResult).@"struct".field_names) |field| {
+                try std.testing.expectEqualDeep(@field(owned.parse, field), @field(reused.parse, field));
             }
             try std.testing.expectEqualDeep(owned.validation, reused.validation);
             try equal(owned.has_errors, reused.has_errors);
@@ -127,7 +127,7 @@ fn allocationCase(allocator: std.mem.Allocator) !void {
 }
 
 test "all workspace growth failures release retained buffers exactly once" {
-    try std.testing.checkAllAllocationFailures(gpa, allocationCase, .{});
+    try @import("allocation_failures.zig").check(gpa, allocationCase, .{});
 }
 
 test "a reusable workspace survives failed growth and rejects bad origins before processing" {
@@ -140,7 +140,7 @@ test "a reusable workspace survives failed growth and rejects bad origins before
     const reserved = workspace.reservedBytes();
     tracked.fail_index = tracked.alloc_index;
     tracked.resize_fail_index = tracked.resize_index;
-    const failed = try workspace.parseAndValidate(.{ .bytes = "<b/>" ** 100, .origin = 0 }, markup.diagnostic.discard);
+    const failed = try workspace.parseAndValidate(.{ .bytes = std.mem.asBytes(&@as([100]["<b/>".len]u8, @splat("<b/>".*))), .origin = 0 }, markup.diagnostic.discard);
     try expect(failed.stopped() and failed.parse.document == null);
     try equal(reserved, workspace.reservedBytes());
     var bag: markup.FixedDiagnosticBag(8) = .{};

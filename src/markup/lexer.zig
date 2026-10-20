@@ -89,7 +89,7 @@ pub fn ScannerWithFraming(comptime actual: encoding.Actual, comptime backend: po
         offset: u32 = 0,
         frontier: if (metered) u32 else void = if (metered) 0 else {},
         state: enum { prefix, prefix_done, content, text, after_lt, end_start, name, after_name, slash, bang, attribute_name, before_equal, before_value, value, after_value, attributes, attribute_slash, comment_start, comment, comment_dash, comment_end, cdata_start, cdata, cdata_bracket, cdata_end, reference_start, reference_name, reference_number_start, reference_hex_start, reference_decimal, reference_hex } = .prefix,
-        prefix: [4]u8 = .{0} ** 4,
+        prefix: [4]u8 = @splat(0),
         /// Shared progress for mutually exclusive markers: initial BOM probe
         /// (0..4), then "CDATA[" (0..6), reset when entering .cdata_start.
         /// Neither value is retained encoding metadata; both fit u3.

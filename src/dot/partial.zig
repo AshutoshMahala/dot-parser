@@ -8,7 +8,7 @@ const event = @import("events.zig");
 pub const pools = .{ "comments", "order", "nodes", "edges", "edge_chains", "scoped_edges", "scoped_edge_links", "edge_links", "ported_references", "subgraphs", "attributes", "assignments", "attribute_statements" };
 pub const AllocationLengths = [pools.len]usize;
 comptime {
-    if (std.meta.fields(syntax.DocumentStorage).len != pools.len)
+    if (std.meta.fieldNames(syntax.DocumentStorage).len != pools.len)
         @compileError("update partial-result allocation ownership for every syntax pool");
 }
 pub fn documentField(comptime field: []const u8) []const u8 {
