@@ -259,6 +259,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "fixed_parse_override", .message = "tests/compile_fail/fixed_parse_override.zig:3:41: error: no field named 'policy' in struct /?/" },
         .{ .name = "unmetered_advance", .message = "error: metering is disabled; use run()" },
         .{ .name = "events_early_flag", .message = "error: wants_early_events must be a comptime bool" },
+        .{ .name = "events_preview_flag", .message = "error: wants_token_previews must be a comptime bool" },
         .{ .name = "processor_fixed_override", .message = "tests/compile_fail/processor_fixed_override.zig:4:35: error: no field named 'policy' in struct /?/" },
         .{ .name = "processor_invalid_binding", .message = "error: configured processor profile must expose Policies" },
         .{ .name = "processor_invalid_infallible_schema", .message = "error: infallible policy schema must declare a valid-only Check" },
@@ -526,6 +527,18 @@ pub fn build(b: *std.Build) void {
     b.step("bench-metering", "Compare default, tiny-budget and batched parse execution")
         .dependOn(&b.addRunArtifact(metering_bench).step);
     check_benches.dependOn(&metering_bench.step);
+    const preview_bench = b.addExecutable(.{
+        .name = "preview_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/previews.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "dot_parser", .module = mod }},
+        }),
+    });
+    b.step("bench-previews", "Compare opt-in EOF/pause previews, callback credits and state size")
+        .dependOn(&b.addRunArtifact(preview_bench).step);
+    check_benches.dependOn(&preview_bench.step);
     const markup_bench = b.addExecutable(.{
         .name = "markup_bench",
         .root_module = b.createModule(.{

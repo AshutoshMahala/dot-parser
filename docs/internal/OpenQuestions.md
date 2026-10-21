@@ -207,7 +207,13 @@ bookkeeping is private continuation state, not a second event protocol.
 Opt-in `Sink.wants_early_events` now delivers complete identifier expressions,
 recognized statement heads and named header prefixes for provisional outlines
 through that same interface. Commit/abort and metering remain separate from
-these observations. Unfinished-token previews remain deferred.
+these observations. The independent Unreleased `Sink.wants_token_previews`
+opt-in exposes raw quoted/HTML/concatenation prefixes at EOF, and word/numeral
+prefixes too at metered pauses. Snapshots never read ahead or decode; a queued
+update consumes its own credit on resume before scanning continues. Same-start
+updates replace prior observations, lexical completion/rejection retires them,
+and document abort abandons remaining previews. These are not trusted names or
+syntax commits. Comments/operators and native sessions are outside this slice.
 Combined tree/event output, composed event execution, event-driven validation
 and public pull events remain
 unfinished. *(Embodied: `src/dot/events.zig`, `event_profile.zig`,

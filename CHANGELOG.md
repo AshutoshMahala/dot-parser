@@ -8,6 +8,13 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Independent opt-in DOT `Consumer.wants_token_previews = true` exposes raw
+  unfinished name-expression spans at EOF and metered pauses, through the same
+  events interface. Updates carry known context and original encoding/offsets;
+  explicit completion/rejection events retire previews. Callbacks consume their
+  own credits, including queued delivery after a budget is exhausted. No repair,
+  trusted-name promotion, source copy or parser allocation; default off.
+  `zig build bench-previews` reports enabled/disabled timing, credits and sizes.
 - Opt-in early DOT event observations with `Consumer.wants_early_events = true`:
   complete identifiers, recognized statement heads and document/subgraph names
   can feed an outline before their enclosing syntax finishes. The same event
@@ -89,7 +96,8 @@ are marked; no compatibility shims are kept.
   are unchanged. Markup sessions gain 16 bytes of standard-library safety
   metadata in Debug/Safe; Fast/Small sizes are unchanged. Earlier performance
   tables retain their original toolchain.
-- **Breaking (Unreleased API):** `events.Event` adds four early-observation tags.
+- **Breaking (Unreleased API):** `events.Event` adds four early-observation tags
+  and two token-preview tags.
   Exhaustive switches must handle them or use `else`; callback delivery stays
   unchanged unless the consumer opts in.
 - Recovery resumes after certified boundaries, reporting independent errors

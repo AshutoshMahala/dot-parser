@@ -2140,7 +2140,7 @@ fn appendScopedLink(self: anytype, right: Endpoint, operator: EdgeOperator, at: 
 inline fn consume(self: anytype, value: event_types.Event) @TypeOf(self.*).Error!event_types.Action {
     switch (value) {
         .begin_document => |header| try self.beginDocument(header),
-        .begin_statement, .identifier, .statement_head, .document_name, .subgraph_name => {},
+        .begin_statement, .identifier, .statement_head, .document_name, .subgraph_name, .token_preview, .token_preview_end => {},
         .begin_scope => |scope| try self.beginSubgraph(scope),
         .end_scope => |scope| try self.endSubgraph(scope),
         .attribute => |pair| try self.attribute(pair.pair),

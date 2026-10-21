@@ -62,8 +62,10 @@ For an outline **before a statement finishes**, use the Unreleased
 [early event observations](EVENTS.md#outline-while-typing) with
 `Consumer.wants_early_events = true`. Complete names can be exposed even when
 their statement never commits, without retaining the library's tree. This is
-separate from the partial-document option below; unfinished-token previews are
-not yet supported.
+separate from the partial-document option below. For raw unfinished names,
+independently enable `Consumer.wants_token_previews = true`: [token previews](EVENTS.md#unfinished-token-previews)
+cover actual EOF and metered pauses, with separately charged callbacks and
+explicit retirement. Their raw spans are not trusted identifiers or tree nodes.
 
 Turn on `retention.partial`:
 

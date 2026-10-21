@@ -272,6 +272,52 @@ sizes remain 448 / 488 / 512 bytes (plain / metered / metered+cancellable), bloc
 retaining outline entries costs whatever the consumer chooses to store. These
 are target-specific layout observations, not a stable ABI or RSS measurement.
 
+## Unfinished-token previews (Unreleased)
+
+Checked against `75ce950` on 2026-10-20 with Zig 0.17.0, Apple M4 Pro.
+With previews disabled, `bench/policies.zig` and `bench/metering.zig` produced
+identical machine-code sections before/after in `fast`, `safe` and `small`.
+These exercise both scanners, fixed/runtime policies, ordinary/fixed-pool
+parsing, tiny/batched budgets and cancellation. The identifier-index benchmark
+also produced identical Fast/Small code; Safe changed only two enum-range
+comparison constants for the two new public event tags, with no extra
+instructions. Ordinary document/session layout guards pass unchanged.
+
+The opt-in uses no new allocation or source copy. In the Fast-mode fixed event sessions
+measured here, it adds 16 bytes: scalar 448 → 464 (plain), 488 → 504 (metered),
+block 544 → 560 and 584 → 600. These are target/mode-qualified instance sizes,
+not RSS or a portable ABI. Consumer-owned outline storage is separate.
+
+Run `zig build bench-previews -Doptimize=fast` (or `safe` / `small`) for one CSV
+report of enabled/disabled timing, decimal MB/s, callback counts, exact credits
+and session sizes. Source construction is excluded; the allocation-free event
+consumer counts callbacks and consumes preview spans. Seven alternating sample
+medians follow two warmup rounds, with eight parses per sample.
+
+Selected Fast-mode observations from that report (milliseconds per parse):
+
+| Input / execution | Scalar off → on | Block off → on |
+| --- | ---: | ---: |
+| 5,000 `a[x=1];` statements, unmetered (35,007 bytes) | 0.207 → 0.220 | 0.236 → 0.238 |
+| Same dense input, 4,096-credit resumes | 0.238 → 0.325 | 0.294 → 0.336 |
+| Long Unicode quoted value, 4,096-credit resumes (95,018 bytes) | 0.0396 → 0.0392 | 0.0387 → 0.0391 |
+| Same Unicode value, one-credit resumes | 0.470 → 1.382 | 0.0422 → 0.0687 |
+| Unterminated Unicode value, unmetered (95,015 bytes) | 0.0461 → 0.0456 | 0.0395 → 0.0396 |
+
+Enabled execution is not free even when a pause happens to align with a token
+boundary and no preview is delivered: the enabled dispatch/control path still
+has checks. These are local measurements, not universal percentage guarantees;
+sub-microsecond differences are noise, not claimed speedups.
+
+Unlike complete-name early observations, pause-preview counts **depend on the
+resume budget and backend**. Every added update/retirement is a separately
+charged callback; the benchmark verifies `enabled credits = ordinary credits +
+preview callbacks`. A one-credit scalar session can deliver an update for each
+additional byte and therefore materially increase time/callback volume. Larger
+budgets coalesce observations without coarsening lexical credits or cancellation
+guarantees. Use the report to choose a UI resume budget, not to infer a regression
+in ordinary parsing with previews disabled.
+
 ## Standalone strings (Unreleased)
 
 Measured on 2026-10-18, Apple M4 Pro, Zig 0.16.0, ReleaseFast, using

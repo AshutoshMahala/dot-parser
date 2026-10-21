@@ -599,6 +599,17 @@ same event interface, dispatch credits and cancellation contract. A delivered
 document-name prefix can require terminal abort before document-begin. The
 consumer owns any retained outline; ordinary tree parsing adds no such output.
 
+Independent opt-in `wants_token_previews` exposes raw unfinished name-expression
+prefixes at EOF and metered pauses through the same event interface. Prefixes
+are observations of consumed bytes, not trusted identifiers, accepted syntax
+or repairs. Each update and lexical completion/rejection notification costs a
+dispatch credit; a pause with no remaining budget queues the update for the next
+positive-budget resume. Zero-budget calls do not emit previews. Source offsets,
+encoding metadata, stop/failure/abort and cancellation contracts are unchanged.
+Preview state is fixed-size, allocation-free and compiled out when unused;
+ordinary scanners and retained document layouts stay unchanged. Paused event
+sequences depend on scanner/backend and budget, not merely the source text.
+
 Opt-in recovered DOT gaps use adjacent start/end tags in the existing compact
 order pool: two slots per gap. No new pool, document descriptor, per-node or
 per-edge metadata is required. Fixed pool exhaustion or allocation failure stops

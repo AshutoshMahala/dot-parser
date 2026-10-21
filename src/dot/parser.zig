@@ -85,6 +85,7 @@ const execution = @import("parser_support").execution;
 const event_types = @import("events.zig");
 const scratch_impl = @import("scratch.zig");
 const policy = @import("policy.zig");
+const previews = @import("lexer/preview.zig");
 
 /// The parse outcome category. The diagnostics explaining a failure travel
 /// through the caller's diagnostic sink, never through this value.
@@ -173,7 +174,8 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
     const statement_recovery = if (@hasDecl(Sink, "recover_statements")) Sink.recover_statements else true;
     const begin_notifications = if (@hasDecl(Sink, "wants_begin_statement")) Sink.wants_begin_statement else true;
     const early_notifications = if (@hasDecl(Sink, "wants_early_events")) Sink.wants_early_events else false;
-    const transactional = statement_recovery or begin_notifications or early_notifications;
+    const preview_notifications = if (@hasDecl(Sink, "wants_token_previews")) Sink.wants_token_previews else false;
+    const transactional = statement_recovery or begin_notifications or early_notifications or preview_notifications;
     return struct {
         const Self = @This();
 
@@ -206,7 +208,12 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             active_statement: if (transactional) u32 else void = if (transactional) no_statement else {},
             recovery_start: if (transactional) u32 else void = if (transactional) no_statement else {},
             rejected: if (transactional) bool else void = if (transactional) false else {},
-            early_started: if (early_notifications) bool else void = if (early_notifications) false else {},
+            early_started: if (early_notifications or preview_notifications) bool else void = if (early_notifications or preview_notifications) false else {},
+            preview: if (preview_notifications) struct {
+                snapshot: previews.Snapshot = undefined,
+                active: bool = false,
+                pending: enum { none, pause, eof, end_token, end_failure } = .none,
+            } else void = if (preview_notifications) .{} else {},
         };
 
         processor: Processor = if (Processor == void) {} else undefined,
@@ -449,6 +456,14 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             self.tokens.setNumeralCheck(self.numeralSeverity() != .off);
             if (metered) {
                 while (true) {
+                    if (comptime preview_notifications) {
+                        // A caller asked to finish, not to observe suspension.
+                        // Drain an already queued preview, but don't create
+                        // pause snapshots at internal max-budget boundaries.
+                        _ = self.drive(true, std.math.maxInt(usize));
+                        if (self.terminal) |result| return result;
+                        continue;
+                    }
                     if (self.advance(std.math.maxInt(usize)).result) |result| return result;
                 }
             } else if (cancellable) {
@@ -470,6 +485,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 .token => |token| token,
                 .failure => blk: {
                     const d = self.tokens.failureDiagnostic();
+                    if (preview_notifications and self.previewFailure()) return self.done();
                     break :blk self.operatorCandidate(d) orelse return self.fail(d);
                 },
             };
@@ -521,6 +537,31 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// grammar transition, or one normal event attempt; never two classes.
         pub inline fn advance(self: *Self, budget: usize) Progress {
             if (!metered) @compileError("advance requires metering; use runToCompletion");
+            if (comptime preview_notifications) {
+                // Deliver a queued observation first, leaving the existing
+                // quoted-run fast path available for the rest of this budget.
+                var used: usize = if (budget != 0 and self.control.preview.pending != .none) self.drive(true, 1) else 0;
+                if (comptime !cancellable and @hasDecl(Scanner, "advanceQuoted")) {
+                    if (budget - used >= 16 and self.terminal == null and self.work.phase == .scan) {
+                        const run = self.tokens.advanceQuoted(budget - used);
+                        used += run.work;
+                        if (run.failed and !self.previewFailure()) _ = self.fail(self.tokens.failureDiagnostic());
+                    }
+                }
+                used += self.drive(true, budget - used);
+                // No credit remains for an extra callback. Queue a snapshot
+                // without reading bytes; resume dispatches it before scanning.
+                if (budget != 0 and self.terminal == null and !self.aborted and self.work.phase == .scan and self.control.preview.pending == .none) {
+                    if (previews.unfinished(&self.tokens, false)) |snapshot| {
+                        const old = &self.control.preview;
+                        if (!old.active or old.snapshot.span.start != snapshot.span.start or old.snapshot.span.len != snapshot.span.len or old.snapshot.kind != snapshot.kind) {
+                            old.snapshot = snapshot;
+                            _ = self.queuePreview(.pause);
+                        }
+                    }
+                }
+                return self.progress(used);
+            }
             // Probe once per resume, not once per token/grammar transition.
             // One-credit calls compile this out. Cancellable calls retain the
             // original driver's exact polling sites.
@@ -571,6 +612,11 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         if (comptime cancellable and fixed_interval != 1) polling.spend(scanned.work_used);
                         if (scanned.result) |result| switch (result) {
                             .token => |token| {
+                                if (preview_notifications and self.control.preview.active and token.comment() == null) {
+                                    self.work.token = token;
+                                    _ = self.queuePreview(.end_token);
+                                    continue;
+                                }
                                 if (self.forwardWarning()) {
                                     if (self.terminal != null) break;
                                     continue;
@@ -580,6 +626,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                                 self.work.phase = .grammar;
                             },
                             .failure => {
+                                if (preview_notifications and self.previewFailure()) continue;
                                 const d = self.tokens.failureDiagnostic();
                                 if (self.operatorCandidate(d)) |token| {
                                     self.work.token = token;
@@ -598,7 +645,10 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     .dispatch => {
                         if (bounded) remaining -= 1;
                         if (comptime cancellable and fixed_interval != 1) polling.spend(1);
-                        if (comptime early_notifications) {
+                        if (preview_notifications and self.control.preview.pending != .none) {
+                            self.work.phase = .scan;
+                            _ = self.dispatchPreview();
+                        } else if (comptime early_notifications) {
                             // An early head can schedule its existing commit.
                             // Keep them separate dispatches/credits/poll sites.
                             self.work.phase = if (self.work.replay) .grammar else .scan;
@@ -654,7 +704,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// The sink's one terminal abort, if it has begun and not yet
         /// received one.
         fn abortEvents(self: *Self, reason: event_types.AbortReason) void {
-            const started = self.begun or (comments_enabled and self.comments_count != 0) or (early_notifications and self.control.early_started);
+            const started = self.begun or (comments_enabled and self.comments_count != 0) or ((early_notifications or preview_notifications) and self.control.early_started);
             if (transactional and started and !self.aborted) {
                 if (self.control.active_statement != no_statement) {
                     const start = self.control.active_statement;
@@ -666,6 +716,10 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             }
             if (started and !self.aborted) self.events.onAbort(.{ .document = reason });
             self.aborted = self.aborted or started;
+            if (preview_notifications and self.aborted) {
+                self.control.preview.active = false;
+                self.control.preview.pending = .none;
+            }
         }
 
         fn progress(self: *const Self, used: usize) Progress {
@@ -1535,6 +1589,87 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 },
                 else => unreachable,
             }
+        }
+
+        fn queuePreview(self: *Self, pending: @FieldType(@FieldType(Control, "preview"), "pending")) Done {
+            self.control.preview.pending = pending;
+            if (metered or cancellable) {
+                // Use the ordinary charged dispatch phase, without widening
+                // the grammar action tag or adding a per-byte preview branch.
+                self.work.phase = .dispatch;
+                return null;
+            }
+            return self.dispatchPreview();
+        }
+
+        fn previewFailure(self: *Self) bool {
+            if (self.aborted) return false;
+            if (previews.unfinished(&self.tokens, true)) |snapshot| {
+                self.control.preview.snapshot = snapshot;
+                _ = self.queuePreview(.eof);
+                return true;
+            }
+            if (self.control.preview.active) {
+                _ = self.queuePreview(.end_failure);
+                return true;
+            }
+            return false;
+        }
+
+        fn dispatchPreview(self: *Self) Done {
+            if (!preview_notifications) unreachable;
+            const pending = self.control.preview.pending;
+            self.control.preview.pending = .none;
+            if (audited) self.control.dispatch += 1;
+            self.control.early_started = true;
+            const snapshot = self.control.preview.snapshot;
+            switch (pending) {
+                .pause, .eof => {
+                    self.control.preview.active = true;
+                    if (self.publish(.token_preview, .{
+                        .span = snapshot.span,
+                        .kind = snapshot.kind,
+                        .reason = if (pending == .eof) .eof else .pause,
+                        .scope = self.currentScope(),
+                        .owner = if (self.control.active_statement == no_statement) null else .{ .statement = @fromBackingInt(self.control.active_statement), .scope = self.currentScope() },
+                        .source_info = if (source_metadata) self.control.source_info else enc.sourceInfo(self.tokens.source),
+                        .context = switch (self.state) {
+                            .header_name => .document_name,
+                            .subgraph_name => .subgraph_name,
+                            .statement, .completed => .statement_start,
+                            .edge_right => .edge_right,
+                            .chain_right => .edge_link,
+                            .attribute_key_or_close => .attribute_key,
+                            .attribute_value => .attribute_value,
+                            .assignment_value => .assignment_value,
+                            .port_first, .port_second => .port,
+                            else => .unknown,
+                        },
+                    })) |result| return result;
+                },
+                .end_token, .end_failure => {
+                    self.control.preview.active = false;
+                    if (self.publish(.token_preview_end, .{ .start = snapshot.span.start, .reason = if (pending == .end_token) .token else .rejected })) |result| return result;
+                },
+                .none => unreachable,
+            }
+            if ((metered or cancellable) and pending == .end_token) {
+                if (self.forwardWarning()) return self.done();
+                if (self.processIdentifier(self.work.token)) |result| return result;
+                self.work.phase = .grammar;
+            }
+            if (pending == .eof or pending == .end_failure) {
+                const d = self.tokens.failureDiagnostic();
+                if (self.operatorCandidate(d)) |token| {
+                    if (metered or cancellable) {
+                        self.work.token = token;
+                        self.work.phase = .grammar;
+                    } else return self.transition(token);
+                    return null;
+                }
+                return self.fail(d);
+            }
+            return null;
         }
 
         fn retainThrough(self: *Self, end: u32) void {

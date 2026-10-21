@@ -94,6 +94,26 @@ pub const DocumentName = struct {
     source_info: @import("parser_support").encoding.Info,
 };
 pub const SubgraphName = struct { owner: Owner, keyword_span: location.Span, name: location.Span, role: ScopeRole };
+/// Raw lexical observations, never trusted identifiers. `word` may become a
+/// keyword. Prefixes may end within a Unicode scalar or escape sequence.
+pub const PreviewKind = @import("lexer/preview.zig").Kind;
+pub const PreviewContext = enum { unknown, document_name, subgraph_name, statement_start, edge_right, edge_link, attribute_key, attribute_value, assignment_value, port };
+pub const TokenPreview = struct {
+    span: location.Span,
+    kind: PreviewKind,
+    reason: enum { pause, eof },
+    context: PreviewContext,
+    scope: ScopeId,
+    /// Absent until a statement occurrence has actually begun.
+    owner: ?Owner,
+    source_info: @import("parser_support").encoding.Info,
+};
+pub const TokenPreviewEnd = struct {
+    /// Identifies the previously delivered prefix, not a new statement.
+    start: u32,
+    /// Lexical completion does not imply grammar acceptance.
+    reason: enum { token, rejected },
+};
 pub const Event = union(enum) {
     begin_document: BeginDocument,
     begin_statement: struct { owner: Owner, start: location.Span },
@@ -119,6 +139,11 @@ pub const Event = union(enum) {
     statement_head: StatementHead,
     document_name: DocumentName,
     subgraph_name: SubgraphName,
+    /// Independent opt-in: Sink.wants_token_previews = true. Updates replace
+    /// the preview with the same start. Token completion/rejection retires it;
+    /// a document abort retires every remaining preview.
+    token_preview: TokenPreview,
+    token_preview_end: TokenPreviewEnd,
 };
 
 /// All output consumers implement this same contract, including the library's
@@ -128,7 +153,7 @@ pub fn assertSink(comptime Sink: type) void {
     comptime {
         checkMethod(Sink, "onEvent", Event, Action, true);
         checkMethod(Sink, "onAbort", Abort, void, false);
-        for (.{ "wants_begin_statement", "recover_statements", "wants_early_events" }) |name| {
+        for (.{ "wants_begin_statement", "recover_statements", "wants_early_events", "wants_token_previews" }) |name| {
             if (@hasDecl(Sink, name) and @TypeOf(@field(Sink, name)) != bool)
                 @compileError(name ++ " must be a comptime bool");
         }

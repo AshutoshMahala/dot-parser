@@ -47,6 +47,7 @@ parsing with partial retention off.
 | `skipped` | A failed/unrecognized region was skipped to a synchronization boundary |
 | `comment` | A complete comment, only with `retention.comments` enabled |
 | `identifier`, `statement_head`, `document_name`, `subgraph_name` | Opt-in early observations for outlines; see below |
+| `token_preview`, `token_preview_end` | Independently opt-in raw token prefixes at EOF and metered pauses |
 | `end_document` | Whole-document syntax commit attempt; successful acknowledgment finishes parsing |
 
 Commit cases are flat event tags, not another tagged union inside an event:
@@ -133,8 +134,8 @@ These are provisional facts, not commits, repairs or a partial document tree.
 Commit/abort semantics are unchanged. An outline may deliberately keep an
 aborted observation marked provisional; an atomic graph/index must discard it.
 Complete lexical names qualify for `identifier.assumeParsed`, even when their
-enclosing statement fails. An unfinished quote, HTML-like token, concatenation
-or comment is not guessed into a name; unfinished-token previews remain deferred.
+enclosing statement fails. Unfinished input is not guessed into a name. The
+separate preview opt-in below exposes raw prefixes, not trusted identifiers.
 
 There is no event queue, additional nesting frame or parser-owned outline.
 Enabled callbacks each consume a separate dispatch credit and obey existing
@@ -142,6 +143,67 @@ cancellation polling, including a pause between a head and its commit.
 Callback execution is still consumer work. Metering units and cancellation
 intervals do not change. The opt-in does not enable `retention.partial` or alter
 syntax acceptance/recovery.
+
+### Unfinished-token previews
+
+For raw prefixes as well as complete names, independently declare:
+
+```zig
+pub const wants_token_previews = true; // default false
+// May be combined with wants_early_events = true.
+```
+
+The same `onEvent` receives these Unreleased events:
+
+| Event | Meaning |
+| --- | --- |
+| `token_preview` | `span`, `kind`, `reason` (`pause` or `eof`), known grammar `context`, current `scope`, optional `owner` and `source_info` |
+| `token_preview_end` | Retire the preview at `start`: a lexical `token` completed, or the prefix was `rejected`. Token completion is not grammar acceptance. |
+
+At actual EOF, `graph { "serv` exposes `"serv` with kind `quoted` and context
+`statement_start`, then reports the ordinary unterminated-string failure and
+aborts. Quoted, HTML-like and concatenated expressions are supported at EOF.
+While a session is scanning, previews can additionally describe `word` and
+`numeral` prefixes. A word might become a keyword; even a closed quoted operand
+can still acquire a concatenated suffix. This slice does not preview comments,
+operators or whitespace. Comment retention remains a separate option.
+
+Spans include their written delimiters and borrow original bytes. They may end
+inside a UTF-8 scalar or escape; they are **not** valid input for
+`identifier.assumeParsed`. No decoding, extra source scan, inferred closing
+delimiter, diagnostic suppression or repaired tree is involved. Native one-shot
+EOF previews keep original UTF-16/32 byte offsets and encoding metadata; native
+sessions remain unavailable.
+
+Contexts include document/subgraph names, statement starts, right/link edge
+endpoints, attribute keys/values, assignment values and ports. Ambiguous
+lookahead and recovery use `unknown`. An owner is absent until an actual
+statement occurrence has begun: a prefix alone does not allocate a statement
+or scope identity. Use the source start to correlate updates, not the spelling.
+
+Replace a previous preview at the same start with each update. Retire it on
+`token_preview_end`; a document abort abandons all remaining previews without
+extra end callbacks. An editor may deliberately keep an EOF preview marked
+provisional after abort, just like early name observations. Reset starts a new
+parse identity space. Never merge these observations into committed syntax.
+
+Each preview/update/end attempt consumes its own dispatch credit. At a metered
+pause, the parser snapshots only already-consumed bytes, **without reading
+ahead**, and queues at most one update. If scanning exhausted the budget, the
+callback waits for the next positive-budget `advance()` before scanning resumes.
+`Progress.phase` is `dispatch` while that update is queued; a one-credit call can
+deliver it. `advance(0)` emits nothing (existing cancellation polling still
+applies). Unchanged prefixes are not repeatedly emitted, and a one-credit
+session always makes progress rather than spending every credit on snapshots.
+
+Pause previews depend on budget partition and scanner backend; their sequence
+is not a token stream or a stable outline. A `run()` does not pause to manufacture
+previews. Consumer stop/failure and cancellation keep their existing terminal
+semantics; a queued preview may never be delivered if the operation is stopped.
+Callback work remains caller work. Enabling previews adds fixed-size state and
+callback work, but no parser allocation, source copy or nesting-frame growth.
+Disabled profiles compile that state and dispatch out. Compare costs with
+`zig build bench-previews -Doptimize=fast`.
 
 ## Recovery and retained output
 
@@ -185,7 +247,7 @@ identifier, a consumer can skip that check without retaining a `Document`:
 `assumeParsed` borrows the source with an explicit syntax-validity precondition.
 It does not validate a span or make a provisional statement valid. Use only
 identifier fields from events, not `begin_statement.start` (which can be a
-keyword or brace), `skipped.span`, or an unfinished token. For native input,
+keyword or brace), `skipped.span`, or `token_preview.span`. For native input,
 select `identifier.ForEncoding(actual)` from the document-begin encoding
 (or `document_name.source_info` for an early header name).
 Those native helpers can reject malformed encoding: propagate `InvalidIdentifier`
@@ -250,8 +312,9 @@ Optional compile-time declarations select callback work:
 `wants_begin_statement = false` omits begin notifications, and
 `recover_statements = false` ends output at the first syntax rejection while
 the grammar may continue collecting diagnostics. Both default to true for user
-consumers. `wants_early_events = true` adds the early observations above and
-defaults to false, independently of begin notifications. None changes the
+consumers. `wants_early_events = true` adds the early observations above;
+`wants_token_previews = true` adds raw prefixes and their retirement events.
+Both default to false, independently of each other and begin notifications. None changes the
 profile's syntax/recovery policy.
 The `parser_retention` namespace is reserved for internal document bookkeeping,
 not a consumer hook. Unrelated methods named `continuesAfterError` or

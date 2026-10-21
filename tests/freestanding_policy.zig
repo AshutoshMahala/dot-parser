@@ -33,10 +33,11 @@ export fn event_node_count(source: [*]const u8, len: usize) u32 {
 
 const Outline = struct {
     pub const wants_early_events = true;
+    pub const wants_token_previews = true;
     names: u32 = 0,
     pub fn onEvent(self: *@This(), event: dot.events.Event) error{}!dot.events.Action {
         switch (event) {
-            .identifier, .document_name, .subgraph_name => self.names += 1,
+            .identifier, .document_name, .subgraph_name, .token_preview => self.names += 1,
             else => {},
         }
         return .proceed;
