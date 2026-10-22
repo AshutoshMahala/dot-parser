@@ -122,6 +122,131 @@ implementations were untouched. Thirty focused IR tests pass in Debug,
 ReleaseSafe and ReleaseFast, including allocation failures, early cleanup,
 cumulative limits, cancellation, strict overlap and an independent eager oracle.
 
+### Effective attributes and defaults (2026-10-22)
+
+Apple M4 Pro, Zig 0.17.0, against `08537a9`. Five alternating process runs
+per configuration; each reports the median of nine samples after two warmups.
+The tables use the median of those five reports. Parsing, source generation,
+output and destruction are outside lowering time. Reproduce the topology and
+attribute reports together with:
+
+```sh
+zig build bench-ir -Doptimize=ReleaseFast
+zig build bench-ir -Doptimize=ReleaseSafe
+```
+
+**This is additional semantic work:** the baseline retained raw attributes but
+could not answer effective-value queries. The new lowering interns keys,
+captures creation defaults and folds node/graph updates into shared immutable
+maps. It still does not expand edge products or copy source strings.
+
+| Attribute workload | Fast raw-only ms | Fast effective ms | Safe raw-only ms | Safe effective ms |
+| --- | ---: | ---: | ---: | ---: |
+| 64 defaults shared by 10,000 nodes | 0.470 | 0.476 | 0.656 | 0.722 |
+| 10,000 nodes, two keys then one update each | 0.848 | 1.696 | 1.154 | 2.329 |
+| 1,000 reopened scopes with changing defaults | 0.165 | 0.254 | 0.233 | 0.346 |
+| 10,000 nested scopes sharing defaults | 0.285 | 0.319 | 0.439 | 0.509 |
+| 50,000 × 50,000 symbolic product with defaults | 5.123 | 5.228 | 6.416 | 6.512 |
+
+Memory below is decimal MB, measured in ReleaseFast. Each pair is baseline →
+effective-attribute implementation. Requested payload/peaks exclude source,
+Document storage, stack frames, allocator metadata and RSS. Arena capacity is
+measured separately; its growth boundaries can move in either direction.
+
+| Workload | Retained MB | Requested peak MB | Arena capacity MB |
+| --- | ---: | ---: | ---: |
+| Shared defaults | 0.944 → 0.959 | 1.051 → 1.065 | 2.679 → 2.636 |
+| Node updates | 1.764 → 3.072 | 1.925 → 3.444 | 4.375 → 8.742 |
+| Reopened defaults | 0.309 → 0.420 | 0.353 → 0.464 | 0.851 → 1.659 |
+| Deep defaults | 0.693 → 0.973 | 1.136 → 1.416 | 1.907 → 2.133 |
+| Symbolic product | 8.900684 → 8.901156 | 10.313012 → 10.313484 | 27.399 → 27.399 |
+
+The symbolic product adds **472 retained bytes**, not 2.5 billion attribute
+records. Conversely, repeated per-node updates retain path-copied map cells:
+that workload's roughly doubled lowering time and increased memory are real
+costs, not claimed improvements. `max_attribute_states`, work and allocation
+limits bound this construction.
+
+Repeated hot-key queries, excluding name lookup, expansion and value rendering,
+take 10–16 ns for nodes and 20–23 ns for non-strict edges in ReleaseFast;
+ReleaseSafe takes 13–18 ns and 24–28 ns respectively. A strict edge query over
+1,000 reopened contributions takes **8.66 µs / 9.01 µs** (Fast/Safe). Queries
+allocate nothing, but strict queries scan contributions: repeated per-edge
+queries are not a bulk attribute materializer.
+
+**Attribute-free costs:** all six existing topology workloads retain exactly
+the same requested heap payload, peaks and arena capacities as the baseline.
+The measured 64-bit node record remains 24 bytes. Lowering timings:
+
+| Workload | Fast before → after ms | Safe before → after ms |
+| --- | ---: | ---: |
+| Singleton connections | 1.046 → 1.033 | 1.306 → 1.351 |
+| Three-member sets | 1.982 → 2.026 | 2.512 → 2.688 |
+| Reopened scopes | 0.143 → 0.141 | 0.169 → 0.175 |
+| Strict reopened scopes | 0.136 → 0.143 | 0.171 → 0.178 |
+| Deep nesting | 0.285 → 0.272 | 0.430 → 0.447 |
+| Symbolic product | 5.084 → 5.174 | 6.568 → 6.580 |
+
+This is **not a blanket zero-regression claim for optional IR execution**.
+Expansion remains sensitive to code generation despite unchanged heap use.
+The iterator now retains only its applicable limits and inlines its shared
+engine into the error-state wrapper; budgets, polling and terminal-error
+behavior are unchanged. The remaining expansion movements include:
+
+| Expansion | Fast before → after ms | Safe before → after ms |
+| --- | ---: | ---: |
+| Materialize 10,000 singleton edges | 0.071 → 0.075 | 0.128 → 0.141 |
+| Stream 10,000 singleton edges | 0.080 → 0.086 | 0.091 → 0.099 |
+| Stream 30,000 set edges | 0.211 → 0.214 | 0.249 → 0.269 |
+| Stream 500,500 reopened-scope edges | 3.024 → 3.289 | 3.869 → 3.724 |
+| Stream 1,000 strict reopened-scope edges | 2.770 → 2.688 | 2.883 → 2.952 |
+| Stream first 1,000 product edges | 0.374 → 0.383 | 0.347 → 0.362 |
+
+Ordinary DOT parsing does not use this layer: default quick-start ReleaseFast
+code/data is identical to `08537a9` after excluding debug/source-location
+metadata. No parser metering/cancellation implementation changed. Verification
+adds allocation-failure and mid-operation cancellation checks, native values,
+512-key persistent-map stress, 10,000 nested scopes, a symbolic product under
+a small memory/state cap, and 48 generated graphs compared with an independent
+eager attribute oracle. See [IR contracts and remaining work](IR.md).
+
+### Borrowed component views and attribute iteration (2026-10-22)
+
+Compared with the working effective-attribute implementation immediately before
+adding views (not the raw-only `08537a9` baseline above), on the same machine
+and toolchain, using five alternating runs and nine-sample medians. `bench-ir`
+now includes view lookups, whole-attribute iteration and iterator scratch.
+
+All twelve topology/attribute workloads have **identical retained heap,
+lowering peak and arena capacity** before/after. Default-parser ReleaseFast
+code/data and topology-benchmark ReleaseFast/ReleaseSafe code/data are identical
+after excluding debug/source-location metadata. Existing topology timing
+variation therefore does not indicate a view-induced change to that code.
+Parser metering/cancellation implementations are untouched.
+
+Views aren't a claim of free result wrapping: a hot node lookup measured about
+13–16 ns through a view versus 11–16 ns directly in ReleaseFast; non-strict edge
+lookups measured 23–25 ns through a view versus 20–23 ns directly. Neither
+allocates. Full iteration includes initialization, preparation, consuming every
+entry and cleanup, but excludes key/value formatting and edge expansion:
+
+| Effective attributes consumed | Fast | Safe | Peak scratch |
+| --- | ---: | ---: | ---: |
+| Node with 64 defaults | 630 ns | 810 ns | 0 B |
+| Node with two updated keys | 28 ns | 33 ns | 0 B |
+| Non-strict edge with one written key | 30 ns | 32 ns | 0 B |
+| Strict edge, 1,000 reopened contributions, inherited key | 8.42 µs | 8.24 µs | 0 B |
+| Strict edge, 1,000 explicit updates, 33 effective keys | 11.73 µs | 12.88 µs | 396 B |
+| One edge of the 50,000 × 50,000 product, two keys | 36 ns | 44 ns | 0 B |
+
+Strict merging scans symbolic contributions once per attribute iterator and
+uses 12 bytes per distinct edge key, not per update or expanded pair. Returned
+entries borrow the IR, not that scratch. These costs are optional and separate
+from the retained graph. This is still not a bulk attribute index across all
+edges. The 54 focused IR tests pass in Debug, ReleaseFast and ReleaseSafe,
+including native Unicode keys/values, terminal stops, allocation failures and
+iteration checked against both direct queries and the eager attribute oracle.
+
 ## Attribute string integration (Unreleased)
 
 Measured on 2026-10-19 against `fb64cc9`, Apple M4 Pro, Zig 0.16.0. The same

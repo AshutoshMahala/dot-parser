@@ -399,6 +399,7 @@ pub fn build(b: *std.Build) void {
         "check_file",
         "policies",
         "build_graph",
+        "graph_attributes",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -418,6 +419,12 @@ pub fn build(b: *std.Build) void {
         const run_example = b.addRunArtifact(example);
         if (std.mem.eql(u8, name, "build_graph")) {
             run_example.expectStdErrEqual(@embedFile("tests/fixtures/build_graph.txt"));
+            run_example.expectStdOutEqual("");
+            test_ir.dependOn(&run_example.step);
+            test_step.dependOn(&run_example.step);
+        }
+        if (std.mem.eql(u8, name, "graph_attributes")) {
+            run_example.expectStdErrEqual(@embedFile("tests/fixtures/graph_attributes.txt"));
             run_example.expectStdOutEqual("");
             test_ir.dependOn(&run_example.step);
             test_step.dependOn(&run_example.step);
@@ -523,8 +530,19 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "dot_parser", .module = mod }},
     }) });
-    b.step("bench-ir", "Measure IR lowering, streaming edges and explicit materialization").dependOn(&b.addRunArtifact(ir_bench).step);
+    const run_ir_bench = b.addRunArtifact(ir_bench);
+    const ir_attributes_bench = b.addExecutable(.{ .name = "ir_attributes_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_attributes.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    const run_ir_attributes_bench = b.addRunArtifact(ir_attributes_bench);
+    // Do not run timed workloads concurrently, even with `-j`.
+    run_ir_attributes_bench.step.dependOn(&run_ir_bench.step);
+    b.step("bench-ir", "Measure IR lowering, edge expansion and effective attributes").dependOn(&run_ir_attributes_bench.step);
     check_benches.dependOn(&ir_bench.step);
+    check_benches.dependOn(&ir_attributes_bench.step);
     const identifier_bench = b.addExecutable(.{
         .name = "identifier_bench",
         .root_module = b.createModule(.{

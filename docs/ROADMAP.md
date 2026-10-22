@@ -6,11 +6,13 @@ the implemented contracts.
 
 ## DOT
 
-- **Effective graph attributes/defaults** and richer graph queries. The first
-  unreleased [topology IR](IR.md) resolves unique nodes, shared scope membership
-  and symbolic connections from complete Documents, with explicit bounded edge
-  iteration or materialization. Event lowering, partial IR, fixed storage and
-  metered sessions remain.
+- **Richer graph queries and bulk attribute folding.** The unreleased
+  [semantic IR](IR.md) resolves unique nodes, shared scope membership, symbolic
+  connections, effective attributes/defaults and their origins from complete
+  Documents. Borrowed component views expose individual/all effective attributes.
+  Edge iteration/materialization is explicit and bounded. Forward-pass
+  attribute materialization across edges, port resolution,
+  event lowering, partial IR, fixed storage and metered sessions remain.
 - **Feeding input in pieces.** Today the whole input must be in memory before
   parsing starts.
 - **Validation in small steps**, and validation that can be cancelled.

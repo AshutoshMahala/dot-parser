@@ -1,4 +1,4 @@
-//! Optional topology lowering. No work or storage is added to ordinary parsing.
+//! Optional semantic lowering. No work or storage is added to ordinary parsing.
 //! See docs/IR.md for coverage, ownership, limits and unsupported semantics.
 const std = @import("std");
 const encoding = @import("parser_support").encoding;
@@ -22,6 +22,9 @@ pub const Connection = topology.Connection;
 pub const Declaration = topology.Declaration;
 pub const Edge = topology.Edge;
 pub const Materialized = topology.Materialized;
+pub const AttributeValue = @import("ir/attributes.zig").Value;
+pub const ResolvedAttribute = @import("ir/attributes.zig").Resolved;
+pub const AttributeOrigin = @import("ir/attributes.zig").Origin;
 pub const parse = @import("ir/parse.zig").parse;
 pub const ParseOptions = @import("ir/parse.zig").Options;
 pub const ParseResult = @import("ir/parse.zig").Result;

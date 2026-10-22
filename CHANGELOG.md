@@ -14,8 +14,17 @@ are marked; no compatibility shims are kept.
   materialization or streaming edge iteration. Streaming reuses endpoint
   scratch, preserves non-strict parallel occurrences and deduplicates strict
   pairs, with cumulative limits/cancellation and explicit early cleanup.
-  Raw attributes/provenance are retained; effective defaults
-  and attribute merging remain later work. Includes one-call `dot.ir.parse`,
+  Effective node/graph/edge attribute queries resolve creation defaults and
+  source-ordered updates, distinguish absent/implicit-empty values, and retain
+  source origins. Immutable maps share default states; strict edge queries
+  inspect symbolic contributions without expanding pairs. Attribute maps have
+  explicit work/memory/state limits; no state is allocated for attribute-free
+  input. Bulk attribute folding and port-derived attributes remain later work.
+  Borrowed node/scope/edge views offer `.attribute(key)` and bounded
+  `.attributes(options)` iteration with logical formatters and provenance.
+  Strict-edge iteration merges contributions once using key-sized scratch;
+  other attribute iterators allocate nothing. Retained record layouts are unchanged.
+  Includes one-call `dot.ir.parse`,
   allocation-free node iteration/name formatting, `test-ir`, `bench-ir` and a
   short graph example with diagnostics; its checks live outside the example.
   Ordinary parsing is unchanged.

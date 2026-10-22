@@ -1,10 +1,9 @@
-# DOT graph topology
+# DOT semantic graph
 
-**Unreleased, first increment.** `dot.ir` is an optional layer above the parser.
-It resolves logical node identities and scope membership, retains symbolic
-connections, and answers topology questions. It does **not** yet resolve
-effective attributes or defaults. Ordinary parsing does not invoke or allocate
-storage for it.
+**Unreleased.** `dot.ir` is an optional layer above the parser. It resolves
+logical node identities, scope membership and effective attributes/defaults,
+while retaining symbolic connections and source provenance. Ordinary parsing
+does not invoke or allocate storage for it.
 
 ## Start here
 
@@ -96,7 +95,12 @@ Optional child-processor validation is the caller's acceptance decision.
 | `hasEdge(from, to)` | Whether any effective connection covers the pair; undirected edges work both ways |
 | `edgeIterator(options)` | Stream individual edges in semantic order, without retaining the expanded output array |
 | `materialize(options)` | Retain those edges in an owning array |
-| `attributes` / `declarations` | Raw attributes and explicit node/default/graph-assignment contributions; **not** final values |
+| `nodeAttribute(node, key)` | Final node value with origin, or absence |
+| `scopeAttribute(scope, key)` | Final graph/subgraph value with origin; `.root` is the graph |
+| `edgeAttribute(edge, key)` | Final value for a streamed/materialized edge, including strict updates |
+| `attributeValue(resolved)` | Borrowed `{f}` formatter for a resolved logical value |
+| `nodeView(id)` / `scopeView(id)` / `edgeView(edge)` | Borrowed component access with `.attribute(key)` and `.attributes(options)` |
+| `attributes` / `declarations` | Retained raw attributes and node/default/graph-assignment contributions, separate from effective values |
 
 IDs and membership handles belong to one IR. Don't manufacture them or mix
 handles from different graphs. Public membership/query calls bounds-check
@@ -127,6 +131,123 @@ Node IDs follow first introduction, including a left endpoint encountered
 before its subgraph endpoint. Connections follow semantic execution order:
 nested endpoint-body connections precede their containing statement's links.
 These are distinct orderings. Source spans retain original byte offsets.
+
+## Effective attributes
+
+```zig
+// digraph { node[color=red]; a; node[color=blue]; b; a[shape=box] }
+const node = try ir.nodeView((try ir.findNode("a")).?);
+if (try node.attribute("color")) |color| {
+    std.debug.print("color={f}\n", .{color.value()}); // red
+    // color.resolved.kind == .inherited; provenance points to color=red.
+}
+
+var attributes = try node.attributes(.{});
+defer attributes.deinit();
+while (try attributes.next()) |attribute|
+    std.debug.print("{f}={f}\n", .{ attribute.key(), attribute.value() });
+```
+
+See [graph_attributes.zig](../examples/graph_attributes.zig) for a runnable
+example with diagnostics, effective node values and streamed edge values.
+Query keys are case-sensitive logical UTF-8 names, just like `findNode`.
+Individual attribute lookups allocate nothing and do not expand edge sets.
+
+### Component views and all attributes
+
+`nodeView`, `scopeView` and `edgeView` create small borrowed values, without
+allocating or adding owner pointers to stored nodes/edges. Use `scopeView(.root)`
+for the graph and another scope ID for a subgraph. Use an `Edge` from this IR's
+stream or materialized array with `edgeView`; a node pair alone cannot identify
+a non-strict parallel occurrence. The ID-oriented APIs above remain useful when
+storing compact handles rather than views. Node/edge iterators still yield those
+compact handles/records; convert once when component methods are useful.
+
+All three views have `.attribute(key)`, `.attributeWith(key, options)` and
+`.attributes(options)`. A node also has `.id` and `.name()`; an edge has its
+original `.edge` record and `.from()`/`.to()` node views. A lookup/iteration
+entry exposes `.key()` and `.value()` as borrowed logical formatters, plus
+`.resolved` with the full `ResolvedAttribute` provenance described below.
+
+The iterator returns **one final effective value per key** in that object kind's
+first-introduction order (semantic traversal order, not alphabetical). It
+includes inherited defaults and implicit empties, even when a key was first
+written on another object of the same kind. It never returns duplicate written
+assignments. Use raw `ir.attributes`/`declarations` for source history.
+
+Each `next()` returns one entry, `null` on exhaustion, or a typed error. Limits
+and cancellation accumulate across the iterator, including preparation; an error
+is terminal and repeated on later calls. Always `deinit()`, even on early exit
+or error. Entries borrow the IR/source, **not** iterator scratch, and remain
+usable after iterator cleanup. Keep the IR alive, unmoved and immutable; don't
+manufacture or mutate views or copy a live attribute iterator. `edgeView` checks
+record bounds; membership and strict first-contribution identity are checked
+when attributes are accessed.
+
+Node, scope and non-strict-edge attribute iteration allocate nothing. Strict
+edges scan contributions once before the first entry; when matching explicit
+assignments exist, a sorted winner table uses **12 bytes per distinct edge key
+in the IR**. Repeated updates overwrite those slots, not append history, and
+keys belonging only to nodes/graphs need no slots. A strict edge with only
+inherited defaults needs no scratch. `.peakBytes()` reports this iterator's peak
+requested scratch, bounded by `.limits.max_bytes`. This merges attributes for
+one edge, not a whole-graph bulk materialization, and never expands endpoint sets.
+
+Lookups distinguish the cases below. On a view entry, these fields live under
+`.resolved`; the ID-oriented methods return `ResolvedAttribute` directly.
+
+| Result | Meaning |
+| --- | --- |
+| `null` | The key was never introduced for that object kind (graph, node or edge) |
+| `.kind = .explicit` | An explicit assignment supplies the final value |
+| `.kind = .inherited` | A creation-time default or parent graph snapshot supplies it |
+| `.kind = .empty` | The key exists, but DOT supplies an implicit empty value here |
+
+An explicit `color=""` is still `.explicit`, with `.value = .written`.
+A language-defined empty is `.value = .empty`, not a fabricated source range.
+No Graphviz renderer defaults (such as an assumed default shape) are added.
+
+`ResolvedAttribute.attribute` indexes `ir.attributes`; `.origin` identifies
+the declaration or connection and `.scope` identifies that origin's scope.
+For an implicit empty, these identify **the first assignment introducing the
+key**, not a source assignment of an empty string. A chain shares its written
+attribute list, but an explicit edge result identifies the applicable link.
+The original key/value ranges remain available, including quotes and HTML-like
+delimiters. All ranges use original source-byte offsets.
+
+`attributeValue` follows logical DOT identifier decoding: it joins quoted
+parts when printed and writes native UTF-16/32 as UTF-8. It does not interpret
+renderer escapes, expand HTML entities, or normalize numbers. It borrows the
+source, allocates no decoded copy, and follows ordinary writer failure behavior,
+without IR work limits or cancellation polling. Only use results from the
+same live IR; do not manufacture or mutate formatter fields.
+
+### Default and update rules
+
+- Node/edge defaults apply when the object is first created. Changing a default
+  does not replace a value on an existing object. Introducing a new key gives
+  existing objects without that key an implicit empty value.
+- Later explicit assignments update only their supplied keys; omitted keys
+  retain their earlier values. Duplicate keys within a list use the last value.
+- A subgraph captures parent **graph attributes** when first created. Reopening
+  it does not replace that snapshot. Node/edge defaults instead inherit current
+  parent defaults unless locally overridden; newly created objects use those
+  current defaults. Existing objects still keep their creation-time values.
+- A strict edge uses the first covering connection's defaults, then merges
+  explicit contributions in semantic order, including overlapping endpoint sets
+  and reversed undirected statements. There is no specificity priority.
+- Non-strict parallel edges remain independent. `edgeAttribute` takes an `Edge`
+  from iteration/materialization, not just a node pair, so it cannot silently
+  choose one parallel occurrence's attributes.
+
+These rules have focused comparisons against Graphviz 16.0.0's cgraph behavior.
+Endpoint ports are still retained separately. Synthesizing `headport`/`tailport`
+and their precedence with explicit attributes is not implemented: querying
+either key returns `UnsupportedSemantics` if a contribution to that edge uses
+an endpoint port. Other attribute queries remain available. All-attribute edge
+iteration returns `UnsupportedSemantics` **before yielding any entries** for
+such an edge, even if port keys weren't explicitly written: it cannot honestly
+enumerate all effective attributes while synthesized ports remain unsupported.
 
 ## Symbolic first; expand explicitly
 
@@ -162,8 +283,9 @@ order. Streaming and materialization share this traversal and deduplication.
 Non-strict graphs retain parallel occurrences; strict directed pairs are
 ordered, strict undirected pairs are unordered. A strict edge keeps the first
 connection's orientation and provenance. Ports do not change edge identity.
-**All** written contributions remain in `ir.connections`; effective attribute
-merging is not implemented by either expansion path yet.
+**All** written contributions remain in `ir.connections`. Use `edgeAttribute`
+to resolve a value across them. Iteration/materialization still produce topology
+records, not copied per-edge attribute tables.
 
 If you need to retain the entire expanded edge array instead:
 
@@ -198,6 +320,33 @@ symbolic connections; membership uses per-node postings and shared intervals.
 This is not a prebuilt adjacency index. Materialization needs memory
 proportional to its output, plus deduplication scratch for strict graphs.
 
+Effective node/graph values use immutable balanced maps referencing written
+attributes. Creation snapshots share map branches; there is no full default-table
+copy per node or descendant scope. Updating a key retains O(log K) map cells
+for K distinct keys in that map, plus bounded rotation cells. Reopening a scope
+after its parent's defaults change reapplies that scope's local overrides.
+Attribute-free input allocates no attribute-state storage. On the measured
+64-bit build the node record remains 24 bytes: its state handle uses existing
+padding. Layout on another target follows that target's alignment rules.
+
+Node/scope queries perform logical key lookup followed by O(log K) map lookup.
+Non-strict edge queries inspect their own connection's list and creation map;
+strict queries scan symbolic connections and membership, retaining no expanded
+pairs. All probes, comparisons and map/traversal steps are work-limited.
+Repeated per-edge queries can therefore cost edges × connections: this is
+**not** a bulk attribute-export index. A forward-pass materializer that folds
+all effective attributes across all edges remains future work.
+
+All-attribute iteration scans the interned key catalog (including skipping other
+object kinds). Node/scope iteration performs a map lookup per relevant key.
+Non-strict edges search their own written list per key, then their creation map.
+Strict-edge iteration scans symbolic contributions/membership once and merges
+explicit writes with O(log K) winner-table comparisons for K edge keys, then
+looks up inherited defaults for keys with no explicit winner. It does not rerun
+a graph-wide query per key, but enumerating attributes separately for every
+strict edge still revisits connections per edge. Formatting keys/values follows
+ordinary writer semantics, outside iterator work accounting.
+
 Streaming allocates scratch lazily. Non-strict singleton-to-singleton iteration
 allocates nothing. Set endpoints reuse two member buffers and a `u32` mark per
 IR node for deduplicating mentions. These buffers grow to the largest endpoints
@@ -215,6 +364,7 @@ Finite defaults are defined by `dot.ir.Limits`:
 | Node mentions | 4,000,000 |
 | Symbolic connections | 2,000,000 |
 | Raw attributes, including assignments | 2,000,000 |
+| Persistent attribute-map cells | 8,000,000 |
 | Edges emitted or materialized | 1,000,000 |
 | Candidate pair visits during expansion | 4,000,000 |
 | Accounted work per operation | 100,000,000 |
@@ -225,6 +375,9 @@ Set a compile-time baseline with `Lowering(.{ .limits = ... })`, or pass
 operation-specific `.limits` and `.cancellation`. There is no unlimited-by-zero
 special case. Counts/indices are `u32`, pair/work totals are `u64`; byte limits
 use the allocator's `usize` domain. Candidate products use checked arithmetic.
+`nodeAttributeWith`, `scopeAttributeWith` and `edgeAttributeWith` accept the
+same options. `max_attribute_states` bounds retained map cells; exhausting it
+returns `AttributeStateLimit`, with no incomplete IR published.
 
 Iterator limits accumulate across all `next()` calls; they do not reset per
 edge. Pair visits include strict duplicates, while `max_edges` counts emitted
@@ -268,8 +421,10 @@ readers with `Lowering(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 } })`.
 The Document supplies the actual encoding and original byte ranges. Unused
 native readers remain compiled out.
 ASCII-admitted Documents are also readable by the UTF-8 configuration. Native
-logical-name decoding can return `InvalidIdentifier` if the accepting parser
-left encoding validation off and a name contains malformed code units.
+logical-name/value decoding can return `InvalidIdentifier` if the accepting
+parser left encoding validation off and a name or attribute value contains
+malformed code units. Native values are checked while lowering, before exposing
+their formatters; byte-profile values preserve their raw bytes.
 
 ## Verification
 
@@ -286,5 +441,8 @@ arena capacity separately. This is the first
 production topology baseline, not a comparison with a previously shipped IR.
 Recorded numbers are in [Performance](PERFORMANCE.md#document-to-ir-topology-unreleased-2026-10-21).
 
-Effective attributes/defaults, event-based lowering, partial IR results,
-fixed-storage IR construction and resumable IR operations remain later work.
+The same command also reports attribute-bearing lowering and direct query costs,
+including shared defaults, repeated updates, reopened/deep scopes and a symbolic
+product. Bulk attribute folding, port resolution, event-based lowering, partial
+IR results, fixed-storage IR construction and resumable IR operations remain
+later work.

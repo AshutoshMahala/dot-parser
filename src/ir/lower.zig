@@ -5,6 +5,7 @@ const policy = @import("../dot/policy.zig");
 const t = @import("topology.zig");
 const names = @import("names.zig");
 const r = @import("resources.zig");
+const attrs = @import("attributes.zig");
 
 pub const Interpretation = struct {
     kind: policy.GraphKind,
@@ -65,6 +66,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
         mentions: []t.Mention = &.{},
         connections: []t.Connection = &.{},
         attributes: []syntax.Attribute = &.{},
+        attribute_data: attrs.Store = .{},
         offsets: []u32 = &.{},
         positions: []u32 = &.{},
         node_table: names.Table = .{},
@@ -90,6 +92,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
             self.nodes.deinit(a);
             self.scopes.deinit(a);
             self.declarations.deinit(a);
+            self.attribute_data.deinit(a);
             inline for (.{ "occurrences", "bodies", "mentions", "connections", "attributes", "offsets", "positions" }) |field| a.free(@field(self, field));
         }
         fn raw(self: *Self, range: t.Range) r.Error![]const u8 {
@@ -121,7 +124,9 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 const id = try r.index(self.nodes.items.len);
                 if (id >= t.node_bit) return error.IndexLimit;
                 try self.node_table.prepare(self.a, &self.work, self);
-                try self.nodes.append(self.a, .{ .name = view.identifier, .first_mention = self.mention_count, .hash = hash });
+                const scope = @backingInt(self.occurrences[occurrence].scope);
+                const state = if (self.attribute_data.scopes.len == 0) attrs.none else self.attribute_data.scopes[scope].node;
+                try self.nodes.append(self.a, .{ .name = view.identifier, .first_mention = self.mention_count, .attribute_state = state, .hash = hash });
                 try self.node_table.insert(hash, id, &self.work);
                 break :blk id;
             };
@@ -219,6 +224,9 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
             if (occurrence >= self.occurrences.len) return error.InvalidDocument;
             const body = if (occurrence == 0) syntax.StatementRange{ .start = 0, .len = try r.index(self.doc.order.len) } else self.doc.subgraph_records[occurrence - 1].body;
             if (body.start > self.doc.order.len or body.len > self.doc.order.len - body.start) return error.InvalidDocument;
+            const scope = @backingInt(self.occurrences[occurrence].scope);
+            const parent = if (self.scopes.items[scope].parent) |id| @backingInt(id) else 0;
+            try self.attribute_data.enter(self.a, scope, parent, @backingInt(self.scopes.items[scope].first_occurrence) == occurrence, self.limits.max_attribute_states, &self.work);
             self.bodies[@backingInt(self.occurrences[occurrence].membership)].start = self.mention_count;
             try self.stack.append(self.a, .{ .scope = .{ .occurrence = occurrence, .cursor = body.start, .end = body.start + body.len } });
         }
@@ -257,7 +265,48 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 .occurrence = @fromBackingInt(occurrence),
                 .attributes = edge.attributes,
             };
+            const connection_id: t.ConnectionId = @fromBackingInt(self.connection_count);
+            if (self.attribute_data.scopes.len != 0) {
+                const scope = @backingInt(self.occurrences[occurrence].scope);
+                self.attribute_data.connection_defaults[self.connection_count] = self.attribute_data.scopes[scope].edge;
+                try self.attribute_data.bind(actual, self.a, self.doc.source, self.attributes, edge.attributes, .edge, .{ .connection = connection_id }, &self.work);
+            }
             self.connection_count += 1;
+        }
+        fn declaration(self: *Self, target: @FieldType(t.Declaration, "target"), occurrence: u32, range: syntax.AttributeRange) r.Error!void {
+            const id = try r.index(self.declarations.items.len);
+            try self.declarations.append(self.a, .{ .target = target, .occurrence = @fromBackingInt(occurrence), .attributes = range });
+            if (range.len == 0) return;
+            const kind: attrs.Kind = switch (target) {
+                .node => .node,
+                .graph_assignment => .graph,
+                .defaults => |value| switch (value) {
+                    .graph => .graph,
+                    .node => .node,
+                    .edge => .edge,
+                },
+            };
+            try self.attribute_data.bind(actual, self.a, self.doc.source, self.attributes, range, kind, .{ .declaration = id }, &self.work);
+            const store = &self.attribute_data;
+            const scope = &store.scopes[@backingInt(self.occurrences[occurrence].scope)];
+            switch (target) {
+                .node => |node_id| {
+                    const node_value = &self.nodes.items[@backingInt(node_id)];
+                    node_value.attribute_state = try store.apply(self.a, node_value.attribute_state, range, self.limits.max_attribute_states, &self.work);
+                },
+                .graph_assignment => scope.graph = try store.apply(self.a, scope.graph, range, self.limits.max_attribute_states, &self.work),
+                .defaults => |value| switch (value) {
+                    .graph => scope.graph = try store.apply(self.a, scope.graph, range, self.limits.max_attribute_states, &self.work),
+                    .node => {
+                        scope.node = try store.apply(self.a, scope.node, range, self.limits.max_attribute_states, &self.work);
+                        if (self.occurrences[occurrence].scope != .root) scope.local_node = try store.apply(self.a, scope.local_node, range, self.limits.max_attribute_states, &self.work);
+                    },
+                    .edge => {
+                        scope.edge = try store.apply(self.a, scope.edge, range, self.limits.max_attribute_states, &self.work);
+                        if (self.occurrences[occurrence].scope != .root) scope.local_edge = try store.apply(self.a, scope.local_edge, range, self.limits.max_attribute_states, &self.work);
+                    },
+                },
+            }
         }
         fn endpointEnd(self: *Self, endpoint_value: syntax.Endpoint) r.Error!u32 {
             if (endpoint_value == .node) return 0;
@@ -287,7 +336,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                         switch (statement) {
                             .node => |node_value| {
                                 const value = try self.node(node_value.reference, frame.occurrence);
-                                try self.declarations.append(self.a, .{ .target = .{ .node = @fromBackingInt(@backingInt(value.members) & ~t.node_bit) }, .occurrence = @fromBackingInt(frame.occurrence), .attributes = node_value.attributes });
+                                try self.declaration(.{ .node = @fromBackingInt(@backingInt(value.members) & ~t.node_bit) }, frame.occurrence, node_value.attributes);
                             },
                             .subgraph => |scope| {
                                 self.stack.items[index].scope.cursor = @max(frame.cursor + 1, try self.endpointEnd(.{ .subgraph = scope }));
@@ -306,11 +355,11 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                                 try self.edge_stack.append(self.a, .{ .occurrence = frame.occurrence, .first = first, .links = self.links(statement), .pending_start = try r.index(self.pending.items.len), .statement_index = frame.cursor });
                                 try self.stack.append(self.a, .{ .edge = edge_index });
                             },
-                            .attribute_statement => |attrs| try self.declarations.append(self.a, .{ .target = .{ .defaults = attrs.target }, .occurrence = @fromBackingInt(frame.occurrence), .attributes = attrs.attributes }),
+                            .attribute_statement => |statement_attrs| try self.declaration(.{ .defaults = statement_attrs.target }, frame.occurrence, statement_attrs.attributes),
                             .assignment => |attr| {
                                 if (self.attribute_count >= self.attributes.len) return error.InvalidDocument;
                                 self.attributes[self.attribute_count] = attr;
-                                try self.declarations.append(self.a, .{ .target = .graph_assignment, .occurrence = @fromBackingInt(frame.occurrence), .attributes = .{ .start = self.attribute_count, .len = 1 } });
+                                try self.declaration(.graph_assignment, frame.occurrence, .{ .start = self.attribute_count, .len = 1 });
                                 self.attribute_count += 1;
                             },
                         }
@@ -380,6 +429,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 dest.* = attr;
             }
             self.attribute_count = try r.index(self.doc.attributes.len);
+            try self.attribute_data.init(self.a, self.attributes.len, self.scopes.items.len, self.connections.len, &self.work);
             try self.walk();
             if (self.mention_count != self.mentions.len or self.connection_count != self.connections.len or self.attribute_count != self.attributes.len) return error.InvalidDocument;
             self.offsets = try self.a.alloc(u32, self.nodes.items.len + 1);
@@ -429,6 +479,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 .mentions = self.mentions,
                 .connections = self.connections,
                 .attributes = self.attributes,
+                .attribute_data = self.attribute_data,
                 .node_slots = self.node_table.slots,
                 .posting_offsets = self.offsets,
                 .posting_positions = self.positions,

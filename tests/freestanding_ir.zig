@@ -52,3 +52,38 @@ export fn streaming(source: [*]const u8, length: u32, memory: [*]u8, capacity: u
     while (edges.next() catch return 0) |_| count += 1;
     return count;
 }
+
+export fn attributes(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    var fixed: std.heap.FixedBufferAllocator = .init(memory[0..capacity]);
+    var result = dot.ir.parse(fixed.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const ir = result.ir() orelse return 0;
+    var buffer: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    if ((ir.findNode("a") catch return 0)) |id| {
+        const node = ir.nodeView(id) catch return 0;
+        if ((node.attribute("color") catch return 0)) |value|
+            writer.print("{f}", .{value.value()}) catch return 0;
+        var values = node.attributes(.{}) catch return 0;
+        defer values.deinit();
+        while (values.next() catch return 0) |entry|
+            writer.print("{f}={f}", .{ entry.key(), entry.value() }) catch return 0;
+    }
+    const root = ir.scopeView(.root) catch return 0;
+    var graph_values = root.attributes(.{}) catch return 0;
+    defer graph_values.deinit();
+    while (graph_values.next() catch return 0) |entry|
+        writer.print("{f}={f}", .{ entry.key(), entry.value() }) catch return 0;
+    var edges = ir.edgeIterator(.{}) catch return 0;
+    defer edges.deinit();
+    if ((edges.next() catch return 0)) |edge| {
+        const view = ir.edgeView(edge) catch return 0;
+        if ((view.attribute("weight") catch return 0)) |value|
+            writer.print("{f}", .{value.value()}) catch return 0;
+        var values = view.attributes(.{}) catch return 0;
+        defer values.deinit();
+        while (values.next() catch return 0) |entry|
+            writer.print("{f}={f}", .{ entry.key(), entry.value() }) catch return 0;
+    }
+    return @intCast(writer.buffered().len);
+}

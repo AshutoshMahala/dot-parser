@@ -12,6 +12,7 @@ pub const Error = error{
     MentionLimit,
     ConnectionLimit,
     AttributeLimit,
+    AttributeStateLimit,
     EdgeLimit,
     PairLimit,
     IndexLimit,
@@ -32,6 +33,8 @@ pub const Limits = struct {
     max_mentions: u32 = 4_000_000,
     max_connections: u32 = 2_000_000,
     max_attributes: u32 = 2_000_000,
+    /// Persistent attribute-map cells, including shared historical versions.
+    max_attribute_states: u32 = 8_000_000,
     max_edges: u32 = 1_000_000,
     max_pairs: u64 = 4_000_000,
     max_work: u64 = 100_000_000,

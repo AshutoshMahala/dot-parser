@@ -1,0 +1,5 @@
+node a: color="red"
+node a: shape="box"
+node b: color="blue"
+node b: shape=""
+edge a -> b: weight=2

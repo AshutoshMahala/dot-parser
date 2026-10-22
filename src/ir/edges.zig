@@ -36,7 +36,10 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
         const Self = @This();
         const Stored = if (retaining) t.Edge else [2]u32;
         graph: *const Graph,
-        limits: r.Limits,
+        // Retain only expansion limits. Lowering-only settings (including
+        // attribute-map limits) must not enlarge this per-edge hot state.
+        max_pairs: u64,
+        max_edges: u32,
         work: r.Work,
         memory: r.Memory,
         left: Endpoint = .{},
@@ -58,7 +61,8 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
             const limits = options.limits orelse graph.limits;
             return .{
                 .graph = graph,
-                .limits = limits,
+                .max_pairs = limits.max_pairs,
+                .max_edges = limits.max_edges,
                 .work = try r.Work.init(limits, options.cancellation),
                 .memory = .{ .backing = graph.allocator, .limit = limits.max_bytes },
             };
@@ -142,7 +146,9 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
             return if (retaining) canonical(value) else value;
         }
 
-        fn nextImpl(self: *Self) r.Error!?t.Edge {
+        // Keep the shared engine inside its error-state wrapper. Outlining it
+        // adds another call on every streamed edge (especially in ReleaseSafe).
+        inline fn nextImpl(self: *Self) r.Error!?t.Edge {
             while (true) {
                 if (!self.ready) {
                     try self.work.spend(0); // Poll even at empty input/end.
@@ -158,7 +164,7 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
                         // product before allocating it. Streaming can consume
                         // just a prefix; it charges each visited pair instead.
                         const product = std.math.mul(u64, self.left.len(), self.right.len()) catch return error.PairLimit;
-                        if (product > self.limits.max_pairs - self.visited) return error.PairLimit;
+                        if (product > self.max_pairs - self.visited) return error.PairLimit;
                         self.visited += product;
                     }
                     if (self.left.len() == 0 or self.right.len() == 0) {
@@ -171,7 +177,7 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
                 }
                 try self.work.spend(1);
                 if (!retaining) {
-                    if (self.visited >= self.limits.max_pairs) return error.PairLimit;
+                    if (self.visited >= self.max_pairs) return error.PairLimit;
                     self.visited += 1;
                 }
                 const edge: t.Edge = .{
@@ -205,7 +211,7 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
                         }
                         if (found) continue;
                     }
-                    if (self.emitted >= self.limits.max_edges) return error.EdgeLimit;
+                    if (self.emitted >= self.max_edges) return error.EdgeLimit;
                     const Owner = struct {
                         items: []const Stored,
                         operator: Operator,
@@ -217,7 +223,7 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
                     // operator only. Keys therefore need no per-pair kind tag.
                     try self.pairs.prepare(a, &self.work, Owner{ .items = self.stored.items, .operator = edge.operator });
                     try self.pairs.insert(hash, try r.index(self.stored.items.len), &self.work);
-                } else if (self.emitted >= self.limits.max_edges) return error.EdgeLimit;
+                } else if (self.emitted >= self.max_edges) return error.EdgeLimit;
                 if (retaining) {
                     try self.stored.append(a, edge);
                 } else if (self.graph.strict) {

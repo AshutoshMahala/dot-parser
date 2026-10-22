@@ -4,6 +4,10 @@ const a = std.testing.allocator;
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const IR = dot.ir.Lowering(.{});
+test {
+    _ = @import("ir_attributes.zig");
+    _ = @import("ir_views.zig");
+}
 
 fn lower(allocator: std.mem.Allocator, source: []const u8) !IR.Graph {
     var parsed = dot.parseAndValidate(allocator, source, dot.diagnostic.discard, .{});

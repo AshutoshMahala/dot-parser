@@ -5,6 +5,7 @@ const support = @import("parser_support");
 const encoding = support.encoding;
 const names = @import("names.zig");
 const r = @import("resources.zig");
+const attrs = @import("attributes.zig");
 pub const Range = support.location.Range;
 pub const NodeId = enum(u32) { _ };
 pub const ScopeId = enum(u32) { root, _ };
@@ -15,7 +16,7 @@ pub const ConnectionId = enum(u32) { _ };
 pub const Membership = enum(u32) { _ };
 pub const node_bit: u32 = 1 << 31;
 pub const Body = struct { start: u32, end: u32, first: u32 };
-pub const Node = struct { name: Range, first_mention: u32, hash: u64 };
+pub const Node = struct { name: Range, first_mention: u32, attribute_state: u32 = attrs.none, hash: u64 };
 pub const Scope = struct { parent: ?ScopeId, name: ?Range, first_occurrence: OccurrenceId, hash: u64 };
 pub const Occurrence = struct { scope: ScopeId, parent: ?OccurrenceId, source: Range, membership: Membership };
 pub const Mention = struct { node: NodeId, occurrence: OccurrenceId, source: Range };
@@ -29,7 +30,7 @@ pub const Connection = struct {
     occurrence: OccurrenceId,
     attributes: syntax.AttributeRange,
 };
-/// Raw declarations, NOT resolved/defaulted attributes. Array order is semantic
+/// Retained raw declarations. Array order is semantic
 /// execution order (children precede the containing edge's contribution).
 pub const Declaration = struct {
     target: union(enum) { node: NodeId, defaults: syntax.AttributeTarget, graph_assignment },
@@ -64,6 +65,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         connections: []const Connection,
         attributes: []const syntax.Attribute,
         declarations: []const Declaration,
+        attribute_data: attrs.Store,
         /// Peak live requested bytes during lowering, including scratch/growth.
         peak_bytes: usize,
         limits: r.Limits,
@@ -75,6 +77,31 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         node_slots: []const u32,
         posting_offsets: []const u32,
         posting_positions: []const u32,
+
+        const Views = @import("views.zig").For(Self, caps, connectionCovers);
+        pub const NodeView = Views.Node;
+        pub const ScopeView = Views.Scope;
+        pub const EdgeView = Views.Edge;
+        pub const AttributeView = Views.Attribute;
+        pub const AttributeIterator = Views.Iterator;
+
+        /// Borrowed context for component-oriented access. No allocation or
+        /// owner pointer in retained records. Keep this IR alive and unmoved.
+        pub fn nodeView(self: *const Self, id: NodeId) r.Error!NodeView {
+            if (@backingInt(id) >= self.nodes.len) return error.InvalidHandle;
+            return .{ .graph = self, .id = id };
+        }
+        pub fn scopeView(self: *const Self, id: ScopeId) r.Error!ScopeView {
+            if (@backingInt(id) >= self.scopes.len) return error.InvalidHandle;
+            return .{ .graph = self, .id = id };
+        }
+        /// Use an edge from this IR's iterator/materialization. Bounds checked
+        /// here; membership and strict first-contribution checks occur on access.
+        pub fn edgeView(self: *const Self, edge: Edge) r.Error!EdgeView {
+            if (@backingInt(edge.from) >= self.nodes.len or @backingInt(edge.to) >= self.nodes.len or
+                @backingInt(edge.first_connection) >= self.connections.len) return error.InvalidHandle;
+            return .{ .graph = self, .edge = edge };
+        }
 
         pub fn deinit(self: *Self) void {
             const a = self.allocator;
@@ -89,6 +116,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             a.free(self.node_slots);
             a.free(self.posting_offsets);
             a.free(self.posting_positions);
+            self.attribute_data.deinit(a);
             self.* = undefined;
         }
 
@@ -100,7 +128,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
                 const slice = @field(self, field);
                 bytes += slice.len * @sizeOf(std.meta.Elem(@TypeOf(slice)));
             }
-            return bytes;
+            return bytes + self.attribute_data.retainedBytes();
         }
 
         /// Logical UTF-8 bytes, not a DOT spelling. No case folding, entity
@@ -186,6 +214,96 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         pub fn attributeSlice(self: *const Self, range: syntax.AttributeRange) ?[]const syntax.Attribute {
             if (range.start > self.attributes.len or range.len > self.attributes.len - range.start) return null;
             return self.attributes[range.start..][0..range.len];
+        }
+
+        /// Final node value. Null means the key was never introduced for nodes;
+        /// `.empty` is DOT's language-defined empty, not absence. Names are
+        /// logical UTF-8, case-sensitive, just like findNode. No allocation.
+        pub fn nodeAttribute(self: *const Self, id: NodeId, key: []const u8) r.Error!?attrs.Resolved {
+            return self.nodeAttributeWith(id, key, .{});
+        }
+        pub fn nodeAttributeWith(self: *const Self, id: NodeId, key: []const u8, options: r.Options) r.Error!?attrs.Resolved {
+            if (@backingInt(id) >= self.nodes.len) return error.InvalidHandle;
+            var work = try r.Work.init(options.limits orelse self.limits, options.cancellation);
+            const key_id = try attrs.findKey(caps, self, .node, key, &work) orelse return null;
+            const node = self.nodes[@backingInt(id)];
+            const value = try self.attribute_data.lookup(node.attribute_state, key_id, &work);
+            const scope = self.occurrences[@backingInt(self.mentions[node.first_mention].occurrence)].scope;
+            return attrs.resolved(self, value orelse self.attribute_data.keys.items[key_id].first_attribute, .node, scope, value == null);
+        }
+
+        /// Graph/subgraph attributes, including definition-time inheritance.
+        pub fn scopeAttribute(self: *const Self, id: ScopeId, key: []const u8) r.Error!?attrs.Resolved {
+            return self.scopeAttributeWith(id, key, .{});
+        }
+        pub fn scopeAttributeWith(self: *const Self, id: ScopeId, key: []const u8, options: r.Options) r.Error!?attrs.Resolved {
+            if (@backingInt(id) >= self.scopes.len) return error.InvalidHandle;
+            var work = try r.Work.init(options.limits orelse self.limits, options.cancellation);
+            const key_id = try attrs.findKey(caps, self, .graph, key, &work) orelse return null;
+            const value = try self.attribute_data.lookup(self.attribute_data.scopes[@backingInt(id)].graph, key_id, &work);
+            return attrs.resolved(self, value orelse self.attribute_data.keys.items[key_id].first_attribute, .graph, id, value == null);
+        }
+
+        fn connectionCovers(self: *const Self, connection: Connection, edge: Edge, work: *r.Work) r.Error!bool {
+            if (connection.effective_operator != edge.operator) return false;
+            if (try self.containsWork(connection.left.members, edge.from, work) and try self.containsWork(connection.right.members, edge.to, work)) return true;
+            return edge.operator == .undirected and try self.containsWork(connection.left.members, edge.to, work) and try self.containsWork(connection.right.members, edge.from, work);
+        }
+
+        /// Final value for a streamed/materialized edge. Strict contributions
+        /// merge in semantic order; non-strict edges use their own connection.
+        /// This bounded query scans symbolic connections, never expands pairs.
+        /// For bulk export, do not mistake per-edge queries for a folded index.
+        pub fn edgeAttribute(self: *const Self, edge: Edge, key: []const u8) r.Error!?attrs.Resolved {
+            return self.edgeAttributeWith(edge, key, .{});
+        }
+        pub fn edgeAttributeWith(self: *const Self, edge: Edge, key: []const u8, options: r.Options) r.Error!?attrs.Resolved {
+            const id = @backingInt(edge.first_connection);
+            if (id >= self.connections.len or @backingInt(edge.from) >= self.nodes.len or @backingInt(edge.to) >= self.nodes.len) return error.InvalidHandle;
+            var work = try r.Work.init(options.limits orelse self.limits, options.cancellation);
+            if (!try self.connectionCovers(self.connections[id], edge, &work)) return error.InvalidHandle;
+            // Synthesizing port attributes, including reversed strict edges,
+            // belongs to port resolution. Never report a falsely absent value.
+            const port_query = std.mem.eql(u8, key, "headport") or std.mem.eql(u8, key, "tailport");
+            const key_id = try attrs.findKey(caps, self, .edge, key, &work);
+            var first: ?u32 = null;
+            var explicit: ?u32 = null;
+            var explicit_connection: ConnectionId = edge.first_connection;
+            const start: usize = if (self.strict) 0 else id;
+            const end: usize = if (self.strict) self.connections.len else @as(usize, id) + 1;
+            for (self.connections[start..end], start..) |connection, index| {
+                try work.spend(1);
+                if (self.strict and !try self.connectionCovers(connection, edge, &work)) continue;
+                if (port_query and (connection.left.port != null or connection.right.port != null)) return error.UnsupportedSemantics;
+                if (first == null) first = @intCast(index);
+                if (key_id) |wanted| {
+                    var at = connection.attributes.start + connection.attributes.len;
+                    while (at != connection.attributes.start) {
+                        at -= 1;
+                        try work.spend(1);
+                        if (self.attribute_data.meta[at].key == wanted) {
+                            explicit = at;
+                            explicit_connection = @fromBackingInt(@as(u32, @intCast(index)));
+                            break;
+                        }
+                    }
+                }
+            }
+            if (first != id) return error.InvalidHandle;
+            if (explicit) |attribute| {
+                return attrs.resolvedConnection(self, attribute, explicit_connection);
+            }
+            const wanted = key_id orelse return null;
+            const root = self.attribute_data.connection_defaults[id];
+            const value = try self.attribute_data.lookup(root, wanted, &work);
+            const scope = self.occurrences[@backingInt(self.connections[id].occurrence)].scope;
+            return attrs.resolved(self, value orelse self.attribute_data.keys.items[wanted].first_attribute, .edge, scope, value == null);
+        }
+
+        /// Borrowed logical-value formatter; no renderer escapes, HTML entity
+        /// expansion or decoded allocation. Construct only from this IR's result.
+        pub fn attributeValue(self: *const Self, resolved: attrs.Resolved) attrs.valueFormatter(caps) {
+            return .{ .source = self.source, .actual = if (self.source_info.encoding == .ascii and caps.utf8) .utf8 else self.source_info.encoding, .value = resolved.value };
         }
         pub fn scopeMembership(self: *const Self, id: ScopeId) r.Error!Membership {
             const raw = @backingInt(id);
