@@ -8,6 +8,14 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Optional `dot.ir.Lowering(...).lowerComplete` topology layer from accepted
+  complete Documents: logical node identity, shared scope-membership snapshots,
+  symbolic connections, allocation-free existence queries and explicit bounded
+  materialization. Raw attributes/provenance are retained; effective defaults
+  and attribute merging remain later work. Includes one-call `dot.ir.parse`,
+  allocation-free node iteration/name formatting, `test-ir`, `bench-ir` and a
+  short graph example with diagnostics; its checks live outside the example.
+  Ordinary parsing is unchanged.
 - Independent opt-in DOT `Consumer.wants_token_previews = true` exposes raw
   unfinished name-expression spans at EOF and metered pauses, through the same
   events interface. Updates carry known context and original encoding/offsets;

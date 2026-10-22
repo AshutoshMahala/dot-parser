@@ -5,6 +5,7 @@ const std = @import("std");
 const dot = @import("dot_parser");
 
 test {
+    _ = @import("ir.zig");
     _ = @import("comments.zig");
     _ = @import("events.zig");
     _ = @import("dot_partial.zig");

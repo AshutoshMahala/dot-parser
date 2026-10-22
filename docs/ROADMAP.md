@@ -6,9 +6,10 @@ the implemented contracts.
 
 ## DOT
 
-- **A graph layer** on top of the document that applies defaults, expands
-  edges like `a -> { b c }`, and works out the list of unique nodes. Graph
-  engines could then use this layer instead of raw syntax.
+- **Effective graph attributes/defaults** and richer graph queries. The first
+  unreleased [topology IR](IR.md) resolves unique nodes, shared scope membership
+  and symbolic connections from complete Documents, with explicit bounded edge
+  materialization. Event lowering, partial IR, fixed storage and sessions remain.
 - **Feeding input in pieces.** Today the whole input must be in memory before
   parsing starts.
 - **Validation in small steps**, and validation that can be cancelled.

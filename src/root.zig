@@ -36,6 +36,8 @@ const policy_impl = @import("dot/policy.zig");
 pub const Policy = policy_impl.Policy;
 /// Optional Graphviz metadata; never applied as defaults or linked when unused.
 pub const attribute_catalog = @import("dot/attribute_catalog.zig");
+/// Optional semantic topology, lowered explicitly from an accepted Document.
+pub const ir = @import("ir.zig");
 pub const presets = policy_impl.presets;
 pub const Acceptance = policy_impl.Acceptance;
 pub const BareDashInterpretation = policy_impl.BareDashInterpretation;

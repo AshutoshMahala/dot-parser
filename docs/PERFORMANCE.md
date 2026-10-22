@@ -38,6 +38,57 @@ Reading the tables:
 - **Labels in DOT:** a file with 1,000 small labels is parsed and checked at
   about 150 MB/s, with only 7 allocations (labels in structural mode).
 
+## Document-to-IR topology (Unreleased, 2026-10-21)
+
+First production baseline, not a comparison against a shipped IR. Apple M4 Pro,
+Zig 0.17.0; `zig build bench-ir -Doptimize=ReleaseFast` and `ReleaseSafe`.
+Nine timed samples after two warmups, median shown. Parsing/source construction
+and destruction are outside lowering timing. Allocations during lowering are
+included; this uses the process general-purpose allocator.
+
+| Workload | Source bytes | Fast ms / MB/s | Safe ms / MB/s |
+| --- | ---: | ---: | ---: |
+| 10,000 singleton connections | 127,794 | 1.960 / 65.2 | 1.923 / 66.5 |
+| 10,000 three-member set connections | 148,900 | 2.558 / 58.2 | 2.796 / 53.3 |
+| 1,000 reopened scope connections | 21,900 | 0.163 / 134.3 | 0.182 / 120.5 |
+| 10,000 nesting levels, one connection | 20,015 | 0.301 / 66.6 | 0.464 / 43.1 |
+| 50,000 × 50,000 symbolic product | 688,906 | 5.412 / 127.3 | 7.069 / 97.5 |
+
+The last row retains **100,000 nodes and one connection**, not 2.5 billion
+edges. Materialization is deliberately not requested for it. Explicit Fast
+materialization took 0.178 ms for 10,000 singleton edges, 0.215 ms for 30,000
+small-set edges, and 2.822 ms for the reopened case's 500,500 edge occurrences.
+These are synthetic baseline measurements; small timing differences are not
+claims about one optimization mode always winning.
+
+| Workload | Retained MB | Peak requested MB, Fast / Safe | Arena capacity MB (Fast) |
+| --- | ---: | ---: | ---: |
+| Singleton connections | 1.662 | 1.671 / 1.671 | 2.402 |
+| Three-member sets | 3.386 | 3.565 / 3.565 | 9.689 |
+| Reopened scopes | 0.218 | 0.223 / 0.223 | 0.414 |
+| Deep nesting | 0.693 | 1.136 / 1.136 | 1.907 |
+| Symbolic product | 8.901 | 8.901 / 10.313 | 27.399 |
+
+Retained bytes include pool capacity. Requested peaks include temporary scratch
+and old/new growth overlap; allocator resize success can change that overlap.
+Neither is RSS, and both exclude the already-built Document and borrowed source.
+The separate arena measurement includes reserved chunks and unreclaimed growth
+buffers: **arena usage is not claimed to equal retained payload**. Deep ordinary
+nesting uses 16-byte continuation frames instead of reserving an edge-sized
+frame for every scope.
+
+Unused-feature check against `8615e9f`: generated ReleaseFast assembly was
+byte-identical for both `bench/identifiers.zig` (event-only parsing/indexing) and
+`examples/quick_start.zig` (retained parsing/validation). No existing parser,
+metering or cancellation implementation changed. IR itself has one-shot work
+limits and cooperative cancellation, not resumable sessions.
+
+Correctness checks include 16 focused tests in Debug/ReleaseSafe, allocation
+failure injection, a generated eager-set oracle, and 200 existing Graphviz
+16.0.0 reference graphs: all 95,033 materialized edge occurrences agreed.
+See [IR coverage and costs](IR.md); effective attributes/defaults are not yet
+part of these measurements.
+
 ## Attribute string integration (Unreleased)
 
 Measured on 2026-10-19 against `fb64cc9`, Apple M4 Pro, Zig 0.16.0. The same

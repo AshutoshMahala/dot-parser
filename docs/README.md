@@ -8,6 +8,7 @@ New here? Start with [Getting started](GETTING_STARTED.md).
 | --- | --- |
 | [Getting started](GETTING_STARTED.md) | parse your first DOT file and read the result |
 | [Reading a parsed graph](READING_DOCUMENTS.md) | walk nodes, edges, attributes, ports and subgraphs |
+| [Graph topology (IR)](IR.md) | resolve unique nodes and symbolic connections from a complete Document (Unreleased) |
 | [DOT events](EVENTS.md) | build your own output without document pools (Unreleased) |
 | [Supported syntax](SUPPORTED_SYNTAX.md) | check exactly which DOT input is accepted |
 | [DOT error codes](ERRORS.md#dot-error-codes) | look up a DOT error or warning |

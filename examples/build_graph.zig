@@ -1,0 +1,51 @@
+//! DOT names and edge sets, resolved: `a` and `"a"` are one node, and
+//! `a -> { b c }` becomes individual edges only when you ask.
+const std = @import("std");
+const dot = @import("dot_parser");
+
+pub fn main(init: std.process.Init) !void {
+    const source =
+        \\digraph {
+        \\    a -> { b c };
+        \\    "a" -> d;
+        \\    subgraph s { x }
+        \\}
+    ;
+    var bag = dot.GrowableDiagnosticBag.init(init.gpa, .{});
+    defer bag.deinit();
+
+    const printed = printGraph(init.gpa, source, bag.sink());
+    // Show warnings too, not just diagnostics from failed input.
+    var buffer: [4096]u8 = undefined;
+    var stderr: std.Io.File.Writer = .init(.stderr(), init.io, &buffer);
+    for (bag.items(), 1..) |problem, n|
+        try dot.console.renderBoxed(problem, n, .{ .source = source }, &stderr.interface);
+    try stderr.interface.flush();
+    try printed;
+}
+
+fn printGraph(gpa: std.mem.Allocator, source: []const u8, sink: dot.DiagnosticSink) !void {
+    var result = try dot.ir.parse(gpa, source, .{ .diagnostics = sink });
+    defer result.deinit();
+    const ir = result.ir() orelse return error.GraphUnavailable;
+
+    // a and "a" are one node; x is a node with no edges.
+    var nodes = ir.nodeIterator();
+    while (nodes.next()) |node| std.debug.print("node {f}\n", .{try ir.nodeName(node)});
+
+    // Sets stay symbolic until you expand them.
+    var graph = try ir.materialize(.{});
+    defer graph.deinit();
+    for (graph.edges) |edge|
+        std.debug.print("edge {f} {s} {f}\n", .{ try ir.nodeName(edge.from), edge.operator.lexeme(), try ir.nodeName(edge.to) });
+}
+
+// Output:
+// node a
+// node b
+// node c
+// node d
+// node x
+// edge a -> b
+// edge a -> c
+// edge a -> d

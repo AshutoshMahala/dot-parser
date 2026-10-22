@@ -275,8 +275,9 @@ interpretation policies through `Profile` (Q35). *(Embodied: `src/dot/parser.zig
 
 **Q5 — Is semantic resolution part of this package or a sibling package?**
 This package, as a separate optional layer (`DotIR` + explicit lowering
-passes) — never inside the parser core. *(Embodied: architecture layering;
-roadmap slice 7.)*
+passes) — never inside the parser core. The first unreleased Document-based
+topology increment is in `src/ir/`; effective attributes/defaults, event lowering
+and partial/session IR remain. *(Embodied: `docs/IR.md`, roadmap slice 7.)*
 
 **Q6 — Which input modes are required initially?**
 A contiguous borrowed byte slice. Chunked and random-access sources remain
@@ -1111,7 +1112,13 @@ per-profile binary-size thresholds await the profile work. *(Embodied:
 which lowering passes are in version 1?**
 The document side is now concrete: source-shaped, source-ordered, no
 deduplication, no implicit nodes, no attribute semantics. The `DotIR` side
-(passes, storage) is open until slice 7. *(Embodied: `src/dot/syntax.zig`.)*
+now has a first unreleased topology increment: explicit lowering from accepted
+complete Documents, logical identities, shared mention ranges with immutable
+scope-prefix snapshots, symbolic connections and explicit materialization.
+Named scopes are parent-qualified; singleton endpoints carry node IDs directly.
+Full effective attributes/defaults and the advanced contracts remain open; this
+does not complete the entire semantic-layer slice. *(Embodied:
+`src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*
 
 **Q18 — Which index widths and pool sizes define the first embedded retained
 representation?**

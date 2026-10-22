@@ -64,7 +64,14 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_integration_tests = b.addRunArtifact(integration_tests);
-
+    const ir_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/ir.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    const test_ir = b.step("test-ir", "Test Document-to-IR topology lowering and its example");
+    test_ir.dependOn(&b.addRunArtifact(ir_tests).step);
     const test_step = b.step("test", "Run unit and public integration tests");
     const check_tools = b.step("check-tools", "Test and compile the Zig generators and performance reporter");
     const perf_tool = b.addExecutable(.{ .name = "perf-string", .root_module = b.createModule(.{
@@ -391,6 +398,7 @@ pub fn build(b: *std.Build) void {
         "subgraph_endpoints",
         "check_file",
         "policies",
+        "build_graph",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -408,6 +416,12 @@ pub fn build(b: *std.Build) void {
         // `zig build` never tries to link host executables.
         examples_step.dependOn(&b.addInstallArtifact(example, .{}).step);
         const run_example = b.addRunArtifact(example);
+        if (std.mem.eql(u8, name, "build_graph")) {
+            run_example.expectStdErrEqual(@embedFile("tests/fixtures/build_graph.txt"));
+            run_example.expectStdOutEqual("");
+            test_ir.dependOn(&run_example.step);
+            test_step.dependOn(&run_example.step);
+        }
         examples_step.dependOn(&run_example.step);
     }
 
@@ -503,6 +517,14 @@ pub fn build(b: *std.Build) void {
     b.step("bench-policy", "Compare fixed/runtime policy costs on the standard benchmark machine")
         .dependOn(&b.addRunArtifact(policy_bench).step);
     const check_benches = b.step("check-benches", "Compile benchmarks without updating or running baselines");
+    const ir_bench = b.addExecutable(.{ .name = "ir_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    b.step("bench-ir", "Measure Document-to-IR lowering and explicit materialization").dependOn(&b.addRunArtifact(ir_bench).step);
+    check_benches.dependOn(&ir_bench.step);
     const identifier_bench = b.addExecutable(.{
         .name = "identifier_bench",
         .root_module = b.createModule(.{
@@ -703,6 +725,14 @@ pub fn build(b: *std.Build) void {
             .optimize = .small,
             .imports = &.{.{ .name = "parser_support", .module = portable_support }},
         });
+        const ir_probe = b.addObject(.{ .name = b.fmt("ir_{s}", .{@tagName(arch)}), .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/freestanding_ir.zig"),
+            .target = portable_target,
+            .optimize = .small,
+            .imports = &.{.{ .name = "dot_parser", .module = portable }},
+        }) });
+        _ = ir_probe.getEmittedBin();
+        freestanding.dependOn(&ir_probe.step);
         const portable_markup = b.createModule(.{
             .root_source_file = b.path("src/markup.zig"),
             .target = portable_target,
