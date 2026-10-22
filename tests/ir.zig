@@ -305,9 +305,17 @@ fn allocationProbe(allocator: std.mem.Allocator, doc: *const dot.Document) !void
     defer ir.deinit();
     var graph = try ir.materialize(.{});
     defer graph.deinit();
+    var edges = try ir.edgeIterator(.{});
+    defer edges.deinit();
+    var index: usize = 0;
+    while (try edges.next()) |actual| {
+        try equal(graph.edges[index], actual);
+        index += 1;
+    }
+    try equal(graph.edges.len, index);
     try expect(try edge(&ir, "a", "b"));
 }
-test "IR and materialization release every allocation on failure" {
+test "IR, materialization and streaming release every allocation on failure" {
     var parsed = dot.parseAndValidate(a, "strict digraph { a -> subgraph s { a b }; subgraph s { c } -> subgraph s {}; node [x=1] a[x=2]; x=y }", dot.diagnostic.discard, .{});
     defer parsed.deinit(a);
     try expect(parsed.documentValid());
@@ -325,6 +333,10 @@ test "IR nesting is iterative and Cartesian products stay symbolic" {
     var deep = try lower(a, source.written());
     defer deep.deinit();
     try expect(try edge(&deep, "a", "b"));
+    var deep_edges = try deep.edgeIterator(.{});
+    defer deep_edges.deinit();
+    try equal(try node(&deep, "a"), (try deep_edges.next()).?.from);
+    try expect(try deep_edges.next() == null);
     source.clearRetainingCapacity();
     try source.writer.writeAll("digraph {{");
     for (0..2000) |i| try source.writer.print("n{d};", .{i});
@@ -366,6 +378,11 @@ test "IR interpretation preserves written operators and explicit profile meaning
             try equal(dot.GraphKind.generic, generic.kind);
             try expect(try edge(&generic, "b", "a"));
             try expect(!try edge(&generic, "c", "b"));
+            var stream = try generic.edgeIterator(.{});
+            defer stream.deinit();
+            try equal(dot.EdgeOperator.undirected, (try stream.next()).?.operator);
+            try equal(dot.EdgeOperator.directed, (try stream.next()).?.operator);
+            try expect(try stream.next() == null);
         }
     }
 }
@@ -399,6 +416,13 @@ test "IR native encoding names keep original source ranges" {
         }
         try equal(actual, ir.source_info.encoding);
         try equal(@as(u32, @intCast(width)), ir.nodes[0].name.len);
+        var stream = try ir.edgeIterator(.{});
+        defer stream.deinit();
+        const first = (try stream.next()).?;
+        try equal(first.from, first.to); // a and "a" are one native node.
+        const second = (try stream.next()).?;
+        try expect(second.from != second.to); // No HTML entity expansion.
+        try expect(try stream.next() == null);
         try std.testing.expectError(error.UnsupportedEncoding, IR.lowerComplete(a, doc, .{ .interpretation = P.interpretation(doc, .{}) }));
     }
 }
@@ -493,6 +517,23 @@ test "IR generated reopened nested scopes agree with an independent eager set or
         var graph = try ir.materialize(.{});
         defer graph.deinit();
         try equal(expected_edges, graph.edges.len);
+        // Verify streamed pairs against the independent eager oracle as well
+        // as the owning path. Shared traversal alone is not an oracle.
+        var stream = try ir.edgeIterator(.{});
+        defer stream.deinit();
+        var seen: [48][48]bool = @splat(@splat(false));
+        var count: usize = 0;
+        while (try stream.next()) |actual| {
+            var from: usize = 0;
+            while (ids[from] != actual.from) : (from += 1) {}
+            var to: usize = 0;
+            while (ids[to] != actual.to) : (to += 1) {}
+            try expect(expected[from][to] and !seen[from][to]);
+            seen[from][to] = true;
+            try equal(graph.edges[count], actual);
+            count += 1;
+        }
+        try equal(expected_edges, count);
     }
 }
 
@@ -553,4 +594,190 @@ test "IR cancellation during lowering and expansion discards operation-owned sto
     try std.testing.expectError(error.Cancelled, ir.materialize(.{ .cancellation = .{ .context = &counter, .is_requested = Counter.poll } }));
     // The existing IR is still queryable after a stopped expansion.
     try expect(try edge(&ir, "a", "d"));
+}
+
+test "IR streaming preserves nested contribution, endpoint and parallel occurrence order" {
+    var ir = try lower(a, "digraph { a:p -> {b b; c -> d} -> e:q; a->b; {}->x }");
+    defer ir.deinit();
+    const Expected = struct { from: []const u8, to: []const u8, connection: u32 };
+    const expected = [_]Expected{
+        .{ .from = "c", .to = "d", .connection = 0 },
+        .{ .from = "a", .to = "b", .connection = 1 },
+        .{ .from = "a", .to = "c", .connection = 1 },
+        .{ .from = "a", .to = "d", .connection = 1 },
+        .{ .from = "b", .to = "e", .connection = 2 },
+        .{ .from = "c", .to = "e", .connection = 2 },
+        .{ .from = "d", .to = "e", .connection = 2 },
+        .{ .from = "a", .to = "b", .connection = 3 },
+    };
+    var stream = try ir.edgeIterator(.{});
+    defer stream.deinit();
+    var graph = try ir.materialize(.{});
+    defer graph.deinit();
+    for (expected, graph.edges) |wanted, materialized| {
+        const actual = (try stream.next()).?;
+        try equal(try node(&ir, wanted.from), actual.from);
+        try equal(try node(&ir, wanted.to), actual.to);
+        try equal(wanted.connection, @backingInt(actual.first_connection));
+        try equal(dot.EdgeOperator.directed, actual.operator);
+        try equal(materialized, actual);
+    }
+    try expect(try stream.next() == null);
+    try expect(try stream.next() == null);
+}
+
+test "IR strict streaming coalesces reversed pairs and self loops without losing first provenance" {
+    var ir = try lower(a, "strict graph { b:p -- a:q; a:r -- b:s; {a b}--{a b}; a--a }");
+    defer ir.deinit();
+    var stream = try ir.edgeIterator(.{ .limits = .{ .max_edges = 3, .max_pairs = 7 } });
+    defer stream.deinit();
+    const expected = [_]struct { []const u8, []const u8, u32 }{ .{ "b", "a", 0 }, .{ "a", "a", 2 }, .{ "b", "b", 2 } };
+    for (expected) |wanted| {
+        const actual = (try stream.next()).?;
+        try equal(try node(&ir, wanted[0]), actual.from);
+        try equal(try node(&ir, wanted[1]), actual.to);
+        try equal(wanted[2], @backingInt(actual.first_connection));
+        try equal(dot.EdgeOperator.undirected, actual.operator);
+    }
+    // Duplicates after the edge cap still count as work/pairs, not new edges.
+    try expect(try stream.next() == null);
+    try equal(@as(usize, 4), ir.connections.len);
+
+    var directed = try lower(a, "strict digraph { a->b; b->a; a->b }");
+    defer directed.deinit();
+    var ds = try directed.edgeIterator(.{});
+    defer ds.deinit();
+    try equal(try node(&directed, "a"), (try ds.next()).?.from);
+    try equal(try node(&directed, "b"), (try ds.next()).?.from);
+    try expect(try ds.next() == null);
+}
+
+test "IR empty and non-strict singleton streams allocate nothing" {
+    inline for (.{ "graph {}", "graph { a }", "graph { {}--{} }", "graph { a--b; b--a; a--a }" }, .{ 0, 0, 0, 3 }) |source, expected| {
+        var ir = try lower(a, source);
+        defer ir.deinit();
+        var stream = try ir.edgeIterator(.{ .limits = .{ .max_bytes = 0 } });
+        defer stream.deinit();
+        var count: u32 = 0;
+        while (try stream.next() != null) count += 1;
+        try equal(@as(u32, expected), count);
+        try equal(@as(usize, 0), stream.peakBytes());
+    }
+}
+
+test "IR streaming can consume a bounded prefix of a large symbolic product" {
+    var source: std.Io.Writer.Allocating = .init(a);
+    defer source.deinit();
+    try source.writer.writeAll("digraph {{");
+    for (0..1000) |i| try source.writer.print("n{d};", .{i});
+    try source.writer.writeAll("}->{");
+    for (1000..2000) |i| try source.writer.print("n{d};", .{i});
+    try source.writer.writeAll("}}");
+    var memory: std.testing.FailingAllocator = .init(a, .{});
+    var ir = try lower(memory.allocator(), source.written());
+    defer ir.deinit();
+    const retained = memory.allocated_bytes - memory.freed_bytes;
+    const options: dot.ir.Options = .{ .limits = .{ .max_pairs = 3, .max_edges = 3 } };
+    {
+        var stream = try ir.edgeIterator(options);
+        defer stream.deinit();
+        try equal(@as(usize, 0), stream.peakBytes()); // Lazy scratch.
+        const first = (try stream.next()).?;
+        try equal(try node(&ir, "n0"), first.from);
+        try equal(try node(&ir, "n1000"), first.to);
+        const peak = stream.peakBytes();
+        for (1..3) |i| {
+            const next = (try stream.next()).?;
+            try equal(first.from, next.from);
+            try equal(@backingInt(first.to) + @as(u32, @intCast(i)), @backingInt(next.to));
+        }
+        try equal(peak, stream.peakBytes()); // No per-output allocation.
+        try expect(peak < 32 * 1024); // Not a million-edge output array.
+        try std.testing.expectError(error.PairLimit, stream.next());
+        try std.testing.expectError(error.PairLimit, stream.next());
+    }
+    try equal(retained, memory.allocated_bytes - memory.freed_bytes);
+    {
+        var stream = try ir.edgeIterator(.{});
+        defer stream.deinit();
+        _ = try stream.next(); // Deliberate early exit, no exhaustion required.
+    }
+    try equal(retained, memory.allocated_bytes - memory.freed_bytes);
+    // Owning output cannot succeed with that cap: reject before expanding it.
+    try std.testing.expectError(error.PairLimit, ir.materialize(options));
+    try equal(retained, memory.allocated_bytes - memory.freed_bytes);
+}
+
+test "IR streaming limits are cumulative and failures are sticky rather than exhaustion" {
+    var ir = try lower(a, "digraph { a->b; b->c }");
+    defer ir.deinit();
+    inline for (.{ .{ .max_pairs = 1 }, .{ .max_edges = 1 }, .{ .max_work = 3 } }, .{ error.PairLimit, error.EdgeLimit, error.WorkLimit }) |limit, err| {
+        var settings: dot.ir.Limits = .{};
+        inline for (comptime std.meta.fieldNames(@TypeOf(limit))) |field| @field(settings, field) = @field(limit, field);
+        var stream = try ir.edgeIterator(.{ .limits = settings });
+        defer stream.deinit();
+        try expect(try stream.next() != null);
+        try std.testing.expectError(err, stream.next());
+        try std.testing.expectError(err, stream.next());
+    }
+    inline for (.{ "strict digraph { a->b }", "digraph { a->{b c} }" }) |source| {
+        var bounded = try lower(a, source);
+        defer bounded.deinit();
+        var stream = try bounded.edgeIterator(.{ .limits = .{ .max_bytes = 1 } });
+        defer stream.deinit();
+        try std.testing.expectError(error.MemoryLimit, stream.next());
+        try std.testing.expectError(error.MemoryLimit, stream.next());
+    }
+}
+
+test "IR materialization has one combined scratch and output allocation limit" {
+    var ir = try lower(a, "digraph { {a b}->{c d} }");
+    defer ir.deinit();
+    var stream = try ir.edgeIterator(.{});
+    defer stream.deinit();
+    while (try stream.next() != null) {}
+    // Both paths need the same endpoint scratch. An output buffer in addition
+    // must not fit by silently receiving its own independent max_bytes cap.
+    try std.testing.expectError(error.MemoryLimit, ir.materialize(.{ .limits = .{ .max_bytes = stream.peakBytes() } }));
+}
+
+test "IR streaming cancellation is polled between calls and inside endpoint and strict walks" {
+    const Counter = struct {
+        remaining: u32,
+        fn poll(context: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            if (self.remaining == 0) return true;
+            self.remaining -= 1;
+            return false;
+        }
+    };
+    var ir = try lower(a, "strict digraph { {a b c d e f}->{a b c d e f}; a->b; b->a }");
+    defer ir.deinit();
+    for (0..180) |allowed| {
+        var counter: Counter = .{ .remaining = @intCast(allowed) };
+        const options: dot.ir.Options = .{ .cancellation = .{ .context = &counter, .is_requested = Counter.poll } };
+        if (allowed == 0) {
+            try std.testing.expectError(error.Cancelled, ir.edgeIterator(options));
+            continue;
+        }
+        var stream = try ir.edgeIterator(options);
+        defer stream.deinit();
+        while (true) {
+            const actual = stream.next() catch |err| {
+                try equal(error.Cancelled, err);
+                counter.remaining = 1000;
+                try std.testing.expectError(error.Cancelled, stream.next());
+                break;
+            };
+            try expect(actual != null); // This fixture needs >180 polls.
+        }
+    }
+    var simple = try lower(a, "digraph { a->b; b->c }");
+    defer simple.deinit();
+    var counter: Counter = .{ .remaining = 100 };
+    var stream = try simple.edgeIterator(.{ .cancellation = .{ .context = &counter, .is_requested = Counter.poll } });
+    defer stream.deinit();
+    try expect(try stream.next() != null);
+    counter.remaining = 0;
+    try std.testing.expectError(error.Cancelled, stream.next());
 }

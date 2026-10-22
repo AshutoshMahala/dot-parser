@@ -244,110 +244,19 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             return false;
         }
 
-        fn enumerate(self: *const Self, members: Membership, marks: []u32, generation: u32, out: *std.ArrayList(NodeId), a: std.mem.Allocator, work: *r.Work) r.Error!void {
-            out.clearRetainingCapacity();
-            const handle = @backingInt(members);
-            if (handle & node_bit != 0) {
-                try work.spend(1);
-                try out.append(a, @fromBackingInt(handle & ~node_bit));
-                return;
-            }
-            for (self.bodies[self.bodies[handle].first .. handle + 1]) |body| {
-                try work.spend(1);
-                for (self.mentions[body.start..body.end]) |mention| {
-                    try work.spend(1);
-                    const id = @backingInt(mention.node);
-                    if (marks[id] == generation) continue;
-                    marks[id] = generation;
-                    try out.append(a, mention.node);
-                }
-            }
+        pub const EdgeIterator = @import("edges.zig").Iterator(Self, false);
+
+        /// Pull individual edges without retaining the output array. Scratch
+        /// is allocated lazily and must be released with iterator.deinit().
+        pub fn edgeIterator(self: *const Self, options: r.Options) r.Error!EdgeIterator {
+            return EdgeIterator.init(self, options);
         }
-        /// Explicit Cartesian expansion. Strict graphs merge pairs; non-strict
-        /// graphs preserve parallel occurrences. Attributes remain raw in the IR.
+
+        /// Explicit owning expansion, using the same traversal as edgeIterator.
+        /// Strict graphs merge pairs; non-strict graphs preserve occurrences.
+        /// Attributes remain raw in the IR.
         pub fn materialize(self: *const Self, options: r.Options) r.Error!Materialized {
-            const limits = options.limits orelse self.limits;
-            var memory: r.Memory = .{ .backing = self.allocator, .limit = limits.max_bytes };
-            return self.materializeImpl(memory.allocator(), limits, options.cancellation) catch |err| return memory.failure(err);
-        }
-        fn materializeImpl(self: *const Self, a: std.mem.Allocator, limits: r.Limits, cancellation: ?r.Cancellation) r.Error!Materialized {
-            var work = try r.Work.init(limits, cancellation);
-            var edges: std.ArrayList(Edge) = .empty;
-            errdefer edges.deinit(a);
-            var pairs: names.Table = .{};
-            defer pairs.deinit(a);
-            var left: std.ArrayList(NodeId) = .empty;
-            defer left.deinit(a);
-            var right: std.ArrayList(NodeId) = .empty;
-            defer right.deinit(a);
-            const marks = try a.alloc(u32, self.nodes.len);
-            defer a.free(marks);
-            for (marks) |*mark| {
-                try work.spend(1);
-                mark.* = 0;
-            }
-            var generation: u32 = 0;
-            var visited: u64 = 0;
-            for (self.connections, 0..) |connection, connection_id| {
-                if (generation > std.math.maxInt(u32) - 2) {
-                    for (marks) |*mark| {
-                        try work.spend(1);
-                        mark.* = 0;
-                    }
-                    generation = 0;
-                }
-                generation += 1;
-                try self.enumerate(connection.left.members, marks, generation, &left, a, &work);
-                generation += 1;
-                try self.enumerate(connection.right.members, marks, generation, &right, a, &work);
-                const product = std.math.mul(u64, left.items.len, right.items.len) catch return error.PairLimit;
-                if (product > limits.max_pairs - visited) return error.PairLimit;
-                visited += product;
-                for (left.items) |from| for (right.items) |to| {
-                    try work.spend(1);
-                    const edge: Edge = .{ .from = from, .to = to, .operator = connection.effective_operator, .first_connection = @fromBackingInt(@as(u32, @intCast(connection_id))) };
-                    if (self.strict) {
-                        const hash = pairHash(edge);
-                        if (pairs.slots.len != 0) {
-                            var at: usize = @intCast(hash & (pairs.slots.len - 1));
-                            var found = false;
-                            while (pairs.slots[at] != names.empty) : (at = (at + 1) & (pairs.slots.len - 1)) {
-                                try work.spend(1);
-                                if (samePair(edges.items[pairs.slots[at]], edge)) {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (found) continue;
-                        }
-                        if (edges.items.len >= limits.max_edges) return error.EdgeLimit;
-                        const Owner = struct {
-                            edges: []const Edge,
-                            pub fn hashFor(owner: @This(), id: u32) u64 {
-                                return pairHash(owner.edges[id]);
-                            }
-                        };
-                        try pairs.prepare(a, &work, Owner{ .edges = edges.items });
-                        try pairs.insert(hash, try r.index(edges.items.len), &work);
-                    } else if (edges.items.len >= limits.max_edges) return error.EdgeLimit;
-                    try edges.append(a, edge);
-                };
-            }
-            const memory: *r.Memory = @ptrCast(@alignCast(a.ptr));
-            return .{ .edges = edges.items, .storage = edges.allocatedSlice(), .allocator = self.allocator, .peak_bytes = memory.peak };
+            return @import("edges.zig").materialize(Self, self, options);
         }
     };
-}
-
-fn canonical(edge: Edge) [2]u32 {
-    const from = @backingInt(edge.from);
-    const to = @backingInt(edge.to);
-    return if (edge.operator == .undirected and from > to) .{ to, from } else .{ from, to };
-}
-fn pairHash(edge: Edge) u64 {
-    const pair = canonical(edge);
-    return std.hash.Wyhash.hash(@backingInt(edge.operator), std.mem.asBytes(&pair));
-}
-fn samePair(a: Edge, b: Edge) bool {
-    return a.operator == b.operator and std.meta.eql(canonical(a), canonical(b));
 }

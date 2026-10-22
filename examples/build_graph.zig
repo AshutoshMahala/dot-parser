@@ -33,10 +33,10 @@ fn printGraph(gpa: std.mem.Allocator, source: []const u8, sink: dot.DiagnosticSi
     var nodes = ir.nodeIterator();
     while (nodes.next()) |node| std.debug.print("node {f}\n", .{try ir.nodeName(node)});
 
-    // Sets stay symbolic until you expand them.
-    var graph = try ir.materialize(.{});
-    defer graph.deinit();
-    for (graph.edges) |edge|
+    // Expand one edge at a time, without storing the whole edge list.
+    var edges = try ir.edgeIterator(.{});
+    defer edges.deinit();
+    while (try edges.next()) |edge|
         std.debug.print("edge {f} {s} {f}\n", .{ try ir.nodeName(edge.from), edge.operator.lexeme(), try ir.nodeName(edge.to) });
 }
 

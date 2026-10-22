@@ -11,7 +11,10 @@ are marked; no compatibility shims are kept.
 - Optional `dot.ir.Lowering(...).lowerComplete` topology layer from accepted
   complete Documents: logical node identity, shared scope-membership snapshots,
   symbolic connections, allocation-free existence queries and explicit bounded
-  materialization. Raw attributes/provenance are retained; effective defaults
+  materialization or streaming edge iteration. Streaming reuses endpoint
+  scratch, preserves non-strict parallel occurrences and deduplicates strict
+  pairs, with cumulative limits/cancellation and explicit early cleanup.
+  Raw attributes/provenance are retained; effective defaults
   and attribute merging remain later work. Includes one-call `dot.ir.parse`,
   allocation-free node iteration/name formatting, `test-ir`, `bench-ir` and a
   short graph example with diagnostics; its checks live outside the example.

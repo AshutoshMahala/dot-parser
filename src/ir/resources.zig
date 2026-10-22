@@ -1,5 +1,5 @@
-//! One-shot IR resource accounting. These are total operation limits, not
-//! resumable credits or deadlines. No global allocator or OS dependencies.
+//! IR resource accounting. Total operation/iterator-lifetime limits, not
+//! replenishable credits or deadlines. No global allocator or OS dependencies.
 const std = @import("std");
 pub const Cancellation = @import("parser_support").execution.Cancellation;
 

@@ -4,16 +4,16 @@ const std = @import("std");
 const dot = @import("dot_parser");
 const Dot = dot.Profile(.{});
 const IR = dot.ir.Lowering(.{});
-const Case = enum { singletons, small_sets, reopened, nested, symbolic_product };
+const Case = enum { singletons, small_sets, reopened, strict_reopened, nested, symbolic_product };
 pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
     const w = &output.interface;
-    try w.writeAll("case,source_bytes,nodes,connections,lower_ms,lower_MB_s,retained_bytes,peak_requested_bytes,arena_capacity_bytes,materialize_ms,edges\n");
+    try w.writeAll("case,source_bytes,nodes,connections,lower_ms,lower_MB_s,retained_bytes,peak_requested_bytes,arena_capacity_bytes,materialize_ms,edges,materialize_peak_bytes,stream_ms,stream_edges,stream_peak_bytes\n");
     inline for (std.meta.tags(Case)) |case| {
         var source: std.Io.Writer.Allocating = .init(init.gpa);
         defer source.deinit();
-        try source.writer.writeAll("digraph {");
+        try source.writer.writeAll(if (case == .strict_reopened) "strict digraph {" else "digraph {");
         switch (case) {
             .singletons => for (0..10_000) |i| {
                 try source.writer.print("n{d}->n{d};", .{ i, i + 1 });
@@ -21,7 +21,7 @@ pub fn main(init: std.process.Init) !void {
             .small_sets => for (0..10_000) |i| {
                 try source.writer.print("n{d}->{{a b c}};", .{i});
             },
-            .reopened => for (0..1000) |i| {
+            .reopened, .strict_reopened => for (0..1000) |i| {
                 try source.writer.print("subgraph s{{n{d}}} -> x;", .{i});
             },
             .nested => {
@@ -64,7 +64,7 @@ pub fn main(init: std.process.Init) !void {
         try w.print("{s},{d},{d},{d},{d:.3},{d:.1},{d},{d},{d},", .{ @tagName(case), source.written().len, ir.nodes.len, ir.connections.len, ns / 1e6, @as(f64, @floatFromInt(source.written().len)) * 1e3 / ns, ir.retainedBytes(), ir.peak_bytes, arena.queryCapacity() });
         if (case == .symbolic_product) {
             if (ir.connections.len != 1 or ir.nodes.len != 100_000) return error.ExpandedUnexpectedly;
-            try w.writeAll("not_requested,not_requested\n");
+            try w.writeAll("not_requested,not_requested,not_requested,");
         } else {
             for (0..11) |round| {
                 const start = std.Io.Clock.Timestamp.now(init.io, .awake);
@@ -77,8 +77,28 @@ pub fn main(init: std.process.Init) !void {
             std.mem.sort(u64, &times, {}, std.sort.asc(u64));
             var graph = try ir.materialize(.{});
             defer graph.deinit();
-            try w.print("{d:.3},{d}\n", .{ @as(f64, @floatFromInt(times[times.len / 2])) / 1e6, graph.edges.len });
+            try w.print("{d:.3},{d},{d},", .{ @as(f64, @floatFromInt(times[times.len / 2])) / 1e6, graph.edges.len, graph.peak_bytes });
         }
+        var stream_count: u32 = 0;
+        var stream_peak: usize = 0;
+        for (0..11) |round| {
+            const start = std.Io.Clock.Timestamp.now(init.io, .awake);
+            // For the 2.5-billion-pair product, consume only a 1,000-edge
+            // prefix. Other cases run to exhaustion, with ordinary limits.
+            var stream = try ir.edgeIterator(.{});
+            defer stream.deinit();
+            stream_count = 0;
+            while (try stream.next()) |edge| {
+                std.mem.doNotOptimizeAway(edge);
+                stream_count += 1;
+                if (case == .symbolic_product and stream_count == 1000) break;
+            }
+            const end = std.Io.Clock.Timestamp.now(init.io, .awake);
+            stream_peak = stream.peakBytes();
+            if (round >= 2) times[round - 2] = @intCast(start.durationTo(end).raw.nanoseconds);
+        }
+        std.mem.sort(u64, &times, {}, std.sort.asc(u64));
+        try w.print("{d:.3},{d},{d}\n", .{ @as(f64, @floatFromInt(times[times.len / 2])) / 1e6, stream_count, stream_peak });
         try w.flush();
     }
 }

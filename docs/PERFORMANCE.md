@@ -89,6 +89,39 @@ failure injection, a generated eager-set oracle, and 200 existing Graphviz
 See [IR coverage and costs](IR.md); effective attributes/defaults are not yet
 part of these measurements.
 
+### Streaming edge consumption (2026-10-21)
+
+Same machine/toolchain, ReleaseFast. Five alternating process runs against
+`5c36bd3`, each reporting the median of nine timed samples after two warmups;
+the table uses the median of those five reports. Expansion includes scratch
+and output allocation, but excludes parsing, lowering, consumer output/I/O
+and destruction. `zig build bench-ir -Doptimize=ReleaseFast` now reports both
+owning and streaming expansion, including their requested allocation peaks.
+
+| Workload | Emitted edges | Materialize before ms | Materialize now ms | Stream ms | Materialize peak bytes | Stream peak bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Singleton connections | 10,000 | 0.123 | 0.078 | 0.086 | 323,072 | 0 |
+| Three-member sets | 30,000 | 0.197 | 0.173 | 0.215 | 1,131,936 | 40,144 |
+| Reopened scopes | 500,500 | 2.768 | 2.594 | 3.157 | 18,672,020 | 11,036 |
+| Strict reopened scopes | 1,000 | — | 2.989 | 2.902 | 44,292 | 33,564 |
+| First 1,000 of the 50,000 × 50,000 product | 1,000 | — | — | 0.395 | — | 1,096,892 |
+
+Streaming avoids the output array; it is not inherently faster. Pull calls and
+per-visited-pair limit checks have costs. The strict row still visits 500,500
+candidate pairs and retains deduplication keys for 1,000 unique edges. It was
+added to the benchmark here, so no earlier number is shown in this comparison.
+The product row stops after 1,000 edges: it enumerates both endpoint sets but
+does **not** visit the other 2,499,999,000 pairs. These are operation-requested
+peaks, excluding the IR, source, consumer storage, allocator overhead and RSS.
+
+The owning path shares traversal with streaming without retaining duplicate
+output/key arrays. Its existing workloads did not regress in this run. Default
+quick-start ReleaseFast code/data remained identical to `5c36bd3` after
+excluding debug/source-location metadata; parser metering and cancellation
+implementations were untouched. Thirty focused IR tests pass in Debug,
+ReleaseSafe and ReleaseFast, including allocation failures, early cleanup,
+cumulative limits, cancellation, strict overlap and an independent eager oracle.
+
 ## Attribute string integration (Unreleased)
 
 Measured on 2026-10-19 against `fb64cc9`, Apple M4 Pro, Zig 0.16.0. The same

@@ -40,3 +40,15 @@ export fn convenient(source: [*]const u8, length: u32, memory: [*]u8, capacity: 
     }
     return count;
 }
+
+export fn streaming(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    var fixed: std.heap.FixedBufferAllocator = .init(memory[0..capacity]);
+    var result = dot.ir.parse(fixed.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const ir = result.ir() orelse return 0;
+    var edges = ir.edgeIterator(.{}) catch return 0;
+    defer edges.deinit();
+    var count: u32 = 0;
+    while (edges.next() catch return 0) |_| count += 1;
+    return count;
+}

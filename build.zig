@@ -523,7 +523,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "dot_parser", .module = mod }},
     }) });
-    b.step("bench-ir", "Measure Document-to-IR lowering and explicit materialization").dependOn(&b.addRunArtifact(ir_bench).step);
+    b.step("bench-ir", "Measure IR lowering, streaming edges and explicit materialization").dependOn(&b.addRunArtifact(ir_bench).step);
     check_benches.dependOn(&ir_bench.step);
     const identifier_bench = b.addExecutable(.{
         .name = "identifier_bench",
