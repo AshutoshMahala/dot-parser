@@ -59,13 +59,14 @@ fn expectPrinted(comptime R: type, items: anytype, options: dot.console.RenderOp
 test "diagnostic printing flushes numbered boxes in order through caller IO" {
     const findings = [_]dot.Diagnostic{
         .{ .code = .syntax_unexpected_token, .span = .{ .start = 5, .len = 1 } },
-        .{ .code = .validation_ambiguous_numeral, .span = .{ .start = 7, .len = 3 } },
+        .{ .code = .syntax_ambiguous_numeral, .span = .{ .start = 7, .len = 3 } },
     };
     const options: dot.console.RenderOptions = .{ .source = "graph} 1e3", .source_name = "graph.dot" };
     try expectPrinted(dot.console, &findings, options, std.math.maxInt(usize));
     // Short writes still flush the entire output, without duplicating bytes.
     try expectPrinted(dot.console, &findings, options, 7);
-    const many = findings ** 20;
+    var many: [40]dot.Diagnostic = undefined;
+    for (&many, 0..) |*finding, i| finding.* = findings[i % findings.len];
     try expectPrinted(dot.console, &many, .{ .style = .ascii }, 251);
 }
 
@@ -76,7 +77,7 @@ test "diagnostic printing skips IO for empty input and propagates write failures
     };
     // A short message fails on the final flush; a long list fails during rendering.
     try std.testing.expectError(error.WriteFailed, dot.console.printDiagnostics(.failing, &findings, .{}));
-    const many = findings ** 40;
+    const many: [40]dot.Diagnostic = @splat(findings[0]);
     try std.testing.expectError(error.WriteFailed, dot.console.printDiagnostics(.failing, &many, .{}));
 }
 
