@@ -59,6 +59,7 @@ pub const render = Bound.render;
 pub const renderList = Bound.renderList;
 pub const renderBoxed = Bound.renderBoxed;
 pub const renderBoxedList = Bound.renderBoxedList;
+pub const printDiagnostics = Bound.printDiagnostics;
 pub const locationCapacity = Bound.locationCapacity;
 
 /// DOT's presentation vocabulary; layout and terminal style belong to common.

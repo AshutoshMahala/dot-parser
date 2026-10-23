@@ -91,7 +91,15 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
         /// Null means exhaustion, never cancellation or a resource shortfall.
         /// Errors are terminal and repeat on later calls. Budgets accumulate
         /// across calls; this is pull iteration, not replenishable metering.
-        pub fn next(self: *Self) r.Error!?t.Edge {
+        pub inline fn next(self: *Self) r.Error!?(if (retaining) t.Edge else Graph.EdgeView) {
+            if (retaining) return self.nextRecord();
+            const edge = (try self.nextRecord()) orelse return null;
+            return .{ .graph = self.graph, .edge = edge };
+        }
+
+        // Keep the expansion engine's compact return ABI. A view adds its owner
+        // at the call site, not to the hot loop's return buffer/register pressure.
+        fn nextRecord(self: *Self) r.Error!?t.Edge {
             if (self.failure) |err| return err;
             if (self.done) return null;
             return self.nextImpl() catch |err| {

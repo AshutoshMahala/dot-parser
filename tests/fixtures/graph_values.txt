@@ -1,0 +1,9 @@
+kind: concatenation
+raw: "first " + "second"
+joined: first second
+string operand: "first "
+string operand: "second"
+kind: markup
+raw: <<b><i>bee</i></b>>
+joined: <b><i>bee</i></b>
+markup operand: "<b><i>bee</i></b>"

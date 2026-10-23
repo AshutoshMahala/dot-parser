@@ -16,6 +16,7 @@ test {
     _ = @import("subgraphs.zig");
     _ = @import("subgraph_endpoints.zig");
     _ = @import("diagnostics.zig");
+    _ = @import("console_print.zig");
     _ = @import("processors.zig");
     _ = @import("measure.zig");
     _ = @import("tooling_helpers.zig");

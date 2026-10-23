@@ -79,7 +79,7 @@ pub fn main(init: std.process.Init) !void {
             // real handles; the product case expands only the first edge.
             var stream = try ir.edgeIterator(.{});
             defer stream.deinit();
-            const edge = (try stream.next()).?;
+            const edge = (try stream.next()).?.edge;
             inline for (.{ false, true }) |edge_query| {
                 const count = if (edge_query) 100 else 10_000;
                 for (0..11) |round| {
@@ -111,7 +111,7 @@ pub fn main(init: std.process.Init) !void {
                                     while (try attributes.next()) |entry| std.mem.doNotOptimizeAway(entry.resolved);
                                     scratch = @max(scratch, attributes.peakBytes());
                                 } else {
-                                    const result = try (if (edge_query) view.attribute("weight") else node.attribute("color"));
+                                    const result = if (edge_query) try view.attribute("weight") else node.attribute("color");
                                     if (result == null) return error.MissingAttribute;
                                     std.mem.doNotOptimizeAway(result);
                                 }

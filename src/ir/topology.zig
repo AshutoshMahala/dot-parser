@@ -84,6 +84,9 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         pub const EdgeView = Views.Edge;
         pub const AttributeView = Views.Attribute;
         pub const AttributeIterator = Views.Iterator;
+        const Values = @import("values.zig").For(Self, caps);
+        pub const ValueView = Values.Value;
+        pub const OperandView = Values.Operand;
 
         /// Borrowed context for component-oriented access. No allocation or
         /// owner pointer in retained records. Keep this IR alive and unmoved.
@@ -158,20 +161,20 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         }
 
         pub const NodeIterator = struct {
+            graph: *const Self,
             index: u32 = 0,
-            end: u32,
 
-            pub fn next(self: *NodeIterator) ?NodeId {
-                if (self.index >= self.end) return null;
+            pub fn next(self: *NodeIterator) ?NodeView {
+                if (self.index >= self.graph.nodes.len) return null;
                 const id: NodeId = @fromBackingInt(self.index);
                 self.index += 1;
-                return id;
+                return .{ .graph = self.graph, .id = id };
             }
         };
 
-        /// Unique node IDs in first-introduction order; no allocation or scan.
+        /// Borrowed views in first-introduction order; no allocation or scan.
         pub fn nodeIterator(self: *const Self) NodeIterator {
-            return .{ .end = @intCast(self.nodes.len) };
+            return .{ .graph = self };
         }
 
         /// A borrowed logical name for `{f}`. O(1) access; decoding happens on
@@ -225,11 +228,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         pub fn nodeAttributeWith(self: *const Self, id: NodeId, key: []const u8, options: r.Options) r.Error!?attrs.Resolved {
             if (@backingInt(id) >= self.nodes.len) return error.InvalidHandle;
             var work = try r.Work.init(options.limits orelse self.limits, options.cancellation);
-            const key_id = try attrs.findKey(caps, self, .node, key, &work) orelse return null;
-            const node = self.nodes[@backingInt(id)];
-            const value = try self.attribute_data.lookup(node.attribute_state, key_id, &work);
-            const scope = self.occurrences[@backingInt(self.mentions[node.first_mention].occurrence)].scope;
-            return attrs.resolved(self, value orelse self.attribute_data.keys.items[key_id].first_attribute, .node, scope, value == null);
+            return attrs.lookupNode(caps, self, id, key, &work);
         }
 
         /// Graph/subgraph attributes, including definition-time inheritance.
@@ -239,9 +238,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         pub fn scopeAttributeWith(self: *const Self, id: ScopeId, key: []const u8, options: r.Options) r.Error!?attrs.Resolved {
             if (@backingInt(id) >= self.scopes.len) return error.InvalidHandle;
             var work = try r.Work.init(options.limits orelse self.limits, options.cancellation);
-            const key_id = try attrs.findKey(caps, self, .graph, key, &work) orelse return null;
-            const value = try self.attribute_data.lookup(self.attribute_data.scopes[@backingInt(id)].graph, key_id, &work);
-            return attrs.resolved(self, value orelse self.attribute_data.keys.items[key_id].first_attribute, .graph, id, value == null);
+            return attrs.lookupScope(caps, self, id, key, &work);
         }
 
         fn connectionCovers(self: *const Self, connection: Connection, edge: Edge, work: *r.Work) r.Error!bool {
@@ -300,10 +297,10 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             return attrs.resolved(self, value orelse self.attribute_data.keys.items[wanted].first_attribute, .edge, scope, value == null);
         }
 
-        /// Borrowed logical-value formatter; no renderer escapes, HTML entity
+        /// Borrowed value view/formatter; no renderer escapes, HTML entity
         /// expansion or decoded allocation. Construct only from this IR's result.
-        pub fn attributeValue(self: *const Self, resolved: attrs.Resolved) attrs.valueFormatter(caps) {
-            return .{ .source = self.source, .actual = if (self.source_info.encoding == .ascii and caps.utf8) .utf8 else self.source_info.encoding, .value = resolved.value };
+        pub fn attributeValue(self: *const Self, resolved: attrs.Resolved) ValueView {
+            return .{ .graph = self, .selected = resolved.value };
         }
         pub fn scopeMembership(self: *const Self, id: ScopeId) r.Error!Membership {
             const raw = @backingInt(id);

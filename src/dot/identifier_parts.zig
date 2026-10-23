@@ -31,11 +31,17 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
             offset: u32 = 0,
 
             pub fn next(self: *@This()) ?Part {
+                return self.nextWith(@import("identifier_cursor.zig").Unmetered{}) catch unreachable;
+            }
+
+            /// Internal bounded traversal of the same trusted operand grammar.
+            pub fn nextWith(self: *@This(), work: anytype) !?Part {
                 const bytes = self.input.bytes;
                 if (self.offset == bytes.len) return null;
-                if (self.compound) cursor.skipGlue(bytes, &self.offset);
+                if (self.compound) try cursor.skipGlueWith(bytes, &self.offset, work);
                 if (self.offset == bytes.len) return null;
                 const start = self.offset;
+                try work.spend(enc.width);
                 const kind: Part.Form = switch (enc.byteAt(bytes, start)) {
                     '<' => .html,
                     '"' => .quoted,
@@ -47,13 +53,13 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
                     .quoted => {
                         self.offset += enc.width;
                         while (true) {
-                            self.offset = cursor.quotedRunEnd(bytes, self.offset);
+                            self.offset = try cursor.quotedRunEndWith(bytes, self.offset, work);
                             if (enc.byteAt(bytes, self.offset) == '"') break;
-                            self.offset = cursor.escapeEnd(bytes, self.offset);
+                            self.offset = try cursor.escapeEndWith(bytes, self.offset, work);
                         }
                         self.offset += enc.width;
                     },
-                    .html => self.offset = cursor.htmlEnd(bytes, self.offset),
+                    .html => self.offset = try cursor.htmlEndWith(bytes, self.offset, work),
                 }
                 const wrapped = kind == .quoted or kind == .html;
                 return .{

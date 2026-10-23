@@ -5,6 +5,7 @@ const attrs = @import("attributes.zig");
 const names = @import("names.zig");
 const r = @import("resources.zig");
 const encoding = @import("parser_support").encoding;
+const Unmetered = @import("../dot/identifier_cursor.zig").Unmetered;
 
 pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime covers: anytype) type {
     return struct {
@@ -19,7 +20,7 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                     .actual = if (self.graph.source_info.encoding == .ascii and caps.utf8) .utf8 else self.graph.source_info.encoding,
                 };
             }
-            pub fn value(self: Attribute) attrs.valueFormatter(caps) {
+            pub fn value(self: Attribute) Graph.ValueView {
                 return self.graph.attributeValue(self.resolved);
             }
         };
@@ -28,11 +29,17 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
             graph: *const Graph,
             id: t.NodeId,
 
-            pub fn name(self: Node) r.Error!names.Formatted(caps) {
-                return self.graph.nodeName(self.id);
+            pub fn name(self: Node) names.Formatted(caps) {
+                return .{
+                    .raw = self.graph.text(self.graph.nodes[@backingInt(self.id)].name),
+                    .actual = if (self.graph.source_info.encoding == .ascii and caps.utf8) .utf8 else self.graph.source_info.encoding,
+                };
             }
-            pub fn attribute(self: Node, key: []const u8) r.Error!?Attribute {
-                return self.attributeWith(key, .{});
+            pub fn attribute(self: Node, key: []const u8) ?Attribute {
+                // Certified view/native names, no work budget: no fallible
+                // prerequisite remains. Never convert a failed query to absence.
+                const value = attrs.lookupNode(caps, self.graph, self.id, key, Unmetered{}) catch unreachable;
+                return if (value) |found| .{ .graph = self.graph, .resolved = found } else null;
             }
             pub fn attributeWith(self: Node, key: []const u8, options: r.Options) r.Error!?Attribute {
                 return if (try self.graph.nodeAttributeWith(self.id, key, options)) |value|
@@ -49,8 +56,9 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
             graph: *const Graph,
             id: t.ScopeId,
 
-            pub fn attribute(self: Scope, key: []const u8) r.Error!?Attribute {
-                return self.attributeWith(key, .{});
+            pub fn attribute(self: Scope, key: []const u8) ?Attribute {
+                const value = attrs.lookupScope(caps, self.graph, self.id, key, Unmetered{}) catch unreachable;
+                return if (value) |found| .{ .graph = self.graph, .resolved = found } else null;
             }
             pub fn attributeWith(self: Scope, key: []const u8, options: r.Options) r.Error!?Attribute {
                 return if (try self.graph.scopeAttributeWith(self.id, key, options)) |value|

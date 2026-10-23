@@ -5,6 +5,7 @@
 //! detail and primaryLabel receive *Positions, as do hint and note, for checked
 //! source access and bounded escaped names. No source strings enter diagnostics.
 //! Rendering writes only to the caller's writer and never allocates or probes IO.
+//! The optional printDiagnostics convenience writes to stderr through caller IO.
 const std = @import("std");
 const location = @import("location.zig");
 const source_text = @import("console_text.zig");
@@ -487,6 +488,16 @@ pub fn Renderer(comptime Catalog: type) type {
         const diagnostic = Adapter.registry;
         const Annotation = Adapter.Annotations.Annotation;
         const max_secondary: usize = Adapter.Annotations.max_count;
+
+        /// Print numbered boxes to stderr through caller-supplied IO, then flush.
+        /// Uses a 4 KiB stack buffer, no heap allocation or terminal detection.
+        /// Empty input performs no IO. Write/flush failures propagate.
+        /// Like repeated renderBoxed calls: preserves order, no list summary;
+        /// source locations are resolved per finding. For large bags, use
+        /// renderBoxedList with caller-owned location scratch and a writer.
+        pub fn printDiagnostics(io: std.Io, diagnostics: []const Diagnostic, options: RenderOptions) !void {
+            try printToStderr(@This(), io, diagnostics, options);
+        }
 
         /// Upper bound on caller-owned location records for list rendering.
         /// Source is scanned once; no per-source-byte or per-line index is kept.
@@ -989,6 +1000,11 @@ pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
     return struct {
         pub const Adapter = @This();
         pub const composed = true;
+        /// Print mixed-processor findings in order, with the same fixed-buffer,
+        /// stderr and failure contract as Renderer.printDiagnostics.
+        pub fn printDiagnostics(io: std.Io, items: []const Item, options: RenderOptions) !void {
+            try printToStderr(@This(), io, items, options);
+        }
         const max_locations = blk: {
             var maximum: usize = 0;
             for (std.meta.fieldNames(@TypeOf(adapters))) |field| {
@@ -1067,4 +1083,13 @@ pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
             try summary.render(items.len, omitted, options, writer);
         }
     };
+}
+
+fn printToStderr(comptime R: type, io: std.Io, items: anytype, options: RenderOptions) !void {
+    if (items.len == 0) return;
+    var buffer: [4096]u8 = undefined;
+    var stderr: std.Io.File.Writer = .initStreaming(.stderr(), io, &buffer);
+    for (items, 1..) |item, number|
+        try R.renderBoxed(item, number, options, &stderr.interface);
+    try stderr.interface.flush();
 }

@@ -167,7 +167,7 @@ pub const Store = struct {
         }
         return child;
     }
-    pub fn lookup(self: Store, root: u32, key: u32, work: *r.Work) r.Error!?u32 {
+    pub fn lookup(self: Store, root: u32, key: u32, work: anytype) r.Error!?u32 {
         var cursor = root;
         while (cursor != none) {
             try work.spend(1);
@@ -220,7 +220,7 @@ pub const Store = struct {
     }
 };
 
-pub fn findKey(comptime caps: encoding.Capabilities, graph: anytype, kind: Kind, key: []const u8, work: *r.Work) r.Error!?u32 {
+pub fn findKey(comptime caps: encoding.Capabilities, graph: anytype, kind: Kind, key: []const u8, work: anytype) r.Error!?u32 {
     try work.spend(key.len);
     const store = &graph.attribute_data;
     if (store.table.slots.len == 0) return null;
@@ -238,6 +238,21 @@ pub fn findKey(comptime caps: encoding.Capabilities, graph: anytype, kind: Kind,
         if (matches) return id;
     }
     return null;
+}
+
+/// Shared indexed lookup for checked ID APIs and certified views. No history scan.
+pub fn lookupNode(comptime caps: encoding.Capabilities, graph: anytype, id: t.NodeId, key: []const u8, work: anytype) r.Error!?Resolved {
+    const key_id = try findKey(caps, graph, .node, key, work) orelse return null;
+    const node = graph.nodes[@backingInt(id)];
+    const value = try graph.attribute_data.lookup(node.attribute_state, key_id, work);
+    const scope = graph.occurrences[@backingInt(graph.mentions[node.first_mention].occurrence)].scope;
+    return resolved(graph, value orelse graph.attribute_data.keys.items[key_id].first_attribute, .node, scope, value == null);
+}
+
+pub fn lookupScope(comptime caps: encoding.Capabilities, graph: anytype, id: t.ScopeId, key: []const u8, work: anytype) r.Error!?Resolved {
+    const key_id = try findKey(caps, graph, .graph, key, work) orelse return null;
+    const value = try graph.attribute_data.lookup(graph.attribute_data.scopes[@backingInt(id)].graph, key_id, work);
+    return resolved(graph, value orelse graph.attribute_data.keys.items[key_id].first_attribute, .graph, id, value == null);
 }
 
 pub fn resolved(graph: anytype, attribute: u32, target: Kind, scope: t.ScopeId, empty: bool) Resolved {
@@ -259,18 +274,4 @@ pub fn resolvedConnection(graph: anytype, attribute: u32, connection: t.Connecti
     result.origin = .{ .connection = connection };
     result.scope = graph.occurrences[@backingInt(graph.connections[@backingInt(connection)].occurrence)].scope;
     return result;
-}
-
-pub fn valueFormatter(comptime caps: encoding.Capabilities) type {
-    return struct {
-        source: []const u8,
-        actual: encoding.Actual,
-        value: Value,
-        pub fn format(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-            switch (self.value) {
-                .empty => {},
-                .written => |range| try (names.Formatted(caps){ .raw = self.source[range.start..][0..range.len], .actual = self.actual }).format(writer),
-            }
-        }
-    };
 }

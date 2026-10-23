@@ -8,6 +8,10 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Optional `console.printDiagnostics(io, items, options)` for DOT, markup,
+  string and composed profiles: numbered boxes to stderr using shared rendering,
+  a fixed stack buffer and caller IO. No heap allocation; write/flush failures
+  propagate. The three introductory IR examples use this helper.
 - Optional `dot.ir.Lowering(...).lowerComplete` topology layer from accepted
   complete Documents: logical node identity, shared scope-membership snapshots,
   symbolic connections, allocation-free existence queries and explicit bounded
@@ -24,6 +28,13 @@ are marked; no compatibility shims are kept.
   `.attributes(options)` iteration with logical formatters and provenance.
   Strict-edge iteration merges contributions once using key-sized scratch;
   other attribute iterators allocate nothing. Retained record layouts are unchanged.
+  Node/edge iterators yield borrowed component views directly. Name access and
+  indexed node/scope attribute lookup are infallible on valid views, with bounded
+  variants for explicit limits. Value views expose string/markup/concatenation
+  kinds, original spelling/encoding/spans, allocation-free operand iteration,
+  markup fragments and joined output. `toString` uses one exact allocation;
+  bounded traversal and output preserve cancellation/work failures. No operand
+  cache, automatic markup parsing or loss of concatenation boundaries.
   Includes one-call `dot.ir.parse`,
   allocation-free node iteration/name formatting, `test-ir`, `bench-ir` and a
   short graph example with diagnostics; its checks live outside the example.

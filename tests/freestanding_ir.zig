@@ -32,10 +32,10 @@ export fn convenient(source: [*]const u8, length: u32, memory: [*]u8, capacity: 
     const ir = result.ir() orelse return 0;
     var nodes = ir.nodeIterator();
     var count: u32 = 0;
-    while (nodes.next()) |id| {
+    while (nodes.next()) |node| {
         var name: [64]u8 = undefined;
         var writer = std.Io.Writer.fixed(&name);
-        writer.print("{f}", .{ir.nodeName(id) catch return 0}) catch return 0;
+        writer.print("{f}", .{node.name()}) catch return 0;
         count += 1;
     }
     return count;
@@ -62,7 +62,7 @@ export fn attributes(source: [*]const u8, length: u32, memory: [*]u8, capacity: 
     var writer = std.Io.Writer.fixed(&buffer);
     if ((ir.findNode("a") catch return 0)) |id| {
         const node = ir.nodeView(id) catch return 0;
-        if ((node.attribute("color") catch return 0)) |value|
+        if (node.attribute("color")) |value|
             writer.print("{f}", .{value.value()}) catch return 0;
         var values = node.attributes(.{}) catch return 0;
         defer values.deinit();
@@ -77,7 +77,7 @@ export fn attributes(source: [*]const u8, length: u32, memory: [*]u8, capacity: 
     var edges = ir.edgeIterator(.{}) catch return 0;
     defer edges.deinit();
     if ((edges.next() catch return 0)) |edge| {
-        const view = ir.edgeView(edge) catch return 0;
+        const view = edge;
         if ((view.attribute("weight") catch return 0)) |value|
             writer.print("{f}", .{value.value()}) catch return 0;
         var values = view.attributes(.{}) catch return 0;
@@ -86,4 +86,29 @@ export fn attributes(source: [*]const u8, length: u32, memory: [*]u8, capacity: 
             writer.print("{f}={f}", .{ entry.key(), entry.value() }) catch return 0;
     }
     return @intCast(writer.buffered().len);
+}
+
+export fn value_parts(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    var fixed: std.heap.FixedBufferAllocator = .init(memory[0..capacity]);
+    var result = dot.ir.parse(fixed.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const ir = result.ir() orelse return 0;
+    var nodes = ir.nodeIterator();
+    var count: u32 = 0;
+    var buffer: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    while (nodes.next()) |node| {
+        const label = node.attribute("label") orelse continue;
+        const value = label.value();
+        var parts = value.partsWith(.{}) catch return 0;
+        while (parts.next() catch return 0) |part| {
+            if (part.fragment()) |fragment| count += @intCast(fragment.input.bytes.len);
+            count += @intFromBool(part.kind() == .string);
+        }
+        value.writeLogicalWith(&writer, .{}) catch return 0;
+        const copy = value.toString(fixed.allocator()) catch return 0;
+        defer fixed.allocator().free(copy);
+        count += @intCast(copy.len);
+    }
+    return count;
 }

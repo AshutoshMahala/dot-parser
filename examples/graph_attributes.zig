@@ -18,12 +18,8 @@ pub fn main(init: std.process.Init) !void {
     defer bag.deinit();
 
     const printed = printAttributes(init.gpa, source, bag.sink());
-    var buffer: [4096]u8 = undefined;
-    var stderr: std.Io.File.Writer = .init(.stderr(), init.io, &buffer);
-    for (bag.items(), 1..) |problem, n|
-        try dot.console.renderBoxed(problem, n, .{ .source = source }, &stderr.interface);
-    try stderr.interface.flush();
-    try printed;
+    try dot.console.printDiagnostics(init.io, bag.items(), .{ .source = source });
+    return printed;
 }
 
 fn printAttributes(gpa: std.mem.Allocator, source: []const u8, sink: dot.DiagnosticSink) !void {
@@ -32,23 +28,21 @@ fn printAttributes(gpa: std.mem.Allocator, source: []const u8, sink: dot.Diagnos
     const ir = result.ir() orelse return error.GraphUnavailable;
 
     var nodes = ir.nodeIterator();
-    while (nodes.next()) |id| {
-        const node = try ir.nodeView(id);
+    while (nodes.next()) |node| {
         // Effective values include defaults and b's implicit empty shape.
         var attributes = try node.attributes(.{});
         defer attributes.deinit();
         while (try attributes.next()) |attribute|
             std.debug.print("node {f}: {f}=\"{f}\"\n", .{
-                try node.name(), attribute.key(), attribute.value(),
+                node.name(), attribute.key(), attribute.value(),
             });
     }
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
-    while (try edges.next()) |record| {
-        const edge = try ir.edgeView(record);
+    while (try edges.next()) |edge| {
         const weight = (try edge.attribute("weight")).?;
         std.debug.print("edge {f} -> {f}: weight={f}\n", .{
-            try edge.from().name(), try edge.to().name(), weight.value(),
+            edge.from().name(), edge.to().name(), weight.value(),
         });
     }
 }

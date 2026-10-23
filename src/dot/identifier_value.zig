@@ -48,20 +48,25 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
             quoted: bool = false,
 
             pub fn next(self: *@This()) ?[]const u8 {
+                return self.nextWith(@import("identifier_cursor.zig").Unmetered{}) catch unreachable;
+            }
+
+            pub fn nextWith(self: *@This(), work: anytype) !?[]const u8 {
                 if (self.offset == self.raw.len) return null;
+                try work.spend(enc.width);
                 if (enc.byteAt(self.raw, 0) != '"' and enc.byteAt(self.raw, 0) != '<') {
                     self.offset = self.raw.len;
                     return self.raw;
                 }
                 while (self.offset < self.raw.len) {
                     if (!self.quoted) {
-                        cursor.skipGlue(self.raw, &self.offset);
+                        try cursor.skipGlueWith(self.raw, &self.offset, work);
                         if (self.offset == self.raw.len) return null;
                         const open = enc.byteAt(self.raw, self.offset);
                         self.offset += enc.width;
                         if (open == '<') {
                             const body = self.offset;
-                            self.offset = cursor.htmlEnd(self.raw, self.offset - enc.width);
+                            self.offset = try cursor.htmlEndWith(self.raw, self.offset - enc.width, work);
                             const inner = self.raw[body .. self.offset - enc.width];
                             // Empty operands must not end logical key comparison.
                             if (inner.len != 0) return inner;
@@ -71,6 +76,7 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
                         continue;
                     }
                     const start = self.offset;
+                    try work.spend(enc.width);
                     switch (enc.byteAt(self.raw, start)) {
                         '"' => {
                             self.offset += enc.width;
@@ -78,7 +84,7 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
                         },
                         '\\' => {
                             const after = enc.byteAt(self.raw, start + enc.width); // validated escape pair
-                            self.offset = cursor.escapeEnd(self.raw, start);
+                            self.offset = try cursor.escapeEndWith(self.raw, start, work);
                             switch (after) {
                                 '"' => return self.raw[start + enc.width .. self.offset],
                                 '\n' => {},
@@ -87,7 +93,7 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
                             }
                         },
                         else => {
-                            self.offset = cursor.quotedRunEnd(self.raw, start + enc.width);
+                            self.offset = try cursor.quotedRunEndWith(self.raw, start + enc.width, work);
                             return self.raw[start..self.offset];
                         },
                     }

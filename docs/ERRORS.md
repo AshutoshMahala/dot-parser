@@ -8,7 +8,7 @@ Every operation tells you two things, kept separate on purpose:
    error or a warning, where it is, and often a suggested fix. Diagnostics go
    to a destination you choose, usually a *bag*.
 
-The library never prints or panics on bad input. Problems in the text are
+The parsers never print or panic on bad input. Problems in the text are
 reported as diagnostics, not Zig errors. Zig errors are for mistakes in how the
 library is called or set up and for files that
 [can't be read in the chosen encoding](ENCODINGS.md#checks-before-parsing).
@@ -246,7 +246,25 @@ log line) from the same fields.
 
 ## Printing diagnostics
 
-The built-in console renderer has four functions:
+For a small command-line program, print the bag to stderr:
+
+```zig
+try dot.console.printDiagnostics(init.io, bag.items(), .{
+    .source = source,
+    .source_name = "graph.dot",
+});
+```
+
+This optional helper prints numbered boxes in bag order and flushes before
+returning. It uses a 4 KiB stack buffer, no heap allocation, and the IO you
+provide. Empty input performs no IO; write and flush failures return an error.
+It does not add a summary, sort findings, detect terminal capabilities or change
+the parse result. The same helper is available on `markup.console`,
+`string_processor.console` and a composed `Parser.console`.
+
+Source locations are resolved per finding. For large bags, use a list renderer
+below to share one source-position pass. For another destination, use your own
+writer; these rendering functions work without an OS or standard streams:
 
 | Function | Output |
 | --- | --- |

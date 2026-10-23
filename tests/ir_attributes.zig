@@ -60,7 +60,7 @@ test "IR late keys and explicit empty values are different from absence" {
     _ = try value(&ir, try ir.scopeAttribute(.root, "color"), "green");
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
-    _ = try value(&ir, try ir.edgeAttribute((try edges.next()).?, "color"), "purple");
+    _ = try value(&ir, try ir.edgeAttribute((try edges.next()).?.edge, "color"), "purple");
 }
 
 test "IR subgraph graph attributes freeze while parent node defaults remain inheritable" {
@@ -82,7 +82,7 @@ test "IR subgraph graph attributes freeze while parent node defaults remain inhe
     }
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
-    _ = try value(&ir, try ir.edgeAttribute((try edges.next()).?, "weight"), "2");
+    _ = try value(&ir, try ir.edgeAttribute((try edges.next()).?.edge, "weight"), "2");
     var late = try lower("digraph { subgraph s{a}; label=late; node[color=red]; subgraph s{b} }");
     defer late.deinit();
     try equal(.empty, (try value(&late, try late.scopeAttribute(try scope(&late, "s"), "label"), "")).kind);
@@ -98,7 +98,8 @@ test "IR nested endpoint bodies respect node creation and edge contribution timi
     _ = try value(&ir, try ir.nodeAttribute(try node(&ir, "d"), "color"), "red");
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
-    while (try edges.next()) |edge| {
+    while (try edges.next()) |view| {
+        const edge = view.edge;
         const inner = @backingInt(edge.first_connection) == 0;
         _ = try value(&ir, try ir.edgeAttribute(edge, "weight"), if (inner) "2" else "1");
         _ = try value(&ir, try ir.edgeAttribute(edge, "label"), if (inner) "" else "outer");
@@ -110,7 +111,8 @@ test "IR strict edge attributes use first defaults and ordered updates including
     defer ir.deinit();
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
-    while (try edges.next()) |edge| {
+    while (try edges.next()) |view| {
+        const edge = view.edge;
         const changed = edge.from == try node(&ir, "a") and edge.to == try node(&ir, "x");
         const color = try value(&ir, try ir.edgeAttribute(edge, "color"), if (changed) "blue" else "red");
         try equal(@as(@TypeOf(color.kind), if (changed) .explicit else .inherited), color.kind);
@@ -124,7 +126,7 @@ test "IR strict edge attributes use first defaults and ordered updates including
     defer reverse.deinit();
     var undirected = try reverse.edgeIterator(.{});
     defer undirected.deinit();
-    const edge = (try undirected.next()).?;
+    const edge = (try undirected.next()).?.edge;
     _ = try value(&reverse, try reverse.edgeAttribute(edge, "color"), "red");
     _ = try value(&reverse, try reverse.edgeAttribute(edge, "weight"), "2");
     _ = try value(&reverse, try reverse.edgeAttribute(edge, "label"), "later");
@@ -136,7 +138,8 @@ test "IR non-strict parallel edges and chain provenance stay distinct" {
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
     var index: u32 = 0;
-    while (try edges.next()) |edge| : (index += 1) {
+    while (try edges.next()) |view| : (index += 1) {
+        const edge = view.edge;
         _ = try value(&ir, try ir.edgeAttribute(edge, "color"), if (index < 2) "red" else "blue");
         const label = try value(&ir, try ir.edgeAttribute(edge, "label"), if (index < 2) "one" else "two");
         try equal(index, @backingInt(label.origin.connection));
@@ -159,7 +162,7 @@ test "IR attribute queries reject handles, preserve stops, and expose unsupporte
     defer ir.deinit();
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
-    const edge = (try edges.next()).?;
+    const edge = (try edges.next()).?.edge;
     try std.testing.expectError(error.InvalidHandle, ir.nodeAttribute(@fromBackingInt(100), "color"));
     try std.testing.expectError(error.InvalidHandle, ir.scopeAttribute(@fromBackingInt(100), "color"));
     var wrong = edge;
@@ -167,7 +170,7 @@ test "IR attribute queries reject handles, preserve stops, and expose unsupporte
     try std.testing.expectError(error.InvalidHandle, ir.edgeAttribute(wrong, "color"));
     try std.testing.expectError(error.UnsupportedSemantics, ir.edgeAttribute(edge, "tailport"));
     _ = try value(&ir, try ir.edgeAttribute(edge, "color"), "green");
-    _ = try value(&ir, try ir.edgeAttribute((try edges.next()).?, "tailport"), "e");
+    _ = try value(&ir, try ir.edgeAttribute((try edges.next()).?.edge, "tailport"), "e");
     try std.testing.expectError(error.WorkLimit, ir.nodeAttributeWith(edge.from, "color", .{ .limits = .{ .max_work = 0 } }));
     try std.testing.expectError(error.WorkLimit, ir.edgeAttributeWith(edge, "color", .{ .limits = .{ .max_work = 0 } }));
     const Stop = struct {
@@ -380,7 +383,7 @@ test "IR attributes agree with an independent eager oracle across defaults scope
         var edges = try ir.edgeIterator(.{});
         defer edges.deinit();
         for (oracle.edges.items) |expected| {
-            const actual = (try edges.next()).?;
+            const actual = (try edges.next()).?.edge;
             try equal(ids[expected.from].?, actual.from);
             try equal(ids[expected.to].?, actual.to);
             for (expected.values, 0..) |v, k| try Oracle.check(&ir, try ir.edgeAttribute(actual, try std.fmt.bufPrint(&buffer, "k{d}", .{k})), oracle.keys[1][k], v);

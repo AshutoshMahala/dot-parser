@@ -14,7 +14,7 @@ const ir = result.ir() orelse return error.GraphUnavailable;
 
 var nodes = ir.nodeIterator();
 while (nodes.next()) |node|
-    std.debug.print("node {f}\n", .{try ir.nodeName(node)});
+    std.debug.print("node {f}\n", .{node.name()});
 ```
 
 `dot.ir.parse` uses the default UTF-8 DOT profile. It parses once, validates,
@@ -82,7 +82,7 @@ Optional child-processor validation is the caller's acceptance decision.
 | API/data | Meaning |
 | --- | --- |
 | `nodes` / `findNode(logical_name)` | Unique logical node identities, including implicit endpoints |
-| `nodeIterator()` | Iterate unique node IDs in first-introduction order, without index conversions or allocation |
+| `nodeIterator()` | Iterate borrowed node views in first-introduction order, without checked conversions or allocation |
 | `nodeName(node)` | Borrowed logical-name formatter for `{f}`; checks the node handle, decodes only when printed |
 | `nodeSpelling(node)` | Borrowed first source spelling, in its original encoding, including quotes/concatenation |
 | `writeNodeName(node, writer)` | Stream the logical name without allocating a decoded copy or rechecking DOT syntax |
@@ -93,12 +93,12 @@ Optional child-processor validation is the caller's acceptance decision.
 | `contains(membership, node)` | Membership in that specific version, without edge expansion |
 | `scopeMembership(scope)` | Final version of a semantic scope |
 | `hasEdge(from, to)` | Whether any effective connection covers the pair; undirected edges work both ways |
-| `edgeIterator(options)` | Stream individual edges in semantic order, without retaining the expanded output array |
+| `edgeIterator(options)` | Stream borrowed edge views in semantic order, without retaining the expanded output array |
 | `materialize(options)` | Retain those edges in an owning array |
 | `nodeAttribute(node, key)` | Final node value with origin, or absence |
 | `scopeAttribute(scope, key)` | Final graph/subgraph value with origin; `.root` is the graph |
 | `edgeAttribute(edge, key)` | Final value for a streamed/materialized edge, including strict updates |
-| `attributeValue(resolved)` | Borrowed `{f}` formatter for a resolved logical value |
+| `attributeValue(resolved)` | Borrowed value view: original spelling, operands and joined output |
 | `nodeView(id)` / `scopeView(id)` / `edgeView(edge)` | Borrowed component access with `.attribute(key)` and `.attributes(options)` |
 | `attributes` / `declarations` | Retained raw attributes and node/default/graph-assignment contributions, separate from effective values |
 
@@ -137,7 +137,7 @@ These are distinct orderings. Source spans retain original byte offsets.
 ```zig
 // digraph { node[color=red]; a; node[color=blue]; b; a[shape=box] }
 const node = try ir.nodeView((try ir.findNode("a")).?);
-if (try node.attribute("color")) |color| {
+if (node.attribute("color")) |color| {
     std.debug.print("color={f}\n", .{color.value()}); // red
     // color.resolved.kind == .inherited; provenance points to color=red.
 }
@@ -158,16 +158,25 @@ Individual attribute lookups allocate nothing and do not expand edge sets.
 `nodeView`, `scopeView` and `edgeView` create small borrowed values, without
 allocating or adding owner pointers to stored nodes/edges. Use `scopeView(.root)`
 for the graph and another scope ID for a subgraph. Use an `Edge` from this IR's
-stream or materialized array with `edgeView`; a node pair alone cannot identify
+materialized array with `edgeView`; a node pair alone cannot identify
 a non-strict parallel occurrence. The ID-oriented APIs above remain useful when
-storing compact handles rather than views. Node/edge iterators still yield those
-compact handles/records; convert once when component methods are useful.
+storing compact handles rather than views. Node/edge iterators yield views
+directly: no redundant `try ir.nodeView(...)`/`edgeView(...)` in ordinary loops.
+Keep `nodeView(id)` and the other checked constructors for caller-supplied handles.
 
 All three views have `.attribute(key)`, `.attributeWith(key, options)` and
 `.attributes(options)`. A node also has `.id` and `.name()`; an edge has its
 original `.edge` record and `.from()`/`.to()` node views. A lookup/iteration
-entry exposes `.key()` and `.value()` as borrowed logical formatters, plus
+entry exposes `.key()` as a logical formatter and `.value()` as a borrowed value
+view (also formattable), plus
 `.resolved` with the full `ResolvedAttribute` provenance described below.
+
+`node.name()` and indexed node/scope `.attribute(key)` access are infallible and
+unmetered on valid views. Lookup uses the existing key index and balanced map,
+not a history scan; hashing/collision checks still have a cost. Use
+`.attributeWith(key, options)` for explicit work limits/cancellation. Edge
+attributes, all-attribute iteration and graph queries remain bounded and
+fallible: resolving symbolic contributions is not a simple value re-read.
 
 The iterator returns **one final effective value per key** in that object kind's
 first-introduction order (semantic traversal order, not alphabetical). It
@@ -215,12 +224,73 @@ attribute list, but an explicit edge result identifies the applicable link.
 The original key/value ranges remain available, including quotes and HTML-like
 delimiters. All ranges use original source-byte offsets.
 
-`attributeValue` follows logical DOT identifier decoding: it joins quoted
-parts when printed and writes native UTF-16/32 as UTF-8. It does not interpret
-renderer escapes, expand HTML entities, or normalize numbers. It borrows the
-source, allocates no decoded copy, and follows ordinary writer failure behavior,
-without IR work limits or cancellation polling. Only use results from the
-same live IR; do not manufacture or mutate formatter fields.
+### Value spelling, operands and joined output
+
+```zig
+// a [label="a" + <<b><c>bee</c></b>>]
+const value = node.attribute("label").?.value();
+// raw() is original spelling in the source's encoding (UTF-8 here).
+std.debug.print("raw: {s}\njoined: {f}\n", .{ value.raw().?, value });
+// raw: "a" + <<b><c>bee</c></b>>
+// joined: a<b><c>bee</c></b>
+
+var parts = value.parts();
+while (parts.next()) |part|
+    std.debug.print("{t}: {f}\n", .{ part.kind(), part });
+// string: a
+// markup: <b><c>bee</c></b>
+```
+
+See runnable [graph_values.zig](../examples/graph_values.zig). Reading or printing
+a value never replaces its source spelling or parses its markup. `ValueKind`
+has three cases: `.string` (including numerals), `.markup` and `.concatenation`.
+Concatenation preserves all operands, including empty ones and mixed forms.
+
+| Value operation | Meaning/cost |
+| --- | --- |
+| `kind()` | Infallible on-demand classification; O(first operand length), no stored kind byte |
+| `raw()` / `span()` | Original complete spelling/byte range, including wrappers and concatenation glue; null for implicit empty |
+| `encoding()` | Original admitted encoding and byte order, including ASCII provenance |
+| `parts()` | Allocation-free operand iterator; `next()` is infallible, no preliminary kind scan |
+| `{f}` / `writeLogical(writer)` | Stream joined logical DOT content; ordinary writer errors only |
+| `toString(allocator)` | Owned joined bytes; caller frees; uses IR work/allocation limits |
+| `kindWith`, `partsWith`, `writeLogicalWith`, `toStringWith` | Explicit `dot.ir.Options` limits/cancellation |
+
+Each operand has `kind()` (`string`/`markup`), `raw()`, `span()`, `innerSpan()`,
+`encoding()`, `{f}`, `writeLogical[With]`, and `form()` for bare/numeral/quoted/html
+spelling. A single value yields **one operand**, including an implicit empty
+string whose raw/inner spans and form are null. Written `""` and `<>` have real
+spans and different kinds. Absence is still the attribute lookup's null result.
+
+`part.fragment()` returns null for strings; a markup operand returns
+`EncodedFragment { input: processor.Fragment, encoding: encoding.Actual }`.
+It borrows the markup interior, excluding exactly one DOT angle envelope, and
+retains the original file-byte origin. Pass this explicitly to a compatible
+markup profile (and its `.encoding` option for native input). The existing
+markup Document can then navigate `b` → `c` and borrow `<c>bee</c>` with `raw()`.
+There is no second markup IR, automatic processing or result association here.
+
+Joined output removes DOT operand wrappers, `+`/glue, quoted continuations and
+lexical quote escapes. It preserves markup tags, reference spellings, unknown
+DOT escapes and numeric spellings. DOT `"a&amp;b"` stays `a&amp;b`; decoding
+markup text to `a&b` belongs to the markup logical reader. No text extraction,
+HTML-safe escaping, rendering or `\N` substitution happens here. Native UTF-16/32
+is written as UTF-8; admitted byte-profile contents remain byte-preserving.
+
+Ordinary borrowed access is unmetered, not constant-time. Bounded value traversal
+charges inspected/skipped source bytes (including repeated delimiter lookahead),
+plus output bytes/native decoding work, before doing that work. It polls inside
+long operands and glue; writer calls and allocation are not interruptible.
+`partsWith` budgets cover the entire iterator lifetime; errors are terminal and
+repeat, never becoming exhaustion. It needs no `deinit()`. This is cumulative
+work accounting, not a replenishable session or a latency deadline.
+
+`toString` makes two bounded passes (count, then write) and one exact allocation,
+with no growable buffer or cache. Both passes share the work allowance. Failure
+frees the output; no successful prefix is returned. Writer-based operations may
+have written a prefix on failure. Views/operands borrow the IR and source, not
+iterator scratch; keep their owners alive, unmoved and immutable. Do not
+manufacture views or change their fields.
 
 ### Default and update rules
 
@@ -266,13 +336,13 @@ var edges = try ir.edgeIterator(.{});
 defer edges.deinit();
 while (try edges.next()) |edge|
     std.debug.print("{f} {s} {f}\n", .{
-        try ir.nodeName(edge.from), edge.operator.lexeme(), try ir.nodeName(edge.to),
+        edge.from().name(), edge.edge.operator.lexeme(), edge.to().name(),
     });
 ```
 
 You can stop early with `break`; `deinit()` releases scratch without visiting
 the remaining pairs. Keep the IR alive, unmoved and immutable while iterating.
-Do not copy a live iterator. Each `next()` returns an edge value, `null` on
+Do not copy a live iterator. Each `next()` returns an edge view, `null` on
 exhaustion, or a typed error. An error is terminal: subsequent calls return
 that same error, not `null`. Already consumed edges cannot be retracted; a
 consumer that needs all-or-nothing publication must stage its own result or
@@ -283,9 +353,10 @@ order. Streaming and materialization share this traversal and deduplication.
 Non-strict graphs retain parallel occurrences; strict directed pairs are
 ordered, strict undirected pairs are unordered. A strict edge keeps the first
 connection's orientation and provenance. Ports do not change edge identity.
-**All** written contributions remain in `ir.connections`. Use `edgeAttribute`
-to resolve a value across them. Iteration/materialization still produce topology
-records, not copied per-edge attribute tables.
+**All** written contributions remain in `ir.connections`. Use `edge.attribute`
+to resolve a value across them (or `ir.edgeAttribute(edge.edge, key)`). The view
+borrows context; neither iteration nor materialization copies per-edge attribute
+tables. Materialization still returns compact `Edge` records, not views.
 
 If you need to retain the entire expanded edge array instead:
 
@@ -446,3 +517,9 @@ including shared defaults, repeated updates, reopened/deep scopes and a symbolic
 product. Bulk attribute folding, port resolution, event-based lowering, partial
 IR results, fixed-storage IR construction and resumable IR operations remain
 later work.
+
+The final section measures value kind/operand access, joined output, bounded
+writing and exact-allocation `toString`, plus a benchmark-only kind cache.
+See the [value-access comparison](PERFORMANCE.md#value-access-and-view-producing-iterators-2026-10-22)
+for memory results, the on-demand classification decision and the remaining
+reopened-subgraph streaming caveat.

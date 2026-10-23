@@ -60,6 +60,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "dot_parser", .module = mod },
+                .{ .name = "markup_parser", .module = markup },
             },
         }),
     });
@@ -68,9 +69,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/ir.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+        .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
     }) });
-    const test_ir = b.step("test-ir", "Test Document-to-IR topology lowering and its example");
+    const test_ir = b.step("test-ir", "Test IR semantics, value views and examples");
     test_ir.dependOn(&b.addRunArtifact(ir_tests).step);
     const test_step = b.step("test", "Run unit and public integration tests");
     const check_tools = b.step("check-tools", "Test and compile the Zig generators and performance reporter");
@@ -400,6 +401,7 @@ pub fn build(b: *std.Build) void {
         "policies",
         "build_graph",
         "graph_attributes",
+        "graph_values",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -425,6 +427,12 @@ pub fn build(b: *std.Build) void {
         }
         if (std.mem.eql(u8, name, "graph_attributes")) {
             run_example.expectStdErrEqual(@embedFile("tests/fixtures/graph_attributes.txt"));
+            run_example.expectStdOutEqual("");
+            test_ir.dependOn(&run_example.step);
+            test_step.dependOn(&run_example.step);
+        }
+        if (std.mem.eql(u8, name, "graph_values")) {
+            run_example.expectStdErrEqual(@embedFile("tests/fixtures/graph_values.txt"));
             run_example.expectStdOutEqual("");
             test_ir.dependOn(&run_example.step);
             test_step.dependOn(&run_example.step);
@@ -540,9 +548,18 @@ pub fn build(b: *std.Build) void {
     const run_ir_attributes_bench = b.addRunArtifact(ir_attributes_bench);
     // Do not run timed workloads concurrently, even with `-j`.
     run_ir_attributes_bench.step.dependOn(&run_ir_bench.step);
-    b.step("bench-ir", "Measure IR lowering, edge expansion and effective attributes").dependOn(&run_ir_attributes_bench.step);
+    const ir_values_bench = b.addExecutable(.{ .name = "ir_values_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_values.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    const run_ir_values_bench = b.addRunArtifact(ir_values_bench);
+    run_ir_values_bench.step.dependOn(&run_ir_attributes_bench.step);
+    b.step("bench-ir", "Measure IR lowering, edges, attributes and value views").dependOn(&run_ir_values_bench.step);
     check_benches.dependOn(&ir_bench.step);
     check_benches.dependOn(&ir_attributes_bench.step);
+    check_benches.dependOn(&ir_values_bench.step);
     const identifier_bench = b.addExecutable(.{
         .name = "identifier_bench",
         .root_module = b.createModule(.{

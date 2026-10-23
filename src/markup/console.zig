@@ -13,6 +13,7 @@ pub const render = Bound.render;
 pub const renderList = Bound.renderList;
 pub const renderBoxed = Bound.renderBoxed;
 pub const renderBoxedList = Bound.renderBoxedList;
+pub const printDiagnostics = Bound.printDiagnostics;
 pub const locationCapacity = Bound.locationCapacity;
 
 pub const Adapter = struct {

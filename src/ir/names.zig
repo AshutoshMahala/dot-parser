@@ -20,7 +20,7 @@ pub fn eql(comptime actual: encoding.Actual, a: []const u8, b: []const u8, work:
 
 /// Query names are logical UTF-8 bytes, not DOT spellings. Byte-profile names
 /// retain raw bytes even if encoding validation was disabled. No normalization.
-pub fn matches(comptime actual: encoding.Actual, raw: []const u8, value: []const u8, work: *resources.Work) Error!bool {
+pub fn matches(comptime actual: encoding.Actual, raw: []const u8, value: []const u8, work: anytype) Error!bool {
     try work.spend(@as(u64, raw.len) + value.len);
     const E = encoding.Reader(actual);
     var chunks: @import("../dot/identifier_value.zig").ForEncoding(actual).Chunks = .{ .raw = raw };
@@ -51,6 +51,11 @@ pub fn write(comptime actual: encoding.Actual, raw: []const u8, writer: anytype,
     return writeImpl(actual, false, raw, writer, work);
 }
 
+/// Shared ordinary formatting path for certified names and values.
+pub fn writeUnmetered(comptime actual: encoding.Actual, raw: []const u8, writer: anytype) !void {
+    return writeImpl(actual, true, raw, writer, {});
+}
+
 /// Borrowed logical-name formatter. Constructed only from names interned by
 /// lowering, which already checked native decoding. Source must stay immutable.
 pub fn Formatted(comptime caps: encoding.Capabilities) type {
@@ -61,7 +66,7 @@ pub fn Formatted(comptime caps: encoding.Capabilities) type {
         pub fn format(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
             switch (self.actual) {
                 inline else => |actual| if (comptime caps.allows(actual)) {
-                    try writeImpl(actual, true, self.raw, writer, {});
+                    try writeUnmetered(actual, self.raw, writer);
                 } else unreachable, // The owning IR admitted this encoding.
             }
         }

@@ -16,12 +16,8 @@ pub fn main(init: std.process.Init) !void {
 
     const printed = printGraph(init.gpa, source, bag.sink());
     // Show warnings too, not just diagnostics from failed input.
-    var buffer: [4096]u8 = undefined;
-    var stderr: std.Io.File.Writer = .init(.stderr(), init.io, &buffer);
-    for (bag.items(), 1..) |problem, n|
-        try dot.console.renderBoxed(problem, n, .{ .source = source }, &stderr.interface);
-    try stderr.interface.flush();
-    try printed;
+    try dot.console.printDiagnostics(init.io, bag.items(), .{ .source = source });
+    return printed;
 }
 
 fn printGraph(gpa: std.mem.Allocator, source: []const u8, sink: dot.DiagnosticSink) !void {
@@ -31,13 +27,13 @@ fn printGraph(gpa: std.mem.Allocator, source: []const u8, sink: dot.DiagnosticSi
 
     // a and "a" are one node; x is a node with no edges.
     var nodes = ir.nodeIterator();
-    while (nodes.next()) |node| std.debug.print("node {f}\n", .{try ir.nodeName(node)});
+    while (nodes.next()) |node| std.debug.print("node {f}\n", .{node.name()});
 
     // Expand one edge at a time, without storing the whole edge list.
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
     while (try edges.next()) |edge|
-        std.debug.print("edge {f} {s} {f}\n", .{ try ir.nodeName(edge.from), edge.operator.lexeme(), try ir.nodeName(edge.to) });
+        std.debug.print("edge {f} {s} {f}\n", .{ edge.from().name(), edge.edge.operator.lexeme(), edge.to().name() });
 }
 
 // Output:

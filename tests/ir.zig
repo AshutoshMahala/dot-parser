@@ -7,6 +7,7 @@ const IR = dot.ir.Lowering(.{});
 test {
     _ = @import("ir_attributes.zig");
     _ = @import("ir_views.zig");
+    _ = @import("ir_values.zig");
 }
 
 fn lower(allocator: std.mem.Allocator, source: []const u8) !IR.Graph {
@@ -43,7 +44,7 @@ test "IR convenience parse matches explicit lowering with no extra allocation or
         for ([_][]const u8{ "a", "b", "c", "d", "x" }) |expected| {
             var buffer: [16]u8 = undefined;
             var writer = std.Io.Writer.fixed(&buffer);
-            try writer.print("{f}", .{try ir.nodeName(nodes.next().?)});
+            try writer.print("{f}", .{nodes.next().?.name()});
             try std.testing.expectEqualStrings(expected, writer.buffered());
         }
         try expect(nodes.next() == null);
@@ -312,7 +313,8 @@ fn allocationProbe(allocator: std.mem.Allocator, doc: *const dot.Document) !void
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
     var index: usize = 0;
-    while (try edges.next()) |actual| {
+    while (try edges.next()) |view| {
+        const actual = view.edge;
         try equal(graph.edges[index], actual);
         index += 1;
     }
@@ -339,7 +341,7 @@ test "IR nesting is iterative and Cartesian products stay symbolic" {
     try expect(try edge(&deep, "a", "b"));
     var deep_edges = try deep.edgeIterator(.{});
     defer deep_edges.deinit();
-    try equal(try node(&deep, "a"), (try deep_edges.next()).?.from);
+    try equal(try node(&deep, "a"), (try deep_edges.next()).?.edge.from);
     try expect(try deep_edges.next() == null);
     source.clearRetainingCapacity();
     try source.writer.writeAll("digraph {{");
@@ -384,8 +386,8 @@ test "IR interpretation preserves written operators and explicit profile meaning
             try expect(!try edge(&generic, "c", "b"));
             var stream = try generic.edgeIterator(.{});
             defer stream.deinit();
-            try equal(dot.EdgeOperator.undirected, (try stream.next()).?.operator);
-            try equal(dot.EdgeOperator.directed, (try stream.next()).?.operator);
+            try equal(dot.EdgeOperator.undirected, (try stream.next()).?.edge.operator);
+            try equal(dot.EdgeOperator.directed, (try stream.next()).?.edge.operator);
             try expect(try stream.next() == null);
         }
     }
@@ -422,9 +424,9 @@ test "IR native encoding names keep original source ranges" {
         try equal(@as(u32, @intCast(width)), ir.nodes[0].name.len);
         var stream = try ir.edgeIterator(.{});
         defer stream.deinit();
-        const first = (try stream.next()).?;
+        const first = (try stream.next()).?.edge;
         try equal(first.from, first.to); // a and "a" are one native node.
-        const second = (try stream.next()).?;
+        const second = (try stream.next()).?.edge;
         try expect(second.from != second.to); // No HTML entity expansion.
         try expect(try stream.next() == null);
         try std.testing.expectError(error.UnsupportedEncoding, IR.lowerComplete(a, doc, .{ .interpretation = P.interpretation(doc, .{}) }));
@@ -527,7 +529,8 @@ test "IR generated reopened nested scopes agree with an independent eager set or
         defer stream.deinit();
         var seen: [48][48]bool = @splat(@splat(false));
         var count: usize = 0;
-        while (try stream.next()) |actual| {
+        while (try stream.next()) |view| {
+            const actual = view.edge;
             var from: usize = 0;
             while (ids[from] != actual.from) : (from += 1) {}
             var to: usize = 0;
@@ -619,7 +622,7 @@ test "IR streaming preserves nested contribution, endpoint and parallel occurren
     var graph = try ir.materialize(.{});
     defer graph.deinit();
     for (expected, graph.edges) |wanted, materialized| {
-        const actual = (try stream.next()).?;
+        const actual = (try stream.next()).?.edge;
         try equal(try node(&ir, wanted.from), actual.from);
         try equal(try node(&ir, wanted.to), actual.to);
         try equal(wanted.connection, @backingInt(actual.first_connection));
@@ -637,7 +640,7 @@ test "IR strict streaming coalesces reversed pairs and self loops without losing
     defer stream.deinit();
     const expected = [_]struct { []const u8, []const u8, u32 }{ .{ "b", "a", 0 }, .{ "a", "a", 2 }, .{ "b", "b", 2 } };
     for (expected) |wanted| {
-        const actual = (try stream.next()).?;
+        const actual = (try stream.next()).?.edge;
         try equal(try node(&ir, wanted[0]), actual.from);
         try equal(try node(&ir, wanted[1]), actual.to);
         try equal(wanted[2], @backingInt(actual.first_connection));
@@ -651,8 +654,8 @@ test "IR strict streaming coalesces reversed pairs and self loops without losing
     defer directed.deinit();
     var ds = try directed.edgeIterator(.{});
     defer ds.deinit();
-    try equal(try node(&directed, "a"), (try ds.next()).?.from);
-    try equal(try node(&directed, "b"), (try ds.next()).?.from);
+    try equal(try node(&directed, "a"), (try ds.next()).?.edge.from);
+    try equal(try node(&directed, "b"), (try ds.next()).?.edge.from);
     try expect(try ds.next() == null);
 }
 
@@ -686,12 +689,12 @@ test "IR streaming can consume a bounded prefix of a large symbolic product" {
         var stream = try ir.edgeIterator(options);
         defer stream.deinit();
         try equal(@as(usize, 0), stream.peakBytes()); // Lazy scratch.
-        const first = (try stream.next()).?;
+        const first = (try stream.next()).?.edge;
         try equal(try node(&ir, "n0"), first.from);
         try equal(try node(&ir, "n1000"), first.to);
         const peak = stream.peakBytes();
         for (1..3) |i| {
-            const next = (try stream.next()).?;
+            const next = (try stream.next()).?.edge;
             try equal(first.from, next.from);
             try equal(@backingInt(first.to) + @as(u32, @intCast(i)), @backingInt(next.to));
         }

@@ -26,7 +26,7 @@ fn checkAll(view: anytype, expected: []const []const u8) !void {
     for (expected) |key| {
         const entry = (try iterator.next()) orelse return error.MissingAttribute;
         try formatted(key, entry.key());
-        const direct = (try view.attribute(key)) orelse return error.MissingAttribute;
+        const direct = (try view.attributeWith(key, .{})) orelse return error.MissingAttribute;
         try std.testing.expectEqualDeep(direct.resolved, entry.resolved);
     }
     try expect(try iterator.next() == null);
@@ -38,19 +38,19 @@ test "IR node views provide names single attributes and unique effective attribu
     defer ir.deinit();
     const before = ir.retainedBytes();
     const node = try ir.nodeView((try ir.findNode("a")).?);
-    try formatted("a", try node.name());
-    const color = (try node.attribute("color")).?;
+    try formatted("a", node.name());
+    const color = (node.attribute("color")).?;
     try formatted("color", color.key());
     try formatted("yellow", color.value());
     try equal(.explicit, color.resolved.kind);
-    try expect(try node.attribute("unknown") == null);
+    try expect(node.attribute("unknown") == null);
     var nodes = ir.nodeIterator();
-    while (nodes.next()) |id| try checkAll(try ir.nodeView(id), &.{ "color", "shape" });
+    while (nodes.next()) |node_view| try checkAll(node_view, &.{ "color", "shape" });
     const b = try ir.nodeView((try ir.findNode("b")).?);
-    try equal(.inherited, (try b.attribute("color")).?.resolved.kind);
-    try equal(.empty, (try b.attribute("shape")).?.resolved.kind);
+    try equal(.inherited, (b.attribute("color")).?.resolved.kind);
+    try equal(.empty, (b.attribute("shape")).?.resolved.kind);
     const c = try ir.nodeView((try ir.findNode("c")).?);
-    try equal(.explicit, (try c.attribute("shape")).?.resolved.kind);
+    try equal(.explicit, (c.attribute("shape")).?.resolved.kind);
     try equal(before, ir.retainedBytes());
     // Views/entries borrow the IR, not the iterator that produced them.
     var attributes = try node.attributes(.{});
@@ -64,13 +64,13 @@ test "IR graph and subgraph views iterate captured and explicit values separatel
     defer ir.deinit();
     const root = try ir.scopeView(.root);
     try checkAll(root, &.{ "label", "bgcolor" });
-    try equal(.empty, (try root.attribute("bgcolor")).?.resolved.kind);
+    try equal(.empty, (root.attribute("bgcolor")).?.resolved.kind);
     const subgraph = try ir.scopeView(@fromBackingInt(1));
     try checkAll(subgraph, &.{ "label", "bgcolor" });
-    const label = (try subgraph.attribute("label")).?;
+    const label = (subgraph.attribute("label")).?;
     try formatted("old", label.value());
     try equal(.inherited, label.resolved.kind);
-    try expect(try subgraph.attribute("color") == null);
+    try expect(subgraph.attribute("color") == null);
 }
 
 test "IR edge views fold strict overlaps once and keep non-strict chain and parallel provenance" {
@@ -80,8 +80,8 @@ test "IR edge views fold strict overlaps once and keep non-strict chain and para
         defer ir.deinit();
         var edges = try ir.edgeIterator(.{});
         defer edges.deinit();
-        while (try edges.next()) |edge| {
-            const view = try ir.edgeView(edge);
+        while (try edges.next()) |view| {
+            const edge = view.edge;
             try equal(edge.from, view.from().id);
             try equal(edge.to, view.to().id);
             try checkAll(view, &.{ "color", "weight", "penwidth", "label" });
@@ -91,7 +91,7 @@ test "IR edge views fold strict overlaps once and keep non-strict chain and para
     defer ir.deinit();
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
-    try checkAll(try ir.edgeView((try edges.next()).?), &.{ "color", "weight", "label" });
+    try checkAll((try edges.next()).?, &.{ "color", "weight", "label" });
 }
 
 test "IR attribute iteration is empty without keys and rejects unsupported ports before emitting anything" {
@@ -102,19 +102,19 @@ test "IR attribute iteration is empty without keys and rejects unsupported ports
         try checkAll(try ir.scopeView(.root), &.{});
         var edges = try ir.edgeIterator(.{});
         defer edges.deinit();
-        try checkAll(try ir.edgeView((try edges.next()).?), &.{});
+        try checkAll((try edges.next()).?, &.{});
     }
     inline for (.{ "digraph {a:p->b}", "strict digraph {a->b[color=red]; a:p->b; c->d[label=ok]}" }) |source| {
         var ir = try lower(source);
         defer ir.deinit();
         var edges = try ir.edgeIterator(.{});
         defer edges.deinit();
-        const view = try ir.edgeView((try edges.next()).?);
+        const view = (try edges.next()).?;
         var attributes = try view.attributes(.{});
         defer attributes.deinit();
         try std.testing.expectError(error.UnsupportedSemantics, attributes.next());
         try std.testing.expectError(error.UnsupportedSemantics, attributes.next());
-        if (try edges.next()) |unrelated| try checkAll(try ir.edgeView(unrelated), &.{ "color", "label" });
+        if (try edges.next()) |unrelated| try checkAll(unrelated, &.{ "color", "label" });
     }
 }
 
@@ -125,7 +125,7 @@ test "IR views reject invalid handles and attribute iterators preserve cumulativ
     try std.testing.expectError(error.InvalidHandle, ir.scopeView(@fromBackingInt(99)));
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
-    var edge = (try edges.next()).?;
+    var edge = (try edges.next()).?.edge;
     edge.first_connection = @fromBackingInt(99);
     try std.testing.expectError(error.InvalidHandle, ir.edgeView(edge));
     edge.first_connection = @fromBackingInt(1); // A later strict duplicate isn't the first contributor.
@@ -184,8 +184,8 @@ test "IR attribute iteration scratch is bounded by edge keys not updates and cle
     defer ir.deinit();
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
-    const edge = (try edges.next()).?;
-    const view = try ir.edgeView(edge);
+    const view = (try edges.next()).?;
+    const edge = view.edge;
     var attributes = try view.attributes(.{});
     defer attributes.deinit();
     while (try attributes.next()) |_| {}
@@ -229,7 +229,7 @@ test "IR ordinary attribute iteration allocates nothing including inherited-only
         const root = try ir.scopeView(.root);
         var edges = try ir.edgeIterator(.{});
         defer edges.deinit();
-        const edge = try ir.edgeView((try edges.next()).?);
+        const edge = (try edges.next()).?;
         inline for (.{ node, root, edge }) |view| {
             var attributes = try view.attributes(.{ .limits = .{ .max_bytes = 0 } });
             defer attributes.deinit();
@@ -266,13 +266,13 @@ test "IR attribute views preserve Unicode keys and native original spans" {
         defer ir.deinit();
         const node = try ir.nodeView((try ir.findNode("a")).?);
         try checkAll(node, &.{"café"});
-        try formatted("😀", (try node.attribute("café")).?.value());
+        try formatted("😀", (node.attribute("café")).?.value());
         const root = try ir.scopeView(.root);
         try checkAll(root, &.{"café"});
-        try formatted("root", (try root.attribute("café")).?.value());
+        try formatted("root", (root.attribute("café")).?.value());
         var edges = try ir.edgeIterator(.{});
         defer edges.deinit();
-        const edge = try ir.edgeView((try edges.next()).?);
+        const edge = (try edges.next()).?;
         try checkAll(edge, &.{"café"});
         const entry = (try edge.attribute("café")).?;
         try formatted("link", entry.value());
@@ -282,5 +282,5 @@ test "IR attribute views preserve Unicode keys and native original spans" {
     defer ir.deinit();
     const node = try ir.nodeView((try ir.findNode("a")).?);
     try checkAll(node, &.{"\xff"});
-    try formatted("\xfe", (try node.attribute("\xff")).?.value());
+    try formatted("\xfe", (node.attribute("\xff")).?.value());
 }

@@ -5,6 +5,12 @@ test {
     _ = @import("string_sessions.zig");
 }
 
+test "string diagnostic printer is optional and propagates IO failures" {
+    try s.console.printDiagnostics(.failing, &.{}, .{});
+    const finding: s.Diagnostic = .{ .code = .unequal, .span = .{ .start = 0, .len = 1 } };
+    try testing.expectError(error.WriteFailed, s.console.printDiagnostics(.failing, &.{finding}, .{}));
+}
+
 test "consumer string views expose checked local spans" {
     const value: s.Value(.utf8) = .{ .bytes = "abc", .origin = 90 };
     try testing.expectEqual(@as(u32, 0), (try value.span()).start);

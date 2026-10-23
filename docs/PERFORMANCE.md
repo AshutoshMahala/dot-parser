@@ -247,6 +247,76 @@ edges. The 54 focused IR tests pass in Debug, ReleaseFast and ReleaseSafe,
 including native Unicode keys/values, terminal stops, allocation failures and
 iteration checked against both direct queries and the eager attribute oracle.
 
+### Value access and view-producing iterators (2026-10-22)
+
+Compared with `57d3674` on Apple M4 Pro, Zig 0.17.0: five alternating process
+runs, each reporting nine-sample medians after warmup. Builds finished before
+timing. IR lowering excludes parsing; formatting excludes lookup and output I/O.
+These are local measurements, not a cross-machine guarantee.
+
+- The consumed ordinary DOT session probe (plain, metered, cancellable and both)
+  has identical non-debug code/data before/after in ReleaseFast and ReleaseSafe.
+- All twelve topology/attribute fixtures retain the same heap payload, requested
+  lowering peak and arena capacity. Expansion scratch/output sizes are unchanged.
+  Borrowed views add no per-node/per-attribute heap allocation; their stack values
+  and iterator context are not included in those heap numbers.
+- Lowering times span −1.3% to +1.4% in Fast, −1.8% to +1.7% in Safe.
+- Infallible indexed node-view lookup drops from 13.1–15.6 ns to 6.5–10.4 ns
+  in representative Fast cases, and 16.4–19.2 ns to 8.9–13.8 ns in Safe.
+
+The ordinary formatter now reuses the existing unmetered name/value writer;
+bounded traversal is an explicit separate specialization. The long-string
+slowdown seen in the first implementation was removed. Small values still show
+sub-nanosecond changes; they must not be described as all faster:
+
+| Joined value | Fast before / after (ns) | Safe before / after (ns) |
+| --- | ---: | ---: |
+| Bare string | 3.62 / 3.85 | 4.12 / 4.36 |
+| Quoted Unicode | 9.00 / 8.67 | 8.78 / 8.87 |
+| Mixed concatenation | 24.28 / 23.40 | 23.98 / 24.16 |
+| Short markup | 9.92 / 10.87 | 10.89 / 10.63 |
+| 4 KiB quoted value | 1,415 / 1,422 | 994 / 1,002 |
+
+**Remaining performance caveat:** the existing whole-benchmark edge loop,
+which consumes each raw edge through an optimization barrier, still reports
+slower reopened-subgraph streaming after wrapping records in borrowed views:
+
+| Streaming workload | Fast before / after (ms) | Safe before / after (ms) |
+| --- | ---: | ---: |
+| Reopened, 500,500 non-strict edges | 3.405 / 3.557 (+4.5%) | 3.701 / 4.124 (+11.4%) |
+| Reopened, 1,000 strict edges | 2.897 / 2.991 (+3.2%) | 3.025 / 2.985 (−1.3%) |
+
+An isolated loop consuming endpoint/connection IDs into a checksum showed
+smaller paired-median differences: approximately +1.9% / +1.6% for non-strict
+Fast/Safe, +0.7% / +1.2% for strict Fast/Safe. This demonstrates harness/call-site
+sensitivity, **not proof that the remaining slowdown is absent**. Forcing the
+whole streaming engine inline traded regressions between cases and was rejected.
+The retained implementation inlines only the thin view wrapper and preserves
+the expansion engine's compact return type. Work, pair, memory and cancellation
+checks were not removed to obtain these results.
+
+`zig build bench-ir -Doptimize=ReleaseFast` now also runs
+[`bench/ir_values.zig`](../bench/ir_values.zig): kind classification, operand
+iteration, formatting, bounded writing, owning output and a benchmark-only
+one-byte-per-written-attribute kind cache. Repeat with ReleaseSafe as needed.
+The cache's allocation is excluded from timing (an optimistic layout); its
+construction includes the mandatory first-operand scan.
+
+Production keeps **on-demand kind classification**: small Fast values cost
+roughly 3–9 ns, a 4 KiB quoted first operand 1.38 µs, and a 4 KiB markup operand
+2.75 µs in this run. Cached probes cost about 0.2–0.5 ns, but require the same
+upfront classification plus storage even when values are never inspected.
+The experiment adds 10,000 bytes for 10,000 written values (512 bytes in the
+large-value fixtures). Repeated classification of long values benefits from a
+cache; classify once and reuse the returned kind when that is the workload.
+No mandatory IR cache or parser metadata was added.
+
+`toString` uses two bounded passes and one exact output allocation. The measured
+4 KiB quoted case takes about 2.98 µs in Fast; streaming its joined content takes
+about 1.00 µs. These are different ownership/work contracts, not a free copying
+API. Empty output needs no allocated payload. Source bytes/operand boundaries
+remain unchanged in all forms.
+
 ## Attribute string integration (Unreleased)
 
 Measured on 2026-10-19 against `fb64cc9`, Apple M4 Pro, Zig 0.16.0. The same

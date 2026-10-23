@@ -88,7 +88,8 @@ pub fn main(init: std.process.Init) !void {
             var stream = try ir.edgeIterator(.{});
             defer stream.deinit();
             stream_count = 0;
-            while (try stream.next()) |edge| {
+            while (try stream.next()) |view| {
+                const edge = view.edge;
                 std.mem.doNotOptimizeAway(edge);
                 stream_count += 1;
                 if (case == .symbolic_product and stream_count == 1000) break;
