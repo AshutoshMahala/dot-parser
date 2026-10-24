@@ -18,6 +18,29 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         _data: Core,
         _coverage: c.Data,
         pub const AttributeView = Core.AttributeView;
+        const Edges = @import("partial_edges.zig").For(Self, Core, caps);
+        pub const EdgeView = Edges.Edge(false);
+        pub const EdgeIterator = Edges.Iterator;
+        pub const Materialized = Edges.Materialized(true);
+        pub const MaterializedTopology = Edges.Materialized(false);
+        pub const Orientation = Edges.Orientation;
+        pub const PortView = Core.PortView;
+
+        /// Expands retained connections only, with the shared engine's limits.
+        /// Exhaustion is not proof that missing input contains no other edges.
+        pub fn edgeIterator(self: *const Self, options: r.Options) r.Error!EdgeIterator {
+            return .{ .graph = self, .inner = try self._data.edgeIterator(options) };
+        }
+        pub fn edgeView(self: *const Self, edge: t.Edge) r.Error!EdgeView {
+            _ = try self._data.edgeView(edge);
+            return .{ .graph = self, .edge = edge };
+        }
+        /// Successful construction retains all snapshot edges, never changes
+        /// source coverage. Failure frees all output; values borrow this IR.
+        pub inline fn materialize(self: *const Self, options: anytype) r.Error!(if (if (@hasField(@TypeOf(options), "attributes")) options.attributes else true) Materialized else MaterializedTopology) {
+            const data = try self._data.materialize(options);
+            return .{ .graph = self, ._data = data, .edges = data.edges, .peak_bytes = data.peak_bytes };
+        }
 
         pub fn deinit(self: *Self) void {
             self._coverage.deinit(self._data.allocator);

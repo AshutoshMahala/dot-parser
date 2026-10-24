@@ -11,6 +11,7 @@ test {
     _ = @import("ir_materialized_attributes.zig");
     _ = @import("ir_ports.zig");
     _ = @import("ir_partial.zig");
+    _ = @import("ir_partial_edges.zig");
 }
 
 fn lower(allocator: std.mem.Allocator, source: []const u8) !IR.Graph {

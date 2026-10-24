@@ -24,16 +24,18 @@ pub const Entry = struct {
     gap: Gap,
     /// Number of declarations executed before this missing contribution.
     boundary: u32,
+    /// Connections have their own semantic order (edge chains share attributes).
+    connection_boundary: u32,
     /// Earliest source explanation at or after this entry (computed once).
     suffix_first: u32 = 0,
 };
 pub const Data = struct {
     entries: std.ArrayList(Entry) = .empty,
 
-    pub fn add(self: *Data, a: std.mem.Allocator, gap: Gap, boundary: usize, work: *r.Work) r.Error!void {
+    pub fn add(self: *Data, a: std.mem.Allocator, gap: Gap, boundary: usize, connections: u32, work: *r.Work) r.Error!void {
         try work.spend(1);
         _ = try r.index(self.entries.items.len + 1);
-        try self.entries.append(a, .{ .gap = gap, .boundary = try r.index(boundary) });
+        try self.entries.append(a, .{ .gap = gap, .boundary = try r.index(boundary), .connection_boundary = connections });
     }
     pub fn finish(self: *Data, work: *r.Work) r.Error!void {
         var i = self.entries.items.len;
@@ -57,6 +59,12 @@ pub const Data = struct {
         return self.uncertaintyWith(after, @import("../dot/identifier_cursor.zig").Unmetered{}) catch unreachable;
     }
     pub inline fn uncertaintyWith(self: *const Data, after: ?u32, work: anytype) r.Error!?Uncertainty {
+        return self.afterWith("boundary", after, work);
+    }
+    pub inline fn afterConnectionWith(self: *const Data, connection: u32, work: anytype) r.Error!?Uncertainty {
+        return self.afterWith("connection_boundary", connection, work);
+    }
+    fn afterWith(self: *const Data, comptime field: []const u8, after: ?u32, work: anytype) r.Error!?Uncertainty {
         const entries = self.entries.items;
         var lo: usize = 0;
         if (after) |declaration| {
@@ -64,7 +72,7 @@ pub const Data = struct {
             while (lo < hi) {
                 try work.spend(1);
                 const mid = lo + (hi - lo) / 2;
-                if (entries[mid].boundary <= declaration) lo = mid + 1 else hi = mid;
+                if (@field(entries[mid], field) <= declaration) lo = mid + 1 else hi = mid;
             }
         }
         if (lo == entries.len) return null;

@@ -1816,6 +1816,9 @@ allocate nothing on query. A gap entry plus its semantic-boundary/suffix index
 is 28 bytes, with ordinary list capacity/growth: a single gap retained 140 extra
 bytes here. No second node/value/mention index is built.
 
+Those gap sizes describe the first partial-IR increment. The edge API increment
+below adds a connection-order boundary, making the record 32 bytes instead.
+
 For 10,000 gaps, retained bytes rose from 1,504,028 to 1,794,640; requested peak
 from 1,611,260 to 1,901,872; total arena capacity from 3,524,678 to 6,316,592.
 Arena chunk growth can amplify the coverage payload; it is not hidden by quoting
@@ -1830,6 +1833,76 @@ Its sampled pair query took about 10 ns; dense/ported pair searches that travers
 10,000 connections took about 10 µs. These are workload-specific indexed/search
 costs, not constant-time guarantees. Requested/arena bytes exclude source,
 allocator metadata and process RSS. Limits include coverage growth/scratch.
+
+### Partial edge iteration and materialization (2026-10-24)
+
+Baseline `b64a8ba`, Apple M4 Pro, Zig 0.17.0. The complete-only attribute-query
+and materialization harnesses have byte-for-byte identical machine-code
+(`__text`) sections before/after in ReleaseFast, ReleaseSafe and ReleaseSmall.
+Their retained, requested-peak and arena measurements are also unchanged.
+This is evidence for the instantiated complete paths, not a claim about every
+possible consumer binary or parser workload.
+
+Five alternating processes per side/mode reconfirmed direct queries. Selected
+medians in microseconds per lookup (nine samples after two warmups):
+
+| Build | 1,000 strict updates, before → after | Reopened defaults, before → after |
+| --- | ---: | ---: |
+| ReleaseFast | 4.910 → 5.097 | 7.484 → 7.558 |
+| ReleaseSafe | 4.887 → 4.811 | 7.955 → 8.002 |
+| ReleaseSmall | 9.818 → 9.734 | 18.382 → 18.916 |
+
+The timing variation here occurs despite identical machine code; do not read
+these small differences as changes to the algorithm. Shorter queries were
+noisier. An intermediate shared-budget forwarding function did cause a real
+strict-query regression through extra return-value copies. The final code
+specializes budget ownership in the existing query body and restores the
+baseline code generation; lookup and coverage still share one work budget.
+
+Run `zig build bench-ir-partial-edges -Doptimize=ReleaseFast` for the new focused
+report (Safe/Small are also supported). It parses/lowers outside timing, warms
+each path for 100 ms and takes nine samples. The table below is the median of
+five serial process runs, with no concurrent builds or timed workloads. The
+broken fixtures insert a gap at the beginning and end of the root body.
+
+| Fixture | Retained edges | Folded materialization: complete / partial on complete / partial with gaps (ms) | Read all attributes: same three paths (ms) |
+| --- | ---: | ---: | ---: |
+| Plain connections | 2,000 | 0.0205 / 0.0205 / 0.0205 | 0.0010 / 0.0010 / 0.0010 |
+| 64 shared defaults | 2,000 | 0.0204 / 0.0192 / 0.0203 | 0.3740 / 0.4977 / 0.4975 |
+| 8 explicit attributes | 2,000 | 0.1817 / 0.1828 / 0.1831 | 0.0223 / 0.0262 / 0.0258 |
+| Strict overlapping sets | 1,024 | 1.4489 / 1.4349 / 1.4441 | 0.0113 / 0.0137 / 0.0212 |
+| Reopened scopes | 250 | 0.3617 / 0.3612 / 0.3623 | 0.0004 / 0.0007 / 0.0009 |
+| Endpoint ports | 2,000 | 0.0545 / 0.0547 / 0.0547 | 0.0040 / 0.0048 / 0.0055 |
+| Strict port updates | 100 | 0.0689 / 0.0703 / 0.0696 | 0.0002 / 0.0003 / 0.0011 |
+
+Streaming plain connections took 0.0173 / 0.0172 / 0.0173 ms; strict overlapping
+sets took 0.1178 / 0.1180 / 0.1178 ms. Expansion and folding reuse the same
+engines. **Qualified attribute reads are not free**, including on complete
+input through the partial API: the shared-default case visits 128,000 values
+and adds about 0.124 ms (about 1 ns/value). Strict winners additionally consult
+the gap index; undirected ports preserve orientation uncertainty. The deep
+fixture's one retained edge is below useful timing resolution, not zero work.
+
+Streaming edge views remain 24 bytes; folded partial edge views are 40 bytes
+versus 32 for complete views. These are transient borrowed handles, not a new
+per-edge allocation. Retained output and materialization peak bytes match all
+three paths: for example explicit attributes retain 484,796 bytes with a
+759,476-byte requested peak; strict overlapping sets retain 312,156 with a
+514,632-byte peak. Topology-only output still skips attribute winner maps.
+
+Partial coverage now needs **four more bytes per gap record** than `b64a8ba`,
+not per node/connection/expanded edge. The first five-record capacity is 160
+bytes, up from 140. Two gaps in these fixtures add 160 retained IR bytes over
+complete input. Arena capacity is unchanged in six of the eight materialized
+fixtures, but grows by 8,754 bytes for strict overlap and 400 for reopened
+scopes: arena chunk growth can exceed the record payload. These measurements
+exclude the source, parser storage, allocator metadata and process RSS.
+
+The 2,500 × 2,500 product stays one symbolic connection. Every path streams a
+1,000-edge prefix using 60,040 bytes of iterator scratch; full materialization
+returns `PairLimit` without allocating the 6.25-million-edge output. Resource
+failure never publishes a half-built materialized graph. No parser metering or
+cancellation interval was changed by this increment.
 
 ## Running the benchmarks
 
@@ -1907,6 +1980,7 @@ zig build bench-markup -Doptimize=fast -- --graphviz-only
 zig build bench-composition -Doptimize=fast
 zig build bench-logical-strings -Doptimize=fast
 zig build bench-ir-partial -Doptimize=fast
+zig build bench-ir-partial-edges -Doptimize=fast
 zig build check-benches  # only checks that they compile
 ```
 

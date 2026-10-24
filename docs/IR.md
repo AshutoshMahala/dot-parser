@@ -98,8 +98,8 @@ if (result.ir()) |ir| {
 }
 ```
 
-See [partial_graph.zig](../examples/partial_graph.zig), which also renders the
-diagnostics. `a[color=red]; broken -> ; b[color=blue];` retains `a` and `b`, not
+The [partial_graph.zig](../examples/partial_graph.zig) example streams retained
+edges and renders diagnostics. For nodes, `a[color=red]; broken -> ; b[color=blue];` retains `a` and `b`, not
 the abandoned endpoint `broken`. Red is a retained candidate; blue is known
 because its explicit assignment follows the gap. Completed child scopes inside
 an abandoned edge also survive, exactly once, without that outer edge.
@@ -118,13 +118,16 @@ an abandoned edge also survive, exactly once, without that outer edge.
 | `findNode(name)` / `hasEdge(from, to)` / `contains(membership, node)` | Bounded `Error!Knowledge(...)`; `With` variants accept limits/cancellation |
 | `scope.membership()` | Bounded lookup of the last retained scope membership version, not proof of final contents |
 | `ir.gaps()` | Semantic-order coverage records: reason, source range and owning occurrence where known |
+| `edgeIterator(options)` / `edgeView(record)` | Retained edge views over the shared expansion engine; checked constructor for caller-supplied records |
+| `edge.attribute(key)` / `edge.attributes(options)` | Bounded qualified edge lookup / retained-key enumeration; reuse value/provenance views |
+| `materialize(options)` | All retained output or an error; partial-aware owning result, with `.attributes = false` for topology only |
 | `nodeCount()` / `scopeCount()` / `connectionCount()` | Retained counts, never counts of missing input; connections remain symbolic |
 
 `Knowledge(T)` is `.known: T` or `.unknown`, with `uncertainty` and an optional
 `retained` candidate. For attributes, the candidate is already optional (not a
 double optional). Known null means proven absence. Unknown null does **not**.
 An implicit empty attribute remains a non-null view with `.resolved.kind = .empty`.
-Only attribute queries populate candidates in this increment. They replay DOT
+Attribute queries replay DOT
 semantics over this snapshot, with ordinary provenance, raw values and operands;
 no repaired or cached previous-document values are substituted.
 
@@ -173,9 +176,79 @@ lowering's work/memory limits and `retainedBytes()` / `peakBytes()`. Complete
 lowering allocates no coverage storage. Borrowed views/candidates require the
 IR to remain alive and unmoved; `_data` and `_coverage` are implementation details.
 
-Partial edge/all-attribute enumeration and materialization are not exposed yet.
-There is no unchecked conversion to a complete graph. Benchmark partial costs
-with `zig build bench-ir-partial -Doptimize=ReleaseFast` (or ReleaseSafe/ReleaseSmall).
+### Edges without switching graph types
+
+Stay on `PartialGraph` for both complete and incomplete input. The complete-only
+`Graph` APIs are unchanged; partial-aware views expose uncertainty instead of
+silently converting an incomplete graph into a complete one.
+
+```zig
+var edges = try ir.edgeIterator(.{});
+defer edges.deinit();
+while (try edges.next()) |edge| {
+    switch (try edge.attribute("color")) {
+        .known => |value| std.debug.print("color={?f}\n", .{value}),
+        .unknown => |u| std.debug.print("color={?f} (may change)\n", .{u.retained}),
+    }
+}
+
+var graph = try ir.materialize(.{});
+defer graph.deinit();
+var stored = graph.edgeIterator();
+while (stored.next()) |edge| {
+    const color = edge.attribute("color"); // Infallible indexed lookup; still Knowledge.
+    _ = color;
+}
+```
+
+Both use the existing forward expansion, strict deduplication and attribute
+folding engines. Connections remain symbolic until explicitly iterated or
+materialized. Non-strict parallel occurrences stay separate; strict pairs merge
+retained contributions. An unfinished owner never creates a guessed edge.
+
+Materialization finishes the **operation**, not missing source coverage:
+`graph.state()` and `graph.kind()` preserve the input IR's qualified state/kind.
+Complete input through this same API yields complete coverage and known answers.
+`.attributes = false` returns retained topology without winner maps; its
+`edgeIterator()` still returns partial-aware compact views, with bounded
+on-demand attribute queries. The default folds once, giving infallible indexed
+attribute lookup/enumeration. `attributeWith` and `attributesWith` remain
+bounded/cancellable and charge qualification against the same work allowance.
+
+An edge's `from()`, `to()` and raw `edge` record use **retained snapshot
+orientation** and first-connection provenance. Missing earlier input can change
+the first contribution of a strict pair, including undirected orientation.
+Use `edge.orientation()` (`Knowledge` of `{ from, to }`) and
+`edge.firstConnection()` (`Knowledge(ConnectionId)`) when that certainty matters.
+Their unknown answers include retained candidates. Currently these checks are
+conservative across any source gap; directed orientation and non-strict
+occurrence identity remain known. Self-loop orientation is unambiguous.
+
+`tailPort()` / `headPort()` also return qualified answers and reuse the existing
+structured port views. A candidate belongs to retained `from()` / `to()`, not a
+guessed repaired orientation. Strict undirected ports remain uncertain across
+gaps even when a later port assignment is retained. Other strict explicit
+winners after the last semantic gap can be known. A non-strict edge's own
+explicit assignments/suffixes remain known because other statements cannot
+update that occurrence. Defaults and absence remain conservative across gaps.
+
+`edge.attributes(...)` yields `Knowledge(AttributeView)` for each retained key
+(not an optional attribute inside a known answer). Unknown entries have their
+retained candidate, including implicit-empty views. Exhaustion does not certify
+that missing input introduces no more keys. Node/scope all-key enumeration is
+not yet exposed by the partial API; individual lookups remain available.
+
+The source/IR must remain alive, immutable and unmoved; folded edge views also
+borrow the materialized result. Returned attribute/port/value views borrow only
+the IR. There is no copied source, reparsing, extra winner cache or second
+expanded edge list. Streaming errors are terminal and repeat; materialization
+returns all retained output or frees it and returns an error. Resource exhaustion
+never becomes successful partial materialization. Pull iteration is not a
+replenishable-credit session and does not change parser metering guarantees.
+
+Benchmark lowering/query costs with `zig build bench-ir-partial -Doptimize=ReleaseFast`
+and expansion/qualified attribute consumption with
+`zig build bench-ir-partial-edges -Doptimize=ReleaseFast` (also Safe/Small).
 
 ## What you can read
 
@@ -804,7 +877,7 @@ including shared defaults, repeated updates, reopened/deep scopes and a symbolic
 product. The bulk attribute benchmark compares construction, full attribute
 consumption, retained/requested peak bytes and total arena capacity with compact
 queries. Run it alone with `zig build bench-ir-materialized -Doptimize=ReleaseFast`.
-Label-port existence/binding, event-based lowering, partial enumeration/materialization,
+Label-port existence/binding, event-based lowering, partial node/scope all-key enumeration,
 fixed-storage IR construction and resumable IR operations remain
 later work.
 

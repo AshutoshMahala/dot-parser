@@ -1147,8 +1147,10 @@ Port-derived attributes and structured port views are implemented. Opt-in
 partial lowering now retains nodes/scopes/mentions and symbolic connections,
 qualifies direct queries and exposes retained attribute candidates. Coverage is
 independent of checking validity; failed construction never publishes an IR.
-Partial enumeration/materialization and event/session lowering remain; this does
-not complete the entire semantic-layer slice. *(Embodied:
+Partial edge iteration/materialization now reuse the complete expansion/folding
+engines, retain qualified attributes/ports and distinguish source coverage from
+operation completion. Partial node/scope all-key enumeration and event/session
+lowering remain; this does not complete the entire semantic-layer slice. *(Embodied:
 `src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*
 
 **Q18 — Which index widths and pool sizes define the first embedded retained

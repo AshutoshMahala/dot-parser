@@ -5,9 +5,9 @@ const dot = @import("dot_parser");
 pub fn main(init: std.process.Init) !void {
     const source =
         \\digraph {
-        \\    a [color=red];
+        \\    a -> b [color=red];
         \\    broken -> ;
-        \\    b [color=blue];
+        \\    b -> c [color=blue];
         \\}
     ;
     // Keep the first 100 findings, count further ones, and continue analysis.
@@ -23,16 +23,20 @@ fn printSnapshot(gpa: std.mem.Allocator, source: []const u8, sink: dot.Diagnosti
     defer result.deinit();
     const ir = result.ir() orelse return error.GraphUnavailable;
 
-    var nodes = ir.nodeIterator();
-    while (nodes.next()) |node| {
-        // The gap could update a. It cannot override b's later explicit blue.
-        switch (node.attribute("color")) {
-            .known => |color| std.debug.print("node {f}: color={?f}\n", .{ node.name(), color }),
-            .unknown => |answer| std.debug.print("node {f}: color={?f} (may change)\n", .{ node.name(), answer.retained }),
+    // Same API on complete input. Exhaustion visits retained edges, not missing input.
+    var edges = try ir.edgeIterator(.{});
+    defer edges.deinit();
+    while (try edges.next()) |edge| {
+        // These non-strict occurrences keep their own explicit colors.
+        switch (try edge.attribute("color")) {
+            .known => |color| std.debug.print("{f} -> {f}: color={?f}\n", .{ edge.from().name(), edge.to().name(), color }),
+            .unknown => |answer| std.debug.print("{f} -> {f}: color={?f} (may change)\n", .{ edge.from().name(), edge.to().name(), answer.retained }),
         }
     }
+    std.debug.print("coverage: {t}\n", .{ir.state()});
 }
 
 // Before the diagnostic:
-// node a: color=red (may change)
-// node b: color=blue
+// a -> b: color=red
+// b -> c: color=blue
+// coverage: partial

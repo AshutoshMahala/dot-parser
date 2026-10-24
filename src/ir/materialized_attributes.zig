@@ -221,7 +221,8 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities) type {
                 else
                     null;
             }
-            fn lookup(self: EdgeView, key: []const u8, work: anytype) r.Error!?Graph.AttributeView {
+            /// Internal composition hook; accepts a shared work allowance.
+            pub fn lookup(self: EdgeView, key: []const u8, work: anytype) r.Error!?Graph.AttributeView {
                 const id = try attrs.findKey(caps, self.owner.graph, .edge, key, work) orelse blk: {
                     if (self.owner.graph.has_ports) inline for (.{ ports.Key.tailport, ports.Key.headport }, 0..) |port_key, i| {
                         if (self.owner.folded.port_introductions[i] != null and std.mem.eql(u8, key, @tagName(port_key))) break :blk self.owner.folded.port_keys.ids[i];
@@ -286,7 +287,7 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities) type {
             pub fn next(self: *AttributeIterator) ?Graph.AttributeView {
                 return self.nextWork(Unmetered{}) catch unreachable;
             }
-            fn nextWork(self: *AttributeIterator, work: anytype) r.Error!?Graph.AttributeView {
+            pub fn nextWork(self: *AttributeIterator, work: anytype) r.Error!?Graph.AttributeView {
                 try work.spend(1);
                 const keys = self.edge.owner.folded.keys.items;
                 if (self.index >= keys.len) return null;

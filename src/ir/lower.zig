@@ -403,7 +403,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                                 const end = self.doc.order[frame.cursor + 1];
                                 if (end != .skipped_end or end.skipped_end < slot.skipped_start or end.skipped_end > self.doc.source.len) return error.InvalidDocument;
                                 self.stack.items[index].scope.cursor += 1;
-                                try self.publication.coverage_data.add(self.a, .{ .reason = .skipped_input, .range = .{ .start = slot.skipped_start, .len = end.skipped_end - slot.skipped_start }, .occurrence = @fromBackingInt(frame.occurrence) }, self.declarations.items.len, &self.work);
+                                try self.publication.coverage_data.add(self.a, .{ .reason = .skipped_input, .range = .{ .start = slot.skipped_start, .len = end.skipped_end - slot.skipped_start }, .occurrence = @fromBackingInt(frame.occurrence) }, self.declarations.items.len, self.connection_count, &self.work);
                             }
                             continue;
                         };
@@ -527,7 +527,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                     if (scope.subtree_end == 0) unfinished = @fromBackingInt(@as(u32, @intCast(id)));
                 }
                 if (self.doc.unrepresented() != null or unfinished != null or (!self.doc.scopeComplete() and self.publication.coverage_data.entries.items.len == 0)) {
-                    try self.publication.coverage_data.add(self.a, .{ .reason = .unfinished_input, .range = self.doc.unrepresented() orelse .{ .start = try r.index(self.doc.source.len), .len = 0 }, .occurrence = unfinished }, self.declarations.items.len, &self.work);
+                    try self.publication.coverage_data.add(self.a, .{ .reason = .unfinished_input, .range = self.doc.unrepresented() orelse .{ .start = try r.index(self.doc.source.len), .len = 0 }, .occurrence = unfinished }, self.declarations.items.len, self.connection_count, &self.work);
                 }
                 try self.publication.coverage_data.finish(&self.work);
             }

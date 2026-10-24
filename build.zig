@@ -607,6 +607,15 @@ pub fn build(b: *std.Build) void {
     b.step("bench-ir-partial", "Measure partial IR coverage, candidates, mentions and symbolic queries")
         .dependOn(&b.addRunArtifact(ir_partial_bench).step);
     check_benches.dependOn(&ir_partial_bench.step);
+    const ir_partial_edges_bench = b.addExecutable(.{ .name = "ir_partial_edges_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_partial_edges.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    b.step("bench-ir-partial-edges", "Compare complete and partial edge streaming, folding and memory")
+        .dependOn(&b.addRunArtifact(ir_partial_edges_bench).step);
+    check_benches.dependOn(&ir_partial_edges_bench.step);
     const identifier_bench = b.addExecutable(.{
         .name = "identifier_bench",
         .root_module = b.createModule(.{

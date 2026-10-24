@@ -20,6 +20,28 @@ export fn retained_snapshot(source: [*]const u8, length: u32, memory: [*]u8, cap
     }
     return count;
 }
+export fn retained_edges(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
+    var result = dot.ir.parsePartial(fixed.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const ir = result.ir() orelse return 0;
+    var graph = ir.materialize(.{}) catch return 0;
+    defer graph.deinit();
+    var edges = graph.edgeIterator();
+    var count: u32 = 0;
+    while (edges.next()) |edge| {
+        var values = edge.attributes();
+        while (values.next()) |answer| {
+            const value = switch (answer) {
+                .known => |v| v,
+                .unknown => |u| u.retained.?,
+            };
+            count +%= value.resolved.attribute orelse 1;
+        }
+        count +%= 1;
+    }
+    return count;
+}
 export fn topology(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
     var fixed: std.heap.FixedBufferAllocator = .init(memory[0..capacity]);
     const a = fixed.allocator();

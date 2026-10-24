@@ -301,52 +301,62 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         pub fn edgeAttribute(self: *const Self, edge: Edge, key: []const u8) r.Error!?attrs.Resolved {
             return self.edgeAttributeWith(edge, key, .{});
         }
-        pub fn edgeAttributeWith(self: *const Self, edge: Edge, key: []const u8, options: r.Options) r.Error!?attrs.Resolved {
-            const id = @backingInt(edge.first_connection);
-            if (id >= self.connections.len or @backingInt(edge.from) >= self.nodes.len or @backingInt(edge.to) >= self.nodes.len) return error.InvalidHandle;
-            var work = try r.Work.init(options.limits orelse self.limits, options.cancellation);
-            if (!try self.connectionCovers(self.connections[id], edge, &work)) return error.InvalidHandle;
-            const port_key: ?ports.Key = if (!self.has_ports) null else if (std.mem.eql(u8, key, "tailport")) .tailport else if (std.mem.eql(u8, key, "headport")) .headport else null;
-            const key_id = try attrs.findKey(caps, self, .edge, key, &work);
-            var first: ?u32 = null;
-            var explicit: ?u32 = null;
-            var explicit_connection: ConnectionId = edge.first_connection;
-            const start: usize = if (self.strict) 0 else id;
-            const end: usize = if (self.strict) self.connections.len else @as(usize, id) + 1;
-            for (self.connections[start..end], start..) |connection, index| {
-                try work.spend(1);
-                if (self.strict and !try self.connectionCovers(connection, edge, &work)) continue;
-                if (port_key) |wanted| if (ports.suffixes(connection, @fromBackingInt(@as(u32, @intCast(index))), edge)[@backingInt(wanted)]) |suffix| {
-                    explicit = suffix.attribute;
-                    explicit_connection = suffix.connection;
-                };
-                if (first == null) first = @intCast(index);
-                if (key_id) |wanted| {
-                    var at = connection.attributes.start + connection.attributes.len;
-                    while (at != connection.attributes.start) {
-                        at -= 1;
+        pub const edgeAttributeWith = EdgeAttributeQuery(false).run;
+        /// Internal composition hook: value lookup and coverage share one budget.
+        pub const edgeAttributeWork = EdgeAttributeQuery(true).run;
+        // Select budget ownership without an extra large error-union return
+        // adapter. Both entry points compile the same query body directly.
+        fn EdgeAttributeQuery(comptime shared_work: bool) type {
+            return struct {
+                pub fn run(self: *const Self, edge: Edge, key: []const u8, options: if (shared_work) *r.Work else r.Options) r.Error!?attrs.Resolved {
+                    const id = @backingInt(edge.first_connection);
+                    if (id >= self.connections.len or @backingInt(edge.from) >= self.nodes.len or @backingInt(edge.to) >= self.nodes.len) return error.InvalidHandle;
+                    var owned_work: if (shared_work) void else r.Work = if (shared_work) {} else try r.Work.init(options.limits orelse self.limits, options.cancellation);
+                    const work = if (shared_work) options else &owned_work;
+                    if (!try self.connectionCovers(self.connections[id], edge, work)) return error.InvalidHandle;
+                    const port_key: ?ports.Key = if (!self.has_ports) null else if (std.mem.eql(u8, key, "tailport")) .tailport else if (std.mem.eql(u8, key, "headport")) .headport else null;
+                    const key_id = try attrs.findKey(caps, self, .edge, key, work);
+                    var first: ?u32 = null;
+                    var explicit: ?u32 = null;
+                    var explicit_connection: ConnectionId = edge.first_connection;
+                    const start: usize = if (self.strict) 0 else id;
+                    const end: usize = if (self.strict) self.connections.len else @as(usize, id) + 1;
+                    for (self.connections[start..end], start..) |connection, index| {
                         try work.spend(1);
-                        if (self.attribute_data.meta[at].key == wanted) {
-                            explicit = at;
-                            explicit_connection = @fromBackingInt(@as(u32, @intCast(index)));
-                            break;
+                        if (self.strict and !try self.connectionCovers(connection, edge, work)) continue;
+                        if (port_key) |wanted| if (ports.suffixes(connection, @fromBackingInt(@as(u32, @intCast(index))), edge)[@backingInt(wanted)]) |suffix| {
+                            explicit = suffix.attribute;
+                            explicit_connection = suffix.connection;
+                        };
+                        if (first == null) first = @intCast(index);
+                        if (key_id) |wanted| {
+                            var at = connection.attributes.start + connection.attributes.len;
+                            while (at != connection.attributes.start) {
+                                at -= 1;
+                                try work.spend(1);
+                                if (self.attribute_data.meta[at].key == wanted) {
+                                    explicit = at;
+                                    explicit_connection = @fromBackingInt(@as(u32, @intCast(index)));
+                                    break;
+                                }
+                            }
                         }
                     }
+                    if (first != id) return error.InvalidHandle;
+                    if (explicit) |attribute| {
+                        if (attribute >= ports.right) return ports.resolve(self, .{ .attribute = attribute, .connection = explicit_connection }, port_key.?, false);
+                        return attrs.resolvedConnection(self, attribute, explicit_connection);
+                    }
+                    const wanted = key_id orelse {
+                        if (port_key) |key_kind| if (try ports.introduction(self, key_kind, work)) |intro| return ports.resolve(self, intro, key_kind, true);
+                        return null;
+                    };
+                    const root = self.attribute_data.connection_defaults[id];
+                    const value = try self.attribute_data.lookup(root, wanted, work);
+                    const scope = self.occurrences[@backingInt(self.connections[id].occurrence)].scope;
+                    return attrs.resolved(self, value orelse self.attribute_data.keys.items[wanted].first_attribute, .edge, scope, value == null);
                 }
-            }
-            if (first != id) return error.InvalidHandle;
-            if (explicit) |attribute| {
-                if (attribute >= ports.right) return ports.resolve(self, .{ .attribute = attribute, .connection = explicit_connection }, port_key.?, false);
-                return attrs.resolvedConnection(self, attribute, explicit_connection);
-            }
-            const wanted = key_id orelse {
-                if (port_key) |key_kind| if (try ports.introduction(self, key_kind, &work)) |intro| return ports.resolve(self, intro, key_kind, true);
-                return null;
             };
-            const root = self.attribute_data.connection_defaults[id];
-            const value = try self.attribute_data.lookup(root, wanted, &work);
-            const scope = self.occurrences[@backingInt(self.connections[id].occurrence)].scope;
-            return attrs.resolved(self, value orelse self.attribute_data.keys.items[wanted].first_attribute, .edge, scope, value == null);
         }
 
         /// Borrowed value view/formatter; no renderer escapes, HTML entity

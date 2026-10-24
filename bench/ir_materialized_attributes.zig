@@ -3,9 +3,9 @@
 const std = @import("std");
 const dot = @import("dot_parser");
 const IR = dot.ir.Lowering(.{});
-const Case = enum { plain, shared_defaults, explicit, strict_overlap, reopened, deep, ports, strict_ports, rejected_product };
+pub const Case = enum { plain, shared_defaults, explicit, strict_overlap, reopened, deep, ports, strict_ports, rejected_product };
 
-fn sourceFor(out: *std.Io.Writer, case: Case) !void {
+pub fn sourceFor(out: *std.Io.Writer, case: Case) !void {
     try out.writeAll(if (case == .strict_ports) "strict graph {" else if (case == .strict_overlap or case == .reopened) "strict digraph {" else "digraph {");
     switch (case) {
         .plain => for (0..2000) |i| try out.print("n{d}->n{d};", .{ i, i + 1 }),

@@ -8,6 +8,13 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Partial IR edge iteration and materialization reuse the existing expansion,
+  strict deduplication and attribute folding engines. Retained edge views expose
+  qualified attributes, ports, orientation and first contributions; folded
+  lookups remain infallible. Complete-input APIs are unchanged. Includes native,
+  compatible-gap-filling, cancellation/allocation-failure tests and
+  `bench-ir-partial-edges`; incomplete sources never become complete merely
+  because materialization finished.
 - Opt-in `dot.ir.parsePartial` / `Lowering.lowerPartial`: retained node/scope
   views, mention iteration, symbolic existence/membership queries and indexed
   attribute candidates. `Knowledge(T)` separates known facts from source gaps;
