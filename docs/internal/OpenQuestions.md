@@ -1151,8 +1151,17 @@ Partial edge iteration/materialization now reuse the complete expansion/folding
 engines, retain qualified attributes/ports and distinguish source coverage from
 operation completion. Partial node/scope all-key enumeration now shares the
 core catalog iterator and qualified lookup rules without allocating scratch;
-qualification uses the same lifetime work/cancellation allowance. Event/session
-lowering and fixed-storage construction remain; this does not complete the
+qualification uses the same lifetime work/cancellation allowance. Opt-in
+resumable materialization now supports complete/partial IRs, retaining the
+existing output types, compile-time attribute selection and runtime limits.
+Its bounded transitions include endpoint traversal, duplicate probes/rehashing,
+AVL updates, port-key code units and growth copying; cancellation polls each
+step and each resume. Only finished output transfers ownership. Allocator
+callbacks and cleanup are not time-budgeted; fixed storage remains separate.
+Direct materialization stays on its throughput-specialized driver, sharing
+identity, port and map semantics with sessions. Event/session lowering,
+resumable query/streaming operations and fixed-storage construction remain;
+this does not complete the
 entire semantic-layer slice. *(Embodied:
 `src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*
 

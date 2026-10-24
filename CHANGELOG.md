@@ -8,6 +8,14 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Opt-in `ir.materializationSession(options)` for complete and partial IRs,
+  with `advance(u32)`, `run`, `cancel`, `deinit` and one-time `takeResult`.
+  Per-call credits cover endpoint traversal, strict deduplication/rehashing,
+  attribute-map updates, port-key reading and bounded growth copies. Existing
+  `materialize` and its output types stay unchanged. Partial-source coverage
+  survives successful materialization; pauses/failures never publish half-built
+  output. Includes allocation/cancellation/partition tests, a runnable example
+  and `bench-ir-sessions`. Allocator callbacks are not wall-time bounded.
 - Partial IR node and graph/subgraph attribute iteration via
   `node.attributes(options)` and `scope.attributes(options)`. Retained keys
   yield qualified values with provenance and implicit-empty candidates;

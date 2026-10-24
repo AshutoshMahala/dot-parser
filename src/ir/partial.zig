@@ -41,6 +41,37 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             const data = try self._data.materialize(options);
             return .{ .graph = self, ._data = data, .edges = data.edges, .peak_bytes = data.peak_bytes };
         }
+        pub fn MaterializationSession(comptime attributes: bool) type {
+            return struct {
+                const Session = @This();
+                pub const Result = if (attributes) Materialized else MaterializedTopology;
+                graph: *const Self,
+                inner: Core.MaterializationSession(attributes),
+                pub fn advance(session: *Session, budget: u32) @import("materialization_session.zig").Progress {
+                    return session.inner.advance(budget);
+                }
+                pub fn run(session: *Session) @import("materialization_session.zig").Progress {
+                    return session.inner.run();
+                }
+                pub fn cancel(session: *Session) void {
+                    session.inner.cancel();
+                }
+                pub fn deinit(session: *Session) void {
+                    session.inner.deinit();
+                    session.* = undefined;
+                }
+                pub fn peakBytes(session: *const Session) usize {
+                    return session.inner.peakBytes();
+                }
+                pub fn takeResult(session: *Session) @import("materialization_session.zig").TakeError!Result {
+                    const data = try session.inner.takeResult();
+                    return .{ .graph = session.graph, ._data = data, .edges = data.edges, .peak_bytes = data.peak_bytes };
+                }
+            };
+        }
+        pub inline fn materializationSession(self: *const Self, options: anytype) r.Error!MaterializationSession(if (@hasField(@TypeOf(options), "attributes")) options.attributes else true) {
+            return .{ .graph = self, .inner = try self._data.materializationSession(options) };
+        }
 
         pub fn deinit(self: *Self) void {
             self._coverage.deinit(self._data.allocator);

@@ -435,6 +435,23 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         }
 
         pub const Materialized = @import("materialized_attributes.zig").For(Self, caps);
+        pub fn MaterializationSession(comptime attributes: bool) type {
+            return @import("materialization_session.zig").Session(Self, caps, attributes);
+        }
+        /// Opt-in resumable equivalent of materialize. The same compile-time
+        /// attribute selection and runtime options; no hidden preparation pass.
+        pub inline fn materializationSession(self: *const Self, options: anytype) r.Error!MaterializationSession(if (@hasField(@TypeOf(options), "attributes")) options.attributes else true) {
+            comptime {
+                for (std.meta.fieldNames(@TypeOf(options))) |field| {
+                    if (!std.mem.eql(u8, field, "attributes") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation"))
+                        @compileError("unknown IR materialization option: " ++ field);
+                }
+            }
+            return MaterializationSession(comptime if (@hasField(@TypeOf(options), "attributes")) options.attributes else true).init(self, .{
+                .limits = if (@hasField(@TypeOf(options), "limits")) optionalOption(r.Limits, options.limits) else null,
+                .cancellation = if (@hasField(@TypeOf(options), "cancellation")) optionalOption(r.Cancellation, options.cancellation) else null,
+            });
+        }
 
         /// Owning expansion with effective attributes by default. Set the
         /// compile-time option .attributes = false for topology-only output.

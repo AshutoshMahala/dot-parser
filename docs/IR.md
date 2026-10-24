@@ -828,9 +828,103 @@ Finite defaults are defined by `dot.ir.Limits`:
 | Accounted work per operation | 100,000,000 |
 | Peak live requested allocation bytes per operation | 256 MiB |
 
+## Resumable materialization
+
+Keep `materialize(.{})` for a direct call. Opt into a session when your
+application needs control **during** expansion and attribute folding:
+
+```zig
+var operation = try ir.materializationSession(.{});
+defer operation.deinit();
+
+while (operation.advance(4096).outcome == null) {
+    // Yield to your application's scheduler here if needed.
+    // Keep operation, ir and source alive and unmoved until the next advance.
+}
+var graph = try operation.takeResult();
+defer graph.deinit();
+```
+
+In an event-driven application, store the operation and call `advance` once
+per scheduling turn instead of spinning this loop. No thread, clock, callback
+dispatch or automatic yielding is introduced. See
+[resumable_edges.zig](../examples/resumable_edges.zig) for a runnable example.
+
+Options have the same form as `materialize`: compile-time `.attributes = false`
+excludes folding; `.limits` and `.cancellation` are runtime values. Omitted
+limits inherit the IR's baseline. Named session types are
+`Graph.MaterializationSession(true/false)` and the corresponding types on
+`PartialGraph`. `takeResult()` returns exactly the existing materialized type.
+A partial source stays partial even when the operation finishes successfully.
+An unfinished operation is a **pause**, not a new partial graph.
+
+| Method | Contract |
+| --- | --- |
+| `advance(budget: u32)` | At most `budget` defined steps; exhaustion yields without losing progress. |
+| `run()` | Drives the same machine to a terminal outcome, honoring total limits and cancellation. |
+| `cancel()` | Permanently cancels an active operation; terminal outcomes are unchanged. |
+| `takeResult()` | Transfers finished output once; `NotReady` while active, `AlreadyTaken` after transfer, actual error on failure. |
+| `peakBytes()` | Peak requested bytes, including scratch and overlapping old/new growth buffers. |
+| `deinit()` | Frees scratch, pending growth buffers and any untransferred output, including after failure. |
+
+`advance` and `run` return `dot.ir.MaterializationProgress`: `work_used` for
+that advance, `total_work: u64`, factual `pairs_visited`, `edges_created`, and
+optional `outcome`. Outcome is `.success` or `.{ .failure = error.… }`;
+null means still active. `run().work_used` is its final advance's count;
+`total_work` remains cumulative. Edge counts before success are progress only,
+not published edges or final attributes. Repeated calls after termination do
+no work and preserve the outcome; explicit cancellation does not erase a prior
+resource error or success. `advance(0)` polls cancellation without semantic work.
+
+### Session work units and limits
+
+One credit is one bounded state transition, not one edge and not a byte count:
+
+| Work | Maximum per credit |
+| --- | --- |
+| Endpoint traversal | One body or mention, or one singleton/phase transition |
+| Pair expansion/deduplication | One candidate, one hash-table probe, or one rehash entry/probe |
+| Attribute folding | One attribute, AVL node visit or ancestor update (at most two rotations) |
+| Port-key comparison | One original source code unit, including concatenation glue/comments |
+| Buffer copying/initialization | At most 64 bytes |
+| Storage preparation | One bounded transition with allocation/resize/free calls; no hidden library copy |
+
+Initial construction only binds the IR/options and polls cancellation; it does
+not scan, allocate, expand or run an unmetered sizing pass. Positive budgets
+advance even with budget one. Cancellation polls at every resume and before
+each credit, including while initializing tables, copying growth buffers and
+walking long names. This leaves DOT, markup and string accounting unchanged.
+
+Per-call exhaustion is resumable; cumulative `limits.max_work`, memory/edge/
+pair/map limits, allocation failure and cancellation are terminal. A rejected
+product is checked before its expanded edges are allocated. No terminal failure
+publishes a partially materialized graph. Session storage remains owned until
+`deinit`, which is also required after a successful `takeResult` for scratch.
+The transferred result owns its buffers and, when attributes are included,
+continues borrowing the IR and source. Do not copy active sessions or owning
+results; borrowed views do not extend their owners' lifetimes.
+
+For the same allocator behavior, results and total credits are independent of
+budget partitioning. Credits include actual copying, so an allocator accepting
+in-place growth can consume less work and peak memory than one requiring a move.
+Yielding never replenishes the lifetime allowance. Session credits differ from
+the direct driver's coarser cumulative accounting: the same small `max_work`
+need not admit both. Values/order/provenance agree when both complete.
+
+This is a cooperative **work bound**, not a latency deadline. Allocator calls,
+the cancellation predicate and destruction are external/unmetered; the backing
+allocator can reserve or initialize memory internally. Library-controlled copies,
+table initialization and rehashing are resumable. Fixed-storage sessions,
+resumable lowering, queries and edge-streaming are not implemented by this slice.
+The session's raw allocation boundary also avoids the standard typed helpers'
+whole-buffer debug poisoning; all readable elements are initialized explicitly.
+
+## Applying resource options
+
 Set a compile-time baseline with `Lowering(.{ .limits = ... })`, or pass
 `.limits` at lowering. `findNodeWith`, `writeNodeNameWith`, `hasEdgeWith`, `edgeIterator`, and `materialize` accept
-operation-specific `.limits` and `.cancellation`. There is no unlimited-by-zero
+operation-specific `.limits` and `.cancellation`; so does
+`materializationSession`. There is no unlimited-by-zero
 special case. Counts/indices are `u32`, pair/work totals are `u64`; byte limits
 use the allocator's `usize` domain. Candidate products use checked arithmetic.
 `nodeAttributeWith`, `scopeAttributeWith` and `edgeAttributeWith` accept the
@@ -855,7 +949,7 @@ stages need different policies or source encodings.
 Limits or cancellation return typed errors, **never** `false`, absence, or a
 truncated graph presented as complete. One-shot failure frees operation-owned
 storage; an iterator must be `deinit()`ed on failure or early exit too.
-Work limits count table probes, comparisons and traversal work; they are not
+For direct calls and pull iterators, work limits count table probes, comparisons and traversal work; they are not
 wall-clock deadlines. Cancellation is cooperative. Existing trusted-name
 primitives are charged by their byte lengths and polled around each call;
 allocation, copying during growth, and an individual name operation are not
@@ -863,7 +957,8 @@ interruptible. An iterator polls during endpoint traversal, pair visits and
 deduplication, including when one `next()` skips many duplicates. A call may
 need to enumerate whole endpoint memberships before yielding an edge. Pull
 iteration allows stopping between edges, but is **not** a fixed-work-per-call
-metered session with replenishable credits. None of this changes the parser's
+metered session with replenishable credits. Use `materializationSession` when
+bounded expansion is needed. None of this changes the parser's
 existing metering or cancellation guarantees.
 
 `retainedBytes()` reports retained allocation payload including spare capacity.
@@ -904,9 +999,11 @@ including shared defaults, repeated updates, reopened/deep scopes and a symbolic
 product. The bulk attribute benchmark compares construction, full attribute
 consumption, retained/requested peak bytes and total arena capacity with compact
 queries. Run it alone with `zig build bench-ir-materialized -Doptimize=ReleaseFast`.
-Label-port existence/binding, event-based lowering,
-fixed-storage IR construction and resumable IR operations remain
-later work.
+Compare direct materialization with session `run()` and budgets 1/64/4096 using
+`zig build bench-ir-sessions -Doptimize=fast`. It consumes the same results and
+reports time, actual credits, retained/requested peak bytes and session state
+size. Label-port existence/binding, event-based/resumable lowering, resumable
+queries/streaming and fixed-storage IR construction remain later work.
 
 The final section measures value kind/operand access, joined output, bounded
 writing and exact-allocation `toString`, plus a benchmark-only kind cache.

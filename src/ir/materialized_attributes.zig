@@ -9,7 +9,7 @@ const Unmetered = @import("../dot/identifier_cursor.zig").Unmetered;
 const none = attrs.none;
 const ports = @import("ports.zig");
 
-const Cell = struct {
+pub const Cell = struct {
     key: u32,
     attribute: u32,
     connection: t.ConnectionId,
@@ -58,6 +58,26 @@ pub fn Builder(comptime with_ports: bool) type {
             self.refresh(upper_id);
             return upper_id;
         }
+        /// One bounded ancestor update, shared by direct and resumable folding.
+        pub inline fn link(self: *Self, id: u32, key: u32, child: u32) u32 {
+            const cell = &self.cells.items[id];
+            if (key < cell.key) cell.left = child else cell.right = child;
+            const left_height = self.height(cell.left);
+            const right_height = self.height(cell.right);
+            const balance = @as(i16, left_height) - right_height;
+            if (balance > 1) {
+                const branch = self.cells.items[cell.left];
+                if (self.height(branch.left) < self.height(branch.right)) cell.left = self.rotate(cell.left, true);
+                return self.rotate(id, false);
+            } else if (balance < -1) {
+                const branch = self.cells.items[cell.right];
+                if (self.height(branch.right) < self.height(branch.left)) cell.right = self.rotate(cell.right, false);
+                return self.rotate(id, true);
+            } else {
+                cell.height = 1 + @max(left_height, right_height);
+                return id;
+            }
+        }
         fn set(self: *Self, a: std.mem.Allocator, root: u32, key: u32, attribute: u32, connection: t.ConnectionId, work: *r.Work) r.Error!u32 {
             // With u32 cell IDs an AVL path has fewer than 48 entries. No recursion
             // or source-dependent stack, and rotations cannot allocate or fail.
@@ -85,25 +105,7 @@ pub fn Builder(comptime with_ports: bool) type {
                 try work.spend(1);
                 depth -= 1;
                 const id = path[depth];
-                const cell = &self.cells.items[id];
-                if (key < cell.key) cell.left = child else cell.right = child;
-                const left_height = self.height(cell.left);
-                const right_height = self.height(cell.right);
-                const balance = @as(i16, left_height) - right_height;
-                // Rotations refresh their affected cells themselves. Only a
-                // balanced ancestor needs a height write here.
-                if (balance > 1) {
-                    const branch = self.cells.items[cell.left];
-                    if (self.height(branch.left) < self.height(branch.right)) cell.left = self.rotate(cell.left, true);
-                    child = self.rotate(id, false);
-                } else if (balance < -1) {
-                    const branch = self.cells.items[cell.right];
-                    if (self.height(branch.right) < self.height(branch.left)) cell.right = self.rotate(cell.right, false);
-                    child = self.rotate(id, true);
-                } else {
-                    cell.height = 1 + @max(left_height, right_height);
-                    child = id;
-                }
+                child = self.link(id, key, child);
             }
             return child;
         }

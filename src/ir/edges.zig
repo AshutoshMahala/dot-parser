@@ -19,12 +19,12 @@ const Endpoint = struct {
     }
 };
 
-fn canonical(edge: t.Edge) [2]u32 {
+pub fn canonical(edge: t.Edge) [2]u32 {
     const from = @backingInt(edge.from);
     const to = @backingInt(edge.to);
     return if (edge.operator == .undirected and from > to) .{ to, from } else .{ from, to };
 }
-fn pairHash(operator: Operator, pair: [2]u32) u64 {
+pub fn pairHash(operator: Operator, pair: [2]u32) u64 {
     return std.hash.Wyhash.hash(@backingInt(operator), std.mem.asBytes(&pair));
 }
 

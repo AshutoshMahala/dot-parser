@@ -1955,6 +1955,81 @@ retained payload bytes, not process RSS or allocator metadata. Work limits remai
 cumulative across lookup and qualification; no parser metering or cancellation
 guarantee changed.
 
+### Resumable IR materialization (2026-10-24)
+
+Baseline `4201dba`, Apple M4 Pro, Zig 0.17.0. Opt-in sessions do not replace
+the direct `materialize` driver. The existing `ir_materialized_attributes`
+benchmark's entire `__text` section is byte-identical before/after in Fast,
+Safe and Small. Retained, requested-peak and arena measurements are unchanged
+in that harness. Five serial, alternating processes per revision produced the
+following median build times (ms, **before → after**):
+
+| Fixture | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| 2,000 plain edges | 0.0220 → 0.0215 | 0.0298 → 0.0317 | 0.0335 → 0.0331 |
+| 2,000 edges, 8 explicit attributes | 0.1670 → 0.1681 | 0.3017 → 0.3021 | 0.4493 → 0.4504 |
+| 32 overlapping 32×32 strict products | 1.3275 → 1.3469 | 1.5227 → 1.5366 | 3.1464 → 3.2658 |
+| 250 reopened-scope contributions | 0.2919 → 0.3038 | 0.3557 → 0.3533 | 0.8797 → 0.8830 |
+| 2,000 port-bearing edges | 0.0540 → 0.0543 | 0.1031 → 0.1046 | 0.1012 → 0.0995 |
+
+These small timing differences exist despite identical generated code; they
+are not evidence of a new default-path operation. The check covers the
+instantiated benchmark paths, not every possible consumer configuration.
+
+Measure the new optional path independently with:
+
+```sh
+zig build bench-ir-sessions -Doptimize=fast
+zig build bench-ir-sessions -Doptimize=safe
+zig build bench-ir-sessions -Doptimize=small
+```
+
+This harness rotates direct/session modes, takes nine samples after two warmup
+rounds, and consumes output outside build timing. Parsing/lowering and final
+result destruction are excluded; internal scratch cleanup is included on both
+paths. Below is one serial Fast process, with no builds or other benchmarks
+running. Compare columns within this harness, not its direct column against a
+different executable's timings above.
+
+| Fixture | Direct (ms) | Session, budget 4096 | Budget 64 | Budget 1 |
+| --- | ---: | ---: | ---: | ---: |
+| Plain edges | 0.0331 | 0.0485 | 0.0514 | 0.1372 |
+| 64 shared defaults | 0.0279 | 0.0366 | 0.0388 | 0.1107 |
+| 8 explicit attributes | 0.1798 | 0.3690 | 0.3973 | 0.8567 |
+| Strict overlapping sets | 1.3389 | 2.3355 | 2.4254 | 5.2028 |
+| Reopened scopes | 0.2992 | 0.7088 | 0.7589 | 1.8297 |
+| Endpoint ports | 0.0554 | 0.0913 | 0.0982 | 0.2294 |
+| Reversed strict port updates | 0.0701 | 0.1135 | 0.1158 | 0.2709 |
+
+Budget 4096 costs roughly 1.3–2.4× direct Fast time on these nontrivial cases;
+budget one costs 3.9–6.1×. This is **opt-in scheduling overhead**, not a speed
+optimization. `run()` drives the same bounded machine and is not an alias for
+the faster direct driver. Safe direct/session-4096 measured 0.3037/0.4320 ms
+for explicit attributes and 1.5420/2.4930 ms for strict overlap; Small measured
+0.4271/0.6450 and 3.2406/4.7545 ms respectively. Deep nesting with one output
+edge is below useful timing resolution. The 2,500×2,500 product returns
+`PairLimit` on every route, without materializing its 6.25 million pairs.
+
+**Heap payload is unchanged in these fixtures:** session growth follows the
+direct driver's capacity curve. Across all budgets/modes the successful cases
+have the same retained/requested-peak bytes as direct materialization: plain
+38,064/63,344; explicit attributes 484,796/759,476; strict overlap
+312,156/514,632; reopened scopes 13,236/21,988; ports 177,308/263,192. These
+exclude the borrowed IR, allocator internals, process RSS and session state.
+The complete session object is 448 bytes topology-only / 888 with attributes
+in Fast/Small, or 472/936 in Safe. No per-node/edge session metadata is added
+to the IR or returned output. Allocator behavior can still affect in-place
+growth, actual copying, credits and physical arena use; this is not a universal
+RSS or arena-capacity equality promise.
+
+The CSV reports factual total session credits (zero means not applicable for
+the direct route), outcomes and memory. A failure's unavailable peak is `null`,
+not zero. Per-call steps include growth copies, table initialization/rehashing,
+AVL updates and port-key code units. Budget-one, mixed-budget, zero-budget,
+all-allocation-failure and every-cancellation-point tests preserve output and
+terminal reasons. Allocator/cancellation callbacks and destruction remain
+outside wall-time guarantees. Existing parser metering/cancellation is unchanged.
+
 ## Running the benchmarks
 
 ### One-command string comparison
@@ -2033,6 +2108,7 @@ zig build bench-logical-strings -Doptimize=fast
 zig build bench-ir-partial -Doptimize=fast
 zig build bench-ir-partial -Doptimize=fast -- --attributes-only
 zig build bench-ir-partial-edges -Doptimize=fast
+zig build bench-ir-sessions -Doptimize=fast
 zig build check-benches  # only checks that they compile
 ```
 

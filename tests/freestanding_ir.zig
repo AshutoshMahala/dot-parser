@@ -2,6 +2,25 @@
 //! allocator: no libc, OS, global allocator, recursion, or renderer required.
 const std = @import("std");
 const dot = @import("dot_parser");
+export fn resumable_edges(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
+    var result = dot.ir.parsePartial(fixed.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const ir = result.ir() orelse return 0;
+    var session = ir.materializationSession(.{}) catch return 0;
+    defer session.deinit();
+    while (session.advance(7).outcome == null) {}
+    var graph = session.takeResult() catch return 0;
+    defer graph.deinit();
+    var iterator = graph.edgeIterator();
+    var count: u32 = 0;
+    while (iterator.next()) |edge| {
+        var values = edge.attributes();
+        while (values.next()) |_| count +%= 1;
+        count +%= 1;
+    }
+    return count;
+}
 export fn retained_snapshot(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
     var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
     var result = dot.ir.parsePartial(fixed.allocator(), source[0..length], .{}) catch return 0;
