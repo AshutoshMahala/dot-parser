@@ -1149,8 +1149,11 @@ qualifies direct queries and exposes retained attribute candidates. Coverage is
 independent of checking validity; failed construction never publishes an IR.
 Partial edge iteration/materialization now reuse the complete expansion/folding
 engines, retain qualified attributes/ports and distinguish source coverage from
-operation completion. Partial node/scope all-key enumeration and event/session
-lowering remain; this does not complete the entire semantic-layer slice. *(Embodied:
+operation completion. Partial node/scope all-key enumeration now shares the
+core catalog iterator and qualified lookup rules without allocating scratch;
+qualification uses the same lifetime work/cancellation allowance. Event/session
+lowering and fixed-storage construction remain; this does not complete the
+entire semantic-layer slice. *(Embodied:
 `src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*
 
 **Q18 — Which index widths and pool sizes define the first embedded retained

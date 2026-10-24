@@ -17,6 +17,21 @@ export fn retained_snapshot(source: [*]const u8, length: u32, memory: [*]u8, cap
             .unknown => |u| u.retained,
         };
         if (value != null) count +%= 1;
+        var values = node.attributes(.{}) catch return 0;
+        defer values.deinit();
+        while (values.next() catch return 0) |answer| {
+            const retained = switch (answer) {
+                .known => |v| v,
+                .unknown => |u| u.retained.?,
+            };
+            count +%= retained.resolved.attribute orelse 1;
+        }
+    }
+    var scopes = ir.scopeIterator();
+    while (scopes.next()) |scope| {
+        var values = scope.attributes(.{}) catch return 0;
+        defer values.deinit();
+        while (values.next() catch return 0) |_| count +%= 1;
     }
     return count;
 }

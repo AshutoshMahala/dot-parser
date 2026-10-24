@@ -94,6 +94,36 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
                 return .{ .unknown = .{ .uncertainty = uncertainty, .retained = value } };
             return .{ .known = value };
         }
+        /// Node/scope catalog iteration over retained input. Reuses the core
+        /// iterator and charges qualification to its lifetime work allowance.
+        pub const AttributeIterator = struct {
+            graph: *const Self,
+            inner: Core.AttributeIterator,
+            failure: ?r.Error = null,
+
+            pub fn deinit(self: *AttributeIterator) void {
+                self.inner.deinit();
+                self.* = undefined;
+            }
+            pub fn peakBytes(self: *const AttributeIterator) usize {
+                return self.inner.peakBytes();
+            }
+            /// One qualified value per retained key, including implicit empties.
+            /// Exhaustion is not proof that missing input introduces no keys.
+            /// Errors are terminal and repeat, including qualification stops.
+            pub inline fn next(self: *AttributeIterator) r.Error!?c.Knowledge(AttributeView) {
+                if (self.failure) |err| return err;
+                const value = (try self.inner.next()) orelse return null;
+                const answer = self.graph.qualifyAttributeWith(value, &self.inner.work) catch |err| {
+                    self.failure = err;
+                    return err;
+                };
+                return switch (answer) {
+                    .known => |known| .{ .known = known.? },
+                    .unknown => |unknown| .{ .unknown = .{ .uncertainty = unknown.uncertainty, .retained = unknown.retained } },
+                };
+            }
+        };
         pub const NodeView = struct {
             graph: *const Self,
             id: t.NodeId,
@@ -112,6 +142,9 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
                 var work = try r.Work.init(options.limits orelse data.limits, options.cancellation);
                 const resolved = try attrs.lookupNode(caps, data, self.id, key, &work);
                 return self.graph.qualifyAttributeWith(if (resolved) |value| .{ .graph = data, .resolved = value } else null, &work);
+            }
+            pub fn attributes(self: NodeView, options: r.Options) r.Error!AttributeIterator {
+                return .{ .graph = self.graph, .inner = try self.core().attributes(options) };
             }
             pub fn mentions(self: NodeView) MentionIterator {
                 const data = &self.graph._data;
@@ -150,6 +183,9 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
                 var work = try r.Work.init(options.limits orelse data.limits, options.cancellation);
                 const resolved = try attrs.lookupScope(caps, data, self.id, key, &work);
                 return self.graph.qualifyAttributeWith(if (resolved) |value| .{ .graph = data, .resolved = value } else null, &work);
+            }
+            pub fn attributes(self: ScopeView, options: r.Options) r.Error!AttributeIterator {
+                return .{ .graph = self.graph, .inner = try self.core().attributes(options) };
             }
             /// Last retained membership version, not a promise of final contents.
             pub fn membership(self: ScopeView) r.Error!t.Membership {

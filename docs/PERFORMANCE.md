@@ -1904,6 +1904,57 @@ returns `PairLimit` without allocating the 6.25-million-edge output. Resource
 failure never publishes a half-built materialized graph. No parser metering or
 cancellation interval was changed by this increment.
 
+### Partial node/scope attribute iteration (2026-10-24)
+
+Baseline `a302e58`, Apple M4 Pro, Zig 0.17.0. This adds enumeration to partial
+node/scope views without changing the complete iterator, lowering or retained
+layouts. The existing `ir_attributes` harness has byte-identical machine-code
+(`__text`) sections before/after in Fast, Safe and Small. Five alternating
+processes per side in Fast/Safe also confirmed unchanged retained, requested-peak,
+arena and scratch bytes. Shared-default node enumeration measured 720.3 → 723.8
+ns/node in Fast and 818.2 → 820.9 in Safe; this small timing variation does not
+indicate a code-generation change. These checks cover the instantiated IR paths,
+not every possible library configuration.
+
+The focused command is:
+
+```sh
+zig build bench-ir-partial -Doptimize=fast -- --attributes-only
+```
+
+It warms each path for 100 ms and takes nine samples, outside parsing/lowering.
+Timings include checked view construction and enumeration, but no formatting or
+output. Below are medians of five serial Fast processes, with no concurrent
+builds. Each cell lists **complete / partial on complete / partial with gaps**.
+
+| Fixture | Node values | Node enumeration (ms) | Scope enumeration (ms) |
+| --- | ---: | ---: | ---: |
+| 1,000 empty nodes/scopes | 0 | 0.0053 / 0.0059 / 0.0059 | 0.0053 / 0.0061 / 0.0060 |
+| 64 shared defaults | 64,000 | 0.7759 / 0.8250 / 0.8173 | 0.7548 / 0.7833 / 0.7865 |
+| 8 explicit node attributes | 8,000 | 0.0933 / 0.0970 / 0.1022 | 0.0284 / 0.0306 / 0.0316 |
+| 1,000 reopened contributions | 2,000 | 0.0217 / 0.0241 / 0.0247 | below useful resolution |
+| 1,000 nested scopes | 1,000 | 0.0142 / 0.0142 / 0.0148 | 0.0134 / 0.0147 / 0.0147 |
+| 1,000 assignments / gaps | 1,000 | 0.0135 / 0.0144 / 0.0346 | below useful resolution |
+
+Scope enumeration visits the root too: 64,064 values for defaults, 2,002 for
+explicit attributes and 1,001 for nesting. Broken variants insert one tail gap,
+except nesting's innermost gap and the many-gap fixture's gap after each node.
+Qualification is not free: it returns larger known/unknown answers and consults
+the gap index for explicit winners. Inlining the thin wrapper reduced the
+shared-default partial-complete node scan from 0.9718 to 0.8250 ms. It was not
+a universal speedup: the many-gap scan changed from 0.0287 to 0.0346 ms. The final
+table includes that cost rather than presenting only favorable cases.
+
+**No enumeration allocations:** scratch peak is zero for every case, including
+when the allocation limit is zero. Complete/partial iterator objects are
+176/192 bytes; complete/partial graph owners remain 464/488 bytes. No additional
+coverage records, indexes or per-node copies were added. Complete input retains
+the same payload through either route. Existing gap storage still costs memory:
+the many-gap IR retains 267,796 bytes versus 224,340 without gaps. These are
+retained payload bytes, not process RSS or allocator metadata. Work limits remain
+cumulative across lookup and qualification; no parser metering or cancellation
+guarantee changed.
+
 ## Running the benchmarks
 
 ### One-command string comparison
@@ -1980,6 +2031,7 @@ zig build bench-markup -Doptimize=fast -- --graphviz-only
 zig build bench-composition -Doptimize=fast
 zig build bench-logical-strings -Doptimize=fast
 zig build bench-ir-partial -Doptimize=fast
+zig build bench-ir-partial -Doptimize=fast -- --attributes-only
 zig build bench-ir-partial-edges -Doptimize=fast
 zig build check-benches  # only checks that they compile
 ```

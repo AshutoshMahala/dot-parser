@@ -8,6 +8,12 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Partial IR node and graph/subgraph attribute iteration via
+  `node.attributes(options)` and `scope.attributes(options)`. Retained keys
+  yield qualified values with provenance and implicit-empty candidates;
+  enumeration uses the existing catalogs/maps without allocating scratch and
+  shares one cumulative lookup/coverage work allowance and cancellation token.
+  Complete-input APIs and retained layouts are unchanged.
 - Partial IR edge iteration and materialization reuse the existing expansion,
   strict deduplication and attribute folding engines. Retained edge views expose
   qualified attributes, ports, orientation and first contributions; folded

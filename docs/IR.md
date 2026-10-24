@@ -115,6 +115,7 @@ an abandoned edge also survive, exactly once, without that outer edge.
 | `node.name()` / `scope.name()` | Logical name formatter; scope names are optional |
 | `node.mentions()` | Infallible iteration of source ranges and owning occurrences using the existing posting index |
 | `node.attribute(key)` / `scope.attribute(key)` | Indexed, infallible `Knowledge(?AttributeView)`; `attributeWith(key, options)` is bounded/cancellable |
+| `node.attributes(options)` / `scope.attributes(options)` | Bounded, allocation-free iteration of retained keys, yielding `Knowledge(AttributeView)` |
 | `findNode(name)` / `hasEdge(from, to)` / `contains(membership, node)` | Bounded `Error!Knowledge(...)`; `With` variants accept limits/cancellation |
 | `scope.membership()` | Bounded lookup of the last retained scope membership version, not proof of final contents |
 | `ir.gaps()` | Semantic-order coverage records: reason, source range and owning occurrence where known |
@@ -232,11 +233,35 @@ winners after the last semantic gap can be known. A non-strict edge's own
 explicit assignments/suffixes remain known because other statements cannot
 update that occurrence. Defaults and absence remain conservative across gaps.
 
-`edge.attributes(...)` yields `Knowledge(AttributeView)` for each retained key
+Node, scope and edge `attributes(...)` yield `Knowledge(AttributeView)` for
+each retained key
 (not an optional attribute inside a known answer). Unknown entries have their
 retained candidate, including implicit-empty views. Exhaustion does not certify
-that missing input introduces no more keys. Node/scope all-key enumeration is
-not yet exposed by the partial API; individual lookups remain available.
+that missing input introduces no more keys. Root graph attributes use
+`(try ir.scopeView(.root)).attributes(options)`; subgraphs use their scope views.
+
+```zig
+var nodes = ir.nodeIterator();
+while (nodes.next()) |node| {
+    var attributes = try node.attributes(.{});
+    defer attributes.deinit();
+    while (try attributes.next()) |answer| switch (answer) {
+        .known => |value| std.debug.print("{f}={f}\n", .{ value.key(), value }),
+        .unknown => |u| {
+            const candidate = u.retained.?; // Every enumerated key has a retained value.
+            std.debug.print("{f}={f} (may change)\n", .{ candidate.key(), candidate });
+        },
+    };
+}
+```
+
+Node/scope iteration uses the existing object-kind key catalog and maps, in the
+same order as complete iteration; duplicate assignments yield one winning
+value per logical key. It allocates no scratch or retained metadata
+(`peakBytes() == 0`). Call `deinit()` even on early exit. Lookup and coverage
+share one cumulative work allowance and cancellation token across all `next()`
+calls. Errors, including stops during qualification, are terminal and repeat.
+An empty iterator does not imply known absence when source coverage is partial.
 
 The source/IR must remain alive, immutable and unmoved; folded edge views also
 borrow the materialized result. Returned attribute/port/value views borrow only
@@ -249,6 +274,8 @@ replenishable-credit session and does not change parser metering guarantees.
 Benchmark lowering/query costs with `zig build bench-ir-partial -Doptimize=ReleaseFast`
 and expansion/qualified attribute consumption with
 `zig build bench-ir-partial-edges -Doptimize=ReleaseFast` (also Safe/Small).
+For node/scope enumeration, run
+`zig build bench-ir-partial -Doptimize=ReleaseFast -- --attributes-only`.
 
 ## What you can read
 
@@ -877,7 +904,7 @@ including shared defaults, repeated updates, reopened/deep scopes and a symbolic
 product. The bulk attribute benchmark compares construction, full attribute
 consumption, retained/requested peak bytes and total arena capacity with compact
 queries. Run it alone with `zig build bench-ir-materialized -Doptimize=ReleaseFast`.
-Label-port existence/binding, event-based lowering, partial node/scope all-key enumeration,
+Label-port existence/binding, event-based lowering,
 fixed-storage IR construction and resumable IR operations remain
 later work.
 
