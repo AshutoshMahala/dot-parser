@@ -317,6 +317,164 @@ about 1.00 µs. These are different ownership/work contracts, not a free copying
 API. Empty output needs no allocated payload. Source bytes/operand boundaries
 remain unchanged in all forms.
 
+## Bulk edge attributes (2026-10-23, Unreleased)
+
+Apple M4 Pro, Zig 0.17.0; five process runs in each of ReleaseFast and
+ReleaseSafe. Each case takes nine measured rounds after two warmups, alternating
+topology + compact queries with attribute-folding materialization within each round.
+Numbers below are medians of the five process medians. Parsing/lowering and
+output IO are excluded from operation timings. The total includes construction,
+one complete read of all effective attributes, and result disposal; it does not
+time formatted strings. Both routes check the same consumed checksum.
+
+| Workload | Edges | Fast compact / folded total (ms) | Safe compact / folded total (ms) |
+| --- | ---: | ---: | ---: |
+| No attributes | 2,000 | 0.0329 / 0.0197 | 0.0468 / 0.0296 |
+| 64 shared defaults | 2,000 | 0.7252 / 0.3585 | 1.1593 / 0.6109 |
+| Eight explicit keys per edge | 2,000 | 0.1014 / 0.1771 | 0.1400 / 0.3380 |
+| 32 overlapping strict products, eight keys | 1,024 | 0.8893 / 1.3273 | 1.2279 / 1.4052 |
+| Reopened named subgraph, 31,375 pair contributions | 250 | 5.5093 / 0.2715 | 5.9959 / 0.3433 |
+
+Folding is **not universally faster for one consumption**. Explicit-heavy input
+pays to build winner indexes; the compact API can answer a one-time read more
+cheaply. Subsequent reads avoid that construction cost: Fast explicit-heavy
+reads were 0.0840 → 0.0169 ms, and overlapping-strict reads 0.7592 → 0.0094 ms.
+Reopened-subgraph total time improved about 20× in Fast and 17× in Safe. These
+are particular generated workloads, not a throughput guarantee.
+
+The topology path does not retain resolved attributes. Comparing its retained
+output with the folded output makes the extra storage cost explicit:
+
+| Workload | Retained topology / folded (bytes) | Peak requested topology / folded (bytes) |
+| --- | ---: | ---: |
+| No attributes | 38,064 / 38,064 | 63,344 / 63,344 |
+| 64 shared defaults | 38,064 / 38,396 | 63,344 / 63,344 |
+| Eight explicit keys per edge | 38,064 / 484,796 | 63,344 / 759,476 |
+| Overlapping strict products | 16,752 / 312,156 | 36,536 / 514,632 |
+| Reopened subgraph | 4,752 / 13,236 | 11,956 / 21,988 |
+
+These output-operation peaks include pair/endpoint scratch and old/new growth
+overlap but exclude the borrowed IR/source, stack and allocator metadata/RSS.
+Winner cells are 24 bytes on this build, plus root/key indexes and spare array
+capacity. Default snapshots stay shared; updates overwrite existing cells.
+The benchmark also reports total arena capacity for lowering plus output:
+in Fast, explicit-heavy input used 1,443,728 / 3,079,880 bytes, while the
+reopened workload stayed at 234,456 bytes on both routes. Arena retention and
+requested live peaks are different measurements; folding is not a general
+arena-memory optimization.
+
+A 5,000-level nested fixture also matched both paths. A 2,500 × 2,500 product
+remained symbolic until expansion was requested, then returned `PairLimit`
+under the existing four-million-pair default rather than publishing a prefix.
+
+### Unused-path comparison
+
+API selection is now `materialize(.{})` for folded attributes and
+`materialize(.{ .attributes = false })` for topology-only output. This deliberately
+changes the work performed by an unqualified materialization call; it does not
+add work to parsing, lowering or streaming. The tables above compare those two
+algorithms, not old and new defaults. The topology harness explicitly opts out of
+attributes so its historical comparisons remain like-for-like.
+
+The existing six-workload topology harness was compiled before this increment
+(`2b227a2`) and after bulk folding/API selection, **before endpoint-port support**,
+with five alternating before/after runs per build mode.
+The `__TEXT,__text` machine-code sections are **byte-identical** in both Fast
+and Safe. Retained IR bytes, lowering peaks, arena capacity, topology output
+peaks and streaming scratch are identical on every workload. Rechecking the
+unified API with `.attributes = false` preserves those identical machine-code
+sections; its executables gained 24 / 40 bytes of non-code data in Fast / Safe
+relative to the baseline. No attribute-folding code is present in that harness.
+Timing differences had overlapping run ranges (including the noisy product-prefix
+stream); they are not evidence of added default-path work. This comparison does
+not resolve the earlier view-wrapper streaming caveat recorded above.
+
+Run `zig build bench-ir-materialized -Doptimize=ReleaseFast` (or ReleaseSafe)
+for the focused report. `zig build bench-ir` includes it after the existing
+topology, compact-attribute and value benchmarks, sequentially. See
+[`bench/ir_materialized_attributes.zig`](../bench/ir_materialized_attributes.zig).
+
+### Endpoint-port increment (2026-10-23)
+
+Same machine/compiler and nine samples after two warmups; five alternating
+process runs per side, with no builds running during measurement. The topology
+baseline is the unified `materialize` API immediately before port support. The
+bulk baseline is the earlier bulk-folding build from this section, before that
+API rename; it performs the same operations but is not an exact one-change
+source comparison. The new harness handles nullable written-attribute indices.
+All times below are medians of process medians, not release-wide throughput.
+
+Endpoint suffixes now participate in effective values. New workloads compare
+topology plus compact attribute reads against materialization with folded values:
+
+| Workload | Effective edges | Fast compact / folded total (ms) | Safe compact / folded total (ms) |
+| --- | ---: | ---: | ---: |
+| Two endpoint suffixes per edge | 2,000 | 0.0569 / 0.0582 | 0.0860 / 0.1228 |
+| 3,200 strict contributions, reversed suffixes and explicit overrides | 100 | 2.3527 / 0.0696 | 2.4744 / 0.0913 |
+
+For the first workload, retained topology/folded output is 38,064 / 177,308
+bytes; peak requested output-operation allocation is 63,344 / 263,192 bytes.
+For strict updates those figures are 1,952 / 9,988 retained and 4,176 / 15,632
+peak bytes. Folding keeps only the winning values, not all 3,200 updates.
+
+Port-free retained/peak allocation and arena measurements remain unchanged
+against their respective baselines. No lowering pool was added; folded winner
+cells remain 24 bytes. On this native build the owning IR struct grows from
+456 to 464 bytes, and a returned `ResolvedAttribute` from 32 to 36 bytes.
+These are object/view sizes, not extra bytes per retained node or attribute.
+Ordinary operand views use one tagged payload rather than separate optional
+written/port payloads. These measurements exclude stack, allocator metadata
+and process RSS.
+
+**The timing gate is not clean.** Specializing port-free folding and avoiding
+redundant origin resolution recovered some overhead, but the following
+port-free regressions remain:
+
+| Operation/workload | Fast before → after (ms) | Safe before → after (ms) |
+| --- | ---: | ---: |
+| Reopened-subgraph topology expansion, 500,500 edges | 2.685 → 2.918 (+8.7%) | 4.365 → 4.401 (+0.8%) |
+| Strict reopened-subgraph streaming, 1,000 edges | 3.016 → 3.504 (+16.2%) | 2.955 → 3.019 (+2.2%) |
+| Eight explicit keys/edge, folded construction + consumption | 0.1922 → 0.2175 (+13.2%) | 0.3661 → 0.3834 (+4.7%) |
+| 64 defaults, compact construction + consumption | 0.7913 → 0.8811 (+11.3%) | 1.2758 → 1.4474 (+13.5%) |
+| No attributes, compact construction + consumption | 0.0366 → 0.0413 (+12.8%) | 0.0517 → 0.0565 (+9.3%) |
+
+Port-free lowering stayed within about 2% in this run; singleton/small-set
+topology expansion and streaming stayed within about 3%. A cold-field layout
+adjustment restored hot connection-field offsets but did **not** remove the
+reopened-subgraph regression. The bulk measurements include the larger returned
+provenance view/nullable-index consumption; they do not isolate its cost from
+code-generation changes. Do not describe this increment as regression-free.
+DOT/markup parsing and their metering/cancellation implementations were not
+changed or rebenchmarked here. IR work/limit/cancellation checks remain enabled.
+
+Correctness coverage includes 79 focused IR tests, native UTF-16/32 port values,
+allocation-failure cleanup, strict reversal/loops and cancellation boundaries.
+A separate Graphviz 16.0.0 cgraph comparison covered 256 generated graphs:
+4,850 effective edges and 9,700 head/tail values agreed. That corpus covers
+singleton↔set contributions; it is not an exhaustive equivalence claim for
+every possible endpoint ordering, renderer interpretation or label-port lookup.
+
+### Structured port views (2026-10-23)
+
+Compared the immediately preceding endpoint implementation with the borrowed
+`tailPort()`/`headPort()`, written-syntax and explicit Graphviz-splitting helpers.
+The existing bulk harness does not invoke the new helpers: its `__TEXT,__text`
+sections are **byte-identical** before/after in ReleaseFast and ReleaseSafe.
+The helpers add no retained fields or pools. Five alternating process runs per
+side/mode (nine samples after two warmups, no concurrent builds) give identical
+retained, peak-requested and arena byte counts on all eight successful workloads;
+the oversized symbolic product still fails with `PairLimit`.
+
+For example, port-free compact construction + consumption is 0.0373 → 0.0374 ms
+(Fast), 0.0514 → 0.0508 ms (Safe); folded explicit attributes are
+0.2084 → 0.2118 ms (Fast), 0.3714 → 0.3631 ms (Safe). Other tiny phases and
+reopened compact reads were noisier despite identical machine code; these are
+not claimed speedups. This checks the **unused-helper path**, not the cost of
+calling the new readers: first-colon splitting/text formatting re-read a value
+linearly with constant scratch and no allocation. Their bounded variants keep
+work limits/cancellation. The earlier endpoint-port regressions above remain
+unresolved; this follow-up does not erase that gate.
+
 ## Attribute string integration (Unreleased)
 
 Measured on 2026-10-19 against `fb64cc9`, Apple M4 Pro, Zig 0.16.0. The same

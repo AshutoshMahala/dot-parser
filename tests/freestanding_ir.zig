@@ -20,7 +20,7 @@ export fn topology(source: [*]const u8, length: u32, memory: [*]u8, capacity: u3
             if (!(ir.hasEdge(from, to) catch return 0)) return 0;
         }
     }
-    var graph = ir.materialize(.{}) catch return 0;
+    var graph = ir.materialize(.{ .attributes = false }) catch return 0;
     defer graph.deinit();
     return @intCast(graph.edges.len);
 }
@@ -41,6 +41,23 @@ export fn convenient(source: [*]const u8, length: u32, memory: [*]u8, capacity: 
     return count;
 }
 
+export fn materialized_attributes(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    var fixed: std.heap.FixedBufferAllocator = .init(memory[0..capacity]);
+    var result = dot.ir.parse(fixed.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const ir = result.ir() orelse return 0;
+    var graph = ir.materialize(.{}) catch return 0;
+    defer graph.deinit();
+    var edges = graph.edgeIterator();
+    var count: u32 = 0;
+    while (edges.next()) |edge| {
+        if (edge.attribute("color") != null) count +%= 1;
+        var values = edge.attributes();
+        while (values.next()) |attribute| count +%= attribute.resolved.attribute orelse 0;
+    }
+    return count;
+}
+
 export fn streaming(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
     var fixed: std.heap.FixedBufferAllocator = .init(memory[0..capacity]);
     var result = dot.ir.parse(fixed.allocator(), source[0..length], .{}) catch return 0;
@@ -51,6 +68,30 @@ export fn streaming(source: [*]const u8, length: u32, memory: [*]u8, capacity: u
     var count: u32 = 0;
     while (edges.next() catch return 0) |_| count += 1;
     return count;
+}
+
+export fn port_views(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    var fixed: std.heap.FixedBufferAllocator = .init(memory[0..capacity]);
+    var result = dot.ir.parse(fixed.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const ir = result.ir() orelse return 0;
+    var edges = ir.edgeIterator(.{}) catch return 0;
+    defer edges.deinit();
+    var buffer: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    if ((edges.next() catch return 0)) |edge| {
+        if ((edge.tailPort() catch return 0)) |port| {
+            if (port.syntax()) |syntax| {
+                syntax.first().writeLogicalWith(&writer, .{}) catch return 0;
+                _ = syntax.compassWith(.{}) catch return 0;
+            }
+            const parts = port.graphvizPartsWith(.{}) catch return 0;
+            parts.name().writeLogicalWith(&writer, .{}) catch return 0;
+            _ = parts.compassWith(.{}) catch return 0;
+            _ = parts.asCompassWith(.{}) catch return 0;
+        }
+    }
+    return @intCast(writer.buffered().len);
 }
 
 export fn attributes(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {

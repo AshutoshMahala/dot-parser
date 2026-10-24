@@ -6,6 +6,7 @@ const names = @import("names.zig");
 const r = @import("resources.zig");
 const encoding = @import("parser_support").encoding;
 const Unmetered = @import("../dot/identifier_cursor.zig").Unmetered;
+const ports = @import("ports.zig");
 
 pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime covers: anytype) type {
     return struct {
@@ -14,14 +15,29 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
             resolved: attrs.Resolved,
 
             /// Logical key/value formatters borrow the source; no decoded copy.
-            pub fn key(self: Attribute) names.Formatted(caps) {
-                return .{
-                    .raw = self.graph.text(self.graph.attributes[self.resolved.attribute].key),
+            pub const Key = union(enum) {
+                written: names.Formatted(caps),
+                port: ports.Key,
+                pub fn format(self: Key, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+                    switch (self) {
+                        .written => |written| try written.format(writer),
+                        .port => |key_name| try writer.writeAll(@tagName(key_name)),
+                    }
+                }
+            };
+            pub fn key(self: Attribute) Key {
+                if (self.resolved.port_key) |key_name| return .{ .port = key_name };
+                return .{ .written = .{
+                    .raw = self.graph.text(self.graph.attributes[self.resolved.attribute.?].key),
                     .actual = if (self.graph.source_info.encoding == .ascii and caps.utf8) .utf8 else self.graph.source_info.encoding,
-                };
+                } };
             }
             pub fn value(self: Attribute) Graph.ValueView {
                 return self.graph.attributeValue(self.resolved);
+            }
+            /// Same joined logical output as value(); no allocation or escaping.
+            pub fn format(self: Attribute, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+                return self.value().format(writer);
             }
         };
 
@@ -90,6 +106,25 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                 else
                     null;
             }
+            /// Effective ports belong to from()/to(), not the latest written sides.
+            pub fn tailPort(self: Edge) r.Error!?Graph.PortView {
+                return self.tailPortWith(.{});
+            }
+            pub fn headPort(self: Edge) r.Error!?Graph.PortView {
+                return self.headPortWith(.{});
+            }
+            pub fn tailPortWith(self: Edge, options: r.Options) r.Error!?Graph.PortView {
+                return if (try self.attributeWith("tailport", options)) |found|
+                    .{ .graph = found.graph, .resolved = found.resolved }
+                else
+                    null;
+            }
+            pub fn headPortWith(self: Edge, options: r.Options) r.Error!?Graph.PortView {
+                return if (try self.attributeWith("headport", options)) |found|
+                    .{ .graph = found.graph, .resolved = found.resolved }
+                else
+                    null;
+            }
             pub fn attributes(self: Edge, options: r.Options) r.Error!Iterator {
                 return Iterator.init(self.graph, .{ .edge = self.edge }, options);
             }
@@ -109,6 +144,11 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
             prepared: bool = false,
             done: bool = false,
             failure: ?r.Error = null,
+            // Initialized only by the port-bearing edge preparation path.
+            // Node/scope and port-free iterators never touch this scratch.
+            port_keys: ports.Keys = undefined,
+            port_winners: [2]?ports.Selection = undefined,
+            port_index: u2 = undefined,
 
             fn init(graph: *const Graph, target: Target, options: r.Options) r.Error!Iterator {
                 switch (target) {
@@ -136,13 +176,13 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                 return self.memory.peak;
             }
 
-            /// One effective value per key, in first-introduction order for
-            /// this object kind, including implicit empties. Errors are terminal
+            /// One effective value per key, in written-catalog order followed
+            /// by suffix-only tailport/headport keys, including implicit empties. Errors are terminal
             /// and repeat. Work/cancellation cover the whole iterator lifetime.
             pub fn next(self: *Iterator) r.Error!?Attribute {
                 if (self.failure) |err| return err;
                 if (self.done) return null;
-                return self.nextImpl() catch |err| {
+                return (if (self.graph.has_ports) self.nextImpl(true) else self.nextImpl(false)) catch |err| {
                     const failure = self.memory.failure(err);
                     self.failure = failure;
                     return failure;
@@ -184,8 +224,13 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                 unreachable; // All bound edge keys were included by initWinners.
             }
 
-            fn prepareEdge(self: *Iterator, edge: t.Edge) r.Error!void {
+            fn prepareEdge(self: *Iterator, comptime with_ports: bool, edge: t.Edge) r.Error!void {
                 const graph = self.graph;
+                if (with_ports) {
+                    self.port_keys = try ports.Keys.init(caps, graph, &self.work);
+                    self.port_winners = .{ null, null };
+                    self.port_index = 0;
+                }
                 const id = @backingInt(edge.first_connection);
                 const start: usize = if (graph.strict) 0 else id;
                 const end = if (graph.strict) graph.connections.len else @as(usize, id) + 1;
@@ -197,9 +242,16 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                         first = @intCast(index);
                         if (first != id) return error.InvalidHandle;
                     }
-                    // All-attribute iteration must not silently omit synthetic
-                    // headport/tailport, even if their keys aren't in the catalog.
-                    if (connection.left.port != null or connection.right.port != null) return error.UnsupportedSemantics;
+                    const connection_id: t.ConnectionId = @fromBackingInt(@as(u32, @intCast(index)));
+                    if (with_ports) {
+                        for (ports.suffixes(connection, connection_id, edge), 0..) |suffix, side| if (suffix) |value| {
+                            self.port_winners[side] = value;
+                        };
+                        for (connection.attributes.start..connection.attributes.start + connection.attributes.len) |attribute| {
+                            try self.work.spend(1);
+                            if (self.port_keys.key(graph.attribute_data.meta[attribute].key)) |key| self.port_winners[@backingInt(key)] = .{ .attribute = @intCast(attribute), .connection = connection_id };
+                        }
+                    }
                     if (!graph.strict or connection.attributes.len == 0) continue;
                     if (self.winners.len == 0) try self.initWinners();
                     for (connection.attributes.start..connection.attributes.start + connection.attributes.len) |attribute| {
@@ -210,10 +262,10 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                 if (first == null) return error.InvalidHandle;
             }
 
-            fn nextImpl(self: *Iterator) r.Error!?Attribute {
+            inline fn nextImpl(self: *Iterator, comptime with_ports: bool) r.Error!?Attribute {
                 try self.work.spend(0);
                 if (!self.prepared) {
-                    if (self.target == .edge) try self.prepareEdge(self.target.edge);
+                    if (self.target == .edge) try self.prepareEdge(with_ports, self.target.edge);
                     self.prepared = true;
                 }
                 const graph = self.graph;
@@ -258,6 +310,7 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                                     }
                                 }
                             }
+                            if (with_ports) if (self.port_keys.key(id)) |port_key| if (self.port_winners[@backingInt(port_key)]) |selection| return .{ .graph = graph, .resolved = ports.resolve(graph, selection, port_key, false) };
                             if (attribute) |written| return .{ .graph = graph, .resolved = attrs.resolvedConnection(graph, written, origin) };
                             scope = graph.occurrences[@backingInt(graph.connections[connection_id].occurrence)].scope;
                             break :blk store.connection_defaults[connection_id];
@@ -265,6 +318,16 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                     };
                     const written = try store.lookup(root, id, &self.work);
                     return .{ .graph = graph, .resolved = attrs.resolved(graph, written orelse key.first_attribute, key.kind, scope, written == null) };
+                }
+                if (self.target == .edge and with_ports) {
+                    while (self.port_index < 2) {
+                        const index = self.port_index;
+                        self.port_index += 1;
+                        if (self.port_keys.ids[index] < ports.right) continue;
+                        const key: ports.Key = @fromBackingInt(@intCast(index));
+                        if (self.port_winners[index]) |selection| return .{ .graph = graph, .resolved = ports.resolve(graph, selection, key, false) };
+                        if (try ports.introduction(graph, key, &self.work)) |intro| return .{ .graph = graph, .resolved = ports.resolve(graph, intro, key, true) };
+                    }
                 }
                 self.done = true;
                 return null;

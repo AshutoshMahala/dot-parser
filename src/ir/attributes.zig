@@ -8,15 +8,20 @@ const names = @import("names.zig");
 const r = @import("resources.zig");
 pub const none = names.empty;
 pub const Kind = enum { graph, node, edge };
-pub const Origin = union(enum) { declaration: u32, connection: t.ConnectionId };
-pub const Value = union(enum) { written: t.Range, empty };
+/// Port sides name the written statement, not the stored edge's orientation.
+pub const Origin = union(enum) { declaration: u32, connection: t.ConnectionId, written_left_port: t.ConnectionId, written_right_port: t.ConnectionId };
+pub const PortReference = struct { connection: t.ConnectionId, side: enum { left, right } };
+pub const Value = union(enum) { written: t.Range, port: PortReference, empty };
 pub const Resolved = struct {
     value: Value,
     /// Inherited means a default or another scope supplied this value.
-    kind: enum { explicit, inherited, empty },
+    kind: enum { explicit, inherited, derived, empty },
     /// Empty values name the assignment that introduced the key, not a fake
     /// assignment of an empty string.
-    attribute: u32,
+    attribute: ?u32,
+    /// Present for a derived endpoint value (or its introduced empty), which
+    /// has no written attribute assignment. Never invent a source range.
+    port_key: ?@import("ports.zig").Key = null,
     origin: Origin,
     scope: t.ScopeId,
 };
@@ -260,18 +265,25 @@ pub fn resolved(graph: anytype, attribute: u32, target: Kind, scope: t.ScopeId, 
     const origin_scope = switch (meta.origin) {
         .declaration => |id| graph.occurrences[@backingInt(graph.declarations[id].occurrence)].scope,
         .connection => |id| graph.occurrences[@backingInt(graph.connections[@backingInt(id)].occurrence)].scope,
+        .written_left_port, .written_right_port => unreachable, // Only written assignments have Meta.
     };
     const inherited = switch (meta.origin) {
         .declaration => |id| if (target == .graph) origin_scope != scope else graph.declarations[id].target == .defaults,
         .connection => false,
+        .written_left_port, .written_right_port => unreachable,
     };
     return .{ .value = if (empty) .empty else .{ .written = graph.attributes[attribute].value }, .kind = if (empty) .empty else if (inherited) .inherited else .explicit, .attribute = attribute, .origin = meta.origin, .scope = origin_scope };
 }
 
-pub fn resolvedConnection(graph: anytype, attribute: u32, connection: t.ConnectionId) Resolved {
-    var result = resolved(graph, attribute, .edge, .root, false);
-    // A chain shares written attributes; provenance names the actual link.
-    result.origin = .{ .connection = connection };
-    result.scope = graph.occurrences[@backingInt(graph.connections[@backingInt(connection)].occurrence)].scope;
-    return result;
+pub inline fn resolvedConnection(graph: anytype, attribute: u32, connection: t.ConnectionId) Resolved {
+    // An explicit winner is already known to belong to this contribution.
+    // A chain shares its written range: use the actual link's provenance,
+    // without resolving and then discarding the first link's origin/defaults.
+    return .{
+        .value = .{ .written = graph.attributes[attribute].value },
+        .kind = .explicit,
+        .attribute = attribute,
+        .origin = .{ .connection = connection },
+        .scope = graph.occurrences[@backingInt(graph.connections[@backingInt(connection)].occurrence)].scope,
+    };
 }

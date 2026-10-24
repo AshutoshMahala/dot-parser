@@ -68,14 +68,14 @@ pub fn main(init: std.process.Init) !void {
         } else {
             for (0..11) |round| {
                 const start = std.Io.Clock.Timestamp.now(init.io, .awake);
-                var graph = try ir.materialize(.{});
+                var graph = try ir.materialize(.{ .attributes = false });
                 const end = std.Io.Clock.Timestamp.now(init.io, .awake);
                 defer graph.deinit();
                 if (round >= 2) times[round - 2] = @intCast(start.durationTo(end).raw.nanoseconds);
                 std.mem.doNotOptimizeAway(graph.edges);
             }
             std.mem.sort(u64, &times, {}, std.sort.asc(u64));
-            var graph = try ir.materialize(.{});
+            var graph = try ir.materialize(.{ .attributes = false });
             defer graph.deinit();
             try w.print("{d:.3},{d},{d},", .{ @as(f64, @floatFromInt(times[times.len / 2])) / 1e6, graph.edges.len, graph.peak_bytes });
         }

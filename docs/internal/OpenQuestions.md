@@ -38,7 +38,7 @@ has been discussed.
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes, borrowed value/operand views and source origins | Bulk attribute folding, port resolution, markup-result association, event/partial/session IR, consumer adapters and marshal/unmarshal |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed value/operand views, source origins and bulk attribute folding | Label-port binding, markup-result association, event/partial/session IR, consumer adapters and marshal/unmarshal |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and
@@ -277,8 +277,18 @@ interpretation policies through `Profile` (Q35). *(Embodied: `src/dot/parser.zig
 This package, as a separate optional layer (`DotIR` + explicit lowering
 passes) — never inside the parser core. Unreleased Document-based topology and
 direct effective-attribute/default queries and borrowed component views with
-all-attribute iteration are in `src/ir/`. Bulk attribute
-folding, port resolution, event lowering and partial/session IR remain.
+all-attribute iteration are in `src/ir/`. Explicit materialization folds
+edge attributes by default under the same expansion limits/cancellation, with
+a compile-time topology-only option. Endpoint suffixes now resolve to derived
+`tailport`/`headport` values: defaults, then suffixes, then explicit attributes;
+strict updates map suffixes to the first edge's orientation without swapping
+explicit attribute names. Written syntax/spans remain retained and no labels
+are processed implicitly. Borrowed `tailPort()`/`headPort()` views keep winning
+endpoint structure (`syntax()`) separate from the opt-in first-colon Graphviz
+reading (`graphvizParts()`). Lone compass-like identifiers remain ambiguous;
+unknown suffix text is preserved, and origins name written sides rather than
+stored orientation. No additional retained storage is needed. Label-port existence/binding,
+event lowering and partial/session IR remain.
 *(Embodied: `docs/IR.md`, roadmap slice 7.)*
 
 **Q6 — Which input modes are required initially?**
@@ -1124,9 +1134,14 @@ scan symbolic contributions without expansion. Graph attributes snapshot at
 scope creation; node/edge defaults inherit current parent defaults unless locally
 overridden. Borrowed node/scope/edge views expose individual attributes and
 bounded all-attribute iteration; strict iteration folds one edge's contributions
-once using key-sized scratch, never an expanded pair table. Bulk attribute
-folding across edges, port-derived attributes and the advanced
-contracts remain open; this does not complete the entire semantic-layer slice. *(Embodied:
+once using key-sized scratch, never an expanded pair table.
+`materialize(.{})` now folds contributions during forward expansion,
+borrows default snapshots/values and retains mutable maps of explicit winners.
+Its certified views have infallible lookup/enumeration and bounded variants.
+`.attributes = false` selects topology-only output at compile time; runtime
+limits/cancellation still apply. Parsing/lowering do not invoke materialization.
+Port-derived attributes and the advanced contracts remain open; this does not
+complete the entire semantic-layer slice. *(Embodied:
 `src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*
 
 **Q18 — Which index widths and pool sizes define the first embedded retained

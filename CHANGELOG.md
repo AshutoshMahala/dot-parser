@@ -8,6 +8,31 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Borrowed IR `tailPort()` / `headPort()` views share effective attribute
+  precedence and provenance. `syntax()` preserves written endpoint components;
+  explicit `graphvizParts()` provides the first-colon interpretation without
+  losing ambiguous names, unknown compass text or empties. Helpers allocate
+  nothing, add no retained storage, and offer bounded/cancellable variants.
+  **Breaking:** port-specific access moved off general value/operand views;
+  endpoint origins are `.written_left_port` / `.written_right_port` to distinguish
+  written sides from stored edge orientation. No legacy aliases.
+- IR attribute views format directly as their logical value with `{f}`;
+  optional views use `{?f}` without forced unwrapping. The materialized-edges
+  example prints explicit label updates alongside creation-time defaults.
+- IR endpoint suffixes now resolve to effective `headport`/`tailport` across
+  compact queries, enumeration and folded materialization. Explicit attributes
+  override suffixes; strict updates respect first-edge orientation, including
+  reversed undirected edges. Derived values retain component spans and format
+  without a decoded allocation. Label-port existence/layout remain separate.
+  **Breaking:** `ResolvedAttribute.attribute` is now optional (null for derived origins).
+- `ir.materialize(.{})` now folds effective edge attributes during
+  forward expansion, including strict duplicate contributions and creation-time
+  defaults. Materialized views provide infallible indexed lookup/enumeration,
+  with bounded variants. Values/defaults/provenance borrow the IR; mutable maps
+  retain only winning explicit assignments. Output, scratch, growth, pair visits
+  and updates share enforced limits/cancellation. `.attributes = false` is the compile-time topology-only option;
+  limits/cancellation remain runtime values. Includes a printable example and
+  `bench-ir-materialized`.
 - Optional `console.printDiagnostics(io, items, options)` for DOT, markup,
   string and composed profiles: numbered boxes to stderr using shared rendering,
   a fixed stack buffer and caller IO. No heap allocation; write/flush failures
@@ -23,7 +48,7 @@ are marked; no compatibility shims are kept.
   source origins. Immutable maps share default states; strict edge queries
   inspect symbolic contributions without expanding pairs. Attribute maps have
   explicit work/memory/state limits; no state is allocated for attribute-free
-  input. Bulk attribute folding and port-derived attributes remain later work.
+  input. Endpoint-derived port values require no additional lowering pools.
   Borrowed node/scope/edge views offer `.attribute(key)` and bounded
   `.attributes(options)` iteration with logical formatters and provenance.
   Strict-edge iteration merges contributions once using key-sized scratch;

@@ -74,6 +74,21 @@ pub fn build(b: *std.Build) void {
     const test_ir = b.step("test-ir", "Test IR semantics, value views and examples");
     test_ir.dependOn(&b.addRunArtifact(ir_tests).step);
     const test_step = b.step("test", "Run unit and public integration tests");
+    for ([_]struct { name: []const u8, message: []const u8 }{
+        .{ .name = "ir_materialize_unknown", .message = "unknown IR materialization option: attributtes" },
+        .{ .name = "ir_materialize_runtime", .message = "unable to resolve comptime value" },
+        .{ .name = "ir_materialize_limit", .message = "unknown IR materialization option field: max_pair" },
+    }) |fixture| {
+        const rejected = b.addObject(.{ .name = fixture.name, .root_module = b.createModule(.{
+            .root_source_file = b.path(b.fmt("tests/compile_fail/{s}.zig", .{fixture.name})),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "dot_parser", .module = mod }},
+        }) });
+        rejected.expect_errors = .{ .contains = fixture.message };
+        test_ir.dependOn(&rejected.step);
+        test_step.dependOn(&rejected.step);
+    }
     const check_tools = b.step("check-tools", "Test and compile the Zig generators and performance reporter");
     const perf_tool = b.addExecutable(.{ .name = "perf-string", .root_module = b.createModule(.{
         .root_source_file = b.path("tools/perf_string.zig"),
@@ -402,6 +417,7 @@ pub fn build(b: *std.Build) void {
         "build_graph",
         "graph_attributes",
         "graph_values",
+        "materialized_attributes",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -433,6 +449,12 @@ pub fn build(b: *std.Build) void {
         }
         if (std.mem.eql(u8, name, "graph_values")) {
             run_example.expectStdErrEqual(@embedFile("tests/fixtures/graph_values.txt"));
+            run_example.expectStdOutEqual("");
+            test_ir.dependOn(&run_example.step);
+            test_step.dependOn(&run_example.step);
+        }
+        if (std.mem.eql(u8, name, "materialized_attributes")) {
+            run_example.expectStdErrEqual(@embedFile("tests/fixtures/materialized_attributes.txt"));
             run_example.expectStdOutEqual("");
             test_ir.dependOn(&run_example.step);
             test_step.dependOn(&run_example.step);
@@ -556,10 +578,21 @@ pub fn build(b: *std.Build) void {
     }) });
     const run_ir_values_bench = b.addRunArtifact(ir_values_bench);
     run_ir_values_bench.step.dependOn(&run_ir_attributes_bench.step);
-    b.step("bench-ir", "Measure IR lowering, edges, attributes and value views").dependOn(&run_ir_values_bench.step);
+    const ir_materialized_attributes_bench = b.addExecutable(.{ .name = "ir_materialized_attributes_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_materialized_attributes.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    const run_ir_materialized_attributes_bench = b.addRunArtifact(ir_materialized_attributes_bench);
+    run_ir_materialized_attributes_bench.step.dependOn(&run_ir_values_bench.step);
+    b.step("bench-ir", "Measure IR lowering, edges, attributes and value views").dependOn(&run_ir_materialized_attributes_bench.step);
+    b.step("bench-ir-materialized", "Compare bulk attribute folding with compact edge queries")
+        .dependOn(&b.addRunArtifact(ir_materialized_attributes_bench).step);
     check_benches.dependOn(&ir_bench.step);
     check_benches.dependOn(&ir_attributes_bench.step);
     check_benches.dependOn(&ir_values_bench.step);
+    check_benches.dependOn(&ir_materialized_attributes_bench.step);
     const identifier_bench = b.addExecutable(.{
         .name = "identifier_bench",
         .root_module = b.createModule(.{

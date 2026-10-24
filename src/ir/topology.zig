@@ -6,6 +6,7 @@ const encoding = support.encoding;
 const names = @import("names.zig");
 const r = @import("resources.zig");
 const attrs = @import("attributes.zig");
+const ports = @import("ports.zig");
 pub const Range = support.location.Range;
 pub const NodeId = enum(u32) { _ };
 pub const ScopeId = enum(u32) { root, _ };
@@ -38,16 +39,43 @@ pub const Declaration = struct {
     attributes: syntax.AttributeRange,
 };
 pub const Edge = struct { from: NodeId, to: NodeId, operator: syntax.EdgeOperator, first_connection: ConnectionId };
-pub const Materialized = struct {
+pub const MaterializedTopology = struct {
     edges: []const Edge,
     peak_bytes: usize,
     allocator: std.mem.Allocator,
     storage: []Edge,
-    pub fn deinit(self: *Materialized) void {
+    pub fn deinit(self: *MaterializedTopology) void {
         self.allocator.free(self.storage);
         self.* = undefined;
     }
 };
+
+// Normalize anonymous option literals without losing field checking/defaults.
+// Typed runtime optionals and explicit null use the same execution contract.
+fn optionalOption(comptime T: type, value: anytype) ?T {
+    if (@TypeOf(value) == T) return value;
+    switch (@typeInfo(@TypeOf(value))) {
+        .null => return null,
+        .optional => return if (value) |payload| optionalOption(T, payload) else null,
+        else => {},
+    }
+    comptime {
+        for (std.meta.fieldNames(@TypeOf(value))) |field| {
+            if (!@hasField(T, field)) @compileError("unknown IR materialization option field: " ++ field);
+        }
+    }
+    var result: T = undefined;
+    const fields = @typeInfo(T).@"struct";
+    inline for (fields.field_names, fields.field_types, fields.field_attrs) |name, Field, attr| {
+        @field(result, name) = if (@hasField(@TypeOf(value), name))
+            @field(value, name)
+        else if (attr.default_value_ptr) |ptr|
+            @as(*const Field, @ptrCast(@alignCast(ptr))).*
+        else
+            @compileError("missing IR materialization option field: " ++ name);
+    }
+    return result;
+}
 
 pub fn Graph(comptime caps: encoding.Capabilities) type {
     return struct {
@@ -77,6 +105,10 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         node_slots: []const u32,
         posting_offsets: []const u32,
         posting_positions: []const u32,
+        /// Conservative fast-path flag; node-only suffixes may also set it.
+        /// Keep new cold flags after the pools: Zig's automatic layout otherwise
+        /// moves the connection/membership fields used by topology-only loops.
+        has_ports: bool,
 
         const Views = @import("views.zig").For(Self, caps, connectionCovers);
         pub const NodeView = Views.Node;
@@ -87,6 +119,16 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         const Values = @import("values.zig").For(Self, caps);
         pub const ValueView = Values.Value;
         pub const OperandView = Values.Operand;
+        const Ports = @import("port_views.zig").For(Self);
+        pub const PortView = Ports.Port;
+        pub const PortSyntaxView = Ports.Syntax;
+        pub const GraphvizPortParts = Ports.GraphvizParts;
+        pub const PortText = Ports.Text;
+        pub const CompassStatus = Ports.CompassStatus;
+
+        pub fn portKeys(self: *const Self, work: anytype) r.Error!ports.Keys {
+            return ports.Keys.init(caps, self, work);
+        }
 
         /// Borrowed context for component-oriented access. No allocation or
         /// owner pointer in retained records. Keep this IR alive and unmoved.
@@ -259,9 +301,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             if (id >= self.connections.len or @backingInt(edge.from) >= self.nodes.len or @backingInt(edge.to) >= self.nodes.len) return error.InvalidHandle;
             var work = try r.Work.init(options.limits orelse self.limits, options.cancellation);
             if (!try self.connectionCovers(self.connections[id], edge, &work)) return error.InvalidHandle;
-            // Synthesizing port attributes, including reversed strict edges,
-            // belongs to port resolution. Never report a falsely absent value.
-            const port_query = std.mem.eql(u8, key, "headport") or std.mem.eql(u8, key, "tailport");
+            const port_key: ?ports.Key = if (!self.has_ports) null else if (std.mem.eql(u8, key, "tailport")) .tailport else if (std.mem.eql(u8, key, "headport")) .headport else null;
             const key_id = try attrs.findKey(caps, self, .edge, key, &work);
             var first: ?u32 = null;
             var explicit: ?u32 = null;
@@ -271,7 +311,10 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             for (self.connections[start..end], start..) |connection, index| {
                 try work.spend(1);
                 if (self.strict and !try self.connectionCovers(connection, edge, &work)) continue;
-                if (port_query and (connection.left.port != null or connection.right.port != null)) return error.UnsupportedSemantics;
+                if (port_key) |wanted| if (ports.suffixes(connection, @fromBackingInt(@as(u32, @intCast(index))), edge)[@backingInt(wanted)]) |suffix| {
+                    explicit = suffix.attribute;
+                    explicit_connection = suffix.connection;
+                };
                 if (first == null) first = @intCast(index);
                 if (key_id) |wanted| {
                     var at = connection.attributes.start + connection.attributes.len;
@@ -288,9 +331,13 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             }
             if (first != id) return error.InvalidHandle;
             if (explicit) |attribute| {
+                if (attribute >= ports.right) return ports.resolve(self, .{ .attribute = attribute, .connection = explicit_connection }, port_key.?, false);
                 return attrs.resolvedConnection(self, attribute, explicit_connection);
             }
-            const wanted = key_id orelse return null;
+            const wanted = key_id orelse {
+                if (port_key) |key_kind| if (try ports.introduction(self, key_kind, &work)) |intro| return ports.resolve(self, intro, key_kind, true);
+                return null;
+            };
             const root = self.attribute_data.connection_defaults[id];
             const value = try self.attribute_data.lookup(root, wanted, &work);
             const scope = self.occurrences[@backingInt(self.connections[id].occurrence)].scope;
@@ -320,7 +367,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             var work = try r.Work.init(self.limits, null);
             return self.containsWork(members, node, &work);
         }
-        fn containsWork(self: *const Self, members: Membership, node: NodeId, work: *r.Work) r.Error!bool {
+        pub fn containsWork(self: *const Self, members: Membership, node: NodeId, work: *r.Work) r.Error!bool {
             const id = @backingInt(node);
             if (id >= self.nodes.len) return error.InvalidHandle;
             const handle = @backingInt(members);
@@ -367,11 +414,35 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             return EdgeIterator.init(self, options);
         }
 
-        /// Explicit owning expansion, using the same traversal as edgeIterator.
-        /// Strict graphs merge pairs; non-strict graphs preserve occurrences.
-        /// Attributes remain raw in the IR.
-        pub fn materialize(self: *const Self, options: r.Options) r.Error!Materialized {
-            return @import("edges.zig").materialize(Self, self, options);
+        pub const Materialized = @import("materialized_attributes.zig").For(Self, caps);
+
+        /// Owning expansion with effective attributes by default. Set the
+        /// compile-time option .attributes = false for topology-only output.
+        /// Limits/cancellation remain runtime values and cover the whole operation.
+        /// Attribute results borrow this IR; topology-only records own their array.
+        /// All-or-error. No attribute/endpoint-port folding code or state is
+        /// instantiated by the topology-only specialization.
+        pub inline fn materialize(self: *const Self, options: anytype) r.Error!(if (if (@hasField(@TypeOf(options), "attributes")) options.attributes else true) Materialized else MaterializedTopology) {
+            comptime {
+                for (std.meta.fieldNames(@TypeOf(options))) |field| {
+                    if (!std.mem.eql(u8, field, "attributes") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation"))
+                        @compileError("unknown IR materialization option: " ++ field);
+                }
+            }
+            const execution: r.Options = .{
+                .limits = if (@hasField(@TypeOf(options), "limits")) optionalOption(r.Limits, options.limits) else null,
+                .cancellation = if (@hasField(@TypeOf(options), "cancellation")) optionalOption(r.Cancellation, options.cancellation) else null,
+            };
+            return self.materializeImpl(comptime if (@hasField(@TypeOf(options), "attributes")) options.attributes else true, execution);
+        }
+
+        // Keep execution behind one typed boundary regardless of the literal's
+        // shape. The inline public adapter only selects/coerces configuration.
+        fn materializeImpl(self: *const Self, comptime attributes: bool, options: r.Options) r.Error!(if (attributes) Materialized else MaterializedTopology) {
+            return if (attributes)
+                @import("materialized_attributes.zig").materialize(Self, self, options)
+            else
+                @import("edges.zig").materialize(Self, self, options);
         }
     };
 }

@@ -94,7 +94,7 @@ Optional child-processor validation is the caller's acceptance decision.
 | `scopeMembership(scope)` | Final version of a semantic scope |
 | `hasEdge(from, to)` | Whether any effective connection covers the pair; undirected edges work both ways |
 | `edgeIterator(options)` | Stream borrowed edge views in semantic order, without retaining the expanded output array |
-| `materialize(options)` | Retain those edges in an owning array |
+| `materialize(options)` | Retain edges and fold effective attributes in one forward pass; `.attributes = false` selects topology-only output |
 | `nodeAttribute(node, key)` | Final node value with origin, or absence |
 | `scopeAttribute(scope, key)` | Final graph/subgraph value with origin; `.root` is the graph |
 | `edgeAttribute(edge, key)` | Final value for a streamed/materialized edge, including strict updates |
@@ -170,6 +170,10 @@ original `.edge` record and `.from()`/`.to()` node views. A lookup/iteration
 entry exposes `.key()` as a logical formatter and `.value()` as a borrowed value
 view (also formattable), plus
 `.resolved` with the full `ResolvedAttribute` provenance described below.
+Formatting an attribute with `{f}` prints its value directly, exactly like
+`attribute.value()`, without allocating or escaping. `{?f}` accepts an optional
+attribute: absent keys print `null`, while implicit-empty and written-empty
+values print no characters. They remain distinct through `.resolved.kind`.
 
 `node.name()` and indexed node/scope `.attribute(key)` access are infallible and
 unmetered on valid views. Lookup uses the existing key index and balanced map,
@@ -210,16 +214,21 @@ Lookups distinguish the cases below. On a view entry, these fields live under
 | `null` | The key was never introduced for that object kind (graph, node or edge) |
 | `.kind = .explicit` | An explicit assignment supplies the final value |
 | `.kind = .inherited` | A creation-time default or parent graph snapshot supplies it |
+| `.kind = .derived` | An endpoint suffix supplies an effective `tailport` or `headport` |
 | `.kind = .empty` | The key exists, but DOT supplies an implicit empty value here |
 
 An explicit `color=""` is still `.explicit`, with `.value = .written`.
 A language-defined empty is `.value = .empty`, not a fabricated source range.
 No Graphviz renderer defaults (such as an assumed default shape) are added.
 
-`ResolvedAttribute.attribute` indexes `ir.attributes`; `.origin` identifies
-the declaration or connection and `.scope` identifies that origin's scope.
-For an implicit empty, these identify **the first assignment introducing the
-key**, not a source assignment of an empty string. A chain shares its written
+`ResolvedAttribute.attribute` is an optional index into `ir.attributes`; it is
+null for endpoint-derived values and their introduced empties. `.origin` identifies
+the declaration, connection, or `.written_left_port`/`.written_right_port` endpoint;
+`.scope` identifies that origin's scope. Derived keys are named by `.port_key`.
+Port origins name the written statement side; tail/head follow the stored edge.
+For an implicit empty, these identify the catalog's first written assignment,
+or the first effective endpoint contribution for a suffix-only key, not a source
+assignment of an empty string. A chain shares its written
 attribute list, but an explicit edge result identifies the applicable link.
 The original key/value ranges remain available, including quotes and HTML-like
 delimiters. All ranges use original source-byte offsets.
@@ -311,13 +320,106 @@ manufacture views or change their fields.
   choose one parallel occurrence's attributes.
 
 These rules have focused comparisons against Graphviz 16.0.0's cgraph behavior.
-Endpoint ports are still retained separately. Synthesizing `headport`/`tailport`
-and their precedence with explicit attributes is not implemented: querying
-either key returns `UnsupportedSemantics` if a contribution to that edge uses
-an endpoint port. Other attribute queries remain available. All-attribute edge
-iteration returns `UnsupportedSemantics` **before yielding any entries** for
-such an edge, even if port keys weren't explicitly written: it cannot honestly
-enumerate all effective attributes while synthesized ports remain unsupported.
+
+### Endpoint ports
+
+Endpoint suffixes participate in effective edge attributes without changing
+written syntax or adding fake assignments to `ir.attributes`:
+
+| Input/contribution | Effective result |
+| --- | --- |
+| `a:p:n -> b:q` | `tailport = "p:n"`, `headport = "q"` |
+| `a:p -> b [tailport=q]` | Explicit `tailport=q` wins over the suffix |
+| `strict digraph { a:p -> b:q; a -> b:r }` | Tail stays `p`; head becomes `r` |
+| `strict graph { a:p -- b:q; b:r -- a:s }` | In the first edge's `a`–`b` orientation: tail `s`, head `r` |
+| `strict graph { a:p -- b:q; b:r -- a:s [tailport=x] }` | Tail `x`, head `r`; explicit attribute names are not swapped |
+| `a:p -> {}` | No pair and no introduced port attribute |
+
+Creation defaults apply first, then suffixes, then the contribution's explicit
+attributes. Strict updates retain omitted values. Only suffixes are mapped to
+the first edge's orientation; self-loop left/right suffixes remain tail/head.
+Chains apply a middle endpoint's suffix to each adjacent link. Port names are
+case-sensitive logical DOT identifiers, not markup to process or compass names
+to validate. A single `:n` remains the string `n`: it may name a port, and the
+IR does not guess its layout meaning.
+
+A derived value has `.kind() == .string`, resolved `.value = .port` (a compact
+connection/side reference, not copied port syntax),
+and yields one string operand. `raw()`/`span()`
+cover from the first identifier through the second, preserving quotes, `+`,
+comments and the intervening colon, but excluding the leading node/colon.
+`{f}`, `writeLogical` and `toString` join the logical components with `:`.
+The operand has null `form()` and `innerSpan()` because it is derived, not a
+single written DOT token; `fragment()` is null even for `a:<p>`.
+
+`edge.tailPort()` and `edge.headPort()` expose small borrowed views of the **same
+effective winners** as `attribute("tailport")` and `attribute("headport")`.
+Tail belongs to `edge.from()`, head to `edge.to()`, in stored orientation. For
+compact edges these queries remain fallible/bounded; materialized edges have
+infallible indexed lookup. Both offer `tailPortWith(options)` / `headPortWith(options)`.
+The returned view's `.resolved` keeps the attribute's kind and provenance;
+`.value()` gives its general value view. An implicit/explicit empty is a view,
+not `null`. `null` means that the key is absent.
+
+Keep the two readings explicit:
+
+| Access | Meaning |
+| --- | --- |
+| `port.syntax()` | Winning endpoint syntax, or `null` for an attribute/default/implicit empty |
+| `syntax.first()` / `syntax.second()` | Logical first and optional second identifiers, without splitting either |
+| `syntax.spans`, `syntax.raw()`, `syntax.span()` | Original source-byte ranges and whole suffix spelling, including intervening syntax |
+| `port.graphvizParts()` | Effective logical value split at its **first** colon |
+| `parts.name()` / `parts.compassText()` | Text before and optional text after that colon; empty suffix differs from absent |
+| `syntax.compass()` / `parts.compass()` | `.absent`, `.recognized` (`dot.ir.Compass`), or `.unrecognized` (the retained text) |
+| `syntax.first().asCompass()` / `parts.asCompass()` | A compass candidate, **not** layout resolution; `parts` returns a candidate only without a colon |
+
+For `a:"x:y":n`, syntax retains `x:y` and `n`; the explicit Graphviz reading
+returns `x` and the unrecognized suffix `y:n`. For `tailport="x:y:n"`, only the
+Graphviz reading is available: there are no endpoint component spans to invent.
+Neither reading rewrites or discards the original spelling.
+
+```zig
+// A compact edge: lookup may inspect contributions under the IR limits.
+if (try edge.tailPort()) |port| {
+    if (port.syntax()) |syntax| {
+        std.debug.print("written first identifier: {f}\n", .{syntax.first()});
+    }
+    const parts = port.graphvizParts();
+    std.debug.print("name: {f}, compass text: {?f}\n", .{ parts.name(), parts.compassText() });
+}
+```
+
+A lone `a:n` retains the identifier `n`; Graphviz prefers a shape-defined port
+named `n`, otherwise it treats it as a compass. The helpers do not inspect the
+shape. Recognition is case-sensitive (`n`, `ne`, `e`, `se`, `s`, `sw`, `w`, `nw`,
+`c`, `_`); the enum names `_` as `.automatic`. An absent second component stays
+absent: renderer defaults are not inserted. `<p>` in a port is the identifier
+`p`, **not** a markup subtree, including through `syntax.first()`.
+
+These text views provide `{f}`, `writeLogical(writer)` and
+`writeLogicalWith(writer, options)`. They stream logical bytes through constant-size
+scratch, with no allocation or decoded cache. Native UTF-16/32 produces UTF-8;
+byte profiles preserve their bytes. Text windows are **not source spans**:
+formatting re-reads the underlying value even for a suffix. Splitting and
+compass recognition are linear single-value reads, infallible by default, with
+`graphvizPartsWith`, `compassWith` and `asCompassWith` for bounded/cancellable
+work. Each `With` call has its own work allowance; it is not a resumable session.
+All port/syntax/text views borrow only the IR and its source, not materialized
+storage. No extra per-edge fields, pools or indexes are retained for these helpers.
+
+All access paths agree: compact queries, all-attribute iteration and folded
+materialization. Written catalog keys retain their introduction order; additional
+suffix-only keys are appended in `tailport`, `headport` order. An introduced
+suffix-only key supplies an implicit empty on other edges; an unintroduced key
+is absent. Compact queries discovering these empties may inspect other
+port-bearing connections and their partners under the same work/cancellation
+limits. They do not allocate or expand Cartesian products. Materialization
+discovers introductions during its existing forward pass and remains indexed.
+
+This is endpoint-value resolution only. It does **not** parse a label, check
+whether a named port exists, bind a label subtree, or compute attachment geometry.
+Source suffixes remain available on every original connection even when an
+explicit attribute overrides their effective value.
 
 ## Symbolic first; expand explicitly
 
@@ -355,13 +457,16 @@ ordered, strict undirected pairs are unordered. A strict edge keeps the first
 connection's orientation and provenance. Ports do not change edge identity.
 **All** written contributions remain in `ir.connections`. Use `edge.attribute`
 to resolve a value across them (or `ir.edgeAttribute(edge.edge, key)`). The view
-borrows context; neither iteration nor materialization copies per-edge attribute
-tables. Materialization still returns compact `Edge` records, not views.
+borrows context; streaming does not build per-edge attribute indexes.
+Materialization resolves attributes by default, as described below. If only
+connectivity is needed, topology-only materialization returns compact `Edge`
+records without building those indexes. Attributes remain in the IR for later
+individual queries; disabling their materialization does not discard them.
 
-If you need to retain the entire expanded edge array instead:
+To retain just the expanded edge array:
 
 ```zig
-var graph = try ir.materialize(.{});
+var graph = try ir.materialize(.{ .attributes = false });
 defer graph.deinit();
 for (graph.edges) |edge| {
     // edge.from / edge.to are IDs in ir.nodes.
@@ -376,6 +481,82 @@ Strict generic graphs, and strict concrete graphs preserving an operator
 inconsistent with their effective kind, return `UnsupportedSemantics`.
 Non-strict generic graphs retain both edge kinds. No mixed-kind strict identity
 rule is invented here.
+
+### Materialize effective attributes once
+
+The ordinary call retains edges and their resolved effective attributes:
+
+```zig
+var graph = try ir.materialize(.{});
+defer graph.deinit(); // Before releasing ir or its source.
+
+var edges = graph.edgeIterator();
+while (edges.next()) |edge| {
+    if (edge.attribute("color")) |color|
+        std.debug.print("{f} -> {f}: {f}\n", .{
+            edge.from().name(), edge.to().name(), color,
+        });
+    var attributes = edge.attributes();
+    while (attributes.next()) |attribute|
+        std.debug.print("  {f}={f}\n", .{ attribute.key(), attribute });
+}
+```
+
+See [materialized_attributes.zig](../examples/materialized_attributes.zig).
+Construction is bounded and fallible; lookup and iteration on its certified views
+are infallible. No iterator allocation or `deinit` is needed. The output keeps
+the same `edges` records, first-connection ordering and orientation as the
+topology-only option. Attribute enumeration follows edge-key introduction order and
+includes implicit empties, just like compact attribute iteration. Values, source
+spans, winning connection/declaration origins and mixed operands are unchanged.
+
+`edge.attributeWith(key, options)` and `edge.attributesWith(options)` add explicit
+work limits/cancellation for reading the folded result. The latter accumulates
+its budget across `next()` calls and repeats terminal errors. No lookup scans
+connection history or expands endpoint sets.
+
+The forward pass applies every connection's explicit assignments to its visited
+pairs, including strict duplicates. An existing strict edge keeps its creation
+defaults; later default changes do not replace them. Non-strict parallel edges
+stay independent. The algorithm does **not** query the entire compact graph
+separately for each output edge.
+
+The result owns its edge array and explicit-winner maps, but borrows the IR's
+default snapshots, keys, source values and provenance. Keep the IR/source alive,
+immutable and unmoved; edge views/iterators additionally require their materialized
+result to stay alive and unmoved. Returned attribute/value views borrow only the
+IR. Nothing is copied into a new string or markup tree.
+`graph.retainedBytes()` includes output allocation capacities; `graph.peak_bytes`
+also includes temporary growth and pair/endpoint scratch, excluding the IR.
+
+Only materialization builds these maps; ordinary parsing, lowering and streaming
+do not. `.attributes` defaults to `true`. Set it to `false` when only connectivity
+is needed or compact, on-demand attribute queries are preferable. Folding spends
+additional time and memory up front; a single read of a simple graph may be
+cheaper through compact queries. Defaults are shared, and overwritten explicit
+assignments reuse map cells instead of retaining update history.
+
+`.attributes` is a **compile-time** selection because it changes the result's
+capabilities: the default returns `IR.Graph.Materialized` with attribute views;
+`false` returns `dot.ir.MaterializedTopology` with only the owning `edges` array.
+No folding state or code is instantiated in the topology-only path. `limits`
+and `cancellation` remain runtime values, including when passed together with
+`.attributes`. `dot.ir.Options` also works directly and uses the default
+attribute-enabled result. Unknown fields are compile errors.
+
+All output is published together, or an error is returned and storage released.
+The operation's `max_pairs`, `max_edges`, `max_work`, `max_bytes` and
+`max_attribute_states` apply throughout, including strict duplicates, map updates,
+hash probes, scratch and old/new buffers during growth. Here
+`max_attribute_states` bounds distinct explicit `(edge, key)` winners, not every
+update. Shared defaults and implicit empties need no per-edge cells.
+These are total-operation limits and cooperative cancellation, not resumable
+metering or hard deadlines.
+
+Endpoint-derived values use the same winner cells as explicit assignments;
+repeated port updates replace a winner rather than retaining an update list.
+Defaults and empty values are still shared. `.attributes = false` omits all
+attribute folding, including endpoint ports, while preserving the source IR.
 
 ## Ownership, limits and costs
 
@@ -405,8 +586,14 @@ Non-strict edge queries inspect their own connection's list and creation map;
 strict queries scan symbolic connections and membership, retaining no expanded
 pairs. All probes, comparisons and map/traversal steps are work-limited.
 Repeated per-edge queries can therefore cost edges × connections: this is
-**not** a bulk attribute-export index. A forward-pass materializer that folds
-all effective attributes across all edges remains future work.
+**not** a bulk attribute-export index. Default `materialize` supplies the
+forward-pass path described above. Its explicit-winner maps use
+balanced trees: updates/lookups are O(log K) for K explicit keys on that edge,
+in addition to pair/index work. Default lookup uses the shared immutable maps.
+The operation still visits every contributed pair, including duplicates; output
+edge count alone does not bound its work. It retains O(E + A + K_total) output
+storage for E edges, A distinct explicit edge/key winners, and K_total edge keys,
+plus pair/endpoint scratch. It never creates a dense edges × all-keys table.
 
 All-attribute iteration scans the interned key catalog (including skipping other
 object kinds). Node/scope iteration performs a map lookup per relevant key.
@@ -514,7 +701,10 @@ Recorded numbers are in [Performance](PERFORMANCE.md#document-to-ir-topology-unr
 
 The same command also reports attribute-bearing lowering and direct query costs,
 including shared defaults, repeated updates, reopened/deep scopes and a symbolic
-product. Bulk attribute folding, port resolution, event-based lowering, partial
+product. The bulk attribute benchmark compares construction, full attribute
+consumption, retained/requested peak bytes and total arena capacity with compact
+queries. Run it alone with `zig build bench-ir-materialized -Doptimize=ReleaseFast`.
+Label-port existence/binding, event-based lowering, partial
 IR results, fixed-storage IR construction and resumable IR operations remain
 later work.
 

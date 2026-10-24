@@ -9,6 +9,7 @@ const r = @import("resources.zig");
 const operands = @import("../dot/identifier_parts.zig");
 const logical = @import("../dot/identifier_value.zig");
 const Unmetered = @import("../dot/identifier_cursor.zig").Unmetered;
+const ports = @import("ports.zig");
 
 pub const Kind = enum { string, markup, concatenation };
 pub const OperandKind = enum { string, markup };
@@ -27,6 +28,7 @@ pub fn For(comptime Graph: type, comptime caps: encodings.Capabilities) type {
                 return switch (self.selected) {
                     .empty => null,
                     .written => |range| range,
+                    .port => |reference| ports.span(ports.syntax(self.graph, reference)),
                 };
             }
             pub fn encoding(self: Value) encodings.Actual {
@@ -43,6 +45,10 @@ pub fn For(comptime Graph: type, comptime caps: encodings.Capabilities) type {
                 return self.kindWork(&work);
             }
             fn kindWork(self: Value, work: anytype) !Kind {
+                if (self.selected == .port) {
+                    try work.spend(0);
+                    return .string;
+                }
                 var iterator = self.parts();
                 const first = (try iterator.nextWork(work)).?;
                 // Certified expression ranges end at their last operand. The
@@ -63,6 +69,7 @@ pub fn For(comptime Graph: type, comptime caps: encodings.Capabilities) type {
             /// Logical DOT strings plus unchanged markup interiors. No entity
             /// expansion, text extraction, renderer escapes or variable substitution.
             pub fn writeLogical(self: Value, writer: anytype) !void {
+                if (self.selected == .port) return self.writePort(writer, Unmetered{});
                 const bytes = self.raw() orelse return;
                 switch (self.reader()) {
                     inline else => |actual| if (comptime caps.allows(actual)) {
@@ -76,6 +83,7 @@ pub fn For(comptime Graph: type, comptime caps: encodings.Capabilities) type {
             }
             fn writeWork(self: Value, writer: anytype, work: anytype) !void {
                 try work.spend(0);
+                if (self.selected == .port) return self.writePort(writer, work);
                 const bytes = self.raw() orelse return;
                 switch (self.reader()) {
                     inline else => |actual| if (comptime caps.allows(actual)) {
@@ -85,6 +93,19 @@ pub fn For(comptime Graph: type, comptime caps: encodings.Capabilities) type {
             }
             pub fn toString(self: Value, allocator: std.mem.Allocator) r.Error![]u8 {
                 return self.toStringWith(allocator, .{});
+            }
+            fn writePort(self: Value, writer: anytype, work: anytype) !void {
+                const port = ports.syntax(self.graph, self.selected.port);
+                switch (self.reader()) {
+                    inline else => |actual| if (comptime caps.allows(actual)) {
+                        try write(actual, self.graph.text(port.first), writer, work);
+                        if (port.second) |second| {
+                            try work.spend(1);
+                            try writer.writeAll(":");
+                            try write(actual, self.graph.text(second), writer, work);
+                        }
+                    } else unreachable,
+                }
             }
             /// Two bounded passes, one exact allocation. No growable-buffer
             /// peak/slack. Caller frees the result with the supplied allocator.
@@ -107,19 +128,24 @@ pub fn For(comptime Graph: type, comptime caps: encodings.Capabilities) type {
 
         pub const Operand = struct {
             graph: *const Graph,
-            // Null is one implicit empty string, not a fabricated source range.
-            part: ?operands.Part,
+            // One representation, not two optional payloads: ordinary operand
+            // views do not grow just to carry a derived port reference.
+            selected: union(enum) { written: operands.Part, port: attrs.PortReference, empty },
             pub fn kind(self: Operand) OperandKind {
-                return if (self.part != null and self.part.?.form == .html) .markup else .string;
+                return if (self.selected == .written and self.selected.written.form == .html) .markup else .string;
             }
             pub fn form(self: Operand) ?operands.Part.Form {
-                return if (self.part) |part| part.form else null;
+                return if (self.selected == .written) self.selected.written.form else null;
             }
             pub fn span(self: Operand) ?Range {
-                return if (self.part) |part| .{ .start = part.raw.start, .len = part.raw.len } else null;
+                return switch (self.selected) {
+                    .written => |part| .{ .start = part.raw.start, .len = part.raw.len },
+                    .port => |reference| ports.span(ports.syntax(self.graph, reference)),
+                    .empty => null,
+                };
             }
             pub fn innerSpan(self: Operand) ?Range {
-                return if (self.part) |part| .{ .start = part.inner.start, .len = part.inner.len } else null;
+                return if (self.selected == .written) .{ .start = self.selected.written.inner.start, .len = self.selected.written.inner.len } else null;
             }
             pub fn raw(self: Operand) ?[]const u8 {
                 return if (self.span()) |range| self.graph.text(range) else null;
@@ -133,7 +159,7 @@ pub fn For(comptime Graph: type, comptime caps: encodings.Capabilities) type {
                 return .{ .input = .{ .bytes = self.graph.text(inner), .origin = inner.start }, .encoding = self.encoding() };
             }
             fn value(self: Operand) Value {
-                return .{ .graph = self.graph, .selected = if (self.span()) |range| .{ .written = range } else .empty };
+                return .{ .graph = self.graph, .selected = if (self.selected == .port) .{ .port = self.selected.port } else if (self.span()) |range| .{ .written = range } else .empty };
             }
             pub fn format(self: Operand, writer: *std.Io.Writer) std.Io.Writer.Error!void {
                 return self.value().format(writer);
@@ -156,9 +182,13 @@ pub fn For(comptime Graph: type, comptime caps: encodings.Capabilities) type {
             fn nextWork(self: *Parts, work: anytype) !?Operand {
                 if (self.done) return null;
                 try work.spend(0);
+                if (self.value.selected == .port) {
+                    self.done = true;
+                    return .{ .graph = self.value.graph, .selected = .{ .port = self.value.selected.port } };
+                }
                 const range = self.value.span() orelse {
                     self.done = true;
-                    return .{ .graph = self.value.graph, .part = null };
+                    return .{ .graph = self.value.graph, .selected = .empty };
                 };
                 const bytes = self.value.graph.text(range);
                 const part = switch (self.value.reader()) {
@@ -175,7 +205,7 @@ pub fn For(comptime Graph: type, comptime caps: encodings.Capabilities) type {
                     } else unreachable,
                 };
                 self.done = self.offset == range.len;
-                return if (part) |found| .{ .graph = self.value.graph, .part = found } else null;
+                return if (part) |found| .{ .graph = self.value.graph, .selected = .{ .written = found } } else null;
             }
         };
 

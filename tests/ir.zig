@@ -8,6 +8,8 @@ test {
     _ = @import("ir_attributes.zig");
     _ = @import("ir_views.zig");
     _ = @import("ir_values.zig");
+    _ = @import("ir_materialized_attributes.zig");
+    _ = @import("ir_ports.zig");
 }
 
 fn lower(allocator: std.mem.Allocator, source: []const u8) !IR.Graph {
@@ -49,7 +51,7 @@ test "IR convenience parse matches explicit lowering with no extra allocation or
         }
         try expect(nodes.next() == null);
         try expect(nodes.next() == null);
-        var graph = try ir.materialize(.{});
+        var graph = try ir.materialize(.{ .attributes = false });
         defer graph.deinit();
         try equal(@as(usize, 3), graph.edges.len);
     }
@@ -146,7 +148,7 @@ test "IR lowers complete topology without expanding endpoint products" {
     const to = (try ir.findNode("b")).?;
     try expect(try ir.hasEdge(from, to));
     try expect(!try ir.hasEdge(to, from));
-    var graph = try ir.materialize(.{});
+    var graph = try ir.materialize(.{ .attributes = false });
     defer graph.deinit();
     try equal(@as(usize, 5), graph.edges.len);
 }
@@ -229,7 +231,7 @@ test "IR reopened scopes freeze statement-end snapshots without retroactive chan
         for ([_][]const u8{ "a", "b", "c" }) |to| try expect(try edge(&ir, from, to));
         try expect(try edge(&ir, "y", from));
     }
-    var materialized = try ir.materialize(.{});
+    var materialized = try ir.materialize(.{ .attributes = false });
     defer materialized.deinit();
     try equal(@as(usize, 13), materialized.edges.len);
     try expect(!try ir.contains(ir.occurrences[1].membership, try node(&ir, "b")));
@@ -242,7 +244,7 @@ test "IR anonymous scopes stay distinct and nested members include descendant no
     try equal(ir.occurrences.len, ir.scopes.len);
     try expect(try edge(&ir, "a", "c"));
     try expect(try edge(&ir, "b", "c"));
-    var graph = try ir.materialize(.{});
+    var graph = try ir.materialize(.{ .attributes = false });
     defer graph.deinit();
     try equal(@as(usize, 2), graph.edges.len);
     try expect(!try edge(&ir, "d", "e"));
@@ -253,7 +255,7 @@ test "IR strict pairs coalesce in forward contribution order while non-strict ke
     inline for (.{ "strict graph { a--b; b--a; {a b}--{a b}; a--a }", "graph { a--b; b--a; {a b}--{a b}; a--a }" }, .{ @as(usize, 3), @as(usize, 7) }) |source, expected| {
         var ir = try lower(a, source);
         defer ir.deinit();
-        var graph = try ir.materialize(.{});
+        var graph = try ir.materialize(.{ .attributes = false });
         defer graph.deinit();
         try equal(expected, graph.edges.len);
         try expect(try edge(&ir, "b", "a"));
@@ -262,7 +264,7 @@ test "IR strict pairs coalesce in forward contribution order while non-strict ke
     }
     var directed = try lower(a, "strict digraph { a->b; b->a; a->b }");
     defer directed.deinit();
-    var graph = try directed.materialize(.{});
+    var graph = try directed.materialize(.{ .attributes = false });
     defer graph.deinit();
     try equal(@as(usize, 2), graph.edges.len);
 }
@@ -287,11 +289,11 @@ test "IR limits and cancellation fail explicitly without pretending absence" {
     try std.testing.expectError(error.Cancelled, IR.lowerComplete(a, doc, .{ .interpretation = interpretation, .cancellation = cancel }));
     var ir = try IR.lowerComplete(a, doc, .{ .interpretation = interpretation });
     defer ir.deinit();
-    try std.testing.expectError(error.PairLimit, ir.materialize(.{ .limits = .{ .max_pairs = 1 } }));
-    try std.testing.expectError(error.EdgeLimit, ir.materialize(.{ .limits = .{ .max_edges = 1 } }));
-    try std.testing.expectError(error.MemoryLimit, ir.materialize(.{ .limits = .{ .max_bytes = 1 } }));
+    try std.testing.expectError(error.PairLimit, ir.materialize(.{ .attributes = false, .limits = .{ .max_pairs = 1 } }));
+    try std.testing.expectError(error.EdgeLimit, ir.materialize(.{ .attributes = false, .limits = .{ .max_edges = 1 } }));
+    try std.testing.expectError(error.MemoryLimit, ir.materialize(.{ .attributes = false, .limits = .{ .max_bytes = 1 } }));
     try std.testing.expectError(error.WorkLimit, ir.hasEdgeWith(try node(&ir, "a"), try node(&ir, "b"), .{ .limits = .{ .max_work = 0 } }));
-    try std.testing.expectError(error.Cancelled, ir.materialize(.{ .cancellation = cancel }));
+    try std.testing.expectError(error.Cancelled, ir.materialize(.{ .attributes = false, .cancellation = cancel }));
     try std.testing.expectError(error.InvalidHandle, ir.hasEdge(@fromBackingInt(500), try node(&ir, "a")));
     try std.testing.expectError(error.InvalidHandle, ir.contains(@fromBackingInt(1000), try node(&ir, "a")));
 }
@@ -308,7 +310,7 @@ test "IR rejects partial Documents instead of publishing a complete graph" {
 fn allocationProbe(allocator: std.mem.Allocator, doc: *const dot.Document) !void {
     var ir = try IR.lowerComplete(allocator, doc, .{ .interpretation = dot.Profile(.{}).interpretation(doc, .{}) });
     defer ir.deinit();
-    var graph = try ir.materialize(.{});
+    var graph = try ir.materialize(.{ .attributes = false });
     defer graph.deinit();
     var edges = try ir.edgeIterator(.{});
     defer edges.deinit();
@@ -355,7 +357,7 @@ test "IR nesting is iterative and Cartesian products stay symbolic" {
     try equal(@as(usize, 4000), product.nodes.len);
     try expect(try edge(&product, "n0", "n3999"));
     try expect(product.peak_bytes < 4 * 1024 * 1024);
-    try std.testing.expectError(error.PairLimit, product.materialize(.{ .limits = .{ .max_pairs = 1_000_000 } }));
+    try std.testing.expectError(error.PairLimit, product.materialize(.{ .attributes = false, .limits = .{ .max_pairs = 1_000_000 } }));
 }
 
 test "IR interpretation preserves written operators and explicit profile meanings" {
@@ -477,7 +479,7 @@ test "IR empty and isolated-node graphs need no connections" {
         defer ir.deinit();
         try equal(count, ir.nodes.len);
         try equal(@as(usize, 0), ir.connections.len);
-        var graph = try ir.materialize(.{});
+        var graph = try ir.materialize(.{ .attributes = false });
         defer graph.deinit();
         try equal(@as(usize, 0), graph.edges.len);
     }
@@ -520,7 +522,7 @@ test "IR generated reopened nested scopes agree with an independent eager set or
             const actual = if (ids[from] != null and ids[to] != null) try ir.hasEdge(ids[from].?, ids[to].?) else false;
             try equal(present, actual);
         };
-        var graph = try ir.materialize(.{});
+        var graph = try ir.materialize(.{ .attributes = false });
         defer graph.deinit();
         try equal(expected_edges, graph.edges.len);
         // Verify streamed pairs against the independent eager oracle as well
@@ -549,7 +551,7 @@ test "IR mixed endpoint chains preserve every link and first introductions" {
     defer ir.deinit();
     try equal(@as(usize, 6), ir.connections.len);
     for ([_][]const u8{ "a", "b", "c", "d", "e", "f", "g" }, 0..) |name, i| try equal(@as(u32, @intCast(i)), @backingInt(try node(&ir, name)));
-    var graph = try ir.materialize(.{});
+    var graph = try ir.materialize(.{ .attributes = false });
     defer graph.deinit();
     try equal(@as(usize, 8), graph.edges.len);
     try expect(try edge(&ir, "d", "e"));
@@ -598,7 +600,7 @@ test "IR cancellation during lowering and expansion discards operation-owned sto
     var ir = try IR.lowerComplete(a, doc, .{ .interpretation = dot.Profile(.{}).interpretation(doc, .{}) });
     defer ir.deinit();
     var counter: Counter = .{ .left = 8 };
-    try std.testing.expectError(error.Cancelled, ir.materialize(.{ .cancellation = .{ .context = &counter, .is_requested = Counter.poll } }));
+    try std.testing.expectError(error.Cancelled, ir.materialize(.{ .attributes = false, .cancellation = .{ .context = &counter, .is_requested = Counter.poll } }));
     // The existing IR is still queryable after a stopped expansion.
     try expect(try edge(&ir, "a", "d"));
 }
@@ -619,7 +621,7 @@ test "IR streaming preserves nested contribution, endpoint and parallel occurren
     };
     var stream = try ir.edgeIterator(.{});
     defer stream.deinit();
-    var graph = try ir.materialize(.{});
+    var graph = try ir.materialize(.{ .attributes = false });
     defer graph.deinit();
     for (expected, graph.edges) |wanted, materialized| {
         const actual = (try stream.next()).?.edge;
@@ -711,7 +713,7 @@ test "IR streaming can consume a bounded prefix of a large symbolic product" {
     }
     try equal(retained, memory.allocated_bytes - memory.freed_bytes);
     // Owning output cannot succeed with that cap: reject before expanding it.
-    try std.testing.expectError(error.PairLimit, ir.materialize(options));
+    try std.testing.expectError(error.PairLimit, ir.materialize(.{ .attributes = false, .limits = options.limits, .cancellation = options.cancellation }));
     try equal(retained, memory.allocated_bytes - memory.freed_bytes);
 }
 
@@ -745,7 +747,7 @@ test "IR materialization has one combined scratch and output allocation limit" {
     while (try stream.next() != null) {}
     // Both paths need the same endpoint scratch. An output buffer in addition
     // must not fit by silently receiving its own independent max_bytes cap.
-    try std.testing.expectError(error.MemoryLimit, ir.materialize(.{ .limits = .{ .max_bytes = stream.peakBytes() } }));
+    try std.testing.expectError(error.MemoryLimit, ir.materialize(.{ .attributes = false, .limits = .{ .max_bytes = stream.peakBytes() } }));
 }
 
 test "IR streaming cancellation is polled between calls and inside endpoint and strict walks" {

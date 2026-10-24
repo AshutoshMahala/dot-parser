@@ -1,0 +1,2 @@
+a -> b: color=red, label="updated"
+a -> c: color=green, label=""

@@ -19,6 +19,47 @@ fn formatted(expected: []const u8, value: anytype) !void {
     try std.testing.expectEqualStrings(expected, writer.buffered());
 }
 
+test "IR attribute format delegates to values and distinguishes absent from empty optionals" {
+    var ir = try lower(
+        "digraph {label=root; node[color=red];" ++
+            "a[text=\"a\"+\"bee\" html=<<B>x&amp;y</B>> empty=\"\"];" ++
+            "b[only_b=x]; a:p:n->b[label=\"edge\"]}",
+    );
+    defer ir.deinit();
+    const node = try ir.nodeView((try ir.findNode("a")).?);
+    try formatted("red", node.attribute("color").?);
+    try formatted("abee", node.attribute("text").?);
+    try formatted("<B>x&amp;y</B>", node.attribute("html").?);
+    try formatted("", node.attribute("empty").?);
+    try formatted("", node.attribute("only_b").?);
+    try equal(.explicit, node.attribute("empty").?.resolved.kind);
+    try equal(.empty, node.attribute("only_b").?.resolved.kind);
+
+    var output: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output);
+    try writer.print("text={?f}; written=[{?f}]; implicit=[{?f}]; absent={?f}", .{
+        node.attribute("text"), node.attribute("empty"), node.attribute("only_b"), node.attribute("missing"),
+    });
+    try std.testing.expectEqualStrings("text=abee; written=[]; implicit=[]; absent=null", writer.buffered());
+    const root = try ir.scopeView(.root);
+    try formatted("root", root.attribute("label").?);
+
+    var edges = try ir.edgeIterator(.{});
+    defer edges.deinit();
+    const edge = (try edges.next()).?;
+    try formatted("p:n", (try edge.attribute("tailport")).?);
+    var materialized = try ir.materialize(.{});
+    defer materialized.deinit();
+    var folded_edges = materialized.edgeIterator();
+    const folded = folded_edges.next().?;
+    try formatted("edge", folded.attribute("label").?);
+    try formatted("p:n", folded.attribute("tailport").?);
+
+    var small: [1]u8 = undefined;
+    var short_writer = std.Io.Writer.fixed(&small);
+    try std.testing.expectError(error.WriteFailed, short_writer.print("{?f}", .{node.attribute("text")}));
+}
+
 /// Compare iteration with independent direct lookups, including every origin.
 fn checkAll(view: anytype, expected: []const []const u8) !void {
     var iterator = try view.attributes(.{});
@@ -94,7 +135,7 @@ test "IR edge views fold strict overlaps once and keep non-strict chain and para
     try checkAll((try edges.next()).?, &.{ "color", "weight", "label" });
 }
 
-test "IR attribute iteration is empty without keys and rejects unsupported ports before emitting anything" {
+test "IR attribute iteration is empty without keys and includes derived endpoint ports" {
     inline for (.{ "digraph {a->b}", "strict digraph {a->b}" }) |source| {
         var ir = try lower(source);
         defer ir.deinit();
@@ -112,9 +153,12 @@ test "IR attribute iteration is empty without keys and rejects unsupported ports
         const view = (try edges.next()).?;
         var attributes = try view.attributes(.{});
         defer attributes.deinit();
-        try std.testing.expectError(error.UnsupportedSemantics, attributes.next());
-        try std.testing.expectError(error.UnsupportedSemantics, attributes.next());
-        if (try edges.next()) |unrelated| try checkAll(unrelated, &.{ "color", "label" });
+        var found_port = false;
+        while (try attributes.next()) |attribute| if (attribute.resolved.port_key == .tailport) {
+            found_port = true;
+        };
+        try std.testing.expect(found_port);
+        if (try edges.next()) |unrelated| try checkAll(unrelated, &.{ "color", "label", "tailport" });
     }
 }
 
@@ -267,6 +311,7 @@ test "IR attribute views preserve Unicode keys and native original spans" {
         const node = try ir.nodeView((try ir.findNode("a")).?);
         try checkAll(node, &.{"café"});
         try formatted("😀", (node.attribute("café")).?.value());
+        try formatted("😀", node.attribute("café").?);
         const root = try ir.scopeView(.root);
         try checkAll(root, &.{"café"});
         try formatted("root", (root.attribute("café")).?.value());

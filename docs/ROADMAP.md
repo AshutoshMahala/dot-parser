@@ -10,8 +10,9 @@ the implemented contracts.
   [semantic IR](IR.md) resolves unique nodes, shared scope membership, symbolic
   connections, effective attributes/defaults and their origins from complete
   Documents. Borrowed component views expose individual/all effective attributes.
-  Edge iteration/materialization is explicit and bounded. Forward-pass
-  attribute materialization across edges, port resolution,
+  Edge iteration/materialization is explicit and bounded. Materialization resolves
+  bulk edge updates and endpoint-port values once by default, with a topology-only
+  option. Label-port existence/binding,
   event lowering, partial IR, fixed storage and metered sessions remain.
 - **Feeding input in pieces.** Today the whole input must be in memory before
   parsing starts.

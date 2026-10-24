@@ -84,7 +84,8 @@ test "diagnostic printing skips IO for empty input and propagates write failures
 test "markup and composed diagnostic printing use their own shared adapters" {
     const finding: markup.Diagnostic = .{ .code = .unexpected_close, .span = .{ .start = 2, .len = 1 } };
     try markup.console.printDiagnostics(.failing, &.{}, .{});
-    try expectPrinted(markup.console, &.{finding}, .{ .source = "</b>" }, 13);
+    const markup_findings = [_]markup.Diagnostic{finding};
+    try expectPrinted(markup.console, &markup_findings, .{ .source = "</b>" }, 13);
 
     const Parser = dot.Profile(.{ .processors = .{ .markup = markup.Profile(.{}) } });
     const findings = [_]Parser.Diagnostic{

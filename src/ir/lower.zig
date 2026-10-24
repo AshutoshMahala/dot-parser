@@ -104,6 +104,14 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
         }
         fn node(self: *Self, reference: syntax.NodeReference, occurrence: u32) r.Error!t.Endpoint {
             const view = self.doc.nodeReference(reference) orelse return error.InvalidDocument;
+            if (comptime encoding.Reader(actual).width != 1) if (view.port) |port| {
+                // Native derived formatting is infallible after admission.
+                _ = try names.hash(actual, try self.raw(port.first), &self.work);
+                if (port.second) |second| {
+                    if (second.start < port.first.start + port.first.len) return error.InvalidDocument;
+                    _ = try names.hash(actual, try self.raw(second), &self.work);
+                }
+            };
             const spelling = try self.raw(view.identifier);
             const hash = try names.hash(actual, spelling, &self.work);
             var found: ?u32 = null;
@@ -420,6 +428,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
             if (connection_count > self.limits.max_connections) return error.ConnectionLimit;
             const attribute_count = @as(u64, self.doc.attributes.len) + self.doc.assignments.len;
             if (attribute_count > self.limits.max_attributes) return error.AttributeLimit;
+            if (attribute_count >= @import("ports.zig").right) return error.IndexLimit;
             try self.prepareScopes();
             self.mentions = try self.a.alloc(t.Mention, @intCast(mention_count));
             self.connections = try self.a.alloc(t.Connection, @intCast(connection_count));
@@ -467,6 +476,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 .declared_kind = self.doc.kind,
                 .kind = self.interpretation.kind,
                 .strict = self.doc.strict,
+                .has_ports = self.doc.ported_references.len != 0,
                 .name = self.doc.name,
                 .nodes = self.nodes.items,
                 .node_storage = self.nodes.allocatedSlice(),

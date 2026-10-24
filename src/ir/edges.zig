@@ -32,6 +32,16 @@ fn pairHash(operator: Operator, pair: [2]u32) u64 {
 /// indexes the output itself for strict deduplication; streaming keeps only
 /// compact pair keys. Neither path maintains a second copy of its edge list.
 pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
+    return Engine(Graph, retaining, false, false);
+}
+
+/// Private owning specialization: reuse exactly the same pair traversal and
+/// deduplication, but fold both new and repeated contributions before publishing.
+pub fn AttributeMaterializer(comptime Graph: type, comptime with_ports: bool) type {
+    return Engine(Graph, true, true, with_ports);
+}
+
+fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attributes: bool, comptime with_ports: bool) type {
     return struct {
         const Self = @This();
         const Stored = if (retaining) t.Edge else [2]u32;
@@ -56,6 +66,7 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
         emitted: u32 = 0,
         done: bool = false,
         failure: ?r.Error = null,
+        folded: if (fold_attributes) @import("materialized_attributes.zig").Builder(with_ports) else void,
 
         pub fn init(graph: *const Graph, options: r.Options) r.Error!Self {
             const limits = options.limits orelse graph.limits;
@@ -65,6 +76,7 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
                 .max_edges = limits.max_edges,
                 .work = try r.Work.init(limits, options.cancellation),
                 .memory = .{ .backing = graph.allocator, .limit = limits.max_bytes },
+                .folded = if (fold_attributes) .{ .limit = limits.max_attribute_states } else {},
             };
         }
 
@@ -77,6 +89,7 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
             a.free(self.marks);
             self.pairs.deinit(a);
             self.stored.deinit(a);
+            if (fold_attributes) self.folded.deinit(a);
             self.* = undefined;
         }
 
@@ -213,6 +226,7 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
                         while (self.pairs.slots[at] != names.empty) : (at = (at + 1) & (self.pairs.slots.len - 1)) {
                             try self.work.spend(1);
                             if (std.meta.eql(storedPair(self.stored.items[self.pairs.slots[at]]), key)) {
+                                if (fold_attributes) try self.folded.apply(self.graph, self.pairs.slots[at], edge.first_connection, if (with_ports) self.stored.items[self.pairs.slots[at]] else {}, a, &self.work);
                                 found = true;
                                 break;
                             }
@@ -234,6 +248,7 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
                 } else if (self.emitted >= self.max_edges) return error.EdgeLimit;
                 if (retaining) {
                     try self.stored.append(a, edge);
+                    if (fold_attributes) try self.folded.apply(self.graph, self.emitted, edge.first_connection, if (with_ports) edge else {}, a, &self.work);
                 } else if (self.graph.strict) {
                     try self.stored.append(a, key);
                 }
@@ -246,11 +261,11 @@ pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
     };
 }
 
-pub fn materialize(comptime Graph: type, graph: *const Graph, options: r.Options) r.Error!t.Materialized {
+pub fn materialize(comptime Graph: type, graph: *const Graph, options: r.Options) r.Error!t.MaterializedTopology {
     var iterator = try Iterator(Graph, true).init(graph, options);
     defer iterator.deinit();
     _ = try iterator.next();
-    const result: t.Materialized = .{
+    const result: t.MaterializedTopology = .{
         .edges = iterator.stored.items,
         .storage = iterator.stored.allocatedSlice(),
         .allocator = graph.allocator,

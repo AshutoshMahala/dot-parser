@@ -40,7 +40,7 @@ test "IR defaults apply at object creation while explicit updates preserve other
     _ = try value(&ir, try ir.nodeAttribute(try node(&ir, "b"), "color"), "blue");
     const shape = try value(&ir, try ir.nodeAttribute(na, "shape"), "diamond");
     try equal(.explicit, shape.kind);
-    try std.testing.expectEqualStrings("diamond", ir.text(ir.attributes[shape.attribute].value));
+    try std.testing.expectEqualStrings("diamond", ir.text(ir.attributes[shape.attribute.?].value));
     const empty = try value(&ir, try ir.nodeAttribute(try node(&ir, "b"), "shape"), "");
     try equal(.empty, empty.kind);
     try expect(empty.value == .empty);
@@ -157,7 +157,7 @@ test "IR attribute names and values reuse logical identity without renderer proc
     try expect(try ir.nodeAttribute(id, "\"color\"") == null);
 }
 
-test "IR attribute queries reject handles, preserve stops, and expose unsupported port synthesis" {
+test "IR attribute queries reject handles, preserve stops, and resolve endpoint ports" {
     var ir = try lower("strict digraph {node[color=red]; a:p->b[color=blue]; a->b[color=green]; c->d[tailport=e]}");
     defer ir.deinit();
     var edges = try ir.edgeIterator(.{});
@@ -168,7 +168,7 @@ test "IR attribute queries reject handles, preserve stops, and expose unsupporte
     var wrong = edge;
     wrong.first_connection = @fromBackingInt(1);
     try std.testing.expectError(error.InvalidHandle, ir.edgeAttribute(wrong, "color"));
-    try std.testing.expectError(error.UnsupportedSemantics, ir.edgeAttribute(edge, "tailport"));
+    try equal(.derived, (try value(&ir, try ir.edgeAttribute(edge, "tailport"), "p")).kind);
     _ = try value(&ir, try ir.edgeAttribute(edge, "color"), "green");
     _ = try value(&ir, try ir.edgeAttribute((try edges.next()).?.edge, "tailport"), "e");
     try std.testing.expectError(error.WorkLimit, ir.nodeAttributeWith(edge.from, "color", .{ .limits = .{ .max_work = 0 } }));
