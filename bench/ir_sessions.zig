@@ -48,7 +48,12 @@ pub fn main(init: std.process.Init) !void {
     const out = &output.interface;
     try out.print("session_state_bytes,topology={d},attributes={d}\n", .{ @sizeOf(Graph.MaterializationSession(false)), @sizeOf(Graph.MaterializationSession(true)) });
     try out.writeAll("case,attributes,cancellation,mode,median_ms,credits,polls,edges,retained_bytes,peak_bytes,outcome\n");
-    for (std.meta.tags(fixtures.Case)) |case| {
+    // One unreported folding traversal warms the process before measuring.
+    // Otherwise CPU ramp-up dominates the first fixture, even with per-route
+    // warmups. Keep the tiny plain/defaults builds after the larger cases.
+    const cases = std.meta.tags(fixtures.Case);
+    for (0..cases.len + 1) |case_index| {
+        const case = cases[((case_index -| 1) + 2) % cases.len];
         var source = std.Io.Writer.Allocating.init(init.gpa);
         defer source.deinit();
         try fixtures.sourceFor(&source.writer, case);
@@ -89,6 +94,7 @@ pub fn main(init: std.process.Init) !void {
                 retained[index] = if (attributes) graph.retainedBytes() else graph.storage.len * @sizeOf(dot.ir.Edge);
                 peak[index] = graph.peak_bytes;
             };
+            if (case_index == 0) continue;
             for (budgets, 0..) |budget, index| {
                 std.mem.sort(u64, &samples[index], {}, std.sort.asc(u64));
                 const name: []const u8 = if (budget == null) "direct" else switch (budget.?) {

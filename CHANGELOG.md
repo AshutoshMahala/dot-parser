@@ -177,6 +177,8 @@ are marked; no compatibility shims are kept.
 
 - Reduce opt-in IR materialization-session dispatch/accounting overhead without
   changing credits, cancellation checkpoints, storage or the direct driver.
+  Share exhausted-grant exits and cache endpoint cardinality in existing scratch
+  space to reduce code size and plain-edge overhead.
   The session benchmark now covers topology/attributes, enabled cancellation
   and budgets 1/64/4096 as well as run-to-completion.
 - **Breaking:** require Zig 0.17.0. Build steps, compile-time reflection and

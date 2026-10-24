@@ -2033,6 +2033,9 @@ outside wall-time guarantees. Existing parser metering/cancellation is unchanged
 
 #### Session-driver optimization
 
+Historical checkpoint; the plain-edge and code-size follow-up below supersedes
+the remaining-cost observations for the current implementation.
+
 Follow-up baseline **`fc64630`**, on the same M4 Pro and Zig 0.17.0. Five
 serial processes per revision, alternating order, using the **same expanded
 harness** against both libraries. Each process rotates the scheduling modes
@@ -2103,6 +2106,74 @@ That harness includes both output forms, runtime cancellation and all budgets;
 it is not a universal consumer binary-size delta. Default-only code is unchanged.
 Heap figures exclude code pages, temporary call frames, allocator internals and
 process RSS.
+
+#### Plain-edge and code-size follow-up
+
+Baseline **`0b3c81f`**, M4 Pro, Zig 0.17.0. Five serial, alternating processes
+per revision in Fast/Safe/Small, plus a fresh Fast comparison with the original
+**`fc64630`** session implementation. Both sides use the same harness: one
+unreported folding traversal warms the process, then each measured route gets
+12 warmups and 15 samples. Plain/defaults run after the larger fixtures to
+avoid measuring CPU ramp-up. No builds or tests overlap timing.
+
+The retained changes are small: endpoint reads borrow their state, endpoint
+cardinality is cached in the former optional-ID slot (two `u32`s, no larger
+scratch), and all exhausted grants share one poll/limit exit instead of
+duplicating it at each phase. The immutable strict flag is read once for
+multi-credit drives. Single-credit resumes retain their direct return. Merging
+the cancellable/non-cancellable drivers, or removing the single-credit
+specialization, saved more code but caused larger slowdowns and was not kept.
+
+Attribute-bearing sessions, **4096 credits, no cancellation token**, median ms
+(before → after):
+
+| Fixture | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| Plain edges | 0.0337 → 0.0310 | 0.0366 → 0.0339 | 0.0361 → 0.0355 |
+| 64 shared defaults | 0.0335 → 0.0315 | 0.0393 → 0.0356 | 0.0360 → 0.0355 |
+| 8 explicit attributes | 0.2870 → 0.2847 | 0.3620 → 0.3624 | 0.4957 → 0.4559 |
+| Strict overlapping sets | 2.0183 → 2.0265 | 2.5013 → 2.5162 | 2.8520 → 2.6166 |
+| Reopened scopes | 0.4468 → 0.4323 | 0.5183 → 0.5162 | 0.9653 → 0.9660 |
+| Endpoint ports | 0.0818 → 0.0816 | 0.1078 → 0.1087 | 0.1187 → 0.1132 |
+| Reversed strict port updates | 0.0893 → 0.0852 | 0.0933 → 0.0895 | 0.1423 → 0.1344 |
+
+The remaining plain Fast slowdown is recovered: **8.0% faster** than `0b3c81f`.
+The freshly measured original `fc64630` takes 0.0331 ms for plain edges and
+0.0328 ms for shared defaults; the new results are also 6.3% / 4.0% faster
+than those original baselines.
+
+Across the seven fixtures, attribute-session geometric-mean times at budget
+4096 improve 3.3% / 2.9% / 4.3% (Fast / Safe / Small); at budget one they
+improve 3.1% / 5.0% / 0.1%. Enabled-cancellation attribute sessions improve
+at both budgets too. Topology-only 4096-credit means improve in all three
+modes; topology budget-one means range from 3.0% faster to 1.2% slower.
+
+This is **not a universal microbenchmark speedup**. Fast reopened-scope
+attribute sessions at budget one rise 1.3617 → 1.4368 ms (+5.5%); cancellable
+topology-only ports rise 0.0600 → 0.0648 ms (+8.0%). Small cancellable
+topology-only strict ports at budget one rise 0.2271 → 0.2413 ms (+6.3%).
+The Small rejected-product check at budget 4096 rises 0.0188 → 0.0211 ms;
+it still rejects before expansion. Tiny deep/one-edge timings remain below
+useful resolution. No credit or polling guarantee was traded for throughput.
+
+The same all-routes benchmark's Mach-O **`__TEXT` segment** (code and constants)
+shrinks as follows; these are not universal consumer binary-size deltas:
+
+| Mode | Before, bytes | After, bytes | Saved |
+| --- | ---: | ---: | ---: |
+| Fast | 491,512 | 483,016 | 8,496 B (8.30 KiB) |
+| Safe | 576,320 | 567,808 | 8,512 B (8.31 KiB) |
+| Small | 222,576 | 216,816 | 5,760 B (5.63 KiB) |
+
+All measured credits, cancellation polls, outcomes, edge counts and requested
+retained/peak bytes match the baselines. Session objects remain 448/888 bytes
+(topology/attributes) in Fast/Small, 472/936 in Safe. The direct-only benchmark's
+entire `__text` remains byte-identical in all three modes. Tests also cover
+endpoint reuse across singleton/deduplicated/empty sets and cancellation at
+every poll for both output forms, alongside existing partition, allocation
+failure and partial-result checks. No API or parser execution policy changes.
+`zig build check` passes all 789 tests; IR passes all 144 tests in Fast and Safe
+as well as the Debug coverage included in the full check.
 
 ## Running the benchmarks
 

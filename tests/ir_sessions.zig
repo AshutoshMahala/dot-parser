@@ -97,6 +97,9 @@ test "materialization sessions agree with direct output at every budget includin
     for ([_][]const u8{
         "digraph {}",
         "digraph { a->b; a->b; a->c }",
+        // Reuse both endpoint buffers across singleton, deduplicated set and
+        // empty products; a cached cardinality must never survive the reset.
+        "digraph { a->{b c b}; {}->a; a->b; {a b}->{}; {a b a}->{c d c}; d->a }",
         "strict graph { edge[color=red]; {a b}--{a b}[label=first]; b--a[label=last]; edge[color=blue]; a--c }",
         "strict digraph {edge[weight=1];subgraph s{a}->x[color=red];edge[weight=2];subgraph s{b}->x[label=new];subgraph s{a}->x[color=blue]}",
         "digraph {edge[color=red]; a->{edge[color=blue];b->c[label=inside]}->d[label=outside]; x:p->{}; {}->y:q}",
@@ -170,38 +173,40 @@ test "session cancellation latches at every poll including zero and across growt
     var memory: NoResize = .{ .backing = a };
     snapshot.allocator = memory.allocator();
     const ir = &snapshot;
-    var counter: Stop = .{};
-    {
-        var session = try ir.materializationSession(.{ .cancellation = counter.token() });
-        defer session.deinit();
-        const progress = session.run();
-        try equal(dot.ir.MaterializationOutcome.success, progress.outcome.?);
-        // One initialization poll and exactly one poll before every credit.
-        try equal(progress.total_work + 1, @as(u64, counter.polls));
-    }
-    for ([_]u32{ 1, 7, std.math.maxInt(u32) }) |budget| for (1..counter.polls + 1) |at| {
-        var stop: Stop = .{ .at = at };
-        var session = ir.materializationSession(.{ .cancellation = stop.token() }) catch |err| {
-            try equal(error.Cancelled, err);
-            try equal(@as(usize, 1), at);
-            continue;
+    inline for (.{ false, true }) |attributes| {
+        var counter: Stop = .{};
+        {
+            var session = try ir.materializationSession(.{ .attributes = attributes, .cancellation = counter.token() });
+            defer session.deinit();
+            const progress = session.run();
+            try equal(dot.ir.MaterializationOutcome.success, progress.outcome.?);
+            // One initialization poll and exactly one poll before every credit.
+            try equal(progress.total_work + 1, @as(u64, counter.polls));
+        }
+        for ([_]u32{ 1, 7, std.math.maxInt(u32) }) |budget| for (1..counter.polls + 1) |at| {
+            var stop: Stop = .{ .at = at };
+            var session = ir.materializationSession(.{ .attributes = attributes, .cancellation = stop.token() }) catch |err| {
+                try equal(error.Cancelled, err);
+                try equal(@as(usize, 1), at);
+                continue;
+            };
+            defer session.deinit();
+            var p = session.advance(budget);
+            while (p.outcome == null) p = session.advance(budget);
+            try equal(error.Cancelled, p.outcome.?.failure);
+            try equal(@as(u64, at - 2), p.total_work);
+            try equal(at, stop.polls);
+            try std.testing.expectError(error.Cancelled, session.takeResult());
+            try equal(@as(u32, 0), session.advance(100).work_used);
+            try equal(at, stop.polls); // A latched stop never polls again.
         };
+        var stop: Stop = .{};
+        var session = try ir.materializationSession(.{ .attributes = attributes, .cancellation = stop.token() });
         defer session.deinit();
-        var p = session.advance(budget);
-        while (p.outcome == null) p = session.advance(budget);
-        try equal(error.Cancelled, p.outcome.?.failure);
-        try equal(@as(u64, at - 2), p.total_work);
-        try equal(at, stop.polls);
-        try std.testing.expectError(error.Cancelled, session.takeResult());
-        try equal(@as(u32, 0), session.advance(100).work_used);
-        try equal(at, stop.polls); // A latched stop never polls again.
-    };
-    var stop: Stop = .{};
-    var session = try ir.materializationSession(.{ .cancellation = stop.token() });
-    defer session.deinit();
-    stop.at = stop.polls + 1;
-    try equal(error.Cancelled, session.advance(0).outcome.?.failure);
-    try equal(@as(u64, 0), session.advance(1).total_work);
+        stop.at = stop.polls + 1;
+        try equal(error.Cancelled, session.advance(0).outcome.?.failure);
+        try equal(@as(u64, 0), session.advance(1).total_work);
+    }
 }
 
 test "batched session progress matches single credits with and without cancellation" {

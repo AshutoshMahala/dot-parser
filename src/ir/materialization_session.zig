@@ -30,14 +30,17 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         pub const Result = if (attributes) Graph.Materialized else t.MaterializedTopology;
         pub const SessionProgress = Progress;
         const Endpoint = struct {
-            singleton: ?t.NodeId = null,
+            // none is never an admitted node ID. These two u32s occupy the
+            // old optional-ID slot: cache cardinality without growing scratch.
+            singleton: u32 = none,
+            count: u32 = 0,
             nodes: std.ArrayList(t.NodeId) = .empty,
             growth: Growth(t.NodeId) = .{},
-            fn len(self: Endpoint) u32 {
-                return if (self.singleton != null) 1 else @intCast(self.nodes.items.len);
+            fn len(self: *const Endpoint) u32 {
+                return self.count;
             }
-            fn at(self: Endpoint, index: u32) t.NodeId {
-                return self.singleton orelse self.nodes.items[index];
+            fn at(self: *const Endpoint, index: u32) t.NodeId {
+                return if (self.singleton != none) @fromBackingInt(self.singleton) else self.nodes.items[index];
             }
         };
         const Phase = enum {
@@ -204,6 +207,10 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
             const grant: u32 = @intCast(@min(budget, self.limits.max_work - initial_work));
             if (single and grant == 0) return error.WorkLimit;
             const a = self.memory.allocator();
+            // The borrowed IR is immutable. Avoid reloading its kind at each
+            // pair/prepare transition, but do not read it for unrelated single
+            // steps (which return after exactly one phase).
+            const strict = if (single) false else self.graph.strict;
             // Literal successors are direct control-flow edges, not a return to
             // a central step() dispatch. Every edge (including a self-loop)
             // still goes through the same credit/poll gate. Keep accounting
@@ -211,7 +218,9 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
             // callbacks when cancellation is enabled. No state or work is lost
             // on a pause, allocator failure or other terminal error.
             machine: switch (self.phase) {
-                .yielded => return,
+                // Single-credit successors already saved their phase. Keep
+                // their direct return out of the multi-credit limit epilogue.
+                .yielded => if (single) return else break :machine,
                 inline else => |phase| {
                     current = phase;
                     if (single) {
@@ -220,15 +229,7 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                         if (used != 0) return;
                         used = 1;
                     } else {
-                        if (used == grant) {
-                            if (used == budget) return;
-                            // Cancellation precedes lifetime exhaustion.
-                            if (cancellable) {
-                                self.phase = phase;
-                                if (used != 0 and !self.poll()) return;
-                            }
-                            return error.WorkLimit;
-                        }
+                        if (used == grant) break :machine;
                         if (cancellable) {
                             self.phase = phase;
                             if (used != 0 and !self.poll()) return;
@@ -282,11 +283,13 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                             // clearRetainingCapacity poisons the whole used slice in
                             // safety builds. No old item is readable after this reset.
                             out.nodes.items.len = 0;
+                            out.count = 0;
                             if (handle & t.node_bit != 0) {
-                                out.singleton = @fromBackingInt(handle & ~t.node_bit);
+                                out.singleton = handle & ~t.node_bit;
+                                out.count = 1;
                                 continue :machine self.successor(single, .endpoint_done);
                             } else {
-                                out.singleton = null;
+                                out.singleton = none;
                                 self.body_index = self.graph.bodies[handle].first;
                                 self.body_end = handle + 1;
                                 if (self.generation == std.math.maxInt(u32)) {
@@ -341,6 +344,7 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                             const out = &self.endpoints[self.side];
                             if (!try out.growth.step(&out.nodes, a)) continue :machine self.successor(single, phase);
                             out.nodes.appendAssumeCapacity(self.pending_node);
+                            out.count += 1;
                             continue :machine self.successor(single, .mention);
                         },
                         .endpoint_done => if (self.side == 0) {
@@ -372,7 +376,7 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                                 self.right_index = 0;
                                 self.left_index += 1;
                             }
-                            if (self.graph.strict and self.slots.len != 0) {
+                            if ((if (single) self.graph.strict else strict) and self.slots.len != 0) {
                                 self.slot = @intCast(hash(self.candidate) & (self.slots.len - 1));
                                 continue :machine self.successor(single, .probe);
                             } else continue :machine self.successor(single, .prepare);
@@ -389,7 +393,7 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                         },
                         .prepare => {
                             if (self.stored.items.len >= self.limits.max_edges) return error.EdgeLimit;
-                            if (!self.graph.strict) {
+                            if (!(if (single) self.graph.strict else strict)) {
                                 continue :machine self.successor(single, .append_edge);
                             }
                             if (self.slots.len != 0 and self.stored.items.len < self.slots.len / 2) {
@@ -546,6 +550,15 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                     continue :machine self.successor(single, phase);
                 },
             }
+            if (used == budget) return;
+            // Centralize the exhausted-grant exit instead of duplicating its
+            // error/poll handling at every phase. Cancellation still wins over
+            // a lifetime limit; a budget pause does not add a poll.
+            if (cancellable) {
+                self.phase = current;
+                if (used != 0 and !self.poll()) return;
+            }
+            return error.WorkLimit;
         }
         /// Drives the same bounded machine without yielding; work_used is the
         /// final advance's count, while total_work covers the complete lifetime.
