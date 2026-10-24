@@ -2,6 +2,24 @@
 //! allocator: no libc, OS, global allocator, recursion, or renderer required.
 const std = @import("std");
 const dot = @import("dot_parser");
+export fn retained_snapshot(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
+    var result = dot.ir.parsePartial(fixed.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const ir = result.ir() orelse return 0;
+    var nodes = ir.nodeIterator();
+    var count: u32 = 0;
+    while (nodes.next()) |node| {
+        var mentions = node.mentions();
+        while (mentions.next()) |_| count +%= 1;
+        const value = switch (node.attribute("color")) {
+            .known => |v| v,
+            .unknown => |u| u.retained,
+        };
+        if (value != null) count +%= 1;
+    }
+    return count;
+}
 export fn topology(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
     var fixed: std.heap.FixedBufferAllocator = .init(memory[0..capacity]);
     const a = fixed.allocator();

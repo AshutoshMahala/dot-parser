@@ -6,24 +6,32 @@ const t = @import("topology.zig");
 const names = @import("names.zig");
 const r = @import("resources.zig");
 const attrs = @import("attributes.zig");
+const coverage = @import("coverage.zig");
 
-pub const Interpretation = struct {
-    kind: policy.GraphKind,
-    directed: syntax.EdgeOperator,
-    undirected: syntax.EdgeOperator,
-    fn operator(self: Interpretation, written: syntax.EdgeOperator) syntax.EdgeOperator {
-        return if (written == .directed) self.directed else self.undirected;
-    }
-};
+pub const Interpretation = InterpretationFor(false);
+pub fn InterpretationFor(comptime partial: bool) type {
+    return struct {
+        kind: if (partial) ?policy.GraphKind else policy.GraphKind,
+        directed: syntax.EdgeOperator,
+        undirected: syntax.EdgeOperator,
+        fn operator(self: @This(), written: syntax.EdgeOperator) syntax.EdgeOperator {
+            return if (written == .directed) self.directed else self.undirected;
+        }
+    };
+}
 
 pub fn run(comptime caps: encoding.Capabilities, a: std.mem.Allocator, document: *const syntax.Document, interpretation: Interpretation, limits: r.Limits, cancellation: ?r.Cancellation) r.Error!t.Graph(caps) {
-    if (!document.scopeComplete()) return error.IncompleteDocument;
-    if (document.strict and interpretation.kind == .generic) return error.UnsupportedSemantics;
+    return runWith(caps, false, a, document, interpretation, limits, cancellation);
+}
+
+pub inline fn runWith(comptime caps: encoding.Capabilities, comptime partial: bool, a: std.mem.Allocator, document: *const syntax.Document, interpretation: InterpretationFor(partial), limits: r.Limits, cancellation: ?r.Cancellation) r.Error!Output(caps, partial) {
+    if (!partial and !document.scopeComplete()) return error.IncompleteDocument;
+    if (document.strict and (interpretation.kind == .generic or (partial and interpretation.kind == null))) return error.UnsupportedSemantics;
     // An ASCII-admitted Document is byte-compatible with the UTF-8 reader.
     const reader = if (document.source_info.encoding == .ascii and caps.utf8) .utf8 else document.source_info.encoding;
     return switch (reader) {
         inline else => |actual| if (comptime caps.allows(actual)) blk: {
-            var builder: Builder(actual, caps) = .{
+            var builder: Builder(actual, caps, partial) = .{
                 .a = a,
                 .doc = document,
                 .interpretation = interpretation,
@@ -36,7 +44,11 @@ pub fn run(comptime caps: encoding.Capabilities, a: std.mem.Allocator, document:
     };
 }
 
-fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilities) type {
+fn Output(comptime caps: encoding.Capabilities, comptime partial: bool) type {
+    return if (partial) @import("partial.zig").Graph(caps) else t.Graph(caps);
+}
+
+fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilities, comptime partial: bool) type {
     return struct {
         const Self = @This();
         const ScopeCursor = struct { first: u32 = 0, next: u32 = 0, head: u32 = names.empty };
@@ -55,7 +67,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
         const Pending = union(enum) { node: t.Endpoint, scope: t.ScopeId };
         a: std.mem.Allocator,
         doc: *const syntax.Document,
-        interpretation: Interpretation,
+        interpretation: InterpretationFor(partial),
         limits: r.Limits,
         work: r.Work,
         nodes: std.ArrayList(t.Node) = .empty,
@@ -78,7 +90,13 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
         mention_count: u32 = 0,
         connection_count: u32 = 0,
         attribute_count: u32 = 0,
-        transferred: bool = false,
+        // Keep the complete builder's field count/types unchanged. Even void
+        // fields can perturb Zig's automatic layout of equal-alignment fields.
+        publication: if (partial) struct {
+            transferred: bool = false,
+            coverage_data: coverage.Data = .{},
+            next_scope: u32 = 1,
+        } else bool = if (partial) .{} else false,
 
         fn deinit(self: *Self) void {
             const a = self.a;
@@ -87,7 +105,8 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
             self.stack.deinit(a);
             self.edge_stack.deinit(a);
             self.pending.deinit(a);
-            if (self.transferred) return;
+            if (if (partial) self.publication.transferred else self.publication) return;
+            if (partial) self.publication.coverage_data.deinit(a);
             self.node_table.deinit(a);
             self.nodes.deinit(a);
             self.scopes.deinit(a);
@@ -191,7 +210,8 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                     if (record.name != null) try self.scope_table.insert(hash, id, &self.work);
                     break :blk id;
                 };
-                self.occurrences[occurrence] = .{ .scope = @fromBackingInt(id), .parent = @fromBackingInt(parent_occurrence), .source = record.source, .membership = undefined };
+                const source = if (partial) self.doc.scope(@fromBackingInt(@as(u32, @intCast(occurrence)))).?.sourceRange() orelse return error.InvalidDocument else record.source;
+                self.occurrences[occurrence] = .{ .scope = @fromBackingInt(id), .parent = @fromBackingInt(parent_occurrence), .source = source, .membership = undefined };
             }
             self.cursors = try self.a.alloc(ScopeCursor, self.scopes.items.len);
             for (self.cursors) |*cursor| {
@@ -230,13 +250,37 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
         }
         fn enter(self: *Self, occurrence: u32) r.Error!void {
             if (occurrence >= self.occurrences.len) return error.InvalidDocument;
-            const body = if (occurrence == 0) syntax.StatementRange{ .start = 0, .len = try r.index(self.doc.order.len) } else self.doc.subgraph_records[occurrence - 1].body;
+            if (partial and occurrence != 0) {
+                if (occurrence != self.publication.next_scope) return error.InvalidDocument;
+                self.publication.next_scope += 1;
+            }
+            const body = try self.scopeBody(occurrence);
             if (body.start > self.doc.order.len or body.len > self.doc.order.len - body.start) return error.InvalidDocument;
             const scope = @backingInt(self.occurrences[occurrence].scope);
             const parent = if (self.scopes.items[scope].parent) |id| @backingInt(id) else 0;
             try self.attribute_data.enter(self.a, scope, parent, @backingInt(self.scopes.items[scope].first_occurrence) == occurrence, self.limits.max_attribute_states, &self.work);
             self.bodies[@backingInt(self.occurrences[occurrence].membership)].start = self.mention_count;
             try self.stack.append(self.a, .{ .scope = .{ .occurrence = occurrence, .cursor = body.start, .end = body.start + body.len } });
+        }
+        inline fn scopeBody(self: *Self, occurrence: u32) r.Error!syntax.StatementRange {
+            if (occurrence == 0) return .{ .start = 0, .len = try r.index(self.doc.order.len) };
+            const record = self.doc.subgraph_records[occurrence - 1];
+            if (partial and record.subtree_end == 0) {
+                if (record.body.start > self.doc.order.len) return error.InvalidDocument;
+                return .{ .start = record.body.start, .len = try r.index(self.doc.order.len - record.body.start) };
+            }
+            return record.body;
+        }
+        inline fn copyAttributes(self: *Self, range: syntax.AttributeRange) r.Error!syntax.AttributeRange {
+            if (!partial) return range;
+            if (range.start > self.doc.attributes.len or range.len > self.doc.attributes.len - range.start or range.len > self.attributes.len - self.attribute_count) return error.InvalidDocument;
+            const copied: syntax.AttributeRange = .{ .start = self.attribute_count, .len = range.len };
+            for (self.doc.attributes[range.start..][0..range.len]) |attr| {
+                try self.work.spend(1);
+                self.attributes[self.attribute_count] = attr;
+                self.attribute_count += 1;
+            }
+            return copied;
         }
         fn endpoint(self: *Self, endpoint_value: syntax.Endpoint, occurrence: u32) r.Error!void {
             switch (endpoint_value) {
@@ -320,7 +364,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
             if (endpoint_value == .node) return 0;
             const id = @backingInt(endpoint_value.subgraph);
             if (id == 0 or id > self.doc.subgraph_records.len) return error.InvalidDocument;
-            const body = self.doc.subgraph_records[id - 1].body;
+            const body = try self.scopeBody(id);
             return std.math.add(u32, body.start, body.len) catch error.InvalidDocument;
         }
         fn walk(self: *Self) r.Error!void {
@@ -330,6 +374,17 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 const index = self.stack.items.len - 1;
                 switch (self.stack.items[index]) {
                     .scope => |frame| {
+                        // Reserved/abandoned owners have no Statement view,
+                        // but their completed children remain real contributions.
+                        if (partial and self.publication.next_scope < self.occurrences.len) {
+                            const child = self.doc.subgraph_records[self.publication.next_scope - 1];
+                            if (@backingInt(child.parent) == frame.occurrence and child.body.start <= frame.cursor) {
+                                const body = try self.scopeBody(self.publication.next_scope);
+                                self.stack.items[index].scope.cursor = @max(frame.cursor, body.start + body.len);
+                                try self.enter(self.publication.next_scope);
+                                continue;
+                            }
+                        }
                         if (frame.cursor == frame.end) {
                             const occurrence = self.occurrences[frame.occurrence];
                             const body = @backingInt(occurrence.membership);
@@ -339,12 +394,24 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                             continue;
                         }
                         if (frame.cursor > frame.end) return error.InvalidDocument;
-                        const statement = self.doc.statementAt(frame.cursor) orelse return error.InvalidDocument;
+                        const statement = self.doc.statementAt(frame.cursor) orelse {
+                            if (!partial) return error.InvalidDocument;
+                            self.stack.items[index].scope.cursor += 1;
+                            const slot = self.doc.order[frame.cursor];
+                            if (slot == .skipped_start) {
+                                if (frame.cursor + 1 >= frame.end) return error.InvalidDocument;
+                                const end = self.doc.order[frame.cursor + 1];
+                                if (end != .skipped_end or end.skipped_end < slot.skipped_start or end.skipped_end > self.doc.source.len) return error.InvalidDocument;
+                                self.stack.items[index].scope.cursor += 1;
+                                try self.publication.coverage_data.add(self.a, .{ .reason = .skipped_input, .range = .{ .start = slot.skipped_start, .len = end.skipped_end - slot.skipped_start }, .occurrence = @fromBackingInt(frame.occurrence) }, self.declarations.items.len, &self.work);
+                            }
+                            continue;
+                        };
                         self.stack.items[index].scope.cursor += 1;
                         switch (statement) {
                             .node => |node_value| {
                                 const value = try self.node(node_value.reference, frame.occurrence);
-                                try self.declaration(.{ .node = @fromBackingInt(@backingInt(value.members) & ~t.node_bit) }, frame.occurrence, node_value.attributes);
+                                try self.declaration(.{ .node = @fromBackingInt(@backingInt(value.members) & ~t.node_bit) }, frame.occurrence, try self.copyAttributes(node_value.attributes));
                             },
                             .subgraph => |scope| {
                                 self.stack.items[index].scope.cursor = @max(frame.cursor + 1, try self.endpointEnd(.{ .subgraph = scope }));
@@ -363,7 +430,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                                 try self.edge_stack.append(self.a, .{ .occurrence = frame.occurrence, .first = first, .links = self.links(statement), .pending_start = try r.index(self.pending.items.len), .statement_index = frame.cursor });
                                 try self.stack.append(self.a, .{ .edge = edge_index });
                             },
-                            .attribute_statement => |statement_attrs| try self.declaration(.{ .defaults = statement_attrs.target }, frame.occurrence, statement_attrs.attributes),
+                            .attribute_statement => |statement_attrs| try self.declaration(.{ .defaults = statement_attrs.target }, frame.occurrence, try self.copyAttributes(statement_attrs.attributes)),
                             .assignment => |attr| {
                                 if (self.attribute_count >= self.attributes.len) return error.InvalidDocument;
                                 self.attributes[self.attribute_count] = attr;
@@ -386,10 +453,14 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                             // Freeze every endpoint only after all bodies in this
                             // statement have executed. Reopens can change BOTH ends.
                             var at = frame.pending_start;
-                            try self.connection(frame.first, frame.occurrence, self.pending.items[at], self.pending.items[at + 1]);
+                            var first = frame.first;
+                            if (partial) first.attributes = try self.copyAttributes(first.attributes);
+                            try self.connection(first, frame.occurrence, self.pending.items[at], self.pending.items[at + 1]);
                             at += 1;
                             var rest = self.links(self.doc.statementAt(frame.statement_index) orelse return error.InvalidDocument);
-                            while (rest.next()) |edge| {
+                            while (rest.next()) |original| {
+                                var edge = original;
+                                if (partial) edge.attributes = first.attributes;
                                 try self.connection(edge, frame.occurrence, self.pending.items[at], self.pending.items[at + 1]);
                                 at += 1;
                             }
@@ -401,13 +472,21 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 }
             }
         }
-        fn build(self: *Self) r.Error!t.Graph(caps) {
+        fn build(self: *Self) r.Error!Output(caps, partial) {
             // Count written payload only; never multiply endpoint cardinalities.
             var mention_count: u64 = 0;
             var connection_count: u64 = 0;
+            var retained_attributes: u64 = 0;
             var statements = self.doc.statements();
             while (statements.next()) |statement| {
                 try self.work.spend(1);
+                if (partial) retained_attributes += switch (statement) {
+                    .node => |n| n.attributes.len,
+                    .edge, .edge_chain => firstEdge(statement).attributes.len,
+                    .attribute_statement => |s| s.attributes.len,
+                    .assignment => 1,
+                    else => 0,
+                };
                 switch (statement) {
                     .node => mention_count += 1,
                     .edge, .edge_chain => {
@@ -426,20 +505,32 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
             }
             if (mention_count > self.limits.max_mentions) return error.MentionLimit;
             if (connection_count > self.limits.max_connections) return error.ConnectionLimit;
-            const attribute_count = @as(u64, self.doc.attributes.len) + self.doc.assignments.len;
+            const attribute_count = if (partial) retained_attributes else @as(u64, self.doc.attributes.len) + self.doc.assignments.len;
             if (attribute_count > self.limits.max_attributes) return error.AttributeLimit;
             if (attribute_count >= @import("ports.zig").right) return error.IndexLimit;
             try self.prepareScopes();
             self.mentions = try self.a.alloc(t.Mention, @intCast(mention_count));
             self.connections = try self.a.alloc(t.Connection, @intCast(connection_count));
             self.attributes = try self.a.alloc(syntax.Attribute, @intCast(attribute_count));
-            for (self.doc.attributes, self.attributes[0..self.doc.attributes.len]) |attr, *dest| {
+            if (!partial) for (self.doc.attributes, self.attributes[0..self.doc.attributes.len]) |attr, *dest| {
                 try self.work.spend(1);
                 dest.* = attr;
-            }
-            self.attribute_count = try r.index(self.doc.attributes.len);
+            };
+            if (!partial) self.attribute_count = try r.index(self.doc.attributes.len);
             try self.attribute_data.init(self.a, self.attributes.len, self.scopes.items.len, self.connections.len, &self.work);
             try self.walk();
+            if (partial) {
+                if (self.publication.next_scope != self.occurrences.len) return error.InvalidDocument;
+                var unfinished: ?t.OccurrenceId = if (!self.doc.root_closed) .root else null;
+                for (self.doc.subgraph_records, 1..) |scope, id| {
+                    try self.work.spend(1);
+                    if (scope.subtree_end == 0) unfinished = @fromBackingInt(@as(u32, @intCast(id)));
+                }
+                if (self.doc.unrepresented() != null or unfinished != null or (!self.doc.scopeComplete() and self.publication.coverage_data.entries.items.len == 0)) {
+                    try self.publication.coverage_data.add(self.a, .{ .reason = .unfinished_input, .range = self.doc.unrepresented() orelse .{ .start = try r.index(self.doc.source.len), .len = 0 }, .occurrence = unfinished }, self.declarations.items.len, &self.work);
+                }
+                try self.publication.coverage_data.finish(&self.work);
+            }
             if (self.mention_count != self.mentions.len or self.connection_count != self.connections.len or self.attribute_count != self.attributes.len) return error.InvalidDocument;
             self.offsets = try self.a.alloc(u32, self.nodes.items.len + 1);
             self.positions = try self.a.alloc(u32, self.mentions.len);
@@ -469,8 +560,8 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
             }
             self.offsets[0] = 0;
             const memory: *r.Memory = @ptrCast(@alignCast(self.a.ptr));
-            self.transferred = true;
-            return .{
+            if (partial) self.publication.transferred = true else self.publication = true;
+            const graph: t.GraphWith(caps, partial) = .{
                 .source = self.doc.source,
                 .source_info = self.doc.source_info,
                 .declared_kind = self.doc.kind,
@@ -497,6 +588,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 .limits = self.limits,
                 .allocator = memory.backing,
             };
+            return if (partial) .{ ._data = graph, ._coverage = self.publication.coverage_data } else graph;
         }
     };
 }

@@ -8,6 +8,14 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Opt-in `dot.ir.parsePartial` / `Lowering.lowerPartial`: retained node/scope
+  views, mention iteration, symbolic existence/membership queries and indexed
+  attribute candidates. `Knowledge(T)` separates known facts from source gaps;
+  coverage never disguises syntax rejection or an execution stop. Complete IR
+  entry points remain unchanged. Includes an editor example, native-encoding/
+  failure/compatible-filling tests and `bench-ir-partial`.
+- Partial DOT Documents retain factual `root_closed` delimiter coverage, so an
+  unfinished root is distinguishable from internal recovery gaps even at EOF.
 - Borrowed IR `tailPort()` / `headPort()` views share effective attribute
   precedence and provenance. `syntax()` preserves written endpoint components;
   explicit `graphvizParts()` provides the first-colon interpretation without

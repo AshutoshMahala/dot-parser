@@ -14,6 +14,7 @@ values that point into your source text.
 | `document.strict` | `true` if the file starts with `strict` |
 | `document.name` | The graph's name as a range, or `null` if it has none |
 | `document.statementCount()` | Number of statements, including those inside subgraphs |
+| `document.root_closed` | **Unreleased:** whether the root closing brace was seen; independent of gaps inside a partially retained Document |
 
 Why `undigraph`? In this library "graph" means any graph, directed or not. So
 the undirected kind needs its own name.

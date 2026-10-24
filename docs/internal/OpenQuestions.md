@@ -38,7 +38,7 @@ has been discussed.
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed value/operand views, source origins and bulk attribute folding | Label-port binding, markup-result association, event/partial/session IR, consumer adapters and marshal/unmarshal |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding and opt-in qualified partial queries/candidates/mentions | Label-port binding, markup-result association, event/session IR, partial enumeration/materialization, consumer adapters and marshal/unmarshal |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and
@@ -288,7 +288,10 @@ endpoint structure (`syntax()`) separate from the opt-in first-colon Graphviz
 reading (`graphvizParts()`). Lone compass-like identifiers remain ambiguous;
 unknown suffix text is preserved, and origins name written sides rather than
 stored orientation. No additional retained storage is needed. Label-port existence/binding,
-event lowering and partial/session IR remain.
+event lowering, partial enumeration/materialization and session IR remain.
+Opt-in partial Document lowering now supplies qualified direct queries,
+retained attribute candidates, node mentions and explicit gap coverage without
+changing the complete-input API. It does not salvage failed lowering operations.
 *(Embodied: `docs/IR.md`, roadmap slice 7.)*
 
 **Q6 — Which input modes are required initially?**
@@ -1140,8 +1143,12 @@ borrows default snapshots/values and retains mutable maps of explicit winners.
 Its certified views have infallible lookup/enumeration and bounded variants.
 `.attributes = false` selects topology-only output at compile time; runtime
 limits/cancellation still apply. Parsing/lowering do not invoke materialization.
-Port-derived attributes and the advanced contracts remain open; this does not
-complete the entire semantic-layer slice. *(Embodied:
+Port-derived attributes and structured port views are implemented. Opt-in
+partial lowering now retains nodes/scopes/mentions and symbolic connections,
+qualifies direct queries and exposes retained attribute candidates. Coverage is
+independent of checking validity; failed construction never publishes an IR.
+Partial enumeration/materialization and event/session lowering remain; this does
+not complete the entire semantic-layer slice. *(Embodied:
 `src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*
 
 **Q18 — Which index widths and pool sizes define the first embedded retained

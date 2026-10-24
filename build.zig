@@ -418,6 +418,7 @@ pub fn build(b: *std.Build) void {
         "graph_attributes",
         "graph_values",
         "materialized_attributes",
+        "partial_graph",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -456,6 +457,10 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, name, "materialized_attributes")) {
             run_example.expectStdErrEqual(@embedFile("tests/fixtures/materialized_attributes.txt"));
             run_example.expectStdOutEqual("");
+            test_ir.dependOn(&run_example.step);
+            test_step.dependOn(&run_example.step);
+        }
+        if (std.mem.eql(u8, name, "partial_graph")) {
             test_ir.dependOn(&run_example.step);
             test_step.dependOn(&run_example.step);
         }
@@ -593,6 +598,15 @@ pub fn build(b: *std.Build) void {
     check_benches.dependOn(&ir_attributes_bench.step);
     check_benches.dependOn(&ir_values_bench.step);
     check_benches.dependOn(&ir_materialized_attributes_bench.step);
+    const ir_partial_bench = b.addExecutable(.{ .name = "ir_partial_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_partial.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    b.step("bench-ir-partial", "Measure partial IR coverage, candidates, mentions and symbolic queries")
+        .dependOn(&b.addRunArtifact(ir_partial_bench).step);
+    check_benches.dependOn(&ir_partial_bench.step);
     const identifier_bench = b.addExecutable(.{
         .name = "identifier_bench",
         .root_module = b.createModule(.{

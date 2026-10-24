@@ -1747,6 +1747,90 @@ In the settings benchmark, run-time settings are read in a way the compiler
 can't see in advance, so it can't optimize them away. That reading happens
 outside the timer.
 
+## Opt-in partial IR (2026-10-24)
+
+Apple M4 Pro, Zig 0.17.0, baseline `e61761e` versus this increment. Complete
+topology: five alternating processes per side/mode, each reporting nine samples
+after two warmups. No concurrent builds/timed workloads. Positive percentages
+below mean **more time**, not a throughput increase.
+
+| Complete lowering | ReleaseFast before → after (ms) | Time change |
+| --- | ---: | ---: |
+| 10,000 singleton connections | 1.108 → 1.128 | +1.8% |
+| 10,000 small endpoint sets | 2.142 → 2.155 | +0.6% |
+| Reopened scopes | 0.154 → 0.151 | −1.9% |
+| Strict reopened scopes | 0.153 → 0.154 | +0.7% |
+| 10,000 nested scopes | 0.289 → 0.296 | +2.4% |
+| 50,000 × 50,000 symbolic product | 5.515 → 5.388 | −2.3% |
+
+Across these six cases, geometric-mean time changed **+0.2% Fast, +0.2% Safe,
+−0.3% Small**; individual medians stayed between −2.3% and +2.7%. This is
+effectively flat at this measurement scale, not proof that every input is
+identical. Complete retained/requested-peak/arena bytes were unchanged in all
+three modes. Separate ReleaseFast attribute-bearing lowering comparisons ranged
+from −3.6% to +0.9%, also with unchanged retained bytes.
+
+An early version changed the complete builder's automatic field layout and
+slowed deep nesting. The final version keeps its field count/types, and inlines
+the compile-time selection helpers before optimizer heuristics can change the
+complete path. No partial coverage allocation or runtime traversal branch is
+present in complete lowering. Consumed topology-harness binaries changed from
+559,736 to 559,784 bytes (Fast), 711,736 to 711,800 (Safe), and remained 276,752
+(Small); these are **executables**, not standalone library sizes.
+
+The existing `bench-policy` also ran three processes per side (150 ms warmup,
+nine four-parse samples/case). Default fixed scalar times were 0.630 → 0.634 ms
+for nodes, 1.248 → 1.196 ms for edges, and 4.816 → 4.859 ms for scoped endpoints.
+Across scalar/block and fixed/runtime/partial-retention configurations, medians
+ranged from −4.2% to +2.0%. Document/session sizes were unchanged: Document 256,
+fixed session 1,120, runtime session 1,424 bytes. The root-closer fact uses
+existing Document padding; metering credits/cancellation guarantees are unchanged.
+
+### What partial coverage costs
+
+Run `zig build bench-ir-partial -Doptimize=ReleaseFast`. This new harness warms
+each path for 100 ms, then reports nine samples, allocation payload/peak,
+arena capacity, qualified attribute access, mention iteration and pair queries.
+The following medians are from five processes; parsing is outside timing.
+
+| Fixture | Complete lowering (ms) | Partial on complete input (ms) | Partial with gaps (ms) |
+| --- | ---: | ---: | ---: |
+| 10,000 sparse nodes | 0.545 | 0.535 | 0.536 |
+| 10,000 dense connections | 1.014 | 1.044 | 1.044 |
+| Shared defaults and updates | 1.277 | 1.196 | 1.213 |
+| Port-bearing edges | 1.160 | 1.196 | 1.213 |
+| Reopened scopes | 0.160 | 0.166 | 0.165 |
+| 10,000 nested scopes | 0.356 | 0.342 | 0.342 |
+| 10,000 assignments / 10,000 gaps | 0.830 | 0.810 | 0.935 |
+| 50,000 × 50,000 symbolic product | 6.149 | 6.010 | 6.048 |
+
+The broken variants add a gap after retained contributions, except the deep
+fixture's inner gap and the many-gap fixture's one gap per node. They do not
+discard the measured valid statements. These are separately specialized paths;
+small wins/losses are not a promise that partial processing is always faster.
+
+On complete input the partial-capable graph retains exactly the same allocation
+payload as complete IR. Its owner is 488 rather than 464 bytes. An attribute view
+is 48 bytes; `Knowledge(?AttributeView)` is 80 bytes. Candidates and mentions
+allocate nothing on query. A gap entry plus its semantic-boundary/suffix index
+is 28 bytes, with ordinary list capacity/growth: a single gap retained 140 extra
+bytes here. No second node/value/mention index is built.
+
+For 10,000 gaps, retained bytes rose from 1,504,028 to 1,794,640; requested peak
+from 1,611,260 to 1,901,872; total arena capacity from 3,524,678 to 6,316,592.
+Arena chunk growth can amplify the coverage payload; it is not hidden by quoting
+only final record sizes. Qualified attribute lookup was 23.9 ns on this case,
+versus 5.8 ns without coverage. The extra work is an indexed gap-boundary search,
+not a history scan. Other qualified attribute cases measured 4.2–6.9 ns and
+mention iteration 0.7–1.0 ns per retained record.
+
+The huge product still has **one symbolic connection**, not 2.5 billion stored
+edges: partial retained payload was 8,900,776 bytes and requested peak 10,312,964.
+Its sampled pair query took about 10 ns; dense/ported pair searches that traversed
+10,000 connections took about 10 µs. These are workload-specific indexed/search
+costs, not constant-time guarantees. Requested/arena bytes exclude source,
+allocator metadata and process RSS. Limits include coverage growth/scratch.
+
 ## Running the benchmarks
 
 ### One-command string comparison
@@ -1822,6 +1906,7 @@ zig build bench-markup -Doptimize=fast -- --scopes-only
 zig build bench-markup -Doptimize=fast -- --graphviz-only
 zig build bench-composition -Doptimize=fast
 zig build bench-logical-strings -Doptimize=fast
+zig build bench-ir-partial -Doptimize=fast
 zig build check-benches  # only checks that they compile
 ```
 

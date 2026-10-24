@@ -72,3 +72,41 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, options: Options)
     });
     return result;
 }
+
+pub const PartialResult = struct {
+    checking: CheckSummary,
+    _graph: ?IR.PartialGraph = null,
+    pub fn ir(self: *const PartialResult) ?*const IR.PartialGraph {
+        return if (self._graph) |*graph| graph else null;
+    }
+    pub fn deinit(self: *PartialResult) void {
+        if (self._graph) |*graph| graph.deinit();
+        self.* = undefined;
+    }
+};
+
+/// Default-policy editor route: partial retention and collection are opt-in
+/// through this entry point. Checking rejection never becomes acceptance.
+/// Deliberate stops never automatically launch a second computation.
+pub fn parsePartial(allocator: std.mem.Allocator, source: []const u8, options: Options) ir_api.Error!PartialResult {
+    const Dot = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true } } });
+    var checked = Dot.parseAndValidate(allocator, source, options.diagnostics, options.dot);
+    defer checked.deinit(allocator);
+    var result: PartialResult = .{ .checking = .from(&checked) };
+    if (checked.document == null or checked.diagnostic_stop != null or checked.diagnostic_delivery != .complete) return result;
+    switch (checked.outcome) {
+        .success, .invalid_syntax, .unsupported_feature => {},
+        else => return result,
+    }
+    if (checked.validation) |validation| switch (validation.outcome) {
+        .completed => {},
+        else => return result,
+    };
+    const document = &checked.document.?;
+    result._graph = try IR.lowerPartial(allocator, document, .{
+        .interpretation = Dot.interpretation(document, .{}),
+        .limits = options.lowering.limits orelse ir_api.Limits{},
+        .cancellation = options.lowering.cancellation,
+    });
+    return result;
+}

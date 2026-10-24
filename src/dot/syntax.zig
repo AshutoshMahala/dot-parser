@@ -728,6 +728,9 @@ pub const Document = struct {
     /// Local DOT representation, independent of validation and child processors.
     state: Completeness = .complete,
     retained_end: u32 = 0,
+    /// Factual delimiter coverage for partial Documents. Internal gaps do not
+    /// imply a missing root closer; an unfinished root may have no tail bytes.
+    root_closed: bool = true,
 
     /// Borrowed comment payload, removing delimiters in this source's encoding.
     pub fn commentBody(self: *const Document, comment: Comment) []const u8 {

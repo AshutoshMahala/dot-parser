@@ -28,7 +28,7 @@ do not prevent a graph. A null `ir()` means DOT checking rejected **or stopped**
 `result.checking` preserves the parse outcome/completion, validation result,
 counts and diagnostic delivery/stop reason. It must not be interpreted as
 proof of invalid input. Lowering failures return typed errors and release
-temporary storage. No failed or partial IR is published.
+temporary storage. This complete-input entry point never publishes partial IR.
 
 See runnable [build_graph.zig](../examples/build_graph.zig). It parses
 `digraph { a -> { b c }; "a" -> d; subgraph s { x } }`, reports diagnostics,
@@ -76,6 +76,106 @@ Input must be an accepted, complete parser-produced Document, with its normal
 invariants intact. Lowering checks completeness but does not repeat syntax or
 policy validation. It rejects partial Documents with `IncompleteDocument`.
 Optional child-processor validation is the caller's acceptance decision.
+
+## Partial snapshots for editors
+
+Use `dot.ir.parsePartial` explicitly to retain facts around recoverable syntax
+errors. It uses the default DOT profile with partial retention and collection
+enabled. Ordinary `parse` and `lowerComplete` remain unchanged.
+
+```zig
+var bag: dot.reporting.FixedBag(dot.Diagnostic, 100, .omit) = .{};
+var result = try dot.ir.parsePartial(allocator, source, .{ .diagnostics = bag.sink() });
+defer result.deinit();
+if (result.ir()) |ir| {
+    var nodes = ir.nodeIterator();
+    while (nodes.next()) |node| {
+        switch (node.attribute("color")) {
+            .known => |color| std.debug.print("{f}: {?f}\n", .{ node.name(), color }),
+            .unknown => |answer| std.debug.print("{f}: {?f} (may change)\n", .{ node.name(), answer.retained }),
+        }
+    }
+}
+```
+
+See [partial_graph.zig](../examples/partial_graph.zig), which also renders the
+diagnostics. `a[color=red]; broken -> ; b[color=blue];` retains `a` and `b`, not
+the abandoned endpoint `broken`. Red is a retained candidate; blue is known
+because its explicit assignment follows the gap. Completed child scopes inside
+an abandoned edge also survive, exactly once, without that outer edge.
+
+| Partial API | Meaning |
+| --- | --- |
+| `result.ir()` | Borrowed `?*const PartialGraph`; null means unavailable, not necessarily invalid |
+| `result.checking` | Original parse/validation outcomes, completion, counts and diagnostic delivery; IR publication never makes rejected input valid |
+| `ir.state()` | `.complete` or `.partial` semantic coverage; a complete empty graph is complete |
+| `ir.kind()` | `Knowledge(GraphKind)`; unfinished `.auto` can remain unknown |
+| `ir.nodeIterator()` / `scopeIterator()` | Infallible retained views; scopes include root and merged reopened identities |
+| `ir.nodeView(id)` / `scopeView(id)` | Checked constructors for caller-supplied handles |
+| `node.name()` / `scope.name()` | Logical name formatter; scope names are optional |
+| `node.mentions()` | Infallible iteration of source ranges and owning occurrences using the existing posting index |
+| `node.attribute(key)` / `scope.attribute(key)` | Indexed, infallible `Knowledge(?AttributeView)`; `attributeWith(key, options)` is bounded/cancellable |
+| `findNode(name)` / `hasEdge(from, to)` / `contains(membership, node)` | Bounded `Error!Knowledge(...)`; `With` variants accept limits/cancellation |
+| `scope.membership()` | Bounded lookup of the last retained scope membership version, not proof of final contents |
+| `ir.gaps()` | Semantic-order coverage records: reason, source range and owning occurrence where known |
+| `nodeCount()` / `scopeCount()` / `connectionCount()` | Retained counts, never counts of missing input; connections remain symbolic |
+
+`Knowledge(T)` is `.known: T` or `.unknown`, with `uncertainty` and an optional
+`retained` candidate. For attributes, the candidate is already optional (not a
+double optional). Known null means proven absence. Unknown null does **not**.
+An implicit empty attribute remains a non-null view with `.resolved.kind = .empty`.
+Only attribute queries populate candidates in this increment. They replay DOT
+semantics over this snapshot, with ordinary provenance, raw values and operands;
+no repaired or cached previous-document values are substituted.
+
+Uncertainty identifies a deterministic earliest relevant source range with
+`skipped_input`, `unfinished_input` or `unresolved_kind`; the last can have a null
+span and EOF can have a zero-length span. Retained positive node/edge/member
+witnesses are known. Negative answers and defaults conservatively depend on all
+gaps: node identity is graph-wide, scopes can reopen, and missing input can
+introduce catalog keys or earlier object creation. Explicit assignments after
+the last semantic gap can still be known. Precomputed boundary/suffix indexes
+avoid per-query history or gap scans; bounded attribute queries charge those
+index probes against the same allowance as the attribute lookup. Coverage does not certify validity or
+inner-markup processing. Strict/generic and ambiguous strict interpretation
+remain unsupported rather than guessed.
+
+All iterator exhaustion means **all retained entries**, not all possible entries.
+Mention iteration is O(1) to initialize and per record, with no additional index.
+Ranges use the original source encoding; traversal follows semantic contribution
+order, not a new source sort. IDs/ordering are local to this snapshot and can
+change when missing input is filled.
+
+`parsePartial` does not launch lowering after a resource/storage failure,
+diagnostic stop/failure, processor stop or incomplete checking operation. The
+`.omit` bag above bounds retained diagnostics while permitting continued work;
+the default stopping bag deliberately stops even when accepting its last slot.
+Render diagnostics and the omitted count. Bounds on retained findings are not
+work limits. Parsing and lowering have separate resource options/budgets, just
+as in `parse`; custom cancellable/runtime/native profiles use explicit lowering.
+
+For an existing parser-produced Document (complete or retained), use:
+
+```zig
+const IR = dot.ir.Lowering(.{});
+var ir = try IR.lowerPartial(allocator, doc, .{
+    .interpretation = Dot.interpretation(doc, options),
+});
+defer ir.deinit();
+```
+
+`Dot` must match the accepting profile/options, including runtime interpretation.
+This low-level call can deliberately lower a stopped parser's retained Document
+as a **new** operation; it never resumes parsing. Lowering failures are errors,
+not unknown answers or partially built IR. Source remains borrowed; Document
+pools may be freed after lowering. Gap metadata and its growth count against
+lowering's work/memory limits and `retainedBytes()` / `peakBytes()`. Complete
+lowering allocates no coverage storage. Borrowed views/candidates require the
+IR to remain alive and unmoved; `_data` and `_coverage` are implementation details.
+
+Partial edge/all-attribute enumeration and materialization are not exposed yet.
+There is no unchecked conversion to a complete graph. Benchmark partial costs
+with `zig build bench-ir-partial -Doptimize=ReleaseFast` (or ReleaseSafe/ReleaseSmall).
 
 ## What you can read
 
@@ -704,8 +804,8 @@ including shared defaults, repeated updates, reopened/deep scopes and a symbolic
 product. The bulk attribute benchmark compares construction, full attribute
 consumption, retained/requested peak bytes and total arena capacity with compact
 queries. Run it alone with `zig build bench-ir-materialized -Doptimize=ReleaseFast`.
-Label-port existence/binding, event-based lowering, partial
-IR results, fixed-storage IR construction and resumable IR operations remain
+Label-port existence/binding, event-based lowering, partial enumeration/materialization,
+fixed-storage IR construction and resumable IR operations remain
 later work.
 
 The final section measures value kind/operand access, joined output, bounded

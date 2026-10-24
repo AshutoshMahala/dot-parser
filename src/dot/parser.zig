@@ -1021,6 +1021,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         self.skip_depth -= 1;
                     } else if (self.nestingDepth() == 0) {
                         self.state = .epilogue;
+                        if (@hasDecl(Sink, "parser_retention")) Sink.parser_retention.closeRoot(self.events);
                         if (transactional and !self.aborted) self.retainThrough(@intCast(token.span.endOffset()));
                     } else {
                         if (transactional and !self.aborted) {
@@ -1116,6 +1117,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 .right_brace => {
                     if (self.nestingDepth() == 0) {
                         self.state = .epilogue;
+                        if (@hasDecl(Sink, "parser_retention")) Sink.parser_retention.closeRoot(self.events);
                     } else {
                         self.state = .after_subgraph;
                         return if (metered or cancellable or fixed == null)

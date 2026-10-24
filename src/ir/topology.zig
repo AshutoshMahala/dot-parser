@@ -78,12 +78,17 @@ fn optionalOption(comptime T: type, value: anytype) ?T {
 }
 
 pub fn Graph(comptime caps: encoding.Capabilities) type {
+    return GraphWith(caps, false);
+}
+
+/// Partial storage never guesses a concrete kind for unresolved .auto input.
+pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) type {
     return struct {
         const Self = @This();
         source: []const u8,
         source_info: encoding.Info,
         declared_kind: syntax.GraphKind,
-        kind: policy.GraphKind,
+        kind: if (partial) ?policy.GraphKind else policy.GraphKind,
         strict: bool,
         name: ?Range,
         nodes: []const Node,

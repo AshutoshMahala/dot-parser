@@ -28,11 +28,13 @@ pub fn Builder(comptime Base: type) type {
         pub const parser_retention = struct {
             pub const continuesAfterError = Self.continuesAfterError;
             pub const retainThrough = Self.retainThrough;
+            pub const closeRoot = Self.closeRoot;
         };
         base: Base,
         enabled: bool,
         frozen: bool = false,
         retained_end: u32 = 0,
+        root_closed: bool = false,
         // Allocated before parsing, only for owned partial-capable operations.
         // A terminal failure never needs to allocate to preserve buffer ownership.
         allocation_lengths: if (owned) ?*AllocationLengths else void = if (owned) null else {},
@@ -57,6 +59,9 @@ pub fn Builder(comptime Base: type) type {
         }
         pub fn continuesAfterError(self: *const Self) bool {
             return self.enabled;
+        }
+        pub fn closeRoot(self: *Self) void {
+            if (self.enabled and !self.frozen) self.root_closed = true;
         }
         fn abortStatement(self: *Self) void {
             if (!self.enabled) return;
@@ -108,6 +113,7 @@ pub fn Builder(comptime Base: type) type {
                 if (self.frozen) {
                     document.state = .partial;
                     document.retained_end = self.retained_end;
+                    document.root_closed = self.root_closed;
                 }
                 return document;
             }
@@ -124,6 +130,7 @@ pub fn Builder(comptime Base: type) type {
                 .edges = &.{},
                 .state = if (self.frozen) .partial else .complete,
                 .retained_end = if (self.frozen) self.retained_end else 0,
+                .root_closed = !self.frozen or self.root_closed,
             };
             if (!self.base.retain_comments) self.base.comments.clearAndFree(self.base.allocator);
             inline for (pools, 0..) |field, i| {
