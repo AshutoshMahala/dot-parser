@@ -175,6 +175,10 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- Reduce opt-in IR materialization-session dispatch/accounting overhead without
+  changing credits, cancellation checkpoints, storage or the direct driver.
+  The session benchmark now covers topology/attributes, enabled cancellation
+  and budgets 1/64/4096 as well as run-to-completion.
 - **Breaking:** require Zig 0.17.0. Build steps, compile-time reflection and
   development tools use the new compiler APIs; optimization modes are
   `debug`, `safe`, `fast` and `small`. Parser policies and execution guarantees

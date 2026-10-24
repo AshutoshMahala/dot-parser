@@ -174,9 +174,12 @@ test "session cancellation latches at every poll including zero and across growt
     {
         var session = try ir.materializationSession(.{ .cancellation = counter.token() });
         defer session.deinit();
-        try equal(dot.ir.MaterializationOutcome.success, session.run().outcome.?);
+        const progress = session.run();
+        try equal(dot.ir.MaterializationOutcome.success, progress.outcome.?);
+        // One initialization poll and exactly one poll before every credit.
+        try equal(progress.total_work + 1, @as(u64, counter.polls));
     }
-    for (1..counter.polls + 1) |at| {
+    for ([_]u32{ 1, 7, std.math.maxInt(u32) }) |budget| for (1..counter.polls + 1) |at| {
         var stop: Stop = .{ .at = at };
         var session = ir.materializationSession(.{ .cancellation = stop.token() }) catch |err| {
             try equal(error.Cancelled, err);
@@ -184,17 +187,70 @@ test "session cancellation latches at every poll including zero and across growt
             continue;
         };
         defer session.deinit();
-        const p = session.run();
+        var p = session.advance(budget);
+        while (p.outcome == null) p = session.advance(budget);
         try equal(error.Cancelled, p.outcome.?.failure);
+        try equal(@as(u64, at - 2), p.total_work);
+        try equal(at, stop.polls);
         try std.testing.expectError(error.Cancelled, session.takeResult());
         try equal(@as(u32, 0), session.advance(100).work_used);
-    }
+        try equal(at, stop.polls); // A latched stop never polls again.
+    };
     var stop: Stop = .{};
     var session = try ir.materializationSession(.{ .cancellation = stop.token() });
     defer session.deinit();
     stop.at = stop.polls + 1;
     try equal(error.Cancelled, session.advance(0).outcome.?.failure);
     try equal(@as(u64, 0), session.advance(1).total_work);
+}
+
+test "batched session progress matches single credits with and without cancellation" {
+    var parsed = try dot.ir.parse(a, "strict graph {{a b c d}--{a b c d}[x=1 y=2];a:p--b:q[z=3];subgraph s{a b}--x}", .{});
+    defer parsed.deinit();
+    var snapshot = parsed.ir().?.*;
+    var memory: NoResize = .{ .backing = a };
+    snapshot.allocator = memory.allocator();
+    inline for (.{ false, true }) |attributes| for ([_]bool{ false, true }) |cancellable| {
+        var stop: Stop = .{};
+        var reference = try snapshot.materializationSession(.{ .attributes = attributes });
+        defer reference.deinit();
+        var session = try snapshot.materializationSession(.{ .attributes = attributes, .cancellation = if (cancellable) stop.token() else null });
+        defer session.deinit();
+        var turn: usize = 0;
+        var zero_polls: u64 = 0;
+        while (true) : (turn += 1) {
+            const grant = ([_]u32{ 0, 1, 7, 64, 2, 4096 })[turn % 6];
+            var expected = reference.advance(0);
+            var consumed: u32 = 0;
+            while (consumed < grant and expected.outcome == null) : (consumed += 1) expected = reference.advance(1);
+            expected.work_used = consumed;
+            const actual = session.advance(grant);
+            try equal(expected, actual);
+            try equal(reference.peakBytes(), session.peakBytes());
+            if (grant == 0) zero_polls += 1;
+            if (cancellable) try equal(actual.total_work + zero_polls + 1, @as(u64, stop.polls));
+            if (actual.outcome != null) break;
+        }
+        var left = try reference.takeResult();
+        defer left.deinit();
+        var right = try session.takeResult();
+        defer right.deinit();
+        try compareResults(attributes, &left, &right);
+    };
+}
+
+test "session cancellation wins at the exact lifetime work boundary" {
+    var parsed = try dot.ir.parse(a, "digraph {a->b}", .{});
+    defer parsed.deinit();
+    for ([_]u32{ 0, 1, 7 }) |limit| {
+        var stop: Stop = .{ .at = @as(usize, limit) + 2 };
+        var session = try parsed.ir().?.materializationSession(.{ .limits = .{ .max_work = limit }, .cancellation = stop.token() });
+        defer session.deinit();
+        const p = session.advance(limit + 1);
+        try equal(@as(u64, limit), p.total_work);
+        try equal(error.Cancelled, p.outcome.?.failure);
+        try equal(stop.at, stop.polls);
+    }
 }
 
 test "work limits and ownership transfer are exact and terminal" {

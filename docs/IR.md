@@ -895,6 +895,13 @@ advance even with budget one. Cancellation polls at every resume and before
 each credit, including while initializing tables, copying growth buffers and
 walking long names. This leaves DOT, markup and string accounting unchanged.
 
+The driver specializes cancellation presence once per resume and has a compact
+one-credit entry into the same transition machine. Neither optimization batches
+credits or reduces polling: budget one uses the entry poll for its only step;
+larger budgets poll before each additional step. See the
+[session measurements](PERFORMANCE.md#resumable-ir-materialization-2026-10-24)
+for measured costs versus the direct driver.
+
 Per-call exhaustion is resumable; cumulative `limits.max_work`, memory/edge/
 pair/map limits, allocation failure and cancellation are terminal. A rejected
 product is checked before its expanded edges are allocated. No terminal failure

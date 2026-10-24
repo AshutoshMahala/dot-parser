@@ -1984,8 +1984,8 @@ zig build bench-ir-sessions -Doptimize=safe
 zig build bench-ir-sessions -Doptimize=small
 ```
 
-This harness rotates direct/session modes, takes nine samples after two warmup
-rounds, and consumes output outside build timing. Parsing/lowering and final
+The original harness rotated direct/session modes, took nine samples after two
+warmup rounds, and consumed output outside build timing. Parsing/lowering and final
 result destruction are excluded; internal scratch cleanup is included on both
 paths. Below is one serial Fast process, with no builds or other benchmarks
 running. Compare columns within this harness, not its direct column against a
@@ -2001,8 +2001,9 @@ different executable's timings above.
 | Endpoint ports | 0.0554 | 0.0913 | 0.0982 | 0.2294 |
 | Reversed strict port updates | 0.0701 | 0.1135 | 0.1158 | 0.2709 |
 
-Budget 4096 costs roughly 1.3–2.4× direct Fast time on these nontrivial cases;
-budget one costs 3.9–6.1×. This is **opt-in scheduling overhead**, not a speed
+Initially, budget 4096 cost roughly 1.3–2.4× direct Fast time on these cases;
+budget one cost 3.9–6.1×. These are the pre-optimization results; see the follow-up
+below. This is **opt-in scheduling overhead**, not a speed
 optimization. `run()` drives the same bounded machine and is not an alias for
 the faster direct driver. Safe direct/session-4096 measured 0.3037/0.4320 ms
 for explicit attributes and 1.5420/2.4930 ms for strict overlap; Small measured
@@ -2029,6 +2030,79 @@ AVL updates and port-key code units. Budget-one, mixed-budget, zero-budget,
 all-allocation-failure and every-cancellation-point tests preserve output and
 terminal reasons. Allocator/cancellation callbacks and destruction remain
 outside wall-time guarantees. Existing parser metering/cancellation is unchanged.
+
+#### Session-driver optimization
+
+Follow-up baseline **`fc64630`**, on the same M4 Pro and Zig 0.17.0. Five
+serial processes per revision, alternating order, using the **same expanded
+harness** against both libraries. Each process rotates the scheduling modes
+and takes 15 samples after 12 warmups. No builds or tests ran alongside these
+measurements. Parsing/lowering, output consumption and final output destruction
+remain outside timing; scratch cleanup is included.
+
+The overhead was largely per-transition dispatch and bookkeeping, not larger
+output or more allocations. The driver now uses direct state transitions,
+selects cancellation presence once per resume, computes the available lifetime
+grant once, and keeps counters local when no cancellation callback needs them.
+A one-credit resume saves its successor and exits without dispatching that
+successor just to pause. The thin progress wrapper and the common
+already-has-capacity check are inlined; allocation/copying stays separate.
+There is one transition implementation, not a second materialization algorithm.
+
+Attribute-bearing sessions, **budget 4096, no cancellation token**, median ms
+(before → after):
+
+| Fixture | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| Plain edges | 0.0327 → 0.0338 | 0.0395 → 0.0385 | 0.0765 → 0.0362 |
+| 64 shared defaults | 0.0329 → 0.0342 | 0.0400 → 0.0365 | 0.0767 → 0.0360 |
+| 8 explicit attributes | 0.3454 → 0.2907 | 0.4498 → 0.3708 | 0.7309 → 0.4834 |
+| Strict overlapping sets | 2.3373 → 2.0410 | 2.5187 → 2.5073 | 4.7015 → 2.6241 |
+| Reopened scopes | 0.7466 → 0.4447 | 0.8245 → 0.5270 | 1.8159 → 0.9588 |
+| Endpoint ports | 0.0943 → 0.0822 | 0.1251 → 0.1093 | 0.2123 → 0.1190 |
+| Reversed strict port updates | 0.1126 → 0.0895 | 0.1181 → 0.0939 | 0.2540 → 0.1409 |
+
+Geometric-mean **time changes** across these seven fixtures (negative is faster):
+
+| Build | Budget 4096 | Budget 1 | Cancellation on, 4096 | Cancellation on, 1 |
+| --- | ---: | ---: | ---: | ---: |
+| Fast | −14.8% | −26.6% | −7.7% | −36.4% |
+| Safe | −14.9% | −38.1% | −12.7% | −24.7% |
+| Small | −46.0% | −17.0% | −26.1% | −16.1% |
+
+Topology-only sessions also improved: without cancellation their 4096-credit
+geometric means fell 12.4% / 14.2% / 37.0% (Fast / Safe / Small), and their
+budget-one means fell 33.1% / 31.1% / 8.9%. Enabled-cancellation topology
+routes improved at both budgets too. Budget 64 and `run()` are included in
+the CSV. The tiny deep/one-edge fixture is below useful timing resolution;
+the rejected product still stops with `PairLimit` before expansion.
+
+**Remaining cost:** Fast sessions at budget 4096 now take 1.25–1.73× direct
+time in this harness; budget one still takes 3.0–4.4×. Bounded transitions,
+resumable growth and repeated calls are not free. This is not a universal
+speedup: the plain/shared-default Fast sessions at budget 4096 rose about
+1 μs (3–4%), while Safe strict overlap was essentially flat. Use direct
+`materialize` when intermediate scheduling is not needed.
+
+**No weaker contract:** every defined transition still consumes the same credit;
+copies/initialization remain at most 64 bytes per credit. Entry polls, one poll
+per credit, zero-budget polls and cancellation-before-work-limit precedence are
+unchanged. Across the measured matrix, credits, poll counts, edge counts,
+retained/peak requested bytes, outcomes and session object sizes matched the
+baseline exactly. Tests compare batched progress to single credits, cancel at
+every poll under budgets 1/7/full-run, and exercise allocation failures and
+partial-source output. The complete check passed 789 tests; IR passed all 144
+in Debug, Fast and Safe.
+
+**Default-path gate:** the direct-only benchmark's entire `__text` remains
+byte-identical to `fc64630` in Fast, Safe and Small. Parser metering and
+cancellation are untouched. The optimization adds no per-node/edge metadata
+or heap payload. Specialization does cost opt-in code: the expanded benchmark's
+`__TEXT` segment grew by 32,352 / 35,968 / 20,576 bytes (Fast / Safe / Small).
+That harness includes both output forms, runtime cancellation and all budgets;
+it is not a universal consumer binary-size delta. Default-only code is unchanged.
+Heap figures exclude code pages, temporary call frames, allocator internals and
+process RSS.
 
 ## Running the benchmarks
 

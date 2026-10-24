@@ -29,7 +29,13 @@ pub fn Growth(comptime T: type) type {
         }
         /// Call once per credit. False means progress, not failure. Keep list
         /// unchanged until true; old and new storage both count against limits.
-        pub fn step(self: *@This(), list: *std.ArrayList(T), a: std.mem.Allocator) r.Error!bool {
+        pub inline fn step(self: *@This(), list: *std.ArrayList(T), a: std.mem.Allocator) r.Error!bool {
+            // Most append credits already have room. Keep that check at the
+            // call site without inlining allocation/copying into every state.
+            if (self.pending.len == 0 and list.items.len < list.capacity) return true;
+            return self.grow(list, a);
+        }
+        fn grow(self: *@This(), list: *std.ArrayList(T), a: std.mem.Allocator) r.Error!bool {
             if (self.pending.len != 0) {
                 if (self.copied < list.items.len) {
                     const end = self.copied + @min(list.items.len - self.copied, @max(1, 64 / @sizeOf(T)));
@@ -44,7 +50,6 @@ pub fn Growth(comptime T: type) type {
                 }
                 return false;
             }
-            if (list.items.len < list.capacity) return true;
             if (list.items.len >= std.math.maxInt(u32) - 1) return error.IndexLimit;
             // Match ordinary ArrayList append capacity, so bounded copying
             // does not accidentally change the retained-memory growth curve.
