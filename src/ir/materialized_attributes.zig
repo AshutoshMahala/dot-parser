@@ -62,7 +62,7 @@ pub fn Builder(comptime with_ports: bool) type {
             // With u32 cell IDs an AVL path has fewer than 48 entries. No recursion
             // or source-dependent stack, and rotations cannot allocate or fail.
             var path: [48]u32 = undefined;
-            var depth: usize = 0;
+            var depth: u32 = 0;
             var cursor = root;
             while (cursor != none) {
                 try work.spend(1);
@@ -87,8 +87,11 @@ pub fn Builder(comptime with_ports: bool) type {
                 const id = path[depth];
                 const cell = &self.cells.items[id];
                 if (key < cell.key) cell.left = child else cell.right = child;
-                self.refresh(id);
-                const balance = @as(i16, self.height(cell.left)) - self.height(cell.right);
+                const left_height = self.height(cell.left);
+                const right_height = self.height(cell.right);
+                const balance = @as(i16, left_height) - right_height;
+                // Rotations refresh their affected cells themselves. Only a
+                // balanced ancestor needs a height write here.
                 if (balance > 1) {
                     const branch = self.cells.items[cell.left];
                     if (self.height(branch.left) < self.height(branch.right)) cell.left = self.rotate(cell.left, true);
@@ -97,7 +100,10 @@ pub fn Builder(comptime with_ports: bool) type {
                     const branch = self.cells.items[cell.right];
                     if (self.height(branch.right) < self.height(branch.left)) cell.right = self.rotate(cell.right, false);
                     child = self.rotate(id, true);
-                } else child = id;
+                } else {
+                    cell.height = 1 + @max(left_height, right_height);
+                    child = id;
+                }
             }
             return child;
         }

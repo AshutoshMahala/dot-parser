@@ -46,6 +46,8 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
         const Self = @This();
         const Stored = if (retaining) t.Edge else [2]u32;
         graph: *const Graph,
+        // The borrowed graph is immutable for the iterator's lifetime.
+        strict: bool,
         // Retain only expansion limits. Lowering-only settings (including
         // attribute-map limits) must not enlarge this per-edge hot state.
         max_pairs: u64,
@@ -62,6 +64,9 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
         left_index: u32 = 0,
         right_index: u32 = 0,
         ready: bool = false,
+        // A connection's operator is constant across its entire Cartesian
+        // product. Cache it with the prepared endpoints, not once per pair.
+        operator: Operator = undefined,
         visited: u64 = 0,
         emitted: u32 = 0,
         done: bool = false,
@@ -72,6 +77,7 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
             const limits = options.limits orelse graph.limits;
             return .{
                 .graph = graph,
+                .strict = graph.strict,
                 .max_pairs = limits.max_pairs,
                 .max_edges = limits.max_edges,
                 .work = try r.Work.init(limits, options.cancellation),
@@ -194,6 +200,7 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                     }
                     self.left_index = 0;
                     self.right_index = 0;
+                    self.operator = connection.effective_operator;
                     self.ready = true;
                 }
                 try self.work.spend(1);
@@ -204,7 +211,7 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                 const edge: t.Edge = .{
                     .from = self.left.at(self.left_index),
                     .to = self.right.at(self.right_index),
-                    .operator = self.graph.connections[self.connection].effective_operator,
+                    .operator = self.operator,
                     .first_connection = @fromBackingInt(self.connection),
                 };
                 self.right_index += 1;
@@ -218,7 +225,7 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                 }
                 const a = self.memory.allocator();
                 const key = canonical(edge);
-                if (self.graph.strict) {
+                if (self.strict) {
                     const hash = pairHash(edge.operator, key);
                     if (self.pairs.slots.len != 0) {
                         var at: usize = @intCast(hash & (self.pairs.slots.len - 1));
@@ -249,7 +256,7 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                 if (retaining) {
                     try self.stored.append(a, edge);
                     if (fold_attributes) try self.folded.apply(self.graph, self.emitted, edge.first_connection, if (with_ports) edge else {}, a, &self.work);
-                } else if (self.graph.strict) {
+                } else if (self.strict) {
                     try self.stored.append(a, key);
                 }
                 self.emitted += 1;

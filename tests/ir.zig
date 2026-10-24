@@ -790,3 +790,28 @@ test "IR streaming cancellation is polled between calls and inside endpoint and 
     counter.remaining = 0;
     try std.testing.expectError(error.Cancelled, stream.next());
 }
+
+test "IR expansion keeps operators synchronized across products empty links and pull calls" {
+    const P = dot.Profile(.{ .policy = .{ .validation = .{ .graph = .{ .treated_as = .generic } } } });
+    const source = "graph { {}->{a}; {a b}--{c d}; {}--{}; e:p->f:q; {a}->{}; g--h }";
+    var parsed = P.parseAndValidate(a, source, dot.diagnostic.discard, .{});
+    defer parsed.deinit(a);
+    try expect(parsed.documentValid());
+    var ir = try IR.lowerComplete(a, &parsed.document.?, .{ .interpretation = P.interpretation(&parsed.document.?, .{}) });
+    defer ir.deinit();
+    var topology = try ir.materialize(.{ .attributes = false });
+    defer topology.deinit();
+    var folded = try ir.materialize(.{});
+    defer folded.deinit();
+    try std.testing.expectEqualSlices(dot.ir.Edge, topology.edges, folded.edges);
+    try equal(@as(usize, 6), topology.edges.len);
+    var stream = try ir.edgeIterator(.{});
+    defer stream.deinit();
+    for (topology.edges, 0..) |record, index| {
+        const expected: dot.EdgeOperator = if (index == 4) .directed else .undirected;
+        try equal(expected, record.operator);
+        try equal(ir.connections[@backingInt(record.first_connection)].effective_operator, record.operator);
+        try equal(record, (try stream.next()).?.edge);
+    }
+    try expect(try stream.next() == null);
+}

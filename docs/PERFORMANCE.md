@@ -472,8 +472,81 @@ reopened compact reads were noisier despite identical machine code; these are
 not claimed speedups. This checks the **unused-helper path**, not the cost of
 calling the new readers: first-colon splitting/text formatting re-read a value
 linearly with constant scratch and no allocation. Their bounded variants keep
-work limits/cancellation. The earlier endpoint-port regressions above remain
-unresolved; this follow-up does not erase that gate.
+work limits/cancellation. This unused-helper check did not resolve the earlier
+endpoint-port gate; the performance repair below revisits it.
+
+### Endpoint-port performance repair (2026-10-23)
+
+Apple M4 Pro, Zig 0.17.0; freshly built `4e525ac` versus the repair, in
+ReleaseFast and ReleaseSafe. Five process runs per side with rotated ordering,
+after warming every executable; each harness takes nine samples after two
+warmups. Builds/tests were finished before timing. The pre-port topology source
+is `2b227a2`; the retained pre-port bulk executable has the same baseline
+qualification described above. All figures are medians of process medians.
+
+The topology-only loop did not acquire per-pair port processing. Disassembly
+comparisons also showed code-generation/layout sensitivity, not one isolated
+new operation explaining every slowdown. The retained changes reduce actual
+work or keep optional preparation out of the hot path:
+
+- Cache the immutable graph classification and current connection operator
+  in the expansion iterator instead of loading them for each candidate pair.
+- Outline port-specific attribute preparation, while keeping per-value reads
+  inline. Inline the provenance projection specifically in compact iteration.
+- Read AVL child heights once when balancing folded winners; rotations already
+  refresh their affected cells, so do not refresh them redundantly beforehand.
+
+| Operation/workload | Fast `4e525ac` → repaired (ms) | Safe `4e525ac` → repaired (ms) |
+| --- | ---: | ---: |
+| Reopened-subgraph topology expansion, 500,500 edges | 2.928 → 2.502 (−14.5%) | 4.314 → 4.178 (−3.2%) |
+| Strict reopened-subgraph streaming, 1,000 edges | 3.368 → 2.857 (−15.2%) | 3.004 → 2.792 (−7.1%) |
+| Eight explicit keys/edge, folded construction + consumption | 0.2073 → 0.1889 (−8.9%) | 0.3724 → 0.3297 (−11.5%) |
+| 64 defaults, compact construction + consumption | 0.8439 → 0.7850 (−7.0%) | 1.4037 → 1.0777 (−23.2%) |
+| No attributes, compact construction + consumption | 0.0378 → 0.0379 (+0.3%) | 0.0513 → 0.0508 (−1.0%) |
+
+The first four originally flagged workloads are now within 1% of, or faster
+than, the pre-port baseline in both modes. **This is not a clean overall
+pre-port gate:** these remaining gaps were also measured, including paths
+outside the original five-row table:
+
+| Remaining case | Mode | Pre-port → repaired (ms) | Change |
+| --- | --- | ---: | ---: |
+| No attributes, compact total, 2,000 edges | Fast | 0.0333 → 0.0379 | +13.8% |
+| No attributes, compact total, 2,000 edges | Safe | 0.0467 → 0.0508 | +8.8% |
+| 64 defaults, folded total | Safe | 0.6479 → 0.7161 | +10.5% |
+| Strict overlapping sets, compact total | Fast | 0.9224 → 0.9853 | +6.8% |
+| Eight explicit keys/edge, compact total | Fast | 0.1078 → 0.1143 | +6.0% |
+
+The empty-attribute gap is about 4–5 µs across 2,000 edges, but is still a
+regression, not rounded away. Broader inlining, outlined allocation growth and
+specialized enumeration experiments were discarded when they hurt other cases.
+Small topology workloads varied by up to about 4%; sub-microsecond phases are
+too short to interpret their rounded percentage changes. There is no claim
+that all IR workloads are now regression-free.
+
+The ordinary-query harness was also rerun with five alternating process runs.
+Most lookup/iteration medians stayed within 5% or improved. Its very small
+Fast loops still varied: one node-view lookup was 6.8 → 7.8 ns, and symbolic
+edge-attribute iteration 34.2 → 37.5 ns, with overlapping process ranges.
+These observations are not evidence of an across-the-board no-regression gate.
+
+Counts, retained allocations, peak requested bytes and arena capacity are
+identical before/after on every workload within each build mode. ReleaseSafe
+public edge/attribute iterators remain 304 / 176 bytes. No source pools, decoded
+copies or retained histories were added. APIs, validation of supplied handles,
+pair/work limits and cancellation checks are unchanged; parser metering and
+DOT/markup parsing code were not changed.
+
+Verification: `zig build check` passes all 238 steps / 731 tests; `test-ir`
+passes 86 tests in Debug and ReleaseSafe. An additional 24,576-case comparison
+against `4e525ac` matches output/error traces and cancellation poll counts for
+work-limit and cancellation cutoffs across materialization, streaming and
+compact/folded attribute reads. The saved Graphviz reference corpus still
+matches all 256 generated graphs (4,850 edges / 9,700 port values).
+
+Reproduce the focused workloads with `zig build bench-ir-materialized` and
+`zig build bench-ir`, selecting `-Doptimize=ReleaseFast` or `ReleaseSafe`.
+The broader command also covers ordinary attribute queries and value access.
 
 ## Attribute string integration (Unreleased)
 

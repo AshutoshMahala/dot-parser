@@ -189,6 +189,12 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                 };
             }
 
+            noinline fn preparePorts(self: *Iterator, edge: t.Edge) r.Error!void {
+                // Keep the derived-key/history preparation out of port-free
+                // iteration; leave per-value resolution inline for port users.
+                return self.prepareEdge(true, edge);
+            }
+
             fn initWinners(self: *Iterator) r.Error!void {
                 var count: u32 = 0;
                 for (self.graph.attribute_data.keys.items) |key| {
@@ -265,7 +271,9 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
             inline fn nextImpl(self: *Iterator, comptime with_ports: bool) r.Error!?Attribute {
                 try self.work.spend(0);
                 if (!self.prepared) {
-                    if (self.target == .edge) try self.prepareEdge(with_ports, self.target.edge);
+                    if (self.target == .edge) {
+                        if (with_ports) try self.preparePorts(self.target.edge) else try self.prepareEdge(false, self.target.edge);
+                    }
                     self.prepared = true;
                 }
                 const graph = self.graph;
@@ -317,7 +325,9 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                         },
                     };
                     const written = try store.lookup(root, id, &self.work);
-                    return .{ .graph = graph, .resolved = attrs.resolved(graph, written orelse key.first_attribute, key.kind, scope, written == null) };
+                    // Project provenance here so callers can eliminate unused
+                    // view fields, without forcing inlining for other queries.
+                    return .{ .graph = graph, .resolved = @call(.always_inline, attrs.resolved, .{ graph, written orelse key.first_attribute, key.kind, scope, written == null }) };
                 }
                 if (self.target == .edge and with_ports) {
                     while (self.port_index < 2) {
