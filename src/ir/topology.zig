@@ -367,7 +367,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             var work = try r.Work.init(self.limits, null);
             return self.containsWork(members, node, &work);
         }
-        pub fn containsWork(self: *const Self, members: Membership, node: NodeId, work: *r.Work) r.Error!bool {
+        pub inline fn containsWork(self: *const Self, members: Membership, node: NodeId, work: *r.Work) r.Error!bool {
             const id = @backingInt(node);
             if (id >= self.nodes.len) return error.InvalidHandle;
             const handle = @backingInt(members);
@@ -376,6 +376,11 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
                 try work.spend(1);
                 return handle & ~node_bit == id;
             }
+            return self.containsSetWork(handle, id, work);
+        }
+        // Singleton checks stay local to their caller. Keep the interval/posting
+        // search out of that hot path without changing its checks or charges.
+        noinline fn containsSetWork(self: *const Self, handle: u32, id: u32, work: *r.Work) r.Error!bool {
             if (handle >= self.bodies.len) return error.InvalidHandle;
             const first = self.bodies[handle].first;
             const positions = self.posting_positions[self.posting_offsets[id]..self.posting_offsets[id + 1]];

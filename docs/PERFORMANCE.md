@@ -477,6 +477,9 @@ endpoint-port gate; the performance repair below revisits it.
 
 ### Endpoint-port performance repair (2026-10-23)
 
+This is the first repair checkpoint; the follow-up below revisits its remaining
+empty-attribute and default-folding gaps.
+
 Apple M4 Pro, Zig 0.17.0; freshly built `4e525ac` versus the repair, in
 ReleaseFast and ReleaseSafe. Five process runs per side with rotated ordering,
 after warming every executable; each harness takes nine samples after two
@@ -547,6 +550,70 @@ matches all 256 generated graphs (4,850 edges / 9,700 port values).
 Reproduce the focused workloads with `zig build bench-ir-materialized` and
 `zig build bench-ir`, selecting `-Doptimize=ReleaseFast` or `ReleaseSafe`.
 The broader command also covers ordinary attribute queries and value access.
+
+### Endpoint-port follow-up: attribute reads (2026-10-23)
+
+Compared `9349221` with the follow-up on the same Apple M4 Pro / Zig 0.17.0.
+Five rotated process runs per side and mode, after warming every executable;
+each process takes nine samples after two warmups. No builds/tests ran during
+timing. Results are medians of process medians. The pre-port topology source
+remains `2b227a2`; the retained pre-port bulk executable has the earlier
+same-operation, not exact-one-commit comparison qualification.
+
+Disassembly identified two concrete call-boundary changes. Compact iteration
+had stopped inlining the membership wrapper, copying an 80-byte connection
+and making an extra call for each candidate. Folded reads in ReleaseSafe had
+an outlined port projection that prevented immutable owner data being hoisted
+out of the value loop. The follow-up:
+
+- Inlines that membership wrapper at the attribute-iteration call site.
+- Keeps singleton membership checks inline and the interval/posting search in
+  a separate function. The checks, short-circuit order and work charges stay
+  unchanged; set membership is not replaced by a guess or skipped check.
+- Specializes folded reads for port-free graphs and keeps the small derived
+  port projection inline. It does not duplicate stored defaults or add caches.
+
+| Operation/workload | Fast `9349221` → follow-up (ms) | Safe `9349221` → follow-up (ms) |
+| --- | ---: | ---: |
+| No attributes, compact total, 2,000 edges | 0.0405 → 0.0325 (−19.8%) | 0.0535 → 0.0464 (−13.3%) |
+| 64 defaults, folded construction + consumption | 0.4073 → 0.4077 (+0.1%) | 0.7513 → 0.6928 (−7.8%) |
+| Strict overlapping sets, compact total | 0.9985 → 0.9662 (−3.2%) | 1.3298 → 1.2870 (−3.2%) |
+| Eight explicit keys/edge, compact total | 0.1168 → 0.1163 (−0.4%) | 0.1383 → 0.1306 (−5.6%) |
+| Two endpoint suffixes per edge, compact total | 0.0580 → 0.0512 (−11.7%) | 0.0848 → 0.0727 (−14.3%) |
+| Strict suffix updates/reversals, compact total | 2.2141 → 0.6560 (−70.4%) | 2.2776 → 0.7196 (−68.4%) |
+
+Against the pre-port executables in this same run, empty-attribute compact
+iteration is now 11.4% faster in Fast and 9.6% faster in Safe. Safe default-heavy
+folding is within 1.9%; the remaining Fast strict-overlap and explicit-key compact
+gaps are 3.2% and 2.9%. All port-free bulk totals are within 3.2% of, or faster
+than, that historical baseline. This is a focused improvement, not a universal
+zero-regression claim or a release-wide throughput measurement.
+
+The topology harness stayed within about 3% of `9349221`, apart from a 4.9%
+improvement in Fast reopened-subgraph expansion. Ordinary attribute-query
+benchmarks also improved on the expensive paths: strict repeated-edge lookups
+fell about 33–35%, and reopened edge-attribute iteration fell 13–15% in both
+modes. Tiny queries still have overlapping process ranges: Safe shared-default
+edge iteration was 71.3 → 75.0 ns by median, with ranges 70.4–80.4 and
+65.4–77.9 ns. Do not infer a robust slowdown or an across-the-board timing
+guarantee from that small loop.
+
+All output counts, retained allocations, peak requested bytes and arena
+capacities match `9349221` within each build mode. ReleaseSafe edge/attribute
+iterator sizes remain 304 / 176 bytes. The bulk harness executables are also
+essentially unchanged in size: Fast 578,024 → 578,008 bytes; Safe
+714,392 → 714,264 bytes. These are whole harness sizes, not isolated library
+code-size claims; allocation measurements exclude stack, allocator metadata
+and process RSS.
+
+Verification: `zig build check` passes 238 steps / 732 tests; `test-ir` passes
+87 tests in Debug and ReleaseSafe. The new empty-catalog test checks exact
+work/cancellation boundaries and rejects false membership and later strict
+contributors even when there are no values to return. All 24,576 differential
+operation/budget/cancellation traces still match the earlier endpoint build,
+including poll counts and terminal errors. The saved Graphviz corpus continues
+to match 256 graphs / 4,850 edges / 9,700 port values. No API, retained layout,
+parser implementation, work accounting or cancellation guarantee changed.
 
 ## Attribute string integration (Unreleased)
 

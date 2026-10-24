@@ -187,7 +187,10 @@ are marked; no compatibility shims are kept.
 
 - Reduced endpoint-port IR overhead in edge expansion, streaming and attribute
   iteration/folding: cache immutable connection/graph facts, isolate port
-  preparation and avoid redundant AVL height work. APIs, retained storage,
+  preparation and avoid redundant AVL height work. Follow-up repairs keep
+  singleton membership checks inline, avoid copying full connections during
+  attribute iteration and specialize folded reads for port-free graphs.
+  APIs, retained storage,
   work accounting and cancellation boundaries are unchanged. See the focused
   performance report for measurements and remaining pre-port gaps.
 - Long reader-bound string checks batch unchanged ASCII runs without changing

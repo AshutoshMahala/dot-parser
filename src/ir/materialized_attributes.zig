@@ -231,17 +231,25 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities) type {
                 return try self.resolve(id, work);
             }
             inline fn resolve(self: EdgeView, key: u32, work: anytype) r.Error!Graph.AttributeView {
+                // A port-free IR cannot contain synthetic winners or keys.
+                // Keep their resolution out of ordinary/default value loops.
+                return if (self.owner.graph.has_ports) self.resolveImpl(true, key, work) else self.resolveImpl(false, key, work);
+            }
+            inline fn resolveImpl(self: EdgeView, comptime with_ports: bool, key: u32, work: anytype) r.Error!Graph.AttributeView {
                 const graph = self.owner.graph;
                 if (try self.owner.folded.lookup(self.index, key, work)) |cell| {
-                    const resolved = if (cell.attribute >= ports.right)
-                        ports.resolve(graph, .{ .attribute = cell.attribute, .connection = cell.connection }, self.owner.folded.port_keys.key(key).?, false)
+                    // Keep this small projection visible to the caller. An
+                    // outlined port branch prevents hoisting immutable owner
+                    // data even when only ordinary/default values are visited.
+                    const resolved = if (with_ports and cell.attribute >= ports.right)
+                        @call(.always_inline, ports.resolve, .{ graph, ports.Selection{ .attribute = cell.attribute, .connection = cell.connection }, self.owner.folded.port_keys.key(key).?, false })
                     else
                         attrs.resolvedConnection(graph, cell.attribute, cell.connection);
                     return .{ .graph = graph, .resolved = resolved };
                 }
-                if (key >= ports.right) {
+                if (with_ports and key >= ports.right) {
                     const port_key = self.owner.folded.port_keys.key(key).?;
-                    return .{ .graph = graph, .resolved = ports.resolve(graph, self.owner.folded.port_introductions[@backingInt(port_key)].?, port_key, true) };
+                    return .{ .graph = graph, .resolved = @call(.always_inline, ports.resolve, .{ graph, self.owner.folded.port_introductions[@backingInt(port_key)].?, port_key, true }) };
                 }
                 const connection = @backingInt(self.edge.first_connection);
                 const root = graph.attribute_data.connection_defaults[connection];

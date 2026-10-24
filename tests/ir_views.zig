@@ -162,6 +162,62 @@ test "IR attribute iteration is empty without keys and includes derived endpoint
     }
 }
 
+test "IR empty edge attributes still validate membership and preserve exact stop boundaries" {
+    const Polls = struct {
+        calls: u32 = 0,
+        stop: u32,
+        fn requested(context: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.calls += 1;
+            return self.calls >= self.stop;
+        }
+    };
+    inline for (.{ false, true }) |strict| {
+        var ir = try lower(if (strict) "strict digraph {a->b; a->b; c}" else "digraph {a->b; c}");
+        defer ir.deinit();
+        var edges = try ir.edgeIterator(.{});
+        defer edges.deinit();
+        const edge = (try edges.next()).?;
+        // One connection visit and two singleton-membership checks per match.
+        const needed: u32 = if (strict) 6 else 3;
+        for (0..needed + 1) |limit| {
+            var attributes = try edge.attributes(.{ .limits = .{ .max_work = limit } });
+            defer attributes.deinit();
+            if (limit < needed) {
+                try std.testing.expectError(error.WorkLimit, attributes.next());
+                try std.testing.expectError(error.WorkLimit, attributes.next());
+            } else try expect(try attributes.next() == null);
+        }
+        // Initialization and next() poll too, including an empty catalog.
+        for (2..needed + 4) |cutoff| {
+            var polls: Polls = .{ .stop = @intCast(cutoff) };
+            var attributes = try edge.attributes(.{ .cancellation = .{ .context = &polls, .is_requested = Polls.requested } });
+            defer attributes.deinit();
+            if (cutoff <= needed + 2) {
+                try std.testing.expectError(error.Cancelled, attributes.next());
+                try equal(@as(u32, @intCast(cutoff)), polls.calls);
+                try std.testing.expectError(error.Cancelled, attributes.next());
+            } else {
+                try expect(try attributes.next() == null);
+                try expect(try attributes.next() == null);
+            }
+            try equal(@min(@as(u32, @intCast(cutoff)), needed + 2), polls.calls);
+        }
+        var wrong = edge.edge;
+        wrong.to = (try ir.findNode("c")).?;
+        var invalid = try (try ir.edgeView(wrong)).attributes(.{});
+        defer invalid.deinit();
+        try std.testing.expectError(error.InvalidHandle, invalid.next());
+        if (strict) {
+            wrong = edge.edge;
+            wrong.first_connection = @fromBackingInt(1);
+            var duplicate = try (try ir.edgeView(wrong)).attributes(.{});
+            defer duplicate.deinit();
+            try std.testing.expectError(error.InvalidHandle, duplicate.next());
+        }
+    }
+}
+
 test "IR views reject invalid handles and attribute iterators preserve cumulative and terminal stops" {
     var ir = try lower("strict digraph {a[x=1 y=2 z=3]; a->b[color=red]; a->b[color=blue]; c}");
     defer ir.deinit();

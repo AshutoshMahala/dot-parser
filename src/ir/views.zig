@@ -243,7 +243,10 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                 var first: ?u32 = null;
                 for (graph.connections[start..end], start..) |connection, index| {
                     try self.work.spend(1);
-                    if (!try covers(graph, connection, edge, &self.work)) continue;
+                    // Project only membership/operator fields here. An outlined
+                    // wrapper copies the whole connection (including ports) per
+                    // candidate; the underlying bounded checks stay unchanged.
+                    if (!try @call(.always_inline, covers, .{ graph, connection, edge, &self.work })) continue;
                     if (first == null) {
                         first = @intCast(index);
                         if (first != id) return error.InvalidHandle;
