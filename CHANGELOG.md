@@ -8,6 +8,17 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Policy-bound resumable attribute access via `IR.attributeSession(view, key, options)`
+  and `IR.attributesSession(view, options)`, for complete/partial node, scope,
+  compact-edge and materialized-edge views. Reuses existing execution policies
+  and shared session options; bounded steps include keys, contribution/membership
+  searches, port introductions, winner scratch and coverage qualification.
+  Single lookup allocates no scratch; materialized views read existing maps.
+  Streams deliver one final effective attribute at a time, preserving direct
+  order/provenance and partial uncertainty. No expansion or implicit key copy.
+  Includes a runnable example and `bench-ir-attribute-sessions`. Direct APIs
+  and retained layouts are unchanged. Unreleased symbolic-query session members
+  `QueryOutcome` are renamed `Outcome` to match the other query/stream types.
 - Policy-bound resumable symbolic queries via `IR.hasEdgeSession` and
   `IR.containsSession`, for complete and partial IRs. Reuses metering,
   cancellation intervals and opt-in runtime policies; bounded steps cover

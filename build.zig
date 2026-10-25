@@ -92,6 +92,11 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ir_query_unknown", .message = "unknown IR query session option: attributes" },
         .{ .name = "ir_query_runtime", .message = "unknown IR query session option: policy" },
         .{ .name = "ir_query_limit", .message = "unknown IR option field: max_wrok" },
+        .{ .name = "ir_attribute_metering", .message = "metering is disabled; use run()" },
+        .{ .name = "ir_attribute_unknown", .message = "unknown IR attribute session option: attributes" },
+        .{ .name = "ir_attribute_runtime", .message = "unknown IR attribute session option: policy" },
+        .{ .name = "ir_attribute_limit", .message = "unknown IR option field: max_wrok" },
+        .{ .name = "ir_attribute_view", .message = "attribute sessions require a compatible IR component view" },
     }) |fixture| {
         const rejected = b.addObject(.{ .name = fixture.name, .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("tests/compile_fail/{s}.zig", .{fixture.name})),
@@ -437,6 +442,7 @@ pub fn build(b: *std.Build) void {
         "resumable_graph",
         "resumable_edge_stream",
         "resumable_query",
+        "resumable_attributes",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -460,6 +466,12 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, name, "resumable_query")) {
             run_example.expectStdErrEqual("a -> c: true\n");
             test_ir.dependOn(&run_example.step);
+        }
+        if (std.mem.eql(u8, name, "resumable_attributes")) {
+            run_example.expectStdErrEqual("color=red\nlabel=updated\n");
+            run_example.expectStdOutEqual("");
+            test_ir.dependOn(&run_example.step);
+            test_step.dependOn(&run_example.step);
         }
         if (std.mem.eql(u8, name, "build_graph")) {
             run_example.expectStdErrEqual(@embedFile("tests/fixtures/build_graph.txt"));
@@ -659,6 +671,15 @@ pub fn build(b: *std.Build) void {
     b.step("bench-ir-query-sessions", "Compare direct and resumable symbolic queries, budgets and memory")
         .dependOn(&b.addRunArtifact(ir_query_sessions_bench).step);
     check_benches.dependOn(&ir_query_sessions_bench.step);
+    const ir_attribute_sessions_bench = b.addExecutable(.{ .name = "ir_attribute_sessions_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_attribute_sessions.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    b.step("bench-ir-attribute-sessions", "Compare direct and resumable attribute access, budgets and scratch")
+        .dependOn(&b.addRunArtifact(ir_attribute_sessions_bench).step);
+    check_benches.dependOn(&ir_attribute_sessions_bench.step);
     const ir_partial_bench = b.addExecutable(.{ .name = "ir_partial_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/ir_partial.zig"),
         .target = target,

@@ -14,6 +14,19 @@ pub const Effective = struct {
     cancellation_interval: u32 = 1,
 };
 pub const Error = error{ InvalidCancellationInterval, MeteringDisabled };
+
+/// Shared typed options for policy-bound queries and streams. Void capability
+/// fields carry neither an override nor a hook, including when options are reused.
+pub fn OptionsFor(comptime config: anytype) type {
+    const r = @import("resources.zig");
+    const baseline = comptime resolve(.{}, config.policy);
+    const Hook = if (config.runtime_policy or baseline.cancellation) ?r.Cancellation else void;
+    return struct {
+        limits: ?r.Limits = null,
+        cancellation: Hook = if (Hook == void) {} else null,
+        policy: if (config.runtime_policy) Policy else void = if (config.runtime_policy) .{} else {},
+    };
+}
 pub fn resolve(base: Effective, policy: Policy) Effective {
     return .{
         .metering = policy.execution.metering orelse base.metering,

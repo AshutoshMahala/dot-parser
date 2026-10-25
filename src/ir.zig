@@ -14,8 +14,8 @@ pub const MaterializationOutcome = @import("ir/materialization_session.zig").Out
 pub const LoweringProgress = @import("ir/lowering_session.zig").Progress;
 pub const LoweringOutcome = @import("ir/lowering_session.zig").Outcome;
 pub const EdgeStreamingOutcome = @import("ir/materialization_session.zig").Outcome;
-pub const QueryOutcome = @import("ir/query_session.zig").Outcome(false);
-pub const PartialQueryOutcome = @import("ir/query_session.zig").Outcome(true);
+pub const QueryOutcome = @import("ir/query_session.zig").OutcomeFor(false);
+pub const PartialQueryOutcome = @import("ir/query_session.zig").OutcomeFor(true);
 pub const Policy = @import("ir/execution_policy.zig").Policy;
 pub const NodeId = topology.NodeId;
 pub const ScopeId = topology.ScopeId;
@@ -72,6 +72,25 @@ pub fn Lowering(comptime config: Config) type {
         pub const PartialHasEdgeSession = @import("ir/query_session.zig").Bound(PartialGraph, .has_edge, config);
         pub const ContainsSession = @import("ir/query_session.zig").Bound(Graph, .contains, config);
         pub const PartialContainsSession = @import("ir/query_session.zig").Bound(PartialGraph, .contains, config);
+        pub const AttributeSession = @import("ir/attribute_session.zig").Bound(Graph, caps, false, config);
+        pub const PartialAttributeSession = @import("ir/attribute_session.zig").Bound(PartialGraph, caps, false, config);
+        pub const AttributesSession = @import("ir/attribute_session.zig").Bound(Graph, caps, true, config);
+        pub const PartialAttributesSession = @import("ir/attribute_session.zig").Bound(PartialGraph, caps, true, config);
+        fn AttributeOperation(comptime View: type, comptime all: bool) type {
+            if (AttributeSession.accepts(View)) return if (all) AttributesSession else AttributeSession;
+            if (PartialAttributeSession.accepts(View)) return if (all) PartialAttributesSession else PartialAttributeSession;
+            @compileError("attribute sessions require a compatible IR component view");
+        }
+        /// Borrows the view's owner and logical UTF-8 key until deinit. No
+        /// traversal, hashing or allocation is hidden in construction.
+        pub fn attributeSession(view: anytype, key: []const u8, options: anytype) !AttributeOperation(@TypeOf(view), false) {
+            return AttributeOperation(@TypeOf(view), false).init(view, key, options);
+        }
+        /// One final effective attribute per delivery, using folded maps when
+        /// supplied a materialized edge. No implicit edge expansion.
+        pub fn attributesSession(view: anytype, options: anytype) !AttributeOperation(@TypeOf(view), true) {
+            return AttributeOperation(@TypeOf(view), true).init(view, {}, options);
+        }
         /// Bounded symbolic edge existence; never expands endpoint products.
         pub fn hasEdgeSession(graph: anytype, from: NodeId, to: NodeId, options: anytype) !(if (@TypeOf(graph.*) == PartialGraph) PartialHasEdgeSession else HasEdgeSession) {
             const G = @TypeOf(graph.*);

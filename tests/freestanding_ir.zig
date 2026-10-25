@@ -2,6 +2,37 @@
 //! allocator: no libc, OS, global allocator, recursion, or renderer required.
 const std = @import("std");
 const dot = @import("dot_parser");
+export fn resumable_attributes(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+    var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
+    var result = dot.ir.parsePartial(fixed.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const graph = result.ir() orelse return 0;
+    var edges = graph.edgeIterator(.{}) catch return 0;
+    defer edges.deinit();
+    const edge = (edges.next() catch return 0) orelse return 0;
+    var stream = IR.attributesSession(edge, .{}) catch return 0;
+    defer stream.deinit();
+    var query = IR.attributeSession(edge, "color", .{}) catch return 0;
+    defer query.deinit();
+    while (query.advance(7).outcome == null) {}
+    if (query.outcome.? == .failure) return 0;
+    var count: u32 = 0;
+    while (true) {
+        const progress = stream.advance(7);
+        if (progress.attribute) |entry| {
+            const value = switch (entry) {
+                .known => |v| v,
+                .unknown => |u| u.retained.?,
+            };
+            count +%= value.resolved.attribute orelse 1;
+        }
+        if (progress.outcome) |outcome| return switch (outcome) {
+            .success => count,
+            .failure => 0,
+        };
+    }
+}
 export fn resumable_query(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
     const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
     var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);

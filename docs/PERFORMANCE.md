@@ -2566,6 +2566,74 @@ allocation-free operation remain covered. Validation included the full check
 (820 tests), the Safe IR suite (175 tests), and the final nine query tests;
 the query tests also pass in Fast and Small.
 
+### Resumable attribute access (2026-10-25)
+
+Initial implementation against `9cd30d2`, Zig 0.17.0, Apple M4 Pro. Performance
+tuning is deliberately deferred to the final IR pass. Ordinary attribute access
+does not use these session drivers.
+
+Run `zig build bench-ir-attribute-sessions -Doptimize=fast` (also `safe` and
+`small`). The report covers direct calls, session `run()`, budgets 1/64/4096,
+active interval-one cancellation and runtime-policy metering. It checks consumed
+answers and identical session credit totals across routes. Source construction,
+parsing, lowering, materialization and handle lookup are outside timings;
+session initialization, scratch allocation and cleanup are included.
+
+Below: medians of three independent processes per mode, each with at least four
+rotated warmups/50 ms and eleven measured rounds, run separately from compilation
+and tests. Times are **ms per 32 completed operations**. `all` consumes the whole
+effective attribute stream, not just its first entry.
+
+| Operation / fixture | Fast direct → budget 4096 | Safe direct → budget 4096 | Session scratch bytes |
+| --- | ---: | ---: | ---: |
+| All 129 indexed node attributes | 0.05554 → 0.10083 | 0.06342 → 0.11192 | 0 |
+| One attribute, 2 KiB quoted key | 0.02092 → 0.20408 | 0.02175 → 0.25167 | 0 |
+| One attribute, 2,000 strict updates | 0.33204 → 0.87483 | 0.34783 → 0.88788 | 0 |
+| All attributes, 2,000 strict updates | 0.28925 → 1.35446 | 0.35625 → 1.34171 | 24 |
+| All attributes, 1,000 reversed port updates | 0.17100 → 0.62617 | 0.21121 → 0.63713 | 12 |
+| All attributes, 1,000 reopened subgraph contributions | 0.31754 → 1.28608 | 0.43221 → 1.39608 | 12 |
+| All two already-folded attributes | 0.00025 → 0.00154 | 0.00025 → 0.00158 | 0 |
+
+These are **not throughput-equivalence claims**. Large edge workloads above
+cost roughly 2.6–4.7× the direct operations; the source-name comparison for a
+2 KiB key costs 9.8× Fast / 11.6× Safe. Budget one costs more: the long-key row
+takes 0.38729 / 0.44058 ms (Fast / Safe), and strict-update enumeration takes
+4.09900 / 4.27033 ms. The long-key stream is cheap because it enumerates an
+interned key without re-reading its spelling; formatting is not timed.
+Tiny indexed/folded calls are shown for context, not stable relative ratios.
+These opt-in costs are recorded for the final tuning pass, not hidden by changing
+credit units or cancellation guarantees.
+
+For strict-update enumeration, `run()` measured 1.35267 / 1.33946 ms;
+an active interval-one hook measured 1.52563 / 1.77183 ms; runtime-policy
+budget 4096 measured 1.34883 / 1.44263 ms. The report prints hook counts,
+actual credits and requested scratch separately. All 588 measured rows across
+the six processes agree on results, credits, hook counts and scratch for the
+same route.
+
+**Memory:** fixed-policy metered session state is 624 bytes for single lookup,
+696 for enumeration; partial counterparts are 680 / 752 bytes. This is inline
+state, not heap scratch or new per-graph storage. Single-key operations allocate
+nothing. Node/scope/non-strict/folded enumeration also allocates nothing. Strict
+compact enumeration lazily uses 12 bytes per distinct written edge key, matching
+direct iteration in these fixtures; two port winners remain inline. The tests
+query a 50,001 × 50,001 symbolic product without expanding it, with zero lookup
+scratch and 12 bytes for its one-key enumeration, plus 3,000 nested levels and
+2,000 reopened scopes. Allocation failure and scratch limits remain typed stops.
+
+**Default gate:** separate direct-only `bench/ir.zig` Safe binaries before/after
+have identical `__text` and identical stripped file size (420,464 bytes). Parsing,
+direct queries, lowering and retained layouts were not changed. This is a code
+identity check, not a noisy timing claim about every possible application.
+
+**Correctness:** `zig build check` passed; the full Safe IR suite passed 190
+tests. All 15 new tests also passed in Fast and Small. Tests cover complete/
+partial compact/folded answers, native encodings, budget partitions, zero grants,
+lifetime limits, cancellation checkpoints/stop precedence, scratch failures,
+symbolic products and borrowed-key/result lifetimes. Five compile-fail fixtures
+and the runnable example are included. Freestanding Wasm/RISC-V builds consume
+the new sessions. Performance tuning remains open, not the stop/ownership contract.
+
 ### Small-set streaming follow-up (2026-10-25)
 
 Compared with `24f8ba0`, using Zig 0.17.0 on the same Apple M4 Pro. The
@@ -2724,6 +2792,7 @@ zig build bench-ir-sessions -Doptimize=fast
 zig build bench-ir-lowering-sessions -Doptimize=fast
 zig build bench-ir-edge-sessions -Doptimize=fast
 zig build bench-ir-query-sessions -Doptimize=safe
+zig build bench-ir-attribute-sessions -Doptimize=safe
 zig build check-benches  # only checks that they compile
 ```
 

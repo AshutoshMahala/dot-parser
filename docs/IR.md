@@ -916,8 +916,8 @@ the operation; pausing does not replenish them.
 Allocator callbacks, cancellation predicates and destruction are external work,
 not latency-bounded operations. This is cooperative work metering, not a deadline.
 No thread or shared parse-plus-IR budget is introduced. Fixed-storage lowering,
-event lowering and resumable attribute queries remain separate work. Bounded edge
-streaming is available below.
+event lowering remain separate work. Bounded edge streaming and attribute
+queries are available below.
 Measure this path with `zig build bench-ir-lowering-sessions -Doptimize=fast`.
 
 ## Resumable materialization
@@ -1013,8 +1013,8 @@ need not admit both. Values/order/provenance agree when both complete.
 This is a cooperative **work bound**, not a latency deadline. Allocator calls,
 the cancellation predicate and destruction are external/unmetered; the backing
 allocator can reserve or initialize memory internally. Library-controlled copies,
-table initialization and rehashing are resumable. Fixed-storage sessions and
-resumable attribute queries remain separate work. Bounded edge streaming is described below.
+table initialization and rehashing are resumable. Fixed-storage sessions remain
+separate work. Bounded edge streaming and attribute queries are described below.
 The session's raw allocation boundary also avoids the standard typed helpers'
 whole-buffer debug poisoning; all readable elements are initialized explicitly.
 
@@ -1184,9 +1184,133 @@ connections, body intervals and posting probes; sessions bound each advance,
 not total query complexity. Ordinary direct drivers and IR layouts are unchanged.
 Measure with `zig build bench-ir-query-sessions -Doptimize=fast` (also `safe`
 and `small`). Name lookup before constructing a handle-based query is separate
-work; this increment does not make `findNode` resumable. Resumable effective-edge-
-attribute queries, attribute enumeration,
-event lowering and fixed-storage construction remain separate increments.
+work; this increment does not make `findNode` resumable. Event lowering and
+fixed-storage construction remain separate increments.
+
+## Resumable attribute access
+
+Use ordinary attribute access for ordinary calls. `attributeWith` adds limits
+and cancellation but runs to completion; a session adds the ability to yield
+inside a lookup. Existing direct APIs are unchanged.
+
+| Component | Ordinary lookup | Bounded direct lookup | Resumable lookup |
+| --- | --- | --- | --- |
+| Node or scope | `view.attribute(key)` | `try view.attributeWith(key, options)` | `try IR.attributeSession(view, key, options)` |
+| Compact edge | `try edge.attribute(key)` | `try edge.attributeWith(key, options)` | `try IR.attributeSession(edge, key, options)` |
+| Materialized edge with folded attributes | `edge.attribute(key)` | `try edge.attributeWith(key, options)` | `try IR.attributeSession(edge, key, options)` |
+
+Each constructor takes the direct call's receiver, then its arguments, then
+options. The view is passed by value; no new graph or decoded value is created.
+The IR profile selects execution policy, not the parser that produced the data:
+
+```zig
+const IR = dot.ir.Lowering(.{
+    .policy = .{ .execution = .{ .metering = true } },
+});
+var query = try IR.attributeSession(node, "color", .{});
+defer query.deinit();
+while (true) {
+    const progress = query.advance(4096);
+    if (progress.outcome) |outcome| switch (outcome) {
+        .success => |attribute| {
+            std.debug.print("color={?f}\n", .{attribute});
+            break;
+        },
+        .failure => |err| return err,
+    };
+    // Yield here. No outcome is not "no color".
+}
+```
+
+`IR.attributesSession(view, options)` enumerates final effective attributes in
+the same order as the direct iterator, including implicit empties and derived
+ports. `advance` delivers at most one `progress.attribute`; `run()` stops at the
+next entry or terminal outcome. Consume each entry once. Null `attribute` alone
+is not exhaustion; only `outcome = .success` proves the retained enumeration
+finished. A later failure leaves already delivered views usable but does not
+turn that prefix into a successful full enumeration.
+See [resumable_attributes.zig](../examples/resumable_attributes.zig).
+
+| Session types | Answer/entry | Progress fields |
+| --- | --- | --- |
+| `IR.AttributeSession` | `?AttributeView` in `outcome.success` | `work_used`, `total_work`, `outcome` |
+| `IR.PartialAttributeSession` | `Knowledge(?AttributeView)` in `outcome.success` | Same |
+| `IR.AttributesSession` | `AttributeView` in `attribute` | Same, plus `attribute`, `attributes_emitted` |
+| `IR.PartialAttributesSession` | `Knowledge(AttributeView)` in `attribute` | Same as the complete stream |
+
+All four accept this profile's node, scope, compact-edge or attribute-bearing
+materialized-edge views. Constructors select complete/partial types from the
+view. Raw IDs/edge records first use the existing checked view constructors;
+this is not an adapter contract for arbitrary structs with an `attribute` method.
+Partial successes preserve direct-query qualifications. Finishing a session
+does not certify missing source or whole-document validity.
+
+Execution policy, optional runtime overrides, shared `.Options`, zero grants,
+latched `.Outcome`, `cancel`, and `deinit` follow the
+[symbolic-query session contract](#resumable-symbolic-queries). Streams follow
+the same delivery convention as `edgeSession`. Limits default to the input
+graph's limits; explicit limits replace them rather than merging fields.
+There is no `takeResult`: returned views borrow the IR/source, not session scratch.
+The nested outcome type is consistently named `Outcome` for queries and streams.
+
+### Borrowed owners and keys
+
+Keep the IR/source alive, immutable and unmoved during the operation. Materialized
+views also borrow their materialized owner until session cleanup. They read its
+existing folded maps, never rescan contribution history. Returned attributes
+borrow only IR/source and survive session and materialized-owner destruction.
+
+Unlike a direct call, **the lookup key is borrowed until `deinit`**. Keys are
+case-sensitive logical UTF-8, regardless of the source encoding. Literals need
+no special handling. A queued job can retain an external stable buffer or own
+a copy; the session does not allocate one implicitly:
+
+```zig
+const Job = struct {
+    key: []u8, // Stable heap bytes, not an inline array moved with the job.
+    query: IR.AttributeSession,
+
+    fn init(gpa: std.mem.Allocator, node: IR.Graph.NodeView, key: []const u8) !Job {
+        const owned = try gpa.dupe(u8, key);
+        errdefer gpa.free(owned);
+        return .{ .key = owned, .query = try IR.attributeSession(node, owned, .{}) };
+    }
+    fn deinit(self: *Job, gpa: std.mem.Allocator) void {
+        self.query.deinit();
+        gpa.free(self.key);
+        self.* = undefined;
+    }
+};
+```
+
+### Bounded work and scratch
+
+Initialization checks bounds and polls enabled cancellation, but performs no
+hashing, traversal or allocation. Each credit hashes at most 64 query bytes,
+decodes one source-name/glue unit or pending UTF-8 byte, inspects one table/map/
+membership/coverage probe, visits one contribution/attribute, initializes one
+winner, or performs a constant-size phase transition. Long concatenated keys,
+comments, reopened membership, port introductions and partial qualification can
+all pause at budget one. Counts need not equal direct calls' coarser work counts.
+Allocator/cancellation callbacks remain outside the cooperative work bound.
+
+Single-key lookup uses only inline cursors (`peakBytes() == 0`). Node, scope,
+non-strict-edge and materialized enumeration allocate no scratch either. Strict
+compact-edge enumeration lazily allocates 12 bytes per distinct written **edge**
+key in the IR when a matching contribution has written attributes. It updates
+winners once in contribution order; it does not scan history afresh for each key.
+Port winners use two inline slots. Initialization and probing of scratch remain
+metered, and `max_bytes` bounds it. `max_pairs = 0` is valid: none of these
+operations expand endpoint products. `peakBytes` excludes inline session state
+and the borrowed graph; the benchmark reports state size separately.
+
+Sessions resolve `tailport`/`headport` as effective attributes with their existing
+provenance and orientation. Structured `tailPort()`/`headPort()` conveniences
+remain direct-only; obtaining the attribute through a session does not make
+port parsing or subsequent value formatting resumable.
+
+Measure with `zig build bench-ir-attribute-sessions -Doptimize=fast` (also `safe`
+and `small`). Ordinary direct drivers and retained IR layouts are unchanged.
 
 ## Applying resource options
 
@@ -1275,8 +1399,9 @@ Compare direct materialization with session `run()` and budgets 1/64/4096 using
 reports time, actual credits, retained/requested peak bytes and session state
 size. Document lowering, materialization and edge streaming now have resumable
 sessions. Edge-existence and membership queries now also have policy-bound,
-allocation-free sessions. Label-port existence/binding, event-based lowering,
-resumable attribute queries and fixed-storage IR construction remain later work.
+allocation-free sessions. Attribute lookup/enumeration sessions now cover compact
+and folded complete/partial views. Label-port existence/binding, event-based
+lowering and fixed-storage IR construction remain later work.
 
 The final section measures value kind/operand access, joined output, bounded
 writing and exact-allocation `toString`, plus a benchmark-only kind cache.

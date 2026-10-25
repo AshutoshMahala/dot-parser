@@ -14,6 +14,7 @@ pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptim
     const Hook = if (config.runtime_policy or baseline.cancellation) ?r.Cancellation else void;
     return struct {
         const Self = @This();
+        pub const Outcome = expansion.Outcome;
         pub const Progress = struct {
             work_used: u32,
             total_work: u64,
@@ -24,17 +25,13 @@ pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptim
             edge: ?Graph.EdgeView,
             outcome: ?expansion.Outcome,
         };
-        pub const Options = struct {
-            limits: ?r.Limits = null,
-            cancellation: Hook = if (Hook == void) {} else null,
-            policy: if (config.runtime_policy) execution.Policy else void = if (config.runtime_policy) .{} else {},
-        };
+        pub const Options = execution.OptionsFor(config);
         graph: *const Graph,
         core: Core,
         effective: if (config.runtime_policy) execution.Effective else void,
 
         pub fn init(graph: *const Graph, options: anytype) !Self {
-            comptime for (std.meta.fieldNames(@TypeOf(options))) |field| {
+            comptime if (@TypeOf(options) != Options) for (std.meta.fieldNames(@TypeOf(options))) |field| {
                 if (!std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !(config.runtime_policy and std.mem.eql(u8, field, "policy")))
                     @compileError("unknown IR edge session option: " ++ field);
             };

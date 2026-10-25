@@ -12,26 +12,14 @@ const coverage = @import("coverage.zig");
 const batch_mode = @import("builtin").mode.runtimeSafety();
 
 pub const Kind = enum { has_edge, contains };
-pub fn Outcome(comptime partial: bool) type {
+pub fn OutcomeFor(comptime partial: bool) type {
     return union(enum) { success: if (partial) coverage.Knowledge(bool) else bool, failure: r.Error };
-}
-
-// Both queries and complete/partial sessions accept the same typed options for
-// a profile. Compiled-out void fields carry no runtime override or hook.
-fn OptionsFor(comptime config: anytype) type {
-    const baseline = comptime execution.resolve(.{}, config.policy);
-    const Hook = if (config.runtime_policy or baseline.cancellation) ?r.Cancellation else void;
-    return struct {
-        limits: ?r.Limits = null,
-        cancellation: Hook = if (Hook == void) {} else null,
-        policy: if (config.runtime_policy) execution.Policy else void = if (config.runtime_policy) .{} else {},
-    };
 }
 
 /// Shared cursor for both query kinds. A step inspects one singleton, body or
 /// binary-search probe. Finish/selection transitions are constant work folded
 /// into that step; no loop over bodies or postings is hidden in a credit.
-const MembershipCursor = struct {
+pub const MembershipCursor = struct {
     members: u32,
     node: u32,
     body: u32 = 0,
@@ -69,7 +57,7 @@ const MembershipCursor = struct {
     }
 
     // One-credit resumes and interval-one polls need no batched-loop setup.
-    inline fn step(self: *MembershipCursor, graph: anytype) ?bool {
+    pub inline fn step(self: *MembershipCursor, graph: anytype) ?bool {
         if (self.phase == .start) {
             if (self.members & t.node_bit != 0) return self.members & ~t.node_bit == self.node;
             self.body = graph.bodies[self.members].first;
@@ -148,20 +136,20 @@ pub fn Bound(comptime Graph: type, comptime kind: Kind, comptime config: anytype
     return struct {
         const Self = @This();
         pub const Answer = if (partial) coverage.Knowledge(bool) else bool;
-        pub const QueryOutcome = Outcome(partial);
+        pub const Outcome = OutcomeFor(partial);
         pub const Progress = struct {
             work_used: u32,
             total_work: u64,
             /// Only success contains an answer. Pauses and failures are never
             /// false/absent; partial success can still be unknown.
-            outcome: ?QueryOutcome,
+            outcome: ?Outcome,
         };
-        pub const Options = OptionsFor(config);
+        pub const Options = execution.OptionsFor(config);
         const Stage = enum { connection, left, right, reverse_left, reverse_right };
         graph: *const Graph,
         max_work: u64,
         total_work: u64 = 0,
-        outcome: ?QueryOutcome = null,
+        outcome: ?Outcome = null,
         cancellation: Hook,
         effective: if (config.runtime_policy) execution.Effective else void,
         cursor: MembershipCursor,
