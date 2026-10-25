@@ -8,6 +8,13 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Policy-bound resumable symbolic queries via `IR.hasEdgeSession` and
+  `IR.containsSession`, for complete and partial IRs. Reuses metering,
+  cancellation intervals and opt-in runtime policies; bounded steps cover
+  connections, membership intervals and posting probes. No expansion or heap
+  scratch, and no implicit negative answer on pause/stop. Partial successes
+  retain existing known/unknown semantics. Direct queries remain unchanged.
+  Includes `resumable_query` and `bench-ir-query-sessions`.
 - Policy-bound resumable edge streaming via `IR.edgeSession` for complete and
   partial IR. Each `advance` delivers at most one existing edge view or a
   budget pause/terminal outcome; `run` stops at the next edge. Shares bounded
@@ -192,6 +199,11 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- Reduce Safe symbolic-query session overhead by reusing posting slices within
+  bounded search loops. One-credit resumes keep an inlined single-step path;
+  Fast, Small and fixed interval-one cancellation profiles retain the compact
+  driver. Credit counts, pause states, polling checkpoints, inline state sizes
+  and ordinary direct queries are unchanged.
 - Reduce resumable edge-streaming overhead with allocation-free non-strict
   transition fusion and inlined one-credit dispatch. Credit totals, pause/stop
   boundaries, cancellation checkpoints, partial views and scratch sizes are

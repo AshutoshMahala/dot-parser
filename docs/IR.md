@@ -916,7 +916,7 @@ the operation; pausing does not replenish them.
 Allocator callbacks, cancellation predicates and destruction are external work,
 not latency-bounded operations. This is cooperative work metering, not a deadline.
 No thread or shared parse-plus-IR budget is introduced. Fixed-storage lowering,
-event lowering and resumable queries remain separate work. Bounded edge
+event lowering and resumable attribute queries remain separate work. Bounded edge
 streaming is available below.
 Measure this path with `zig build bench-ir-lowering-sessions -Doptimize=fast`.
 
@@ -1013,8 +1013,8 @@ need not admit both. Values/order/provenance agree when both complete.
 This is a cooperative **work bound**, not a latency deadline. Allocator calls,
 the cancellation predicate and destruction are external/unmetered; the backing
 allocator can reserve or initialize memory internally. Library-controlled copies,
-table initialization and rehashing are resumable. Fixed-storage sessions,
-resumable queries remain separate work. Bounded edge streaming is described below.
+table initialization and rehashing are resumable. Fixed-storage sessions and
+resumable attribute queries remain separate work. Bounded edge streaming is described below.
 The session's raw allocation boundary also avoids the standard typed helpers'
 whole-buffer debug poisoning; all readable elements are initialized explicitly.
 
@@ -1103,6 +1103,91 @@ yourself when all-or-nothing publication is required.
 Measure with `zig build bench-ir-edge-sessions -Doptimize=fast` (also `safe`
 and `small`). Ordinary iteration/materialization retain their direct drivers.
 
+## Resumable symbolic queries
+
+Use direct `graph.hasEdge(from, to)` and `graph.contains(membership, node)` for
+ordinary calls. To yield during a large connection or reopened-subgraph search,
+select the same IR execution policy used by other sessions:
+
+```zig
+const IR = dot.ir.Lowering(.{
+    .policy = .{ .execution = .{ .metering = true } },
+});
+var query = try IR.hasEdgeSession(&graph, from, to, .{});
+defer query.deinit();
+while (true) {
+    const progress = query.advance(4096);
+    if (progress.outcome) |outcome| switch (outcome) {
+        .success => |found| {
+            std.debug.print("edge exists: {}\n", .{found});
+            break;
+        },
+        .failure => |err| return err,
+    };
+    // Yield to the application here; a pause is not a negative answer.
+}
+```
+
+See [resumable_query.zig](../examples/resumable_query.zig) for a complete example.
+`IR.containsSession(&graph, membership, node, options)` uses the same lifecycle.
+Both accept this profile's `Graph` or `PartialGraph`. Named types are
+`HasEdgeSession`, `ContainsSession`, `PartialHasEdgeSession` and
+`PartialContainsSession`. The graph/source must remain alive, immutable and
+unmoved while a session borrows them. Handles belong to that graph; numeric
+bounds are checked at initialization, but foreign in-range handles cannot be
+identified. Initialization performs no traversal or allocation.
+
+| Operation/result | Meaning |
+| --- | --- |
+| `advance(budget)` | At most the granted work; `Progress` has `work_used`, `total_work`, `outcome` |
+| `run()` | Run to a terminal answer or failure, without needing metering enabled |
+| Null `outcome` | Still searching; not false, absent, or partial-source uncertainty |
+| Complete `success` | Plain `bool`, matching the direct query |
+| Partial `success` | Existing `Knowledge(bool)`; retained positives are known, missing evidence can remain unknown |
+| `failure` | Actual stop cause, such as `WorkLimit` or `Cancelled`; no answer is published |
+| `cancel()` / `deinit()` / `peakBytes()` | Latched explicit stop / release the borrowed session / zero allocated scratch bytes |
+
+The selected IR profile controls `.execution.metering`, `.cancellation` and
+`.cancellation_interval`; nothing is inherited from a previous parser or lowering
+operation. Runtime `.policy` overrides require `.runtime_policy = true` and
+are resolved and validated once. The `.limits` option defaults to the input
+graph's limits. Only `max_work` is consumed: these queries neither allocate
+nor visit expanded pairs, so `max_bytes = 0` and `max_pairs = 0` are valid.
+`advance` with metering disabled is a compile error for fixed policy, or
+`MeteringDisabled` for runtime policy, without advancing the search.
+
+A credit inspects one connection (including exhaustion), singleton, membership
+body, or binary-search probe. Constant-size transitions and final coverage
+qualification accompany that step. No name scan, set expansion or unbounded
+loop hides in a credit. Session credit counts need not equal a direct call's
+coarser work count: the same tight `max_work` need not admit both. A positive
+edge witness can finish immediately; an absent answer requires finishing the
+relevant retained search. The partial
+coverage rule is unchanged from direct calls. Query success on a partial
+snapshot never certifies the missing source or the whole graph's validity.
+
+Zero grants poll enabled cancellation but do no semantic work. Hooks poll on
+initialization, each active resume and at most the configured number of credits
+apart. Outcomes latch; repeated calls after success/failure consume no work and
+do not poll. Cumulative `max_work` never replenishes on a yield; exhausting only
+the call's grant pauses. `run().work_used` describes its final internal advance;
+`total_work` covers the entire operation. Callbacks are not wall-time bounded.
+
+The implementation can reuse a posting slice across several probes, but only
+within the remaining grant, lifetime allowance and next cancellation checkpoint.
+Batching does not change credit units, pause positions or the polling interval.
+
+Both queries keep only inline cursor state, including across reopened scope
+versions. A 50,000 × 50,000 symbolic product is searched without materializing
+its 2.5 billion possible edges. Worst-case searches still scale with relevant
+connections, body intervals and posting probes; sessions bound each advance,
+not total query complexity. Ordinary direct drivers and IR layouts are unchanged.
+Measure with `zig build bench-ir-query-sessions -Doptimize=fast` (also `safe`
+and `small`). Name lookup before constructing a handle-based query is separate
+work; this increment does not make `findNode` resumable. Resumable effective-edge-
+attribute queries, attribute enumeration,
+event lowering and fixed-storage construction remain separate increments.
+
 ## Applying resource options
 
 Set a compile-time baseline with `Lowering(.{ .limits = ... })`, or pass
@@ -1189,8 +1274,9 @@ Compare direct materialization with session `run()` and budgets 1/64/4096 using
 `zig build bench-ir-sessions -Doptimize=fast`. It consumes the same results and
 reports time, actual credits, retained/requested peak bytes and session state
 size. Document lowering, materialization and edge streaming now have resumable
-sessions. Label-port existence/binding, event-based lowering, resumable queries
-and fixed-storage IR construction remain later work.
+sessions. Edge-existence and membership queries now also have policy-bound,
+allocation-free sessions. Label-port existence/binding, event-based lowering,
+resumable attribute queries and fixed-storage IR construction remain later work.
 
 The final section measures value kind/operand access, joined output, bounded
 writing and exact-allocation `toString`, plus a benchmark-only kind cache.

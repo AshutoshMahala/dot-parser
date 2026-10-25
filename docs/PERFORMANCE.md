@@ -2431,6 +2431,141 @@ mixed-kind views cover grants 1/3/9/64; runtime-policy batching and every
 interval-one cancellation checkpoint are covered too. The full check passes
 **809 tests**; Fast and Safe each pass **164 IR tests**.
 
+### Resumable symbolic queries (2026-10-25)
+
+The new `IR.hasEdgeSession` / `IR.containsSession` increment was checked against
+`6bfa394` using Zig 0.17.0 on the same Apple M4 Pro. These are opt-in operations;
+ordinary queries, parsing and lowering retain their existing drivers/layouts.
+
+Run `zig build bench-ir-query-sessions -Doptimize=fast` (also `safe` and `small`).
+The harness generates/lower inputs outside timings, then compares direct calls,
+session `run()`, budgets 1/64/4096, active interval-one cancellation, and runtime
+metering policy. Initialization is included. Each row consumes 32 queries,
+alternating an isolated-node miss with a fixture-specific target, and checks
+answers against the other routes. It includes directed/undirected singletons,
+small sets, 1,000 reopened subgraphs, 2,000 nested scopes, and a symbolic
+50,000 × 50,000 endpoint product. No expanded-edge array is constructed.
+
+Recorded values below are medians of **three independent processes** per mode;
+each process uses at least four rotated warmups/50 ms, then eleven rotated
+measured rounds. Benchmarks ran separately from builds/tests. Times are **ms
+per 32-query batch**, direct → session budget 4096, without a cancellation hook:
+
+| Query fixture | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| 2,000 directed singleton connections, existence | 0.0764 → 0.1068 | 0.0795 → 0.1253 | 0.1269 → 0.1275 |
+| 2,000 small-set connections, existence | 0.0749 → 0.1000 | 0.0643 → 0.1279 | 0.1118 → 0.1281 |
+| 2,000 undirected connections, existence | 0.1000 → 0.1709 | 0.1076 → 0.2316 | 0.1790 → 0.2223 |
+| 1,000 reopened scopes, existence | 15.3969 → 30.4107 | 17.0485 → 48.9577 | 62.9452 → 51.2665 |
+| Final reopened membership, contains | 0.0306 → 0.0562 | 0.0423 → 0.1033 | 0.1231 → 0.0887 |
+
+Fast budget-4096 sessions cost about 1.3–2.0× direct calls in these substantial
+cases; Safe reaches 2.9× on reopened existence. Small ranges from 0.7–1.2×.
+This is **not** a promise that yielding is free: saving/dispatching a membership
+probe costs work, and repeatedly searching reopened versions retains the direct
+algorithm's potentially expensive total complexity. No new adjacency index or
+memoization is introduced. The purpose is bounded advances, not lower total
+query complexity. Singleton membership, deep-but-compact membership and the
+single symbolic-product query finish too quickly for useful timing ratios.
+The latter checks 2.5 billion potential edges through membership indexes,
+without visiting the product.
+
+Fast `run()` / budget 1 times for those same rows are respectively
+0.1069 / 0.1929, 0.1060 / 0.1879, 0.1898 / 0.2983,
+30.9156 / 55.3299, and 0.0639 / 0.1034 ms. Exact credits match across every
+session budget, runtime-policy and active-hook route. Active interval-one hooks
+poll at each credit plus initialization/resume. The synthetic hook increments
+a counter; it does not model application callback cost. Code layout can also
+make an active-hook specialization faster on some fixtures.
+
+**Memory and default-path gates:** every session route uses **zero heap scratch**.
+The fixed-policy, complete-input metered session states are **72 bytes** for
+existence and **56 bytes** for membership in all three modes; this is inline
+per-operation state, not new per-graph storage. Partial/runtime/cancellable
+specializations may have larger state. There is no new allocation, persistent
+index or eager expansion. The consumed direct-only `bench/ir.zig` executable's
+entire `__text` dump is byte-identical before/after in Fast, Safe and Small,
+and code-and-constants sizes are unchanged (278,976 / 341,672 / 187,896 bytes).
+That gate applies to the default path, not binaries opting into the new sessions.
+
+Tests cover direct/session agreement, complete and partial answers, zero/mixed/
+one-credit grants, lifetime-limit boundaries, interval/entry cancellation,
+runtime overrides, invalid handles, generic operators, UTF-8/16/32, nested and
+reopened membership, and an allocator refusing all new allocations. The full
+check passes **818 tests** and **173 IR tests** pass separately in Fast, Safe
+and Small. Effective-edge-attribute query sessions remain a later increment.
+
+### Safe symbolic-query follow-up (2026-10-25)
+
+Compared with the initial query-session implementation above, using the same
+Zig 0.17.0, Apple M4 Pro and `bench-ir-query-sessions` harness. These are medians
+of three alternating before/after process pairs, with no builds or tests
+running alongside them. Each process retains the rotated warmups and eleven
+measured rounds described above. Times are **ms per 32 queries**, not per query.
+
+The old driver redispatched the query and membership state machines for every
+body/probe, rebuilding the posting slice and repeating Safe's bounds checks.
+The bounded set loop now keeps the slice/body local across probes. Empty posting
+lists can account for impossible body visits without reading each body, while
+retaining exactly the original credits and paused cursor. Connection and
+membership transitions share their single-step primitives.
+
+Batching is capped by the remaining grant, lifetime work allowance and next
+cancellation checkpoint. One-credit calls keep an inlined step. Existence
+queries without reopened scopes keep the compact loop; standalone membership
+queries can still batch their probes. Fixed interval-one cancellation profiles
+also retain the compact driver. No safety checks are disabled, work units
+enlarged, polling intervals relaxed, indexes added or edges expanded.
+
+| Safe query, budget 4096 without hook | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Directed singleton connections | 0.12538 | 0.13113 | +4.6% |
+| Small-set connections | 0.12696 | 0.12575 | −1.0% |
+| Undirected connections | 0.23204 | 0.23404 | +0.9% |
+| Reopened-scope existence | 44.53021 | 25.29417 | **−43.2%** |
+| Reopened-scope membership | 0.10738 | 0.05471 | **−49.1%** |
+
+Direct reopened existence measured 16.94883 ms in the new harness: its session
+is now about **1.49×** direct, versus the earlier roughly 2.9× observation
+(2.60× in this paired baseline). This is not a claim that every session is
+within 1.49×: the undirected workload still costs about 2.18× direct. Tiny
+singleton/deep-compact/product membership calls are too short for useful ratios.
+
+| Safe reopened query / route | Before | After |
+| --- | ---: | ---: |
+| Existence, `run()` | 44.59271 | 26.99279 |
+| Existence, budget 64 | 47.38296 | 26.98592 |
+| Existence, budget 1 | 95.91446 | 54.66013 |
+| Existence, active interval-one hook | 50.70296 | 49.22917 |
+| Existence, runtime-policy budget 4096 | 42.75225 | 27.27629 |
+| Membership, budget 1 | 0.17642 | 0.08467 |
+| Membership, active interval-one hook | 0.07988 | 0.08363 |
+| Membership, runtime-policy budget 4096 | 0.09133 | 0.05517 |
+
+**Remaining tradeoffs:** these are not across-the-board wins. In addition to
+the small increases above, the opt-in runtime-policy undirected route measured
+0.19896 → 0.22746 ms (**+14.3%**); its singleton/small-set routes changed +2.5%
+and −1.3%. Inlining/layout experiments that regressed Fast/Small were not kept:
+both modes retain the original driver, and their complete query benchmark
+`__text` dumps are **byte-identical** to the initial implementation. The larger
+bounded driver is used only in Debug/Safe configurations that permit batching.
+
+**Default and memory gates:** the separate direct-only `bench/ir.zig` executable
+has identical `__text` before/after in Fast, Safe and Small. Session state remains
+72 bytes for existence and 56 bytes for membership (fixed, metered, no hook),
+with **zero heap scratch** and no new per-graph storage. The opt-in Safe query
+harness's code-and-constants section grows 318,424 → 327,424 bytes (+9,000);
+this is executable code, not per-query heap usage. Stack layout is compiler-
+dependent; no claim of identical caller stack frames is made.
+
+All 504 final report rows agree on credits, hook counts, answers and heap
+scratch. An independent one-credit test model compares intermediate cursors,
+every tested lifetime boundary, cancellation checkpoints and stop precedence
+for fixed/runtime policies. Complete/partial answers, native encodings and
+allocation-free operation remain covered. Validation included the full check
+(820 tests), the Safe IR suite (175 tests), and the final nine query tests;
+the query tests also pass in Fast and Small.
+
 ### Small-set streaming follow-up (2026-10-25)
 
 Compared with `24f8ba0`, using Zig 0.17.0 on the same Apple M4 Pro. The
@@ -2588,6 +2723,7 @@ zig build bench-ir-partial-edges -Doptimize=fast
 zig build bench-ir-sessions -Doptimize=fast
 zig build bench-ir-lowering-sessions -Doptimize=fast
 zig build bench-ir-edge-sessions -Doptimize=fast
+zig build bench-ir-query-sessions -Doptimize=safe
 zig build check-benches  # only checks that they compile
 ```
 

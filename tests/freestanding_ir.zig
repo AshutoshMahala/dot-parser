@@ -2,6 +2,28 @@
 //! allocator: no libc, OS, global allocator, recursion, or renderer required.
 const std = @import("std");
 const dot = @import("dot_parser");
+export fn resumable_query(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+    var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
+    var result = dot.ir.parsePartial(fixed.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const graph = result.ir() orelse return 0;
+    var nodes = graph.nodeIterator();
+    const from = nodes.next() orelse return 0;
+    const to = nodes.next() orelse return 0;
+    var query = IR.hasEdgeSession(graph, from.id, to.id, .{}) catch return 0;
+    defer query.deinit();
+    while (true) {
+        const p = query.advance(7);
+        if (p.outcome) |outcome| return switch (outcome) {
+            .success => |answer| switch (answer) {
+                .known => |found| if (found) 1 else 2,
+                .unknown => 3,
+            },
+            .failure => 0,
+        };
+    }
+}
 export fn resumable_edge_stream(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
     const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
     var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);

@@ -14,6 +14,8 @@ pub const MaterializationOutcome = @import("ir/materialization_session.zig").Out
 pub const LoweringProgress = @import("ir/lowering_session.zig").Progress;
 pub const LoweringOutcome = @import("ir/lowering_session.zig").Outcome;
 pub const EdgeStreamingOutcome = @import("ir/materialization_session.zig").Outcome;
+pub const QueryOutcome = @import("ir/query_session.zig").Outcome(false);
+pub const PartialQueryOutcome = @import("ir/query_session.zig").Outcome(true);
 pub const Policy = @import("ir/execution_policy.zig").Policy;
 pub const NodeId = topology.NodeId;
 pub const ScopeId = topology.ScopeId;
@@ -66,6 +68,22 @@ pub fn Lowering(comptime config: Config) type {
         pub const PartialLoweringSession = execution.Bound(caps, true, config);
         pub const EdgeSession = @import("ir/edge_session.zig").Bound(Graph, caps, config);
         pub const PartialEdgeSession = @import("ir/edge_session.zig").Bound(PartialGraph, caps, config);
+        pub const HasEdgeSession = @import("ir/query_session.zig").Bound(Graph, .has_edge, config);
+        pub const PartialHasEdgeSession = @import("ir/query_session.zig").Bound(PartialGraph, .has_edge, config);
+        pub const ContainsSession = @import("ir/query_session.zig").Bound(Graph, .contains, config);
+        pub const PartialContainsSession = @import("ir/query_session.zig").Bound(PartialGraph, .contains, config);
+        /// Bounded symbolic edge existence; never expands endpoint products.
+        pub fn hasEdgeSession(graph: anytype, from: NodeId, to: NodeId, options: anytype) !(if (@TypeOf(graph.*) == PartialGraph) PartialHasEdgeSession else HasEdgeSession) {
+            const G = @TypeOf(graph.*);
+            if (G != Graph and G != PartialGraph) @compileError("hasEdgeSession requires this profile's complete or partial IR type");
+            return (if (G == PartialGraph) PartialHasEdgeSession else HasEdgeSession).init(graph, from, to, options);
+        }
+        /// Bounded membership lookup, including reopened named subgraphs.
+        pub fn containsSession(graph: anytype, members: Membership, node: NodeId, options: anytype) !(if (@TypeOf(graph.*) == PartialGraph) PartialContainsSession else ContainsSession) {
+            const G = @TypeOf(graph.*);
+            if (G != Graph and G != PartialGraph) @compileError("containsSession requires this profile's complete or partial IR type");
+            return (if (G == PartialGraph) PartialContainsSession else ContainsSession).init(graph, members, node, options);
+        }
         /// Explicitly use this IR profile's execution policy, not settings from
         /// a past parser/lowering operation. Limits default to the input IR.
         pub fn edgeSession(graph: anytype, options: anytype) !(if (@TypeOf(graph.*) == PartialGraph) PartialEdgeSession else EdgeSession) {
