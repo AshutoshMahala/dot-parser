@@ -13,6 +13,7 @@ pub const MaterializationProgress = @import("ir/materialization_session.zig").Pr
 pub const MaterializationOutcome = @import("ir/materialization_session.zig").Outcome;
 pub const LoweringProgress = @import("ir/lowering_session.zig").Progress;
 pub const LoweringOutcome = @import("ir/lowering_session.zig").Outcome;
+pub const EdgeStreamingOutcome = @import("ir/materialization_session.zig").Outcome;
 pub const Policy = @import("ir/execution_policy.zig").Policy;
 pub const NodeId = topology.NodeId;
 pub const ScopeId = topology.ScopeId;
@@ -63,6 +64,15 @@ pub fn Lowering(comptime config: Config) type {
         pub const PartialGraph = @import("ir/partial.zig").Graph(caps);
         pub const LoweringSession = execution.Bound(caps, false, config);
         pub const PartialLoweringSession = execution.Bound(caps, true, config);
+        pub const EdgeSession = @import("ir/edge_session.zig").Bound(Graph, caps, config);
+        pub const PartialEdgeSession = @import("ir/edge_session.zig").Bound(PartialGraph, caps, config);
+        /// Explicitly use this IR profile's execution policy, not settings from
+        /// a past parser/lowering operation. Limits default to the input IR.
+        pub fn edgeSession(graph: anytype, options: anytype) !(if (@TypeOf(graph.*) == PartialGraph) PartialEdgeSession else EdgeSession) {
+            const G = @TypeOf(graph.*);
+            if (G != Graph and G != PartialGraph) @compileError("edgeSession requires this profile's complete or partial IR type");
+            return (if (G == PartialGraph) PartialEdgeSession else EdgeSession).init(graph, options);
+        }
         /// Resolve/check an override without starting work. The fixed-policy
         /// profile verifies its baseline during compilation.
         pub fn validatePolicy(policy: Policy) execution.Error!void {

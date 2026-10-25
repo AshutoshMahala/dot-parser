@@ -13,9 +13,9 @@ the implemented contracts.
   Edge iteration/materialization is explicit and bounded. Materialization resolves
   bulk edge updates and endpoint-port values once by default, with a topology-only
   option. Opt-in partial IR retains qualified queries, iteration and materialized
-  output; Document lowering and materialization have resumable sessions.
-  Label-port existence/binding, event lowering, fixed storage and resumable
-  query/edge-streaming operations remain.
+  output; Document lowering, materialization and edge streaming have resumable
+  sessions. Label-port existence/binding, event lowering, fixed storage and
+  resumable queries remain.
 - **Feeding input in pieces.** Today the whole input must be in memory before
   parsing starts.
 - **Validation in small steps**, and validation that can be cancelled.

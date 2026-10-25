@@ -2,6 +2,24 @@
 //! allocator: no libc, OS, global allocator, recursion, or renderer required.
 const std = @import("std");
 const dot = @import("dot_parser");
+export fn resumable_edge_stream(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+    var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
+    var result = dot.ir.parsePartial(fixed.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const graph = result.ir() orelse return 0;
+    var stream = IR.edgeSession(graph, .{}) catch return 0;
+    defer stream.deinit();
+    var count: u32 = 0;
+    while (true) {
+        const p = stream.advance(7);
+        if (p.edge != null) count += 1;
+        if (p.outcome) |outcome| return switch (outcome) {
+            .success => count,
+            .failure => 0,
+        };
+    }
+}
 export fn resumable_lowering(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
     const P = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true } } });
     const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });

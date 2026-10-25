@@ -38,7 +38,7 @@ has been discussed.
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization and resumable lowering/materialization | Label-port binding, markup-result association, event lowering, resumable queries/streaming, fixed storage, consumer adapters and marshal/unmarshal |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization and resumable lowering/materialization/edge streaming | Label-port binding, markup-result association, event lowering, resumable queries, fixed storage, consumer adapters and marshal/unmarshal |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and
@@ -288,7 +288,7 @@ endpoint structure (`syntax()`) separate from the opt-in first-colon Graphviz
 reading (`graphvizParts()`). Lone compass-like identifiers remain ambiguous;
 unknown suffix text is preserved, and origins name written sides rather than
 stored orientation. No additional retained storage is needed. Label-port existence/binding,
-event lowering, fixed storage and resumable query/streaming operations remain.
+event lowering, fixed storage and resumable queries remain.
 Opt-in partial Document lowering now supplies qualified direct queries,
 retained attribute candidates, node mentions and explicit gap coverage without
 changing the complete-input API. Partial iteration/materialization and resumable
@@ -1169,7 +1169,15 @@ probes/rehashing, persistent map visits/rotations, default overlays, traversal,
 coverage/posting indexes and growth copying. Initialization does no scan or
 allocation; successful transfer releases the Document lifetime requirement,
 while source bytes stay borrowed. Direct lowering remains throughput-specialized.
-Event lowering, resumable query/streaming operations and fixed-storage construction remain;
+Policy-bound edge streaming now reuses bounded expansion without an output
+array or attribute folding. Each advance delivers at most one complete/partial
+view, pauses, or terminates; no edge does not mean exhaustion. Views borrow IR
+and survive session destruction. Strict streams retain compact pair keys;
+limits count visited duplicates and allow bounded product-prefix consumption.
+Successful enumeration preserves partial-input qualifications. Execution
+settings belong to the explicitly selected IR profile, never a Document or
+past parser; a future combined operation may own a shared configuration.
+Event lowering, resumable queries and fixed-storage construction remain;
 this does not complete the
 entire semantic-layer slice. *(Embodied:
 `src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*

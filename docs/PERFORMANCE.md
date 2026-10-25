@@ -2270,6 +2270,89 @@ Partition-invariance tests disable allocator resizing: credits include actual
 copies, so different allocator resize outcomes can legitimately change totals.
 DOT, markup and string metering/cancellation remain unchanged.
 
+## Resumable edge streaming (2026-10-24)
+
+Compared with `d875891` on the same Apple M4 Pro and Zig 0.17.0. Streaming
+sessions are opt-in; ordinary `edgeIterator` calls still use their direct
+driver. No parsing, lowering, attribute queries or explicit destruction are
+included in the new traversal timings. Session/iterator initialization and
+consuming/checksumming the edges are included. All builds finished before
+timing, with no concurrent benchmark or test jobs.
+
+**Default-path gate:** five alternating before/after processes per mode using
+the existing `bench/ir.zig` harness. The direct-only executable's entire
+Mach-O `__text` section is byte-identical before/after in Fast, Safe and Small;
+code-and-constants `__TEXT` sizes also remain 278,976 / 341,672 / 187,896 bytes.
+Retained bytes, peak bytes, arena capacities and iterator scratch are identical
+on all six fixtures. This is stronger evidence of no default code-path change
+than small timing differences. Timings are not perfectly stable: Small's
+singleton iterator median moved from 0.163 to 0.195 ms despite identical code,
+with overlapping process ranges (0.149–0.192 and 0.155–0.221 ms).
+
+The shared-engine refactor initially changed owning sessions' automatic field
+layout and cancellation guard code generation, slowing some Small fixtures.
+Keeping the original owning layout and guard removes those changes: the final
+existing `bench/ir_sessions.zig` executable's entire `__text` section is also
+byte-identical to the baseline in all three modes (273,588 / 322,556 / 174,500
+bytes). Session object sizes and requested output/scratch memory are unchanged.
+The correction does not change the new streaming benchmark's generated code;
+the measurements below use that same code.
+
+**Opt-in cost:** `zig build bench-ir-edge-sessions -Doptimize=fast` compares
+ordinary iteration with the new pull session. Each process rotates route order
+over four warmups and eleven measured rounds. These are medians of five process
+medians. All session routes compile cancellation support; only the final column
+supplies a hook, at interval one. An advance returns when **one** edge is ready,
+even if credits remain; it does not batch 4096 output edges.
+
+Fast median ms:
+
+| Fixture | Direct | Session `run()` | Budget 4096 | Budget 1 | Budget 4096 + hook |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2,000 edges | 0.0138 | 0.0377 | 0.0351 | 0.0710 | 0.0399 |
+| 1,000 small sets, 3,000 edges | 0.0169 | 0.0350 | 0.0333 | 0.0933 | 0.0516 |
+| 400 overlapping strict products, 10 edges | 0.0241 | 0.0268 | 0.0268 | 0.1088 | 0.0424 |
+| 200 reopened scopes, 20,100 edges | 0.0975 | 0.1998 | 0.1777 | 0.4941 | 0.3016 |
+| 2,000 port-bearing edges | 0.0133 | 0.0361 | 0.0348 | 0.0689 | 0.0368 |
+| First 1,000 edges of a 5,000 × 5,000 product | 0.0449 | 0.0478 | 0.0465 | 0.0948 | 0.0536 |
+
+Safe and Small median ms, without a hook:
+
+| Fixture | Safe direct | Safe 4096 | Safe 1 | Small direct | Small 4096 | Small 1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Edges | 0.0175 | 0.0358 | 0.0750 | 0.0210 | 0.0293 | 0.0923 |
+| Small sets | 0.0208 | 0.0350 | 0.1004 | 0.0278 | 0.0430 | 0.1263 |
+| Strict overlap | 0.0268 | 0.0311 | 0.1181 | 0.0785 | 0.0947 | 0.1940 |
+| Reopened | 0.0886 | 0.1921 | 0.5283 | 0.1638 | 0.2709 | 0.6968 |
+| Ports | 0.0173 | 0.0345 | 0.0761 | 0.0210 | 0.0318 | 0.1000 |
+| Product prefix | 0.0306 | 0.0581 | 0.1125 | 0.0544 | 0.0387 | 0.1256 |
+
+The 2,000-level nested fixture produces only two edges after lowering; traversal
+is about 0.0001 ms, too short for useful ratios. Sessions do more state dispatch
+and save/resume work: Fast budget-4096 costs about 1.0–2.6× direct on these
+fixtures, and budget one 2.1–5.5×. These are new, opt-in costs, not a slowdown of
+the ordinary iterator. Neither credit granularity nor cancellation guarantees
+were weakened. The Small product-prefix win is fixture-specific, not a general
+session speed advantage.
+
+**Memory:** direct and session requested heap peaks match in every fixture and
+route: 0 bytes for singleton/port edges, 4,144 for small sets, 608 for strict
+overlap, 144 for nested scopes and 100,456 for the product prefix. Reopened
+scopes use 2,516 bytes in Fast/Small or 1,884 in Safe. These allocator-dependent
+growth figures exclude source/IR storage, allocator internals and process RSS.
+The session object additionally occupies 488 bytes in Fast/Small or 512 in Safe
+for the benchmark's policy. Non-strict streams retain no output array; strict
+streams retain canonical node pairs and a hash table. They are not generally
+constant-memory, and the product-prefix fixture stops after 1,000 edges rather
+than pretending to enumerate all 25 million.
+
+The full check passes **807 tests**; the IR suite passes **162 tests** in both
+Fast and Safe. Coverage includes complete/partial views, native encoding,
+strict duplicates, provenance/ports, deep scopes, allocation failures, lifetime
+limits, zero/one/mixed grants, runtime policies and cancellation intervals.
+Credit partition tests disable allocator resizing: actual growth copies are
+charged, so allocator behavior can otherwise change total credits.
+
 ## Running the benchmarks
 
 ### One-command string comparison
@@ -2350,6 +2433,7 @@ zig build bench-ir-partial -Doptimize=fast -- --attributes-only
 zig build bench-ir-partial-edges -Doptimize=fast
 zig build bench-ir-sessions -Doptimize=fast
 zig build bench-ir-lowering-sessions -Doptimize=fast
+zig build bench-ir-edge-sessions -Doptimize=fast
 zig build check-benches  # only checks that they compile
 ```
 

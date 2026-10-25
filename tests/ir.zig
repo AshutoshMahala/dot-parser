@@ -1,4 +1,7 @@
 const std = @import("std");
+comptime {
+    _ = @import("ir_edge_sessions.zig");
+}
 const dot = @import("dot_parser");
 const a = std.testing.allocator;
 const expect = std.testing.expect;

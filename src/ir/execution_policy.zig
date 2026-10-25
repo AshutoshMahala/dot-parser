@@ -35,7 +35,7 @@ pub fn option(comptime T: type, value: anytype) T {
     }
     if (@typeInfo(T) != .@"struct") return value;
     comptime for (@import("std").meta.fieldNames(@TypeOf(value))) |field| {
-        if (!@hasField(T, field)) @compileError("unknown IR lowering option field: " ++ field);
+        if (!@hasField(T, field)) @compileError("unknown IR option field: " ++ field);
     };
     var result: T = undefined;
     const fields = @typeInfo(T).@"struct";
@@ -45,7 +45,7 @@ pub fn option(comptime T: type, value: anytype) T {
         else if (attribute.default_value_ptr) |ptr|
             @as(*const Field, @ptrCast(@alignCast(ptr))).*
         else
-            @compileError("missing IR lowering option field: " ++ field);
+            @compileError("missing IR option field: " ++ field);
     }
     return result;
 }

@@ -916,7 +916,8 @@ the operation; pausing does not replenish them.
 Allocator callbacks, cancellation predicates and destruction are external work,
 not latency-bounded operations. This is cooperative work metering, not a deadline.
 No thread or shared parse-plus-IR budget is introduced. Fixed-storage lowering,
-event lowering and resumable query/edge-streaming operations remain separate work.
+event lowering and resumable queries remain separate work. Bounded edge
+streaming is available below.
 Measure this path with `zig build bench-ir-lowering-sessions -Doptimize=fast`.
 
 ## Resumable materialization
@@ -1013,9 +1014,94 @@ This is a cooperative **work bound**, not a latency deadline. Allocator calls,
 the cancellation predicate and destruction are external/unmetered; the backing
 allocator can reserve or initialize memory internally. Library-controlled copies,
 table initialization and rehashing are resumable. Fixed-storage sessions,
-resumable queries and edge-streaming are not implemented by this slice.
+resumable queries remain separate work. Bounded edge streaming is described below.
 The session's raw allocation boundary also avoids the standard typed helpers'
 whole-buffer debug poisoning; all readable elements are initialized explicitly.
+
+## Resumable edge streaming
+
+Use `edgeIterator(.{})` for ordinary pull iteration. When one call must do a
+bounded amount of work, opt into a streaming session instead of materializing
+the entire expanded graph:
+
+```zig
+const IR = dot.ir.Lowering(.{
+    .policy = .{ .execution = .{ .metering = true } },
+});
+var stream = try IR.edgeSession(&graph, .{});
+defer stream.deinit();
+while (true) {
+    const progress = stream.advance(4096);
+    if (progress.edge) |edge| {
+        // Consume this edge; attribute queries are separate work.
+        std.debug.print("{f} -> {f}\n", .{ edge.from().name(), edge.to().name() });
+    }
+    if (progress.outcome) |outcome| switch (outcome) {
+        .success => break,
+        .failure => |err| return err,
+    };
+    // Yield to the application's scheduler here if needed.
+}
+```
+
+See [resumable_edge_stream.zig](../examples/resumable_edge_stream.zig). The
+same call accepts this profile's `Graph` or `PartialGraph`; the named session
+types are `IR.EdgeSession` and `IR.PartialEdgeSession`. It uses **the explicitly
+selected IR profile's execution policy**, not settings retained from a parser
+or an earlier lowering operation. There is no policy stored in the Document
+and no implicit shared budget between operations. Runtime overrides are
+default-off, enabled with `.runtime_policy = true`, resolved once from session
+options `.policy`, and checked by the existing `IR.validatePolicy` contract.
+
+Settings are the same `.execution.metering`, `.cancellation` and positive
+`.cancellation_interval` used by lowering sessions. `advance` requires metering;
+fixed-policy misuse is a compile error, and disabled runtime metering returns
+`MeteringDisabled` without work. `.limits` and the enabled `.cancellation` hook
+are session options. Omitted limits inherit the **input graph's** limits, not
+the settings of a former operation. No attribute-folding option is accepted.
+
+| Method/result | Contract |
+| --- | --- |
+| `advance(budget)` | At most the granted bounded steps; returns early when one edge is ready |
+| `run()` | Runs until the next edge or terminal outcome; does not drain/discard the stream |
+| `Progress.edge` | At most one existing complete/partial edge view, delivered once |
+| `Progress.outcome` | Null means active; `success` means exhausted; `failure` preserves the stop cause |
+| Progress counters | `work_used`, `total_work`, `pairs_visited` and `edges_emitted`; cumulative limits never reset on yield |
+| `cancel()`, `peakBytes()`, `deinit()` | Same stop, requested-memory accounting and cleanup obligations as other sessions |
+
+No edge **does not mean exhaustion**: preparing a large endpoint, rehashing or
+skipping strict duplicates may use the entire grant without an edge. Zero
+grants poll enabled cancellation but do no semantic work and never replay a
+previous edge. Terminal outcomes latch. There is no `takeResult`: delivered
+views borrow the immutable IR/source, not session scratch, and remain usable
+after the session is destroyed while those owners remain alive and unmoved.
+
+Streaming and materialization sessions share their bounded traversal engine.
+A step visits one body/mention, candidate pair, hash slot, or storage transition;
+copies/clears cover at most 64 bytes. Preparation does not scan or allocate
+before the first advance. Enabled hooks poll on initialization, each resume
+(even zero grants), and within the configured number of credits. Allocator
+callbacks, cancellation predicates and destruction are not wall-time bounded.
+`run().work_used` is its final internal advance's count; `total_work` is cumulative.
+
+Order, deduplication, orientation and first-connection provenance match ordinary
+edge iteration. Partial views retain their existing qualified answers;
+successful enumeration of a partial IR does not certify missing source. Views'
+attribute/port queries remain separate operations with their existing limits
+and costs, not hidden work charged to `advance`.
+
+Non-strict streaming retains no emitted-edge array. Set traversal still needs
+reusable endpoint buffers and marks; strict streaming also keeps two `u32` node
+IDs per emitted pair plus a hash table. It is not generally constant-memory.
+All scratch and overlapping growth buffers count against `max_bytes`.
+Pair limits count duplicates too; unlike owning materialization, streaming may
+consume a prefix of a product larger than `max_pairs` and stops when the next
+pair would exceed the allowance. Failure never retracts delivered edges, but
+the prefix is not a successfully exhausted stream. Stage consumer output
+yourself when all-or-nothing publication is required.
+
+Measure with `zig build bench-ir-edge-sessions -Doptimize=fast` (also `safe`
+and `small`). Ordinary iteration/materialization retain their direct drivers.
 
 ## Applying resource options
 
@@ -1056,7 +1142,8 @@ deduplication, including when one `next()` skips many duplicates. A call may
 need to enumerate whole endpoint memberships before yielding an edge. Pull
 iteration allows stopping between edges, but is **not** a fixed-work-per-call
 metered session with replenishable credits. Use `materializationSession` when
-bounded expansion is needed. None of this changes the parser's
+bounded owning expansion is needed, or `IR.edgeSession` for bounded streaming.
+None of this changes the parser's
 existing metering or cancellation guarantees.
 
 `retainedBytes()` reports retained allocation payload including spare capacity.
@@ -1081,8 +1168,9 @@ their formatters; byte-profile values preserve their raw bytes.
 
 ```sh
 zig build test-ir
-zig build test-ir -Doptimize=ReleaseSafe
-zig build bench-ir -Doptimize=ReleaseFast
+zig build test-ir -Doptimize=safe
+zig build bench-ir -Doptimize=fast
+zig build bench-ir-edge-sessions -Doptimize=fast
 ```
 
 The benchmark reports lowering separately from parsing, materialization and
@@ -1096,12 +1184,13 @@ The same command also reports attribute-bearing lowering and direct query costs,
 including shared defaults, repeated updates, reopened/deep scopes and a symbolic
 product. The bulk attribute benchmark compares construction, full attribute
 consumption, retained/requested peak bytes and total arena capacity with compact
-queries. Run it alone with `zig build bench-ir-materialized -Doptimize=ReleaseFast`.
+queries. Run it alone with `zig build bench-ir-materialized -Doptimize=fast`.
 Compare direct materialization with session `run()` and budgets 1/64/4096 using
 `zig build bench-ir-sessions -Doptimize=fast`. It consumes the same results and
 reports time, actual credits, retained/requested peak bytes and session state
-size. Label-port existence/binding, event-based/resumable lowering, resumable
-queries/streaming and fixed-storage IR construction remain later work.
+size. Document lowering, materialization and edge streaming now have resumable
+sessions. Label-port existence/binding, event-based lowering, resumable queries
+and fixed-storage IR construction remain later work.
 
 The final section measures value kind/operand access, joined output, bounded
 writing and exact-allocation `toString`, plus a benchmark-only kind cache.

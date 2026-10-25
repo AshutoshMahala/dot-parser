@@ -1,5 +1,6 @@
-//! Bounded, owning expansion. The direct driver remains specialized for throughput;
-//! both drivers share edge identity, port semantics, output and AVL folding.
+//! Bounded expansion for owning materialization and pull streaming. Compile-time
+//! storage selection keeps non-strict streaming free of an output edge array.
+//! The direct drivers remain specialized for throughput.
 const std = @import("std");
 const t = @import("topology.zig");
 const r = @import("resources.zig");
@@ -25,10 +26,32 @@ pub const Progress = struct {
 pub const TakeError = r.Error || error{ NotReady, AlreadyTaken };
 
 pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, comptime attributes: bool) type {
+    return Engine(Graph, caps, attributes, false, null);
+}
+
+/// Internal record result; public streaming wraps the record in the owning
+/// graph's complete/partial view without a second traversal or a queue.
+pub const StreamProgress = struct {
+    work_used: u32,
+    total_work: u64,
+    pairs_visited: u64,
+    edges_emitted: u32,
+    edge: ?t.Edge,
+    outcome: ?Outcome,
+};
+pub fn Streaming(comptime Graph: type, comptime caps: encoding.Capabilities, comptime fixed: ?@import("execution_policy.zig").Effective) type {
+    return Engine(Graph, caps, false, true, fixed);
+}
+
+fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime attributes: bool, comptime streaming: bool, comptime fixed: ?@import("execution_policy.zig").Effective) type {
+    const Stored = if (streaming) [2]u32 else t.Edge;
+    const StepProgress = if (streaming) StreamProgress else Progress;
+    const has_cancellation = !streaming or fixed == null or fixed.?.cancellation;
+    const Polling = @import("parser_support").execution.CancellationPolling(streaming and has_cancellation, if (fixed) |v| v.cancellation_interval else null);
     return struct {
         const Self = @This();
-        pub const Result = if (attributes) Graph.Materialized else t.MaterializedTopology;
-        pub const SessionProgress = Progress;
+        pub const Result = if (streaming) void else if (attributes) Graph.Materialized else t.MaterializedTopology;
+        pub const SessionProgress = StepProgress;
         const Endpoint = struct {
             // none is never an admitted node ID. These two u32s occupy the
             // old optional-ID slot: cache cardinality without growing scratch.
@@ -76,11 +99,19 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         };
         graph: *const Graph,
         limits: r.Limits,
-        cancellation: ?r.Cancellation,
+        cancellation: if (has_cancellation) ?r.Cancellation else void,
         memory: r.Memory,
         total_work: u64 = 0,
         outcome: ?Outcome = null,
-        taken: bool = false,
+        // Keep owning sessions' field count/order unchanged. Even void fields
+        // can change Zig's automatic layout and Small's outlined hot code.
+        // Streaming reuses this ownership-state slot for its delivery state.
+        taken: if (streaming) struct {
+            interval: if (has_cancellation) u32 else void = if (has_cancellation) 1 else {},
+            polling: Polling = .{},
+            emitted: u32 = 0,
+            ready_edge: ?t.Edge = null,
+        } else bool = if (streaming) .{} else false,
         phase: Phase,
         endpoints: [2]Endpoint = .{ .{}, .{} },
         side: u1 = 0,
@@ -97,8 +128,8 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         left_index: u32 = 0,
         right_index: u32 = 0,
         visited: u64 = 0,
-        stored: std.ArrayList(t.Edge) = .empty,
-        edge_growth: Growth(t.Edge) = .{},
+        stored: std.ArrayList(Stored) = .empty,
+        edge_growth: Growth(Stored) = .{},
         candidate: t.Edge = undefined,
         target: u32 = 0,
         slots: []u32 = &.{},
@@ -128,11 +159,11 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         /// and its attribute-bearing result are destroyed. Do not copy after use.
         pub fn init(graph: *const Graph, options: r.Options) r.Error!Self {
             const limits = options.limits orelse graph.limits;
-            if (options.cancellation) |c| if (c.requested()) return error.Cancelled;
+            if (has_cancellation) if (options.cancellation) |c| if (c.requested()) return error.Cancelled;
             return .{
                 .graph = graph,
                 .limits = limits,
-                .cancellation = options.cancellation,
+                .cancellation = if (has_cancellation) options.cancellation else {},
                 .memory = .{ .backing = graph.allocator, .limit = limits.max_bytes },
                 .phase = if (attributes and graph.has_ports) .port_catalog else .connection,
                 .maps = if (attributes) .{ .limit = limits.max_attribute_states } else {},
@@ -163,11 +194,12 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         pub fn cancel(self: *Self) void {
             if (self.outcome == null) self.outcome = .{ .failure = error.Cancelled };
         }
-        inline fn progress(self: *const Self, used: u32) Progress {
+        inline fn progress(self: *const Self, used: u32) StepProgress {
+            if (streaming) return .{ .work_used = used, .total_work = self.total_work, .pairs_visited = self.visited, .edges_emitted = self.taken.emitted, .edge = self.taken.ready_edge, .outcome = self.outcome };
             return .{ .work_used = used, .total_work = self.total_work, .pairs_visited = self.visited, .edges_created = if (self.taken) self.target else @intCast(self.stored.items.len), .outcome = self.outcome };
         }
         inline fn poll(self: *Self) bool {
-            if (self.cancellation) |c| if (c.requested()) {
+            if (has_cancellation) if (self.cancellation) |c| if (c.requested()) {
                 self.cancel();
                 return false;
             };
@@ -179,13 +211,20 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         /// cancellation but does no semantic work. Every stop is latched.
         /// Keep this wrapper small/inlined: copying Progress through another
         /// call frame dominates budget-one resumes, particularly in Small.
-        pub inline fn advance(self: *Self, budget: u32) Progress {
+        pub inline fn advance(self: *Self, budget: u32) StepProgress {
+            if (streaming) self.taken.ready_edge = null;
             if (self.outcome != null or !self.poll()) return self.progress(0);
+            if (streaming and has_cancellation) {
+                self.taken.polling = .{};
+                _ = self.taken.polling.due(self.taken.interval); // Entry poll covers the first credit.
+            }
             const before = self.total_work;
-            // Select once per resume, not at every tiny transition. The enabled
-            // driver still polls before every credit, including a limit stop.
+            // Select once per resume, not at every tiny transition. Owning
+            // sessions poll before each credit; streaming uses its interval.
             const result = if (budget == 1)
                 self.drive(false, true, 1)
+            else if (!has_cancellation)
+                self.drive(false, false, budget)
             else if (self.cancellation == null)
                 self.drive(false, false, budget)
             else
@@ -232,11 +271,14 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                         if (used == grant) break :machine;
                         if (cancellable) {
                             self.phase = phase;
-                            if (used != 0 and !self.poll()) return;
+                            if (streaming) {
+                                if (used != 0 and self.taken.polling.due(self.taken.interval) and !self.poll()) return;
+                            } else if (used != 0 and !self.poll()) return;
                         }
                         used += 1;
                         if (cancellable) self.total_work = initial_work + used;
                     }
+                    if (streaming and cancellable) self.taken.polling.spend(1);
                     switch (phase) {
                         .port_catalog => if (attributes) {
                             if (self.catalog_index == self.graph.attribute_data.keys.items.len) {
@@ -355,7 +397,7 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                         },
                         .product => {
                             const product = std.math.mul(u64, self.endpoints[0].len(), self.endpoints[1].len()) catch return error.PairLimit;
-                            if (product > self.limits.max_pairs - self.visited) return error.PairLimit;
+                            if (!streaming and product > self.limits.max_pairs - self.visited) return error.PairLimit;
                             if (product == 0) {
                                 self.connection += 1;
                                 continue :machine self.successor(single, .connection);
@@ -369,6 +411,7 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                                 self.connection += 1;
                                 continue :machine self.successor(single, .connection);
                             }
+                            if (streaming and self.visited >= self.limits.max_pairs) return error.PairLimit;
                             self.visited += 1;
                             self.candidate = .{ .from = self.endpoints[0].at(self.left_index), .to = self.endpoints[1].at(self.right_index), .operator = self.graph.connections[self.connection].effective_operator, .first_connection = @fromBackingInt(self.connection) };
                             self.right_index += 1;
@@ -386,13 +429,13 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                             if (id == none) {
                                 continue :machine self.successor(single, .prepare);
                             }
-                            if (std.meta.eql(edges.canonical(self.stored.items[id]), edges.canonical(self.candidate))) {
+                            if (std.meta.eql(storedPair(self.stored.items[id]), edges.canonical(self.candidate))) {
                                 self.target = id;
                                 continue :machine self.successor(single, if (attributes) .apply else .pair);
                             } else self.slot = @intCast((@as(usize, self.slot) + 1) & (self.slots.len - 1));
                         },
                         .prepare => {
-                            if (self.stored.items.len >= self.limits.max_edges) return error.EdgeLimit;
+                            if ((if (streaming) self.taken.emitted else self.stored.items.len) >= self.limits.max_edges) return error.EdgeLimit;
                             if (!(if (single) self.graph.strict else strict)) {
                                 continue :machine self.successor(single, .append_edge);
                             }
@@ -428,7 +471,8 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                             self.rehash_index += 1;
                             if (id != none) {
                                 self.rehash_id = id;
-                                self.slot = @intCast(hash(self.stored.items[id]) & (self.new_slots.len - 1));
+                                const stored_hash = if (streaming) edges.pairHash(self.candidate.operator, self.stored.items[id]) else hash(self.stored.items[id]);
+                                self.slot = @intCast(stored_hash & (self.new_slots.len - 1));
                                 continue :machine self.successor(single, .rehash_probe);
                             }
                         },
@@ -445,9 +489,18 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                             } else self.slot = @intCast((@as(usize, self.slot) + 1) & (self.slots.len - 1));
                         },
                         .append_edge => {
-                            if (!try self.edge_growth.step(&self.stored, a)) continue :machine self.successor(single, phase);
-                            self.target = try r.index(self.stored.items.len);
-                            self.stored.appendAssumeCapacity(self.candidate);
+                            if (!streaming or (if (single) self.graph.strict else strict)) {
+                                if (!try self.edge_growth.step(&self.stored, a)) continue :machine self.successor(single, phase);
+                                self.target = try r.index(self.stored.items.len);
+                                self.stored.appendAssumeCapacity(if (streaming) edges.canonical(self.candidate) else self.candidate);
+                            }
+                            if (streaming) {
+                                self.taken.emitted += 1;
+                                self.taken.ready_edge = self.candidate;
+                                current = .pair;
+                                self.phase = .pair;
+                                return; // Deliver once, even when the grant has credits left.
+                            }
                             continue :machine self.successor(single, if (attributes) .apply else .pair);
                         },
                         .apply => if (attributes) {
@@ -562,15 +615,17 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         }
         /// Drives the same bounded machine without yielding; work_used is the
         /// final advance's count, while total_work covers the complete lifetime.
-        pub fn run(self: *Self) Progress {
+        pub fn run(self: *Self) StepProgress {
             while (true) {
                 const p = self.advance(std.math.maxInt(u32));
+                if (streaming and p.edge != null) return p;
                 if (p.outcome != null) return p;
             }
         }
         /// Transfer completed output exactly once. Failed operations never
         /// publish a half-built graph. NotReady leaves an active session intact.
         pub fn takeResult(self: *Self) TakeError!Result {
+            if (streaming) @compileError("streaming delivers edges through progress, not an owning result");
             if (self.taken) return error.AlreadyTaken;
             const outcome = self.outcome orelse return error.NotReady;
             switch (outcome) {
@@ -598,6 +653,9 @@ pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         }
         fn hash(edge: t.Edge) u64 {
             return edges.pairHash(edge.operator, edges.canonical(edge));
+        }
+        inline fn storedPair(value: Stored) [2]u32 {
+            return if (streaming) value else edges.canonical(value);
         }
         inline fn successor(self: *Self, comptime single: bool, next: Phase) Phase {
             if (single) {

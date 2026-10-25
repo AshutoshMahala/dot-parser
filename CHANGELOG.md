@@ -8,6 +8,14 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Policy-bound resumable edge streaming via `IR.edgeSession` for complete and
+  partial IR. Each `advance` delivers at most one existing edge view or a
+  budget pause/terminal outcome; `run` stops at the next edge. Shares bounded
+  expansion with materialization, without its output array or attribute folding.
+  Strict streams retain pair keys; non-strict streams retain no emitted edges.
+  Execution policy/runtime overrides match lowering sessions; limits remain
+  cumulative and partial qualifications survive. Adds a runnable example and
+  `bench-ir-edge-sessions`; ordinary pull iteration remains unchanged.
 - Policy-bound resumable Document-to-IR lowering via `loweringSession` and
   `partialLoweringSession`. Reuses `.execution.metering`, cancellation and its
   interval, with default-off runtime overrides and `validatePolicy`. Budgeted
