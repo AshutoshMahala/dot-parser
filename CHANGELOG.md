@@ -8,6 +8,15 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Policy-bound resumable Document-to-IR lowering via `loweringSession` and
+  `partialLoweringSession`. Reuses `.execution.metering`, cancellation and its
+  interval, with default-off runtime overrides and `validatePolicy`. Budgeted
+  steps include logical-name hashing/equality, collision probes/rehashing,
+  persistent attribute updates, scope-default overlays, coverage/posting indexes
+  and growth copies. No eager edge expansion or hidden preparation pass; only
+  successful output transfers ownership. Existing direct calls remain unchanged.
+  Includes native/partial/partition/stop tests, `resumable_graph` and the
+  `bench-ir-lowering-sessions` report command.
 - Opt-in `ir.materializationSession(options)` for complete and partial IRs,
   with `advance(u32)`, `run`, `cancel`, `deinit` and one-time `takeResult`.
   Per-call credits cover endpoint traversal, strict deduplication/rehashing,

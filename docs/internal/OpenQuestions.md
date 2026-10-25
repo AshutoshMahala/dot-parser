@@ -38,7 +38,7 @@ has been discussed.
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding and opt-in qualified partial queries/candidates/mentions | Label-port binding, markup-result association, event/session IR, partial enumeration/materialization, consumer adapters and marshal/unmarshal |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization and resumable lowering/materialization | Label-port binding, markup-result association, event lowering, resumable queries/streaming, fixed storage, consumer adapters and marshal/unmarshal |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and
@@ -288,10 +288,12 @@ endpoint structure (`syntax()`) separate from the opt-in first-colon Graphviz
 reading (`graphvizParts()`). Lone compass-like identifiers remain ambiguous;
 unknown suffix text is preserved, and origins name written sides rather than
 stored orientation. No additional retained storage is needed. Label-port existence/binding,
-event lowering, partial enumeration/materialization and session IR remain.
+event lowering, fixed storage and resumable query/streaming operations remain.
 Opt-in partial Document lowering now supplies qualified direct queries,
 retained attribute candidates, node mentions and explicit gap coverage without
-changing the complete-input API. It does not salvage failed lowering operations.
+changing the complete-input API. Partial iteration/materialization and resumable
+Document lowering/materialization are also implemented. These do not salvage
+failed lowering operations or introduce a shared parse-plus-IR work budget.
 *(Embodied: `docs/IR.md`, roadmap slice 7.)*
 
 **Q6 — Which input modes are required initially?**
@@ -1159,8 +1161,15 @@ AVL updates, port-key code units and growth copying; cancellation polls each
 step and each resume. Only finished output transfers ownership. Allocator
 callbacks and cleanup are not time-budgeted; fixed storage remains separate.
 Direct materialization stays on its throughput-specialized driver, sharing
-identity, port and map semantics with sessions. Event/session lowering,
-resumable query/streaming operations and fixed-storage construction remain;
+identity, port and map semantics with sessions. Policy-bound Document lowering
+now has complete/partial sessions with the same lifecycle and output types.
+Execution policy reuses metering, cancellation and positive polling intervals;
+runtime overrides are opt-in. Bounded steps cover source names/glue, collision
+probes/rehashing, persistent map visits/rotations, default overlays, traversal,
+coverage/posting indexes and growth copying. Initialization does no scan or
+allocation; successful transfer releases the Document lifetime requirement,
+while source bytes stay borrowed. Direct lowering remains throughput-specialized.
+Event lowering, resumable query/streaming operations and fixed-storage construction remain;
 this does not complete the
 entire semantic-layer slice. *(Embodied:
 `src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*

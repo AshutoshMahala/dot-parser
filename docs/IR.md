@@ -828,6 +828,97 @@ Finite defaults are defined by `dot.ir.Limits`:
 | Accounted work per operation | 100,000,000 |
 | Peak live requested allocation bytes per operation | 256 MiB |
 
+## Resumable Document lowering
+
+Opt in through the same execution-policy vocabulary as the parsers. There is
+no separate `resumable` switch. This policy belongs to the IR operation: the
+profile that parsed a Document does not implicitly select its lowering driver.
+
+```zig
+const IR = dot.ir.Lowering(.{
+    .policy = .{ .execution = .{ .metering = true } },
+});
+var operation = try IR.loweringSession(allocator, doc, .{
+    .interpretation = Dot.interpretation(doc, .{}),
+});
+defer operation.deinit();
+while (operation.advance(4096).outcome == null) {
+    // Yield to the application's scheduler; resume this operation later.
+}
+var ir = try operation.takeResult();
+defer ir.deinit();
+```
+
+See [resumable_graph.zig](../examples/resumable_graph.zig). Already parsed and
+accepted input has the same prerequisites as `lowerComplete`. Use
+`partialLoweringSession` for an explicitly retained partial Document; its result
+is the existing `PartialGraph`, with the same retained facts and uncertainty.
+Both operations keep edges symbolic. They do not parse the source again,
+materialize edges, invoke child processors or change validation outcomes.
+
+### Execution policy and lifecycle
+
+| Setting | Default | Meaning for lowering sessions |
+| --- | --- | --- |
+| `.policy.execution.metering` | `false` | Enable `advance(budget)`; `run()` remains available either way |
+| `.policy.execution.cancellation` | `false` | Enable the borrowed `.cancellation` hook in session options |
+| `.policy.execution.cancellation_interval` | `1` | Positive maximum lowering credits between hook polls; every resume also polls, including budget zero |
+| `.runtime_policy` | `false` | Allow session options `.policy` to override the compiled baseline at initialization |
+
+Fixed policies are checked at compile time. With `.runtime_policy = true`,
+`IR.validatePolicy(override)` checks an override independently; construction
+also resolves and checks it once. Runtime `advance` returns `MeteringDisabled`
+without doing work when metering is disabled; the fixed-policy equivalent is a
+compile error. Runtime policy changes settings, not the lowering implementation.
+There is no mid-session policy replacement. Direct `lowerComplete`/`lowerPartial`
+keep their existing throughput-specialized driver and explicit limits/cancellation
+options, even on a profile that enables metered sessions. Existing materialization
+sessions remain explicitly selected through their own API below.
+
+`LoweringSession` and `PartialLoweringSession` expose `advance(u32)`, `run()`,
+`cancel()`, `peakBytes()`, `takeResult()` and `deinit()`. The lifecycle matches
+materialization sessions: zero grants do no semantic work, positive grants make
+progress, terminal outcomes are latched, and ownership transfers once after
+success. `LoweringProgress` reports this call's `work_used`, cumulative
+`total_work`, factual `nodes_created`/`connections_created`, and optional
+`LoweringOutcome` (`success` or `failure`). Progress counts are not published IR.
+`run().work_used` is the last internal advance's count, not its lifetime total.
+
+Construction binds input/options and checks admission; it performs no scan or
+allocation. Keep the immutable Document, source and active session alive and
+unmoved until lowering finishes and the result is taken. After successful transfer,
+the IR borrows only source bytes: Document pools and session scratch can be freed.
+An execution pause is not a partial source. Cancellation, allocation/limit failure
+and unfinished work never publish a half-built IR; `takeResult()` returns
+`NotReady`, the actual failure, or `AlreadyTaken` as appropriate. `deinit()` is
+required on every path, including after successful transfer.
+
+### Lowering work units
+
+One credit performs one bounded transition:
+
+| Work | Maximum per credit |
+| --- | --- |
+| Counting/traversal/indexing | One order slot, chain link, scope, mention or phase transition |
+| Identity hashing/equality | One byte (byte profiles), native scalar (at most two UTF-16 code units), glue unit, pending UTF-8 output byte or hash-table probe |
+| Persistent attribute maps | One tree visit or ancestor update, with at most two rotations/five appended cells |
+| Buffer growth/initialization | At most 64 bytes copied/cleared, or one bounded storage-preparation transition |
+
+Long names, concatenation comments, hash-table rehashes, scope-default overlays
+and membership/posting preparation all yield. Budget one needs no minimum
+larger grant. Hash collisions still require logical equality; native validation
+and byte-profile byte preservation match direct lowering. Total credits include
+actual growth copies, so comparisons between budget partitions require the same
+allocator resize behavior. Intermediate work units need not equal the direct
+driver's coarser `max_work` accounting. Configured lifetime limits still stop
+the operation; pausing does not replenish them.
+
+Allocator callbacks, cancellation predicates and destruction are external work,
+not latency-bounded operations. This is cooperative work metering, not a deadline.
+No thread or shared parse-plus-IR budget is introduced. Fixed-storage lowering,
+event lowering and resumable query/edge-streaming operations remain separate work.
+Measure this path with `zig build bench-ir-lowering-sessions -Doptimize=fast`.
+
 ## Resumable materialization
 
 Keep `materialize(.{})` for a direct call. Opt into a session when your
@@ -922,7 +1013,7 @@ This is a cooperative **work bound**, not a latency deadline. Allocator calls,
 the cancellation predicate and destruction are external/unmetered; the backing
 allocator can reserve or initialize memory internally. Library-controlled copies,
 table initialization and rehashing are resumable. Fixed-storage sessions,
-resumable lowering, queries and edge-streaming are not implemented by this slice.
+resumable queries and edge-streaming are not implemented by this slice.
 The session's raw allocation boundary also avoids the standard typed helpers'
 whole-buffer debug poisoning; all readable elements are initialized explicitly.
 

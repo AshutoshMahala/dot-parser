@@ -2175,6 +2175,101 @@ failure and partial-result checks. No API or parser execution policy changes.
 `zig build check` passes all 789 tests; IR passes all 144 tests in Fast and Safe
 as well as the Debug coverage included in the full check.
 
+### Resumable Document lowering (2026-10-24)
+
+Baseline **`ac473db`**, Apple M4 Pro, Zig 0.17.0. The new, opt-in lowering
+session uses bounded transitions for identity reads, graph construction,
+attribute maps and buffer copies. Ordinary `lowerComplete`/`lowerPartial`
+retain their direct driver; enabling sessions does not route direct calls
+through the resumable machine.
+
+**Direct-path gate:** five serial, alternating processes per revision and mode,
+using the same existing `bench/ir.zig` harness (two warmups, nine samples per
+process). Median lowering times in ms, before → after:
+
+| Fixture | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| 10,000 singleton edges | 1.114 → 1.111 | 1.343 → 1.352 | 1.805 → 1.786 |
+| 10,000 small sets | 2.119 → 2.125 | 2.641 → 2.642 | 2.893 → 2.889 |
+| 1,000 reopened scopes | 0.150 → 0.150 | 0.180 → 0.180 | 0.208 → 0.201 |
+| Strict reopened scopes | 0.150 → 0.151 | 0.184 → 0.183 | 0.208 → 0.209 |
+| 10,000 nested scopes | 0.296 → 0.293 | 0.456 → 0.461 | 0.335 → 0.340 |
+| 50,000 × 50,000 symbolic product | 5.494 → 5.441 | 6.869 → 6.861 | 8.054 → 8.090 |
+
+These measurements show no material direct-path regression. Requested retained
+bytes, peak bytes and arena capacities are identical in every fixture/mode.
+The direct-only benchmark's Mach-O `__text` size is unchanged in Fast/Small
+and 96 bytes smaller in Safe; its code-and-constants `__TEXT` changes by
++16 / −72 / +16 bytes. This is a harness measurement, not a claim of identical
+binaries or a universal consumer code-size delta.
+
+**Opt-in cost:** `zig build bench-ir-lowering-sessions -Doptimize=fast`
+compares the two drivers on smaller fixtures. Each mode runs four warmups and
+eleven measured rounds, rotating route order within the process. Source
+construction, DOT parsing, output consumption and explicit cleanup are outside
+timing. Direct lowering frees its internal scratch before returning, so that
+cleanup is included in direct times; session destruction is outside timing.
+No builds or tests overlap timing. All session routes compile cancellation
+support; only the cancellation route supplies a hook, at interval one.
+
+Fast median ms:
+
+| Fixture | Direct | Session `run()` | Budget 4096 | Budget 1 | Budget 4096 + hook |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2,000 edges | 0.2544 | 0.4690 | 0.4452 | 0.8939 | 0.5373 |
+| 2,000 nodes, three attributes each | 0.3067 | 0.8795 | 0.8771 | 1.7309 | 0.9712 |
+| 400 reopened scopes | 0.1123 | 0.2146 | 0.2146 | 0.4275 | 0.2440 |
+| 2,000 nested scopes | 0.0650 | 0.1003 | 0.0998 | 0.1860 | 0.1179 |
+| Concatenated name with 64 KiB glue comment | 0.0173 | 0.1626 | 0.1618 | 0.3221 | 0.1789 |
+| 5,000 × 5,000 symbolic product | 0.5048 | 0.9046 | 0.9002 | 1.8391 | 1.0712 |
+
+Safe and Small median ms, without a hook:
+
+| Fixture | Safe direct | Safe 4096 | Safe 1 | Small direct | Small 4096 | Small 1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Edges | 0.2959 | 0.7359 | 1.0097 | 0.3859 | 0.7657 | 1.3949 |
+| Attributes | 0.4877 | 1.3999 | 1.8973 | 0.5280 | 1.5048 | 2.5794 |
+| Reopened | 0.1590 | 0.3608 | 0.4875 | 0.1713 | 0.3755 | 0.6641 |
+| Nested | 0.0977 | 0.1710 | 0.2201 | 0.0813 | 0.1503 | 0.3239 |
+| Long glue comment | 0.0167 | 0.2628 | 0.3550 | 0.0295 | 0.2621 | 0.5048 |
+| Symbolic product | 0.7053 | 1.5851 | 2.0795 | 0.8943 | 1.4559 | 2.7600 |
+
+Sessions are not throughput-equivalent to direct lowering: Fast budget-4096
+times are about 1.5–2.9× direct on ordinary fixtures, and 9.4× on the long-glue
+stress case (15.7× in Safe). The resumable name cursor accounts for every glue
+unit instead of skipping the comment in one uninterruptible operation. Budget
+one adds resume/dispatch overhead. These costs are confined to the opt-in
+driver, and remain optimization opportunities; no metering or cancellation
+guarantee was relaxed to improve the numbers.
+
+Requested heap bytes, direct → session, identical across modes and budgets:
+
+| Fixture | Retained bytes | Peak bytes |
+| --- | ---: | ---: |
+| Edges | 321,828 → 321,828 | 336,424 → 336,424 |
+| Attributes | 766,560 → 678,000 | 1,012,972 → 846,136 |
+| Reopened | 183,228 → 193,428 | 215,756 → 232,696 |
+| Nested | 194,268 → 194,268 | 281,396 → 281,396 |
+| Long glue comment | 536 → 536 | 1,076 → 1,076 |
+| Symbolic product | 943,184 → 943,184 | 1,050,824 → 1,050,824 |
+
+Bounded attribute-map updates reserve enough cells for one update before
+executing it, changing capacity growth without changing retained semantic
+records. Consequently session memory can be lower **or higher**: the reopened
+fixture's peak rises 7.9%. This is not a memory-reduction feature. Session
+objects add 1,816 bytes in Fast/Small or 1,880 in Safe for this policy. Heap
+figures exclude those objects, source/Document storage, allocator internals,
+code and process RSS. The symbolic product remains one connection and 10,000
+nodes, not 25 million edges.
+
+The complete check passes **799 tests**, including compile-failure and
+freestanding coverage. New tests compare complete/partial outputs with direct
+lowering, cover native encodings and byte-preserving UTF-8 profiles, allocation
+failures, lifetime limits, zero/one/mixed grants and cancellation checkpoints.
+Partition-invariance tests disable allocator resizing: credits include actual
+copies, so different allocator resize outcomes can legitimately change totals.
+DOT, markup and string metering/cancellation remain unchanged.
+
 ## Running the benchmarks
 
 ### One-command string comparison
@@ -2254,6 +2349,7 @@ zig build bench-ir-partial -Doptimize=fast
 zig build bench-ir-partial -Doptimize=fast -- --attributes-only
 zig build bench-ir-partial-edges -Doptimize=fast
 zig build bench-ir-sessions -Doptimize=fast
+zig build bench-ir-lowering-sessions -Doptimize=fast
 zig build check-benches  # only checks that they compile
 ```
 

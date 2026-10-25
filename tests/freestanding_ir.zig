@@ -2,6 +2,20 @@
 //! allocator: no libc, OS, global allocator, recursion, or renderer required.
 const std = @import("std");
 const dot = @import("dot_parser");
+export fn resumable_lowering(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    const P = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true } } });
+    const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+    var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
+    var parsed = P.parseAndValidate(fixed.allocator(), source[0..length], dot.diagnostic.discard, .{});
+    defer parsed.deinit(fixed.allocator());
+    const doc = if (parsed.document) |*doc| doc else return 0;
+    var session = IR.partialLoweringSession(fixed.allocator(), doc, .{ .interpretation = P.interpretation(doc, .{}) }) catch return 0;
+    defer session.deinit();
+    while (session.advance(7).outcome == null) {}
+    var ir = session.takeResult() catch return 0;
+    defer ir.deinit();
+    return @intCast(ir._data.nodes.len);
+}
 export fn resumable_edges(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
     var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
     var result = dot.ir.parsePartial(fixed.allocator(), source[0..length], .{}) catch return 0;

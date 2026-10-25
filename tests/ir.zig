@@ -14,6 +14,7 @@ test {
     _ = @import("ir_partial_edges.zig");
     _ = @import("ir_partial_attributes.zig");
     _ = @import("ir_sessions.zig");
+    _ = @import("ir_lowering_sessions.zig");
 }
 
 fn lower(allocator: std.mem.Allocator, source: []const u8) !IR.Graph {

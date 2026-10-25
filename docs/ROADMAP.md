@@ -12,8 +12,10 @@ the implemented contracts.
   Documents. Borrowed component views expose individual/all effective attributes.
   Edge iteration/materialization is explicit and bounded. Materialization resolves
   bulk edge updates and endpoint-port values once by default, with a topology-only
-  option. Label-port existence/binding,
-  event lowering, partial IR, fixed storage and metered sessions remain.
+  option. Opt-in partial IR retains qualified queries, iteration and materialized
+  output; Document lowering and materialization have resumable sessions.
+  Label-port existence/binding, event lowering, fixed storage and resumable
+  query/edge-streaming operations remain.
 - **Feeding input in pieces.** Today the whole input must be in memory before
   parsing starts.
 - **Validation in small steps**, and validation that can be cancelled.

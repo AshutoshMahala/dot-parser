@@ -14,7 +14,7 @@ pub fn InterpretationFor(comptime partial: bool) type {
         kind: if (partial) ?policy.GraphKind else policy.GraphKind,
         directed: syntax.EdgeOperator,
         undirected: syntax.EdgeOperator,
-        fn operator(self: @This(), written: syntax.EdgeOperator) syntax.EdgeOperator {
+        pub fn operator(self: @This(), written: syntax.EdgeOperator) syntax.EdgeOperator {
             return if (written == .directed) self.directed else self.undirected;
         }
     };
@@ -44,11 +44,11 @@ pub inline fn runWith(comptime caps: encoding.Capabilities, comptime partial: bo
     };
 }
 
-fn Output(comptime caps: encoding.Capabilities, comptime partial: bool) type {
+pub fn Output(comptime caps: encoding.Capabilities, comptime partial: bool) type {
     return if (partial) @import("partial.zig").Graph(caps) else t.Graph(caps);
 }
 
-fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilities, comptime partial: bool) type {
+pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilities, comptime partial: bool) type {
     return struct {
         const Self = @This();
         const ScopeCursor = struct { first: u32 = 0, next: u32 = 0, head: u32 = names.empty };
@@ -98,7 +98,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
             next_scope: u32 = 1,
         } else bool = if (partial) .{} else false,
 
-        fn deinit(self: *Self) void {
+        pub fn deinit(self: *Self) void {
             const a = self.a;
             self.scope_table.deinit(a);
             a.free(self.cursors);
@@ -114,7 +114,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
             self.attribute_data.deinit(a);
             inline for (.{ "occurrences", "bodies", "mentions", "connections", "attributes", "offsets", "positions" }) |field| a.free(@field(self, field));
         }
-        fn raw(self: *Self, range: t.Range) r.Error![]const u8 {
+        pub fn raw(self: *Self, range: t.Range) r.Error![]const u8 {
             if (range.start > self.doc.source.len or range.len > self.doc.source.len - range.start) return error.InvalidDocument;
             return self.doc.source[range.start..][0..range.len];
         }
@@ -238,14 +238,14 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 cursor.next += 1;
             }
         }
-        fn firstEdge(statement: syntax.Statement) syntax.EdgeView {
+        pub fn firstEdge(statement: syntax.Statement) syntax.EdgeView {
             return switch (statement) {
                 .edge => |e| e,
                 .edge_chain => |chain| chain.first,
                 else => unreachable,
             };
         }
-        fn links(self: *Self, statement: syntax.Statement) syntax.EdgeLinkIterator {
+        pub fn links(self: *Self, statement: syntax.Statement) syntax.EdgeLinkIterator {
             return if (statement == .edge_chain) self.doc.edgeLinks(statement.edge_chain) else .{ .document = self.doc };
         }
         fn enter(self: *Self, occurrence: u32) r.Error!void {
@@ -262,7 +262,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
             self.bodies[@backingInt(self.occurrences[occurrence].membership)].start = self.mention_count;
             try self.stack.append(self.a, .{ .scope = .{ .occurrence = occurrence, .cursor = body.start, .end = body.start + body.len } });
         }
-        inline fn scopeBody(self: *Self, occurrence: u32) r.Error!syntax.StatementRange {
+        pub inline fn scopeBody(self: *Self, occurrence: u32) r.Error!syntax.StatementRange {
             if (occurrence == 0) return .{ .start = 0, .len = try r.index(self.doc.order.len) };
             const record = self.doc.subgraph_records[occurrence - 1];
             if (partial and record.subtree_end == 0) {
@@ -293,7 +293,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 },
             }
         }
-        fn resolved(self: *Self, pending: Pending) r.Error!t.Endpoint {
+        pub fn resolved(self: *Self, pending: Pending) r.Error!t.Endpoint {
             return switch (pending) {
                 .node => |node_value| node_value,
                 .scope => |scope| blk: {
@@ -360,7 +360,7 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 },
             }
         }
-        fn endpointEnd(self: *Self, endpoint_value: syntax.Endpoint) r.Error!u32 {
+        pub fn endpointEnd(self: *Self, endpoint_value: syntax.Endpoint) r.Error!u32 {
             if (endpoint_value == .node) return 0;
             const id = @backingInt(endpoint_value.subgraph);
             if (id == 0 or id > self.doc.subgraph_records.len) return error.InvalidDocument;
@@ -559,6 +559,10 @@ fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilitie
                 self.offsets[i] = self.offsets[i - 1];
             }
             self.offsets[0] = 0;
+            return self.publish();
+        }
+        /// Shared ownership transfer; callers finish every pool/index first.
+        pub fn publish(self: *Self) Output(caps, partial) {
             const memory: *r.Memory = @ptrCast(@alignCast(self.a.ptr));
             if (partial) self.publication.transferred = true else self.publication = true;
             const graph: t.GraphWith(caps, partial) = .{

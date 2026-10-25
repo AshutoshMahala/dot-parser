@@ -81,6 +81,9 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ir_session_unknown", .message = "unknown IR materialization option: attributtes" },
         .{ .name = "ir_session_runtime", .message = "unable to resolve comptime value" },
         .{ .name = "ir_session_limit", .message = "unknown IR materialization option field: max_pair" },
+        .{ .name = "ir_lowering_metering", .message = "metering is disabled; use run()" },
+        .{ .name = "ir_lowering_interval", .message = "IR cancellation_interval must be positive" },
+        .{ .name = "ir_lowering_runtime", .message = "runtime policy is disabled; the baseline is verified at compile time" },
     }) |fixture| {
         const rejected = b.addObject(.{ .name = fixture.name, .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("tests/compile_fail/{s}.zig", .{fixture.name})),
@@ -423,6 +426,7 @@ pub fn build(b: *std.Build) void {
         "materialized_attributes",
         "partial_graph",
         "resumable_edges",
+        "resumable_graph",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -441,6 +445,7 @@ pub fn build(b: *std.Build) void {
         examples_step.dependOn(&b.addInstallArtifact(example, .{}).step);
         const run_example = b.addRunArtifact(example);
         if (std.mem.eql(u8, name, "resumable_edges")) test_ir.dependOn(&run_example.step);
+        if (std.mem.eql(u8, name, "resumable_graph")) test_ir.dependOn(&run_example.step);
         if (std.mem.eql(u8, name, "build_graph")) {
             run_example.expectStdErrEqual(@embedFile("tests/fixtures/build_graph.txt"));
             run_example.expectStdOutEqual("");
@@ -612,6 +617,15 @@ pub fn build(b: *std.Build) void {
     b.step("bench-ir-sessions", "Compare direct and resumable materialization, budgets and memory")
         .dependOn(&b.addRunArtifact(ir_sessions_bench).step);
     check_benches.dependOn(&ir_sessions_bench.step);
+    const ir_lowering_sessions_bench = b.addExecutable(.{ .name = "ir_lowering_sessions_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_lowering_sessions.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    b.step("bench-ir-lowering-sessions", "Compare direct and policy-bound resumable lowering, budgets and memory")
+        .dependOn(&b.addRunArtifact(ir_lowering_sessions_bench).step);
+    check_benches.dependOn(&ir_lowering_sessions_bench.step);
     const ir_partial_bench = b.addExecutable(.{ .name = "ir_partial_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/ir_partial.zig"),
         .target = target,

@@ -27,7 +27,7 @@ pub const Resolved = struct {
 };
 pub const Key = struct { name: t.Range, hash: u64, first_attribute: u32, kind: Kind };
 pub const Meta = struct { key: u32 = none, origin: Origin = undefined };
-const Cell = struct { key: u32, attribute: u32, left: u32 = none, right: u32 = none, height: u8 = 1 };
+pub const Cell = struct { key: u32, attribute: u32, left: u32 = none, right: u32 = none, height: u8 = 1 };
 pub const Scope = struct {
     graph: u32 = none,
     node: u32 = none,
@@ -112,10 +112,10 @@ pub const Store = struct {
             self.meta[index] = .{ .key = id, .origin = origin };
         }
     }
-    fn height(self: Store, id: u32) u8 {
+    pub fn height(self: Store, id: u32) u8 {
         return if (id == none) 0 else self.cells.items[id].height;
     }
-    fn add(self: *Store, a: std.mem.Allocator, cell: Cell, limit: u32, work: *r.Work) r.Error!u32 {
+    pub fn add(self: *Store, a: std.mem.Allocator, cell: Cell, limit: u32, work: *r.Work) r.Error!u32 {
         try work.spend(1);
         if (self.cells.items.len >= limit) return error.AttributeStateLimit;
         const id = try r.index(self.cells.items.len);
@@ -124,7 +124,7 @@ pub const Store = struct {
         try self.cells.append(a, value);
         return id;
     }
-    fn rotate(self: *Store, a: std.mem.Allocator, root: u32, comptime left: bool, limit: u32, work: *r.Work) r.Error!u32 {
+    pub fn rotate(self: *Store, a: std.mem.Allocator, root: u32, comptime left: bool, limit: u32, work: *r.Work) r.Error!u32 {
         var lower = self.cells.items[root];
         var upper = self.cells.items[if (left) lower.right else lower.left];
         if (left) lower.right = upper.left else lower.left = upper.right;
