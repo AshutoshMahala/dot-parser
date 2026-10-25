@@ -3,7 +3,7 @@
 const std = @import("std");
 const dot = @import("dot_parser");
 const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
-const Case = enum { edges, sets, strict_overlap, reopened, nested, ports, product_prefix };
+const Case = enum { edges, sets, strict_overlap, reopened, nested, ports, product_prefix, sets_one, sets_eight, sets_duplicates, sets_both };
 const routes = [_]struct { name: []const u8, budget: ?u32, hook: bool = false }{
     .{ .name = "direct", .budget = null },
     .{ .name = "run", .budget = 0 },
@@ -29,8 +29,14 @@ fn fixture(out: *std.Io.Writer, case: Case) !void {
             else
                 try out.print("n{d}->n{d};", .{ i, i + 1 });
         },
-        .sets => for (0..1000) |i| {
-            try out.print("n{d}->{{a b c}};", .{i});
+        .sets, .sets_one, .sets_eight, .sets_duplicates, .sets_both => for (0..1000) |i| {
+            switch (case) {
+                .sets_one => try out.print("n{d}->{{a}};", .{i}),
+                .sets_eight => try out.print("n{d}->{{a b c d e f g h}};", .{i}),
+                .sets_duplicates => try out.print("n{d}->{{a b a c b c a}};", .{i}),
+                .sets_both => try out.writeAll("{a b c}->{d e};"),
+                else => try out.print("n{d}->{{a b c}};", .{i}),
+            }
         },
         .reopened => for (0..200) |i| {
             try out.print("subgraph s{{n{d}}}->x;", .{i});

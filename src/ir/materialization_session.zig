@@ -268,7 +268,12 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                 const source = self.graph.connections[connection];
                 const left = @backingInt(source.left.members);
                 const right = @backingInt(source.right.members);
-                if (left & right & t.node_bit == 0) return false;
+                if (left & right & t.node_bit == 0) {
+                    // Fast benefits from fusing preparation into the caller.
+                    // Forcing the same inlining in Small enlarges the mixed-
+                    // budget caller and slows its one-credit path.
+                    return @call(if (@import("builtin").mode == .fast) .always_inline else .auto, streamSetEdge, .{ self, connection, budget, cost });
+                }
                 self.connection = connection;
                 inline for (.{ left, right }, 0..) |id, i| {
                     self.endpoints[i].singleton = id & ~t.node_bit;
@@ -279,6 +284,10 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                 self.left_index = 0;
                 self.right_index = 0;
             }
+            self.deliverStreamEdge(connection, cost);
+            return true;
+        }
+        inline fn deliverStreamEdge(self: *Self, connection: u32, cost: u32) void {
             self.visited += 1;
             self.candidate = .{ .from = self.endpoints[0].at(self.left_index), .to = self.endpoints[1].at(self.right_index), .operator = self.graph.connections[connection].effective_operator, .first_connection = @fromBackingInt(connection) };
             self.right_index += 1;
@@ -290,6 +299,66 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
             self.taken.ready_edge = self.candidate;
             self.phase = .pair;
             self.total_work += cost;
+        }
+        /// Extend ready delivery to warm, single-body sets. Inspect only two
+        /// body headers before committing: their written sizes bound both the
+        /// required capacity and credits, even if every mention is unique.
+        /// Reopened bodies, empty sets, growth and mark-generation rollover
+        /// keep the stepped path. This never pre-scans a set or allocates.
+        fn streamSetEdge(self: *Self, connection: u32, budget: u32, base_cost: u32) bool {
+            if (self.marks.len == 0 or self.generation > std.math.maxInt(u32) - 2) return false;
+            const source = self.graph.connections[connection];
+            const handles = [2]u32{ @backingInt(source.left.members), @backingInt(source.right.members) };
+            var bodies: [2]?t.Body = .{ null, null };
+            var upper: u64 = base_cost;
+            inline for (handles, 0..) |handle, i| {
+                if (handle & t.node_bit == 0) {
+                    const body = self.graph.bodies[handle];
+                    const count = body.end - body.start;
+                    const out = &self.endpoints[i];
+                    if (body.first != handle or count == 0 or out.growth.pending.len != 0 or count > out.nodes.capacity) return false;
+                    bodies[i] = body;
+                    // In addition to endpoint/done: body, mention/append per
+                    // node, exhausted mention, exhausted body. Repeats do not
+                    // consume append credits; compute the actual cost below.
+                    upper += @as(u64, count) * 2 + 3;
+                }
+            }
+            if (upper > budget or upper > self.limits.max_work - self.total_work) return false;
+            var cost = base_cost;
+            inline for (handles, 0..) |handle, i| {
+                const out = &self.endpoints[i];
+                out.nodes.items.len = 0;
+                if (bodies[i]) |body| {
+                    out.singleton = none;
+                    self.generation += 1;
+                    var end: u32 = 0;
+                    const nodes = out.nodes.allocatedSlice();
+                    for (self.graph.mentions[body.start..body.end]) |mention| {
+                        const id = @backingInt(mention.node);
+                        if (self.marks[id] == self.generation) continue;
+                        self.marks[id] = self.generation;
+                        self.pending_node = mention.node;
+                        nodes[end] = mention.node;
+                        end += 1;
+                    }
+                    out.nodes.items.len = end;
+                    out.count = end;
+                    self.body_index = handle + 1;
+                    self.body_end = handle + 1;
+                    self.mention_index = body.end;
+                    self.mention_end = body.end;
+                    cost += body.end - body.start + end + 3;
+                } else {
+                    out.singleton = handle & ~t.node_bit;
+                    out.count = 1;
+                }
+            }
+            self.connection = connection;
+            self.side = 1;
+            self.left_index = 0;
+            self.right_index = 0;
+            self.deliverStreamEdge(connection, cost);
             return true;
         }
         fn drive(self: *Self, comptime cancellable: bool, comptime single: bool, requested: u32) r.Error!void {

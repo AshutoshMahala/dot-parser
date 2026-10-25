@@ -2431,6 +2431,82 @@ mixed-kind views cover grants 1/3/9/64; runtime-policy batching and every
 interval-one cancellation checkpoint are covered too. The full check passes
 **809 tests**; Fast and Safe each pass **164 IR tests**.
 
+### Small-set streaming follow-up (2026-10-25)
+
+Compared with `24f8ba0`, using Zig 0.17.0 on the same Apple M4 Pro. The
+remaining small-set cost was endpoint preparation: each membership test and
+ready append still passed through the resumable machine, even when scratch
+capacity was already available. The earlier shortcut only prepared singleton
+endpoints or delivered pairs from endpoints that were already prepared.
+
+Non-strict streaming now also fuses **warm, non-empty, single-body sets** when
+no cancellation hook is installed. Two body headers provide a conservative
+capacity/credit bound; there is no speculative membership scan. The loop then
+deduplicates members in written order using the existing marks and buffers.
+Every original transition is charged, including the distinction between a
+duplicate mention and a unique mention plus append. Short grants/lifetime
+limits, allocation/growth, empty sets, reopened multi-body sets and generation
+rollover use the original stepped path. No session field or allocation was added.
+
+The same expanded `bench-ir-edge-sessions` harness was compiled against both
+revisions: five alternating process runs per mode, at least 50 ms/four rotated
+warmup rounds per fixture, then eleven measured rounds per process. These are
+medians of process medians, in milliseconds. Parsing/lowering, attribute
+queries and explicit destruction are outside timing; no builds or tests ran
+during measurement. Each set fixture below contains 1,000 connections.
+
+Budget 4096, no hook, before → after:
+
+| Set fixture | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| One member, 1,000 edges | 0.0159 → 0.0082 | 0.0161 → 0.0096 | 0.0173 → 0.0084 |
+| Three members, 3,000 edges | 0.0294 → 0.0194 | 0.0316 → 0.0213 | 0.0333 → 0.0195 |
+| Eight members, 8,000 edges | 0.0592 → 0.0440 | 0.0621 → 0.0482 | 0.0656 → 0.0475 |
+| Seven mentions/three unique members, 3,000 edges | 0.0300 → 0.0198 | 0.0334 → 0.0218 | 0.0355 → 0.0216 |
+| Three-by-two sets, 6,000 edges | 0.0509 → 0.0371 | 0.0526 → 0.0386 | 0.0543 → 0.0375 |
+
+The original three-member fixture takes **34% less time in Fast**, 33% less
+in Safe and 41% less in Small. Fast direct iteration is 0.0173 ms in the new
+binary: session/direct is now **1.12×**, versus 1.74× in this comparison and
+about 1.9× in the earlier report. This is traversal only, not an end-to-end
+source-to-IR speedup. Budget 64 gives similar gains; `run()` improves from
+0.0345 to 0.0250 ms in Fast.
+
+Budget one and active hooks do not use the new set path. On the three-member
+fixture, budget one is 0.0850 → 0.0843 ms in Fast, 0.0862 → 0.0870 in Safe,
+and 0.1041 → 0.0973 in Small; active interval-one cancellation is
+0.0511 → 0.0511, 0.0532 → 0.0537, and 0.0746 → 0.0746 ms respectively.
+Inlining is compiler-mode sensitive: forcing set preparation inline helped
+Fast mixed-budget callers but hurt Small's one-credit route. The final version
+forces it only in Fast. A uniform outlining variant that regressed Fast's
+mixed-budget one-credit route was rejected.
+
+This does not claim every route improved. Positive medians above 5% outside
+the set gains have overlapping process ranges: Fast product-prefix budget one
+(0.0835–0.0925 → 0.0841–0.0935 ms), Safe singleton cancellation
+(0.0346–0.0392 → 0.0350–0.0383), and Safe product-prefix budget 4096
+(0.0486–0.0513 → 0.0494–0.0518). The nested two-edge case remains too short
+for useful ratios.
+
+**Memory/default gates:** requested heap peaks and edge counts match in every
+case/route. Three-member sets still peak at **4,144 bytes**, excluding source,
+IR storage, allocator overhead and process RSS; the session remains 488 bytes
+in Fast/Small and 512 in Safe. Work/poll counts match except allocator-dependent
+copy credits in two Safe reopened runs (142,320 versus 142,324 credits, same
+heap peak); forced-no-resize tests verify identical credits and states.
+Direct-only and owning-session benchmark code remains byte-identical to the
+baseline in all three modes. The consumed streaming harness adds 4,508 / 1,456 /
+888 bytes of `__text` in Fast/Safe/Small; unused streaming adds no default-path
+code. These are harness sizes, not universal library binary-size figures.
+
+Tests compare batched execution with one-credit execution at work, pair, edge
+and memory boundaries, including endpoint contents/cursors and marks. Additional
+coverage includes duplicates, warm capacity followed by growth, reopened and
+empty sets, generation rollover, partial IR, native encoding, runtime policies,
+allocation failures and every interval-one cancellation checkpoint. The full
+check passes **811 tests**; the IR suite passes **166 tests** in Fast, Safe and
+Small.
+
 ## Running the benchmarks
 
 ### One-command string comparison

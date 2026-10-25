@@ -278,7 +278,7 @@ test "streaming keeps generic operators and native source views" {
     const Native = dot.ir.Lowering(.{ .source_encodings = &.{.utf16}, .policy = .{ .execution = .{ .metering = true } } });
     var encoded = std.Io.Writer.Allocating.init(a);
     defer encoded.deinit();
-    for ("graph {{a b}->c;a--b;a:p->d:q[color=red]}") |byte| try encoded.writer.writeInt(u16, byte, .little);
+    for ("graph {{a b}->c;{a b a}->c;a--b;a:p->d:q[color=red]}") |byte| try encoded.writer.writeInt(u16, byte, .little);
     var parsed = try P.parseAndValidate(a, encoded.written(), dot.diagnostic.discard, .{ .encoding = .utf16le });
     defer parsed.deinit(a);
     try expect(parsed.documentValid());
@@ -306,14 +306,14 @@ test "streaming keeps generic operators and native source views" {
     }
 }
 
-fn allocationCase(allocator: std.mem.Allocator, original: *const IR.Graph) !void {
+fn allocationCase(allocator: std.mem.Allocator, original: *const IR.Graph, budget: u32) !void {
     var copy = original.*;
     var moving: NoResize = .{ .backing = allocator };
     copy.allocator = moving.allocator();
     var session = try IR.edgeSession(&copy, .{});
     defer session.deinit();
     while (true) {
-        const p = session.advance(1);
+        const p = session.advance(budget);
         if (p.outcome) |outcome| switch (outcome) {
             .success => return,
             .failure => |err| return err,
@@ -324,7 +324,10 @@ fn allocationCase(allocator: std.mem.Allocator, original: *const IR.Graph) !void
 test "edge streaming frees pending growth on allocation failure and enforces cumulative limits" {
     var result = try dot.ir.parse(a, "strict digraph {{a b c d e f g h}->{i j k l m n o p};a->i}", .{});
     defer result.deinit();
-    try std.testing.checkAllAllocationFailures(a, allocationCase, .{result.ir().?});
+    try std.testing.checkAllAllocationFailures(a, allocationCase, .{ result.ir().?, 1 });
+    var sets = try dot.ir.parse(a, "digraph {x->{a b};x->{a b};{a b c d e f g h i j k l m n o p q r}->{x y};{a a b}->{x y}}", .{});
+    defer sets.deinit();
+    try std.testing.checkAllAllocationFailures(a, allocationCase, .{ sets.ir().?, 4096 });
     inline for (.{
         .{ dot.ir.Limits{ .max_work = 0 }, error.WorkLimit },
         .{ dot.ir.Limits{ .max_pairs = 0 }, error.PairLimit },
@@ -346,19 +349,19 @@ test "edge streaming frees pending growth on allocation failure and enforces cum
     }
 }
 
-fn compareCreditBoundaries(original: anytype) !void {
+fn compareCreditBoundaries(original: anytype, work_limits: u64) !void {
     var memory: NoResize = .{ .backing = a };
     var graph = original.*;
     if (@hasField(@TypeOf(graph), "_data")) graph._data.allocator = memory.allocator() else graph.allocator = memory.allocator();
     // Include stops inside the fused singleton path (9/10 credits), inside
     // ready-pair delivery (3), and after endpoint scratch has been populated.
-    for (0..107) |limit| {
-        const limits: dot.ir.Limits = if (limit < 90)
+    for (0..work_limits + 17) |limit| {
+        const limits: dot.ir.Limits = if (limit < work_limits)
             .{ .max_work = @as(u64, limit) }
-        else if (limit < 98)
-            .{ .max_pairs = @as(u64, limit - 90) }
-        else if (limit < 106)
-            .{ .max_edges = @intCast(limit - 98) }
+        else if (limit < work_limits + 8)
+            .{ .max_pairs = @as(u64, limit - work_limits) }
+        else if (limit < work_limits + 16)
+            .{ .max_edges = @intCast(limit - work_limits - 8) }
         else
             .{ .max_bytes = 0 };
         for ([_]u32{ 2, 3, 4, 8, 9, 10, 11, 64, 4096 }) |budget| {
@@ -390,6 +393,22 @@ fn compareCreditBoundaries(original: anytype) !void {
                 try equal(reference.core.connection, batched.core.connection);
                 try equal(reference.core.left_index, batched.core.left_index);
                 try equal(reference.core.right_index, batched.core.right_index);
+                try equal(reference.core.side, batched.core.side);
+                try equal(reference.core.body_index, batched.core.body_index);
+                try equal(reference.core.body_end, batched.core.body_end);
+                try equal(reference.core.mention_index, batched.core.mention_index);
+                try equal(reference.core.mention_end, batched.core.mention_end);
+                try equal(reference.core.generation, batched.core.generation);
+                for (reference.core.endpoints, batched.core.endpoints) |expected, actual| {
+                    try equal(expected.singleton, actual.singleton);
+                    try equal(expected.count, actual.count);
+                    try equal(expected.nodes.items, actual.nodes.items);
+                }
+                if (reference.core.phase == .endpoint_append) try equal(reference.core.pending_node, batched.core.pending_node);
+                // A marks allocation is initialized in bounded chunks. Do not
+                // read its unwritten suffix while clearing it for the first time.
+                const initialized = if (reference.core.phase == .marks_clear) reference.core.mark_index else reference.core.marks.len;
+                try equal(reference.core.marks[0..initialized], batched.core.marks[0..initialized]);
                 try equal(reference.peakBytes(), batched.peakBytes());
                 if (p.outcome != null) break;
             }
@@ -401,15 +420,75 @@ test "fused streaming preserves every credit limit and retained edge prefix" {
     const source = "digraph {a:p->b:q;a->c;{a b}->{c d};{}->a;a->{};d->e;e->e}";
     var result = try dot.ir.parse(a, source, .{});
     defer result.deinit();
-    try compareCreditBoundaries(result.ir().?);
+    try compareCreditBoundaries(result.ir().?, 90);
     var partial = try dot.ir.parsePartial(a, "digraph {a->b;bad->;a->{b c};d->e;f->", .{});
     defer partial.deinit();
-    try compareCreditBoundaries(partial.ir().?);
+    try compareCreditBoundaries(partial.ir().?, 90);
+}
+
+test "warm set streaming preserves exact state at grants and lifetime limits" {
+    for ([_][]const u8{
+        "digraph {a->{b c};a->{b c};{a b}->{c d};{a a b b}->{c d c};{a b c d e f g h i j k l m n o p q r}->x;{a b}->x}",
+        "digraph {{a b}->x;{a a}->x;{}->x;x->{};subgraph s{a}->x;subgraph s{b}->x;subgraph s{}->x;{a {b {c}}}->x}",
+        "strict graph {{a b}--{c d};{a b a}--{c d c};{a b}--{a b}}",
+    }) |source| {
+        var result = try dot.ir.parse(a, source, .{});
+        defer result.deinit();
+        try compareCreditBoundaries(result.ir().?, 256);
+        try check(result.ir().?);
+    }
+    var partial = try dot.ir.parsePartial(a, "digraph {a->{b c};broken->;a->{b b c};{a b}->{c d};f->", .{});
+    defer partial.deinit();
+    try compareCreditBoundaries(partial.ir().?, 128);
+}
+
+test "warm set streaming handles mark rollover and runtime policy dispatch" {
+    var result = try dot.ir.parse(a, "digraph {{a b}->{c d};{a a b}->{c d c};{a b}->{c d};x->y}", .{});
+    defer result.deinit();
+    var memory: NoResize = .{ .backing = a };
+    var graph = result.ir().?.*;
+    graph.allocator = memory.allocator();
+    inline for (.{ std.math.maxInt(u32) - 2, std.math.maxInt(u32) - 1, std.math.maxInt(u32) }) |generation| {
+        var reference = try IR.edgeSession(&graph, .{});
+        defer reference.deinit();
+        var batched = try IR.edgeSession(&graph, .{});
+        defer batched.deinit();
+        while (reference.advance(1).edge == null) {}
+        try expect(batched.advance(4096).edge != null);
+        reference.core.generation = generation;
+        batched.core.generation = generation;
+        while (true) {
+            const p = batched.advance(4096);
+            var last = reference.advance(0);
+            for (0..p.work_used) |_| last = reference.advance(1);
+            try equal(last.total_work, p.total_work);
+            try equal(last.outcome, p.outcome);
+            try equal(if (last.edge) |e| e.edge else null, if (p.edge) |e| e.edge else null);
+            try equal(reference.core.generation, batched.core.generation);
+            try equal(reference.core.marks, batched.core.marks);
+            try equal(reference.peakBytes(), batched.peakBytes());
+            if (p.outcome != null) break;
+        }
+    }
+    const Runtime = dot.ir.Lowering(.{ .runtime_policy = true });
+    var runtime = try Runtime.edgeSession(&graph, .{ .policy = .{ .execution = .{ .metering = true } } });
+    defer runtime.deinit();
+    var reference = try IR.edgeSession(&graph, .{});
+    defer reference.deinit();
+    while (true) {
+        const p = try runtime.advance(64);
+        var last = reference.advance(0);
+        for (0..p.work_used) |_| last = reference.advance(1);
+        try equal(last.total_work, p.total_work);
+        try equal(last.outcome, p.outcome);
+        try equal(if (last.edge) |e| e.edge else null, if (p.edge) |e| e.edge else null);
+        if (p.outcome != null) break;
+    }
 }
 
 test "streaming shortcuts never bypass a cancellation checkpoint" {
     const C = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
-    var result = try dot.ir.parse(a, "digraph {a->b;a->{c d};d->e}", .{});
+    var result = try dot.ir.parse(a, "digraph {a->b;a->{c d};a->{c d c};{a b}->{c d};d->e}", .{});
     defer result.deinit();
     var stop: Stop = .{};
     var full = try C.edgeSession(result.ir().?, .{ .cancellation = stop.token() });
