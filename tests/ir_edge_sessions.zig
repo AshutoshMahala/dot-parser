@@ -219,7 +219,7 @@ test "edge session execution policies are explicit and runtime overrides validat
     try expect(stop.calls > 1 and stop.max_gap <= 4);
     var enabled = try R.edgeSession(result.ir().?, .{ .policy = .{ .execution = .{ .metering = true } } });
     defer enabled.deinit();
-    while ((try enabled.advance(1)).outcome == null) {}
+    while ((try enabled.advance(64)).outcome == null) {}
     try std.testing.expectError(error.InvalidCancellationInterval, R.edgeSession(result.ir().?, .{ .policy = .{ .execution = .{ .cancellation_interval = 0 } } }));
     var plain = try dot.ir.Lowering(.{}).edgeSession(result.ir().?, .{});
     defer plain.deinit();
@@ -284,24 +284,26 @@ test "streaming keeps generic operators and native source views" {
     try expect(parsed.documentValid());
     var graph = try Native.lowerComplete(a, &parsed.document.?, .{ .interpretation = P.interpretation(&parsed.document.?, .{}) });
     defer graph.deinit();
-    var direct = try graph.edgeIterator(.{});
-    defer direct.deinit();
-    var session = try Native.edgeSession(&graph, .{});
-    defer session.deinit();
-    while (true) {
-        const p = session.advance(1);
-        if (p.edge) |edge| {
-            const expected = (try direct.next()).?;
-            try equal(expected.edge, edge.edge);
-            try equal(try expected.tailPort(), try edge.tailPort());
-            try equal(try expected.attribute("color"), try edge.attribute("color"));
+    for ([_]u32{ 1, 3, 9, 64 }) |budget| {
+        var direct = try graph.edgeIterator(.{});
+        defer direct.deinit();
+        var session = try Native.edgeSession(&graph, .{});
+        defer session.deinit();
+        while (true) {
+            const p = session.advance(budget);
+            if (p.edge) |edge| {
+                const expected = (try direct.next()).?;
+                try equal(expected.edge, edge.edge);
+                try equal(try expected.tailPort(), try edge.tailPort());
+                try equal(try expected.attribute("color"), try edge.attribute("color"));
+            }
+            if (p.outcome) |outcome| {
+                try equal(dot.ir.EdgeStreamingOutcome.success, outcome);
+                break;
+            }
         }
-        if (p.outcome) |outcome| {
-            try equal(dot.ir.EdgeStreamingOutcome.success, outcome);
-            break;
-        }
+        try expect(try direct.next() == null);
     }
-    try expect(try direct.next() == null);
 }
 
 fn allocationCase(allocator: std.mem.Allocator, original: *const IR.Graph) !void {
@@ -341,5 +343,88 @@ test "edge streaming frees pending growth on allocation failure and enforces cum
         }
         session.cancel();
         try equal(case[1], session.run().outcome.?.failure);
+    }
+}
+
+fn compareCreditBoundaries(original: anytype) !void {
+    var memory: NoResize = .{ .backing = a };
+    var graph = original.*;
+    if (@hasField(@TypeOf(graph), "_data")) graph._data.allocator = memory.allocator() else graph.allocator = memory.allocator();
+    // Include stops inside the fused singleton path (9/10 credits), inside
+    // ready-pair delivery (3), and after endpoint scratch has been populated.
+    for (0..107) |limit| {
+        const limits: dot.ir.Limits = if (limit < 90)
+            .{ .max_work = @as(u64, limit) }
+        else if (limit < 98)
+            .{ .max_pairs = @as(u64, limit - 90) }
+        else if (limit < 106)
+            .{ .max_edges = @intCast(limit - 98) }
+        else
+            .{ .max_bytes = 0 };
+        for ([_]u32{ 2, 3, 4, 8, 9, 10, 11, 64, 4096 }) |budget| {
+            var reference = try IR.edgeSession(&graph, .{ .limits = limits });
+            defer reference.deinit();
+            var batched = try IR.edgeSession(&graph, .{ .limits = limits });
+            defer batched.deinit();
+            while (true) {
+                const p = batched.advance(budget);
+                var last = reference.advance(0);
+                for (0..p.work_used) |i| {
+                    last = reference.advance(1);
+                    try equal(@as(u32, 1), last.work_used);
+                    if (i + 1 != p.work_used) try expect(last.edge == null and last.outcome == null);
+                }
+                // A multi-credit call can observe the lifetime limit after
+                // its final step, where the one-credit call paused exactly.
+                if (p.outcome != null and last.outcome == null) {
+                    const stop = reference.advance(1);
+                    try equal(@as(u32, 0), stop.work_used);
+                    last = stop;
+                }
+                try equal(last.total_work, p.total_work);
+                try equal(last.pairs_visited, p.pairs_visited);
+                try equal(last.edges_emitted, p.edges_emitted);
+                try equal(last.outcome, p.outcome);
+                try equal(if (last.edge) |e| e.edge else null, if (p.edge) |e| e.edge else null);
+                try equal(reference.core.phase, batched.core.phase);
+                try equal(reference.core.connection, batched.core.connection);
+                try equal(reference.core.left_index, batched.core.left_index);
+                try equal(reference.core.right_index, batched.core.right_index);
+                try equal(reference.peakBytes(), batched.peakBytes());
+                if (p.outcome != null) break;
+            }
+        }
+    }
+}
+
+test "fused streaming preserves every credit limit and retained edge prefix" {
+    const source = "digraph {a:p->b:q;a->c;{a b}->{c d};{}->a;a->{};d->e;e->e}";
+    var result = try dot.ir.parse(a, source, .{});
+    defer result.deinit();
+    try compareCreditBoundaries(result.ir().?);
+    var partial = try dot.ir.parsePartial(a, "digraph {a->b;bad->;a->{b c};d->e;f->", .{});
+    defer partial.deinit();
+    try compareCreditBoundaries(partial.ir().?);
+}
+
+test "streaming shortcuts never bypass a cancellation checkpoint" {
+    const C = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
+    var result = try dot.ir.parse(a, "digraph {a->b;a->{c d};d->e}", .{});
+    defer result.deinit();
+    var stop: Stop = .{};
+    var full = try C.edgeSession(result.ir().?, .{ .cancellation = stop.token() });
+    while (full.advance(4096).outcome == null) {}
+    full.deinit();
+    const polls = stop.calls;
+    for (2..polls + 1) |at| {
+        stop = .{ .at = at };
+        var current = try C.edgeSession(result.ir().?, .{ .cancellation = stop.token() });
+        defer current.deinit();
+        stop.work = &current.core.total_work;
+        while (current.advance(4096).outcome == null) {}
+        try equal(error.Cancelled, current.core.outcome.?.failure);
+        try equal(@as(u64, at), stop.calls);
+        try equal(@as(u64, at - 2), current.core.total_work);
+        try expect(stop.max_gap <= 1);
     }
 }

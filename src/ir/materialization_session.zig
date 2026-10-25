@@ -219,10 +219,16 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                 _ = self.taken.polling.due(self.taken.interval); // Entry poll covers the first credit.
             }
             const before = self.total_work;
+            if (streaming and budget >= 3) {
+                const no_hook = if (has_cancellation) self.cancellation == null else true;
+                if (no_hook and self.streamReady(budget)) return self.progress(@intCast(self.total_work - before));
+            }
             // Select once per resume, not at every tiny transition. Owning
             // sessions poll before each credit; streaming uses its interval.
+            // Inline just the one-credit streaming dispatch. Inlining the
+            // larger multi-credit drivers duplicates cold phases and hurts Small.
             const result = if (budget == 1)
-                self.drive(false, true, 1)
+                @call(if (streaming) .always_inline else .auto, drive, .{ self, false, true, 1 })
             else if (!has_cancellation)
                 self.drive(false, false, budget)
             else if (self.cancellation == null)
@@ -233,6 +239,58 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                 self.outcome = .{ .failure = self.memory.failure(err) };
             };
             return self.progress(@intCast(self.total_work - before));
+        }
+        /// Fuse only a complete, allocation-free, non-strict edge path. Every
+        /// original transition is still charged. No hook may observe the
+        /// intermediate states, and a grant/limit ending inside the path falls
+        /// back to drive(), so budget-one and failure prefixes stay identical.
+        inline fn streamReady(self: *Self, budget: u32) bool {
+            if (self.graph.strict) return false;
+            var connection = self.connection;
+            var cost: u32 = 3; // pair, prepare, append_edge
+            const prepare = switch (self.phase) {
+                .connection => blk: {
+                    cost = 9; // connection + two endpoint/done pairs + product
+                    break :blk true;
+                },
+                .pair => blk: {
+                    if (self.left_index != self.endpoints[0].len()) break :blk false;
+                    connection += 1;
+                    cost = 10; // also retire the preceding exhausted pair
+                    break :blk true;
+                },
+                else => return false,
+            };
+            if (budget < cost or self.limits.max_work - self.total_work < cost or
+                self.visited >= self.limits.max_pairs or self.taken.emitted >= self.limits.max_edges) return false;
+            if (prepare) {
+                if (connection >= self.graph.connections.len) return false;
+                const source = self.graph.connections[connection];
+                const left = @backingInt(source.left.members);
+                const right = @backingInt(source.right.members);
+                if (left & right & t.node_bit == 0) return false;
+                self.connection = connection;
+                inline for (.{ left, right }, 0..) |id, i| {
+                    self.endpoints[i].singleton = id & ~t.node_bit;
+                    self.endpoints[i].count = 1;
+                    self.endpoints[i].nodes.items.len = 0;
+                }
+                self.side = 1;
+                self.left_index = 0;
+                self.right_index = 0;
+            }
+            self.visited += 1;
+            self.candidate = .{ .from = self.endpoints[0].at(self.left_index), .to = self.endpoints[1].at(self.right_index), .operator = self.graph.connections[connection].effective_operator, .first_connection = @fromBackingInt(connection) };
+            self.right_index += 1;
+            if (self.right_index == self.endpoints[1].len()) {
+                self.right_index = 0;
+                self.left_index += 1;
+            }
+            self.taken.emitted += 1;
+            self.taken.ready_edge = self.candidate;
+            self.phase = .pair;
+            self.total_work += cost;
+            return true;
         }
         fn drive(self: *Self, comptime cancellable: bool, comptime single: bool, requested: u32) r.Error!void {
             const budget = if (single) 1 else requested;

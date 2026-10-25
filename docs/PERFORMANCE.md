@@ -2353,6 +2353,84 @@ limits, zero/one/mixed grants, runtime policies and cancellation intervals.
 Credit partition tests disable allocator resizing: actual growth copies are
 charged, so allocator behavior can otherwise change total credits.
 
+### Edge-streaming overhead follow-up (2026-10-25)
+
+Compared with `2a72c90`, on the same Apple M4 Pro and Zig 0.17.0. The previous
+cost was largely per-edge bookkeeping: a plain non-strict edge took nine
+transitions initially and ten thereafter, each checking the grant and updating
+intermediate state. Budget-one calls also crossed an avoidable driver boundary.
+This was not extra parsing, attribute resolution or retained output.
+
+The streaming driver now fuses two allocation-free cases when **no cancellation
+hook is installed**: singleton connection preparation/delivery (9 or 10 credits)
+and delivery from already-prepared endpoints (3 credits). It charges exactly
+those original credits, and only enters when both the grant and lifetime limits
+cover the whole path. A stop inside that path uses the original stepped machine.
+Strict deduplication, scratch growth and active hooks also keep that machine.
+Only the one-credit dispatch is forced inline: forcing all drivers inline made
+Small slower and enlarged code, so that experiment was discarded.
+
+Five alternating process runs per revision/mode, with the same current harness
+on both revisions. Each fixture now warms for at least 50 ms and four complete
+rotated rounds, then records eleven rounds; table entries are medians of process
+medians. No builds/tests overlapped the final measurements. Source construction,
+parsing/lowering, attribute queries and explicit destruction remain outside
+timing. `bench-ir-edge-sessions` produces the per-route CSV in one command.
+
+Budget 4096, no hook, median ms before → after:
+
+| Fixture | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| 2,000 edges | 0.0333 → 0.0123 | 0.0329 → 0.0126 | 0.0280 → 0.0124 |
+| 1,000 small sets, 3,000 edges | 0.0331 → 0.0303 | 0.0345 → 0.0314 | 0.0401 → 0.0317 |
+| 400 overlapping strict products | 0.0269 → 0.0267 | 0.0309 → 0.0309 | 0.0867 → 0.0806 |
+| 200 reopened scopes, 20,100 edges | 0.1755 → 0.1495 | 0.1928 → 0.1579 | 0.2508 → 0.1548 |
+| 2,000 port-bearing edges | 0.0344 → 0.0122 | 0.0314 → 0.0126 | 0.0280 → 0.0123 |
+| First 1,000 edges of a 5,000 × 5,000 product | 0.0412 → 0.0410 | 0.0502 → 0.0532 | 0.0350 → 0.0325 |
+
+Simple edges improve 56–65%; reopened scopes improve 15–38%. The largest Fast
+session/direct ratio in this no-hook, budget-4096 matrix falls from about 2.5×
+to 1.9× (small sets). This does **not** make every resumable operation as fast as
+direct iteration. With only one credit available, dispatch/save/resume remains
+real work; active interval-one hooks still poll at every original checkpoint.
+The two-edge nested fixture remains too short for meaningful timing ratios.
+
+Budget one, no hook, median ms before → after:
+
+| Fixture | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| Edges | 0.0682 → 0.0655 | 0.0753 → 0.0653 | 0.0923 → 0.0625 |
+| Small sets | 0.0929 → 0.0862 | 0.1019 → 0.0875 | 0.1150 → 0.0815 |
+| Strict overlap | 0.1086 → 0.0938 | 0.1170 → 0.0978 | 0.1759 → 0.1525 |
+| Reopened | 0.4923 → 0.4777 | 0.5197 → 0.4669 | 0.6640 → 0.4782 |
+| Ports | 0.0682 → 0.0656 | 0.0719 → 0.0652 | 0.0903 → 0.0636 |
+| Product prefix | 0.0902 → 0.0905 | 0.1101 → 0.1004 | 0.1175 → 0.0892 |
+
+Fast `run()` on plain edges improves from 0.0359 to 0.0170 ms, but reopened
+scopes are approximately flat (0.1892 → 0.1867 ms). Cancellation timings are
+mostly flat. Remaining positive medians above 5% have overlapping process
+ranges: Fast product-prefix `run()` and cancellation, Safe product-prefix 4096,
+and Small small-set/product-prefix cancellation. For example, the Safe product
+case above spans 0.0491–0.0525 ms before and 0.0478–0.0537 ms after. These are
+inconclusive small differences, not a claim that every measured route improved.
+
+**Default and memory gates:** the direct-only `bench/ir.zig` and existing owning
+`bench/ir_sessions.zig` executable `__text` sections remain byte-identical to
+the baseline in Fast, Safe and Small. Their code-and-constants sizes are also
+unchanged. Streaming credits, poll counts, edge counts and requested heap peaks
+match before/after in every measured case/route, and the session remains
+488 bytes in Fast/Small or 512 in Safe. The consumed streaming harness adds
+2,088 / 1,468 / 1,592 bytes of `__text` in Fast/Safe/Small (about 0.5–1.1%);
+this is opt-in harness code, not a per-graph allocation or a universal library
+binary-size figure.
+
+Regression tests compare batched execution with one-credit execution at every
+tested work-limit boundary, plus pair/edge/memory stops, checking returned
+prefixes, phases, counters and peak memory for complete and partial IR. Native
+mixed-kind views cover grants 1/3/9/64; runtime-policy batching and every
+interval-one cancellation checkpoint are covered too. The full check passes
+**809 tests**; Fast and Safe each pass **164 IR tests**.
+
 ## Running the benchmarks
 
 ### One-command string comparison

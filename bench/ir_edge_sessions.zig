@@ -72,55 +72,65 @@ pub fn main(init: std.process.Init) !void {
         var peaks: [routes.len]usize = undefined;
         var counts: [routes.len]u32 = undefined;
         var expected: ?u64 = null;
-        for (0..15) |round| for (0..routes.len) |offset| {
-            const index = (round + offset) % routes.len;
-            const route = routes[index];
-            var counter: Polls = .{};
-            var checksum: u64 = 0;
-            var count: u32 = 0;
-            const start = std.Io.Clock.Timestamp.now(init.io, .awake);
-            var direct: ?IR.Graph.EdgeIterator = null;
-            var session: ?IR.EdgeSession = null;
-            if (route.budget) |budget| {
-                session = try IR.edgeSession(graph, .{ .cancellation = if (route.hook) dot.ir.Cancellation{ .context = &counter, .is_requested = Polls.requested } else null });
-                while (true) {
-                    const p = if (budget == 0) session.?.run() else session.?.advance(budget);
-                    credits[index] = p.total_work;
-                    if (p.edge) |view| {
+        // Tiny fixtures otherwise finish before this machine settles into its
+        // sustained clock state. Keep at least four full, rotated warmups and
+        // 50 ms of untimed warmup per fixture, then take eleven timed rounds.
+        const warmup = std.Io.Clock.Timestamp.now(init.io, .awake);
+        var round: usize = 0;
+        var sample: usize = 0;
+        while (sample < 11) : (round += 1) {
+            const measured = round >= 4 and warmup.durationTo(std.Io.Clock.Timestamp.now(init.io, .awake)).raw.nanoseconds >= 50_000_000;
+            for (0..routes.len) |offset| {
+                const index = (round + offset) % routes.len;
+                const route = routes[index];
+                var counter: Polls = .{};
+                var checksum: u64 = 0;
+                var count: u32 = 0;
+                const start = std.Io.Clock.Timestamp.now(init.io, .awake);
+                var direct: ?IR.Graph.EdgeIterator = null;
+                var session: ?IR.EdgeSession = null;
+                if (route.budget) |budget| {
+                    session = try IR.edgeSession(graph, .{ .cancellation = if (route.hook) dot.ir.Cancellation{ .context = &counter, .is_requested = Polls.requested } else null });
+                    while (true) {
+                        const p = if (budget == 0) session.?.run() else session.?.advance(budget);
+                        credits[index] = p.total_work;
+                        if (p.edge) |view| {
+                            checksum +%= @as(u64, @backingInt(view.edge.from)) + @backingInt(view.edge.to) + @backingInt(view.edge.first_connection);
+                            count += 1;
+                            if (case == .product_prefix and count == 1000) break;
+                        }
+                        if (p.outcome) |outcome| switch (outcome) {
+                            .success => break,
+                            .failure => |err| return err,
+                        };
+                    }
+                } else {
+                    direct = try graph.edgeIterator(.{});
+                    while (try direct.?.next()) |view| {
                         checksum +%= @as(u64, @backingInt(view.edge.from)) + @backingInt(view.edge.to) + @backingInt(view.edge.first_connection);
                         count += 1;
                         if (case == .product_prefix and count == 1000) break;
                     }
-                    if (p.outcome) |outcome| switch (outcome) {
-                        .success => break,
-                        .failure => |err| return err,
-                    };
                 }
-            } else {
-                direct = try graph.edgeIterator(.{});
-                while (try direct.?.next()) |view| {
-                    checksum +%= @as(u64, @backingInt(view.edge.from)) + @backingInt(view.edge.to) + @backingInt(view.edge.first_connection);
-                    count += 1;
-                    if (case == .product_prefix and count == 1000) break;
+                const end = std.Io.Clock.Timestamp.now(init.io, .awake);
+                if (session) |*s| {
+                    peaks[index] = s.peakBytes();
+                    s.deinit();
                 }
+                if (direct) |*d| {
+                    peaks[index] = d.peakBytes();
+                    d.deinit();
+                }
+                if (expected) |n| {
+                    if (n != checksum) return error.ResultMismatch;
+                } else expected = checksum;
+                counts[index] = count;
+                polls[index] = counter.count;
+                if (measured) samples[index][sample] = @intCast(start.durationTo(end).raw.nanoseconds);
+                std.mem.doNotOptimizeAway(checksum);
             }
-            const end = std.Io.Clock.Timestamp.now(init.io, .awake);
-            if (session) |*s| {
-                peaks[index] = s.peakBytes();
-                s.deinit();
-            }
-            if (direct) |*d| {
-                peaks[index] = d.peakBytes();
-                d.deinit();
-            }
-            if (expected) |n| {
-                if (n != checksum) return error.ResultMismatch;
-            } else expected = checksum;
-            counts[index] = count;
-            polls[index] = counter.count;
-            if (round >= 4) samples[index][round - 4] = @intCast(start.durationTo(end).raw.nanoseconds);
-            std.mem.doNotOptimizeAway(checksum);
-        };
+            if (measured) sample += 1;
+        }
         for (routes, 0..) |route, i| {
             std.mem.sort(u64, &samples[i], {}, std.sort.asc(u64));
             try out.print("{t},{s},{d:.4},{d},{d},{d},{d}\n", .{ case, route.name, @as(f64, @floatFromInt(samples[i][5])) / 1e6, credits[i], polls[i], counts[i], peaks[i] });

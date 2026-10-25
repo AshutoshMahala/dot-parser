@@ -192,6 +192,12 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- Reduce resumable edge-streaming overhead with allocation-free non-strict
+  transition fusion and inlined one-credit dispatch. Credit totals, pause/stop
+  boundaries, cancellation checkpoints, partial views and scratch sizes are
+  unchanged; active cancellation hooks retain the original stepped path.
+  `bench-ir-edge-sessions` now warms each fixture for at least 50 ms before
+  measuring, in addition to its four rotated warmup rounds.
 - Reduce opt-in IR materialization-session dispatch/accounting overhead without
   changing credits, cancellation checkpoints, storage or the direct driver.
   Share exhausted-grant exits and cache endpoint cardinality in existing scratch
