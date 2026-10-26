@@ -760,8 +760,9 @@ attribute folding, including endpoint ports, while preserving the source IR.
 
 ## Ownership, limits and costs
 
-The IR owns its tables through the supplied allocator and borrows only the
-immutable source bytes. Document pools may be released after lowering. Keep
+Allocator-backed IR owns its tables through the supplied allocator and borrows
+only the immutable source bytes. Fixed-storage IR instead borrows the caller's
+retained region as well (see below). Document pools may be released after lowering. Keep
 source bytes alive until the IR is released. Materialized edges own their
 array but refer to IR-local node/connection IDs; retain the IR to interpret
 those IDs and read names or provenance. No source text is copied.
@@ -827,6 +828,183 @@ Finite defaults are defined by `dot.ir.Limits`:
 | Candidate pair visits during expansion | 4,000,000 |
 | Accounted work per operation | 100,000,000 |
 | Peak live requested allocation bytes per operation | 256 MiB |
+
+## Fixed-storage Document lowering
+
+Use the `In` calls when IR construction must use caller-provided pools without
+allocating or abandoning growth copies. They produce the same `Graph` and
+`PartialGraph`, with the same symbolic connections, views and queries. Ordinary
+allocator-backed calls are unchanged; **bounds are never computed or reserved
+automatically**.
+
+| Allocator-backed | Caller-owned retained storage and scratch |
+| --- | --- |
+| `IR.lowerComplete(allocator, document, options)` | `IR.lowerCompleteIn(document, memory, options)` |
+| `IR.lowerPartial(allocator, document, options)` | `IR.lowerPartialIn(document, memory, options)` |
+| `IR.loweringSession(allocator, document, options)` | `IR.loweringSessionIn(document, memory, options)` |
+| `IR.partialLoweringSession(allocator, document, options)` | `IR.partialLoweringSessionIn(document, memory, options)` |
+
+For example, after parsing an attribute-free Document:
+
+```zig
+const IR = dot.ir.Lowering(.{});
+// An explicit application envelope, not a prediction about the input.
+const Retained = IR.FixedGraphStorage(.{
+    .nodes = 64, .scopes = 8, .occurrences = 16,
+    .mentions = 128, .connections = 64, .declarations = 128,
+});
+const Scratch = IR.FixedLoweringScratch(Retained, .{
+    .nesting = 16, .edge_nesting = 8, .pending_endpoints = 64,
+});
+var retained: Retained = .{};
+var scratch: Scratch = .{};
+const lowered = IR.lowerCompleteIn(document, .{
+    .graph = retained.storage(), .scratch = scratch.storage(),
+}, .{ .interpretation = Dot.interpretation(document, .{}) });
+if (lowered.outcome == .failure) {
+    if (lowered.shortfall) |missing|
+        std.debug.print("{t}: capacity {d}, needs at least {d}\n", .{
+            missing.resource, missing.limit, missing.required_at_least,
+        });
+    return lowered.outcome.failure;
+}
+var nodes = lowered.graph.?.nodeIterator();
+while (nodes.next()) |node| std.debug.print("node {f}\n", .{node.name()});
+```
+
+See [the runnable example](../examples/fixed_graph.zig). Both helper types have a
+`byte_size` and contain inline, initially undefined backing arrays. They perform
+no allocation or clearing; place large envelopes in suitable caller-managed
+storage rather than on a small stack. Zero capacity means zero, not “automatic.”
+
+### Capacity and sizing choices
+
+`dot.ir.GraphCapacities` contains these `u32` counts, all defaulting to zero:
+
+| Fields | What consumes the capacity |
+| --- | --- |
+| `nodes`, `scopes` | Unique logical nodes and scopes, including the root scope. |
+| `occurrences`, `mentions` | Written scope bodies (including root), and node membership occurrences. |
+| `connections` | Symbolic connections, **not** expanded edge pairs. |
+| `declarations`, `attributes` | Retained declaration contributions and written attribute/assignment records. |
+| `attribute_keys`, `attribute_states` | Interned keys and persistent map cells, including update history. |
+| `coverage_gaps` | Partial-source coverage records; complete lowering needs none. |
+
+`dot.ir.LoweringScratchCapacities` contains `nesting` (live scope **and edge**
+walk frames, including root), `edge_nesting` (live edge continuations), and
+`pending_endpoints` (buffered endpoints, never their Cartesian product).
+Hash slots, metadata, cursors and posting indexes are derived from these counts;
+callers do not need to know internal record layouts or table load factors.
+
+Choose one of three sizing strategies:
+
+- Supply an application envelope and handle shortfalls.
+- Use `graph.capacities()` for observed retained counts. This excludes growth
+  slack and is only a hint for changed input. Fixed direct results report
+  `scratch_peak`; fixed sessions expose `scratchPeak()`. An allocator-backed
+  first run has no scratch peak: use explicit scratch or bounds-derived scratch.
+- Explicitly request conservative bounds, then bind suitably aligned byte regions:
+
+```zig
+const options = .{ .interpretation = Dot.interpretation(document, .{}) };
+const bounds = try IR.capacityBounds(document.capacities(), options);
+// For partial input: IR.partialCapacityBounds(...).
+const layout = try IR.storageLayout(bounds.graph, bounds.scratch);
+// Caller supplies at least layout.graph_bytes / layout.scratch_bytes,
+// each aligned to layout.alignment. This does not allocate those buffers.
+const memory = try layout.bind(graph_buffer, scratch_buffer);
+const lowered = IR.lowerCompleteIn(document, memory, options);
+```
+
+The same helpers accept compile-time Document capacity envelopes. They do checked
+count arithmetic, not a source walk or second parse. Omitted limits use the IR
+profile's limits; passing the same options to sizing and lowering keeps them
+aligned. Other recognized options are ignored by sizing, without invoking hooks.
+Bounds guarantee no pool shortfall for valid parser-produced Documents fitting
+the envelope before another enforced limit/stop; they do not guarantee semantic
+acceptance or override memory/work limits.
+
+Bounds can substantially over-reserve, particularly persistent attribute cells:
+the bound is `min((h(A) + 5) * A * (S + 2), max_attribute_states)`, where
+`A = attributes + assignments`, `S = subgraphs`, and `h` is the integer AVL
+height bound. Pool counts cannot distinguish updates to one key from many keys,
+or edge-only attributes from attributes needing persistent history. Bounds-based
+scratch can be used without reserving the retained bounds. **Nothing reserves
+these bounds on the default path.**
+
+### Failures and ownership
+
+`FixedLoweringResult` / `FixedPartialLoweringResult` contain `graph`, `outcome`,
+`shortfall`, and `scratch_peak`. A graph exists exactly on `.success`.
+`PoolExhausted` supplies the first exhausted `resource`, its `limit`, and
+`required_at_least`; this describes the encountered prefix, not all remaining
+requirements. Other failures use `outcome.failure` without a shortfall.
+Runtime-policy profiles add an outer error union for invalid policy configuration
+only; fixed-policy direct calls need no `try`.
+
+Shortfalls never allocate a fallback, discard records, or publish half-built IR.
+End the operation and restart in adequate storage. A successful partial-source
+IR is different from a failed lowering operation. Semantic limits are checked
+before the corresponding pool write, including individual attribute-map cells.
+
+`storageLayout` and `bind` check arithmetic, lengths, alignment and overlap in all
+build modes. Short byte regions return `BufferTooSmall`; invalid or overlapping
+regions return `InvalidStorage`. Lowering also rejects overlap with source and
+Document storage before writes. Excess buffer tails are unused. Layouts are
+build-specific, not a serialized representation.
+
+Keep source and retained bytes alive and unchanged for the graph and borrowing
+views. Document pools and scratch are needed only until direct lowering returns,
+or its session is deinitialized. The returned graph retains no Document/scratch
+pointers. Temporary descriptors need not survive. Do not rebuild into retained
+storage while an old graph or its views still borrow it.
+
+The fixed direct result owns no memory and has no `deinit`. Calling the returned
+graph's `deinit()` is safe but unnecessary: it invalidates the handle without
+freeing caller storage, including partial coverage. Later owning query/output
+results still require their normal cleanup.
+
+For fixed construction, `max_bytes` checks the **entire bound retained + scratch
+reservation**, including padding, before writes. Construction `peakBytes()`
+reports this reservation; `retainedBytes()` reports the bound retained region.
+Source, Document, unbound buffer tails and inline operation state are excluded.
+Fixed capacities can waste memory too; they eliminate growth copies, not the
+cost of oversized pools. Use `@sizeOf(IR.FixedLoweringSession)` for inline state;
+the benchmark below reports it separately for the selected build.
+
+### Sessions and subsequent queries
+
+`IR.FixedLoweringSession` / `IR.FixedPartialLoweringSession` use the same execution
+policy, `advance`, `run`, `cancel`, `takeResult` and `deinit` contract as the
+[allocator-backed lowering sessions](#resumable-document-lowering). There is no
+new metering switch or minimum grant. Zero grants do no work; stops latch; no
+result transfers before success. `shortfall()` and `scratchPeak()` expose fixed
+storage details. Initialization checks a fixed number of descriptors without
+clearing pools or scanning input. Hash-table initialization and all semantic work
+remain bounded, metered and cancellable; larger envelopes may require more work
+to clear their tables. Direct fixed calls run to completion with the direct
+driver's accounting; use sessions when work must pause.
+
+Fixed construction does not provide fixed scratch/output for later queries.
+The optional lowering option `.query_allocator = allocator` supplies storage
+**only for subsequent operations**; construction never calls it. Its context
+must outlive those operations/results. It defaults to null, with no heap fallback.
+
+| Operation without `query_allocator` | Result |
+| --- | --- |
+| Names/values, node iteration, indexed attributes, allocation-free symbolic queries | Available. |
+| Non-strict singleton edge streaming | Available without scratch. |
+| Streaming reaching non-empty set endpoints, or strict candidate pairs | `StorageRequired` when scratch is needed, possibly after earlier entries. |
+| Strict compact-edge attribute enumeration | `StorageRequired` when winner scratch is needed; single-key lookup remains allocation-free. |
+| Materialization needing output arrays | `StorageRequired`, including topology-only output. |
+| `toString(allocator)` and other explicitly allocated helpers | Use their explicitly supplied allocator. |
+
+`StorageRequired` is a terminal operation failure, never an empty answer or
+successful exhaustion. With an allocator supplied, normal allocation errors and
+limits apply. Fixed query/output storage and event lowering remain later work.
+Run `zig build bench-ir-fixed -Doptimize=fast` (also `safe`/`small`) to compare
+growable lowering, observed capacities, explicit bounds and fixed sessions;
+sizing and caller-buffer allocation are outside its lowering timings.
 
 ## Resumable Document lowering
 
@@ -915,8 +1093,8 @@ the operation; pausing does not replenish them.
 
 Allocator callbacks, cancellation predicates and destruction are external work,
 not latency-bounded operations. This is cooperative work metering, not a deadline.
-No thread or shared parse-plus-IR budget is introduced. Fixed-storage lowering,
-event lowering remain separate work. Bounded edge streaming and attribute
+No thread or shared parse-plus-IR budget is introduced. Event lowering remains
+separate work. Fixed-storage lowering is available above; bounded edge streaming and attribute
 queries are available below.
 Measure this path with `zig build bench-ir-lowering-sessions -Doptimize=fast`.
 
@@ -1185,7 +1363,7 @@ not total query complexity. Ordinary direct drivers and IR layouts are unchanged
 Measure with `zig build bench-ir-query-sessions -Doptimize=fast` (also `safe`
 and `small`). Name lookup before constructing a handle-based query is separate
 work; this increment does not make `findNode` resumable. Event lowering and
-fixed-storage construction remain separate increments.
+fixed query/output storage remain separate increments.
 
 ## Resumable attribute access
 
@@ -1380,6 +1558,7 @@ zig build test-ir
 zig build test-ir -Doptimize=safe
 zig build bench-ir -Doptimize=fast
 zig build bench-ir-edge-sessions -Doptimize=fast
+zig build bench-ir-fixed -Doptimize=fast
 ```
 
 The benchmark reports lowering separately from parsing, materialization and
@@ -1400,8 +1579,10 @@ reports time, actual credits, retained/requested peak bytes and session state
 size. Document lowering, materialization and edge streaming now have resumable
 sessions. Edge-existence and membership queries now also have policy-bound,
 allocation-free sessions. Attribute lookup/enumeration sessions now cover compact
-and folded complete/partial views. Label-port existence/binding, event-based
-lowering and fixed-storage IR construction remain later work.
+and folded complete/partial views. Fixed-storage Document construction supports
+the same direct/session algorithms with explicit capacity bounds and shortfalls.
+Label-port existence/binding, event-based lowering and fixed query/output storage
+remain later work.
 
 The final section measures value kind/operand access, joined output, bounded
 writing and exact-allocation `toString`, plus a benchmark-only kind cache.

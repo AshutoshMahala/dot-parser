@@ -74,7 +74,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self._coverage.deinit(self._data.allocator);
+            if (self._data.borrowed_bytes == 0) self._coverage.deinit(self._data.allocator);
             self._data.deinit();
             self.* = undefined;
         }
@@ -85,7 +85,13 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             return if (self._data.kind) |value| .{ .known = value } else .{ .unknown = .{ .uncertainty = .{ .reason = .unresolved_kind, .span = null } } };
         }
         pub fn retainedBytes(self: *const Self) usize {
+            if (self._data.borrowed_bytes != 0) return self._data.borrowed_bytes;
             return self._data.retainedBytes() + self._coverage.retainedBytes();
+        }
+        pub fn capacities(self: *const Self) @import("fixed_storage.zig").GraphCapacities {
+            var result = self._data.capacities();
+            result.coverage_gaps = @intCast(self._coverage.entries.items.len);
+            return result;
         }
         pub fn peakBytes(self: *const Self) usize {
             return self._data.peak_bytes;

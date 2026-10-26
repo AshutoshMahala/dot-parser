@@ -2,6 +2,42 @@
 //! allocator: no libc, OS, global allocator, recursion, or renderer required.
 const std = @import("std");
 const dot = @import("dot_parser");
+// Parse storage remains independently supplied. Neither fixed IR route below
+// calls an allocator or expands edges during construction.
+export fn fixed_ir(source: [*]const u8, length: u32, parse_memory: [*]u8, parse_capacity: u32, resumable: bool) u32 {
+    const P = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true } } });
+    const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+    var parse_storage = std.heap.FixedBufferAllocator.init(parse_memory[0..parse_capacity]);
+    var parsed = P.parseAndValidate(parse_storage.allocator(), source[0..length], dot.diagnostic.discard, .{});
+    defer parsed.deinit(parse_storage.allocator());
+    const doc = if (parsed.document) |*value| value else return 0;
+    const Retained = IR.FixedGraphStorage(.{
+        .nodes = 32,
+        .scopes = 8,
+        .occurrences = 16,
+        .mentions = 128,
+        .connections = 64,
+        .declarations = 64,
+        .attributes = 128,
+        .attribute_keys = 32,
+        .attribute_states = 1024,
+        .coverage_gaps = 16,
+    });
+    const Scratch = IR.FixedLoweringScratch(Retained, .{ .nesting = 32, .edge_nesting = 8, .pending_endpoints = 64 });
+    var retained: Retained = .{};
+    var scratch: Scratch = .{};
+    const memory: IR.LoweringMemory = .{ .graph = retained.storage(), .scratch = scratch.storage() };
+    const options = .{ .interpretation = P.interpretation(doc, .{}) };
+    if (resumable) {
+        var operation = IR.partialLoweringSessionIn(doc, memory, options) catch return 0;
+        defer operation.deinit();
+        while (operation.advance(7).outcome == null) {}
+        const graph = operation.takeResult() catch return 0;
+        return graph.nodeCount();
+    }
+    const lowered = IR.lowerPartialIn(doc, memory, options);
+    return if (lowered.graph) |graph| graph.nodeCount() else 0;
+}
 export fn resumable_attributes(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
     const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
     var fixed = std.heap.FixedBufferAllocator.init(memory[0..capacity]);

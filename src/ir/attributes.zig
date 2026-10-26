@@ -6,6 +6,7 @@ const syntax = @import("../dot/syntax.zig");
 const encoding = @import("parser_support").encoding;
 const names = @import("names.zig");
 const r = @import("resources.zig");
+const mem = @import("lowering_storage.zig");
 pub const none = names.empty;
 pub const Kind = enum { graph, node, edge };
 /// Port sides name the written statement, not the stored edge's orientation.
@@ -59,25 +60,25 @@ pub const Store = struct {
             self.table.slots.len * 4 + self.meta.len * @sizeOf(Meta) +
             self.scopes.len * @sizeOf(Scope) + self.connection_defaults.len * 4;
     }
-    pub fn init(self: *Store, a: std.mem.Allocator, attributes: usize, scopes: usize, connections: usize, work: *r.Work) r.Error!void {
+    pub fn init(self: *Store, a: anytype, attributes: usize, scopes: usize, connections: usize, work: *r.Work) r.Error!void {
         if (attributes == 0) return;
-        self.meta = try a.alloc(Meta, attributes);
+        self.meta = try mem.allocate(Meta, a, attributes, "meta", false);
         for (self.meta) |*meta| {
             try work.spend(1);
             meta.* = .{};
         }
-        self.scopes = try a.alloc(Scope, scopes);
+        self.scopes = try mem.allocate(Scope, a, scopes, "attribute_scopes", false);
         for (self.scopes) |*scope| {
             try work.spend(1);
             scope.* = .{};
         }
-        self.connection_defaults = try a.alloc(u32, connections);
+        self.connection_defaults = try mem.allocate(u32, a, connections, "connection_defaults", false);
         // Written connections initialize their own default snapshot.
     }
     pub fn hashFor(self: *const Store, id: u32) u64 {
         return self.keys.items[id].hash;
     }
-    pub fn bind(self: *Store, comptime actual: encoding.Actual, a: std.mem.Allocator, source: []const u8, attributes: []const syntax.Attribute, range: syntax.AttributeRange, kind: Kind, origin: Origin, work: *r.Work) r.Error!void {
+    pub fn bind(self: *Store, comptime actual: encoding.Actual, a: anytype, source: []const u8, attributes: []const syntax.Attribute, range: syntax.AttributeRange, kind: Kind, origin: Origin, work: *r.Work) r.Error!void {
         if (range.start > attributes.len or range.len > attributes.len - range.start) return error.InvalidDocument;
         for (range.start..range.start + range.len) |index| {
             try work.spend(1);
@@ -104,8 +105,8 @@ pub const Store = struct {
             }
             const id = found orelse blk: {
                 const id = try r.index(self.keys.items.len);
-                try self.table.prepare(a, work, self);
-                try self.keys.append(a, .{ .name = name, .hash = hash, .kind = kind, .first_attribute = @intCast(index) });
+                try mem.prepareTable(&self.table, a, work, self, "key_slots");
+                try mem.append(a, &self.keys, .{ .name = name, .hash = hash, .kind = kind, .first_attribute = @intCast(index) }, "keys");
                 try self.table.insert(hash, id, work);
                 break :blk id;
             };
@@ -115,16 +116,16 @@ pub const Store = struct {
     pub fn height(self: Store, id: u32) u8 {
         return if (id == none) 0 else self.cells.items[id].height;
     }
-    pub fn add(self: *Store, a: std.mem.Allocator, cell: Cell, limit: u32, work: *r.Work) r.Error!u32 {
+    pub fn add(self: *Store, a: anytype, cell: Cell, limit: u32, work: *r.Work) r.Error!u32 {
         try work.spend(1);
         if (self.cells.items.len >= limit) return error.AttributeStateLimit;
         const id = try r.index(self.cells.items.len);
         var value = cell;
         value.height = 1 + @max(self.height(value.left), self.height(value.right));
-        try self.cells.append(a, value);
+        try mem.append(a, &self.cells, value, "cells");
         return id;
     }
-    pub fn rotate(self: *Store, a: std.mem.Allocator, root: u32, comptime left: bool, limit: u32, work: *r.Work) r.Error!u32 {
+    pub fn rotate(self: *Store, a: anytype, root: u32, comptime left: bool, limit: u32, work: *r.Work) r.Error!u32 {
         var lower = self.cells.items[root];
         var upper = self.cells.items[if (left) lower.right else lower.left];
         if (left) lower.right = upper.left else lower.left = upper.right;
@@ -132,7 +133,7 @@ pub const Store = struct {
         if (left) upper.left = child else upper.right = child;
         return self.add(a, upper, limit, work);
     }
-    pub fn set(self: *Store, a: std.mem.Allocator, root: u32, key: u32, attribute: u32, limit: u32, work: *r.Work) r.Error!u32 {
+    pub fn set(self: *Store, a: anytype, root: u32, key: u32, attribute: u32, limit: u32, work: *r.Work) r.Error!u32 {
         // An AVL tree with <2^32 cells has height <48. This is an implementation
         // bound, not input nesting; no recursion or source-sized stack.
         var path: [48]u32 = undefined;
@@ -182,12 +183,12 @@ pub const Store = struct {
         }
         return null;
     }
-    pub fn apply(self: *Store, a: std.mem.Allocator, root: u32, range: syntax.AttributeRange, limit: u32, work: *r.Work) r.Error!u32 {
+    pub fn apply(self: *Store, a: anytype, root: u32, range: syntax.AttributeRange, limit: u32, work: *r.Work) r.Error!u32 {
         var next = root;
         for (range.start..range.start + range.len) |id| next = try self.set(a, next, self.meta[id].key, @intCast(id), limit, work);
         return next;
     }
-    fn overlay(self: *Store, a: std.mem.Allocator, base: u32, local: u32, limit: u32, work: *r.Work) r.Error!u32 {
+    fn overlay(self: *Store, a: anytype, base: u32, local: u32, limit: u32, work: *r.Work) r.Error!u32 {
         var path: [48]u32 = undefined;
         var depth: usize = 0;
         var cursor = local;
@@ -207,7 +208,7 @@ pub const Store = struct {
         }
         return result;
     }
-    pub fn enter(self: *Store, a: std.mem.Allocator, id: u32, parent: u32, first: bool, limit: u32, work: *r.Work) r.Error!void {
+    pub fn enter(self: *Store, a: anytype, id: u32, parent: u32, first: bool, limit: u32, work: *r.Work) r.Error!void {
         if (self.scopes.len == 0 or id == 0) return;
         const inherited = self.scopes[parent];
         const scope = &self.scopes[id];

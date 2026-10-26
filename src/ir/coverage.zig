@@ -32,10 +32,10 @@ pub const Entry = struct {
 pub const Data = struct {
     entries: std.ArrayList(Entry) = .empty,
 
-    pub fn add(self: *Data, a: std.mem.Allocator, gap: Gap, boundary: usize, connections: u32, work: *r.Work) r.Error!void {
+    pub fn add(self: *Data, a: anytype, gap: Gap, boundary: usize, connections: u32, work: *r.Work) r.Error!void {
         try work.spend(1);
         _ = try r.index(self.entries.items.len + 1);
-        try self.entries.append(a, .{ .gap = gap, .boundary = try r.index(boundary), .connection_boundary = connections });
+        try @import("lowering_storage.zig").append(a, &self.entries, .{ .gap = gap, .boundary = try r.index(boundary), .connection_boundary = connections }, "gaps");
     }
     pub fn finish(self: *Data, work: *r.Work) r.Error!void {
         var i = self.entries.items.len;

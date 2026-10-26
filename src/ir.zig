@@ -9,6 +9,11 @@ pub const Error = resources.Error;
 pub const Limits = resources.Limits;
 pub const Options = resources.Options;
 pub const Cancellation = resources.Cancellation;
+const fixed_storage = @import("ir/fixed_storage.zig");
+pub const GraphCapacities = fixed_storage.GraphCapacities;
+pub const LoweringScratchCapacities = fixed_storage.LoweringScratchCapacities;
+pub const StorageShortfall = fixed_storage.StorageShortfall;
+pub const Resource = fixed_storage.Resource;
 pub const MaterializationProgress = @import("ir/materialization_session.zig").Progress;
 pub const MaterializationOutcome = @import("ir/materialization_session.zig").Outcome;
 pub const LoweringProgress = @import("ir/lowering_session.zig").Progress;
@@ -62,6 +67,43 @@ pub fn Lowering(comptime config: Config) type {
         execution.validate(baseline) catch @compileError("IR cancellation_interval must be positive");
     }
     return struct {
+        const Fixed = @import("ir/fixed_lowering.zig").API(config);
+        pub const GraphStorage = fixed_storage.GraphStorage;
+        pub const LoweringScratch = fixed_storage.LoweringScratch;
+        pub const LoweringMemory = fixed_storage.LoweringMemory;
+        pub const FixedGraphStorage = fixed_storage.FixedGraphStorage;
+        pub const FixedLoweringScratch = fixed_storage.FixedLoweringScratch;
+        pub const storageLayout = fixed_storage.storageLayout;
+        pub const FixedLoweringResult = Fixed.Result(false);
+        pub const FixedPartialLoweringResult = Fixed.Result(true);
+        pub const FixedLoweringSession = Fixed.FixedLoweringSession;
+        pub const FixedPartialLoweringSession = Fixed.FixedPartialLoweringSession;
+        /// Explicit arithmetic-only sizing. Lowering never reserves these bounds
+        /// automatically; pass the same options to sizing and construction.
+        pub fn capacityBounds(counts: syntax.Capacities, options: anytype) Error!fixed_storage.Bounds {
+            return Fixed.bounds(false, counts, options);
+        }
+        /// Like capacityBounds, including retained partial-source coverage.
+        pub fn partialCapacityBounds(counts: syntax.Capacities, options: anytype) Error!fixed_storage.Bounds {
+            return Fixed.bounds(true, counts, options);
+        }
+        /// Allocation-free construction. Success borrows source and retained
+        /// storage, never Document pools or scratch. Failure publishes no graph.
+        pub fn lowerCompleteIn(document: *const syntax.Document, memory: LoweringMemory, options: anytype) Fixed.DirectReturn(false) {
+            return Fixed.direct(false, document, memory, options);
+        }
+        /// Lower retained partial-source facts; a storage/work stop is still a
+        /// failure, not a partially constructed graph.
+        pub fn lowerPartialIn(document: *const syntax.Document, memory: LoweringMemory, options: anytype) Fixed.DirectReturn(true) {
+            return Fixed.direct(true, document, memory, options);
+        }
+        /// Same bounded session contract as loweringSession, using caller pools.
+        pub fn loweringSessionIn(document: *const syntax.Document, memory: LoweringMemory, options: anytype) (Error || execution.Error)!FixedLoweringSession {
+            return Fixed.start(false, document, memory, options);
+        }
+        pub fn partialLoweringSessionIn(document: *const syntax.Document, memory: LoweringMemory, options: anytype) (Error || execution.Error)!FixedPartialLoweringSession {
+            return Fixed.start(true, document, memory, options);
+        }
         pub const Graph = topology.Graph(caps);
         pub const PartialGraph = @import("ir/partial.zig").Graph(caps);
         pub const LoweringSession = execution.Bound(caps, false, config);

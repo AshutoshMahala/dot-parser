@@ -2710,6 +2710,100 @@ allocation failures and every interval-one cancellation checkpoint. The full
 check passes **811 tests**; the IR suite passes **166 tests** in Fast, Safe and
 Small.
 
+### Fixed-storage Document lowering (2026-10-25)
+
+Baseline **`bb3ae96`**, Apple M4 Pro, Zig 0.17.0, native macOS. Fixed construction
+is opt-in; it specializes the existing builders for caller-owned retained pools
+and separate scratch. No sizing helper or reservation is added to ordinary calls.
+
+**Default-path gate:** nine serial, alternating processes per revision/mode,
+using the same `bench/ir_lowering_sessions.zig` harness. Each process rotates
+routes over four warmups and eleven measured rounds; the table gives the median
+of process medians, in ms, before → after. Compilation was not running during
+measurement.
+
+| Fixture | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| 2,000 singleton edges | 0.2179 → 0.2206 | 0.2688 → 0.2676 | 0.3521 → 0.3574 |
+| 2,000 attribute-bearing nodes | 0.3090 → 0.3097 | 0.5045 → 0.5055 | 0.5533 → 0.5561 |
+| 400 reopened-scope statements | 0.1123 → 0.1132 | 0.1647 → 0.1625 | 0.1759 → 0.1800 |
+| 2,000 nested scopes | 0.0646 → 0.0624 | 0.0992 → 0.1024 | 0.0825 → 0.0821 |
+| 64 KiB name-concatenation comment | 0.0175 → 0.0175 | 0.0168 → 0.0168 | 0.0329 → 0.0330 |
+| 5,000 × 5,000 symbolic product | 0.5318 → 0.5265 | 0.7411 → 0.7248 | 0.9323 → 0.9250 |
+
+Geometric-mean direct-time changes were **−0.4% Fast, −0.1% Safe, +0.6% Small**.
+Individual direct changes ranged from −3.4% to +3.2%; the earlier independent
+Fast/Safe batch also averaged roughly flat. There is no material default-path
+regression demonstrated by these runs. Existing session `run`, budgets 1/4096,
+and cancellable runs also stayed within roughly 3.5%. Every retained/peak byte
+count, work total, cancellation poll count and result count matched baseline.
+
+The existing lowering-session object remains **1,816 B Fast/Small / 1,880 B Safe**.
+Borrowed ownership adds one cold `usize` per graph handle, not per record;
+on this target the handle grows by 8 B. The existing benchmark's Mach-O
+`__TEXT` (code plus constants, not the full file) changes by **+200 B Fast,
++456 B Safe, +440 B Small**, all below 0.3%. These are harness-specific sizes,
+not a universal application binary delta.
+
+**Opt-in storage comparison:** run `zig build bench-ir-fixed -Doptimize=fast`
+(or `safe` / `small`). Nine process runs per measured mode, each with four
+warmups and eleven measured samples per rotating route. Source construction,
+DOT parsing, sizing, caller-buffer allocation and result cleanup are outside
+timing. Allocation counts come from a separate untimed growable run; the timed
+growable path uses the ordinary allocator directly.
+
+`fixed_used` explicitly uses observed retained counts and a prior fixed run's
+scratch peak. That prior run starts with bounds-derived scratch because a
+growable result has no scratch high-water report. This is a repeat-input sizing
+comparison, **not** a cheap exact-sizing pass or a promise about edited input.
+`fixed_bounds` reserves the full count-derived bounds instead.
+No route expands the 25-million-pair product during lowering.
+
+| Fixture | Direct Fast: growable → fixed used (ms) | Direct Safe: growable → fixed used (ms) | Fixed session `run`: Fast / Safe (ms) |
+| --- | ---: | ---: | ---: |
+| 2,000 singleton edges | 0.2343 → 0.2006 | 0.3202 → 0.2212 | 0.3634 / 0.5978 |
+| 2,000 attribute-bearing nodes | 0.3237 → 0.2418 | 0.5583 → 0.3229 | 0.7471 / 1.1880 |
+| 400 reopened-scope statements | 0.1202 → 0.1001 | 0.1991 → 0.1244 | 0.1855 / 0.2924 |
+| 2,000 nested scopes | 0.0735 → 0.0637 | 0.1605 → 0.0685 | 0.0716 / 0.1268 |
+| 64 KiB name-concatenation comment | 0.0175 → 0.0173 | 0.0168 → 0.0166 | 0.1645 / 0.2675 |
+| 5,000 × 5,000 symbolic product | 0.5357 → 0.3930 | 1.0112 → 0.4196 | 0.5832 / 0.9953 |
+
+The new harness also includes fixed-code specializations and capacity reporting,
+so its absolute growable timings need not match the separate baseline harness.
+Sessions retain bounded steps; fixed storage removes growth-copy work, not name
+reading or semantic work. The new fixed-session object is **2,192 B Fast /
+2,256 B Safe**, reported separately from its pools. Scratch peaks are recorded
+only at growth points, not by scanning scratch counts on every credit.
+
+All numbers below are **bytes**, not RSS. Growable peak is live requested
+allocation payload; fixed peak is the entire bound graph-plus-scratch reservation,
+even when slots are unused. The fixed routes make zero construction allocator
+calls. Inline graph/session objects and borrowed source/Document pools are
+excluded.
+
+| Fixture | Fast allocation calls: growable → fixed | Retained: growable → fixed used | Peak: growable → fixed used | Full-bounds peak |
+| --- | ---: | ---: | ---: | ---: |
+| 2,000 singleton edges | 33 → 0 | 321828 → 312488 | 336424 → 312776 | 768936 |
+| 2,000 attribute-bearing nodes | 66 → 0 | 766560 → 640624 | 1012972 → 640720 | 5810120 |
+| 400 reopened-scope statements | 58 → 0 | 183228 → 173960 | 215756 → 174272 | 116088008 |
+| 2,000 nested scopes | 44 → 0 | 194268 → 192504 | 281396 → 265112 | 505336 |
+| 64 KiB name-concatenation comment | 13 → 0 | 536 → 312 | 1076 → 600 | 600 |
+| 5,000 × 5,000 symbolic product | 57 → 0 | 943184 → 811360 | 1050824 → 811688 | 811800 |
+
+Observed-size fixed storage reduces requested/reserved peak by about **6–44%**
+on these fixtures. Full bounds can be much larger: the reopened fixture reserves
+about **116 MB**, versus **174 KB** with observed sizes. Most of that excess is
+the conservative attribute-history envelope, not live records. Larger intern
+tables can also add clearing work. This is why bounds remain an explicit option,
+not automatic preallocation.
+
+Verification includes complete/partial and native-encoding equivalence, exact
+fits, every pool one short, individual rotation failures, semantic-limit
+precedence, layout/overlap/canary checks, borrowed lifetimes, zero construction
+allocations, missing later-query storage, budget partitions and every cancellation
+checkpoint in the stop fixture. Fixed construction is also compiled for
+freestanding wasm32 and riscv32. Fixed query/output pools remain later work.
+
 ## Running the benchmarks
 
 ### One-command string comparison
@@ -2793,6 +2887,7 @@ zig build bench-ir-lowering-sessions -Doptimize=fast
 zig build bench-ir-edge-sessions -Doptimize=fast
 zig build bench-ir-query-sessions -Doptimize=safe
 zig build bench-ir-attribute-sessions -Doptimize=safe
+zig build bench-ir-fixed -Doptimize=fast
 zig build check-benches  # only checks that they compile
 ```
 

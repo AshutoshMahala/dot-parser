@@ -84,6 +84,11 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ir_lowering_metering", .message = "metering is disabled; use run()" },
         .{ .name = "ir_lowering_interval", .message = "IR cancellation_interval must be positive" },
         .{ .name = "ir_lowering_runtime", .message = "runtime policy is disabled; the baseline is verified at compile time" },
+        .{ .name = "ir_fixed_metering", .message = "metering is disabled; use run()" },
+        .{ .name = "ir_fixed_runtime", .message = "unknown fixed IR lowering option: policy" },
+        .{ .name = "ir_fixed_unknown", .message = "unknown fixed IR lowering option: partial" },
+        .{ .name = "ir_fixed_limit", .message = "unknown IR option field: max_byte" },
+        .{ .name = "ir_fixed_cancellation", .message = "IR cancellation is disabled by this profile" },
         .{ .name = "ir_edge_metering", .message = "metering is disabled; use run()" },
         .{ .name = "ir_edge_unknown", .message = "unknown IR edge session option: attributes" },
         .{ .name = "ir_edge_runtime", .message = "unknown IR edge session option: policy" },
@@ -443,6 +448,7 @@ pub fn build(b: *std.Build) void {
         "resumable_edge_stream",
         "resumable_query",
         "resumable_attributes",
+        "fixed_graph",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -460,6 +466,12 @@ pub fn build(b: *std.Build) void {
         // `zig build` never tries to link host executables.
         examples_step.dependOn(&b.addInstallArtifact(example, .{}).step);
         const run_example = b.addRunArtifact(example);
+        if (std.mem.eql(u8, name, "fixed_graph")) {
+            run_example.expectStdErrEqual("node a\nnode b\nnode c\n");
+            run_example.expectStdOutEqual("");
+            test_ir.dependOn(&run_example.step);
+            test_step.dependOn(&run_example.step);
+        }
         if (std.mem.eql(u8, name, "resumable_edges")) test_ir.dependOn(&run_example.step);
         if (std.mem.eql(u8, name, "resumable_graph")) test_ir.dependOn(&run_example.step);
         if (std.mem.eql(u8, name, "resumable_edge_stream")) test_ir.dependOn(&run_example.step);
@@ -596,6 +608,15 @@ pub fn build(b: *std.Build) void {
     b.step("bench-policy", "Compare fixed/runtime policy costs on the standard benchmark machine")
         .dependOn(&b.addRunArtifact(policy_bench).step);
     const check_benches = b.step("check-benches", "Compile benchmarks without updating or running baselines");
+    const ir_fixed_bench = b.addExecutable(.{ .name = "ir_fixed_storage_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_fixed_storage.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    b.step("bench-ir-fixed", "Compare explicit fixed IR sizing, allocation, memory and lowering throughput")
+        .dependOn(&b.addRunArtifact(ir_fixed_bench).step);
+    check_benches.dependOn(&ir_fixed_bench.step);
     const ir_bench = b.addExecutable(.{ .name = "ir_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/ir.zig"),
         .target = target,

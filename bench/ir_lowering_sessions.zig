@@ -6,7 +6,7 @@ const dot = @import("dot_parser");
 const Dot = dot.Profile(.{});
 const IR = dot.ir.Lowering(.{});
 const Scheduled = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
-const Case = enum { edges, attributes, reopened, nested, long_name, symbolic_product };
+pub const Case = enum { edges, attributes, reopened, nested, long_name, symbolic_product };
 const routes = [_]struct { name: []const u8, budget: ?u32, cancellation: bool = false }{
     .{ .name = "direct", .budget = null },
     .{ .name = "session-run", .budget = 0 },
@@ -22,7 +22,7 @@ const Polls = struct {
         return false;
     }
 };
-fn fixture(out: *std.Io.Writer, case: Case) !void {
+pub fn fixture(out: *std.Io.Writer, case: Case) !void {
     try out.writeAll("digraph {");
     switch (case) {
         .edges => for (0..2000) |i| {

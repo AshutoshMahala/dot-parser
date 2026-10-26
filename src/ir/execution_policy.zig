@@ -64,11 +64,14 @@ pub fn option(comptime T: type, value: anytype) T {
 }
 
 pub fn Bound(comptime caps: @import("parser_support").encoding.Capabilities, comptime partial: bool, comptime config: anytype) type {
+    return BoundWith(caps, partial, config, false);
+}
+pub fn BoundWith(comptime caps: @import("parser_support").encoding.Capabilities, comptime partial: bool, comptime config: anytype, comptime fixed_storage: bool) type {
     const baseline = comptime resolve(.{}, config.policy);
     comptime {
         validate(baseline) catch @compileError("IR cancellation_interval must be positive");
     }
-    const Core = @import("lowering_session.zig").Session(caps, partial, if (config.runtime_policy) null else baseline);
+    const Core = @import("lowering_session.zig").SessionWith(caps, partial, if (config.runtime_policy) null else baseline, fixed_storage);
     const Hook = if (config.runtime_policy or baseline.cancellation) ?@import("resources.zig").Cancellation else void;
     return struct {
         const Self = @This();
@@ -81,7 +84,7 @@ pub fn Bound(comptime caps: @import("parser_support").encoding.Capabilities, com
         };
         core: Core,
         effective: if (config.runtime_policy) Effective else void,
-        pub fn init(a: @import("std").mem.Allocator, doc: *const @import("../dot/syntax.zig").Document, options: Options) (@import("resources.zig").Error || Error)!Self {
+        pub fn init(a: if (fixed_storage) @import("fixed_storage.zig").Context else @import("std").mem.Allocator, doc: *const @import("../dot/syntax.zig").Document, options: Options) (@import("resources.zig").Error || Error)!Self {
             const effective = if (config.runtime_policy) resolve(baseline, options.policy) else baseline;
             if (config.runtime_policy) try validate(effective);
             const hook = if (comptime Hook == void) {} else if (effective.cancellation) options.cancellation else null;
@@ -101,6 +104,14 @@ pub fn Bound(comptime caps: @import("parser_support").encoding.Capabilities, com
         }
         pub fn peakBytes(self: *const Self) usize {
             return self.core.peakBytes();
+        }
+        pub fn scratchPeak(self: *const Self) @import("fixed_storage.zig").LoweringScratchCapacities {
+            if (!fixed_storage) @compileError("scratchPeak requires fixed lowering");
+            return self.core.memory.peak;
+        }
+        pub fn shortfall(self: *const Self) ?@import("fixed_storage.zig").StorageShortfall {
+            if (!fixed_storage) @compileError("shortfall requires fixed lowering");
+            return self.core.memory.shortfall;
         }
         pub fn takeResult(self: *Self) @import("lowering_session.zig").TakeError!Result {
             return self.core.takeResult();

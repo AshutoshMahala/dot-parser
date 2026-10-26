@@ -6,6 +6,16 @@ const storage = @import("session_storage.zig");
 const attrs = @import("attributes.zig");
 const none = attrs.none;
 
+pub fn ReserveFor(comptime T: type, comptime fixed_storage: bool, comptime field: []const u8) type {
+    if (!fixed_storage) return Reserve(T);
+    return struct {
+        pub fn step(_: *@This(), list: *std.ArrayList(T), count: usize, context: *@import("fixed_storage.zig").Context) r.Error!bool {
+            try context.ensure(field, std.math.add(usize, list.items.len, count) catch return error.IndexLimit);
+            return true;
+        }
+    };
+}
+
 /// Reserve several records without hiding an ArrayList copy. Each call copies
 /// at most 64 bytes or performs one external allocator operation.
 pub fn Reserve(comptime T: type) type {
@@ -193,7 +203,7 @@ pub const Set = struct {
     pub fn init(root: u32, key: u32, attribute: u32) Set {
         return .{ .root = root, .key = key, .attribute = attribute, .cursor = root };
     }
-    pub fn step(self: *Set, store: *attrs.Store, growth: *Reserve(attrs.Cell), a: std.mem.Allocator, limit: u32) r.Error!?u32 {
+    pub fn step(self: *Set, store: *attrs.Store, growth: anytype, a: anytype, limit: u32) r.Error!?u32 {
         switch (self.phase) {
             .probe => {
                 if (self.cursor == none) {
@@ -218,7 +228,9 @@ pub const Set = struct {
                     self.phase = .done;
                     return null;
                 }
-                if (!try growth.step(&store.cells, if (self.phase == .leaf) 1 else 5, a)) return null;
+                // Fixed storage checks each actual write in Store.add, after
+                // the semantic limit. No artificial five-cell spare requirement.
+                if (@TypeOf(a) == std.mem.Allocator) if (!try growth.step(&store.cells, if (self.phase == .leaf) 1 else 5, a)) return null;
                 var work: r.Work = .{ .remaining = 32, .cancellation = null };
                 if (self.phase == .leaf) {
                     var cell: attrs.Cell = if (self.cursor == none) .{ .key = self.key, .attribute = self.attribute } else store.cells.items[self.cursor];

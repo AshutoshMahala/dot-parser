@@ -12,15 +12,20 @@ const storage = @import("session_storage.zig");
 const p = @import("lowering_primitives.zig");
 const coverage = @import("coverage.zig");
 const none = names.empty;
+const pools = @import("fixed_storage.zig");
+const mem = @import("lowering_storage.zig");
 
 pub const Outcome = union(enum) { success, failure: r.Error };
 pub const Progress = struct { work_used: u32, total_work: u64, nodes_created: u32, connections_created: u32, outcome: ?Outcome };
 pub const TakeError = r.Error || error{ NotReady, AlreadyTaken };
 
 pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, comptime fixed: ?@import("execution_policy.zig").Effective) type {
+    return SessionWith(caps, partial, fixed, false);
+}
+pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool, comptime fixed: ?@import("execution_policy.zig").Effective, comptime fixed_storage: bool) type {
     // Builder's storage layout is encoding-independent. Only its bounded
     // structural helpers are called here; names use the selected native reader.
-    const B = lower.Builder(.utf8, caps, partial);
+    const B = lower.BuilderWith(.utf8, caps, partial, fixed_storage);
     const cancellable = fixed == null or fixed.?.cancellation;
     const Hook = if (cancellable) ?r.Cancellation else void;
     const Polling = @import("parser_support").execution.CancellationPolling(cancellable, if (fixed) |value| value.cancellation_interval else null);
@@ -88,7 +93,7 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
         const Family = enum { node, scope, key };
         b: B,
         actual: encoding.Actual,
-        memory: r.Memory,
+        memory: if (fixed_storage) pools.Context else r.Memory,
         cancellation: Hook,
         interval: u32,
         polling: Polling = .{},
@@ -148,36 +153,44 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
         gap_after: Phase = .walk,
         unfinished_scope: ?t.OccurrenceId = null,
         suffix_first: u32 = 0,
-        node_growth: p.Reserve(t.Node) = .{},
-        scope_growth: p.Reserve(t.Scope) = .{},
-        declaration_growth: p.Reserve(t.Declaration) = .{},
-        frame_growth: p.Reserve(std.meta.Elem(@FieldType(@FieldType(B, "stack"), "items"))) = .{},
+        node_growth: p.ReserveFor(t.Node, fixed_storage, "nodes") = .{},
+        scope_growth: p.ReserveFor(t.Scope, fixed_storage, "scopes") = .{},
+        declaration_growth: p.ReserveFor(t.Declaration, fixed_storage, "declarations") = .{},
+        frame_growth: p.ReserveFor(std.meta.Elem(@FieldType(@FieldType(B, "stack"), "items")), fixed_storage, "stack") = .{},
         // Field types below are derived from the shared arrays, not duplicate
         // frame definitions or a second public event vocabulary.
-        edge_growth: p.Reserve(std.meta.Elem(@FieldType(@FieldType(B, "edge_stack"), "items"))) = .{},
-        pending_growth: p.Reserve(std.meta.Elem(@FieldType(@FieldType(B, "pending"), "items"))) = .{},
-        key_growth: p.Reserve(attrs.Key) = .{},
-        cell_growth: p.Reserve(attrs.Cell) = .{},
-        gap_growth: p.Reserve(coverage.Entry) = .{},
+        edge_growth: p.ReserveFor(std.meta.Elem(@FieldType(@FieldType(B, "edge_stack"), "items")), fixed_storage, "edge_stack") = .{},
+        pending_growth: p.ReserveFor(std.meta.Elem(@FieldType(@FieldType(B, "pending"), "items")), fixed_storage, "pending") = .{},
+        key_growth: p.ReserveFor(attrs.Key, fixed_storage, "keys") = .{},
+        cell_growth: p.ReserveFor(attrs.Cell, fixed_storage, "cells") = .{},
+        gap_growth: p.ReserveFor(coverage.Entry, fixed_storage, "gaps") = .{},
 
-        pub fn init(a: std.mem.Allocator, doc: *const syntax.Document, interpretation: lower.InterpretationFor(partial), limits: r.Limits, cancellation: Hook, interval: u32) r.Error!Self {
-            if (cancellable) if (cancellation) |c| if (c.requested()) return error.Cancelled;
+        pub fn init(a: if (fixed_storage) pools.Context else std.mem.Allocator, doc: *const syntax.Document, interpretation: lower.InterpretationFor(partial), limits: r.Limits, cancellation: Hook, interval: u32) r.Error!Self {
+            // The fixed boundary polls before validating caller regions. Do not
+            // poll twice for that single constructor checkpoint.
+            if (cancellable and !fixed_storage) if (cancellation) |c| if (c.requested()) return error.Cancelled;
             if (!partial and !doc.scopeComplete()) return error.IncompleteDocument;
             if (doc.strict and (interpretation.kind == .generic or (partial and interpretation.kind == null))) return error.UnsupportedSemantics;
             const actual = if (doc.source_info.encoding == .ascii and caps.utf8) .utf8 else doc.source_info.encoding;
             if (!caps.allows(actual)) return error.UnsupportedEncoding;
             _ = try r.index(doc.source.len);
             _ = try r.index(doc.order.len);
-            return .{
-                .b = .{ .a = a, .doc = doc, .interpretation = interpretation, .limits = limits, .work = .{ .remaining = 0, .cancellation = null } },
+            var result: Self = .{
+                .b = .{ .a = if (fixed_storage) undefined else a, .doc = doc, .interpretation = interpretation, .limits = limits, .work = .{ .remaining = 0, .cancellation = null } },
                 .actual = actual,
-                .memory = .{ .backing = a, .limit = limits.max_bytes },
+                .memory = if (fixed_storage) a else .{ .backing = a, .limit = limits.max_bytes },
                 .cancellation = cancellation,
                 .interval = interval,
                 .iterator = .{ .document = doc },
             };
+            if (fixed_storage) result.b.bindFixed(&result.memory);
+            return result;
         }
         pub fn deinit(self: *Self) void {
+            if (fixed_storage) {
+                self.* = undefined;
+                return;
+            }
             const a = self.memory.allocator();
             self.b.a = a;
             inline for (.{ "node_growth", "scope_growth", "declaration_growth", "frame_growth", "edge_growth", "pending_growth", "key_growth", "cell_growth", "gap_growth" }) |field| @field(self, field).deinit(a);
@@ -186,7 +199,7 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
             self.* = undefined;
         }
         pub fn peakBytes(self: *const Self) usize {
-            return self.memory.peak;
+            return if (fixed_storage) self.memory.layout.graph_bytes + self.memory.layout.scratch_bytes else self.memory.peak;
         }
         pub fn cancel(self: *Self) void {
             if (self.outcome == null) self.outcome = .{ .failure = error.Cancelled };
@@ -201,7 +214,7 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
         pub fn advance(self: *Self, budget: u32) Progress {
             var used: u32 = 0;
             if (self.outcome == null and self.poll()) {
-                self.b.a = self.memory.allocator();
+                self.b.a = if (fixed_storage) &self.memory else self.memory.allocator();
                 self.polling = .{};
                 _ = self.polling.due(self.interval); // Entry poll covers the first credit.
                 while (used < budget and self.outcome == null) {
@@ -214,7 +227,7 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
                     self.total_work += 1;
                     self.polling.spend(1);
                     self.step() catch |err| {
-                        self.outcome = .{ .failure = self.memory.failure(err) };
+                        self.outcome = .{ .failure = if (fixed_storage) err else self.memory.failure(err) };
                     };
                 }
             }
@@ -231,7 +244,7 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
             if (outcome == .failure) return outcome.failure;
             if (self.taken) return error.AlreadyTaken;
             self.taken = true;
-            self.b.a = self.memory.allocator();
+            self.b.a = if (fixed_storage) &self.memory else self.memory.allocator();
             return self.b.publish();
         }
         fn startName(self: *Self, family: Family, name: t.Range, after: Phase) r.Error!void {
@@ -343,11 +356,11 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
                 },
                 .allocate => {
                     switch (self.allocation) {
-                        0 => b.occurrences = try storage.allocate(t.Occurrence, a, doc.subgraph_records.len + 1),
-                        1 => b.bodies = try storage.allocate(t.Body, a, b.occurrences.len),
-                        2 => b.mentions = try storage.allocate(t.Mention, a, @intCast(self.counted_mentions)),
-                        3 => b.connections = try storage.allocate(t.Connection, a, @intCast(self.counted_connections)),
-                        4 => b.attributes = try storage.allocate(syntax.Attribute, a, @intCast(self.counted_attributes)),
+                        0 => b.occurrences = try mem.allocate(t.Occurrence, a, doc.subgraph_records.len + 1, "occurrences", true),
+                        1 => b.bodies = try mem.allocate(t.Body, a, b.occurrences.len, "bodies", true),
+                        2 => b.mentions = try mem.allocate(t.Mention, a, @intCast(self.counted_mentions), "mentions", true),
+                        3 => b.connections = try mem.allocate(t.Connection, a, @intCast(self.counted_connections), "connections", true),
+                        4 => b.attributes = try mem.allocate(syntax.Attribute, a, @intCast(self.counted_attributes), "attributes", true),
                         else => {
                             if (!try self.scope_growth.step(&b.scopes, 1, a)) return;
                             b.scopes.appendAssumeCapacity(.{ .parent = null, .name = doc.name, .first_occurrence = .root, .hash = 0 });
@@ -361,7 +374,7 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
                 },
                 .scope => {
                     if (self.index == b.occurrences.len) {
-                        b.cursors = try storage.allocate(std.meta.Elem(@FieldType(B, "cursors")), a, b.scopes.items.len);
+                        b.cursors = try mem.allocate(std.meta.Elem(@FieldType(B, "cursors")), a, b.scopes.items.len, "cursors", true);
                         self.index = 0;
                         self.phase = .cursor_clear;
                         return;
@@ -436,9 +449,9 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
                         return;
                     }
                     switch (self.allocation) {
-                        0 => b.attribute_data.meta = try storage.allocate(attrs.Meta, a, b.attributes.len),
-                        1 => b.attribute_data.scopes = try storage.allocate(attrs.Scope, a, b.scopes.items.len),
-                        2 => b.attribute_data.connection_defaults = try storage.allocate(u32, a, b.connections.len),
+                        0 => b.attribute_data.meta = try mem.allocate(attrs.Meta, a, b.attributes.len, "meta", true),
+                        1 => b.attribute_data.scopes = try mem.allocate(attrs.Scope, a, b.scopes.items.len, "attribute_scopes", true),
+                        2 => b.attribute_data.connection_defaults = try mem.allocate(u32, a, b.connections.len, "connection_defaults", true),
                         else => {
                             self.phase = if (partial) .meta_clear else .copy_attributes;
                             return;
@@ -535,6 +548,7 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
                     }
                     b.bodies[@backingInt(b.occurrences[self.enter_id].membership)].start = b.mention_count;
                     b.stack.appendAssumeCapacity(.{ .scope = .{ .occurrence = self.enter_id, .cursor = body.start, .end = body.start + body.len } });
+                    if (fixed_storage) a.observe("stack", b.stack.items.len);
                     self.phase = .walk;
                 },
                 .walk => {
@@ -607,6 +621,10 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
                                     const edge_index = try r.index(b.edge_stack.items.len);
                                     b.edge_stack.appendAssumeCapacity(.{ .occurrence = frame.occurrence, .first = first, .links = b.links(statement), .pending_start = try r.index(b.pending.items.len), .statement_index = frame.cursor });
                                     b.stack.appendAssumeCapacity(.{ .edge = edge_index });
+                                    if (fixed_storage) {
+                                        a.observe("edge_stack", b.edge_stack.items.len);
+                                        a.observe("stack", b.stack.items.len);
+                                    }
                                     self.iterator = b.links(statement);
                                     self.phase = .chain_scan;
                                 },
@@ -702,11 +720,13 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
                 .pending_node => {
                     if (!try self.pending_growth.step(&b.pending, 1, a)) return;
                     b.pending.appendAssumeCapacity(.{ .node = self.node_value });
+                    if (fixed_storage) a.observe("pending", b.pending.items.len);
                     self.phase = .walk;
                 },
                 .pending_scope => {
                     if (!try self.pending_growth.step(&b.pending, 1, a)) return;
                     b.pending.appendAssumeCapacity(.{ .scope = b.occurrences[self.enter_id].scope });
+                    if (fixed_storage) a.observe("pending", b.pending.items.len);
                     self.beginEnter(self.enter_id);
                 },
                 .edge_finish => {
@@ -888,9 +908,24 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
                         self.phase = .intern_append;
                         return;
                     }
-                    const capacity = if (table_value.slots.len == 0) 16 else std.math.mul(usize, table_value.slots.len, 2) catch return error.IndexLimit;
-                    if (capacity > std.math.maxInt(u32)) return error.IndexLimit;
-                    self.new_slots = try storage.allocate(u32, a, capacity);
+                    if (fixed_storage) {
+                        if (self.family == .node and b.nodes.items.len >= b.limits.max_nodes) return error.NodeLimit;
+                        self.new_slots = switch (self.family) {
+                            inline else => |family| blk: {
+                                const field = switch (family) {
+                                    .node => "node_slots",
+                                    .scope => "scope_slots",
+                                    .key => "key_slots",
+                                };
+                                try a.ensureTable(field, table_value.count + 1);
+                                break :blk a.slice(field);
+                            },
+                        };
+                    } else {
+                        const capacity = if (table_value.slots.len == 0) 16 else std.math.mul(usize, table_value.slots.len, 2) catch return error.IndexLimit;
+                        if (capacity > std.math.maxInt(u32)) return error.IndexLimit;
+                        self.new_slots = try storage.allocate(u32, a, capacity);
+                    }
                     self.table_index = 0;
                     self.phase = .table_clear;
                 },
@@ -907,7 +942,7 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
                 .rehash_scan => {
                     const slots = self.table().slots;
                     if (self.table_index == slots.len) {
-                        storage.release(u32, a, slots);
+                        if (!fixed_storage) storage.release(u32, a, slots);
                         self.table().slots = self.new_slots;
                         self.new_slots = &.{};
                         self.phase = .intern_append;
@@ -995,8 +1030,8 @@ pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, com
                 } else unreachable,
                 .posting_allocate => {
                     if (b.mention_count != b.mentions.len or b.connection_count != b.connections.len or b.attribute_count != b.attributes.len) return error.InvalidDocument;
-                    if (b.offsets.len == 0) b.offsets = try storage.allocate(u32, a, b.nodes.items.len + 1) else {
-                        b.positions = try storage.allocate(u32, a, b.mentions.len);
+                    if (b.offsets.len == 0) b.offsets = try mem.allocate(u32, a, b.nodes.items.len + 1, "offsets", true) else {
+                        b.positions = try mem.allocate(u32, a, b.mentions.len, "positions", true);
                         self.index = 0;
                         self.phase = .posting_clear;
                     }

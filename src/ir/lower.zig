@@ -7,6 +7,8 @@ const names = @import("names.zig");
 const r = @import("resources.zig");
 const attrs = @import("attributes.zig");
 const coverage = @import("coverage.zig");
+const mem = @import("lowering_storage.zig");
+const pools = @import("fixed_storage.zig");
 
 pub const Interpretation = InterpretationFor(false);
 pub fn InterpretationFor(comptime partial: bool) type {
@@ -49,23 +51,17 @@ pub fn Output(comptime caps: encoding.Capabilities, comptime partial: bool) type
 }
 
 pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilities, comptime partial: bool) type {
+    return BuilderWith(actual, caps, partial, false);
+}
+pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Capabilities, comptime partial: bool, comptime fixed_storage: bool) type {
     return struct {
         const Self = @This();
-        const ScopeCursor = struct { first: u32 = 0, next: u32 = 0, head: u32 = names.empty };
-        const ScopeFrame = struct { occurrence: u32, cursor: u32, end: u32 };
-        const EdgeFrame = struct {
-            occurrence: u32,
-            first: syntax.EdgeView,
-            links: syntax.EdgeLinkIterator,
-            phase: u2 = 0,
-            pending_start: u32,
-            statement_index: u32,
-        };
-        // Ordinary nesting pays only 16 bytes per continuation. Large edge
-        // continuations live separately and exist only for active edge owners.
-        const Frame = union(enum) { scope: ScopeFrame, edge: u32 };
-        const Pending = union(enum) { node: t.Endpoint, scope: t.ScopeId };
-        a: std.mem.Allocator,
+        const Records = @import("lowering_types.zig");
+        const ScopeCursor = Records.ScopeCursor;
+        const Frame = Records.Frame;
+        const EdgeFrame = Records.EdgeFrame;
+        const Pending = Records.Pending;
+        a: if (fixed_storage) *pools.Context else std.mem.Allocator,
         doc: *const syntax.Document,
         interpretation: InterpretationFor(partial),
         limits: r.Limits,
@@ -98,7 +94,15 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
             next_scope: u32 = 1,
         } else bool = if (partial) .{} else false,
 
+        pub fn bindFixed(self: *Self, context: *pools.Context) void {
+            if (!fixed_storage) @compileError("fixed storage only");
+            inline for (.{ "nodes", "scopes", "declarations", "stack", "edge_stack", "pending" }) |field| @field(self, field) = context.list(field);
+            self.attribute_data.keys = context.list("keys");
+            self.attribute_data.cells = context.list("cells");
+            if (partial) self.publication.coverage_data.entries = context.list("gaps");
+        }
         pub fn deinit(self: *Self) void {
+            if (fixed_storage) return;
             const a = self.a;
             self.scope_table.deinit(a);
             a.free(self.cursors);
@@ -150,10 +154,10 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
                 if (self.nodes.items.len >= self.limits.max_nodes) return error.NodeLimit;
                 const id = try r.index(self.nodes.items.len);
                 if (id >= t.node_bit) return error.IndexLimit;
-                try self.node_table.prepare(self.a, &self.work, self);
+                try mem.prepareTable(&self.node_table, self.a, &self.work, self, "node_slots");
                 const scope = @backingInt(self.occurrences[occurrence].scope);
                 const state = if (self.attribute_data.scopes.len == 0) attrs.none else self.attribute_data.scopes[scope].node;
-                try self.nodes.append(self.a, .{ .name = view.identifier, .first_mention = self.mention_count, .attribute_state = state, .hash = hash });
+                try mem.append(self.a, &self.nodes, .{ .name = view.identifier, .first_mention = self.mention_count, .attribute_state = state, .hash = hash }, "nodes");
                 try self.node_table.insert(hash, id, &self.work);
                 break :blk id;
             };
@@ -167,9 +171,9 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
             if (count >= t.node_bit) return error.IndexLimit;
             // Limit written scope occurrences as well as distinct semantic scopes.
             if (count > self.limits.max_scopes) return error.ScopeLimit;
-            self.occurrences = try self.a.alloc(t.Occurrence, count);
-            self.bodies = try self.a.alloc(t.Body, count);
-            try self.scopes.append(self.a, .{ .parent = null, .name = self.doc.name, .first_occurrence = .root, .hash = 0 });
+            self.occurrences = try mem.allocate(t.Occurrence, self.a, count, "occurrences", false);
+            self.bodies = try mem.allocate(t.Body, self.a, count, "bodies", false);
+            try mem.append(self.a, &self.scopes, .{ .parent = null, .name = self.doc.name, .first_occurrence = .root, .hash = 0 }, "scopes");
             self.occurrences[0] = .{ .scope = .root, .parent = null, .source = .{ .start = 0, .len = try r.index(self.doc.source.len) }, .membership = undefined };
             for (self.doc.subgraph_records, 1..) |record, occurrence| {
                 try self.work.spend(1);
@@ -204,16 +208,16 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
                                 return owner.scopes[scope_id].hash;
                             }
                         };
-                        try self.scope_table.prepare(self.a, &self.work, Owner{ .scopes = self.scopes.items });
+                        try mem.prepareTable(&self.scope_table, self.a, &self.work, Owner{ .scopes = self.scopes.items }, "scope_slots");
                     }
-                    try self.scopes.append(self.a, .{ .parent = parent, .name = record.name, .first_occurrence = @fromBackingInt(@as(u32, @intCast(occurrence))), .hash = hash });
+                    try mem.append(self.a, &self.scopes, .{ .parent = parent, .name = record.name, .first_occurrence = @fromBackingInt(@as(u32, @intCast(occurrence))), .hash = hash }, "scopes");
                     if (record.name != null) try self.scope_table.insert(hash, id, &self.work);
                     break :blk id;
                 };
                 const source = if (partial) self.doc.scope(@fromBackingInt(@as(u32, @intCast(occurrence)))).?.sourceRange() orelse return error.InvalidDocument else record.source;
                 self.occurrences[occurrence] = .{ .scope = @fromBackingInt(id), .parent = @fromBackingInt(parent_occurrence), .source = source, .membership = undefined };
             }
-            self.cursors = try self.a.alloc(ScopeCursor, self.scopes.items.len);
+            self.cursors = try mem.allocate(ScopeCursor, self.a, self.scopes.items.len, "cursors", false);
             for (self.cursors) |*cursor| {
                 try self.work.spend(1);
                 cursor.* = .{};
@@ -260,7 +264,7 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
             const parent = if (self.scopes.items[scope].parent) |id| @backingInt(id) else 0;
             try self.attribute_data.enter(self.a, scope, parent, @backingInt(self.scopes.items[scope].first_occurrence) == occurrence, self.limits.max_attribute_states, &self.work);
             self.bodies[@backingInt(self.occurrences[occurrence].membership)].start = self.mention_count;
-            try self.stack.append(self.a, .{ .scope = .{ .occurrence = occurrence, .cursor = body.start, .end = body.start + body.len } });
+            try mem.append(self.a, &self.stack, .{ .scope = .{ .occurrence = occurrence, .cursor = body.start, .end = body.start + body.len } }, "stack");
         }
         pub inline fn scopeBody(self: *Self, occurrence: u32) r.Error!syntax.StatementRange {
             if (occurrence == 0) return .{ .start = 0, .len = try r.index(self.doc.order.len) };
@@ -284,11 +288,11 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
         }
         fn endpoint(self: *Self, endpoint_value: syntax.Endpoint, occurrence: u32) r.Error!void {
             switch (endpoint_value) {
-                .node => |reference| try self.pending.append(self.a, .{ .node = try self.node(reference, occurrence) }),
+                .node => |reference| try mem.append(self.a, &self.pending, .{ .node = try self.node(reference, occurrence) }, "pending"),
                 .subgraph => |scope| {
                     const id = @backingInt(scope);
                     if (id == 0 or id >= self.occurrences.len) return error.InvalidDocument;
-                    try self.pending.append(self.a, .{ .scope = self.occurrences[id].scope });
+                    try mem.append(self.a, &self.pending, .{ .scope = self.occurrences[id].scope }, "pending");
                     try self.enter(id);
                 },
             }
@@ -327,7 +331,7 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
         }
         fn declaration(self: *Self, target: @FieldType(t.Declaration, "target"), occurrence: u32, range: syntax.AttributeRange) r.Error!void {
             const id = try r.index(self.declarations.items.len);
-            try self.declarations.append(self.a, .{ .target = target, .occurrence = @fromBackingInt(occurrence), .attributes = range });
+            try mem.append(self.a, &self.declarations, .{ .target = target, .occurrence = @fromBackingInt(occurrence), .attributes = range }, "declarations");
             if (range.len == 0) return;
             const kind: attrs.Kind = switch (target) {
                 .node => .node,
@@ -427,8 +431,8 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
                                 }
                                 self.stack.items[index].scope.cursor = end;
                                 const edge_index = try r.index(self.edge_stack.items.len);
-                                try self.edge_stack.append(self.a, .{ .occurrence = frame.occurrence, .first = first, .links = self.links(statement), .pending_start = try r.index(self.pending.items.len), .statement_index = frame.cursor });
-                                try self.stack.append(self.a, .{ .edge = edge_index });
+                                try mem.append(self.a, &self.edge_stack, .{ .occurrence = frame.occurrence, .first = first, .links = self.links(statement), .pending_start = try r.index(self.pending.items.len), .statement_index = frame.cursor }, "edge_stack");
+                                try mem.append(self.a, &self.stack, .{ .edge = edge_index }, "stack");
                             },
                             .attribute_statement => |statement_attrs| try self.declaration(.{ .defaults = statement_attrs.target }, frame.occurrence, try self.copyAttributes(statement_attrs.attributes)),
                             .assignment => |attr| {
@@ -472,7 +476,7 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
                 }
             }
         }
-        fn build(self: *Self) r.Error!Output(caps, partial) {
+        pub fn build(self: *Self) r.Error!Output(caps, partial) {
             // Count written payload only; never multiply endpoint cardinalities.
             var mention_count: u64 = 0;
             var connection_count: u64 = 0;
@@ -509,9 +513,9 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
             if (attribute_count > self.limits.max_attributes) return error.AttributeLimit;
             if (attribute_count >= @import("ports.zig").right) return error.IndexLimit;
             try self.prepareScopes();
-            self.mentions = try self.a.alloc(t.Mention, @intCast(mention_count));
-            self.connections = try self.a.alloc(t.Connection, @intCast(connection_count));
-            self.attributes = try self.a.alloc(syntax.Attribute, @intCast(attribute_count));
+            self.mentions = try mem.allocate(t.Mention, self.a, @intCast(mention_count), "mentions", false);
+            self.connections = try mem.allocate(t.Connection, self.a, @intCast(connection_count), "connections", false);
+            self.attributes = try mem.allocate(syntax.Attribute, self.a, @intCast(attribute_count), "attributes", false);
             if (!partial) for (self.doc.attributes, self.attributes[0..self.doc.attributes.len]) |attr, *dest| {
                 try self.work.spend(1);
                 dest.* = attr;
@@ -532,8 +536,8 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
                 try self.publication.coverage_data.finish(&self.work);
             }
             if (self.mention_count != self.mentions.len or self.connection_count != self.connections.len or self.attribute_count != self.attributes.len) return error.InvalidDocument;
-            self.offsets = try self.a.alloc(u32, self.nodes.items.len + 1);
-            self.positions = try self.a.alloc(u32, self.mentions.len);
+            self.offsets = try mem.allocate(u32, self.a, self.nodes.items.len + 1, "offsets", false);
+            self.positions = try mem.allocate(u32, self.a, self.mentions.len, "positions", false);
             for (self.offsets) |*offset| {
                 try self.work.spend(1);
                 offset.* = 0;
@@ -563,7 +567,7 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
         }
         /// Shared ownership transfer; callers finish every pool/index first.
         pub fn publish(self: *Self) Output(caps, partial) {
-            const memory: *r.Memory = @ptrCast(@alignCast(self.a.ptr));
+            const memory = if (fixed_storage) self.a else @as(*r.Memory, @ptrCast(@alignCast(self.a.ptr)));
             if (partial) self.publication.transferred = true else self.publication = true;
             const graph: t.GraphWith(caps, partial) = .{
                 .source = self.doc.source,
@@ -588,9 +592,10 @@ pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabil
                 .node_slots = self.node_table.slots,
                 .posting_offsets = self.offsets,
                 .posting_positions = self.positions,
-                .peak_bytes = memory.peak,
+                .peak_bytes = if (fixed_storage) memory.layout.graph_bytes + memory.layout.scratch_bytes else memory.peak,
                 .limits = self.limits,
-                .allocator = memory.backing,
+                .allocator = if (fixed_storage) memory.query_allocator orelse r.unavailableAllocator() else memory.backing,
+                .borrowed_bytes = if (fixed_storage) memory.layout.graph_bytes else 0,
             };
             return if (partial) .{ ._data = graph, ._coverage = self.publication.coverage_data } else graph;
         }

@@ -23,6 +23,10 @@ pub const Error = error{
     InvalidHandle,
     UnsupportedEncoding,
     UnsupportedSemantics,
+    PoolExhausted,
+    BufferTooSmall,
+    InvalidStorage,
+    StorageRequired,
 };
 
 /// Finite convenience defaults, not promises about acceptable graph size.
@@ -40,7 +44,8 @@ pub const Limits = struct {
     max_pairs: u64 = 4_000_000,
     max_work: u64 = 100_000_000,
     /// Peak live requested bytes allocated by this operation, including
-    /// temporary old/new growth buffers. Excludes borrowed inputs/allocator RSS.
+    /// temporary old/new growth buffers. Fixed lowering instead counts the full
+    /// bound retained + scratch reservation. Excludes borrowed inputs/allocator RSS.
     max_bytes: usize = 256 * 1024 * 1024,
 };
 
@@ -122,9 +127,36 @@ pub const Memory = struct {
         m.live -= buf.len;
     }
     pub fn failure(m: *const Memory, err: Error) Error {
-        return if (err == error.OutOfMemory and m.exceeded) error.MemoryLimit else err;
+        if (err == error.OutOfMemory) {
+            if (m.exceeded) return error.MemoryLimit;
+            if (m.backing.vtable == unavailableAllocator().vtable) return error.StorageRequired;
+        }
+        return err;
     }
 };
+
+/// Missing later-query storage is not OOM. Never used to construct fixed pools.
+pub fn unavailableAllocator() std.mem.Allocator {
+    const Missing = struct {
+        fn alloc(_: *anyopaque, _: usize, _: std.mem.Alignment, _: usize) ?[*]u8 {
+            return null;
+        }
+        fn resize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
+            return false;
+        }
+        fn remap(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
+            return null;
+        }
+        fn free(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize) void {
+            unreachable;
+        }
+        const vtable: std.mem.Allocator.VTable = .{ .alloc = alloc, .resize = resize, .remap = remap, .free = free };
+        const marker: u8 = 0;
+    };
+    // The context is never dereferenced; keep it defined when passed through
+    // generic allocator wrappers, including in safety-enabled builds.
+    return .{ .ptr = @constCast(&Missing.marker), .vtable = &Missing.vtable };
+}
 
 pub fn index(n: usize) Error!u32 {
     return if (n >= std.math.maxInt(u32)) error.IndexLimit else @intCast(n);

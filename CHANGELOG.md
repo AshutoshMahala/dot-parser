@@ -8,6 +8,15 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Fixed-storage Document-to-IR lowering via `lowerCompleteIn`, `lowerPartialIn`,
+  `loweringSessionIn` and `partialLoweringSessionIn`. Caller-owned retained pools
+  and reusable scratch use the same semantics and metered/cancellable sessions,
+  with no construction allocations or heap fallback. Adds explicit capacity
+  bounds, observed capacities/scratch peaks, checked byte-region binding and
+  structured shortfalls; failed lowering publishes no graph. Returned graphs
+  borrow retained storage/source, with optional storage for later queries.
+  No automatic reservation is added to ordinary lowering. Includes `fixed_graph`
+  and `bench-ir-fixed`; fixed query/output storage remains separate work.
 - Policy-bound resumable attribute access via `IR.attributeSession(view, key, options)`
   and `IR.attributesSession(view, options)`, for complete/partial node, scope,
   compact-edge and materialized-edge views. Reuses existing execution policies

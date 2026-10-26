@@ -20,6 +20,7 @@ test {
     _ = @import("ir_lowering_sessions.zig");
     _ = @import("ir_query_sessions.zig");
     _ = @import("ir_attribute_sessions.zig");
+    _ = @import("ir_fixed_storage.zig");
 }
 
 fn lower(allocator: std.mem.Allocator, source: []const u8) !IR.Graph {

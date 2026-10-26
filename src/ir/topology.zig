@@ -114,6 +114,9 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         /// Keep new cold flags after the pools: Zig's automatic layout otherwise
         /// moves the connection/membership fields used by topology-only loops.
         has_ports: bool,
+        /// Nonzero only for borrowed fixed storage; includes unused pools and
+        /// padding. Query allocator, if any, does not own this reservation.
+        borrowed_bytes: usize = 0,
 
         const Views = @import("views.zig").For(Self, caps, connectionCovers);
         pub const NodeView = Views.Node;
@@ -154,6 +157,10 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         }
 
         pub fn deinit(self: *Self) void {
+            if (self.borrowed_bytes != 0) {
+                self.* = undefined;
+                return;
+            }
             const a = self.allocator;
             a.free(self.node_storage);
             a.free(self.scope_storage);
@@ -173,12 +180,28 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         /// Retained allocation payload (including spare capacity), not source,
         /// allocator metadata, arena slack, or temporary operation scratch.
         pub fn retainedBytes(self: *const Self) usize {
+            if (self.borrowed_bytes != 0) return self.borrowed_bytes;
             var bytes: usize = 0;
             inline for (.{ "node_storage", "scope_storage", "declaration_storage", "occurrences", "mentions", "connections", "attributes", "bodies", "node_slots", "posting_offsets", "posting_positions" }) |field| {
                 const slice = @field(self, field);
                 bytes += slice.len * @sizeOf(std.meta.Elem(@TypeOf(slice)));
             }
             return bytes + self.attribute_data.retainedBytes();
+        }
+
+        /// Used records, not reserved capacity or a bound for changed input.
+        pub fn capacities(self: *const Self) @import("fixed_storage.zig").GraphCapacities {
+            return .{
+                .nodes = @intCast(self.nodes.len),
+                .scopes = @intCast(self.scopes.len),
+                .occurrences = @intCast(self.occurrences.len),
+                .mentions = @intCast(self.mentions.len),
+                .connections = @intCast(self.connections.len),
+                .declarations = @intCast(self.declarations.len),
+                .attributes = @intCast(self.attributes.len),
+                .attribute_keys = @intCast(self.attribute_data.keys.items.len),
+                .attribute_states = @intCast(self.attribute_data.cells.items.len),
+            };
         }
 
         /// Logical UTF-8 bytes, not a DOT spelling. No case folding, entity
