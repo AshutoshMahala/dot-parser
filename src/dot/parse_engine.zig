@@ -91,7 +91,7 @@ pub fn EngineWithEncoding(comptime actual: @import("parser_support").encoding.Ac
             // Keep the ordinary runtime-policy composition loop independent of
             // the caller's child/result bookkeeping. Inlining it into that
             // wrapper extends live ranges across every token (notably in
-            // ReleaseSafe). This is one direct call per parse, not per token;
+            // safe). This is one direct call per parse, not per token;
             // fixed policies, DOT-only and cancellable paths keep auto inlining.
             const result = @call(if (Processor != void and fixed == null and !cancellable) .never_inline else .auto, drive, .{ source, &builder, diagnostics, &scratch, options });
             var output = publicResult(ParseResult, result);

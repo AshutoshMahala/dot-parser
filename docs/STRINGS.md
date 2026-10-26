@@ -236,7 +236,7 @@ There is no bundled regex engine.
 local `span`, `related`, typed `detail`, and `fix`. Missing primary span means
 the whole value. **Every standard span field** is checked against the fragment and rebased once,
 including ignored fix offers. Invalid ranges produce `invalid_validator` even in
-ReleaseFast. Rule severity is authoritative; a custom report cannot secretly
+fast. Rule severity is authoritative; a custom report cannot secretly
 promote a warning rule or bypass an error rule.
 
 The WDP `custom_check_failed`/`custom_check_warning` family identifies the custom
@@ -392,6 +392,14 @@ Both `equals` and `one_of` use this same optional contract. A validator with onl
 `State`/`step` remains supported without modification. Never rely on a batch
 being called: small budgets, poll intervals and unsuitable input can bypass it.
 
+When binding this validator through `WithReader`, **both** `step` and `batch`
+receive a logical value, not the standalone `Value`. Use the context helpers
+shown above; a `batch` that directly reads `value.bytes` is standalone-only.
+To keep a byte-specialized batch and a portable step in one validator, return
+zero without mutation for logical values (for example, a compile-time
+`if (!@hasField(@TypeOf(value), "bytes")) return 0;` guard). The portable step
+then handles that input. No new capability declaration is required.
+
 An optional `check` provides an unmetered fast path, exactly as it does for
 built-ins. It must agree with `step` on acceptance and diagnostics. A step-only
 validator also works unmetered. A check-only validator (including `Predicate`)
@@ -436,7 +444,7 @@ only caller-selected bags or consumer callbacks may allocate. There is no string
 tree, retained processor per value, normalization buffer or source copy.
 
 For a single before/after report, run `zig build perf-string -- --baseline HEAD`.
-It covers native comparisons and sessions in ReleaseFast/ReleaseSafe and saves
+It covers native comparisons and sessions in fast/safe and saves
 timings, ranges, sizes and work counters; see [report options](PERFORMANCE.md#one-command-string-comparison).
 
 Run `zig build test-string`, `zig build bench-string -Doptimize=fast`,
@@ -653,7 +661,7 @@ whole original value (including DOT quotes/glue). `detail`, severity, fail-fast,
 sink stops and generic-failure suppression work as for standalone strings.
 
 Both standalone and bound contexts check location bounds, segment origin and
-native code-unit alignment even in ReleaseFast. Combining `at` with local `span`,
+native code-unit alignment even in fast. Combining `at` with local `span`,
 or `related_at` with local `related`, is invalid. Bound contexts reject local
 `span`/`related` and raw `fix` offers: those cannot safely describe logical host
 edits. This includes offers filtered by `diagnostics.fixes`. Locations are

@@ -44,7 +44,7 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
             return initWith(graph, memory, options);
         }
         inline fn initWith(graph: *const Graph, memory: if (fixed_storage) scratch.EdgeScratch else void, options: anytype) !Self {
-            comptime if (@TypeOf(options) != Options) for (std.meta.fieldNames(@TypeOf(options))) |field| {
+            comptime if (@TypeOf(options) != Options) for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
                 if (!std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !(config.runtime_policy and std.mem.eql(u8, field, "policy")))
                     @compileError("unknown IR edge session option: " ++ field);
             };

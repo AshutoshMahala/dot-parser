@@ -142,7 +142,7 @@ pub fn FixedAttributeScratch(comptime capacities: AttributeScratchCapacities) ty
 }
 /// Arithmetic-only upper bound. Does not walk connections, call hooks or reserve.
 pub fn edgeScratchBounds(graph: anytype, options: anytype) r.Error!EdgeScratchCapacities {
-    comptime for (std.meta.fieldNames(@TypeOf(options))) |field| {
+    comptime for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
         if (!std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !std.mem.eql(u8, field, "policy")) @compileError("unknown IR edge scratch sizing option: " ++ field);
     };
     const g = data(graph);

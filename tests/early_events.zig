@@ -35,6 +35,43 @@ fn Recorder(comptime early: bool, comptime begins: bool) type {
     };
 }
 const Early = Recorder(true, true);
+
+test "aborted consumers do not schedule unused early observations" {
+    const input = "graph { a[x=]; b; c; d -- e; f=g; h -- i -- j; subgraph s { k; } l[x=y]; }";
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |begins| {
+        var work: [2]usize = .{ 0, 0 };
+        var observations: usize = 0;
+        inline for (.{ false, true }, 0..) |early, index| {
+            const Consumer = struct {
+                pub const recover_statements = false;
+                pub const wants_begin_statement = begins;
+                pub const wants_early_events = early;
+                log: Recorder(early, begins) = .{},
+                pub fn onEvent(self: *@This(), event: dot.events.Event) error{Refused}!dot.events.Action {
+                    return self.log.onEvent(event);
+                }
+                pub fn onAbort(self: *@This(), abort: dot.events.Abort) void {
+                    self.log.onAbort(abort);
+                }
+            };
+            const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .execution = .{ .metering = true } } }).Events(Consumer);
+            var sink: Consumer = .{};
+            var frames: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
+            var session = P.Session.init(input, frames.storage(), &sink, discard, .{});
+            defer session.deinit();
+            while (session.result() == null) work[index] += session.advance(1).work_used;
+            try expect(session.result().?.outcome == .invalid_syntax);
+            var aborted = false;
+            for (sink.log.items()) |record| {
+                try expect(!aborted);
+                if (record == .event and isEarly(record.event)) observations += 1;
+                if (record == .abort and record.abort == .document) aborted = true;
+            }
+            try expect(aborted);
+        }
+        try equal(work[0] + observations, work[1]);
+    };
+}
 fn isEarly(event: dot.events.Event) bool {
     return switch (event) {
         .identifier, .statement_head, .document_name, .subgraph_name => true,

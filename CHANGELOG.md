@@ -239,9 +239,11 @@ are marked; no compatibility shims are kept.
 - **Breaking:** require Zig 0.17.0. Build steps, compile-time reflection and
   development tools use the new compiler APIs; optimization modes are
   `debug`, `safe`, `fast` and `small`. Parser policies and execution guarantees
-  are unchanged. Markup sessions gain 16 bytes of standard-library safety
-  metadata in Debug/Safe; Fast/Small sizes are unchanged. Earlier performance
-  tables retain their original toolchain.
+  are unchanged. On the measured 64-bit target, standard-library safety metadata
+  increases Debug/Safe markup sessions by 16 bytes, DOT/markup growable diagnostic
+  bags from 48 to 56 bytes, and `markup.ParseResult` from 176 to 192 bytes.
+  Other ArrayList-owning builders/workspaces can also grow. Fast/Small sizes are
+  unchanged. Earlier performance tables retain their original toolchain.
 - **Breaking (Unreleased API):** `events.Event` adds four early-observation tags
   and two token-preview tags.
   Exhaustive switches must handle them or use `else`; callback delivery stays
@@ -252,6 +254,11 @@ are marked; no compatibility shims are kept.
   not two. Partial retention does not make invalid input valid.
 - **Breaking (Unreleased API):** string `Value.span()` now returns an error union,
   rejecting oversized consumer-constructed views rather than trapping/truncating.
+- **Breaking (Unreleased API):** reader-bound string sessions now invoke optional
+  custom `batch` methods with logical values. Like `step`, a portable `batch`
+  must use reader-compatible helpers or return zero for logical input. Direct
+  `value.bytes` access remains supported only for standalone values. No change
+  to credit costs, cancellation polling or the scalar fallback contract.
 
 - **Breaking:** Graphviz mode now rejects previously unchecked label content
   and values under its default policies. The new rules can be individually
@@ -275,6 +282,15 @@ are marked; no compatibility shims are kept.
 
 ### Fixed
 
+- Token previews report the next statement's context/absent owner during
+  separator-free lookahead, retain owners for preview-only consumers, and
+  recognize separator-free attribute keys. Trailing trivia after `+` no longer
+  creates whitespace-only updates. A queued preview cannot hide an already-found
+  scanner failure behind later cancellation. Aborted consumers no longer incur
+  extra early-observation dispatch work.
+- Replace deprecated Zig reflection/`std.builtin` aliases, share ASCII batch
+  width with logical readers, and correct observation lifecycle, trusted-name
+  guidance and historical benchmark reproduction instructions.
 - Reduced endpoint-port IR overhead in edge expansion, streaming and attribute
   iteration/folding: cache immutable connection/graph facts, isolate port
   preparation and avoid redundant AVL height work. Follow-up repairs keep

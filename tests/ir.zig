@@ -289,7 +289,7 @@ test "IR limits and cancellation fail explicitly without pretending absence" {
     const interpretation = dot.Profile(.{}).interpretation(doc, .{});
     inline for (.{ .{ .max_nodes = 1 }, .{ .max_scopes = 1 }, .{ .max_mentions = 1 }, .{ .max_connections = 0 }, .{ .max_work = 0 }, .{ .max_bytes = 1 } }, .{ error.NodeLimit, error.ScopeLimit, error.MentionLimit, error.ConnectionLimit, error.WorkLimit, error.MemoryLimit }) |limits, err| {
         var settings: dot.ir.Limits = .{};
-        inline for (comptime std.meta.fieldNames(@TypeOf(limits))) |field| @field(settings, field) = @field(limits, field);
+        inline for (comptime @typeInfo(@TypeOf(limits)).@"struct".field_names) |field| @field(settings, field) = @field(limits, field);
         try std.testing.expectError(err, IR.lowerComplete(a, doc, .{ .interpretation = interpretation, .limits = settings }));
     }
     const Stop = struct {
@@ -734,7 +734,7 @@ test "IR streaming limits are cumulative and failures are sticky rather than exh
     defer ir.deinit();
     inline for (.{ .{ .max_pairs = 1 }, .{ .max_edges = 1 }, .{ .max_work = 3 } }, .{ error.PairLimit, error.EdgeLimit, error.WorkLimit }) |limit, err| {
         var settings: dot.ir.Limits = .{};
-        inline for (comptime std.meta.fieldNames(@TypeOf(limit))) |field| @field(settings, field) = @field(limit, field);
+        inline for (comptime @typeInfo(@TypeOf(limit)).@"struct".field_names) |field| @field(settings, field) = @field(limit, field);
         var stream = try ir.edgeIterator(.{ .limits = settings });
         defer stream.deinit();
         try expect(try stream.next() != null);

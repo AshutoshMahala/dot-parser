@@ -161,6 +161,239 @@ test "EOF previews expose raw prefixes with known context but no invented identi
     };
 }
 
+const PreviewOnly = struct {
+    pub const wants_token_previews = true;
+    pub const wants_begin_statement = false;
+    pub const recover_statements = false;
+    log: Sink = .{},
+    pub fn onEvent(self: *@This(), event: dot.events.Event) error{Refused}!dot.events.Action {
+        return self.log.onEvent(event);
+    }
+    pub fn onAbort(self: *@This(), abort: dot.events.Abort) void {
+        self.log.onAbort(abort);
+    }
+    fn items(self: *const @This()) []const Record {
+        return self.log.items();
+    }
+};
+
+test "preview ownership and contexts do not depend on separators or begin notifications" {
+    const cases = .{
+        .{ "graph { a\n \"next", .statement_start },
+        .{ "graph { a -- b \"next", .statement_start },
+        .{ "graph { a -- b -- c \"next", .statement_start },
+        .{ "graph { a[x=1] \"next", .statement_start },
+        .{ "graph { subgraph s {} \"next", .statement_start },
+        .{ "graph { a:p \"next", .statement_start },
+        .{ "graph { a:p:n -- b:q:s \"next", .statement_start },
+        .{ "graph { a[x=1 \"next", .attribute_key },
+        .{ "graph { a -- \"next", .edge_right },
+        .{ "graph { a[label=\"next", .attribute_value },
+    };
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ Sink, PreviewOnly }) |Consumer| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner } }).Events(Consumer);
+        const Metered = dot.Profile(.{ .policy = .{ .scanner = scanner, .execution = .{ .metering = true } } }).Events(Consumer);
+        inline for (cases) |case| {
+            inline for (.{ false, true }) |metered| {
+                const sink = try std.testing.allocator.create(Consumer);
+                defer std.testing.allocator.destroy(sink);
+                sink.* = .{};
+                const source = case[0];
+                if (metered) {
+                    var frames: Metered.FixedParseScratch(.{ .nesting = 2 }) = .{};
+                    var session = Metered.Session.init(source, frames.storage(), sink, discard, .{});
+                    defer session.deinit();
+                    while (session.result() == null) try expect(session.advance(1).work_used <= 1);
+                    try expect(session.result().?.outcome == .invalid_syntax);
+                } else try expect(P.parse(std.testing.allocator, source, sink, discard, .{}).outcome == .invalid_syntax);
+                const start = std.mem.indexOf(u8, source, "\"next").?;
+                var seen = false;
+                for (sink.items()) |record| if (record == .event and record.event == .token_preview) {
+                    const p = record.event.token_preview;
+                    if (p.span.start != start) continue;
+                    seen = true;
+                    try equal(@as(dot.events.PreviewContext, case[1]), p.context);
+                    if (case[1] == .statement_start) {
+                        try expect(p.owner == null);
+                    } else {
+                        try equal(@as(u32, 8), @backingInt(p.owner.?.statement));
+                        try equal(p.scope, p.owner.?.scope);
+                    }
+                };
+                try expect(seen);
+            }
+        }
+    };
+}
+
+test "preview-only consumers get statement aborts and pre-header previews get document aborts" {
+    const P = dot.Profile(.{}).Events(PreviewOnly);
+    var body: PreviewOnly = .{};
+    _ = P.parse(std.testing.allocator, "graph { a[x=\"unfinished", &body, discard, .{});
+    const items = body.items();
+    try expect(items[items.len - 2].abort == .statement);
+    try equal(@as(u32, 8), @backingInt(items[items.len - 2].abort.statement.owner.statement));
+    try expect(items[items.len - 1].abort == .document);
+    var header: PreviewOnly = .{};
+    _ = P.parse(std.testing.allocator, "\"not a graph", &header, discard, .{});
+    try equal(@as(usize, 2), header.items().len);
+    try expect(header.items()[0].event == .token_preview);
+    try expect(header.items()[1].abort == .document);
+}
+
+test "concatenation previews exclude trailing trivia without rescanning it" {
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |comments| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .retention = .{ .comments = comments }, .execution = .{ .metering = true } } }).Events(Sink);
+        const sources = .{
+            "graph { a=\"a\" +    ",
+            "graph { a=\"a\" + /* gap */ \n ",
+            "graph { a=\"a\" + // gap\n    ",
+            "graph { a=\"a\" + # gap\n    ",
+            "graph { a=\"a\" +    \"b\"; }",
+        };
+        inline for (sources) |source| for ([_]usize{ 1, 2, 7, 64, 4096 }) |budget| {
+            const sink = try std.testing.allocator.create(Sink);
+            defer std.testing.allocator.destroy(sink);
+            sink.* = .{};
+            var frames: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
+            var session = P.Session.init(source, frames.storage(), sink, discard, .{});
+            defer session.deinit();
+            while (session.result() == null) try expect(session.advance(budget).work_used <= budget);
+            const plus_end = std.mem.indexOfScalar(u8, source, '+').? + 1;
+            const next_operand = std.mem.indexOf(u8, source, "\"b\"") orelse source.len;
+            var previous: ?dot.events.TokenPreview = null;
+            for (sink.items()) |record| if (record == .event and record.event == .token_preview) {
+                const p = record.event.token_preview;
+                if (p.kind != .concatenation) continue;
+                const end = p.span.endOffset();
+                try expect(end <= plus_end or end > next_operand);
+                if (previous) |old| if (p.reason == .pause) {
+                    try expect(!std.meta.eql(old.span, p.span) or old.kind != p.kind);
+                };
+                previous = p;
+            };
+        };
+    };
+}
+
+test "a queued lexical failure wins over a later explicit or polled cancellation" {
+    const Poll = struct {
+        flag: bool = false,
+        calls: usize = 0,
+        fn requested(raw: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            self.calls += 1;
+            return self.flag;
+        }
+    };
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ 1, 64 }) |interval| inline for (.{ .collect, .fail_fast }) |on_error| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .on_error = on_error, .execution = .{ .metering = true, .cancellation = true, .cancellation_interval = interval } } }).Events(Sink);
+        for ([_][]const u8{ "graph { \"serv", "graph { a=<<b>x", "graph { a=\"x\" + /* bad" }) |source| {
+            // Find the final failure-dispatch credit, not merely a byte frontier:
+            // consuming the last byte alone need not have examined EOF yet.
+            const full_sink = try std.testing.allocator.create(Sink);
+            defer std.testing.allocator.destroy(full_sink);
+            full_sink.* = .{};
+            var full_frames: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
+            var full = P.Session.init(source, full_frames.storage(), full_sink, discard, .{});
+            defer full.deinit();
+            var steps: usize = 0;
+            while (full.result() == null) : (steps += 1) _ = full.advance(1);
+            inline for (.{ false, true }) |explicit| {
+                var hook: Poll = .{};
+                const sink = try std.testing.allocator.create(Sink);
+                defer std.testing.allocator.destroy(sink);
+                sink.* = .{};
+                var bag: dot.FixedDiagnosticBag(4) = .{};
+                var frames: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
+                var session = P.Session.init(source, frames.storage(), sink, bag.sink(), .{ .cancellation = .{ .context = &hook, .is_requested = Poll.requested } });
+                defer session.deinit();
+                for (0..steps - 1) |_| try expect(session.advance(1).result == null);
+                try equal(@as(usize, 0), bag.items().len);
+                const callbacks = sink.callbacks;
+                hook.flag = true;
+                if (explicit) _ = session.cancel() else try equal(@as(usize, 0), session.advance(0).work_used);
+                try expect(session.result().?.outcome == .invalid_syntax);
+                try equal(@as(u32, 1), session.result().?.syntax_errors);
+                try equal(@as(usize, 1), bag.items().len);
+                try equal(callbacks, sink.callbacks); // the preview was abandoned
+                const polls = hook.calls;
+                const records = sink.len;
+                _ = session.run();
+                _ = session.cancel();
+                try equal(@as(usize, 0), session.advance(1).work_used);
+                try equal(polls, hook.calls);
+                try equal(records, sink.len);
+                try equal(@as(usize, 1), bag.items().len);
+            }
+        }
+    };
+}
+
+test "failure precedence also holds inside a single runtime-policy run" {
+    const Poll = struct {
+        calls: usize = 0,
+        stop_at: usize = std.math.maxInt(usize),
+        fn requested(raw: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            self.calls += 1;
+            return self.calls >= self.stop_at;
+        }
+    };
+    const P = dot.Profile(.{ .runtime_policy = true }).Events(Sink);
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |metered| {
+        var last_poll: usize = 0;
+        for (0..2) |pass| {
+            var hook: Poll = .{ .stop_at = if (pass == 0) std.math.maxInt(usize) else last_poll };
+            var sink: Sink = .{};
+            var frames: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
+            var bag: dot.FixedDiagnosticBag(4) = .{};
+            var session = try P.Session.init("graph { \"serv", frames.storage(), &sink, bag.sink(), .{
+                .policy = .{ .scanner = scanner, .execution = .{ .metering = metered, .cancellation = true } },
+                .cancellation = .{ .context = &hook, .is_requested = Poll.requested },
+            });
+            defer session.deinit();
+            try expect(session.run().outcome == .invalid_syntax);
+            try equal(@as(u32, 1), session.result().?.syntax_errors);
+            try equal(@as(usize, 1), bag.items().len);
+            last_poll = hook.calls;
+        }
+    };
+}
+
+test "cancellation retains a recoverable scanner finding without resuming recovery" {
+    inline for (.{ .scalar, .block }) |scanner| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .execution = .{ .metering = true } } }).Events(Sink);
+        const source = "graph { a=\"x\" + b; after; }";
+        var full_sink: Sink = .{};
+        var full_frames: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
+        var full = P.Session.init(source, full_frames.storage(), &full_sink, discard, .{});
+        defer full.deinit();
+        var steps: usize = 0;
+        reject: while (full.result() == null) {
+            const before = full_sink.len;
+            _ = full.advance(1);
+            steps += 1;
+            for (full_sink.items()[before..]) |record| if (record == .event and record.event == .token_preview_end and record.event.token_preview_end.reason == .rejected) break :reject;
+        }
+        try expect(full.result() == null); // the ordinary parser could recover
+        var sink: Sink = .{};
+        var frames: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
+        var bag: dot.FixedDiagnosticBag(4) = .{};
+        var session = P.Session.init(source, frames.storage(), &sink, bag.sink(), .{});
+        defer session.deinit();
+        for (0..steps - 1) |_| _ = session.advance(1);
+        try equal(@as(usize, 0), bag.items().len);
+        const callbacks = sink.callbacks;
+        const result = session.cancel();
+        try expect(result.outcome == .cancelled);
+        try equal(@as(u32, 1), result.syntax_errors);
+        try equal(@as(usize, 1), bag.items().len);
+        try equal(callbacks, sink.callbacks);
+        try expect(sink.items()[sink.len - 1].abort == .document);
+    }
+}
+
 test "pause previews have separately charged lifecycle events and unchanged core work" {
     const input = "digraph G { \"alpha\" /*join*/ + <b>:p -> beta [label=\"Straße 中文 😀\"]; x=12.5; bad[x=]; after; }";
     inline for (.{ .scalar, .block }) |scanner| {

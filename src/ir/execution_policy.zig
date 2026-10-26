@@ -47,7 +47,7 @@ pub fn option(comptime T: type, value: anytype) T {
         return option(@typeInfo(T).optional.child, value);
     }
     if (@typeInfo(T) != .@"struct") return value;
-    comptime for (@import("std").meta.fieldNames(@TypeOf(value))) |field| {
+    comptime for (@typeInfo(@TypeOf(value)).@"struct".field_names) |field| {
         if (!@hasField(T, field)) @compileError("unknown IR option field: " ++ field);
     };
     var result: T = undefined;

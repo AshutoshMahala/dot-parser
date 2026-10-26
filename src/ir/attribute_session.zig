@@ -117,7 +117,7 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         inline fn initWith(view: anytype, key: if (all) void else []const u8, memory: if (fixed_storage) scratch.AttributeScratch else void, options: anytype) !Self {
             const V = @TypeOf(view);
             if (comptime !accepts(V)) @compileError("attribute sessions require a compatible IR component view");
-            comptime if (@TypeOf(options) != Options) for (std.meta.fieldNames(@TypeOf(options))) |field| {
+            comptime if (@TypeOf(options) != Options) for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
                 if (!std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !(config.runtime_policy and std.mem.eql(u8, field, "policy")))
                     @compileError("unknown IR attribute session option: " ++ field);
             };

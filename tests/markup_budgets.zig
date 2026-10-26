@@ -89,7 +89,7 @@ test "default bag bounds tolerated-reference floods and latched sessions do no m
 }
 
 test "untrusted is a complete resource-only preset with runtime inheritance and reset" {
-    inline for (comptime std.meta.fieldNames(@TypeOf(markup.presets.untrusted.limits))) |field| {
+    inline for (comptime @typeInfo(@TypeOf(markup.presets.untrusted.limits)).@"struct".field_names) |field| {
         try expect(@field(markup.presets.untrusted.limits, field) != null);
         try expect(@field(markup.presets.untrusted.limits, field).? < std.math.maxInt(u32));
     }

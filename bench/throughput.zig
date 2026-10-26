@@ -2,7 +2,7 @@
 //! R-PERF-004). Synthesizes a large milestone-grammar document and times
 //! `parseAndValidate` over it, with and without capacity hints.
 //!
-//! Run with: `zig build bench -Doptimize=ReleaseFast`
+//! Run with: `zig build bench -Doptimize=fast`
 
 const std = @import("std");
 const dot = @import("dot_parser");

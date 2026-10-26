@@ -60,7 +60,7 @@ fn optionalOption(comptime T: type, value: anytype) ?T {
         else => {},
     }
     comptime {
-        for (std.meta.fieldNames(@TypeOf(value))) |field| {
+        for (@typeInfo(@TypeOf(value)).@"struct".field_names) |field| {
             if (!@hasField(T, field)) @compileError("unknown IR materialization option field: " ++ field);
         }
     }
@@ -470,7 +470,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         /// attribute selection and runtime options; no hidden preparation pass.
         pub inline fn materializationSession(self: *const Self, options: anytype) r.Error!MaterializationSession(if (@hasField(@TypeOf(options), "attributes")) options.attributes else true) {
             comptime {
-                for (std.meta.fieldNames(@TypeOf(options))) |field| {
+                for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
                     if (!std.mem.eql(u8, field, "attributes") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation"))
                         @compileError("unknown IR materialization option: " ++ field);
                 }
@@ -489,7 +489,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         /// instantiated by the topology-only specialization.
         pub inline fn materialize(self: *const Self, options: anytype) r.Error!(if (if (@hasField(@TypeOf(options), "attributes")) options.attributes else true) Materialized else MaterializedTopology) {
             comptime {
-                for (std.meta.fieldNames(@TypeOf(options))) |field| {
+                for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
                     if (!std.mem.eql(u8, field, "attributes") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation"))
                         @compileError("unknown IR materialization option: " ++ field);
                 }

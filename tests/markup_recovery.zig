@@ -7,7 +7,7 @@ const deep = std.testing.expectEqualDeep;
 const discard = markup.diagnostic.discard;
 
 test "collect is the markup recovery default and presets expose the same two choices" {
-    try equal(@as(usize, 2), std.meta.fieldNames(markup.OnError).len);
+    try equal(@as(usize, 2), @typeInfo(markup.OnError).@"enum".field_names.len);
     try equal(markup.OnError.collect, markup.Profile(.{}).baseline.on_error);
     try equal(markup.OnError.collect, markup.presets.standard.on_error.?);
     try equal(markup.OnError.collect, markup.presets.untrusted.on_error.?);

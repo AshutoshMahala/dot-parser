@@ -7,7 +7,7 @@ const Runtime = dot.Profile(.{ .runtime_policy = true });
 const Storage = dot.FixedDocumentStorage(.{ .statements = 16, .nodes = 16, .edges = 16, .attributes = 16, .subgraphs = 8, .scoped_edges = 8, .scoped_edge_links = 8, .edge_chains = 8, .edge_links = 16, .ported_references = 16, .assignments = 8, .attribute_statements = 8 });
 
 test "collect is the default while explicit fail-fast remains available" {
-    try equal(@as(usize, 2), std.meta.fieldNames(dot.OnError).len);
+    try equal(@as(usize, 2), @typeInfo(dot.OnError).@"enum".field_names.len);
     try equal(dot.OnError.collect, dot.Profile(.{}).baseline.parsing.on_error);
     try equal(dot.OnError.collect, dot.presets.standard.on_error.?);
     try equal(dot.OnError.collect, dot.presets.lenient.on_error.?);
@@ -370,7 +370,7 @@ test "fixed settings have no runtime storage and disabled controls are absent" {
     const Variants = @FieldType(Runtime.Session, "driver");
     var total: usize = 0;
     var largest: usize = 0;
-    inline for (comptime std.meta.fieldNames(Variants)) |field| {
+    inline for (comptime @typeInfo(Variants).@"union".field_names) |field| {
         total += @sizeOf(@FieldType(Variants, field));
         largest = @max(largest, @sizeOf(@FieldType(Variants, field)));
     }

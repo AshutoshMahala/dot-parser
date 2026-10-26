@@ -86,8 +86,9 @@ after pre-header comment delivery can produce document abort without a header.
 No callbacks follow document abort or successful document commit.
 
 With early observations enabled, a complete document name can also arrive
-before `begin_document`. Failure after that observation produces document abort,
-even if the opening `{` never arrives.
+before `begin_document`. Token previews can likewise arrive before a header,
+even for input that never becomes DOT. Failure after either observation produces
+document abort, even if the opening `{` never arrives.
 
 `onEvent` returns `.proceed` or `.stop`, or a consumer-defined error. The result
 distinguishes `.event_stopped` and `.event_failure` from syntax, diagnostic and
@@ -106,8 +107,9 @@ This exposes recognized names before a statement completes. For example,
 `statement_head` of `.node`, but no `commit_node`. An editor can retain that
 observation as a provisional outline entry while still reporting the syntax
 error. Ordinary consumers receive neither of these extra callbacks.
-The shared `Event` type gains the four tags below even when the consumer opts
-out: existing exhaustive switches must handle them or add `else => {}`.
+The shared `Event` type gains these four early-observation tags and the two
+preview tags below even when the consumer opts out: existing exhaustive switches
+must handle all six or add `else => {}`.
 
 | Event | Payload and timing |
 | --- | --- |
@@ -131,7 +133,10 @@ encoding available even before `begin_document`. IDs remain local to one parse,
 not stable identities across edits.
 
 These are provisional facts, not commits, repairs or a partial document tree.
-Commit/abort semantics are unchanged. An outline may deliberately keep an
+Commits still certify completed statements, not observations. Opting into either
+early events or previews also tracks statement ownership when begin notifications
+and statement recovery are disabled, so those consumers can now receive a
+statement abort followed by document abort. An outline may deliberately keep an
 aborted observation marked provisional; an atomic graph/index must discard it.
 Complete lexical names qualify for `identifier.assumeParsed`, even when their
 enclosing statement fails. Unfinished input is not guessed into a name. The
@@ -166,7 +171,9 @@ aborts. Quoted, HTML-like and concatenated expressions are supported at EOF.
 While a session is scanning, previews can additionally describe `word` and
 `numeral` prefixes. A word might become a keyword; even a closed quoted operand
 can still acquire a concatenated suffix. This slice does not preview comments,
-operators or whitespace. Comment retention remains a separate option.
+operators or whitespace as separate previews. Concatenation spans include their
+internal glue, but trailing trivia after `+` does not extend a prefix or trigger
+whitespace-only updates. Comment retention remains a separate option.
 
 Spans include their written delimiters and borrow original bytes. They may end
 inside a UTF-8 scalar or escape; they are **not** valid input for
@@ -179,7 +186,10 @@ Contexts include document/subgraph names, statement starts, right/link edge
 endpoints, attribute keys/values, assignment values and ports. Ambiguous
 lookahead and recovery use `unknown`. An owner is absent until an actual
 statement occurrence has begun: a prefix alone does not allocate a statement
-or scope identity. Use the source start to correlate updates, not the spelling.
+or scope identity. In separator-free DOT, a new statement's prefix does not
+belong to the preceding statement while its commit awaits lookahead. Ownership
+does not require enabling begin notifications or early events. Use the source
+start to correlate updates, not the spelling.
 
 Replace a previous preview at the same start with each update. Retire it on
 `token_preview_end`; a document abort abandons all remaining previews without
@@ -200,9 +210,13 @@ Pause previews depend on budget partition and scanner backend; their sequence
 is not a token stream or a stable outline. A `run()` does not pause to manufacture
 previews. Consumer stop/failure and cancellation keep their existing terminal
 semantics; a queued preview may never be delivered if the operation is stopped.
+Cancellation abandons the observation, not a scanner failure already found:
+that finding is reported first. An unrecoverable failure remains `invalid_syntax`;
+if recovery was possible, cancellation stops it with the finding retained.
 Callback work remains caller work. Enabling previews adds fixed-size state and
 callback work, but no parser allocation, source copy or nesting-frame growth.
-Disabled profiles compile that state and dispatch out. Compare costs with
+Disabled profiles compile that state, scanner-boundary bookkeeping and dispatch
+out. Compare costs with
 `zig build bench-previews -Doptimize=fast`.
 
 ## Recovery and retained output
@@ -246,8 +260,12 @@ identifier, a consumer can skip that check without retaining a `Document`:
 
 `assumeParsed` borrows the source with an explicit syntax-validity precondition.
 It does not validate a span or make a provisional statement valid. Use only
-identifier fields from events, not `begin_statement.start` (which can be a
-keyword or brace), `skipped.span`, or `token_preview.span`. For native input,
+identifier fields from events: `identifier.span`, document/subgraph `name`,
+node identifiers, attribute keys/values, and non-scoped edge endpoints. Do not
+use `begin_statement.start`, `statement_head.start`, `begin_scope.start`, keyword
+spans, `skipped.span`, or `token_preview.span`. An edge's `left`/`right` is a
+scope-introducing keyword or brace when `left_scope`/`right_scope` is non-null,
+not an identifier. For native input,
 select `identifier.ForEncoding(actual)` from the document-begin encoding
 (or `document_name.source_info` for an early header name).
 Those native helpers can reject malformed encoding: propagate `InvalidIdentifier`
@@ -258,7 +276,7 @@ Hashing/comparison in callbacks is consumer work, not parser-session credits.
 `zig build bench-identifiers -Doptimize=fast` compares the checked and
 trusted paths in an event-only name index, with source generation and identical
 table reservation outside timing. It reports parse-plus-index time, decimal
-MB/s and index storage. Use `ReleaseSafe` or `ReleaseSmall` for those modes.
+MB/s and index storage. Use `safe` or `small` for those modes.
 
 ## Sessions and encodings
 

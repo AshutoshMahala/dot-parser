@@ -559,7 +559,7 @@ hand, you must keep the parser's rules:
   that element
 
 Validation assumes these storage rules hold; it doesn't repair or certify
-caller-built pools. Debug and `ReleaseSafe` builds catch some mistakes with
+caller-built pools. Debug and `safe` builds catch some mistakes with
 assertions.
 
 In a partial document, `subtree_end == 0` marks an unfinished

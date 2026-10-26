@@ -244,7 +244,7 @@ fn encoded(comptime actual: s.ActualEncoding, source: []const u8, buffer: []u8) 
                 at += len;
             },
             .utf16le, .utf16be => {
-                const endian: std.builtin.Endian = if (actual == .utf16le) .little else .big;
+                const endian: std.lang.Endian = if (actual == .utf16le) .little else .big;
                 if (cp < 0x10000) {
                     std.mem.writeInt(u16, buffer[at..][0..2], @intCast(cp), endian);
                     at += 2;

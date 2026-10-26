@@ -11,7 +11,7 @@ pub inline fn decode(bytes: []const u8) ?Decoded {
     return decodeWith(.auto, bytes);
 }
 
-inline fn decodeWith(comptime scalar_call: std.builtin.CallModifier, bytes: []const u8) ?Decoded {
+inline fn decodeWith(comptime scalar_call: std.lang.CallModifier, bytes: []const u8) ?Decoded {
     if (bytes.len == 0) return null;
     const len = std.unicode.utf8ByteSequenceLength(bytes[0]) catch return null;
     if (len > bytes.len) return null;
@@ -24,7 +24,7 @@ pub inline fn sequenceLength(bytes: []const u8) ?u3 {
     // Safe length-only consumers benefit from seeing the scalar checks without
     // an error-union call/return. Fast/Small and scalar-valued consumers keep
     // the compiler's normal inlining decision; forcing it there costs throughput.
-    const scalar_call: std.builtin.CallModifier = if (@import("builtin").mode == .safe) .always_inline else .auto;
+    const scalar_call: std.lang.CallModifier = if (@import("builtin").mode == .safe) .always_inline else .auto;
     return if (decodeWith(scalar_call, bytes)) |value| value.len else null;
 }
 

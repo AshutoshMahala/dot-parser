@@ -311,7 +311,7 @@ from `markup.presets.untrusted`, which already sets finite
    cap. The default growable bag already stops at 1,024 diagnostics.
 4. **Bound the time** if that matters to you. Use
    [step-by-step parsing](EXECUTION.md) with your own overall budget.
-5. **Build with `ReleaseSafe`** at the boundary, so unexpected bugs stop the
+5. **Build with `safe`** at the boundary, so unexpected bugs stop the
    program instead of continuing silently.
 6. **Treat values as bytes.** They can contain any byte, including NUL. Check
    before passing them to C functions that expect NUL-terminated strings.

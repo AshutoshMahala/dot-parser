@@ -13,6 +13,18 @@ commands use `fast`, `safe` and `small` (previously `ReleaseFast`,
 `ReleaseSafe` and `ReleaseSmall`). Re-measure with the same compiler on both
 sides when comparing revisions.
 
+For a current working-tree comparison, use a Zig-0.17-compatible baseline:
+
+```sh
+zig build perf-string -- --baseline HEAD --modes fast,safe,small --runs 3
+```
+
+`HEAD` compares the committed baseline to the working tree; choose another
+0.17-compatible revision when appropriate. The current reporter builds both
+sides with one compiler. It cannot reproduce the older 0.16 studies below by
+passing their baseline hashes to Zig 0.17, and its `--modes` option does not
+accept the legacy `Release*` names.
+
 Reading the tables:
 
 - **MB** means 1,000,000 bytes, and **MB/s** means MB per second.
@@ -41,7 +53,7 @@ Reading the tables:
 ## Document-to-IR topology (Unreleased, 2026-10-21)
 
 First production baseline, not a comparison against a shipped IR. Apple M4 Pro,
-Zig 0.17.0; `zig build bench-ir -Doptimize=ReleaseFast` and `ReleaseSafe`.
+Zig 0.17.0; `zig build bench-ir -Doptimize=fast` and `safe`.
 Nine timed samples after two warmups, median shown. Parsing/source construction
 and destruction are outside lowering timing. Allocations during lowering are
 included; this uses the process general-purpose allocator.
@@ -95,7 +107,7 @@ Same machine/toolchain, ReleaseFast. Five alternating process runs against
 `5c36bd3`, each reporting the median of nine timed samples after two warmups;
 the table uses the median of those five reports. Expansion includes scratch
 and output allocation, but excludes parsing, lowering, consumer output/I/O
-and destruction. `zig build bench-ir -Doptimize=ReleaseFast` now reports both
+and destruction. `zig build bench-ir -Doptimize=fast` now reports both
 owning and streaming expansion, including their requested allocation peaks.
 
 | Workload | Emitted edges | Materialize before ms | Materialize now ms | Stream ms | Materialize peak bytes | Stream peak bytes |
@@ -131,8 +143,8 @@ output and destruction are outside lowering time. Reproduce the topology and
 attribute reports together with:
 
 ```sh
-zig build bench-ir -Doptimize=ReleaseFast
-zig build bench-ir -Doptimize=ReleaseSafe
+zig build bench-ir -Doptimize=fast
+zig build bench-ir -Doptimize=safe
 ```
 
 **This is additional semantic work:** the baseline retained raw attributes but
@@ -295,7 +307,7 @@ The retained implementation inlines only the thin view wrapper and preserves
 the expansion engine's compact return type. Work, pair, memory and cancellation
 checks were not removed to obtain these results.
 
-`zig build bench-ir -Doptimize=ReleaseFast` now also runs
+`zig build bench-ir -Doptimize=fast` now also runs
 [`bench/ir_values.zig`](../bench/ir_values.zig): kind classification, operand
 iteration, formatting, bounded writing, owning output and a benchmark-only
 one-byte-per-written-attribute kind cache. Repeat with ReleaseSafe as needed.
@@ -389,7 +401,7 @@ Timing differences had overlapping run ranges (including the noisy product-prefi
 stream); they are not evidence of added default-path work. This comparison does
 not resolve the earlier view-wrapper streaming caveat recorded above.
 
-Run `zig build bench-ir-materialized -Doptimize=ReleaseFast` (or ReleaseSafe)
+Run `zig build bench-ir-materialized -Doptimize=fast` (or `safe`)
 for the focused report. `zig build bench-ir` includes it after the existing
 topology, compact-attribute and value benchmarks, sequentially. See
 [`bench/ir_materialized_attributes.zig`](../bench/ir_materialized_attributes.zig).
@@ -548,7 +560,7 @@ compact/folded attribute reads. The saved Graphviz reference corpus still
 matches all 256 generated graphs (4,850 edges / 9,700 port values).
 
 Reproduce the focused workloads with `zig build bench-ir-materialized` and
-`zig build bench-ir`, selecting `-Doptimize=ReleaseFast` or `ReleaseSafe`.
+`zig build bench-ir`, selecting `-Doptimize=fast` or `safe`.
 The broader command also covers ordinary attribute queries and value access.
 
 ### Endpoint-port follow-up: attribute reads (2026-10-23)
@@ -687,17 +699,14 @@ A separate standalone comparison covered 54 native and 84 session cases per
 mode: aggregate time changes ranged from −0.59% to +0.40%, with no changed
 session sizes, metering credits or cancellation-poll counts.
 
-Reproduce the host study with one command:
-
-```sh
-zig build perf-string -- --baseline fb64cc9 \
-  --suites host-defaults,integration \
-  --modes ReleaseFast,ReleaseSafe,ReleaseSmall --runs 5
-```
+This historical host study used baseline `fb64cc9`, suites
+`host-defaults,integration`, and five runs under Zig 0.16 with its then-current
+reporter. Reproducing these numbers requires the original compatible snapshots
+and toolchain; `fb64cc9` cannot be built by the current Zig 0.17 reporter.
 
 Use `--suites native,sessions` for the standalone study, and `logical` for
 explicit reader-bound sessions; all five suites can share one report.
-`zig build bench-string-integration -Doptimize=ReleaseFast`
+`zig build bench-string-integration -Doptimize=fast`
 also prints allocator-request totals. See [string integration](STRINGS.md#attribute-processing-in-dot-and-markup)
 for precedence, scheduling and partial-result semantics.
 
@@ -766,19 +775,18 @@ The latter is `WithReader(LogicalReader(...))`, not standalone string parsing.
 These non-target control cases remain recorded, not hidden by the long-value
 gains. The final suite has no flagged Small end-to-end integration slowdowns.
 
-Reproduce the complete comparison:
-
-```sh
-zig build perf-string -- --baseline b58db00 \
-  --suites host-defaults,integration,logical,native,sessions \
-  --modes ReleaseFast,ReleaseSafe,ReleaseSmall --runs 3
-```
+The historical comparison used baseline `b58db00`, suites
+`host-defaults,integration,logical,native,sessions`, and three runs with the
+compatible pre-migration toolchain/report snapshot. It is not reproducible by
+building that baseline with today's Zig 0.17 compiler. Use a compatible baseline
+and the current command above for new measurements, not as a reproduction of
+this table.
 
 ## Parser-recognized names (Unreleased)
 
 Measured on this machine with Zig 0.16.0 on 2026-10-20 using
-`zig build bench-identifiers -Doptimize=ReleaseFast` (and `ReleaseSafe` /
-`ReleaseSmall`). Each fixture contains 10,000 node statements and 1,000 unique
+`zig build bench-identifiers -Doptimize=fast` (and `safe` /
+`small`). Each fixture contains 10,000 node statements and 1,000 unique
 names. The event consumer builds a hash-based reference index, without a syntax
 tree. Source generation and equal table reservations are outside timing.
 Numbers are medians of nine alternating samples, four parses per sample.
@@ -828,6 +836,10 @@ guarantee; use the code-generation comparison as the disabled-path evidence.
 counting callbacks on 10,000 `a[x=1];` statements (80,010 bytes, including a named
 header) measured the following in ReleaseFast. Nine alternating timed batches
 of four parses followed three warmup batches; source construction was excluded.
+This is a **historical Zig 0.16, one-off harness** which was not committed.
+The table is not a current Zig 0.17 overhead guarantee or a reproducible committed
+benchmark. Enabled costs depend on the consumer's callback work as well as the
+parser; counting tags and consuming full event payloads are different workloads.
 
 | Execution | Scalar off → on | Block off → on |
 | --- | ---: | ---: |
@@ -894,6 +906,38 @@ additional byte and therefore materially increase time/callback volume. Larger
 budgets coalesce observations without coarsening lexical credits or cancellation
 guarantees. Use the report to choose a UI resume budget, not to infer a regression
 in ordinary parsing with previews disabled.
+
+### Preview correctness follow-up (2026-10-25)
+
+Checked against `a484fef`, Apple M4 Pro, Zig 0.17.0. Preview-only scanner
+bookkeeping is specialized at compile time: ordinary scanners do not record
+the unfinished `+` boundary. The complete machine-code (`__text`) sections of
+the existing policy, metering and string-integration benchmarks are byte-identical
+to the baseline in all three optimized modes:
+
+| Benchmark | `fast` code bytes | `safe` code bytes | `small` code bytes |
+| --- | ---: | ---: | ---: |
+| `bench/policies.zig` | 612,172 | 677,788 | 267,252 |
+| `bench/metering.zig` | 1,184,456 | 1,038,172 | 421,020 |
+| `bench/string_integration.zig` | 440,968 | 490,776 | 182,836 |
+
+These are whole-harness code sizes, not library-only or file sizes. They cover
+fixed/runtime policies, ordinary/metered/cancellable parsing and string
+processing, with token previews disabled. This is stronger evidence for the
+unchanged default path than noisy sub-millisecond timing differences; it is not
+a claim that every application produces identical code.
+Final before/after smoke runs of those harnesses and `bench/previews.zig` in all
+three modes also agreed on work credits, poll counts, callback counts, session
+sizes and integration allocation totals for their unchanged fixtures. Timing
+samples fluctuated even for identical code, so no percentage speedup is claimed.
+
+The fixes add no fields, allocations or source copies. Preview-enabled sessions
+keep their existing credit/polling contract; trailing whitespace after `+` now
+omits redundant preview callbacks and their credits, not scanner work. Tests
+cover both scanners, one-credit resumes, cancellation between failure detection
+and preview delivery, recoverable failures, runtime policies and event-sink
+stop/failure. The existing checked-identifier helper inlining interaction and
+broader observation/API redesign are not addressed by this correctness pass.
 
 ## Standalone strings (Unreleased)
 
@@ -979,7 +1023,7 @@ These hot-buffer microbenchmarks do not establish a universal percentage bound
 for every application/profile; no new default-path work or instructions were added.
 
 For opt-in execution, run
-`zig build bench-string-sessions -Doptimize=ReleaseFast`. These are medians of
+`zig build bench-string-sessions -Doptimize=fast`. These are medians of
 three alternating before/after runs, each with seven measured batches after two
 warmups. They include session init, execution and consuming the result; inputs
 are allocated outside timing, and diagnostics are discarded. Values use exact
@@ -1038,9 +1082,9 @@ Measured on 2026-10-19, Apple M4 Pro, Zig 0.16.0, against `6661630`
 alternating process runs per side, seven timed batches after two warmups, and
 the same captured harness for both source trees:
 
-```sh
-zig build perf-string -- --baseline 6661630 --modes ReleaseFast,ReleaseSafe,ReleaseSmall --runs 3
-```
+This used baseline `6661630` and the then-current Zig 0.16 reporter. The current
+reporter cannot build that baseline with Zig 0.17; use compatible snapshots and
+the original compiler to reproduce this historical comparison.
 
 Geometric mean **time** changes; negative means faster. These are overlapping
 groups, not quantities to add. The 18 newly available native ASCII-comparison
@@ -1099,7 +1143,7 @@ folding and 10,247 for Unicode folding; only the last retains the Unicode table.
 
 ### Simulated string passthrough versus processing
 
-`zig build bench-string-passthrough -Doptimize=ReleaseFast` uses the **actual DOT
+`zig build bench-string-passthrough -Doptimize=fast` uses the **actual DOT
 lexer** to scan one quoted identifier through EOF, then optionally hands the
 borrowed contents to the standalone string processor. Every timed variant calls
 the same scanner helper. This is a benchmark simulation, not implemented
@@ -1234,6 +1278,8 @@ retain the sizes above. These are constant session costs, not per-node
 allocations; DOT's guarded session and scanner sizes are unchanged.
 Other growable builders/workspaces also inherit the per-list safety-lock
 overhead; these locks are compiled out in `fast` and `small`.
+For example, DOT/markup growable diagnostic bags grow from 48 to 56 bytes,
+and `markup.ParseResult` from 176 to 192 bytes in `debug`/`safe`.
 
 Changes since 0.4.0 to these sizes:
 
@@ -1788,7 +1834,7 @@ existing Document padding; metering credits/cancellation guarantees are unchange
 
 ### What partial coverage costs
 
-Run `zig build bench-ir-partial -Doptimize=ReleaseFast`. This new harness warms
+Run `zig build bench-ir-partial -Doptimize=fast`. This new harness warms
 each path for 100 ms, then reports nine samples, allocation payload/peak,
 arena capacity, qualified attribute access, mention iteration and pair queries.
 The following medians are from five processes; parsing is outside timing.
@@ -1859,7 +1905,7 @@ strict-query regression through extra return-value copies. The final code
 specializes budget ownership in the existing query body and restores the
 baseline code generation; lookup and coverage still share one work budget.
 
-Run `zig build bench-ir-partial-edges -Doptimize=ReleaseFast` for the new focused
+Run `zig build bench-ir-partial-edges -Doptimize=fast` for the new focused
 report (Safe/Small are also supported). It parses/lowers outside timing, warms
 each path for 100 ms and takes nine samples. The table below is the median of
 five serial process runs, with no concurrent builds or timed workloads. The

@@ -124,16 +124,16 @@ pub fn resolve(base: Effective, patch: Policy) Effective {
     if (patch.diagnostics.fixes) |value| result.diagnostics.fixes = value;
     if (patch.diagnostics.unsupported) |value| result.diagnostics.unsupported = value;
     if (patch.syntax.malformed_reference) |value| result.syntax.malformed_reference = value;
-    inline for (comptime std.meta.fieldNames(@TypeOf(patch.limits))) |field| {
+    inline for (comptime @typeInfo(@TypeOf(patch.limits)).@"struct".field_names) |field| {
         if (@field(patch.limits, field)) |value| @field(result.limits, field) = value;
     }
-    inline for (comptime std.meta.fieldNames(@TypeOf(patch.execution))) |field| {
+    inline for (comptime @typeInfo(@TypeOf(patch.execution)).@"struct".field_names) |field| {
         if (@field(patch.execution, field)) |value| @field(result.execution, field) = value;
     }
     if (patch.validation.duplicate_attribute) |v| result.validation.duplicate_attribute = v;
     if (patch.validation.invalid_encoding) |v| result.validation.invalid_encoding = v;
     inline for (.{ "names", "references", "graphviz" }) |group| {
-        inline for (comptime std.meta.fieldNames(@TypeOf(@field(patch.validation, group)))) |field| {
+        inline for (comptime @typeInfo(@TypeOf(@field(patch.validation, group))).@"struct".field_names) |field| {
             if (@field(@field(patch.validation, group), field)) |value|
                 @field(@field(result.validation, group), field) = value;
         }
@@ -179,7 +179,7 @@ pub const presets = struct {
             .max_attributes = 200_000,
             .max_nesting = 256,
         };
-        for (std.meta.fieldNames(@TypeOf(input.limits))) |field| {
+        for (@typeInfo(@TypeOf(input.limits)).@"struct".field_names) |field| {
             if (!@hasField(@TypeOf(budgets), field))
                 @compileError("untrusted preset needs an explicit budget for " ++ field);
             const value: u32 = @field(budgets, field);

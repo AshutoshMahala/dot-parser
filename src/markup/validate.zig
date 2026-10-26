@@ -222,7 +222,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             return result;
         }
         fn scopeRequested(result: Result) bool {
-            inline for (comptime std.meta.fieldNames(@TypeOf(result.checks))) |field| {
+            inline for (comptime @typeInfo(@TypeOf(result.checks)).@"struct".field_names) |field| {
                 if (@field(result.checks, field) != .not_run) return true;
             }
             return false;
@@ -314,7 +314,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
             }
             if (!encodingThrough(bounded_source, end, &offset, poller, &result, sink, settings, hook)) return result;
             const complete = scope != .opening_header or scope.opening_header.complete;
-            inline for (comptime std.meta.fieldNames(@TypeOf(result.checks))) |field| {
+            inline for (comptime @typeInfo(@TypeOf(result.checks)).@"struct".field_names) |field| {
                 const missing = if (comptime std.mem.eql(u8, field, "graphviz_attributes")) gaps.attributes else if (comptime std.mem.eql(u8, field, "graphviz_values")) gaps.values else false;
                 if (@field(result.checks, field) != .not_run)
                     @field(result.checks, field) = if (!complete or missing) .incomplete else .complete;
@@ -353,7 +353,7 @@ pub fn ValidatorForEncoding(comptime actual: support.encoding.Actual, comptime f
                 .complete, .incomplete => recordGap(&result, document.retained_end),
                 else => {},
             }
-            inline for (comptime std.meta.fieldNames(@TypeOf(result.checks))) |field| {
+            inline for (comptime @typeInfo(@TypeOf(result.checks)).@"struct".field_names) |field| {
                 // Encoding is independent of syntax if every source byte was read.
                 const all_bytes = comptime std.mem.eql(u8, field, "invalid_encoding");
                 if (@field(result.checks, field) == .complete and !(all_bytes and document.retained_end == document.source.len))

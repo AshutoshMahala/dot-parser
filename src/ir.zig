@@ -199,7 +199,7 @@ pub fn Lowering(comptime config: Config) type {
         fn sessionInit(comptime partial: bool, allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype) !(if (partial) PartialLoweringSession else LoweringSession) {
             comptime {
                 if (!@hasField(@TypeOf(options), "interpretation")) @compileError("lowering session requires .interpretation from the accepting DOT profile");
-                for (std.meta.fieldNames(@TypeOf(options))) |field| {
+                for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
                     if (!std.mem.eql(u8, field, "interpretation") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !(config.runtime_policy and std.mem.eql(u8, field, "policy"))) @compileError("unknown IR lowering session option: " ++ field);
                 }
             }
@@ -223,7 +223,7 @@ pub fn Lowering(comptime config: Config) type {
         pub fn lowerPartial(allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype) Error!PartialGraph {
             comptime {
                 if (!@hasField(@TypeOf(options), "interpretation")) @compileError("lowerPartial requires .interpretation from the accepting DOT profile");
-                for (std.meta.fieldNames(@TypeOf(options))) |field| {
+                for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
                     if (!std.mem.eql(u8, field, "interpretation") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation")) @compileError("unknown IR lowering option: " ++ field);
                 }
             }
@@ -244,7 +244,7 @@ pub fn Lowering(comptime config: Config) type {
         pub fn lowerComplete(allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype) Error!Graph {
             comptime {
                 if (!@hasField(@TypeOf(options), "interpretation")) @compileError("lowerComplete requires .interpretation from the accepting DOT profile");
-                for (std.meta.fieldNames(@TypeOf(options))) |field| {
+                for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
                     if (!std.mem.eql(u8, field, "interpretation") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation")) @compileError("unknown IR lowering option: " ++ field);
                 }
             }

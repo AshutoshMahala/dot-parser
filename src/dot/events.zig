@@ -42,10 +42,13 @@ pub const Node = struct { identifier: location.Span, port: ?u32 = null };
 pub const Edge = struct {
     left_scope: ?u32 = null,
     right_scope: ?u32 = null,
+    /// Complete identifier only when left_scope is null; otherwise the written
+    /// scope introducer (`subgraph` or `{`), not a trusted name.
     left: location.Span,
     left_port: ?u32 = null,
     operator: EdgeOperator,
     operator_span: location.Span,
+    /// As for left: right_scope distinguishes a name from a scope introducer.
     right: location.Span,
     right_port: ?u32 = null,
 };
@@ -104,7 +107,8 @@ pub const TokenPreview = struct {
     reason: enum { pause, eof },
     context: PreviewContext,
     scope: ScopeId,
-    /// Absent until a statement occurrence has actually begun.
+    /// Absent until this prefix's statement occurrence has actually begun;
+    /// separator-free lookahead never inherits the preceding statement's owner.
     owner: ?Owner,
     source_info: @import("parser_support").encoding.Info,
 };

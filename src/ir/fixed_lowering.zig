@@ -28,7 +28,7 @@ pub fn API(comptime config: anytype) type {
         }
         fn checkOptions(comptime Options: type, comptime require_interpretation: bool) void {
             if (require_interpretation and !@hasField(Options, "interpretation")) @compileError("fixed IR lowering requires .interpretation from the accepting DOT profile");
-            for (std.meta.fieldNames(Options)) |field| {
+            for (@typeInfo(Options).@"struct".field_names) |field| {
                 if (!std.mem.eql(u8, field, "interpretation") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !std.mem.eql(u8, field, "query_allocator") and !(config.runtime_policy and std.mem.eql(u8, field, "policy"))) @compileError("unknown fixed IR lowering option: " ++ field);
             }
         }

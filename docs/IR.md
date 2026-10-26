@@ -271,11 +271,11 @@ returns all retained output or frees it and returns an error. Resource exhaustio
 never becomes successful partial materialization. Pull iteration is not a
 replenishable-credit session and does not change parser metering guarantees.
 
-Benchmark lowering/query costs with `zig build bench-ir-partial -Doptimize=ReleaseFast`
+Benchmark lowering/query costs with `zig build bench-ir-partial -Doptimize=fast`
 and expansion/qualified attribute consumption with
-`zig build bench-ir-partial-edges -Doptimize=ReleaseFast` (also Safe/Small).
+`zig build bench-ir-partial-edges -Doptimize=fast` (also Safe/Small).
 For node/scope enumeration, run
-`zig build bench-ir-partial -Doptimize=ReleaseFast -- --attributes-only`.
+`zig build bench-ir-partial -Doptimize=fast -- --attributes-only`.
 
 ## What you can read
 

@@ -10,19 +10,19 @@ pub const Mode = enum { none, passthrough, process };
 pub fn hostConfig(comptime T: type, comptime config: anytype) T {
     @setEvalBranchQuota(10000);
     var result: T = .{};
-    inline for (comptime std.meta.fieldNames(@TypeOf(config))) |field| {
+    inline for (comptime @typeInfo(@TypeOf(config)).@"struct".field_names) |field| {
         const value = @field(config, field);
         if (comptime std.mem.eql(u8, field, "policy")) {
             if (@TypeOf(value) == @FieldType(T, "policy")) {
                 result.policy = value;
                 continue;
             }
-            inline for (comptime std.meta.fieldNames(@TypeOf(value))) |leaf| {
+            inline for (comptime @typeInfo(@TypeOf(value)).@"struct".field_names) |leaf| {
                 if (comptime std.mem.eql(u8, leaf, "string") or std.mem.eql(u8, leaf, "attributes")) continue;
                 @field(result.policy, leaf) = coerce(@FieldType(@TypeOf(result.policy), leaf), @field(value, leaf));
             }
         } else if (comptime std.mem.eql(u8, field, "processors")) {
-            inline for (comptime std.meta.fieldNames(@TypeOf(value))) |leaf| {
+            inline for (comptime @typeInfo(@TypeOf(value)).@"struct".field_names) |leaf| {
                 if (comptime std.mem.eql(u8, leaf, "string")) continue;
                 @field(result.processors, leaf) = @field(value, leaf);
             }
@@ -37,7 +37,7 @@ pub fn coerce(comptime T: type, value: anytype) T {
     if (@typeInfo(T) == .optional) return coerce(@typeInfo(T).optional.child, value);
     if (@typeInfo(T) == .@"struct" and @typeInfo(@TypeOf(value)) == .@"struct") {
         var result: T = .{};
-        inline for (comptime std.meta.fieldNames(@TypeOf(value))) |field|
+        inline for (comptime @typeInfo(@TypeOf(value)).@"struct".field_names) |field|
             @field(result, field) = coerce(@FieldType(T, field), @field(value, field));
         return result;
     }
@@ -54,7 +54,7 @@ pub fn Routes(comptime config: anytype) type {
     const p = if (@hasField(@TypeOf(config), "policy")) config.policy else .{};
     const fallback = if (@hasField(@TypeOf(p), "string")) p.string else .passthrough;
     const attributes = if (@hasField(@TypeOf(p), "attributes")) p.attributes else .{};
-    const fields = std.meta.fieldNames(@TypeOf(attributes));
+    const fields = @typeInfo(@TypeOf(attributes)).@"struct".field_names;
     return struct {
         pub const count = fields.len + 1;
         pub fn rule(comptime index: usize) @TypeOf(if (index == 0) fallback else selected(index - 1)) {
@@ -63,7 +63,7 @@ pub fn Routes(comptime config: anytype) type {
         fn selected(comptime index: usize) @TypeOf(if (@hasField(@TypeOf(@field(attributes, fields[index])), "string")) @field(attributes, fields[index]).string else fallback) {
             const item = @field(attributes, fields[index]);
             // Other value-form routes must not be silently accepted as implemented.
-            inline for (comptime std.meta.fieldNames(@TypeOf(item))) |field|
+            inline for (comptime @typeInfo(@TypeOf(item)).@"struct".field_names) |field|
                 if (comptime !std.mem.eql(u8, field, "string")) @compileError("attribute routing currently supports only .string");
             return if (@hasField(@TypeOf(item), "string")) item.string else fallback;
         }

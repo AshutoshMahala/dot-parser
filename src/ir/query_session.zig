@@ -164,7 +164,7 @@ pub fn Bound(comptime Graph: type, comptime kind: Kind, comptime config: anytype
             comptime {
                 // The typed contract includes void fields for compiled-out
                 // capabilities. They carry no override and must remain usable.
-                if (@TypeOf(options) != Options) for (std.meta.fieldNames(@TypeOf(options))) |field| {
+                if (@TypeOf(options) != Options) for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
                     if (!std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !(config.runtime_policy and std.mem.eql(u8, field, "policy")))
                         @compileError("unknown IR query session option: " ++ field);
                 };

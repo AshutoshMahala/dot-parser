@@ -1,6 +1,6 @@
 //! Bounded ASCII runs. Each byte is exactly one scalar/credit; non-ASCII,
 //! short tails and mismatches fall back without consuming any work.
-pub const width = 16;
+pub const width = @import("parser_support").logical.ascii_width;
 
 pub inline fn ascii(bytes: []const u8, at: u32) bool {
     if (at >= bytes.len or bytes.len - at < width) return false;

@@ -18,7 +18,12 @@ pub fn PolicyBinding(comptime Schema: type, comptime config: struct {
         // a currently-valid baseline cannot make an invalid-capable Check infallible.
         if (Schema.Error == error{}) {
             const Check = @TypeOf(checked);
-            if (std.meta.fieldNames(Check).len != 1 or !@hasField(Check, "valid"))
+            const fields = switch (@typeInfo(Check)) {
+                .@"enum" => |info| info.field_names,
+                .@"union" => |info| info.field_names,
+                else => @compileError("infallible policy schema must declare a valid-only Check"),
+            };
+            if (fields.len != 1 or !@hasField(Check, "valid"))
                 @compileError("infallible policy schema must declare a valid-only Check");
         }
         if (Schema.Error == error{}) switch (checked) {
@@ -62,7 +67,7 @@ pub fn PolicyBinding(comptime Schema: type, comptime config: struct {
 /// profile's prepare method may scan input, allocate or invoke consumer callbacks.
 /// Stage/resource compatibility will be checked by the future stage composition.
 pub fn PolicySet(comptime profiles: anytype) type {
-    const fields = std.meta.fieldNames(@TypeOf(profiles));
+    const fields = @typeInfo(@TypeOf(profiles)).@"struct".field_names;
     inline for (fields) |field| {
         const Profile = @field(profiles, field);
         if (@TypeOf(Profile) != type or !@hasDecl(Profile, "Policies"))
@@ -109,7 +114,7 @@ pub fn PolicySet(comptime profiles: anytype) type {
 }
 
 fn namedFields(comptime profiles: anytype, comptime member: []const u8, comptime defaults: bool) type {
-    const fields = std.meta.fieldNames(@TypeOf(profiles));
+    const fields = @typeInfo(@TypeOf(profiles)).@"struct".field_names;
     var types: [fields.len]type = undefined;
     var attrs: [fields.len]std.lang.Type.Struct.FieldAttributes = undefined;
     for (fields, 0..) |field, i| {
@@ -119,7 +124,7 @@ fn namedFields(comptime profiles: anytype, comptime member: []const u8, comptime
             .default_value_ptr = if (defaults) @as(*const T, &@as(T, .{})) else null,
         };
     }
-    return @Struct(.auto, null, std.meta.fieldNames(@TypeOf(profiles)), &types, &attrs);
+    return @Struct(.auto, null, @typeInfo(@TypeOf(profiles)).@"struct".field_names, &types, &attrs);
 }
 
 /// Raw contiguous input, not decoded/concatenated input. The caller establishes

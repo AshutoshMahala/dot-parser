@@ -118,10 +118,19 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
 }
 
 pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool) type {
+    return ScannerConfigured(actual, metered, audited, numeral_check, comments, false);
+}
+
+fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool, comptime preview_boundaries: bool) type {
     const enc = encoding.Reader(actual);
     return struct {
         const Self = @This();
         pub const source_encoding = actual;
+
+        /// Internal parser specialization; no state or work is added when unused.
+        pub fn WithPreviews() type {
+            return ScannerConfigured(actual, metered, audited, numeral_check, comments, true);
+        }
         const Mode = enum { trivia, line_comment, block_comment, quoted, html, ident, numeral, dash_gap };
         const TriviaMode = enum { ordinary, after_part, after_plus };
         const NumeralPart = enum { integral, fraction };
@@ -508,6 +517,8 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                 .after_part => {
                     if (b != '+') return self.finishString();
                     self.advanceTo(self.cursor + 1);
+                    // Prefix observations stop at '+', not trailing trivia.
+                    if (preview_boundaries) self.part_end = self.cursor;
                     self.trivia = .after_plus;
                     self.flags.concatenated = true;
                     return null;

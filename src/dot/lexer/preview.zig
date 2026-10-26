@@ -19,7 +19,7 @@ pub fn unfinished(scanner: anytype, comptime eof: bool) ?Snapshot {
         };
         // A terminal failure rewinds cursor to anchor; the EOF failures above
         // prove that the complete source was examined before that rewind.
-        end = @intCast(enc.units(scanner.source));
+        end = if (kind == .concatenation) scanner.part_end else @intCast(enc.units(scanner.source));
     } else {
         if (scanner.terminal != .none) return null;
         kind = if (@hasField(T, "mode")) switch (scanner.mode) {
@@ -28,7 +28,10 @@ pub fn unfinished(scanner: anytype, comptime eof: bool) ?Snapshot {
             .ident => .word,
             .numeral => .numeral,
             .trivia => switch (scanner.trivia) {
-                .after_plus => .concatenation,
+                .after_plus => blk: {
+                    end = scanner.part_end;
+                    break :blk .concatenation;
+                },
                 .after_part => blk: {
                     end = scanner.part_end;
                     break :blk if (scanner.flags.has_html) Kind.html else Kind.quoted;
@@ -42,7 +45,10 @@ pub fn unfinished(scanner: anytype, comptime eof: bool) ?Snapshot {
             .bare => .word,
             .leading_dot, .integral, .fraction => .numeral,
             .trivia => switch (scanner.trivia) {
-                .after_plus => .concatenation,
+                .after_plus => blk: {
+                    end = scanner.part_end;
+                    break :blk .concatenation;
+                },
                 .after_part => blk: {
                     end = scanner.part_end;
                     break :blk if (scanner.flags.has_html) Kind.html else Kind.quoted;

@@ -175,7 +175,7 @@ test "every fixed retained and scratch pool reports an exact shortfall without a
     try equal(dot.ir.LoweringOutcome.success, first.outcome);
     const peaks = first.scratch_peak;
     const resources = [_]dot.ir.Resource{ .node_pool, .scope_pool, .occurrence_pool, .mention_pool, .connection_pool, .declaration_pool, .attribute_pool, .attribute_key_pool, .attribute_state_pool, .coverage_gap_pool };
-    inline for (comptime std.meta.fieldNames(dot.ir.GraphCapacities), resources) |field, resource| {
+    inline for (comptime @typeInfo(dot.ir.GraphCapacities).@"struct".field_names, resources) |field, resource| {
         var reduced = counts;
         try expect(@field(reduced, field) != 0);
         @field(reduced, field) -= 1;
@@ -196,7 +196,7 @@ test "every fixed retained and scratch pool reports an exact shortfall without a
         try equal(@as(u32, 0), session.advance(100).work_used);
         try memory.canaries();
     }
-    inline for (comptime std.meta.fieldNames(dot.ir.LoweringScratchCapacities), [_]dot.ir.Resource{ .nesting_frames, .edge_frames, .pending_endpoints }) |field, resource| {
+    inline for (comptime @typeInfo(dot.ir.LoweringScratchCapacities).@"struct".field_names, [_]dot.ir.Resource{ .nesting_frames, .edge_frames, .pending_endpoints }) |field, resource| {
         var reduced = peaks;
         try expect(@field(reduced, field) != 0);
         @field(reduced, field) -= 1;

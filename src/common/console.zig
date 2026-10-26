@@ -1007,7 +1007,7 @@ pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
         }
         const max_locations = blk: {
             var maximum: usize = 0;
-            for (std.meta.fieldNames(@TypeOf(adapters))) |field| {
+            for (@typeInfo(@TypeOf(adapters)).@"struct".field_names) |field| {
                 const A = @field(adapters, field);
                 maximum = @max(maximum, if (@hasDecl(A, "composed")) A.max_locations else A.Annotations.max_count + 2);
             }

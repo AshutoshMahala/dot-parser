@@ -1,5 +1,5 @@
 //! Allocation-free scanning timing; source construction is outside the timer.
-//! Run with: zig build bench-lexer -Doptimize=ReleaseFast
+//! Run with: zig build bench-lexer -Doptimize=fast
 const std = @import("std");
 const dot = @import("dot_parser");
 const build_options = @import("build_options");

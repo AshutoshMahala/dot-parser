@@ -49,10 +49,20 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
 }
 
 pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool) type {
+    return ScannerConfigured(actual, metered, audited, numeral_check, comments, false);
+}
+
+fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool, comptime preview_boundaries: bool) type {
     const enc = encoding.Reader(actual);
     return struct {
         const Self = @This();
         pub const source_encoding = actual;
+
+        /// Internal parser specialization; ordinary lexical callers pay nothing
+        /// for the extra boundary retained while a concatenation is unfinished.
+        pub fn WithPreviews() type {
+            return ScannerConfigured(actual, metered, audited, numeral_check, comments, true);
+        }
         const State = enum {
             trivia,
             slash,
@@ -577,6 +587,9 @@ pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: b
                 .after_part => {
                     if (byte != '+') return self.finishString();
                     self.consume();
+                    // While awaiting the next operand, retain the consumed '+'
+                    // boundary independently of subsequent whitespace/comments.
+                    if (preview_boundaries) self.part_end = self.cursor;
                     self.trivia = .after_plus;
                     self.flags.concatenated = true;
                     return .trivia;
@@ -901,7 +914,7 @@ test "zero credits leave every nonterminal continuation unchanged" {
             const zero = lexer.nextBounded(0);
             try expectEqual(@as(?Result, null), zero.result);
             try expectEqual(@as(usize, 0), zero.work_used);
-            inline for (comptime std.meta.fieldNames(@TypeOf(lexer))) |field| {
+            inline for (comptime @typeInfo(@TypeOf(lexer)).@"struct".field_names) |field| {
                 if (comptime std.mem.eql(u8, field, "content")) {
                     // Only these states resume using the union's saved value.
                     // Other states leave it dormant until a new part overwrites it.

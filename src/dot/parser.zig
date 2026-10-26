@@ -41,8 +41,9 @@
 //! - Stop at unrecoverable syntax; recover body statements by default. The sink
 //!   lifecycle from `events.zig` is honored: abort after delivered output when
 //!   the document cannot commit, including an attempted begin_document that
-//!   itself failed. Opt-in comments and early document names may precede the
-//!   complete header; ordinary syntax events still require its opening brace.
+//!   itself failed. Opt-in comments, early document names and token previews
+//!   may precede the complete header; ordinary syntax events still require
+//!   its opening brace.
 //! - With `Policy.on_error = .collect`, a syntax error inside the body
 //!   aborts an ordinary document sink once, then continues for diagnostics only.
 //!   Opt-in partial builders and public event consumers instead abort just the
@@ -93,7 +94,8 @@ pub const Outcome = union(enum) {
     scratch_failure: scratch_impl.For(void).Stack.Error,
     /// The document parsed completely and the event sink committed.
     success,
-    /// Explicit cancellation or an observed caller request; no diagnostic.
+    /// Explicit cancellation or an observed caller request. Cancellation itself
+    /// emits no diagnostic; findings already detected remain reported.
     cancelled,
     /// A compile-time-bound child stopped the enclosing operation.
     processor_stopped,
@@ -160,7 +162,10 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
         event_types.assertSink(info.pointer.child);
     }
-    const Scanner = ScannerOf(metered, audited, if (fixed) |v| v.ambiguous_numeral != .off else null);
+    const Sink = @typeInfo(EventsPtr).pointer.child;
+    const preview_notifications = if (@hasDecl(Sink, "wants_token_previews")) Sink.wants_token_previews else false;
+    const BaseScanner = ScannerOf(metered, audited, if (fixed) |v| v.ambiguous_numeral != .off else null);
+    const Scanner = if (preview_notifications) BaseScanner.WithPreviews() else BaseScanner;
     const actual = if (@hasDecl(Scanner, "source_encoding")) Scanner.source_encoding else @import("parser_support").encoding.Actual.utf8;
     const enc = @import("parser_support").encoding.Reader(actual);
     const recovery_enabled = if (fixed) |value| value.on_error == .collect or (value.markup == .none and value.unsupported != .err) else true;
@@ -169,12 +174,10 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
     const comments_enabled = if (fixed) |value| value.retention.comments else true;
     // Only retaining builders and public event consumers opt into statement
     // transactions. Ordinary parsing keeps its existing dispatch/state layout.
-    const Sink = @typeInfo(EventsPtr).pointer.child;
     const ScopeScratch = scratch_impl.For(event_types.Context(Sink));
     const statement_recovery = if (@hasDecl(Sink, "recover_statements")) Sink.recover_statements else true;
     const begin_notifications = if (@hasDecl(Sink, "wants_begin_statement")) Sink.wants_begin_statement else true;
     const early_notifications = if (@hasDecl(Sink, "wants_early_events")) Sink.wants_early_events else false;
-    const preview_notifications = if (@hasDecl(Sink, "wants_token_previews")) Sink.wants_token_previews else false;
     const transactional = statement_recovery or begin_notifications or early_notifications or preview_notifications;
     return struct {
         const Self = @This();
@@ -187,7 +190,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             // unreachable extra switch arms change Zig/LLVM's hot-loop code.
             const count = @backingInt(AllAction.name_left);
             const Tag = std.math.IntFittingRange(0, count - 1);
-            break :blk @Enum(Tag, .exhaustive, std.meta.fieldNames(AllAction)[0..count], &std.simd.iota(Tag, count));
+            break :blk @Enum(Tag, .exhaustive, @typeInfo(AllAction).@"enum".field_names[0..count], &std.simd.iota(Tag, count));
         };
         const Action = if (early_notifications) AllAction else CoreAction;
         const Work = struct {
@@ -217,7 +220,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         };
 
         processor: Processor = if (Processor == void) {} else undefined,
-        tokens: ScannerOf(metered, audited, if (fixed) |value| value.ambiguous_numeral != .off else null),
+        tokens: Scanner,
         work: if (metered or cancellable) Work else void = if (metered or cancellable) .{} else {},
         cancellation: if (cancellable) ?execution.Cancellation else void = if (cancellable) null else {},
         // Reuse the optional control slot: even adding top-level void fields
@@ -669,6 +672,21 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         /// Explicit cleanup works even without a polling hook or positive budget.
         pub fn cancel(self: *Self) Result {
             if (self.terminal) |result| return result;
+            if (comptime preview_notifications) {
+                // A preview dispatch may be waiting behind a lexical failure
+                // already found by a charged scanner step. Drop the observation,
+                // not that failure. No normal callback or new scan is performed.
+                switch (self.control.preview.pending) {
+                    .eof, .end_failure => {
+                        self.control.preview.pending = .none;
+                        const d = self.tokens.failureDiagnostic();
+                        if (self.operatorCandidate(d) == null) {
+                            if (self.fail(d)) |result| return result.*;
+                        }
+                    },
+                    else => {},
+                }
+            }
             // Keep cancellation visible without erasing prior syntax findings.
             self.abortEvents(.cancelled);
             return self.finish(.cancelled).*;
@@ -680,7 +698,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn tracksStatements(self: *const Self) bool {
-            return begin_notifications or early_notifications or self.continuesAfterError();
+            return begin_notifications or early_notifications or preview_notifications or self.continuesAfterError();
         }
 
         fn currentScope(self: *const Self) event_types.ScopeId {
@@ -772,7 +790,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         .identifier => {
                             self.name_span = token.span;
                             self.state = .header_open;
-                            if (early_notifications) return self.schedule(.document_name, token);
+                            if (early_notifications and !self.aborted) return self.schedule(.document_name, token);
                         },
                         .left_brace => return self.beginBody(token),
                         // Unquoted keywords are not valid names (Graphviz
@@ -790,7 +808,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         .identifier => {
                             self.subgraph_name = token.span;
                             self.state = .subgraph_open;
-                            if (early_notifications) return self.schedule(.subgraph_name, token);
+                            if (early_notifications and !self.aborted) return self.schedule(.subgraph_name, token);
                         },
                         .left_brace => return self.beginSubgraphBody(token),
                         else => return self.unexpected(.{ .identifier = true, .left_brace = true }, .subgraph_header, token),
@@ -804,7 +822,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             self.operator = self.readOperator(token) orelse return self.done();
                             self.operator_span = token.span;
                             self.state = .edge_right;
-                            if (early_notifications) return self.schedule(.head_edge, token);
+                            if (early_notifications and !self.aborted) return self.schedule(.head_edge, token);
                         } else if (token.tag == .colon or token.tag == .left_bracket) {
                             // `{ a }:n` / `{ a } [x=1]`: a rule violation the
                             // renderer can state, not merely an expected set.
@@ -814,7 +832,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             return self.unexpected(expected, .subgraph_suffix, token);
                         } else {
                             self.state = .completed;
-                            if (self.dispatchThenReplay(if (early_notifications) .head_subgraph_commit else .subgraph_statement, token)) |result| return result;
+                            if (self.dispatchThenReplay(if (early_notifications and !self.aborted) .head_subgraph_commit else .subgraph_statement, token)) |result| return result;
                             if (!metered and !cancellable) return self.continueAfterStatement(token);
                             return null;
                         }
@@ -832,17 +850,17 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             if (self.left_port != null) return self.unexpected(nodeEndExpected(false), .statement, token);
                             if (self.countAttribute(self.left)) |result| return result;
                             self.state = .assignment_value;
-                            if (early_notifications) return self.schedule(.head_assignment, token);
+                            if (early_notifications and !self.aborted) return self.schedule(.head_assignment, token);
                         },
                         .left_bracket => {
                             self.openAttributes(token);
-                            if (early_notifications) return self.schedule(.head_node, token);
+                            if (early_notifications and !self.aborted) return self.schedule(.head_node, token);
                         },
                         .edge_undirected, .edge_directed => {
                             self.operator = self.readOperator(token) orelse return self.done();
                             self.operator_span = token.span;
                             self.state = .edge_right;
-                            if (early_notifications) return self.schedule(.head_edge, token);
+                            if (early_notifications and !self.aborted) return self.schedule(.head_edge, token);
                         },
                         else => return if (metered or cancellable or fixed == null)
                             self.finishPending(token, nodeEndExpected(self.left_port == null), .statement)
@@ -856,7 +874,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             self.right_scope = null;
                             self.pending = .edge;
                             self.state = .edge_terminate;
-                            if (early_notifications) return self.schedule(.name_right, token);
+                            if (early_notifications and !self.aborted) return self.schedule(.name_right, token);
                         },
                         .left_brace, .keyword_subgraph => return self.startSubgraph(token, .right),
                         else => return self.unexpected(.{ .identifier = true, .left_brace = true, .subgraph_keyword = true }, .edge_endpoint, token),
@@ -886,7 +904,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             self.link_right = token.span;
                             self.link_port = null;
                             self.state = .chain_after_identifier;
-                            if (early_notifications) return self.schedule(.name_link, token);
+                            if (early_notifications and !self.aborted) return self.schedule(.name_link, token);
                         },
                         .left_brace, .keyword_subgraph => return self.startSubgraph(token, .link),
                         else => return self.unexpected(.{ .identifier = true, .left_brace = true, .subgraph_keyword = true }, .edge_endpoint, token),
@@ -1110,7 +1128,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             };
             switch (token.tag) {
                 .identifier => {
-                    if (!early_notifications) return self.beginStatement(token);
+                    if (!early_notifications or self.aborted) return self.beginStatement(token);
                     if (self.beginStatement(token)) |result| return result;
                     return self.schedule(.name_left, token);
                 },
@@ -1139,7 +1157,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         else => .edge,
                     };
                     self.state = .attribute_open;
-                    if (early_notifications) return self.schedule(.head_attributes, token);
+                    if (early_notifications and !self.aborted) return self.schedule(.head_attributes, token);
                 },
                 else => return self.unexpected(.{
                     .identifier = true,
@@ -1158,7 +1176,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             if (!transactional) unreachable;
             self.state = .after_identifier;
             switch (token.tag) {
-                .identifier => if (early_notifications) return self.schedule(.name_left, token),
+                .identifier => if (early_notifications and !self.aborted) return self.schedule(.name_left, token),
                 .left_brace, .keyword_subgraph => return self.startSubgraph(token, .left),
                 .keyword_graph, .keyword_node, .keyword_edge => {
                     self.pending = .attributes;
@@ -1168,7 +1186,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         else => .edge,
                     };
                     self.state = .attribute_open;
-                    if (early_notifications) return self.schedule(.head_attributes, token);
+                    if (early_notifications and !self.aborted) return self.schedule(.head_attributes, token);
                 },
                 else => unreachable,
             }
@@ -1266,7 +1284,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 else => return self.unexpected(expected, context, token),
             }
             const action: Action = switch (self.pending) {
-                .node => if (early_notifications and self.state == .after_identifier) .head_node_commit else .node,
+                .node => if (early_notifications and !self.aborted and self.state == .after_identifier) .head_node_commit else .node,
                 .edge => .edge,
                 .edge_chain => .edge_chain,
                 .attributes => .attribute_statement,
@@ -1628,25 +1646,38 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             switch (pending) {
                 .pause, .eof => {
                     self.control.preview.active = true;
+                    const context: event_types.PreviewContext = switch (self.state) {
+                        .header_name => .document_name,
+                        .subgraph_name => .subgraph_name,
+                        // An identifier lookahead here starts the next statement.
+                        // The old statement has not committed yet, but does not
+                        // own the new prefix. No new identity is invented.
+                        .statement,
+                        .completed,
+                        .after_identifier,
+                        .edge_terminate,
+                        .chain_after_identifier,
+                        .after_attributes,
+                        .after_subgraph,
+                        .port_after_first,
+                        .port_after_second,
+                        => .statement_start,
+                        .edge_right => .edge_right,
+                        .chain_right => .edge_link,
+                        .attribute_key_or_close, .attribute_after_value => .attribute_key,
+                        .attribute_value => .attribute_value,
+                        .assignment_value => .assignment_value,
+                        .port_first, .port_second => .port,
+                        else => .unknown,
+                    };
                     if (self.publish(.token_preview, .{
                         .span = snapshot.span,
                         .kind = snapshot.kind,
                         .reason = if (pending == .eof) .eof else .pause,
                         .scope = self.currentScope(),
-                        .owner = if (self.control.active_statement == no_statement) null else .{ .statement = @fromBackingInt(self.control.active_statement), .scope = self.currentScope() },
+                        .owner = if (context == .statement_start or self.control.active_statement == no_statement) null else .{ .statement = @fromBackingInt(self.control.active_statement), .scope = self.currentScope() },
                         .source_info = if (source_metadata) self.control.source_info else enc.sourceInfo(self.tokens.source),
-                        .context = switch (self.state) {
-                            .header_name => .document_name,
-                            .subgraph_name => .subgraph_name,
-                            .statement, .completed => .statement_start,
-                            .edge_right => .edge_right,
-                            .chain_right => .edge_link,
-                            .attribute_key_or_close => .attribute_key,
-                            .attribute_value => .attribute_value,
-                            .assignment_value => .assignment_value,
-                            .port_first, .port_second => .port,
-                            else => .unknown,
-                        },
+                        .context = context,
                     })) |result| return result;
                 },
                 .end_token, .end_failure => {

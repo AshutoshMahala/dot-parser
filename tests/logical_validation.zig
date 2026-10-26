@@ -341,6 +341,54 @@ test "one custom contract works for standalone, plain, DOT and markup readers" {
     try t.expectEqualDeep(raw, ordinary.result().?);
 }
 
+test "custom batches use the same portable value contract as custom steps" {
+    const Match = struct {
+        pub const Settings = struct { expected: []const u8 = "", batches: ?*usize = null };
+        pub const defaults: Settings = .{};
+        pub const uses_comparison = true;
+        pub const State = s.validators.Equals.State;
+        pub fn step(state: anytype, value: anytype, settings: Settings, context: anytype) s.Step {
+            return context.equalsStep(&state.comparison, value, settings.expected);
+        }
+        pub fn batch(state: anytype, value: anytype, settings: Settings, context: anytype, allowance: u32) u32 {
+            // No value.bytes assumption: this also receives LogicalValue.
+            const used = context.equalsBatch(&state.comparison, value, settings.expected, allowance);
+            if (used != 0) if (settings.batches) |count| {
+                count.* += 1;
+            };
+            return used;
+        }
+    };
+    const P = s.Profile(.{ .runtime_policy = true, .custom = Match, .policy = .{ .execution = .{ .metering = true }, .validation = .{ .custom = .err } } });
+    const text = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";
+    inline for (.{ .standalone, .plain, .dot, .markup }) |host| {
+        const input = switch (host) {
+            .standalone => try s.Fragment.init(text, 23),
+            .plain => try s.LogicalReader(.utf8).init(try s.Fragment.init(text, 23)),
+            .dot => try dot.identifier.LogicalReader(.utf8).init(try s.Fragment.init("\"" ++ text ++ "\"", 23)),
+            .markup => try markup.LogicalReader(.utf8).init(try s.Fragment.init(text, 23), .{}),
+            else => unreachable,
+        };
+        const Bound = if (host == .standalone) P else P.WithReader(@TypeOf(input));
+        var expected_work: ?u64 = null;
+        for ([_]u32{ 1, 4096 }) |budget| {
+            var batches: usize = 0;
+            var session = try Bound.Session.init(input, P.Sink.discard, .{ .policy = .{ .custom = .{ .expected = text, .batches = &batches } } });
+            defer session.deinit();
+            var total: u64 = 0;
+            while (session.result() == null) {
+                const progress = try session.advance(budget);
+                try t.expect(progress.work_used <= budget);
+                total += progress.work_used;
+            }
+            try t.expect(session.result().?.valid());
+            if (budget == 1) try t.expectEqual(@as(usize, 0), batches) else try t.expect(batches > 0);
+            if (expected_work) |work| try t.expectEqual(work, total);
+            expected_work = total;
+        }
+    }
+}
+
 test "reader prerequisites fail truthfully without inventing duplicate host errors" {
     const P = s.Profile(.{ .runtime_policy = true, .policy = .{ .execution = .{ .metering = true }, .validation = .{
         .equals = .{ .expected = "wrong", .severity = .err },

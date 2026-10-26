@@ -120,7 +120,7 @@ fn countFor(comptime field: []const u8, g: GraphCapacities, s: LoweringScratchCa
 }
 pub const alignment = blk: {
     var result: usize = 1;
-    for (.{ Retained, Scratch }) |Pools| for (std.meta.fieldNames(Pools)) |field| {
+    for (.{ Retained, Scratch }) |Pools| for (@typeInfo(Pools).@"struct".field_names) |field| {
         result = @max(result, @alignOf(std.meta.Elem(@FieldType(Pools, field))));
     };
     break :blk result;
@@ -131,13 +131,13 @@ fn aligned(value: usize, by: usize) r.Error!usize {
 }
 fn Regions(comptime Pools: type) type {
     return struct {
-        offsets: [std.meta.fieldNames(Pools).len]usize,
-        counts: [std.meta.fieldNames(Pools).len]usize,
+        offsets: [@typeInfo(Pools).@"struct".field_names.len]usize,
+        counts: [@typeInfo(Pools).@"struct".field_names.len]usize,
         bytes: usize,
         fn init(g: GraphCapacities, s: LoweringScratchCapacities) r.Error!@This() {
             var result: @This() = undefined;
             var at: usize = 0;
-            inline for (comptime std.meta.fieldNames(Pools), 0..) |field, i| {
+            inline for (comptime @typeInfo(Pools).@"struct".field_names, 0..) |field, i| {
                 const T = std.meta.Elem(@FieldType(Pools, field));
                 at = try aligned(at, @alignOf(T));
                 result.offsets[i] = at;
@@ -184,8 +184,8 @@ pub const Layout = struct {
 };
 pub fn loweringLayout(g: GraphCapacities, s: LoweringScratchCapacities) r.Error!Layout {
     @setEvalBranchQuota(20_000);
-    inline for (comptime std.meta.fieldNames(GraphCapacities)) |field| _ = try r.index(@field(g, field));
-    inline for (comptime std.meta.fieldNames(LoweringScratchCapacities)) |field| _ = try r.index(@field(s, field));
+    inline for (comptime @typeInfo(GraphCapacities).@"struct".field_names) |field| _ = try r.index(@field(g, field));
+    inline for (comptime @typeInfo(LoweringScratchCapacities).@"struct".field_names) |field| _ = try r.index(@field(s, field));
     if (g.nodes >= t.node_bit or g.scopes >= t.node_bit or g.occurrences >= t.node_bit or g.attributes >= @import("ports.zig").right) return error.IndexLimit;
     const retained = try Regions(Retained).init(g, s);
     const temporary = try Regions(Scratch).init(g, s);
@@ -241,7 +241,7 @@ pub const Context = struct {
         if (layout.graph_bytes + layout.scratch_bytes > limits.max_bytes) return error.MemoryLimit;
         // A fixed number of descriptor checks; no source or pool-content scan.
         try disjoint(bound, std.mem.asBytes(doc));
-        inline for (comptime std.meta.fieldNames(syntax.Document)) |field| {
+        inline for (comptime @typeInfo(syntax.Document).@"struct".field_names) |field| {
             const T = @FieldType(syntax.Document, field);
             if (@typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice) {
                 try disjoint(bound, std.mem.sliceAsBytes(@field(doc, field)));

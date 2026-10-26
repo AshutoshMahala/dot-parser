@@ -238,7 +238,7 @@ pub fn Reader(comptime actual: Actual) type {
     return struct {
         pub const selected = actual;
         pub const width: comptime_int = unitBytes(actual);
-        pub const endian: std.builtin.Endian = switch (actual) {
+        pub const endian: std.lang.Endian = switch (actual) {
             .utf16be, .utf32be => .big,
             else => .little,
         };
