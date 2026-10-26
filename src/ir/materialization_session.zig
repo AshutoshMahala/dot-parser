@@ -12,6 +12,7 @@ const storage = @import("session_storage.zig");
 const Growth = storage.Growth;
 const encoding = @import("parser_support").encoding;
 const none = attrs.none;
+const scratch = @import("query_storage.zig");
 
 pub const Outcome = union(enum) { success, failure: r.Error };
 pub const Progress = struct {
@@ -26,7 +27,7 @@ pub const Progress = struct {
 pub const TakeError = r.Error || error{ NotReady, AlreadyTaken };
 
 pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, comptime attributes: bool) type {
-    return Engine(Graph, caps, attributes, false, null);
+    return Engine(Graph, caps, attributes, false, null, false);
 }
 
 /// Internal record result; public streaming wraps the record in the owning
@@ -40,10 +41,13 @@ pub const StreamProgress = struct {
     outcome: ?Outcome,
 };
 pub fn Streaming(comptime Graph: type, comptime caps: encoding.Capabilities, comptime fixed: ?@import("execution_policy.zig").Effective) type {
-    return Engine(Graph, caps, false, true, fixed);
+    return Engine(Graph, caps, false, true, fixed, false);
+}
+pub fn FixedStreaming(comptime Graph: type, comptime caps: encoding.Capabilities, comptime fixed: ?@import("execution_policy.zig").Effective) type {
+    return Engine(Graph, caps, false, true, fixed, true);
 }
 
-fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime attributes: bool, comptime streaming: bool, comptime fixed: ?@import("execution_policy.zig").Effective) type {
+fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime attributes: bool, comptime streaming: bool, comptime fixed: ?@import("execution_policy.zig").Effective, comptime fixed_storage: bool) type {
     const Stored = if (streaming) [2]u32 else t.Edge;
     const StepProgress = if (streaming) StreamProgress else Progress;
     const has_cancellation = !streaming or fixed == null or fixed.?.cancellation;
@@ -58,7 +62,7 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
             singleton: u32 = none,
             count: u32 = 0,
             nodes: std.ArrayList(t.NodeId) = .empty,
-            growth: Growth(t.NodeId) = .{},
+            growth: if (fixed_storage) void else Growth(t.NodeId) = if (fixed_storage) {} else .{},
             fn len(self: *const Endpoint) u32 {
                 return self.count;
             }
@@ -100,7 +104,7 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
         graph: *const Graph,
         limits: r.Limits,
         cancellation: if (has_cancellation) ?r.Cancellation else void,
-        memory: r.Memory,
+        memory: if (fixed_storage) scratch.EdgeState else r.Memory,
         total_work: u64 = 0,
         outcome: ?Outcome = null,
         // Keep owning sessions' field count/order unchanged. Even void fields
@@ -129,7 +133,7 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
         right_index: u32 = 0,
         visited: u64 = 0,
         stored: std.ArrayList(Stored) = .empty,
-        edge_growth: Growth(Stored) = .{},
+        edge_growth: if (fixed_storage) void else Growth(Stored) = if (fixed_storage) {} else .{},
         candidate: t.Edge = undefined,
         target: u32 = 0,
         slots: []u32 = &.{},
@@ -170,6 +174,10 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
             };
         }
         pub fn deinit(self: *Self) void {
+            if (fixed_storage) {
+                self.* = undefined;
+                return;
+            }
             const a = self.memory.allocator();
             for (&self.endpoints) |*endpoint| {
                 endpoint.growth.deinit(a);
@@ -190,6 +198,20 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
         }
         pub fn peakBytes(self: *const Self) usize {
             return self.memory.peak;
+        }
+        pub fn initIn(graph: *const Graph, memory: scratch.EdgeScratch, options: r.Options) r.Error!Self {
+            const limits = options.limits orelse graph.limits;
+            if (has_cancellation) if (options.cancellation) |c| if (c.requested()) return error.Cancelled;
+            const bound = try scratch.EdgeState.init(memory, graph, limits);
+            return .{ .graph = graph, .limits = limits, .cancellation = if (has_cancellation) options.cancellation else {}, .memory = bound, .stored = .initBuffer(bound.pairs), .phase = .connection, .maps = {} };
+        }
+        pub fn shortfall(self: *const Self) ?@import("fixed_storage.zig").StorageShortfall {
+            if (!fixed_storage) @compileError("shortfall requires fixed scratch");
+            return self.memory.shortfall;
+        }
+        pub fn scratchPeak(self: *const Self) scratch.EdgeScratchCapacities {
+            if (!fixed_storage) @compileError("scratchPeak requires fixed scratch");
+            return self.memory.used;
         }
         pub fn cancel(self: *Self) void {
             if (self.outcome == null) self.outcome = .{ .failure = error.Cancelled };
@@ -306,6 +328,10 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
         /// Reopened bodies, empty sets, growth and mark-generation rollover
         /// keep the stepped path. This never pre-scans a set or allocates.
         fn streamSetEdge(self: *Self, connection: u32, budget: u32, base_cost: u32) bool {
+            // Fixed endpoints share a buffer; use the metered collector rather
+            // than this growable-only capacity preflight. Singleton/pair fusion
+            // remains available and charges exactly the same transitions.
+            if (fixed_storage) return false;
             if (self.marks.len == 0 or self.generation > std.math.maxInt(u32) - 2) return false;
             const source = self.graph.connections[connection];
             const handles = [2]u32{ @backingInt(source.left.members), @backingInt(source.right.members) };
@@ -372,7 +398,7 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
             defer self.total_work = initial_work + used;
             const grant: u32 = @intCast(@min(budget, self.limits.max_work - initial_work));
             if (single and grant == 0) return error.WorkLimit;
-            const a = self.memory.allocator();
+            const a = if (fixed_storage) undefined else self.memory.allocator();
             // The borrowed IR is immutable. Avoid reloading its kind at each
             // pair/prepare transition, but do not read it for unrelated single
             // steps (which return after exactly one phase).
@@ -449,6 +475,10 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                             const members = if (self.side == 0) source.left.members else source.right.members;
                             const handle = @backingInt(members);
                             const out = &self.endpoints[self.side];
+                            if (fixed_storage) {
+                                const offset = if (self.side == 0) 0 else self.endpoints[0].nodes.items.len;
+                                out.nodes = .initBuffer(self.memory.members[offset..]);
+                            }
                             // clearRetainingCapacity poisons the whole used slice in
                             // safety builds. No old item is readable after this reset.
                             out.nodes.items.len = 0;
@@ -481,7 +511,10 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                             self.mention_index = body.start;
                             self.mention_end = body.end;
                             if (self.marks.len == 0) {
-                                self.marks = try storage.allocate(u32, a, self.graph.nodes.len);
+                                if (fixed_storage) {
+                                    if (self.memory.members.len == 0) try self.memory.needMembers(1);
+                                    self.marks = self.memory.marks;
+                                } else self.marks = try storage.allocate(u32, a, self.graph.nodes.len);
                                 self.mark_index = 0;
                                 self.marks_after = .mention;
                                 continue :machine self.successor(single, .marks_clear);
@@ -511,7 +544,10 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                         },
                         .endpoint_append => {
                             const out = &self.endpoints[self.side];
-                            if (!try out.growth.step(&out.nodes, a)) continue :machine self.successor(single, phase);
+                            if (fixed_storage) {
+                                const offset = if (self.side == 0) 0 else self.endpoints[0].nodes.items.len;
+                                try self.memory.needMembers(offset + out.nodes.items.len + 1);
+                            } else if (!try out.growth.step(&out.nodes, a)) continue :machine self.successor(single, phase);
                             out.nodes.appendAssumeCapacity(self.pending_node);
                             out.count += 1;
                             continue :machine self.successor(single, .mention);
@@ -566,6 +602,16 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                             if (!(if (single) self.graph.strict else strict)) {
                                 continue :machine self.successor(single, .append_edge);
                             }
+                            if (fixed_storage) {
+                                try self.memory.needPair(self.stored.items.len + 1);
+                                if (self.slots.len == 0) {
+                                    self.new_slots = self.memory.slots;
+                                    self.table_index = 0;
+                                    continue :machine self.successor(single, .table_clear);
+                                }
+                                self.slot = @intCast(hash(self.candidate) & (self.slots.len - 1));
+                                continue :machine self.successor(single, .insert);
+                            }
                             if (self.slots.len != 0 and self.stored.items.len < self.slots.len / 2) {
                                 self.slot = @intCast(hash(self.candidate) & (self.slots.len - 1));
                                 continue :machine self.successor(single, .insert);
@@ -582,13 +628,19 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                             @memset(self.new_slots[self.table_index..end], none);
                             self.table_index = @intCast(end);
                             if (end == self.new_slots.len) {
+                                if (fixed_storage) {
+                                    self.slots = self.new_slots;
+                                    self.new_slots = &.{};
+                                    self.slot = @intCast(hash(self.candidate) & (self.slots.len - 1));
+                                    continue :machine self.successor(single, .insert);
+                                }
                                 self.rehash_index = 0;
                                 continue :machine self.successor(single, .rehash_scan);
                             }
                         },
                         .rehash_scan => {
                             if (self.rehash_index == self.slots.len) {
-                                storage.release(u32, a, self.slots);
+                                if (!fixed_storage) storage.release(u32, a, self.slots);
                                 self.slots = self.new_slots;
                                 self.new_slots = &.{};
                                 self.slot = @intCast(hash(self.candidate) & (self.slots.len - 1));
@@ -617,9 +669,12 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                         },
                         .append_edge => {
                             if (!streaming or (if (single) self.graph.strict else strict)) {
-                                if (!try self.edge_growth.step(&self.stored, a)) continue :machine self.successor(single, phase);
+                                if (fixed_storage) {
+                                    try self.memory.needPair(self.stored.items.len + 1);
+                                } else if (!try self.edge_growth.step(&self.stored, a)) continue :machine self.successor(single, phase);
                                 self.target = try r.index(self.stored.items.len);
                                 self.stored.appendAssumeCapacity(if (streaming) edges.canonical(self.candidate) else self.candidate);
+                                if (fixed_storage) self.memory.used.strict_pairs = @intCast(self.stored.items.len);
                             }
                             if (streaming) {
                                 self.taken.emitted += 1;

@@ -10,6 +10,7 @@ const c = @import("coverage.zig");
 const names = @import("names.zig");
 const attrs = @import("attributes.zig");
 const Unmetered = @import("../dot/identifier_cursor.zig").Unmetered;
+const scratch = @import("query_storage.zig");
 
 pub fn Graph(comptime caps: encoding.Capabilities) type {
     const Core = t.GraphWith(caps, true);
@@ -21,6 +22,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         const Edges = @import("partial_edges.zig").For(Self, Core, caps);
         pub const EdgeView = Edges.Edge(false);
         pub const EdgeIterator = Edges.Iterator;
+        pub const FixedEdgeIterator = Edges.FixedIterator;
         pub const Materialized = Edges.Materialized(true);
         pub const MaterializedTopology = Edges.Materialized(false);
         pub const Orientation = Edges.Orientation;
@@ -30,6 +32,10 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         /// Exhaustion is not proof that missing input contains no other edges.
         pub fn edgeIterator(self: *const Self, options: r.Options) r.Error!EdgeIterator {
             return .{ .graph = self, .inner = try self._data.edgeIterator(options) };
+        }
+        pub fn edgeIteratorIn(self: *const Self, memory: scratch.EdgeScratch, options: r.Options) r.Error!FixedEdgeIterator {
+            try scratch.checkGraph(try scratch.checkedBytes(memory), self);
+            return .{ .graph = self, .inner = try self._data.edgeIteratorIn(memory, options) };
         }
         pub fn edgeView(self: *const Self, edge: t.Edge) r.Error!EdgeView {
             _ = try self._data.edgeView(edge);
@@ -133,34 +139,47 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         }
         /// Node/scope catalog iteration over retained input. Reuses the core
         /// iterator and charges qualification to its lifetime work allowance.
-        pub const AttributeIterator = struct {
-            graph: *const Self,
-            inner: Core.AttributeIterator,
-            failure: ?r.Error = null,
+        pub const AttributeIterator = AttributeIteratorFor(false);
+        pub const FixedAttributeIterator = AttributeIteratorFor(true);
+        fn AttributeIteratorFor(comptime fixed: bool) type {
+            return struct {
+                const IteratorSelf = @This();
+                graph: *const Self,
+                inner: if (fixed) Core.FixedAttributeIterator else Core.AttributeIterator,
+                failure: ?r.Error = null,
 
-            pub fn deinit(self: *AttributeIterator) void {
-                self.inner.deinit();
-                self.* = undefined;
-            }
-            pub fn peakBytes(self: *const AttributeIterator) usize {
-                return self.inner.peakBytes();
-            }
-            /// One qualified value per retained key, including implicit empties.
-            /// Exhaustion is not proof that missing input introduces no keys.
-            /// Errors are terminal and repeat, including qualification stops.
-            pub inline fn next(self: *AttributeIterator) r.Error!?c.Knowledge(AttributeView) {
-                if (self.failure) |err| return err;
-                const value = (try self.inner.next()) orelse return null;
-                const answer = self.graph.qualifyAttributeWith(value, &self.inner.work) catch |err| {
-                    self.failure = err;
-                    return err;
-                };
-                return switch (answer) {
-                    .known => |known| .{ .known = known.? },
-                    .unknown => |unknown| .{ .unknown = .{ .uncertainty = unknown.uncertainty, .retained = unknown.retained } },
-                };
-            }
-        };
+                pub fn deinit(self: *IteratorSelf) void {
+                    self.inner.deinit();
+                    self.* = undefined;
+                }
+                pub fn peakBytes(self: *const IteratorSelf) usize {
+                    return self.inner.peakBytes();
+                }
+                /// One qualified value per retained key, including implicit empties.
+                /// Exhaustion is not proof that missing input introduces no keys.
+                /// Errors are terminal and repeat, including qualification stops.
+                pub inline fn next(self: *IteratorSelf) r.Error!?c.Knowledge(AttributeView) {
+                    if (self.failure) |err| return err;
+                    const value = (try self.inner.next()) orelse return null;
+                    const answer = (if (fixed and self.inner.target == .edge) Edges.qualify(self.graph, self.inner.target.edge, value, &self.inner.work) else self.graph.qualifyAttributeWith(value, &self.inner.work)) catch |err| {
+                        self.failure = err;
+                        return err;
+                    };
+                    return switch (answer) {
+                        .known => |known| .{ .known = known.? },
+                        .unknown => |unknown| .{ .unknown = .{ .uncertainty = unknown.uncertainty, .retained = unknown.retained } },
+                    };
+                }
+                pub fn shortfall(self: *const IteratorSelf) ?@import("fixed_storage.zig").StorageShortfall {
+                    if (!fixed) @compileError("shortfall requires fixed scratch");
+                    return self.inner.shortfall();
+                }
+                pub fn scratchPeak(self: *const IteratorSelf) scratch.AttributeScratchCapacities {
+                    if (!fixed) @compileError("scratchPeak requires fixed scratch");
+                    return self.inner.scratchPeak();
+                }
+            };
+        }
         pub const NodeView = struct {
             graph: *const Self,
             id: t.NodeId,
@@ -182,6 +201,10 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             }
             pub fn attributes(self: NodeView, options: r.Options) r.Error!AttributeIterator {
                 return .{ .graph = self.graph, .inner = try self.core().attributes(options) };
+            }
+            pub fn attributesIn(self: NodeView, memory: scratch.AttributeScratch, options: r.Options) r.Error!FixedAttributeIterator {
+                try scratch.checkGraph(try scratch.checkedBytes(memory), self.graph);
+                return .{ .graph = self.graph, .inner = try self.core().attributesIn(memory, options) };
             }
             pub fn mentions(self: NodeView) MentionIterator {
                 const data = &self.graph._data;
@@ -223,6 +246,10 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             }
             pub fn attributes(self: ScopeView, options: r.Options) r.Error!AttributeIterator {
                 return .{ .graph = self.graph, .inner = try self.core().attributes(options) };
+            }
+            pub fn attributesIn(self: ScopeView, memory: scratch.AttributeScratch, options: r.Options) r.Error!FixedAttributeIterator {
+                try scratch.checkGraph(try scratch.checkedBytes(memory), self.graph);
+                return .{ .graph = self.graph, .inner = try self.core().attributesIn(memory, options) };
             }
             /// Last retained membership version, not a promise of final contents.
             pub fn membership(self: ScopeView) r.Error!t.Membership {

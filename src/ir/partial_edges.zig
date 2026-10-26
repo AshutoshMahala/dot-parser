@@ -6,12 +6,13 @@ const r = @import("resources.zig");
 const attrs = @import("attributes.zig");
 const encoding = @import("parser_support").encoding;
 const Unmetered = @import("../dot/identifier_cursor.zig").Unmetered;
+const scratch = @import("query_storage.zig");
 
 pub fn For(comptime Graph: type, comptime Core: type, comptime caps: encoding.Capabilities) type {
     return struct {
         pub const Orientation = struct { from: t.NodeId, to: t.NodeId };
 
-        inline fn qualify(graph: *const Graph, edge: t.Edge, value: ?Core.AttributeView, work: anytype) r.Error!c.Knowledge(?Core.AttributeView) {
+        pub inline fn qualify(graph: *const Graph, edge: t.Edge, value: ?Core.AttributeView, work: anytype) r.Error!c.Knowledge(?Core.AttributeView) {
             // Keep the large borrowed answer at the call site; the outlined
             // decision returns only a small uncertainty, not another value copy.
             if (try uncertainty(graph, edge, value, work)) |u|
@@ -130,6 +131,12 @@ pub fn For(comptime Graph: type, comptime Core: type, comptime caps: encoding.Ca
                     const view: Core.EdgeView = .{ .graph = &self.graph._data, .edge = self.edge };
                     return .{ .graph = self.graph, .edge = self.edge, .inner = try view.attributes(options) };
                 }
+                pub fn attributesIn(self: Self, memory: scratch.AttributeScratch, options: r.Options) r.Error!Graph.FixedAttributeIterator {
+                    if (folded) @compileError("materialized attributes need no scratch; use attributes or attributesWith");
+                    try scratch.checkGraph(try scratch.checkedBytes(memory), self.graph);
+                    const view: Core.EdgeView = .{ .graph = &self.graph._data, .edge = self.edge };
+                    return .{ .graph = self.graph, .inner = try view.attributesIn(memory, options) };
+                }
                 pub fn attributesWith(self: Self, options: r.Options) r.Error!(if (folded) BoundedFoldedAttributes else CompactAttributes) {
                     if (!folded) return self.compactAttributes(options);
                     return .{ .inner = self.foldedAttributes(), .work = try r.Work.init(options.limits orelse self.graph._data.limits, options.cancellation) };
@@ -187,21 +194,34 @@ pub fn For(comptime Graph: type, comptime Core: type, comptime caps: encoding.Ca
             }
         };
 
-        pub const Iterator = struct {
-            graph: *const Graph,
-            inner: Core.EdgeIterator,
-            pub fn deinit(self: *Iterator) void {
-                self.inner.deinit();
-                self.* = undefined;
-            }
-            pub fn peakBytes(self: *const Iterator) usize {
-                return self.inner.peakBytes();
-            }
-            pub inline fn next(self: *Iterator) r.Error!?Edge(false) {
-                const value = (try self.inner.next()) orelse return null;
-                return .{ .graph = self.graph, .edge = value.edge };
-            }
-        };
+        pub const Iterator = IteratorFor(false);
+        pub const FixedIterator = IteratorFor(true);
+        fn IteratorFor(comptime fixed: bool) type {
+            return struct {
+                const IteratorSelf = @This();
+                graph: *const Graph,
+                inner: if (fixed) Core.FixedEdgeIterator else Core.EdgeIterator,
+                pub fn deinit(self: *IteratorSelf) void {
+                    self.inner.deinit();
+                    self.* = undefined;
+                }
+                pub fn peakBytes(self: *const IteratorSelf) usize {
+                    return self.inner.peakBytes();
+                }
+                pub inline fn next(self: *IteratorSelf) r.Error!?Edge(false) {
+                    const value = (try self.inner.next()) orelse return null;
+                    return .{ .graph = self.graph, .edge = value.edge };
+                }
+                pub fn shortfall(self: *const IteratorSelf) ?@import("fixed_storage.zig").StorageShortfall {
+                    if (!fixed) @compileError("shortfall requires fixed scratch");
+                    return self.inner.shortfall();
+                }
+                pub fn scratchPeak(self: *const IteratorSelf) scratch.EdgeScratchCapacities {
+                    if (!fixed) @compileError("scratchPeak requires fixed scratch");
+                    return self.inner.scratchPeak();
+                }
+            };
+        }
 
         pub fn Materialized(comptime folded: bool) type {
             return struct {

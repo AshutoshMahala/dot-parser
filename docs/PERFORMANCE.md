@@ -2802,7 +2802,108 @@ fits, every pool one short, individual rotation failures, semantic-limit
 precedence, layout/overlap/canary checks, borrowed lifetimes, zero construction
 allocations, missing later-query storage, budget partitions and every cancellation
 checkpoint in the stop fixture. Fixed construction is also compiled for
-freestanding wasm32 and riscv32. Fixed query/output pools remain later work.
+freestanding wasm32 and riscv32. Fixed query scratch is covered below;
+fixed materialization output remains later work.
+
+### Fixed streaming/query scratch (2026-10-25)
+
+Baseline **`a5ab7f8`**, Apple M4 Pro, Zig 0.17.0, native macOS. The new `In`
+operations specialize the existing algorithms for caller-owned scratch.
+Ordinary operations do not reserve bounds, collect scratch high-water counts,
+or branch on a runtime storage backend. No retained graph/record fields were
+added. The lowering-helper renames are naming changes only.
+
+**Default-path comparison:** ten serial processes per revision/mode, balanced
+before/after order, using the unchanged `ir_edge_sessions` and
+`ir_attribute_sessions` harnesses. No compilation/tests ran during measurement.
+Each process reports medians of its rotating, warmed routes. Geometric means
+below use the medians across processes; sub-microsecond rows are excluded to
+avoid magnifying the printed timer's quantization. Positive means more time.
+
+| Existing direct operations | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| Edge streaming | −1.8% | −0.6% | +0.6% |
+| Attribute lookup/enumeration | +1.7% | +1.3% | +1.6% |
+
+These aggregates are approximately flat, **not a claim that every microbenchmark
+is unchanged**. The separate binaries showed +7.8% Fast indexed enumeration,
+a bimodal +15.3% Safe long-key lookup, and +6.4% Small three-member sets. A paired
+same-process lookup/enumeration harness put indexed enumeration within roughly
+−3.4% to −0.2% Fast and −1.7% to −1.3% Safe, and Safe long-key lookup within
+0.1–1.4%; that harness instead showed a roughly 9–12% Safe strict single-key
+outlier, which the original harness did not reproduce. Standalone Safe node
+and strict-edge lookup probes emitted identical instruction streams before and
+after. This points to benchmark/code-layout sensitivity rather than additional
+query work, but the case-level differences remain recorded for the final IR
+performance pass. Forcing attribute iteration to inline did not improve both
+modes consistently and was not retained.
+
+Default peak allocations, result counts and inline state sizes are unchanged.
+Session work/poll counts also agree apart from existing allocator-resize-dependent
+variation of four credits in the Safe reopened fixture (about 142,320 total).
+Fixed backends are tested separately for partition-independent work totals.
+The unchanged harnesses' Mach-O `__TEXT` shrank by 16/64/48 bytes for edges and
+5,136/3,824/2,384 bytes for attributes in Fast/Safe/Small respectively. These
+are harness code-plus-constant sizes, not universal application binary deltas.
+
+**Opt-in fixed scratch:** `zig build bench-ir-fixed-queries -Doptimize=fast`
+(also `safe` or `small`) produces one report comparing growable operations,
+explicit observed capacities, explicit bounds, and fixed sessions with grants
+1/4096. Five processes per measured mode; eleven warmed rotating samples per
+process. Parsing/lowering, sizing and caller buffer allocation are untimed;
+operation construction, initialization, traversal and cleanup are timed.
+`fixed_used` is a repeat-input comparison using a prior fixed run's high-water
+counts, not an automatic reservation or an exact sizing pass for edited input.
+
+| Fixture | Direct Fast: growable → fixed used (ms) | Direct Safe: growable → fixed used (ms) |
+| --- | ---: | ---: |
+| 2,000 singleton edges | 0.01321 → 0.01521 | 0.01608 → 0.01733 |
+| 1,000 three-member sets | 0.01717 → 0.01963 | 0.01875 → 0.02350 |
+| 400 overlapping strict products | 0.02292 → 0.02229 | 0.02604 → 0.02521 |
+| 200 reopened-scope connections | 0.09208 → 0.13021 | 0.08688 → 0.13608 |
+| First 1,000 edges of a 5,000 × 5,000 product | 0.04254 → 0.02408 | 0.03408 → 0.03925 |
+| 32 enumerations over 2,000 strict attribute updates | 0.47063 → 0.43629 | 0.39963 → 0.38821 |
+
+Fixed scratch is an allocation/ownership guarantee, **not automatically a speed
+improvement**. In particular, the opt-in direct reopened fixture is slower;
+broader tuning remains for the final IR pass. The 4096-credit fixed edge sessions
+take 0.00800/0.00888 ms for singletons and 0.10758/0.11779 ms for reopened
+connections (Fast/Safe). Fixed attribute sessions take 1.26283/1.25738 ms at
+4096 credits and 4.60138/4.86138 ms at one credit for the 32 enumerations.
+No metering unit or cancellation checkpoint was relaxed.
+
+The following are scratch **bytes**, not RSS or whole-process memory. Growable
+peak is requested live allocation payload; fixed peak is the full bound
+reservation, including unused slots/marks/hash tables. Input graph/source and
+inline objects are excluded. Every `In` operation makes zero allocator calls.
+
+| Fixture | Growable peak Fast / Safe | Fixed used reservation | Explicit full-bounds reservation |
+| --- | ---: | ---: | ---: |
+| Singletons | 0 / 0 | 0 | 24,012 |
+| Three-member sets | 4,144 / 4,144 | 4,024 | 12,036 |
+| Strict overlap | 608 / 608 | 304 | 304 |
+| Reopened scopes | 2,516 / 1,884 | 1,604 | 2,412 |
+| Large-product prefix | 100,456 / 100,456 | 80,000 | 120,000 |
+| Strict attribute enumeration | 192 / 192 | 192 | 192 |
+
+The product stays symbolic in the IR: its query holds member lists, not 25
+million output edges. Bounds can waste memory; they intentionally do not scan
+for singleton-only streams or exclude non-edge keys. No automatic sizing is
+added to either backend.
+
+With metering enabled and cancellation compiled out, complete edge iterator
+state is 280 → 328 B Fast and 304 → 352 B Safe (growable → fixed); edge session
+state is 456 → 432 B Fast and 480 → 456 B Safe. Attribute iterator state remains
+176 B and attribute session state 696 B. Fixed state replaces allocator/growth
+bookkeeping; it does not add fields to the ordinary specialization.
+
+Verification covers exact/short pools, full-pool duplicate skipping, combined
+member capacity, collision-checked pairs, reusable buffers, alias/length/alignment
+checks (including unused retained regions), semantic-limit precedence, partial
+answers, UTF-8/16/32, zero allocator calls, and emitted-prefix survival. Tests
+exercise zero/one/larger grants, runtime policies, cancellation stop points,
+every work-limit stop in the fixtures, and bounded generation rollover. Fixed
+streaming/enumeration are also consumed in freestanding wasm32/riscv32 checks.
 
 ## Running the benchmarks
 
@@ -2888,6 +2989,7 @@ zig build bench-ir-edge-sessions -Doptimize=fast
 zig build bench-ir-query-sessions -Doptimize=safe
 zig build bench-ir-attribute-sessions -Doptimize=safe
 zig build bench-ir-fixed -Doptimize=fast
+zig build bench-ir-fixed-queries -Doptimize=fast
 zig build check-benches  # only checks that they compile
 ```
 

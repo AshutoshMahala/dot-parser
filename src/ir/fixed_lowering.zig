@@ -64,7 +64,7 @@ pub fn API(comptime config: anytype) type {
         }
         pub fn bounds(comptime partial: bool, counts: syntax.Capacities, options: anytype) r.Error!pools.Bounds {
             comptime checkOptions(@TypeOf(options), false);
-            return pools.capacityBounds(partial, counts, limitsOf(options));
+            return pools.loweringBounds(partial, counts, limitsOf(options));
         }
         pub fn direct(comptime partial: bool, doc: *const syntax.Document, memory: pools.LoweringMemory, options: anytype) DirectReturn(partial) {
             comptime checkOptions(@TypeOf(options), true);

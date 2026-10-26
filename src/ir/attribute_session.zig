@@ -11,9 +11,16 @@ const p = @import("attribute_primitives.zig");
 const storage = @import("session_storage.zig");
 const encoding = @import("parser_support").encoding;
 const none = attrs.none;
-const Winner = struct { key: u32, attribute: u32 = none, connection: t.ConnectionId = undefined };
+const scratch = @import("query_storage.zig");
+const Winner = scratch.Winner;
 
 pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptime all: bool, comptime config: anytype) type {
+    return WithStorage(Graph, caps, all, config, false);
+}
+pub fn FixedBound(comptime Graph: type, comptime caps: encoding.Capabilities, comptime config: anytype) type {
+    return WithStorage(Graph, caps, true, config, true);
+}
+fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, comptime all: bool, comptime config: anytype, comptime fixed_storage: bool) type {
     const partial = @hasField(Graph, "_data");
     const Data = if (partial) @FieldType(Graph, "_data") else Graph;
     const baseline = comptime execution.resolve(.{}, config.policy);
@@ -89,7 +96,7 @@ pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptim
         coverage_connection: if (partial) bool else void = if (partial) false else {},
         lo: u32 = 0,
         hi: u32 = 0,
-        memory: if (all) r.Memory else void,
+        memory: if (all) (if (fixed_storage) scratch.AttributeState else r.Memory) else void,
         winners: if (all) []Winner else void = if (all) &.{} else {},
         winner_count: if (all) u32 else void = if (all) 0 else {},
         winner_read: if (all) u32 else void = if (all) 0 else {},
@@ -102,6 +109,12 @@ pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptim
             return V == Graph.NodeView or V == Graph.ScopeView or V == Graph.EdgeView or V == Graph.Materialized.EdgeView;
         }
         pub fn init(view: anytype, key: if (all) void else []const u8, options: anytype) !Self {
+            return initWith(view, key, {}, options);
+        }
+        pub fn initIn(view: anytype, memory: scratch.AttributeScratch, options: anytype) !Self {
+            return initWith(view, {}, memory, options);
+        }
+        inline fn initWith(view: anytype, key: if (all) void else []const u8, memory: if (fixed_storage) scratch.AttributeScratch else void, options: anytype) !Self {
             const V = @TypeOf(view);
             if (comptime !accepts(V)) @compileError("attribute sessions require a compatible IR component view");
             comptime if (@TypeOf(options) != Options) for (std.meta.fieldNames(@TypeOf(options))) |field| {
@@ -126,6 +139,7 @@ pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptim
             const hook = if (has_hook) (if (effective.cancellation) opts.cancellation else null) else {};
             if (has_hook) if (hook) |h| if (h.requested()) return error.Cancelled;
             const limits = opts.limits orelse data.limits;
+            if (fixed_storage and target == .folded) try scratch.checkMaterialized(try scratch.checkedBytes(memory), target.folded.owner);
             return .{
                 .graph = graph,
                 .target = target,
@@ -133,7 +147,7 @@ pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptim
                 .effective = if (config.runtime_policy) effective else {},
                 .max_work = limits.max_work,
                 .finder = .{ .bytes = if (all) &.{} else key, .kind = targetKind(target) },
-                .memory = if (all) .{ .backing = data.allocator, .limit = limits.max_bytes } else {},
+                .memory = if (fixed_storage) try scratch.AttributeState.init(memory, graph, limits) else if (all) .{ .backing = data.allocator, .limit = limits.max_bytes } else {},
             };
         }
         fn checkEdge(data: *const Data, edge: t.Edge) r.Error!void {
@@ -312,7 +326,7 @@ pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptim
                     }
                 } else unreachable,
                 .winner_alloc => if (all) {
-                    self.winners = try storage.allocate(Winner, self.memory.allocator(), self.winner_count);
+                    self.winners = if (fixed_storage) try self.memory.take(self.winner_count) else try storage.allocate(Winner, self.memory.allocator(), self.winner_count);
                     self.catalog = 0;
                     self.winner_count = 0;
                     self.phase = .winner_init;
@@ -532,8 +546,16 @@ pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptim
             return if (all) self.memory.peak else 0;
         }
         pub fn deinit(self: *Self) void {
-            if (all) storage.release(Winner, self.memory.allocator(), self.winners);
+            if (all and !fixed_storage) storage.release(Winner, self.memory.allocator(), self.winners);
             self.* = undefined;
+        }
+        pub fn shortfall(self: *const Self) ?@import("fixed_storage.zig").StorageShortfall {
+            if (!fixed_storage) @compileError("shortfall requires fixed scratch");
+            return self.memory.shortfall;
+        }
+        pub fn scratchPeak(self: *const Self) scratch.AttributeScratchCapacities {
+            if (!fixed_storage) @compileError("scratchPeak requires fixed scratch");
+            return self.memory.used;
         }
     };
 }

@@ -907,9 +907,9 @@ Choose one of three sizing strategies:
 
 ```zig
 const options = .{ .interpretation = Dot.interpretation(document, .{}) };
-const bounds = try IR.capacityBounds(document.capacities(), options);
-// For partial input: IR.partialCapacityBounds(...).
-const layout = try IR.storageLayout(bounds.graph, bounds.scratch);
+const bounds = try IR.loweringBounds(document.capacities(), options);
+// For partial input: IR.partialLoweringBounds(...).
+const layout = try IR.loweringLayout(bounds.graph, bounds.scratch);
 // Caller supplies at least layout.graph_bytes / layout.scratch_bytes,
 // each aligned to layout.alignment. This does not allocate those buffers.
 const memory = try layout.bind(graph_buffer, scratch_buffer);
@@ -947,7 +947,7 @@ End the operation and restart in adequate storage. A successful partial-source
 IR is different from a failed lowering operation. Semantic limits are checked
 before the corresponding pool write, including individual attribute-map cells.
 
-`storageLayout` and `bind` check arithmetic, lengths, alignment and overlap in all
+`loweringLayout` and `bind` check arithmetic, lengths, alignment and overlap in all
 build modes. Short byte regions return `BufferTooSmall`; invalid or overlapping
 regions return `InvalidStorage`. Lowering also rejects overlap with source and
 Document storage before writes. Excess buffer tails are unused. Layouts are
@@ -985,12 +985,13 @@ remain bounded, metered and cancellable; larger envelopes may require more work
 to clear their tables. Direct fixed calls run to completion with the direct
 driver's accounting; use sessions when work must pause.
 
-Fixed construction does not provide fixed scratch/output for later queries.
-The optional lowering option `.query_allocator = allocator` supplies storage
+Fixed construction and query scratch are independent. Use the `In` operations
+below for caller-owned scratch. The optional lowering option
+`.query_allocator = allocator` supplies storage
 **only for subsequent operations**; construction never calls it. Its context
 must outlive those operations/results. It defaults to null, with no heap fallback.
 
-| Operation without `query_allocator` | Result |
+| Ordinary operation without `query_allocator` | Result |
 | --- | --- |
 | Names/values, node iteration, indexed attributes, allocation-free symbolic queries | Available. |
 | Non-strict singleton edge streaming | Available without scratch. |
@@ -1001,10 +1002,161 @@ must outlive those operations/results. It defaults to null, with no heap fallbac
 
 `StorageRequired` is a terminal operation failure, never an empty answer or
 successful exhaustion. With an allocator supplied, normal allocation errors and
-limits apply. Fixed query/output storage and event lowering remain later work.
+limits apply. The fixed-scratch counterparts below never call that allocator.
+Fixed materialization output and event lowering remain later work.
 Run `zig build bench-ir-fixed -Doptimize=fast` (also `safe`/`small`) to compare
 growable lowering, observed capacities, explicit bounds and fixed sessions;
 sizing and caller-buffer allocation are outside its lowering timings.
+
+## Fixed scratch for streaming and queries
+
+Use the same graph, views, ordering and execution policy with caller-owned
+scratch. These operations work with both allocator-backed and fixed IRs;
+they never allocate, grow, or fall back to the graph's allocator.
+
+| Ordinary call | Fixed-scratch call |
+| --- | --- |
+| `graph.edgeIterator(options)` | `graph.edgeIteratorIn(memory, options)` |
+| `IR.edgeSession(&graph, options)` | `IR.edgeSessionIn(&graph, memory, options)` |
+| `component.attributes(options)` | `component.attributesIn(memory, options)` |
+| `IR.attributesSession(component, options)` | `IR.attributesSessionIn(component, memory, options)` |
+
+`attributesIn` accepts compact node, scope and edge views, including partial
+views. Nodes/scopes and non-strict edges need zero external winner slots.
+`attributesSessionIn` also accepts materialized views; their folded maps need
+no winner scratch. Direct materialized attributes and single-key/existence/
+membership queries already need no allocation, so they have no additional
+`In` operation.
+
+### Explicit sizing
+
+Choose application capacities, a previous fixed operation's `scratchPeak()`,
+or the explicit metadata-only bounds below. **Nothing reserves automatically.**
+
+```zig
+// Retained is the application's IR.FixedGraphStorage(...) type.
+var scratch: IR.FixedEdgeScratch(Retained, .{
+    .members = 128, .strict_pairs = 256,
+}) = .{};
+var edges = try graph.edgeIteratorIn(scratch.storage(), .{});
+defer edges.deinit();
+while (try edges.next()) |edge|
+    std.debug.print("{f} {s} {f}\n", .{
+        edge.from().name(), edge.edge.operator.lexeme(), edge.to().name(),
+    });
+```
+
+`IR.FixedAttributeScratch(.{ .winners = 16 })` similarly exposes `.storage()`.
+The descriptors are `IR.EdgeScratch` and `IR.AttributeScratch`; capacity types
+are `dot.ir.EdgeScratchCapacities` and `dot.ir.AttributeScratchCapacities`.
+Helpers contain initially undefined inline bytes and expose `byte_size`.
+Put large envelopes in suitable caller-managed memory, not a small stack.
+
+| Capacity | Storage used |
+| --- | --- |
+| `members` | Shared left/right distinct-member lists, not their Cartesian product. Singletons stay inline. Left fills from the front, right immediately after it; lists are reused per connection. |
+| `strict_pairs` | One canonical key per emitted unique strict edge, plus derived collision-checked hash slots. Non-strict streams need none. |
+| `winners` | All interned edge-family keys for strict compact-edge enumeration, not just the queried edge's final keys. Suffix-only ports use inline selections. |
+
+There is no marks capacity to guess. With `members > 0`, marks derive from
+`Retained.graph_capacities.nodes`. A graph exceeding that envelope is rejected
+at construction with `InvalidStorage`. With `members = 0`, no marks are reserved
+and singleton/empty-set traversal works regardless of graph size; a non-empty
+set reports a member shortfall. `{a b c d}->x` needs four member slots, while
+`{a b c d}->{a b c d}` needs eight.
+
+For runtime-sized buffers, including allocator-backed graphs:
+
+```zig
+const capacities = try IR.edgeScratchBounds(&graph, options); // optional
+const layout = try IR.edgeScratchLayout(&graph, capacities);
+// buffer must satisfy layout.alignment and layout.byte_size.
+const memory = try layout.bind(buffer);
+var edges = try graph.edgeIteratorIn(memory, options);
+defer edges.deinit();
+```
+
+`IR.attributeScratchLayout(capacities)` has the same checked binding interface.
+Layouts allocate/clear nothing and scan no input. Marks derive from the graph's
+actual node count for a runtime edge layout. Extra buffer bytes are not bound.
+See [fixed_edge_stream.zig](../examples/fixed_edge_stream.zig) for edge streaming
+with a separate reusable attribute pool.
+
+Bounds read existing metadata only. Let `N` be node count, `C` connection count,
+`K` the **total interned-key count across all families**, and `L` effective limits:
+
+| Helper | Bound |
+| --- | --- |
+| `IR.edgeScratchBounds(&graph, options)` | `members = 2N` when `C != 0`; strict pairs = `min(L.max_edges, L.max_pairs, N²)` directed, or `min(L.max_edges, L.max_pairs, N(N+1)/2)` undirected. Zero pairs for non-strict graphs; all zero when `C = 0`. |
+| `IR.attributeScratchBounds(&graph)` | `winners = K` for strict graphs, otherwise zero. Infallible, no edge-key scan or per-family retained counter. |
+
+Both accept complete/partial graphs. Edge limits come from `options.limits` or
+the input graph, exactly as for consumption. Recognized execution options do
+not affect sizing or invoke hooks. Counts/products/byte layouts are checked;
+unrepresentable capacities fail with `IndexLimit`. Bounds can overreserve:
+they do not detect singleton-only endpoints or exclude non-edge keys. They do
+not promise success under work, byte or cancellation limits. Lowering uses the
+separate `loweringLayout`, `loweringBounds` and `partialLoweringBounds` helpers.
+
+### Ownership, limits and shortfalls
+
+Each active operation borrows scratch exclusively until `deinit`, including
+after a terminal outcome. Backing bytes must stay alive and unmoved; the
+descriptor variable need not. Cleanup never frees caller memory. Reuse starts
+a fresh operation with no stale marks, pairs or winners. Two simultaneous
+operations need disjoint scratch. Keep the input graph/source and any active
+materialized owner alive and immutable. Emitted views borrow graph/source, not
+scratch, and survive scratch reuse.
+
+Binding/admission checks lengths, alignment, derived node envelopes and overlap
+with known borrowed input regions in all build modes. Arbitrary pointer lifetimes
+and scratch already lent to another operation remain caller responsibilities.
+`peakBytes()` and `max_bytes` count the **entire bound reservation**, including
+derived tables/padding, not just touched slots. They exclude the graph/source,
+unbound buffer tail and inline operation object. `scratchPeak()` returns maximum
+combined live members, remembered pairs or activated winner slots; it excludes
+a missing request and does not predict an unvisited suffix or an edited graph.
+
+| Failure | Behavior |
+| --- | --- |
+| Short backing buffer | `BufferTooSmall` before execution. |
+| Invalid alignment/descriptor/overlap/node envelope | `InvalidStorage` before execution. |
+| Reservation above `max_bytes` | `MemoryLimit` before initialization. |
+| Needed slot unavailable | Terminal `PoolExhausted`; `shortfall()` names `.members`, `.strict_pairs` or `.attribute_winners`, with `limit` and `required_at_least`. |
+| Semantic/work/cancellation stop | Existing error; no storage shortfall. |
+
+A full strict-pair pool still skips duplicates. For a new pair, `EdgeLimit`
+precedes the corresponding pool shortfall. Earlier work/cancellation stops keep
+their normal order. Small capacities are allowed, not rejected against bounds.
+No eviction, hidden growth, alternate rescanning or enlarge-and-resume occurs.
+
+Previously emitted entries remain usable after failure; they are a prefix, not
+successful exhaustion. Direct errors repeat instead of returning null; session
+outcomes latch, with no new entry or work on later polls. To retry, end the borrow,
+provide more storage and restart; the prefix can be emitted again. Strict
+attribute enumeration resolves winners before publishing its first attribute,
+so a winner-pool shortfall emits none. A query failure does not make a complete
+graph partial, and exhausting retained partial content does not certify gaps.
+
+### Fixed sessions
+
+Use `edgeSessionIn` / `attributesSessionIn` with the same execution policy,
+`advance`, `run`, progress and outcomes as the existing sessions. Complete/partial
+types are `FixedEdgeSession` / `FixedPartialEdgeSession` and
+`FixedAttributesSession` / `FixedPartialAttributesSession`. Graph types expose
+`FixedEdgeIterator` / `FixedAttributeIterator`. No new execution setting is added.
+
+Initialization, reuse and generation rollover remain bounded and metered:
+constructors do not hide bulk clears. One/zero-credit grants, cancellation
+intervals and terminal latching keep their guarantees. Fixed work totals can
+differ from growable totals because growth/copying disappears and a larger
+explicit table can need more clearing. Partitioning a grant does not change
+work totals within the same backend, capacities and policy.
+
+Run `zig build bench-ir-fixed-queries -Doptimize=fast` (also `safe`/`small`) for
+throughput, fixed reservation versus observed usage, and inline state sizes.
+Broader session tuning remains separate; fixed materialization output is not
+part of these scratch APIs.
 
 ## Resumable Document lowering
 
@@ -1191,8 +1343,8 @@ need not admit both. Values/order/provenance agree when both complete.
 This is a cooperative **work bound**, not a latency deadline. Allocator calls,
 the cancellation predicate and destruction are external/unmetered; the backing
 allocator can reserve or initialize memory internally. Library-controlled copies,
-table initialization and rehashing are resumable. Fixed-storage sessions remain
-separate work. Bounded edge streaming and attribute queries are described below.
+table initialization and rehashing are resumable. Fixed-storage materialization
+output remains separate work. Bounded edge streaming and attribute queries are described below.
 The session's raw allocation boundary also avoids the standard typed helpers'
 whole-buffer debug poisoning; all readable elements are initialized explicitly.
 
@@ -1363,7 +1515,8 @@ not total query complexity. Ordinary direct drivers and IR layouts are unchanged
 Measure with `zig build bench-ir-query-sessions -Doptimize=fast` (also `safe`
 and `small`). Name lookup before constructing a handle-based query is separate
 work; this increment does not make `findNode` resumable. Event lowering and
-fixed query/output storage remain separate increments.
+fixed materialization output remain separate increments. Fixed scratch for
+streaming and attribute enumeration is available above.
 
 ## Resumable attribute access
 
@@ -1581,8 +1734,9 @@ sessions. Edge-existence and membership queries now also have policy-bound,
 allocation-free sessions. Attribute lookup/enumeration sessions now cover compact
 and folded complete/partial views. Fixed-storage Document construction supports
 the same direct/session algorithms with explicit capacity bounds and shortfalls.
-Label-port existence/binding, event-based lowering and fixed query/output storage
-remain later work.
+Fixed scratch also supports direct/session edge streaming and attribute
+enumeration without a query allocator. Label-port existence/binding,
+event-based lowering and fixed materialization output remain later work.
 
 The final section measures value kind/operand access, joined output, bounded
 writing and exact-allocation `toString`, plus a benchmark-only kind cache.

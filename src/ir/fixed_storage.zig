@@ -39,6 +39,9 @@ pub const Resource = enum {
     nesting_frames,
     edge_frames,
     pending_endpoints,
+    members,
+    strict_pairs,
+    attribute_winners,
 };
 pub const StorageShortfall = struct { resource: Resource, limit: u32, required_at_least: u32 };
 pub const Bounds = struct { graph: GraphCapacities, scratch: LoweringScratchCapacities };
@@ -74,6 +77,19 @@ const Scratch = struct {
 pub const GraphStorage = struct { bytes: []u8, capacities: GraphCapacities };
 pub const LoweringScratch = struct { bytes: []u8, graph_capacities: GraphCapacities, capacities: LoweringScratchCapacities };
 pub const LoweringMemory = struct { graph: GraphStorage, scratch: LoweringScratch };
+
+/// A successful fixed graph always has its root scope. Nodes are the first
+/// retained region, scopes the second: when the node envelope is empty, scopes
+/// begin at offset zero instead. Recover the complete borrowed reservation,
+/// including unused pools/padding, without enlarging ordinary Graph records.
+pub fn borrowedGraphBytes(graph: anytype) []const u8 {
+    if (graph.borrowed_bytes == 0) return &.{};
+    const start: [*]const u8 = if (graph.node_storage.len != 0)
+        @ptrCast(graph.node_storage.ptr)
+    else
+        @ptrCast(graph.scope_storage.ptr);
+    return start[0..graph.borrowed_bytes];
+}
 
 fn slotCount(count: u32) r.Error!usize {
     if (count == 0) return 0;
@@ -152,7 +168,7 @@ pub const Layout = struct {
 
     pub fn bind(self: Layout, graph_buffer: []u8, scratch_buffer: []u8) r.Error!LoweringMemory {
         // Recompute rather than trusting caller-modifiable derived metadata.
-        const checked = try storageLayout(self.graph_capacities, self.scratch_capacities);
+        const checked = try loweringLayout(self.graph_capacities, self.scratch_capacities);
         if (!std.meta.eql(self, checked)) return error.InvalidStorage;
         if (graph_buffer.len < self.graph_bytes or scratch_buffer.len < self.scratch_bytes) return error.BufferTooSmall;
         const graph = graph_buffer[0..self.graph_bytes];
@@ -166,7 +182,7 @@ pub const Layout = struct {
         };
     }
 };
-pub fn storageLayout(g: GraphCapacities, s: LoweringScratchCapacities) r.Error!Layout {
+pub fn loweringLayout(g: GraphCapacities, s: LoweringScratchCapacities) r.Error!Layout {
     @setEvalBranchQuota(20_000);
     inline for (comptime std.meta.fieldNames(GraphCapacities)) |field| _ = try r.index(@field(g, field));
     inline for (comptime std.meta.fieldNames(LoweringScratchCapacities)) |field| _ = try r.index(@field(s, field));
@@ -177,7 +193,7 @@ pub fn storageLayout(g: GraphCapacities, s: LoweringScratchCapacities) r.Error!L
     return .{ .graph_bytes = retained.bytes, .scratch_bytes = temporary.bytes, .graph_capacities = g, .scratch_capacities = s, .retained = retained, .temporary = temporary };
 }
 pub fn FixedGraphStorage(comptime capacities: GraphCapacities) type {
-    const layout = comptime storageLayout(capacities, .{}) catch @compileError("invalid IR storage capacities");
+    const layout = comptime loweringLayout(capacities, .{}) catch @compileError("invalid IR storage capacities");
     return struct {
         pub const graph_capacities = capacities;
         pub const byte_size = layout.graph_bytes;
@@ -189,7 +205,7 @@ pub fn FixedGraphStorage(comptime capacities: GraphCapacities) type {
 }
 pub fn FixedLoweringScratch(comptime GraphStorageType: type, comptime capacities: LoweringScratchCapacities) type {
     const graph = GraphStorageType.graph_capacities;
-    const layout = comptime storageLayout(graph, capacities) catch @compileError("invalid IR scratch capacities");
+    const layout = comptime loweringLayout(graph, capacities) catch @compileError("invalid IR scratch capacities");
     return struct {
         pub const byte_size = layout.scratch_bytes;
         bytes: [byte_size]u8 align(alignment) = undefined,
@@ -220,7 +236,7 @@ pub const Context = struct {
 
     pub fn init(memory: LoweringMemory, doc: *const syntax.Document, limits: r.Limits, query_allocator: ?std.mem.Allocator) r.Error!Context {
         if (!std.meta.eql(memory.graph.capacities, memory.scratch.graph_capacities)) return error.InvalidStorage;
-        const layout = try storageLayout(memory.graph.capacities, memory.scratch.capacities);
+        const layout = try loweringLayout(memory.graph.capacities, memory.scratch.capacities);
         const bound = try layout.bind(memory.graph.bytes, memory.scratch.bytes);
         if (layout.graph_bytes + layout.scratch_bytes > limits.max_bytes) return error.MemoryLimit;
         // A fixed number of descriptor checks; no source or pool-content scan.
@@ -299,7 +315,7 @@ fn avlHeight(keys: u64) u64 {
     return height;
 }
 /// Arithmetic only; never automatically called by lowering.
-pub fn capacityBounds(comptime partial: bool, counts: syntax.Capacities, limits: r.Limits) r.Error!Bounds {
+pub fn loweringBounds(comptime partial: bool, counts: syntax.Capacities, limits: r.Limits) r.Error!Bounds {
     const A = @as(u64, counts.attributes) + counts.assignments;
     const S = @as(u64, counts.subgraphs);
     const owners = @as(u64, counts.edges) + counts.edge_chains + counts.scoped_edges;

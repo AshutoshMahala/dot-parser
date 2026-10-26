@@ -124,6 +124,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         pub const EdgeView = Views.Edge;
         pub const AttributeView = Views.Attribute;
         pub const AttributeIterator = Views.Iterator;
+        pub const FixedAttributeIterator = Views.FixedIterator;
         const Values = @import("values.zig").For(Self, caps);
         pub const ValueView = Values.Value;
         pub const OperandView = Values.Operand;
@@ -450,11 +451,15 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         }
 
         pub const EdgeIterator = @import("edges.zig").Iterator(Self, false);
+        pub const FixedEdgeIterator = @import("edges.zig").FixedIterator(Self);
 
         /// Pull individual edges without retaining the output array. Scratch
         /// is allocated lazily and must be released with iterator.deinit().
         pub fn edgeIterator(self: *const Self, options: r.Options) r.Error!EdgeIterator {
             return EdgeIterator.init(self, options);
+        }
+        pub fn edgeIteratorIn(self: *const Self, memory: @import("query_storage.zig").EdgeScratch, options: r.Options) r.Error!FixedEdgeIterator {
+            return FixedEdgeIterator.initIn(self, memory, options);
         }
 
         pub const Materialized = @import("materialized_attributes.zig").For(Self, caps);

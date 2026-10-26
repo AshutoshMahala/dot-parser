@@ -38,7 +38,7 @@ has been discussed.
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations and fixed-storage Document construction | Label-port binding, markup-result association, event lowering, fixed query/output storage, consumer adapters and marshal/unmarshal |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction and fixed query scratch | Label-port binding, markup-result association, event lowering, fixed materialization output, consumer adapters and marshal/unmarshal |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and
@@ -288,7 +288,7 @@ endpoint structure (`syntax()`) separate from the opt-in first-colon Graphviz
 reading (`graphvizParts()`). Lone compass-like identifiers remain ambiguous;
 unknown suffix text is preserved, and origins name written sides rather than
 stored orientation. No additional retained storage is needed. Label-port existence/binding,
-event lowering and fixed query/output storage remain. Fixed-storage Document
+event lowering and fixed materialization output remain. Fixed-storage Document
 construction now shares direct/session lowering with explicit capacity bounds,
 checked bindings, reusable scratch and terminal shortfalls, without automatic
 reservation or a construction heap fallback.
@@ -1203,7 +1203,15 @@ capacity; shortfalls publish no graph and require restart. Bound regions are
 checked before writes in every build mode. Later allocating queries need an
 explicit query allocator or return `StorageRequired`; construction never uses it.
 Metered initialization and semantic steps keep the existing session guarantees.
-Event lowering and fixed query/output storage remain;
+Fixed query scratch now supplies `In` counterparts for direct/resumable edge
+streaming and attribute enumeration, independent of graph storage. One shared
+member buffer and derived node marks preserve symbolic endpoints; strict pair
+keys and attribute winners use caller-owned pools with no allocator fallback.
+Bounds remain explicit and metadata-only (pair-universe caps and total interned
+keys). A terminal shortfall preserves already emitted entries but never certifies
+exhaustion; retries start a new stream. Lowering helpers are named `loweringLayout`,
+`loweringBounds` and `partialLoweringBounds` without legacy aliases.
+Event lowering and fixed materialization output remain;
 this does not complete the
 entire semantic-layer slice. *(Embodied:
 `src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*

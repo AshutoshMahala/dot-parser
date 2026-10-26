@@ -4,6 +4,7 @@ const std = @import("std");
 const t = @import("topology.zig");
 const r = @import("resources.zig");
 const names = @import("names.zig");
+const scratch = @import("query_storage.zig");
 const Operator = @import("../dot/syntax.zig").EdgeOperator;
 
 const Endpoint = struct {
@@ -32,16 +33,19 @@ pub fn pairHash(operator: Operator, pair: [2]u32) u64 {
 /// indexes the output itself for strict deduplication; streaming keeps only
 /// compact pair keys. Neither path maintains a second copy of its edge list.
 pub fn Iterator(comptime Graph: type, comptime retaining: bool) type {
-    return Engine(Graph, retaining, false, false);
+    return Engine(Graph, retaining, false, false, false);
+}
+pub fn FixedIterator(comptime Graph: type) type {
+    return Engine(Graph, false, false, false, true);
 }
 
 /// Private owning specialization: reuse exactly the same pair traversal and
 /// deduplication, but fold both new and repeated contributions before publishing.
 pub fn AttributeMaterializer(comptime Graph: type, comptime with_ports: bool) type {
-    return Engine(Graph, true, true, with_ports);
+    return Engine(Graph, true, true, with_ports, false);
 }
 
-fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attributes: bool, comptime with_ports: bool) type {
+fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attributes: bool, comptime with_ports: bool, comptime fixed: bool) type {
     return struct {
         const Self = @This();
         const Stored = if (retaining) t.Edge else [2]u32;
@@ -53,7 +57,7 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
         max_pairs: u64,
         max_edges: u32,
         work: r.Work,
-        memory: r.Memory,
+        memory: if (fixed) scratch.EdgeState else r.Memory,
         left: Endpoint = .{},
         right: Endpoint = .{},
         marks: []u32 = &.{},
@@ -85,10 +89,28 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                 .folded = if (fold_attributes) .{ .limit = limits.max_attribute_states } else {},
             };
         }
+        pub fn initIn(graph: *const Graph, memory: scratch.EdgeScratch, options: r.Options) r.Error!Self {
+            const limits = options.limits orelse graph.limits;
+            const work = try r.Work.init(limits, options.cancellation);
+            const bound = try scratch.EdgeState.init(memory, graph, limits);
+            return .{ .graph = graph, .strict = graph.strict, .max_pairs = limits.max_pairs, .max_edges = limits.max_edges, .work = work, .memory = bound, .stored = .initBuffer(bound.pairs), .folded = {} };
+        }
+        pub fn shortfall(self: *const Self) ?@import("fixed_storage.zig").StorageShortfall {
+            if (!fixed) @compileError("shortfall requires fixed scratch");
+            return self.memory.shortfall;
+        }
+        pub fn scratchPeak(self: *const Self) scratch.EdgeScratchCapacities {
+            if (!fixed) @compileError("scratchPeak requires fixed scratch");
+            return self.memory.used;
+        }
 
         /// Release scratch even after early exit or error. Do not copy an
         /// iterator after use; keep its graph alive, unmoved and immutable.
         pub fn deinit(self: *Self) void {
+            if (fixed) {
+                self.* = undefined;
+                return;
+            }
             const a = self.memory.allocator();
             self.left.nodes.deinit(a);
             self.right.nodes.deinit(a);
@@ -99,8 +121,8 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
             self.* = undefined;
         }
 
-        /// Peak requested allocation bytes, excluding the borrowed IR and
-        /// allocator overhead/arena slack. Non-strict singleton streams use 0.
+        /// Peak requested allocation bytes, or the complete bound reservation
+        /// for fixed scratch. Excludes the borrowed IR and inline iterator.
         pub fn peakBytes(self: *const Self) usize {
             return self.memory.peak;
         }
@@ -137,7 +159,7 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
         }
 
         fn enumerate(self: *Self, members: t.Membership, out: *Endpoint) r.Error!void {
-            out.nodes.clearRetainingCapacity();
+            if (fixed) out.nodes.items.len = 0 else out.nodes.clearRetainingCapacity();
             const handle = @backingInt(members);
             if (handle & t.node_bit != 0) {
                 try self.work.spend(1);
@@ -146,15 +168,20 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                 return;
             }
             out.singleton = null;
+            const offset = if (fixed and out == &self.right) self.left.nodes.items.len else 0;
+            if (fixed) out.nodes = .initBuffer(self.memory.members[offset..]);
             if (self.generation == std.math.maxInt(u32)) try self.clearMarks();
             self.generation += 1;
-            const a = self.memory.allocator();
+            const a = if (fixed) undefined else self.memory.allocator();
             for (self.graph.bodies[self.graph.bodies[handle].first .. handle + 1]) |body| {
                 try self.work.spend(1);
                 // Empty sets do not allocate a graph-sized marks array.
                 if (body.start == body.end) continue;
                 if (self.marks.len == 0) {
-                    self.marks = try a.alloc(u32, self.graph.nodes.len);
+                    if (fixed) {
+                        if (self.memory.members.len == 0) try self.memory.needMembers(1);
+                        self.marks = self.memory.marks;
+                    } else self.marks = try a.alloc(u32, self.graph.nodes.len);
                     try self.clearMarks();
                     self.generation = 1;
                 }
@@ -163,7 +190,10 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                     const id = @backingInt(mention.node);
                     if (self.marks[id] == self.generation) continue;
                     self.marks[id] = self.generation;
-                    try out.nodes.append(a, mention.node);
+                    if (fixed) {
+                        try self.memory.needMembers(offset + out.nodes.items.len + 1);
+                        out.nodes.appendAssumeCapacity(mention.node);
+                    } else try out.nodes.append(a, mention.node);
                 }
             }
             out.count = @intCast(out.nodes.items.len);
@@ -223,7 +253,7 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                         self.connection += 1;
                     }
                 }
-                const a = self.memory.allocator();
+                const a = if (fixed) undefined else self.memory.allocator();
                 const key = canonical(edge);
                 if (self.strict) {
                     const hash = pairHash(edge.operator, key);
@@ -250,14 +280,26 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                     };
                     // Lowering admits strict concrete graphs with one effective
                     // operator only. Keys therefore need no per-pair kind tag.
-                    try self.pairs.prepare(a, &self.work, Owner{ .items = self.stored.items, .operator = edge.operator });
+                    if (fixed) {
+                        try self.memory.needPair(self.stored.items.len + 1);
+                        if (self.pairs.slots.len == 0) {
+                            self.pairs.slots = self.memory.slots;
+                            for (self.pairs.slots) |*slot| {
+                                try self.work.spend(1);
+                                slot.* = names.empty;
+                            }
+                        }
+                    } else try self.pairs.prepare(a, &self.work, Owner{ .items = self.stored.items, .operator = edge.operator });
                     try self.pairs.insert(hash, try r.index(self.stored.items.len), &self.work);
                 } else if (self.emitted >= self.max_edges) return error.EdgeLimit;
                 if (retaining) {
                     try self.stored.append(a, edge);
                     if (fold_attributes) try self.folded.apply(self.graph, self.emitted, edge.first_connection, if (with_ports) edge else {}, a, &self.work);
                 } else if (self.strict) {
-                    try self.stored.append(a, key);
+                    if (fixed) {
+                        self.stored.appendAssumeCapacity(key);
+                        self.memory.used.strict_pairs = @intCast(self.stored.items.len);
+                    } else try self.stored.append(a, key);
                 }
                 self.emitted += 1;
                 // The owning specialization drains in this call: no per-edge

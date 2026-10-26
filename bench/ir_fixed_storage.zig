@@ -12,7 +12,7 @@ const Buffers = struct {
     scratch: []align(16) u8,
     bound: IR.LoweringMemory,
     fn init(allocator: std.mem.Allocator, counts: dot.ir.GraphCapacities, scratch: dot.ir.LoweringScratchCapacities) !Buffers {
-        const layout = try IR.storageLayout(counts, scratch);
+        const layout = try IR.loweringLayout(counts, scratch);
         const graph = try allocator.alignedAlloc(u8, .@"16", layout.graph_bytes);
         errdefer allocator.free(graph);
         const temporary = try allocator.alignedAlloc(u8, .@"16", layout.scratch_bytes);
@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
         var previous = try IR.lowerComplete(counted.allocator(), doc, options);
         defer previous.deinit();
         const counts = previous.capacities();
-        const bounds = try IR.capacityBounds(doc.capacities(), options);
+        const bounds = try IR.loweringBounds(doc.capacities(), options);
         // First allocator-backed run has no scratch peak: bounds supply scratch.
         // A fixed run records it; subsequent runs can use both observed counts.
         const scratch_counts = blk: {

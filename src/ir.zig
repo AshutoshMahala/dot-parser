@@ -12,6 +12,9 @@ pub const Cancellation = resources.Cancellation;
 const fixed_storage = @import("ir/fixed_storage.zig");
 pub const GraphCapacities = fixed_storage.GraphCapacities;
 pub const LoweringScratchCapacities = fixed_storage.LoweringScratchCapacities;
+const query_storage = @import("ir/query_storage.zig");
+pub const EdgeScratchCapacities = query_storage.EdgeScratchCapacities;
+pub const AttributeScratchCapacities = query_storage.AttributeScratchCapacities;
 pub const StorageShortfall = fixed_storage.StorageShortfall;
 pub const Resource = fixed_storage.Resource;
 pub const MaterializationProgress = @import("ir/materialization_session.zig").Progress;
@@ -73,18 +76,26 @@ pub fn Lowering(comptime config: Config) type {
         pub const LoweringMemory = fixed_storage.LoweringMemory;
         pub const FixedGraphStorage = fixed_storage.FixedGraphStorage;
         pub const FixedLoweringScratch = fixed_storage.FixedLoweringScratch;
-        pub const storageLayout = fixed_storage.storageLayout;
+        pub const loweringLayout = fixed_storage.loweringLayout;
+        pub const EdgeScratch = query_storage.EdgeScratch;
+        pub const AttributeScratch = query_storage.AttributeScratch;
+        pub const FixedEdgeScratch = query_storage.FixedEdgeScratch;
+        pub const FixedAttributeScratch = query_storage.FixedAttributeScratch;
+        pub const edgeScratchLayout = query_storage.edgeScratchLayout;
+        pub const attributeScratchLayout = query_storage.attributeScratchLayout;
+        pub const edgeScratchBounds = query_storage.edgeScratchBounds;
+        pub const attributeScratchBounds = query_storage.attributeScratchBounds;
         pub const FixedLoweringResult = Fixed.Result(false);
         pub const FixedPartialLoweringResult = Fixed.Result(true);
         pub const FixedLoweringSession = Fixed.FixedLoweringSession;
         pub const FixedPartialLoweringSession = Fixed.FixedPartialLoweringSession;
         /// Explicit arithmetic-only sizing. Lowering never reserves these bounds
         /// automatically; pass the same options to sizing and construction.
-        pub fn capacityBounds(counts: syntax.Capacities, options: anytype) Error!fixed_storage.Bounds {
+        pub fn loweringBounds(counts: syntax.Capacities, options: anytype) Error!fixed_storage.Bounds {
             return Fixed.bounds(false, counts, options);
         }
-        /// Like capacityBounds, including retained partial-source coverage.
-        pub fn partialCapacityBounds(counts: syntax.Capacities, options: anytype) Error!fixed_storage.Bounds {
+        /// Like loweringBounds, including retained partial-source coverage.
+        pub fn partialLoweringBounds(counts: syntax.Capacities, options: anytype) Error!fixed_storage.Bounds {
             return Fixed.bounds(true, counts, options);
         }
         /// Allocation-free construction. Success borrows source and retained
@@ -110,6 +121,8 @@ pub fn Lowering(comptime config: Config) type {
         pub const PartialLoweringSession = execution.Bound(caps, true, config);
         pub const EdgeSession = @import("ir/edge_session.zig").Bound(Graph, caps, config);
         pub const PartialEdgeSession = @import("ir/edge_session.zig").Bound(PartialGraph, caps, config);
+        pub const FixedEdgeSession = @import("ir/edge_session.zig").FixedBound(Graph, caps, config);
+        pub const FixedPartialEdgeSession = @import("ir/edge_session.zig").FixedBound(PartialGraph, caps, config);
         pub const HasEdgeSession = @import("ir/query_session.zig").Bound(Graph, .has_edge, config);
         pub const PartialHasEdgeSession = @import("ir/query_session.zig").Bound(PartialGraph, .has_edge, config);
         pub const ContainsSession = @import("ir/query_session.zig").Bound(Graph, .contains, config);
@@ -118,6 +131,23 @@ pub fn Lowering(comptime config: Config) type {
         pub const PartialAttributeSession = @import("ir/attribute_session.zig").Bound(PartialGraph, caps, false, config);
         pub const AttributesSession = @import("ir/attribute_session.zig").Bound(Graph, caps, true, config);
         pub const PartialAttributesSession = @import("ir/attribute_session.zig").Bound(PartialGraph, caps, true, config);
+        pub const FixedAttributesSession = @import("ir/attribute_session.zig").FixedBound(Graph, caps, config);
+        pub const FixedPartialAttributesSession = @import("ir/attribute_session.zig").FixedBound(PartialGraph, caps, config);
+        fn FixedAttributesOperation(comptime View: type) type {
+            if (FixedAttributesSession.accepts(View)) return FixedAttributesSession;
+            if (FixedPartialAttributesSession.accepts(View)) return FixedPartialAttributesSession;
+            @compileError("attribute sessions require a compatible IR component view");
+        }
+        /// Borrows explicit winner scratch. No graph allocator fallback.
+        pub fn attributesSessionIn(view: anytype, memory: AttributeScratch, options: anytype) !FixedAttributesOperation(@TypeOf(view)) {
+            return FixedAttributesOperation(@TypeOf(view)).initIn(view, memory, options);
+        }
+        /// Fixed scratch, same policy and delivery contract as edgeSession.
+        pub fn edgeSessionIn(graph: anytype, memory: EdgeScratch, options: anytype) !(if (@TypeOf(graph.*) == PartialGraph) FixedPartialEdgeSession else FixedEdgeSession) {
+            const G = @TypeOf(graph.*);
+            if (G != Graph and G != PartialGraph) @compileError("edgeSessionIn requires this profile's complete or partial IR type");
+            return (if (G == PartialGraph) FixedPartialEdgeSession else FixedEdgeSession).initIn(graph, memory, options);
+        }
         fn AttributeOperation(comptime View: type, comptime all: bool) type {
             if (AttributeSession.accepts(View)) return if (all) AttributesSession else AttributeSession;
             if (PartialAttributeSession.accepts(View)) return if (all) PartialAttributesSession else PartialAttributeSession;

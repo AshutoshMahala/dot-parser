@@ -2,6 +2,49 @@
 //! allocator: no libc, OS, global allocator, recursion, or renderer required.
 const std = @import("std");
 const dot = @import("dot_parser");
+// Caller scratch works independently of the graph's storage backend. Consuming
+// both direct and stepped routes here checks that neither introduces OS calls.
+export fn fixed_queries(source: [*]const u8, length: u32, parse_memory: [*]u8, parse_capacity: u32, stepped: bool) u32 {
+    const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+    var parser_memory = std.heap.FixedBufferAllocator.init(parse_memory[0..parse_capacity]);
+    var result = dot.ir.parsePartial(parser_memory.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const graph = result.ir() orelse return 0;
+    const Retained = IR.FixedGraphStorage(.{ .nodes = 32 });
+    var edge_memory: IR.FixedEdgeScratch(Retained, .{ .members = 64, .strict_pairs = 128 }) = .{};
+    var attribute_memory: IR.FixedAttributeScratch(.{ .winners = 16 }) = .{};
+    var count: u32 = 0;
+    if (stepped) {
+        var edges = IR.edgeSessionIn(graph, edge_memory.storage(), .{}) catch return 0;
+        defer edges.deinit();
+        while (true) {
+            const p = edges.advance(7);
+            if (p.edge) |edge| {
+                count +%= 1;
+                var values = IR.attributesSessionIn(edge, attribute_memory.storage(), .{}) catch return 0;
+                defer values.deinit();
+                while (true) {
+                    const v = values.advance(7);
+                    if (v.attribute != null) count +%= 1;
+                    if (v.outcome) |o| {
+                        if (o == .failure) return 0;
+                        break;
+                    }
+                }
+            }
+            if (p.outcome) |o| return if (o == .success) count else 0;
+        }
+    }
+    var edges = graph.edgeIteratorIn(edge_memory.storage(), .{}) catch return 0;
+    defer edges.deinit();
+    while (edges.next() catch return 0) |edge| {
+        count +%= 1;
+        var values = edge.attributesIn(attribute_memory.storage(), .{}) catch return 0;
+        defer values.deinit();
+        while (values.next() catch return 0) |_| count +%= 1;
+    }
+    return count;
+}
 // Parse storage remains independently supplied. Neither fixed IR route below
 // calls an allocator or expands edges during construction.
 export fn fixed_ir(source: [*]const u8, length: u32, parse_memory: [*]u8, parse_capacity: u32, resumable: bool) u32 {

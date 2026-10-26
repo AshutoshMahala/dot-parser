@@ -5,12 +5,19 @@ const execution = @import("execution_policy.zig");
 const expansion = @import("materialization_session.zig");
 const r = @import("resources.zig");
 const encoding = @import("parser_support").encoding;
+const scratch = @import("query_storage.zig");
 
 pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptime config: anytype) type {
+    return WithStorage(Graph, caps, config, false);
+}
+pub fn FixedBound(comptime Graph: type, comptime caps: encoding.Capabilities, comptime config: anytype) type {
+    return WithStorage(Graph, caps, config, true);
+}
+fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, comptime config: anytype, comptime fixed_storage: bool) type {
     const partial = @hasField(Graph, "_data");
     const Data = if (partial) @FieldType(Graph, "_data") else Graph;
     const baseline = comptime execution.resolve(.{}, config.policy);
-    const Core = expansion.Streaming(Data, caps, if (config.runtime_policy) null else baseline);
+    const Core = (if (fixed_storage) expansion.FixedStreaming else expansion.Streaming)(Data, caps, if (config.runtime_policy) null else baseline);
     const Hook = if (config.runtime_policy or baseline.cancellation) ?r.Cancellation else void;
     return struct {
         const Self = @This();
@@ -31,6 +38,12 @@ pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptim
         effective: if (config.runtime_policy) execution.Effective else void,
 
         pub fn init(graph: *const Graph, options: anytype) !Self {
+            return initWith(graph, {}, options);
+        }
+        pub fn initIn(graph: *const Graph, memory: scratch.EdgeScratch, options: anytype) !Self {
+            return initWith(graph, memory, options);
+        }
+        inline fn initWith(graph: *const Graph, memory: if (fixed_storage) scratch.EdgeScratch else void, options: anytype) !Self {
             comptime if (@TypeOf(options) != Options) for (std.meta.fieldNames(@TypeOf(options))) |field| {
                 if (!std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !(config.runtime_policy and std.mem.eql(u8, field, "policy")))
                     @compileError("unknown IR edge session option: " ++ field);
@@ -40,7 +53,8 @@ pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptim
             if (config.runtime_policy) try execution.validate(effective);
             const hook = if (Hook == void) null else if (effective.cancellation) normalized.cancellation else null;
             const data = if (partial) &graph._data else graph;
-            var core = try Core.init(data, .{ .limits = normalized.limits, .cancellation = hook });
+            if (fixed_storage) try scratch.checkGraph(try scratch.checkedBytes(memory), graph);
+            var core = if (fixed_storage) try Core.initIn(data, memory, .{ .limits = normalized.limits, .cancellation = hook }) else try Core.init(data, .{ .limits = normalized.limits, .cancellation = hook });
             if (config.runtime_policy or baseline.cancellation) core.taken.interval = effective.cancellation_interval;
             return .{ .graph = graph, .core = core, .effective = if (config.runtime_policy) effective else {} };
         }
@@ -74,6 +88,14 @@ pub fn Bound(comptime Graph: type, comptime caps: encoding.Capabilities, comptim
         pub fn deinit(self: *Self) void {
             self.core.deinit();
             self.* = undefined;
+        }
+        pub fn shortfall(self: *const Self) ?@import("fixed_storage.zig").StorageShortfall {
+            if (!fixed_storage) @compileError("shortfall requires fixed scratch");
+            return self.core.shortfall();
+        }
+        pub fn scratchPeak(self: *const Self) scratch.EdgeScratchCapacities {
+            if (!fixed_storage) @compileError("scratchPeak requires fixed scratch");
+            return self.core.scratchPeak();
         }
     };
 }

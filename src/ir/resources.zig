@@ -44,8 +44,9 @@ pub const Limits = struct {
     max_pairs: u64 = 4_000_000,
     max_work: u64 = 100_000_000,
     /// Peak live requested bytes allocated by this operation, including
-    /// temporary old/new growth buffers. Fixed lowering instead counts the full
-    /// bound retained + scratch reservation. Excludes borrowed inputs/allocator RSS.
+    /// temporary old/new growth buffers. Fixed operations count the full bound
+    /// reservation (retained + scratch for lowering, scratch alone for queries).
+    /// Excludes borrowed inputs, inline operation state and allocator RSS.
     max_bytes: usize = 256 * 1024 * 1024,
 };
 

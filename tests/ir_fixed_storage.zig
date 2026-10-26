@@ -11,7 +11,7 @@ const Memory = struct {
     temporary: []align(16) u8,
     bound: IR.LoweringMemory,
     fn init(graph: dot.ir.GraphCapacities, scratch: dot.ir.LoweringScratchCapacities) !Memory {
-        const layout = try IR.storageLayout(graph, scratch);
+        const layout = try IR.loweringLayout(graph, scratch);
         const retained = try a.alignedAlloc(u8, .@"16", layout.graph_bytes + 16);
         errdefer a.free(retained);
         const temporary = try a.alignedAlloc(u8, .@"16", layout.scratch_bytes + 16);
@@ -42,7 +42,7 @@ fn check(comptime partial: bool, source: []const u8) !void {
     const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
     var expected = if (partial) try IR.lowerPartial(a, doc, options) else try IR.lowerComplete(a, doc, options);
     defer expected.deinit();
-    const bounds = if (partial) try IR.partialCapacityBounds(doc.capacities(), options) else try IR.capacityBounds(doc.capacities(), options);
+    const bounds = if (partial) try IR.partialLoweringBounds(doc.capacities(), options) else try IR.loweringBounds(doc.capacities(), options);
     // Retained exact fit, scratch conservatively sized. Neither is automatic.
     const memory = try Memory.init(expected.capacities(), bounds.scratch);
     defer memory.deinit();
@@ -146,16 +146,16 @@ test "fixed helpers reserve explicit inline arrays without initializing the back
 test "fixed IR bounds inherit profile limits and use distinct complete and partial helpers" {
     const Limited = dot.ir.Lowering(.{ .limits = .{ .max_attribute_states = 17 } });
     const counts: dot.DocumentCapacities = .{ .attributes = 48, .subgraphs = 13, .statements = 10 };
-    const bounded = try IR.capacityBounds(counts, .{});
+    const bounded = try IR.loweringBounds(counts, .{});
     try equal(@as(u32, 8640), bounded.graph.attribute_states);
     try equal(@as(u32, 0), bounded.graph.coverage_gaps);
-    try equal(@as(u32, 6), (try IR.partialCapacityBounds(counts, .{})).graph.coverage_gaps);
-    try equal(@as(u32, 17), (try Limited.capacityBounds(counts, .{})).graph.attribute_states);
-    try equal(@as(u32, 8640), (try Limited.capacityBounds(counts, .{ .limits = dot.ir.Limits{} })).graph.attribute_states);
-    try equal(@as(u32, 0), (try Limited.capacityBounds(.{}, .{})).graph.attribute_states);
-    try std.testing.expectError(error.IndexLimit, IR.capacityBounds(.{ .nodes = std.math.maxInt(u32) }, .{}));
-    try std.testing.expectError(error.IndexLimit, IR.storageLayout(.{ .nodes = std.math.maxInt(u32) }, .{}));
-    const compile_bounds = comptime Limited.capacityBounds(.{ .attributes = 2 }, .{}) catch unreachable;
+    try equal(@as(u32, 6), (try IR.partialLoweringBounds(counts, .{})).graph.coverage_gaps);
+    try equal(@as(u32, 17), (try Limited.loweringBounds(counts, .{})).graph.attribute_states);
+    try equal(@as(u32, 8640), (try Limited.loweringBounds(counts, .{ .limits = dot.ir.Limits{} })).graph.attribute_states);
+    try equal(@as(u32, 0), (try Limited.loweringBounds(.{}, .{})).graph.attribute_states);
+    try std.testing.expectError(error.IndexLimit, IR.loweringBounds(.{ .nodes = std.math.maxInt(u32) }, .{}));
+    try std.testing.expectError(error.IndexLimit, IR.loweringLayout(.{ .nodes = std.math.maxInt(u32) }, .{}));
+    const compile_bounds = comptime Limited.loweringBounds(.{ .attributes = 2 }, .{}) catch unreachable;
     try equal(@as(u32, 17), compile_bounds.graph.attribute_states);
 }
 
@@ -168,7 +168,7 @@ test "every fixed retained and scratch pool reports an exact shortfall without a
     var expected = try IR.lowerPartial(a, doc, options);
     defer expected.deinit();
     const counts = expected.capacities();
-    const bounds = try IR.partialCapacityBounds(doc.capacities(), options);
+    const bounds = try IR.partialLoweringBounds(doc.capacities(), options);
     const first_memory = try Memory.init(counts, bounds.scratch);
     defer first_memory.deinit();
     const first = IR.lowerPartialIn(doc, first_memory.bound, options);
@@ -227,7 +227,7 @@ test "fixed rotations check semantic limits before each pool write including int
     const interpretation = Dot.interpretation(doc, .{});
     var expected = try IR.lowerComplete(a, doc, .{ .interpretation = interpretation });
     defer expected.deinit();
-    const bounds = try IR.capacityBounds(doc.capacities(), .{});
+    const bounds = try IR.loweringBounds(doc.capacities(), .{});
     const counts = expected.capacities();
     for (0..counts.attribute_states) |limit| {
         var reduced = counts;
@@ -252,7 +252,7 @@ test "fixed rotations check semantic limits before each pool write including int
 test "fixed layout rejects malformed regions, overlap and mismatched envelopes before writes" {
     const counts: dot.ir.GraphCapacities = .{ .nodes = 3, .scopes = 1, .occurrences = 1, .mentions = 4, .connections = 2 };
     const scratch: dot.ir.LoweringScratchCapacities = .{ .nesting = 2, .edge_nesting = 1, .pending_endpoints = 4 };
-    const layout = try IR.storageLayout(counts, scratch);
+    const layout = try IR.loweringLayout(counts, scratch);
     const memory = try Memory.init(counts, scratch);
     defer memory.deinit();
     try std.testing.expectError(error.BufferTooSmall, layout.bind(memory.retained[0 .. layout.graph_bytes - 1], memory.temporary));
@@ -287,7 +287,7 @@ test "fixed construction never calls the optional query allocator and absent sto
     defer parsed.deinit(a);
     const doc = &parsed.document.?;
     const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
-    const bounds = try IR.capacityBounds(doc.capacities(), options);
+    const bounds = try IR.loweringBounds(doc.capacities(), options);
     const memory = try Memory.init(bounds.graph, bounds.scratch);
     defer memory.deinit();
     var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = 0 });
@@ -321,7 +321,7 @@ test "fixed graphs report missing storage in later streams attribute enumeration
         defer parsed.deinit(a);
         const doc = &parsed.document.?;
         const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
-        const bounds = try IR.capacityBounds(doc.capacities(), options);
+        const bounds = try IR.loweringBounds(doc.capacities(), options);
         const memory = try Memory.init(bounds.graph, bounds.scratch);
         defer memory.deinit();
         var lowered = IR.lowerCompleteIn(doc, memory.bound, options);
@@ -383,7 +383,7 @@ test "fixed sessions preserve work limits cancellation intervals zero grants and
     defer parsed.deinit(a);
     const doc = &parsed.document.?;
     const interpretation = Dot.interpretation(doc, .{});
-    const bounds = try C.capacityBounds(doc.capacities(), .{});
+    const bounds = try C.loweringBounds(doc.capacities(), .{});
     const memory = try Memory.init(bounds.graph, bounds.scratch);
     defer memory.deinit();
     var total: u64 = 0;

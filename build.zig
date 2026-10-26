@@ -102,6 +102,11 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ir_attribute_runtime", .message = "unknown IR attribute session option: policy" },
         .{ .name = "ir_attribute_limit", .message = "unknown IR option field: max_wrok" },
         .{ .name = "ir_attribute_view", .message = "attribute sessions require a compatible IR component view" },
+        .{ .name = "ir_fixed_edge_metering", .message = "metering is disabled; use run()" },
+        .{ .name = "ir_fixed_attributes_metering", .message = "metering is disabled; use run()" },
+        .{ .name = "ir_fixed_edge_runtime", .message = "unknown IR edge session option: policy" },
+        .{ .name = "ir_fixed_attributes_unknown", .message = "unknown IR attribute session option: attributes" },
+        .{ .name = "ir_scratch_bounds_unknown", .message = "unknown IR edge scratch sizing option: max_pair" },
     }) |fixture| {
         const rejected = b.addObject(.{ .name = fixture.name, .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("tests/compile_fail/{s}.zig", .{fixture.name})),
@@ -449,6 +454,7 @@ pub fn build(b: *std.Build) void {
         "resumable_query",
         "resumable_attributes",
         "fixed_graph",
+        "fixed_edge_stream",
     };
     for (example_names) |name| {
         const example = b.addExecutable(.{
@@ -466,6 +472,12 @@ pub fn build(b: *std.Build) void {
         // `zig build` never tries to link host executables.
         examples_step.dependOn(&b.addInstallArtifact(example, .{}).step);
         const run_example = b.addRunArtifact(example);
+        if (std.mem.eql(u8, name, "fixed_edge_stream")) {
+            run_example.expectStdErrEqual("a -> b\n  color=blue\na -> c\n  color=red\n");
+            run_example.expectStdOutEqual("");
+            test_ir.dependOn(&run_example.step);
+            test_step.dependOn(&run_example.step);
+        }
         if (std.mem.eql(u8, name, "fixed_graph")) {
             run_example.expectStdErrEqual("node a\nnode b\nnode c\n");
             run_example.expectStdOutEqual("");
@@ -617,6 +629,15 @@ pub fn build(b: *std.Build) void {
     b.step("bench-ir-fixed", "Compare explicit fixed IR sizing, allocation, memory and lowering throughput")
         .dependOn(&b.addRunArtifact(ir_fixed_bench).step);
     check_benches.dependOn(&ir_fixed_bench.step);
+    const ir_fixed_queries = b.addExecutable(.{ .name = "ir_fixed_queries_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_fixed_queries.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    b.step("bench-ir-fixed-queries", "Compare fixed/growable query scratch, explicit bounds and session budgets")
+        .dependOn(&b.addRunArtifact(ir_fixed_queries).step);
+    check_benches.dependOn(&ir_fixed_queries.step);
     const ir_bench = b.addExecutable(.{ .name = "ir_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/ir.zig"),
         .target = target,
