@@ -80,25 +80,31 @@ on request only; nothing is cached in the tree.
 
 #### Names already recognized by the parser
 
-For identifier spellings from parser events or retained document records,
-`assumeParsed` skips the redundant syntax check:
+For typed names from parser events or retained document views, `fromName`
+skips the redundant syntax check:
 
 ```zig
-// These ranges must identify complete parser-recognized identifiers.
-const first = dot.identifier.assumeParsed(document.text(first_range));
-const second = dot.identifier.assumeParsed(document.text(second_range));
+const first_name = document.nodeReference(document.nodes[0].reference).?.name();
+const second_name = document.nodeReference(document.nodes[1].reference).?.name();
+const first = dot.identifier.fromName(document.source, first_name);
+const second = dot.identifier.fromName(document.source, second_name);
 const hash = try first.hash();
 const same = try first.eql(second);
 ```
 
-This is an explicit **unchecked precondition**, not an input-validation function.
-Do not use it on arbitrary bytes, incomplete tokens, whole statement spans or
-skipped recovery regions. Keep the original source alive and unchanged.
+`dot.Name` is a distinct eight-byte handle; arbitrary `Span` values, including
+unfinished previews, do not type-check here. Keep the producing source alive,
+unchanged and in its original encoding. Deliberately forging a name or mixing
+buffers still violates the contract. Use `try identifier.check(source, span)`
+for a caller-supplied span. Syntax recognition does not certify Unicode validity.
 A `Parsed` value contains only a borrowed slice; it neither allocates nor caches
 a decoded value or hash. The checked functions above are unchanged.
-You can retain compact source ranges and construct these views only when needed.
+You can retain compact `Name` handles and bind these views only when needed.
+Attribute pairs expose `keyName()` / `valueName()`, port syntax exposes
+`firstName()` / `secondName()`, and scope views expose `recognizedName()`.
+The original range fields and retained pool layouts remain unchanged.
 
-For native input, use `dot.identifier.ForEncoding(actual).assumeParsed(raw)`,
+For native input, use `dot.identifier.ForEncoding(actual).fromName(source, name)`,
 selecting the document's encoding (or `begin_document.source_info.encoding`
 for events). Both operands of `eql` use the same encoding. Native decoding still
 rejects malformed characters with `InvalidIdentifier`; skipping the DOT syntax

@@ -1,19 +1,19 @@
 //! Same logical-name contract as DOT identifiers. Hashes never replace equality.
 const std = @import("std");
 const encoding = @import("parser_support").encoding;
-const identifier = @import("../dot/identifier.zig");
+const parsed_name = @import("../dot/parsed_name.zig");
 const resources = @import("resources.zig");
 const Error = resources.Error;
 
 pub fn hash(comptime actual: encoding.Actual, raw: []const u8, work: *resources.Work) Error!u64 {
     try work.spend(raw.len);
-    const result = try identifier.ForEncoding(actual).assumeParsed(raw).hash();
+    const result = try @as(parsed_name.ForEncoding(actual), .{ .raw = raw }).hash();
     try work.spend(0);
     return result;
 }
 pub fn eql(comptime actual: encoding.Actual, a: []const u8, b: []const u8, work: *resources.Work) Error!bool {
     try work.spend(@as(u64, a.len) + b.len);
-    const result = try identifier.ForEncoding(actual).assumeParsed(a).eql(identifier.ForEncoding(actual).assumeParsed(b));
+    const result = try @as(parsed_name.ForEncoding(actual), .{ .raw = a }).eql(@as(parsed_name.ForEncoding(actual), .{ .raw = b }));
     try work.spend(0);
     return result;
 }

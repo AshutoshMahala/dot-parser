@@ -7,7 +7,7 @@ const Record = union(enum) { event: dot.events.Event, abort: dot.events.Abort };
 
 fn Recorder(comptime early: bool, comptime begins: bool) type {
     return struct {
-        pub const wants_early_events = early;
+        pub const observations: dot.events.Observations = if (early) .early else .none;
         pub const wants_begin_statement = begins;
         records: [512]Record = undefined,
         len: usize = 0,
@@ -36,16 +36,86 @@ fn Recorder(comptime early: bool, comptime begins: bool) type {
 }
 const Early = Recorder(true, true);
 
+test "observation kinds share dispatch but are independently selected and charged" {
+    const input = "digraph G { subgraph s { a; } a -> b -> c; x=y; node[k=v]; }";
+    inline for (.{ .scalar, .block }) |scanner| {
+        const Base = dot.Profile(.{ .policy = .{ .scanner = scanner, .execution = .{ .metering = true } } });
+        var baseline: Recorder(false, true) = .{};
+        const B = Base.Events(@TypeOf(baseline));
+        var base_frames: B.FixedParseScratch(.{ .nesting = 2 }) = .{};
+        var base_session = B.Session.init(input, base_frames.storage(), &baseline, discard, .{});
+        defer base_session.deinit();
+        var base_work: usize = 0;
+        while (base_session.result() == null) base_work += base_session.advance(1).work_used;
+
+        inline for (.{
+            dot.events.Observations.none,
+            dot.events.Observations{ .identifier = true },
+            dot.events.Observations{ .statement_head = true },
+            dot.events.Observations{ .document_name = true },
+            dot.events.Observations{ .subgraph_name = true },
+            dot.events.Observations.previews,
+            dot.events.Observations.all,
+        }) |selected| {
+            const Consumer = struct {
+                pub const observations = selected;
+                log: Recorder(false, true) = .{},
+                pub fn onEvent(self: *@This(), e: dot.events.Event) error{Refused}!dot.events.Action {
+                    return self.log.onEvent(e);
+                }
+                pub fn onAbort(self: *@This(), e: dot.events.Abort) void {
+                    self.log.onAbort(e);
+                }
+            };
+            const P = Base.Events(Consumer);
+            for ([_]usize{ 1, 64, 4096 }) |budget| {
+                var sink: Consumer = .{};
+                var frames: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
+                var session = P.Session.init(input, frames.storage(), &sink, discard, .{});
+                defer session.deinit();
+                var work: usize = 0;
+                while (session.result() == null) {
+                    const p = session.advance(budget);
+                    try expect(p.work_used <= budget);
+                    work += p.work_used;
+                }
+                try expect(session.result().?.outcome == .success);
+                var base_index: usize = 0;
+                var observed: usize = 0;
+                for (sink.log.items()) |record| {
+                    const selected_event = if (record == .event) switch (record.event) {
+                        .identifier => selected.identifier,
+                        .statement_head => selected.statement_head,
+                        .document_name => selected.document_name,
+                        .subgraph_name => selected.subgraph_name,
+                        .token_preview, .token_preview_end => selected.token_preview,
+                        else => false,
+                    } else false;
+                    if (selected_event) {
+                        observed += 1;
+                    } else {
+                        try expect(base_index < baseline.len);
+                        try std.testing.expectEqualDeep(baseline.records[base_index], record);
+                        base_index += 1;
+                    }
+                }
+                try equal(baseline.len, base_index);
+                try equal(base_work + observed, work);
+            }
+        }
+    }
+}
+
 test "aborted consumers do not schedule unused early observations" {
     const input = "graph { a[x=]; b; c; d -- e; f=g; h -- i -- j; subgraph s { k; } l[x=y]; }";
     inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |begins| {
         var work: [2]usize = .{ 0, 0 };
-        var observations: usize = 0;
+        var observation_count: usize = 0;
         inline for (.{ false, true }, 0..) |early, index| {
             const Consumer = struct {
                 pub const recover_statements = false;
                 pub const wants_begin_statement = begins;
-                pub const wants_early_events = early;
+                pub const observations: dot.events.Observations = if (early) .early else .none;
                 log: Recorder(early, begins) = .{},
                 pub fn onEvent(self: *@This(), event: dot.events.Event) error{Refused}!dot.events.Action {
                     return self.log.onEvent(event);
@@ -64,12 +134,12 @@ test "aborted consumers do not schedule unused early observations" {
             var aborted = false;
             for (sink.log.items()) |record| {
                 try expect(!aborted);
-                if (record == .event and isEarly(record.event)) observations += 1;
+                if (record == .event and isEarly(record.event)) observation_count += 1;
                 if (record == .abort and record.abort == .document) aborted = true;
             }
             try expect(aborted);
         }
-        try equal(work[0] + observations, work[1]);
+        try equal(work[0] + observation_count, work[1]);
     };
 }
 fn isEarly(event: dot.events.Event) bool {
@@ -98,9 +168,9 @@ test "early observations expose complete names and heads without unfinished-toke
         var head_seen = false;
         for (sink.items()) |record| if (record == .event) switch (record.event) {
             .identifier => |name| if (name.role == case[1]) {
-                try std.testing.expectEqualStrings(case[2], name.span.slice(case[0]));
+                try std.testing.expectEqualStrings(case[2], name.name.slice(case[0]));
                 // Only complete identifiers qualify, even if their statement fails.
-                try equal(try dot.identifier.hash(case[2]), try dot.identifier.assumeParsed(name.span.slice(case[0])).hash());
+                try equal(try dot.identifier.hash(case[2]), try dot.identifier.fromName(case[0], name.name).hash());
                 name_seen = true;
             },
             .statement_head => |head| {
@@ -303,8 +373,8 @@ test "early native headers and identifiers use original coordinates and encoding
         var names: usize = 0;
         for (sink.items()) |record| if (record == .event) switch (record.event) {
             .identifier => |id| {
-                try equal(@as(u32, E.width), id.span.len);
-                try equal(@as(u32, if (id.role == .statement_start) 10 else 15) * E.width, id.span.start);
+                try equal(@as(u32, E.width), id.name.len);
+                try equal(@as(u32, if (id.role == .statement_start) 10 else 15) * E.width, id.name.start);
                 names += 1;
             },
             .subgraph_name => |name| try equal(@as(u32, text.len - 1) * E.width, name.name.start),
@@ -329,10 +399,10 @@ test "early observations agree across truncated mutated and metered input" {
         var reference: Early = .{};
         const expected = parse(Early, bytes[0..len], &reference);
         for (reference.items()) |record| if (record == .event and record.event == .identifier) {
-            const span = record.event.identifier.span;
+            const span = record.event.identifier.name;
             try expect(span.start <= len and span.len <= len - span.start);
             const raw = span.slice(bytes[0..len]);
-            try equal(try dot.identifier.hash(raw), try dot.identifier.assumeParsed(raw).hash());
+            try equal(try dot.identifier.hash(raw), try dot.identifier.fromName(bytes[0..len], span).hash());
         };
         inline for (.{ .scalar, .block }) |scanner| {
             const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .execution = .{ .metering = true } } }).Events(Early);
@@ -381,7 +451,7 @@ test "undelivered early header does not require abort and zero budget delivers n
 
 test "early-only consumer keeps rejection lifecycle without begin or recovery notifications" {
     const Consumer = struct {
-        pub const wants_early_events = true;
+        pub const observations: dot.events.Observations = .early;
         pub const wants_begin_statement = false;
         pub const recover_statements = false;
         log: Early = .{},

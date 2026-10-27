@@ -22,7 +22,7 @@ fn Consumer(comptime trusted: bool) type {
         pub fn onEvent(self: *@This(), event: dot.events.Event) error{}!dot.events.Action {
             switch (event) {
                 .commit_node => |node| {
-                    const name = dot.identifier.assumeParsed(node.value.identifier.slice(self.source));
+                    const name = dot.identifier.fromName(self.source, node.value.identifier);
                     const entry = self.table.getOrPutAssumeCapacity(name);
                     if (!entry.found_existing) entry.value_ptr.* = 0;
                     entry.value_ptr.* += 1;

@@ -798,7 +798,8 @@ Numbers are medians of nine alternating samples, four parses per sample.
 | Unicode quoted | 0.914 → 0.647 ms | 0.981 → 0.677 ms | 1.651 → 1.001 ms |
 | Long quoted (10.36 MB input) | 23.818 → 14.421 ms | 23.689 → 14.442 ms | 37.271 → 17.417 ms |
 
-Here “trusted” means `identifier.assumeParsed(raw)` on complete identifier fields
+Here “trusted” means binding complete recognized names (now
+`identifier.fromName(source, name)`, with typed handles) from identifier fields
 delivered by the parser. It skips repeated syntax checks, not logical-value
 hashing/equality. Across all six fixtures (also bare and escaped names),
 parse-plus-index time fell 24–40% in Fast, 29–40% in Safe and 33–53% in Small.
@@ -832,7 +833,7 @@ code signatures were byte-identical, not just their code sections. These runs
 therefore cannot establish a feature-induced slowdown or a precise percentage
 guarantee; use the code-generation comparison as the disabled-path evidence.
 
-**Enabling** `wants_early_events` does add work. A fixed-scratch event consumer
+**Enabling** early observations (`observations = events.Observations.early`) does add work. A fixed-scratch event consumer
 counting callbacks on 10,000 `a[x=1];` statements (80,010 bytes, including a named
 header) measured the following in ReleaseFast. Nine alternating timed batches
 of four parses followed three warmup batches; source construction was excluded.
@@ -938,6 +939,43 @@ cover both scanners, one-credit resumes, cancellation between failure detection
 and preview delivery, recoverable failures, runtime policies and event-sink
 stop/failure. The existing checked-identifier helper inlining interaction and
 broader observation/API redesign are not addressed by this correctness pass.
+
+### Unified observations and typed names (2026-10-26)
+
+Compared with `cb950e9`, Apple M4 Pro, Zig 0.17.0. Early observations and
+unfinished-token previews now share one compile-time selection and internal
+event scheduler. Recognized identifiers carry `Name` rather than an arbitrary
+`Span`; binding one with `identifier.fromName` does not rescan its syntax.
+
+Three alternating process runs of the policy and name-index harnesses gave
+these geometric-mean time changes across each harness's cases (negative is
+faster):
+
+| Harness | `fast` | `safe` | `small` |
+| --- | ---: | ---: | ---: |
+| Fixed/runtime policies | 0.0% | -0.4% | +0.7% |
+| Checked/recognized-name indexing | -0.8% | -1.5% | +0.1% |
+
+For event sessions, longer samples used the preview fixtures with a 150 ms
+warmup per case, seven measured batches after two warmup batches, and 32 parses
+per one-credit sample or 128 otherwise. Final Fast/Safe checks across both
+scanners and plain/1/64/4096-credit execution averaged -0.6%/+0.7% with
+observations disabled. Individual short cases still varied substantially;
+these aggregate results are not a guarantee of identical generated code or
+zero regression in every workload.
+
+One opt-in cost remains: **Small's scalar, preview-enabled, one-credit cases
+take about 6–8% longer** in two alternating warmed comparisons. For example,
+the dense fixture took 1.979 → 2.133 ms and 2.031 → 2.153 ms. Disabled-preview
+one-credit cases were flat or faster in those same runs. Applications choosing
+larger budgets coalesce previews, but the implementation does not enlarge
+grants or weaken cancellation to improve these numbers.
+
+Compared fixtures retain identical work-credit, cancellation-poll, callback
+and session-size totals. `Name` remains 8 bytes, matching `Span`; retained
+document pools are unchanged, and the unification adds no allocations or
+source copies. Tests also check that enabling any observation subset adds
+exactly its delivered callback credits, with no additional lexical work.
 
 ## Standalone strings (Unreleased)
 

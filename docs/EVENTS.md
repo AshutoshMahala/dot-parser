@@ -99,7 +99,7 @@ nesting-storage failures. No consumer error is relabeled as out-of-memory.
 Declare this on your consumer, using the **same** `onEvent`/`onAbort` interface:
 
 ```zig
-pub const wants_early_events = true; // compile-time opt-in; default false
+pub const observations = dot.events.Observations.early; // default .none
 ```
 
 This exposes recognized names before a statement completes. For example,
@@ -113,7 +113,7 @@ must handle all six or add `else => {}`.
 
 | Event | Payload and timing |
 | --- | --- |
-| `identifier` | `owner`, complete identifier `span`, and `role`: `.statement_start`, `.edge_right` or `.edge_link`. Port suffixes are separate existing `ported_reference` events. |
+| `identifier` | `owner`, complete typed `name`, and `role`: `.statement_start`, `.edge_right` or `.edge_link`. Port suffixes are separate existing `ported_reference` events. |
 | `statement_head` | `owner`, first-token `start`, and recognized `kind`: `.node`, `.edge`, `.assignment`, `.graph_attributes`, `.node_attributes`, `.edge_attributes` or `.subgraph`. At most once per statement occurrence. |
 | `document_name` | Complete `name`, `kind`, `strict`, `keyword_span` and `source_info`, before the document's opening brace. |
 | `subgraph_name` | Complete `name`, `keyword_span`, `owner` and endpoint `role`, before its opening brace. No `ScopeId` is allocated until the body opens. |
@@ -138,7 +138,7 @@ early events or previews also tracks statement ownership when begin notification
 and statement recovery are disabled, so those consumers can now receive a
 statement abort followed by document abort. An outline may deliberately keep an
 aborted observation marked provisional; an atomic graph/index must discard it.
-Complete lexical names qualify for `identifier.assumeParsed`, even when their
+Complete lexical names qualify for `identifier.fromName(source, name)`, even when their
 enclosing statement fails. Unfinished input is not guessed into a name. The
 separate preview opt-in below exposes raw prefixes, not trusted identifiers.
 
@@ -154,8 +154,12 @@ syntax acceptance/recovery.
 For raw prefixes as well as complete names, independently declare:
 
 ```zig
-pub const wants_token_previews = true; // default false
-// May be combined with wants_early_events = true.
+pub const observations = dot.events.Observations.previews;
+// Use Observations.all for both early names/heads and previews.
+// Or select individual kinds:
+// pub const observations: dot.events.Observations = .{
+//     .identifier = true, .token_preview = true,
+// };
 ```
 
 The same `onEvent` receives these Unreleased events:
@@ -177,7 +181,7 @@ whitespace-only updates. Comment retention remains a separate option.
 
 Spans include their written delimiters and borrow original bytes. They may end
 inside a UTF-8 scalar or escape; they are **not** valid input for
-`identifier.assumeParsed`. No decoding, extra source scan, inferred closing
+`identifier.fromName`: their type is `Span`, not `Name`. No decoding, extra source scan, inferred closing
 delimiter, diagnostic suppression or repaired tree is involved. Native one-shot
 EOF previews keep original UTF-16/32 byte offsets and encoding metadata; native
 sessions remain unavailable.
@@ -252,25 +256,32 @@ identifier, a consumer can skip that check without retaining a `Document`:
 ```zig
 // Inside a UTF-8 consumer's onEvent:
 .commit_node => |node| {
-    const name = dot.identifier.assumeParsed(node.value.identifier.slice(self.source));
+    const name = dot.identifier.fromName(self.source, node.value.identifier);
     const hash = name.hash() catch unreachable; // UTF-8 preserves raw bytes.
     // Store name/hash in your index; use name.eql(other) on hash matches.
 },
 ```
 
-`assumeParsed` borrows the source with an explicit syntax-validity precondition.
-It does not validate a span or make a provisional statement valid. Use only
-identifier fields from events: `identifier.span`, document/subgraph `name`,
-node identifiers, attribute keys/values, and non-scoped edge endpoints. Do not
-use `begin_statement.start`, `statement_head.start`, `begin_scope.start`, keyword
-spans, `skipped.span`, or `token_preview.span`. An edge's `left`/`right` is a
-scope-introducing keyword or brace when `left_scope`/`right_scope` is non-null,
-not an identifier. For native input,
+`fromName` accepts a parser-issued `dot.Name`, not arbitrary bytes or a `Span`.
+Names have the same eight-byte layout as spans; `.span()` exposes coordinates
+for diagnostics and `.slice(source)` returns original spelling. Events use
+`Name` for `identifier.name`, document/subgraph names, node identifiers,
+attribute keys/values, ports and link identifiers. Edge `left`/`right` can also
+represent scope introducers, so use `edge.leftName()` / `edge.rightName()`;
+they return null for scoped endpoints. Begins, heads, keywords, skipped regions
+and previews remain spans and cannot accidentally enter this API.
+
+Keep the producing source unchanged and use its encoding. This is type safety
+against accidental misuse, not protection from deliberate forging or supplying
+another buffer. The handle certifies recognized syntax, not Unicode validity,
+statement acceptance, or node identity. For arbitrary spans, explicitly call
+`try identifier.check(source, span)` to obtain a checked `Name`, or use the
+existing checked byte helpers. For native input,
 select `identifier.ForEncoding(actual)` from the document-begin encoding
 (or `document_name.source_info` for an early header name).
 Those native helpers can reject malformed encoding: propagate `InvalidIdentifier`
 through a fallible callback instead of treating it as unreachable.
-No event fields or parser storage are added; index memory belongs to the consumer.
+No event fields, parser storage or allocations are added; index memory belongs to the consumer.
 Hashing/comparison in callbacks is consumer work, not parser-session credits.
 
 `zig build bench-identifiers -Doptimize=fast` compares the checked and
@@ -330,9 +341,14 @@ Optional compile-time declarations select callback work:
 `wants_begin_statement = false` omits begin notifications, and
 `recover_statements = false` ends output at the first syntax rejection while
 the grammar may continue collecting diagnostics. Both default to true for user
-consumers. `wants_early_events = true` adds the early observations above;
-`wants_token_previews = true` adds raw prefixes and their retirement events.
-Both default to false, independently of each other and begin notifications. None changes the
+consumers. `observations: dot.events.Observations` selects optional observations.
+Its fields are `identifier`, `statement_head`, `document_name`, `subgraph_name`
+and `token_preview`; all default to false. Preview retirement is always paired
+with preview delivery. The `.early`, `.previews`, `.all` and `.none` constants
+are convenient selections, not separate machinery. Names, heads and previews
+share one internal scheduling/dispatch continuation and abort-delivery flag;
+only previews need a snapshot. Unselected kinds have no callback or work credit.
+Selection is independent of begin notifications. None changes the
 profile's syntax/recovery policy.
 The `parser_retention` namespace is reserved for internal document bookkeeping,
 not a consumer hook. Unrelated methods named `continuesAfterError` or

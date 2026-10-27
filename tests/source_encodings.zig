@@ -71,9 +71,12 @@ test "native name helpers match decoded UTF-8 hashes and check both ranges" {
         try std.testing.expectEqual(@as(usize, 3), document.capacities().nodes);
         // Framed but malformed native text cannot be decoded to a logical value.
         const H = dot.identifier.ForEncoding(actual);
-        const parsed_a = H.assumeParsed(document.text(a));
-        const parsed_b = H.assumeParsed(document.text(b));
-        const parsed_c = H.assumeParsed(document.text(c));
+        try std.testing.expectError(error.InvalidIdentifier, H.check(source, bad));
+        const checked_name = try H.check(source, a);
+        try std.testing.expectEqual(a, checked_name.span());
+        const parsed_a = H.fromName(source, document.nodeReference(document.nodes[0].reference).?.name());
+        const parsed_b = H.fromName(source, document.nodeReference(document.nodes[1].reference).?.name());
+        const parsed_c = H.fromName(source, document.nodeReference(document.nodes[2].reference).?.name());
         try std.testing.expect(try parsed_a.eql(parsed_b));
         try std.testing.expect(!try parsed_a.eql(parsed_c));
         try std.testing.expectEqual(try document.hashIdentifier(a), try parsed_a.hash());
@@ -91,8 +94,7 @@ test "native name helpers match decoded UTF-8 hashes and check both ranges" {
         defer malformed_parse.deinit(gpa);
         try std.testing.expect(malformed_parse.outcome == .success);
         const malformed_document = &malformed_parse.document.?;
-        const malformed_range = malformed_document.nodeReference(malformed_document.nodes[0].reference).?.identifier;
-        const malformed = H.assumeParsed(malformed_document.text(malformed_range));
+        const malformed = H.fromName(malformed_source, malformed_document.nodeReference(malformed_document.nodes[0].reference).?.name());
         try std.testing.expectError(error.InvalidIdentifier, malformed.hash());
         try std.testing.expectError(error.InvalidIdentifier, parsed_c.eql(malformed));
         try std.testing.expectError(error.InvalidIdentifier, malformed.eql(parsed_c));
@@ -128,8 +130,8 @@ test "parser-certified names preserve escape and concatenation semantics across 
             const document = &parsed.document.?;
             const left = document.text(document.nodeReference(document.nodes[0].reference).?.identifier);
             const right = document.text(document.nodeReference(document.nodes[1].reference).?.identifier);
-            const trusted_left = H.assumeParsed(left);
-            const trusted_right = H.assumeParsed(right);
+            const trusted_left = H.fromName(source, document.nodeReference(document.nodes[0].reference).?.name());
+            const trusted_right = H.fromName(source, document.nodeReference(document.nodes[1].reference).?.name());
             try std.testing.expectEqual(try H.hash(left), try trusted_left.hash());
             try std.testing.expectEqual(try dot.identifier.hash(a), try trusted_left.hash());
             try std.testing.expectEqual(try H.eql(left, right), try trusted_left.eql(trusted_right));

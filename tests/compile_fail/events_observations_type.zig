@@ -1,6 +1,6 @@
 const dot = @import("dot_parser");
 const Consumer = struct {
-    pub const wants_early_events = 1;
+    pub const observations = 1;
     pub fn onEvent(_: *@This(), _: dot.events.Event) error{}!dot.events.Action {
         return .proceed;
     }

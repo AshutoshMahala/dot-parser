@@ -8,6 +8,28 @@
 const std = @import("std");
 const location = @import("parser_support").location;
 const diagnostic = @import("diagnostic.zig");
+pub const Name = @import("name.zig").Name;
+const recognized = @import("name.zig").recognized;
+
+/// Compile-time selection on a sink: `pub const observations =
+/// dot.events.Observations.all;`. Preview retirement is inseparable from
+/// preview delivery. Unselected kinds add no callbacks or dispatch credits.
+pub const Observations = struct {
+    identifier: bool = false,
+    statement_head: bool = false,
+    document_name: bool = false,
+    subgraph_name: bool = false,
+    token_preview: bool = false,
+
+    pub const none: Observations = .{};
+    pub const early: Observations = .{ .identifier = true, .statement_head = true, .document_name = true, .subgraph_name = true };
+    pub const previews: Observations = .{ .token_preview = true };
+    pub const all: Observations = .{ .identifier = true, .statement_head = true, .document_name = true, .subgraph_name = true, .token_preview = true };
+
+    pub fn enabled(self: Observations) bool {
+        return self.identifier or self.statement_head or self.document_name or self.subgraph_name or self.token_preview;
+    }
+};
 
 pub const Action = enum { proceed, stop };
 /// Local to this parse/source. Statement IDs are opening byte offsets; scopes
@@ -36,9 +58,9 @@ pub const AbortReason = enum {
     sink_failure,
     sink_stopped,
 };
-pub const Attribute = struct { key: location.Span, value: location.Span };
-pub const PortedReference = struct { identifier: location.Span, first: location.Span, second: ?location.Span = null };
-pub const Node = struct { identifier: location.Span, port: ?u32 = null };
+pub const Attribute = struct { key: Name, value: Name };
+pub const PortedReference = struct { identifier: Name, first: Name, second: ?Name = null };
+pub const Node = struct { identifier: Name, port: ?u32 = null };
 pub const Edge = struct {
     left_scope: ?u32 = null,
     right_scope: ?u32 = null,
@@ -51,8 +73,14 @@ pub const Edge = struct {
     /// As for left: right_scope distinguishes a name from a scope introducer.
     right: location.Span,
     right_port: ?u32 = null,
+    pub fn leftName(self: Edge) ?Name {
+        return if (self.left_scope == null) recognized(self.left) else null;
+    }
+    pub fn rightName(self: Edge) ?Name {
+        return if (self.right_scope == null) recognized(self.right) else null;
+    }
 };
-pub const Link = struct { operator: EdgeOperator, operator_span: location.Span, right: location.Span, right_port: ?u32 = null };
+pub const Link = struct { operator: EdgeOperator, operator_span: location.Span, right: Name, right_port: ?u32 = null };
 pub const AttributeTarget = enum { graph, node, edge };
 pub const AttributeStatement = struct { target: AttributeTarget, keyword_span: location.Span };
 pub const Owner = struct { statement: StatementId, scope: ScopeId };
@@ -64,7 +92,7 @@ pub const BeginDocument = struct {
     kind: GraphKind,
     strict: bool = false,
     keyword_span: location.Span,
-    name_span: ?location.Span = null,
+    name_span: ?Name = null,
     retain_comments: bool = false,
     source_info: @import("parser_support").encoding.Info = .{},
 };
@@ -73,7 +101,7 @@ pub const BeginScope = struct {
     parent: ScopeId,
     statement: StatementId,
     start: location.Span,
-    name: ?location.Span = null,
+    name: ?Name = null,
     role: ScopeRole = .left,
     /// The suspended edge prefix, if this is a right/link endpoint. It is
     /// syntax, not a storage reservation; the owning commit still follows.
@@ -88,15 +116,15 @@ pub const EndScope = struct { id: ScopeId, close: location.Span };
 pub const IdentifierRole = enum { statement_start, edge_right, edge_link };
 pub const StatementKind = enum { node, edge, assignment, graph_attributes, node_attributes, edge_attributes, subgraph };
 pub const StatementHead = struct { owner: Owner, kind: StatementKind, start: location.Span };
-pub const Identifier = struct { owner: Owner, span: location.Span, role: IdentifierRole };
+pub const Identifier = struct { owner: Owner, name: Name, role: IdentifierRole };
 pub const DocumentName = struct {
     kind: GraphKind,
     strict: bool,
     keyword_span: location.Span,
-    name: location.Span,
+    name: Name,
     source_info: @import("parser_support").encoding.Info,
 };
-pub const SubgraphName = struct { owner: Owner, keyword_span: location.Span, name: location.Span, role: ScopeRole };
+pub const SubgraphName = struct { owner: Owner, keyword_span: location.Span, name: Name, role: ScopeRole };
 /// Raw lexical observations, never trusted identifiers. `word` may become a
 /// keyword. Prefixes may end within a Unicode scalar or escape sequence.
 pub const PreviewKind = @import("lexer/preview.zig").Kind;
@@ -137,13 +165,13 @@ pub const Event = union(enum) {
     skipped: Skipped,
     comment: @import("comment.zig").Comment,
     end_document,
-    /// Opt-in with Sink.wants_early_events = true. Names are complete lexical
+    /// Opt-in with Sink.observations. Names are complete lexical
     /// expressions, never unfinished-token previews. No scope/body is opened.
     identifier: Identifier,
     statement_head: StatementHead,
     document_name: DocumentName,
     subgraph_name: SubgraphName,
-    /// Independent opt-in: Sink.wants_token_previews = true. Updates replace
+    /// Opt-in with observations.token_preview. Updates replace
     /// the preview with the same start. Token completion/rejection retires it;
     /// a document abort retires every remaining preview.
     token_preview: TokenPreview,
@@ -157,10 +185,12 @@ pub fn assertSink(comptime Sink: type) void {
     comptime {
         checkMethod(Sink, "onEvent", Event, Action, true);
         checkMethod(Sink, "onAbort", Abort, void, false);
-        for (.{ "wants_begin_statement", "recover_statements", "wants_early_events", "wants_token_previews" }) |name| {
+        for (.{ "wants_begin_statement", "recover_statements" }) |name| {
             if (@hasDecl(Sink, name) and @TypeOf(@field(Sink, name)) != bool)
                 @compileError(name ++ " must be a comptime bool");
         }
+        if (@hasDecl(Sink, "observations") and @TypeOf(Sink.observations) != Observations)
+            @compileError("observations must be dot.events.Observations");
         if (@hasDecl(Sink, "ScopeContext")) {
             if (@TypeOf(Sink.ScopeContext) != type) @compileError("ScopeContext must be a type");
             if (!@hasDecl(Sink, "suspendScope") or !@hasDecl(Sink, "restoreScope"))

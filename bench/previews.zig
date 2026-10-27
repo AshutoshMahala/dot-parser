@@ -6,7 +6,7 @@ const Mode = enum { plain, budget1, budget64, budget4096 };
 const Observation = struct { credits: usize = 0, callbacks: usize = 0, previews: usize = 0, ends: usize = 0 };
 fn Consumer(comptime enabled: bool) type {
     return struct {
-        pub const wants_token_previews = enabled;
+        pub const observations: dot.events.Observations = .{ .token_preview = enabled };
         observation: Observation = .{},
         pub fn onEvent(self: *@This(), event: dot.events.Event) error{}!dot.events.Action {
             self.observation.callbacks += 1;

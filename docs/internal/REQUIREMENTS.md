@@ -592,14 +592,14 @@ event-driven validation, composed event execution and public pull events remain
 future extensions, not claims of this slice.
 
 An opt-in event consumer can also observe complete names and recognized heads
-before enclosing syntax completes (`wants_early_events`, default false).
+before enclosing syntax completes (`observations`, default `.none`).
 These are provisional observations with the same source coordinates and owner
 identities, not successful commits or guessed unfinished tokens. They share the
 same event interface, dispatch credits and cancellation contract. A delivered
 document-name prefix can require terminal abort before document-begin. The
 consumer owns any retained outline; ordinary tree parsing adds no such output.
 
-Independent opt-in `wants_token_previews` exposes raw unfinished name-expression
+The same selection's `token_preview` opt-in exposes raw unfinished name-expression
 prefixes at EOF and metered pauses through the same event interface. Prefixes
 are observations of consumed bytes, not trusted identifiers, accepted syntax
 or repairs. Each update and lexical completion/rejection notification costs a
@@ -609,6 +609,23 @@ encoding metadata, stop/failure/abort and cancellation contracts are unchanged.
 Preview state is fixed-size, allocation-free and compiled out when unused;
 ordinary scanners and retained document layouts stay unchanged. Paused event
 sequences depend on scanner/backend and budget, not merely the source text.
+
+`events.Observations` selects identifier, statement-head, document-name,
+subgraph-name and token-preview delivery independently at compile time; preview
+retirement follows its preview selection. Presets `.early`, `.previews`, `.all`
+and `.none` are only values of that selection. Internally all selected kinds
+use the same pending action, dispatch credit and delivered-observation cleanup
+flag. There is no second preview queue or duplicated metered driver. Disabled
+kinds schedule nothing; the default action range and storage stay specialized.
+
+Recognized identifier event fields carry a distinct span-sized `Name`; previews,
+keywords and general syntax ranges remain `Span`. Scope-capable edge endpoints
+expose optional typed names only for node endpoints. `identifier.fromName`
+binds a Name to its original unchanged source without re-lexing. Retained views
+expose equivalent handles without changing pool layouts. Raw spans must cross
+the explicit checked `identifier.check` boundary. These types prevent accidental
+mix-ups, not deliberate forgery, source mutation or use of a different buffer.
+Recognized syntax never implies Unicode validity or whole-statement acceptance.
 
 Opt-in recovered DOT gaps use adjacent start/end tags in the existing compact
 order pool: two slots per gap. No new pool, document descriptor, per-node or

@@ -7,7 +7,7 @@ const Record = union(enum) { event: dot.events.Event, abort: dot.events.Abort };
 
 fn Recorder(comptime previews: bool) type {
     return struct {
-        pub const wants_token_previews = previews;
+        pub const observations: dot.events.Observations = .{ .token_preview = previews };
         records: [4096]Record = undefined,
         len: usize = 0,
         callbacks: usize = 0,
@@ -71,8 +71,7 @@ test "preview retirement obeys stop failure and cancellation at each polling int
 
 test "previews compose with early events and never follow document abort" {
     const EarlyNoRecovery = struct {
-        pub const wants_token_previews = true;
-        pub const wants_early_events = true;
+        pub const observations = dot.events.Observations.all;
         pub const wants_begin_statement = false;
         pub const recover_statements = false;
         log: Sink = .{},
@@ -162,7 +161,7 @@ test "EOF previews expose raw prefixes with known context but no invented identi
 }
 
 const PreviewOnly = struct {
-    pub const wants_token_previews = true;
+    pub const observations: dot.events.Observations = .{ .token_preview = true };
     pub const wants_begin_statement = false;
     pub const recover_statements = false;
     log: Sink = .{},

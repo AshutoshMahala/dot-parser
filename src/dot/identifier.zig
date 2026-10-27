@@ -1,8 +1,8 @@
 //! Explicit, allocation-free decoding of supported identifier expressions.
 //!
 //! Raw spelling stays in the document. These helpers validate one complete
-//! identifier (no leading/trailing trivia), then decode on demand. `assumeParsed`
-//! explicitly skips syntax validation for parser-recognized spellings. Helpers do
+//! identifier (no leading/trailing trivia), then decode on demand. `fromName`
+//! skips syntax validation for typed parser-recognized names. Helpers do
 //! not cache results, interpret layout escapes, normalize encoding, or convert
 //! numerals. Repeated calls repeat linear work. Output memory is caller-owned.
 
@@ -12,6 +12,8 @@ pub const LogicalReader = @import("logical.zig").Reader;
 const lex = @import("lexer/lexer.zig");
 const Chunks = @import("identifier_value.zig").Chunks;
 const encoding = @import("parser_support").encoding;
+const names = @import("name.zig");
+const ParsedForEncoding = @import("parsed_name.zig").ForEncoding;
 
 pub const DecodeError = error{ InvalidIdentifier, NoSpaceLeft, OverlappingBuffers };
 pub const Form = enum { bare, numeral, quoted, html, concatenation };
@@ -108,63 +110,18 @@ pub fn eql(a: []const u8, b: []const u8) error{InvalidIdentifier}!bool {
 /// A borrowed name with parser-certified syntax, not a cached/decoded string.
 pub const Parsed = ParsedForEncoding(.utf8);
 
-/// Skip syntax revalidation of one complete parser-recognized identifier.
-/// The caller guarantees that raw is exactly an identifier spelling from a
-/// parser event or retained document, and stays alive and unchanged. Arbitrary
-/// text, partial tokens, skipped regions and statement spans do not qualify.
-/// This is an unchecked precondition, not a way to validate input. Use hash/eql
-/// above for arbitrary bytes. No allocation, source copy or cached hash.
-pub fn assumeParsed(raw: []const u8) Parsed {
-    return .{ .raw = raw };
+/// Bind a recognized name to its unchanged source, without lexing it again.
+/// Raw spans (including previews) are deliberately not accepted. This guards
+/// accidental misuse, not forged names or mixing buffers/encodings. No allocation.
+pub fn fromName(source: []const u8, name: names.Name) Parsed {
+    return .{ .raw = name.slice(source) };
 }
 
-fn ParsedForEncoding(comptime actual: encoding.Actual) type {
-    return struct {
-        raw: []const u8,
-        const Self = @This();
-        const E = encoding.Reader(actual);
-        const Values = @import("identifier_value.zig").ForEncoding(actual);
-
-        /// Same logical-value hash as the checked helper, without lexing again.
-        /// Native text is still decoded with encoding checks: accepted syntax
-        /// alone does not certify Unicode validity. UTF-8 retains arbitrary bytes.
-        pub fn hash(self: Self) error{InvalidIdentifier}!u64 {
-            if (comptime actual == .utf8) return Values.hashAssumeValid(self.raw);
-            var chunks: Values.Chunks = .{ .raw = self.raw };
-            var state = std.hash.Wyhash.init(0);
-            var out: [4]u8 = undefined;
-            while (chunks.next()) |chunk| {
-                var at: usize = 0;
-                while (at < chunk.len) {
-                    const scalar = E.decode(chunk, at) catch return error.InvalidIdentifier;
-                    at += scalar.len;
-                    const len = std.unicode.utf8Encode(scalar.scalar, &out) catch return error.InvalidIdentifier;
-                    state.update(out[0..len]);
-                }
-            }
-            return state.final();
-        }
-
-        /// Compare names using the same source encoding. No normalization,
-        /// layout escapes or entity expansion. Hash equality is not sufficient.
-        pub fn eql(self: Self, other: Self) error{InvalidIdentifier}!bool {
-            if (comptime actual != .utf8) {
-                // Preserve the checked API's rejection of malformed native
-                // text on either side, even when the logical values differ.
-                for ([_][]const u8{ self.raw, other.raw }) |raw| {
-                    var chunks: Values.Chunks = .{ .raw = raw };
-                    while (chunks.next()) |chunk| {
-                        var at: usize = 0;
-                        while (at < chunk.len) {
-                            const scalar = E.decode(chunk, at) catch return error.InvalidIdentifier;
-                            at += scalar.len;
-                        }
-                    }
-                }
-            }
-            return Values.orderAssumeValid(self.raw, other.raw) == .eq;
-        }
-    };
+/// Checked boundary for caller-supplied spans. Parser-issued Names need no check.
+pub fn check(source: []const u8, span: @import("parser_support").location.Span) error{InvalidIdentifier}!names.Name {
+    if (span.endOffset() > source.len) return error.InvalidIdentifier;
+    _ = try validate(span.slice(source));
+    return names.recognized(span);
 }
 
 fn validate(raw: []const u8) error{InvalidIdentifier}!lex.Token {
@@ -188,17 +145,22 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
         pub const hash = @import("identifier.zig").hash;
         pub const eql = @import("identifier.zig").eql;
         pub const Parsed = @import("identifier.zig").Parsed;
-        pub const assumeParsed = @import("identifier.zig").assumeParsed;
+        pub const fromName = @import("identifier.zig").fromName;
+        pub const check = @import("identifier.zig").check;
     };
     return struct {
         const E = encoding.Reader(actual);
         const Values = @import("identifier_value.zig").ForEncoding(actual);
         pub const Parts = @import("identifier_parts.zig").ForEncoding(actual).Parts;
         pub const Parsed = ParsedForEncoding(actual);
-        /// Same syntax/source-lifetime precondition as identifier.assumeParsed;
-        /// raw must use this reader's encoding and contain whole code units.
-        pub fn assumeParsed(raw: []const u8) @This().Parsed {
-            return .{ .raw = raw };
+        /// The Name must belong to this unchanged source in this encoding.
+        pub fn fromName(source: []const u8, name: names.Name) @This().Parsed {
+            return .{ .raw = name.slice(source) };
+        }
+        pub fn check(source: []const u8, span: @import("parser_support").location.Span) error{InvalidIdentifier}!names.Name {
+            if (span.endOffset() > source.len or span.start % E.width != 0) return error.InvalidIdentifier;
+            _ = try checked(span.slice(source));
+            return names.recognized(span);
         }
         fn checked(raw: []const u8) error{InvalidIdentifier}!lex.Token {
             if (raw.len % E.width != 0) return error.InvalidIdentifier;

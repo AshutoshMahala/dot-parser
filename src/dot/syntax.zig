@@ -77,6 +77,12 @@ pub const AttributeTarget = event_types.AttributeTarget;
 pub const Attribute = struct {
     key: location.Range,
     value: location.Range,
+    pub fn keyName(self: Attribute) event_types.Name {
+        return @import("name.zig").recognized(self.key);
+    }
+    pub fn valueName(self: Attribute) event_types.Name {
+        return @import("name.zig").recognized(self.value);
+    }
 };
 pub const Assignment = Attribute;
 
@@ -113,6 +119,12 @@ pub const NodeReference = struct {
 pub const PortSyntax = struct {
     first: location.Range,
     second: ?location.Range = null,
+    pub fn firstName(self: PortSyntax) event_types.Name {
+        return @import("name.zig").recognized(self.first);
+    }
+    pub fn secondName(self: PortSyntax) ?event_types.Name {
+        return if (self.second) |value| @import("name.zig").recognized(value) else null;
+    }
 };
 
 /// One written qualified occurrence, not an interned node or port declaration.
@@ -124,6 +136,9 @@ pub const PortedReference = struct {
 pub const NodeReferenceView = struct {
     identifier: location.Range,
     port: ?PortSyntax = null,
+    pub fn name(self: NodeReferenceView) event_types.Name {
+        return @import("name.zig").recognized(self.identifier);
+    }
 };
 
 pub const NodeStatement = struct {
@@ -258,6 +273,9 @@ pub const ScopeView = struct {
     }
     pub fn name(self: ScopeView) ?location.Range {
         return if (self.id == .root) self.document.name else self.record().name;
+    }
+    pub fn recognizedName(self: ScopeView) ?event_types.Name {
+        return if (self.name()) |value| @import("name.zig").recognized(value) else null;
     }
     pub fn sourceRange(self: ScopeView) ?location.Range {
         return if (self.id == .root) location.Range{ .start = 0, .len = if (self.document.state == .partial) self.document.retained_end else @intCast(self.document.source.len) } else self.record().source;
@@ -1235,14 +1253,14 @@ pub const Builder = struct {
         self.kind = event.kind;
         self.strict = event.strict;
         self.keyword = self.range(event.keyword_span);
-        self.name = if (event.name_span) |name_span| self.range(name_span) else null;
+        self.name = if (event.name_span) |name_span| self.range(name_span.span()) else null;
     }
 
     fn nodeStatement(self: *Builder, statement_event: event_types.Node) Error!void {
         std.debug.assert(self.phase == .building);
-        const at = statement_event.identifier;
+        const at = statement_event.identifier.span();
         const node: NodeStatement = .{
-            .reference = try self.reference(statement_event.identifier, statement_event.port),
+            .reference = try self.reference(statement_event.identifier.span(), statement_event.port),
             .attributes = self.pendingRange(),
         };
         const index = try self.statementIndex(self.nodes.items.len, at);
@@ -1276,11 +1294,11 @@ pub const Builder = struct {
 
     fn edgeLink(self: *Builder, event: event_types.Link) Error!void {
         if (self.scope_state.scoped_owner != null) {
-            try appendScopedLink(self, .{ .node = try self.reference(event.right, event.right_port) }, event.operator, event.operator_span, false);
+            try appendScopedLink(self, .{ .node = try self.reference(event.right.span(), event.right_port) }, event.operator, event.operator_span, false);
             return;
         }
         std.debug.assert(self.phase == .building);
-        const value: EdgeLink = .{ .operator = event.operator, .operator_range = self.range(event.operator_span), .right = try self.reference(event.right, event.right_port) };
+        const value: EdgeLink = .{ .operator = event.operator, .operator_range = self.range(event.operator_span), .right = try self.reference(event.right.span(), event.right_port) };
         if (self.edge_links.items.len >= std.math.maxInt(Index)) {
             self.failure_info = .{ .span = event.operator_span, .capacity = .{ .resource = .edge_link_index, .limit = std.math.maxInt(Index) } };
             return error.EdgeLinkIndexOverflow;
@@ -1319,15 +1337,15 @@ pub const Builder = struct {
     fn portedReference(self: *Builder, event: event_types.PortedReference) Error!u32 {
         std.debug.assert(self.phase == .building);
         const value: PortedReference = .{
-            .identifier = self.range(event.identifier),
-            .port = .{ .first = self.range(event.first), .second = if (event.second) |span| self.range(span) else null },
+            .identifier = self.range(event.identifier.span()),
+            .port = .{ .first = self.range(event.first.span()), .second = if (event.second) |span| self.range(span.span()) else null },
         };
         if (self.ported_references.items.len >= std.math.maxInt(Index)) {
-            self.failure_info = .{ .span = event.first, .capacity = .{ .resource = .ported_reference_index, .limit = std.math.maxInt(Index) } };
+            self.failure_info = .{ .span = event.first.span(), .capacity = .{ .resource = .ported_reference_index, .limit = std.math.maxInt(Index) } };
             return error.PortedReferenceIndexOverflow;
         }
         const index: Index = @intCast(self.ported_references.items.len);
-        try self.reserve(&self.ported_references, event.first);
+        try self.reserve(&self.ported_references, event.first.span());
         self.ported_references.appendAssumeCapacity(value);
         return index;
     }
@@ -1346,21 +1364,21 @@ pub const Builder = struct {
 
     fn attribute(self: *Builder, event: event_types.Attribute) Error!void {
         std.debug.assert(self.phase == .building);
-        const value: Attribute = .{ .key = self.range(event.key), .value = self.range(event.value) };
+        const value: Attribute = .{ .key = self.range(event.key.span()), .value = self.range(event.value.span()) };
         if (self.attributes.items.len >= std.math.maxInt(Index)) {
-            self.failure_info = .{ .span = event.key, .capacity = .{ .resource = .attribute_index, .limit = std.math.maxInt(Index) } };
+            self.failure_info = .{ .span = event.key.span(), .capacity = .{ .resource = .attribute_index, .limit = std.math.maxInt(Index) } };
             return error.AttributeIndexOverflow;
         }
-        try self.reserve(&self.attributes, event.key);
+        try self.reserve(&self.attributes, event.key.span());
         self.attributes.appendAssumeCapacity(value);
     }
 
     fn assignment(self: *Builder, event: event_types.Attribute) Error!void {
         std.debug.assert(self.phase == .building and self.pending_attributes == self.attributes.items.len);
-        const value: Assignment = .{ .key = self.range(event.key), .value = self.range(event.value) };
-        const index = try self.statementIndex(self.assignments.items.len, event.key);
-        try self.reserve(&self.assignments, event.key);
-        try self.reserve(&self.order, event.key);
+        const value: Assignment = .{ .key = self.range(event.key.span()), .value = self.range(event.value.span()) };
+        const index = try self.statementIndex(self.assignments.items.len, event.key.span());
+        try self.reserve(&self.assignments, event.key.span());
+        try self.reserve(&self.order, event.key.span());
         self.assignments.appendAssumeCapacity(value);
         self.order.appendAssumeCapacity(.{ .assignment = index });
     }
@@ -1809,16 +1827,16 @@ pub const FixedBuilder = struct {
         self.kind = event.kind;
         self.strict = event.strict;
         self.keyword = self.range(event.keyword_span);
-        self.name = if (event.name_span) |name_span| self.range(name_span) else null;
+        self.name = if (event.name_span) |name_span| self.range(name_span.span()) else null;
     }
 
     fn edgeLink(self: *FixedBuilder, event: event_types.Link) Error!void {
         if (self.scope_state.scoped_owner != null) {
-            try appendScopedLink(self, .{ .node = try self.reference(event.right, event.right_port) }, event.operator, event.operator_span, false);
+            try appendScopedLink(self, .{ .node = try self.reference(event.right.span(), event.right_port) }, event.operator, event.operator_span, false);
             return;
         }
         std.debug.assert(self.phase == .building);
-        const value: EdgeLink = .{ .operator = event.operator, .operator_range = self.range(event.operator_span), .right = try self.reference(event.right, event.right_port) };
+        const value: EdgeLink = .{ .operator = event.operator, .operator_range = self.range(event.operator_span), .right = try self.reference(event.right.span(), event.right_port) };
         if (self.edge_links_len >= std.math.maxInt(Index)) {
             self.failure_info = .{ .span = event.operator_span, .capacity = .{ .resource = .edge_link_index, .limit = std.math.maxInt(Index) } };
             return error.EdgeLinkIndexOverflow;
@@ -1860,15 +1878,15 @@ pub const FixedBuilder = struct {
     fn portedReference(self: *FixedBuilder, event: event_types.PortedReference) Error!u32 {
         std.debug.assert(self.phase == .building);
         const value: PortedReference = .{
-            .identifier = self.range(event.identifier),
-            .port = .{ .first = self.range(event.first), .second = if (event.second) |span| self.range(span) else null },
+            .identifier = self.range(event.identifier.span()),
+            .port = .{ .first = self.range(event.first.span()), .second = if (event.second) |span| self.range(span.span()) else null },
         };
         if (self.ported_references_len >= std.math.maxInt(Index)) {
-            self.failure_info = .{ .span = event.first, .capacity = .{ .resource = .ported_reference_index, .limit = std.math.maxInt(Index) } };
+            self.failure_info = .{ .span = event.first.span(), .capacity = .{ .resource = .ported_reference_index, .limit = std.math.maxInt(Index) } };
             return error.PortedReferenceIndexOverflow;
         }
         const index: Index = @intCast(self.ported_references_len);
-        try self.checkPool(self.ported_references_len, self.storage.ported_references.len, .ported_reference_pool, event.first);
+        try self.checkPool(self.ported_references_len, self.storage.ported_references.len, .ported_reference_pool, event.first.span());
         self.storage.ported_references[self.ported_references_len] = value;
         self.ported_references_len += 1;
         return index;
@@ -1888,22 +1906,22 @@ pub const FixedBuilder = struct {
 
     fn attribute(self: *FixedBuilder, event: event_types.Attribute) Error!void {
         std.debug.assert(self.phase == .building);
-        const value: Attribute = .{ .key = self.range(event.key), .value = self.range(event.value) };
+        const value: Attribute = .{ .key = self.range(event.key.span()), .value = self.range(event.value.span()) };
         if (self.attributes_len >= std.math.maxInt(Index)) {
-            self.failure_info = .{ .span = event.key, .capacity = .{ .resource = .attribute_index, .limit = std.math.maxInt(Index) } };
+            self.failure_info = .{ .span = event.key.span(), .capacity = .{ .resource = .attribute_index, .limit = std.math.maxInt(Index) } };
             return error.AttributeIndexOverflow;
         }
-        try self.checkPool(self.attributes_len, self.storage.attributes.len, .attribute_pool, event.key);
+        try self.checkPool(self.attributes_len, self.storage.attributes.len, .attribute_pool, event.key.span());
         self.storage.attributes[self.attributes_len] = value;
         self.attributes_len += 1;
     }
 
     fn assignment(self: *FixedBuilder, event: event_types.Attribute) Error!void {
         std.debug.assert(self.phase == .building and self.pending_attributes == self.attributes_len);
-        const value: Assignment = .{ .key = self.range(event.key), .value = self.range(event.value) };
-        const index = try self.statementIndex(self.assignments_len, event.key);
-        try self.checkPool(self.assignments_len, self.storage.assignments.len, .assignment_pool, event.key);
-        try self.checkPool(self.order_len, self.storage.statement_ids.len, .statement_pool, event.key);
+        const value: Assignment = .{ .key = self.range(event.key.span()), .value = self.range(event.value.span()) };
+        const index = try self.statementIndex(self.assignments_len, event.key.span());
+        try self.checkPool(self.assignments_len, self.storage.assignments.len, .assignment_pool, event.key.span());
+        try self.checkPool(self.order_len, self.storage.statement_ids.len, .statement_pool, event.key.span());
         self.storage.assignments[self.assignments_len] = value;
         self.assignments_len += 1;
         self.storage.statement_ids[self.order_len] = .{ .assignment = index };
@@ -1959,9 +1977,9 @@ pub const FixedBuilder = struct {
 
     fn nodeStatement(self: *FixedBuilder, statement_event: event_types.Node) Error!void {
         std.debug.assert(self.phase == .building);
-        const at = statement_event.identifier;
+        const at = statement_event.identifier.span();
         const node: NodeStatement = .{
-            .reference = try self.reference(statement_event.identifier, statement_event.port),
+            .reference = try self.reference(statement_event.identifier.span(), statement_event.port),
             .attributes = self.pendingRange(),
         };
         try self.checkPool(self.nodes_len, self.storage.nodes.len, .node_pool, at);
@@ -2209,7 +2227,7 @@ fn beginScope(self: anytype, event: event_types.BeginScope) @TypeOf(self.*).Erro
     }
     _ = appendPrepared(self, .subgraphs, .{
         .parent = self.current_scope,
-        .name = if (event.name) |name| self.range(name) else null,
+        .name = if (event.name) |name| self.range(name.span()) else null,
         .source = self.range(event.start),
         .body = .{ .start = @intCast(poolLen(self, .order)), .len = 0 },
     });
@@ -2328,7 +2346,7 @@ test "ported index and source overflow fail before pool access and reset cleanly
     const at: location.Span = .{ .start = 0, .len = 1 };
     try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = at });
     builder.ported_references_len = std.math.maxInt(Index);
-    try std.testing.expectError(error.PortedReferenceIndexOverflow, builder.portedReference(.{ .identifier = at, .first = at }));
+    try std.testing.expectError(error.PortedReferenceIndexOverflow, builder.portedReference(.{ .identifier = @import("name.zig").recognized(at), .first = @import("name.zig").recognized(at) }));
     try expectEqual(diagnostic.Capacity.Resource.ported_reference_index, builder.failure_info.?.capacity.?.resource);
     builder.abortDocument(.sink_failure);
     try expectEqual(@as(usize, 0), builder.ported_references_len);
@@ -2348,7 +2366,7 @@ test "link index overflow is reported before accessing a fixed pool" {
     try std.testing.expectError(error.EdgeLinkIndexOverflow, builder.edgeLink(.{
         .operator = .undirected,
         .operator_span = at,
-        .right = at,
+        .right = @import("name.zig").recognized(at),
     }));
     try expectEqual(diagnostic.Capacity.Resource.edge_link_index, builder.failure_info.?.capacity.?.resource);
     builder.abortDocument(.sink_failure);
@@ -2823,7 +2841,7 @@ test "attribute index overflow is checked before fixed pool access" {
     try builder.beginDocument(.{ .kind = .undigraph, .keyword_span = .{ .start = 0, .len = 5 } });
     builder.attributes_len = std.math.maxInt(Index);
     const at: location.Span = .{ .start = 0, .len = 1 };
-    try std.testing.expectError(error.AttributeIndexOverflow, builder.attribute(.{ .key = at, .value = at }));
+    try std.testing.expectError(error.AttributeIndexOverflow, builder.attribute(.{ .key = @import("name.zig").recognized(at), .value = @import("name.zig").recognized(at) }));
     try expectEqual(diagnostic.Capacity.Resource.attribute_index, builder.failure_info.?.capacity.?.resource);
     builder.abortDocument(.sink_failure);
     try expectEqual(@as(usize, 0), builder.attributes_len);

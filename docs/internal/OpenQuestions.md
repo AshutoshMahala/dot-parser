@@ -204,16 +204,25 @@ compile time and can ignore irrelevant events without building document pools.
 Statement IDs use byte offsets; scope/reference IDs use encounter-order
 ordinals. The parser assigns all identities; source is borrowed. Builder pool
 bookkeeping is private continuation state, not a second event protocol.
-Opt-in `Sink.wants_early_events` now delivers complete identifier expressions,
+Opt-in `Sink.observations = events.Observations.early` delivers complete identifier expressions,
 recognized statement heads and named header prefixes for provisional outlines
 through that same interface. Commit/abort and metering remain separate from
-these observations. The independent Unreleased `Sink.wants_token_previews`
+these observations. The same selection's independent `token_preview`
 opt-in exposes raw quoted/HTML/concatenation prefixes at EOF, and word/numeral
 prefixes too at metered pauses. Snapshots never read ahead or decode; a queued
 update consumes its own credit on resume before scanning continues. Same-start
 updates replace prior observations, lexical completion/rejection retires them,
 and document abort abandons remaining previews. These are not trusted names or
 syntax commits. Comments/operators and native sessions are outside this slice.
+All five selectable observation kinds now share one internal action scheduler,
+charged dispatch continuation and delivered-output cleanup flag. Previews only
+add their snapshot; there is no parallel preview queue. `.none` is the default,
+with `.early`, `.previews` and `.all` convenience selections.
+Typed `Name` handles distinguish recognized identifiers from raw `Span` previews
+and other syntax ranges. `identifier.fromName(source, name)` avoids re-lexing;
+raw spans use checked `identifier.check`. Builders consume the same typed events,
+and retained views derive handles without extra storage. This is an accidental
+misuse guard, not unforgeability or a source-identity/Unicode certificate.
 Combined tree/event output, composed event execution, event-driven validation
 and public pull events remain
 unfinished. *(Embodied: `src/dot/events.zig`, `event_profile.zig`,

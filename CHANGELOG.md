@@ -137,21 +137,28 @@ are marked; no compatibility shims are kept.
   allocation-free node iteration/name formatting, `test-ir`, `bench-ir` and a
   short graph example with diagnostics; its checks live outside the example.
   Ordinary parsing is unchanged.
-- Independent opt-in DOT `Consumer.wants_token_previews = true` exposes raw
+- DOT `Consumer.observations = events.Observations.previews` exposes raw
   unfinished name-expression spans at EOF and metered pauses, through the same
   events interface. Updates carry known context and original encoding/offsets;
   explicit completion/rejection events retire previews. Callbacks consume their
   own credits, including queued delivery after a budget is exhausted. No repair,
   trusted-name promotion, source copy or parser allocation; default off.
   `zig build bench-previews` reports enabled/disabled timing, credits and sizes.
-- Opt-in early DOT event observations with `Consumer.wants_early_events = true`:
+- Opt-in early DOT event observations with `Consumer.observations = events.Observations.early`:
   complete identifiers, recognized statement heads and document/subgraph names
   can feed an outline before their enclosing syntax finishes. The same event
   interface retains commit/abort, original byte spans and separate callback
   work credits. No event queue or partial-token guessing; default off.
-- `identifier.assumeParsed(raw)` (also under `ForEncoding`) provides a borrowed
+- **Breaking (Unreleased):** one typed `events.Observations` selection replaces
+  the separate early-event/preview flags; `.all`, `.none` and individual fields
+  are also supported. Internal names, heads and previews share one dispatch
+  continuation and cleanup flag, with unchanged metering/cancellation contracts.
+- `identifier.fromName(source, name)` (also under `ForEncoding`) provides a borrowed
   name view with logical hash/equality that skips redundant DOT syntax checks.
-  Only complete parser-recognized identifiers qualify; the source must stay
+  Complete identifier event fields now use a distinct eight-byte `Name`, while
+  previews/general locations remain `Span`. Retained views expose typed names
+  too. Arbitrary spans use `identifier.check`; the unchecked raw constructor is
+  removed without aliases. Only complete recognized identifiers qualify; the source must stay
   unchanged. Checked helpers remain checked, and native decoding retains its
   encoding checks. No event/document fields, copies or allocations are added.
   `zig build bench-identifiers` compares both paths in an event-only name index.

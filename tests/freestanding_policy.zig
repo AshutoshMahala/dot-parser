@@ -32,8 +32,7 @@ export fn event_node_count(source: [*]const u8, len: usize) u32 {
 }
 
 const Outline = struct {
-    pub const wants_early_events = true;
-    pub const wants_token_previews = true;
+    pub const observations = dot.events.Observations.all;
     names: u32 = 0,
     pub fn onEvent(self: *@This(), event: dot.events.Event) error{}!dot.events.Action {
         switch (event) {

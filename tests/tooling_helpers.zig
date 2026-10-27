@@ -2,6 +2,29 @@
 const std = @import("std");
 const dot = @import("dot_parser");
 
+test "recognized names are distinct span-sized handles, never raw previews" {
+    try std.testing.expect(dot.Name != dot.Span);
+    try std.testing.expectEqual(@sizeOf(dot.Span), @sizeOf(dot.Name));
+    try std.testing.expectEqual(@alignOf(dot.Span), @alignOf(dot.Name));
+    try std.testing.expect(@FieldType(dot.events.TokenPreview, "span") == dot.Span);
+    try std.testing.expect(@FieldType(dot.events.Identifier, "name") == dot.Name);
+    const input = "graph G { a:p:n -> { b } [k=\"a\"+\"\"]; }";
+    var result = dot.parseBorrowed(std.testing.allocator, input, dot.diagnostic.discard, .{});
+    defer result.deinit(std.testing.allocator);
+    const doc = &result.document.?;
+    const attr = doc.attributes[0];
+    try std.testing.expectEqualStrings("k", attr.keyName().slice(input));
+    try std.testing.expectEqual(try dot.identifier.hash("a"), try dot.identifier.fromName(input, attr.valueName()).hash());
+    const port = doc.ported_references[0].port;
+    try std.testing.expectEqualStrings("p", port.firstName().slice(input));
+    try std.testing.expectEqualStrings("n", port.secondName().?.slice(input));
+    try std.testing.expectError(error.InvalidIdentifier, dot.identifier.check(input, .{ .start = 0, .len = 5 }));
+    try std.testing.expectError(error.InvalidIdentifier, dot.identifier.check(input, .{ .start = std.math.maxInt(u32), .len = 2 }));
+    const scoped: dot.events.Edge = .{ .left = .{ .start = 0, .len = 1 }, .right = .{ .start = 2, .len = 1 }, .right_scope = 1, .operator = .directed, .operator_span = .{ .start = 1, .len = 2 } };
+    try std.testing.expect(scoped.leftName() != null);
+    try std.testing.expect(scoped.rightName() == null);
+}
+
 test "logical name hashes and equality match decoding across operand boundaries" {
     const spellings = [_][]const u8{
         "a",              "\"a\"",        "\"a\"+\"\"",    "\"\"/**/+\"a\"", "<a>",
@@ -20,8 +43,8 @@ test "logical name hashes and equality match decoding across operand boundaries"
         var right: [128]u8 = undefined;
         const expected = std.mem.eql(u8, try dot.identifier.decodeInto(a, &left), try dot.identifier.decodeInto(b, &right));
         try std.testing.expectEqual(expected, try dot.identifier.eql(a, b));
-        const parsed_a = dot.identifier.assumeParsed(a);
-        const parsed_b = dot.identifier.assumeParsed(b);
+        const parsed_a = dot.identifier.fromName(a, try dot.identifier.check(a, .{ .start = 0, .len = @intCast(a.len) }));
+        const parsed_b = dot.identifier.fromName(b, try dot.identifier.check(b, .{ .start = 0, .len = @intCast(b.len) }));
         try std.testing.expectEqual(expected, try parsed_a.eql(parsed_b));
         try std.testing.expectEqual(try dot.identifier.hash(a), try parsed_a.hash());
         if (expected) try std.testing.expectEqual(try dot.identifier.hash(a), try dot.identifier.hash(b));
@@ -43,7 +66,7 @@ test "event consumers index parser-recognized names without a document" {
         pub fn onEvent(self: *@This(), event: dot.events.Event) error{}!dot.events.Action {
             switch (event) {
                 .commit_node => |node| {
-                    self.names[self.count] = dot.identifier.assumeParsed(node.value.identifier.slice(self.source));
+                    self.names[self.count] = dot.identifier.fromName(self.source, node.value.identifier);
                     self.count += 1;
                 },
                 else => {},
