@@ -35,7 +35,7 @@ pub fn For(comptime Graph: type, comptime caps: encodings.Capabilities) type {
                 return self.graph.source_info.encoding;
             }
             fn reader(self: Value) encodings.Actual {
-                return if (self.encoding() == .ascii and caps.utf8) .utf8 else self.encoding();
+                return @import("names.zig").reader(caps, self.encoding());
             }
             pub fn kind(self: Value) Kind {
                 return self.kindWork(Unmetered{}) catch unreachable;

@@ -31,6 +31,15 @@ pub const Entry = struct {
 };
 pub const Data = struct {
     entries: std.ArrayList(Entry) = .empty,
+    /// Partial-only dependency summary. Hidden scope members can affect a
+    /// later set-endpoint connection even when the gap precedes its winner.
+    last_set_connection: ?u32 = null,
+
+    pub fn observeConnection(self: *Data, id: u32, connection: t.Connection) void {
+        if (@backingInt(connection.left.members) & t.node_bit == 0 or
+            @backingInt(connection.right.members) & t.node_bit == 0)
+            self.last_set_connection = id;
+    }
 
     pub fn add(self: *Data, a: anytype, gap: Gap, boundary: usize, connections: u32, work: *r.Work) r.Error!void {
         try work.spend(1);

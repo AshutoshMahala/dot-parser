@@ -316,7 +316,12 @@ fn avlHeight(keys: u64) u64 {
 }
 /// Arithmetic only; never automatically called by lowering.
 pub fn loweringBounds(comptime partial: bool, counts: syntax.Capacities, limits: r.Limits) r.Error!Bounds {
-    const A = @as(u64, counts.attributes) + counts.assignments;
+    // Validate source counts before arithmetic. Each admitted operand is u32,
+    // so the endpoint/count sums fit u64 even for caller-made envelopes.
+    // The larger attribute-state product is saturated separately below.
+    inline for (.{ "nodes", "attributes", "assignments", "subgraphs", "edges", "edge_chains", "scoped_edges", "edge_links", "scoped_edge_links", "attribute_statements" }) |field|
+        _ = try r.index(@field(counts, field));
+    const A: u64 = try index64(@as(u64, counts.attributes) + counts.assignments);
     const S = @as(u64, counts.subgraphs);
     const owners = @as(u64, counts.edges) + counts.edge_chains + counts.scoped_edges;
     const links = @as(u64, counts.edge_links) + counts.scoped_edge_links;

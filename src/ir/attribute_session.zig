@@ -452,7 +452,8 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                                     return;
                                 }
                                 const e = self.edgeRecord();
-                                if (!(e.operator == .undirected and e.from != e.to and self.port_key != null)) after = @backingInt(id);
+                                const later_set = if (self.graph._coverage.last_set_connection) |last| last > @backingInt(id) else false;
+                                if (!later_set and !(e.operator == .undirected and e.from != e.to and self.port_key != null)) after = @backingInt(id);
                             }
                         }
                     }
@@ -499,9 +500,9 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
             return .{ .work_used = used, .total_work = self.total_work, .outcome = self.outcome };
         }
         fn poll(self: *Self) bool {
-            if (has_hook) if (self.cancellation) |hook| if (hook.requested()) {
-                self.cancel();
-                return false;
+            if (has_hook) if (self.cancellation) |hook| {
+                if (hook.requested()) self.cancel();
+                return self.outcome == null;
             };
             return true;
         }
@@ -519,11 +520,11 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
             _ = polling.due(interval); // Entry poll covers the first credit.
             var used: u32 = 0;
             while (used < budget and self.outcome == null and (if (all) self.entry == null else true)) {
-                if (used != 0 and polling.due(interval) and !self.poll()) break;
                 if (self.total_work == self.max_work) {
-                    self.outcome = .{ .failure = error.WorkLimit };
+                    if (used == 0 or self.poll()) self.outcome = .{ .failure = error.WorkLimit };
                     break;
                 }
+                if (used != 0 and polling.due(interval) and !self.poll()) break;
                 self.total_work += 1;
                 used += 1;
                 polling.spend(1);

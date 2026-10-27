@@ -232,7 +232,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
             pub fn name(self: ScopeView) ?names.Formatted(caps) {
                 const data = &self.graph._data;
                 const range = data.scopes[@backingInt(self.id)].name orelse return null;
-                return .{ .raw = data.text(range), .actual = if (data.source_info.encoding == .ascii and caps.utf8) .utf8 else data.source_info.encoding };
+                return .{ .raw = data.text(range), .actual = names.reader(caps, data.source_info.encoding) };
             }
             pub fn attribute(self: ScopeView, key: []const u8) c.Knowledge(?AttributeView) {
                 return self.graph.qualifyAttribute(self.core().attribute(key));

@@ -33,8 +33,7 @@ pub fn API(comptime config: anytype) type {
             }
         }
         fn limitsOf(options: anytype) r.Limits {
-            const explicit: ?r.Limits = if (@hasField(@TypeOf(options), "limits")) execution.option(?r.Limits, options.limits) else null;
-            return explicit orelse config.limits;
+            return execution.directLimits(options, config.limits);
         }
         fn effectiveOf(options: anytype) execution.Effective {
             const override: execution.Policy = if (config.runtime_policy and @hasField(@TypeOf(options), "policy")) execution.option(execution.Policy, options.policy) else .{};
@@ -71,7 +70,7 @@ pub fn API(comptime config: anytype) type {
             const effective = effectiveOf(options);
             if (config.runtime_policy) try execution.validate(effective);
             var report: Result(partial) = .{ .outcome = .success };
-            const hook = hookOf(options, effective);
+            const hook = execution.directCancellation(options);
             if (hook) |cancel| if (cancel.requested()) {
                 report.outcome = .{ .failure = error.Cancelled };
                 return report;
@@ -95,7 +94,7 @@ pub fn API(comptime config: anytype) type {
         fn run(comptime partial: bool, doc: *const syntax.Document, storage: *pools.Context, resolved: lower.InterpretationFor(partial), limits: r.Limits, hook: ?r.Cancellation) r.Error!lower.Output(caps, partial) {
             _ = try r.index(doc.source.len);
             _ = try r.index(doc.order.len);
-            const reader = if (doc.source_info.encoding == .ascii and caps.utf8) .utf8 else doc.source_info.encoding;
+            const reader = @import("names.zig").reader(caps, doc.source_info.encoding);
             return switch (reader) {
                 inline else => |actual| if (comptime caps.allows(actual)) blk: {
                     var builder: lower.BuilderWith(actual, caps, partial, true) = .{

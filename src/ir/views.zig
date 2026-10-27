@@ -30,7 +30,7 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                 if (self.resolved.port_key) |key_name| return .{ .port = key_name };
                 return .{ .written = .{
                     .raw = self.graph.text(self.graph.attributes[self.resolved.attribute.?].key),
-                    .actual = if (self.graph.source_info.encoding == .ascii and caps.utf8) .utf8 else self.graph.source_info.encoding,
+                    .actual = names.reader(caps, self.graph.source_info.encoding),
                 } };
             }
             pub fn value(self: Attribute) Graph.ValueView {
@@ -49,7 +49,7 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
             pub fn name(self: Node) names.Formatted(caps) {
                 return .{
                     .raw = self.graph.text(self.graph.nodes[@backingInt(self.id)].name),
-                    .actual = if (self.graph.source_info.encoding == .ascii and caps.utf8) .utf8 else self.graph.source_info.encoding,
+                    .actual = names.reader(caps, self.graph.source_info.encoding),
                 };
             }
             pub fn attribute(self: Node, key: []const u8) ?Attribute {

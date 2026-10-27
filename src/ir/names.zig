@@ -5,6 +5,12 @@ const parsed_name = @import("../dot/parsed_name.zig");
 const resources = @import("resources.zig");
 const Error = resources.Error;
 
+/// ASCII-admitted text is byte-compatible with the UTF-8 reader. Every IR
+/// reader selection goes through here; an unmapped `.ascii` is unreachable
+/// in a UTF-8-only profile.
+pub inline fn reader(comptime caps: encoding.Capabilities, actual: encoding.Actual) encoding.Actual {
+    return if (actual == .ascii and caps.utf8) .utf8 else actual;
+}
 pub fn hash(comptime actual: encoding.Actual, raw: []const u8, work: *resources.Work) Error!u64 {
     try work.spend(raw.len);
     const result = try @as(parsed_name.ForEncoding(actual), .{ .raw = raw }).hash();

@@ -195,7 +195,47 @@ test "partial edge qualification follows child execution order and shared chain 
         if (edge.edge.from == (try ir.findNode("b")).known.? and edge.edge.to == (try ir.findNode("c")).known.?) {
             try formatted("old", edge.attribute("color").unknown.retained.?);
             try formatted("new", edge.attribute("label").known.?);
-        } else try formatted("blue", edge.attribute("color").known.?);
+        } else {
+            const color = edge.attribute("color");
+            // The partial-only dependency summary is conservative: a later
+            // set connection can consume membership introduced by a gap.
+            try formatted("blue", if (color == .known) color.known.? else color.unknown.retained.?);
+        }
+    }
+}
+
+test "earlier gaps cannot certify a strict winner consumed by a later set endpoint" {
+    for ([_][]const u8{
+        "strict digraph { subgraph s { @@ }; a->b[color=red]; subgraph s {}->b[color=blue] }",
+        "strict digraph { @@; a->b[color=red]; subgraph s {}->b[color=blue] }",
+        "strict digraph { {@@}->{a->b[color=red]}[color=blue] }",
+        "strict digraph { subgraph s {subgraph t {@@}}; a->b[color=red]; subgraph s {}->b[color=blue] }",
+        "strict digraph { subgraph s {@@}->c; a->b[color=red]; subgraph s {}->b[color=blue] }",
+        "strict digraph { subgraph s {@@}; a->b[color=red]; a->subgraph s {}[color=blue] }",
+        "strict graph { subgraph s {@@}; a--b[color=red]; subgraph s {}--b[color=blue] }",
+    }) |source| {
+        var result = try dot.ir.parsePartial(a, source, .{});
+        defer result.deinit();
+        const ir = result.ir().?;
+        const from = (try ir.findNode("a")).known.?;
+        const to = (try ir.findNode("b")).known.?;
+        var folded = try ir.materialize(.{});
+        defer folded.deinit();
+        var stream = try ir.edgeIterator(.{});
+        defer stream.deinit();
+        var saw_pair = false;
+        while (try stream.next()) |edge| {
+            if (edge.edge.from != from or edge.edge.to != to) continue;
+            saw_pair = true;
+            const answer = try edge.attribute("color");
+            try expect(answer == .unknown);
+            try formatted("red", answer.unknown.retained.?);
+            var entries = folded.edgeIterator();
+            while (entries.next()) |entry| if (entry.edge.from == from and entry.edge.to == to) {
+                try equal(answer, entry.attribute("color"));
+            };
+        }
+        try expect(saw_pair);
     }
 }
 

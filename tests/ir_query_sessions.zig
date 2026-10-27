@@ -390,14 +390,18 @@ fn referenceAdvance(s: anytype, graph: anytype, budget: u32, stop: ?*Stop, inter
     };
     var used: u32 = 0;
     while (used < budget and s.outcome == null) {
+        if (s.total_work == s.max_work) {
+            if (stop) |hook| if (used != 0 and hook.token().requested()) {
+                s.cancel();
+                break;
+            };
+            s.outcome = .{ .failure = error.WorkLimit };
+            break;
+        }
         if (stop) |hook| if (used != 0 and used % interval == 0 and hook.token().requested()) {
             s.cancel();
             break;
         };
-        if (s.total_work == s.max_work) {
-            s.outcome = .{ .failure = error.WorkLimit };
-            break;
-        }
         used += 1;
         s.total_work += 1;
         referenceStep(s, graph);

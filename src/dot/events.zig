@@ -185,6 +185,9 @@ pub fn assertSink(comptime Sink: type) void {
     comptime {
         checkMethod(Sink, "onEvent", Event, Action, true);
         checkMethod(Sink, "onAbort", Abort, void, false);
+        for (.{ "wants_early_events", "wants_token_previews" }) |name| {
+            if (@hasDecl(Sink, name)) @compileError(name ++ " was removed; use pub const observations: dot.events.Observations");
+        }
         for (.{ "wants_begin_statement", "recover_statements" }) |name| {
             if (@hasDecl(Sink, name) and @TypeOf(@field(Sink, name)) != bool)
                 @compileError(name ++ " must be a comptime bool");

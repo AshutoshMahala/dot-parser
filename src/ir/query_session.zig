@@ -199,9 +199,9 @@ pub fn Bound(comptime Graph: type, comptime kind: Kind, comptime config: anytype
             return .{ .work_used = used, .total_work = self.total_work, .outcome = self.outcome };
         }
         inline fn poll(self: *Self) bool {
-            if (has_cancellation) if (self.cancellation) |c| if (c.requested()) {
-                self.cancel();
-                return false;
+            if (has_cancellation) if (self.cancellation) |c| {
+                if (c.requested()) self.cancel();
+                return self.outcome == null;
             };
             return true;
         }
@@ -336,9 +336,9 @@ pub fn Bound(comptime Graph: type, comptime kind: Kind, comptime config: anytype
             }
             self.total_work = before + used;
             if (self.outcome == null and used < budget and used == grant) {
-                // Match the ordinary credit gate: cancellation precedes a
-                // lifetime shortfall when a poll is due, never becomes absence.
-                if (used == 0 or !cancellable or !polling.due(interval) or self.poll()) self.outcome = .{ .failure = error.WorkLimit };
+                // Poll at a lifetime stop as well as at interval boundaries,
+                // matching lowering/edge sessions. A budget pause adds no poll.
+                if (used == 0 or !cancellable or self.poll()) self.outcome = .{ .failure = error.WorkLimit };
             }
             return self.progress(used);
         }

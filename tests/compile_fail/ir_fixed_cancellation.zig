@@ -5,7 +5,7 @@ export fn rejected(doc: *const dot.Document, bytes: [*]u8, len: usize) void {
         .graph = .{ .bytes = bytes[0..len], .capacities = .{} },
         .scratch = .{ .bytes = &.{}, .graph_capacities = .{}, .capacities = .{} },
     };
-    _ = IR.lowerCompleteIn(doc, memory, .{
+    _ = IR.loweringSessionIn(doc, memory, .{
         .interpretation = dot.Profile(.{}).interpretation(doc, .{}),
         .cancellation = @as(?dot.ir.Cancellation, null),
     });

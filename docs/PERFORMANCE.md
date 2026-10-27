@@ -974,8 +974,72 @@ grants or weaken cancellation to improve these numbers.
 Compared fixtures retain identical work-credit, cancellation-poll, callback
 and session-size totals. `Name` remains 8 bytes, matching `Span`; retained
 document pools are unchanged, and the unification adds no allocations or
-source copies. Tests also check that enabling any observation subset adds
-exactly its delivered callback credits, with no additional lexical work.
+source copies. Tests check no observations, each individual early-observation
+kind, previews alone and all observations across both scanners and several
+budgets: these selections add exactly their delivered callback credits, with
+no additional lexical work. This is not exhaustive coverage of all subsets.
+
+### IR/name review fixes (2026-10-26)
+
+Compared with `aa04bb3`, Apple M4 Pro, Zig 0.17.0, with all compilation/tests
+finished before sequential timings. Three process runs alternate before/after
+order; numbers below are medians of run medians. The node-session harness uses
+200,000 `a;` statements, fixed pools, 22 warmup parses and nine measured parses.
+It measures parsing only, not source construction or allocation.
+
+| Ordinary node session | Before, ms | After, ms |
+| --- | ---: | ---: |
+| Fast | 2.15 | 2.21 |
+| Safe | 2.54 | 2.52 |
+| Small | 4.52 | 4.60 |
+
+The broader scalar/block metering harness covers dense statements, long ASCII
+and long Unicode values, plain execution, budgets 1/64/4096, cancellation and
+runtime policies. Its DOT geometric-mean time changes were -0.5% Fast, -0.6%
+Safe and +0.7% Small. These aggregates do not certify every case: short scalar
+string timings are particularly unstable. For example, Small's plain long-ASCII
+run medians ranged from 0.156–0.202 ms before and 0.143–0.205 ms after; choosing
+just the middle of three samples suggests a slowdown despite those overlapping
+ranges. The longer-warmed investigation likewise showed substantial variation.
+
+The proposed conversion-at-storage change was **not retained**: it slowed the
+ordinary Small node session. Speed builds instead inline the existing conversion;
+Small lets the optimizer share it. Parser/document state sizes and pools stay
+unchanged. No credits are combined and no polling interval is enlarged.
+
+A separate Fast linking probe reproduces the checked-identifier interaction:
+the same parser becomes slower merely when a standalone checked helper is
+linked. The helper runs outside the timed parsing loop. The comparison below
+uses an intermediate build with the outlined checked scanner versus the final
+inlined helper, 50,000-node/edge fixtures and three process runs:
+
+| Linked helper | Nodes before → after, ms | Edges before → after, ms |
+| --- | ---: | ---: |
+| None | 0.600 → 0.600 | 2.354 → 2.299 |
+| `document.hashIdentifier` | 0.733 → 0.604 | 2.984 → 2.399 |
+| `identifier.check` + `fromName` | 0.735 → 0.604 | 2.840 → 2.287 |
+| `document.decodeIdentifier` | 0.731 → 0.605 | 2.958 → 2.408 |
+
+The checked helper now inlines its scanner body without changing the parser's
+scanner or skipping validation. This removes the reproduced outlining penalty;
+it is not a promise that linking arbitrary helpers never affects code layout.
+
+Direct IR lowering was within -1.7% to +1.2% in Fast for five of six fixtures;
+the symbolic-product fixture improved 6.7%. Safe's direct cases were within
+-1.0% to +0.5%; Small's ranged from -10.0% to +2.7%. Remaining opt-in costs are
+not hidden by those results: Fast materialization's strict-overlap one-credit
+case took 3.144 → 3.445 ms, and some cancellable one-credit cases were about
+13% slower. Topology-only reopened-subgraph materialization took 0.179 →
+0.197 ms. Broader IR/session tuning remains separate work; this is not a blanket
+zero-regression claim for every configuration.
+
+Successful compared fixtures have identical work totals, poll counts, results
+and measured retained/peak **allocator-requested bytes**. Native root-name
+validation adds required bounded work when that previously unchecked name is
+present. Complete IR stays 472 bytes; partial IR grows 496 → 504 bytes for its
+conservative set-dependency summary. Attribute-enabled materialization sessions
+grow 888 → 896 bytes by reusing the logical-name reader; topology-only sessions
+stay 448 bytes. These are inline state sizes, not extra heap pools or process RSS.
 
 ## Standalone strings (Unreleased)
 

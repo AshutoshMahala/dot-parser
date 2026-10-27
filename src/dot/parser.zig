@@ -1337,7 +1337,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
 
         fn schedule(self: *Self, action: Action, token: lex.Token) Done {
             if (metered or cancellable) {
-                if (preview_notifications and @backingInt(action) >= @backingInt(Action.preview_pause)) self.work.replay = false;
+                if (preview_notifications and @backingInt(action) >= @backingInt(Action.preview_pause)) std.debug.assert(!self.work.replay);
                 self.work.action = action;
                 self.work.phase = .dispatch;
                 return null;

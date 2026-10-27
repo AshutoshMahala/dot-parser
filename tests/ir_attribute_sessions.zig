@@ -111,6 +111,8 @@ test "attribute sessions preserve partial candidates and port orientation uncert
         "digraph { node[color=red]; a[color=blue]; bad->; b[label=ok]; a->b; }",
         "strict graph { a:p--b:q; bad-- ; b:r--a:s[color=green]; c--d; }",
         "strict digraph { a->b[color=red]; bad->; a->b[label=ok]; c->d;",
+        "strict digraph { subgraph s { @@ }; a->b[color=red]; subgraph s {} -> b[color=blue] }",
+        "strict graph { @@; a:p--b:q; subgraph s {}--b:r }",
     }) |source| {
         var result = try dot.ir.parsePartial(a, source, .{});
         defer result.deinit();

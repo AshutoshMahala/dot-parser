@@ -227,8 +227,8 @@ pub fn Lowering(comptime config: Config) type {
                     if (!std.mem.eql(u8, field, "interpretation") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation")) @compileError("unknown IR lowering option: " ++ field);
                 }
             }
-            const limits: Limits = if (@hasField(@TypeOf(options), "limits")) options.limits else config.limits;
-            const cancellation: ?Cancellation = if (@hasField(@TypeOf(options), "cancellation")) options.cancellation else null;
+            const limits = execution.directLimits(options, config.limits);
+            const cancellation = execution.directCancellation(options);
             const interpretation = options.interpretation;
             const resolved: @import("ir/lower.zig").InterpretationFor(true) = .{
                 .kind = interpretation.effectiveKind(document.kind),
@@ -248,8 +248,8 @@ pub fn Lowering(comptime config: Config) type {
                     if (!std.mem.eql(u8, field, "interpretation") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation")) @compileError("unknown IR lowering option: " ++ field);
                 }
             }
-            const limits: Limits = if (@hasField(@TypeOf(options), "limits")) options.limits else config.limits;
-            const cancellation: ?Cancellation = if (@hasField(@TypeOf(options), "cancellation")) options.cancellation else null;
+            const limits = execution.directLimits(options, config.limits);
+            const cancellation = execution.directCancellation(options);
             if (!document.scopeComplete()) return error.IncompleteDocument;
             const interpretation = options.interpretation;
             const resolved: @import("ir/lower.zig").Interpretation = .{

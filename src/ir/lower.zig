@@ -30,7 +30,7 @@ pub inline fn runWith(comptime caps: encoding.Capabilities, comptime partial: bo
     if (!partial and !document.scopeComplete()) return error.IncompleteDocument;
     if (document.strict and (interpretation.kind == .generic or (partial and interpretation.kind == null))) return error.UnsupportedSemantics;
     // An ASCII-admitted Document is byte-compatible with the UTF-8 reader.
-    const reader = if (document.source_info.encoding == .ascii and caps.utf8) .utf8 else document.source_info.encoding;
+    const reader = names.reader(caps, document.source_info.encoding);
     return switch (reader) {
         inline else => |actual| if (comptime caps.allows(actual)) blk: {
             var builder: Builder(actual, caps, partial) = .{
@@ -173,6 +173,11 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             if (count > self.limits.max_scopes) return error.ScopeLimit;
             self.occurrences = try mem.allocate(t.Occurrence, self.a, count, "occurrences", false);
             self.bodies = try mem.allocate(t.Body, self.a, count, "bodies", false);
+            if (comptime encoding.Reader(actual).width != 1) if (self.doc.name) |name| {
+                // Root names are not interned, but their formatters have the
+                // same native-decoding precondition as every interned name.
+                _ = try names.hash(actual, try self.raw(name), &self.work);
+            };
             try mem.append(self.a, &self.scopes, .{ .parent = null, .name = self.doc.name, .first_occurrence = .root, .hash = 0 }, "scopes");
             self.occurrences[0] = .{ .scope = .root, .parent = null, .source = .{ .start = 0, .len = try r.index(self.doc.source.len) }, .membership = undefined };
             for (self.doc.subgraph_records, 1..) |record, occurrence| {
@@ -322,6 +327,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 .attributes = edge.attributes,
             };
             const connection_id: t.ConnectionId = @fromBackingInt(self.connection_count);
+            if (partial) self.publication.coverage_data.observeConnection(self.connection_count, self.connections[self.connection_count]);
             if (self.attribute_data.scopes.len != 0) {
                 const scope = @backingInt(self.occurrences[occurrence].scope);
                 self.attribute_data.connection_defaults[self.connection_count] = self.attribute_data.scopes[scope].edge;

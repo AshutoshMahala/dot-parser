@@ -102,6 +102,11 @@ Declare this on your consumer, using the **same** `onEvent`/`onAbort` interface:
 pub const observations = dot.events.Observations.early; // default .none
 ```
 
+The declaration must be `pub`: a private declaration is not visible to the
+parser's cross-module contract and behaves like an omitted selection. Removed public
+`wants_early_events` / `wants_token_previews` declarations are compile errors;
+there are no compatibility aliases.
+
 This exposes recognized names before a statement completes. For example,
 `graph { alpha [label="unfinished` delivers `identifier` for `alpha` and a
 `statement_head` of `.node`, but no `commit_node`. An editor can retain that
@@ -262,7 +267,8 @@ identifier, a consumer can skip that check without retaining a `Document`:
 },
 ```
 
-`fromName` accepts a parser-issued `dot.Name`, not arbitrary bytes or a `Span`.
+`fromName` accepts a `dot.Name` issued by parsing or `identifier.check`, not
+arbitrary bytes or a `Span`.
 Names have the same eight-byte layout as spans; `.span()` exposes coordinates
 for diagnostics and `.slice(source)` returns original spelling. Events use
 `Name` for `identifier.name`, document/subgraph names, node identifiers,
@@ -273,14 +279,33 @@ and previews remain spans and cannot accidentally enter this API.
 
 Keep the producing source unchanged and use its encoding. This is type safety
 against accidental misuse, not protection from deliberate forging or supplying
-another buffer. The handle certifies recognized syntax, not Unicode validity,
-statement acceptance, or node identity. For arbitrary spans, explicitly call
+another buffer. Zig struct literals and record helpers are not a security
+boundary: constructing a `Name` or `Parsed` manually does not validate it.
+An out-of-source range panics in every build mode; same-sized stale input or a
+wrong encoding cannot be detected from the handle. It represents complete
+identifier spelling, not Unicode validity, statement acceptance or node identity.
+For arbitrary spans, explicitly call
 `try identifier.check(source, span)` to obtain a checked `Name`, or use the
 existing checked byte helpers. For native input,
 select `identifier.ForEncoding(actual)` from the document-begin encoding
 (or `document_name.source_info` for an early header name).
 Those native helpers can reject malformed encoding: propagate `InvalidIdentifier`
 through a fallible callback instead of treating it as unreachable.
+
+When the encoding is selected at runtime, dispatch once on the source metadata:
+
+```zig
+fn nameHash(source: []const u8, name: dot.Name, actual: dot.InputEncoding) !u64 {
+    return switch (actual) {
+        inline else => |encoding| dot.identifier.ForEncoding(encoding)
+            .fromName(source, name).hash(),
+    };
+}
+```
+
+Use `begin_document.source_info.encoding` (or the early document-name metadata)
+for `actual`. `check` verifies a standalone identifier spelling; it does not
+establish the identifier's role or acceptance in the surrounding document.
 No event fields, parser storage or allocations are added; index memory belongs to the consumer.
 Hashing/comparison in callbacks is consumer work, not parser-session credits.
 

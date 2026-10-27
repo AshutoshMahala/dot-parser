@@ -237,7 +237,7 @@ pub fn findKey(comptime caps: encoding.Capabilities, graph: anytype, kind: Kind,
         const id = store.table.slots[at];
         const entry = store.keys.items[id];
         if (entry.kind != kind or entry.hash != hash) continue;
-        const reader = if (graph.source_info.encoding == .ascii and caps.utf8) .utf8 else graph.source_info.encoding;
+        const reader = names.reader(caps, graph.source_info.encoding);
         const matches = switch (reader) {
             inline else => |actual| if (comptime caps.allows(actual)) try names.matches(actual, graph.text(entry.name), key, work) else return error.UnsupportedEncoding,
         };

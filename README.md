@@ -23,6 +23,12 @@ The package has three independent modules:
   [attribute routing](docs/STRINGS.md#attribute-processing-in-dot-and-markup)
   integrates both hosts while keeping passthrough as the default.
 
+The optional **Unreleased** [`dot.ir` graph layer](docs/IR.md) resolves logical
+names, defaults and effective attributes above the parser. It keeps set
+connections symbolic until you explicitly stream or materialize edges, with
+partial snapshots, resumable operations and fixed-storage alternatives.
+Ordinary parsing does not run or allocate this layer.
+
 > **Status: experimental (0.x).** It works and is well tested, but names may
 > still change between versions. Breaking changes are listed in the
 > [changelog](CHANGELOG.md).

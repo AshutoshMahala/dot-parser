@@ -12,6 +12,9 @@ test "recognized names are distinct span-sized handles, never raw previews" {
     var result = dot.parseBorrowed(std.testing.allocator, input, dot.diagnostic.discard, .{});
     defer result.deinit(std.testing.allocator);
     const doc = &result.document.?;
+    const graph_name = doc.scope(.root).?.recognizedName().?;
+    try std.testing.expectEqualStrings("G", graph_name.slice(input));
+    try std.testing.expectEqual(@as(u64, 7), graph_name.endOffset());
     const attr = doc.attributes[0];
     try std.testing.expectEqualStrings("k", attr.keyName().slice(input));
     try std.testing.expectEqual(try dot.identifier.hash("a"), try dot.identifier.fromName(input, attr.valueName()).hash());
@@ -23,6 +26,24 @@ test "recognized names are distinct span-sized handles, never raw previews" {
     const scoped: dot.events.Edge = .{ .left = .{ .start = 0, .len = 1 }, .right = .{ .start = 2, .len = 1 }, .right_scope = 1, .operator = .directed, .operator_span = .{ .start = 1, .len = 2 } };
     try std.testing.expect(scoped.leftName() != null);
     try std.testing.expect(scoped.rightName() == null);
+}
+
+fn encodedNameHash(source: []const u8, name: dot.Name, actual: dot.InputEncoding) !u64 {
+    return switch (actual) {
+        inline else => |encoding| dot.identifier.ForEncoding(encoding).fromName(source, name).hash(),
+    };
+}
+
+test "runtime encoding dispatch uses name source metadata rather than the UTF8 default" {
+    const P = dot.Profile(.{ .source_encodings = &.{.utf16} });
+    const text = "graph G {a}";
+    var source: [text.len * 2]u8 = undefined;
+    for (text, 0..) |byte, i| std.mem.writeInt(u16, source[i * 2 ..][0..2], byte, .little);
+    var parsed = try P.parseBorrowed(std.testing.allocator, &source, dot.diagnostic.discard, .{ .encoding = .utf16le });
+    defer parsed.deinit(std.testing.allocator);
+    const doc = &parsed.document.?;
+    const name = doc.scope(.root).?.recognizedName().?;
+    try std.testing.expectEqual(try dot.identifier.hash("G"), try encodedNameHash(doc.source, name, doc.source_info.encoding));
 }
 
 test "logical name hashes and equality match decoding across operand boundaries" {

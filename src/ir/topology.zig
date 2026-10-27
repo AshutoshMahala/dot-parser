@@ -223,7 +223,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
                 const node = self.nodes[id];
                 if (node.hash != hash) continue;
                 const raw = self.text(node.name);
-                const reader = if (self.source_info.encoding == .ascii and caps.utf8) .utf8 else self.source_info.encoding;
+                const reader = names.reader(caps, self.source_info.encoding);
                 const equal = switch (reader) {
                     inline else => |actual| if (comptime caps.allows(actual)) try names.matches(actual, raw, value, &work) else return error.UnsupportedEncoding,
                 };
@@ -255,7 +255,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         pub fn nodeName(self: *const Self, id: NodeId) r.Error!names.Formatted(caps) {
             return .{
                 .raw = try self.nodeSpelling(id),
-                .actual = if (self.source_info.encoding == .ascii and caps.utf8) .utf8 else self.source_info.encoding,
+                .actual = names.reader(caps, self.source_info.encoding),
             };
         }
 
@@ -276,7 +276,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         pub fn writeNodeNameWith(self: *const Self, id: NodeId, writer: anytype, options: r.Options) !void {
             const raw = try self.nodeSpelling(id);
             var work = try r.Work.init(options.limits orelse self.limits, options.cancellation);
-            const reader = if (self.source_info.encoding == .ascii and caps.utf8) .utf8 else self.source_info.encoding;
+            const reader = names.reader(caps, self.source_info.encoding);
             switch (reader) {
                 inline else => |actual| if (comptime caps.allows(actual)) try names.write(actual, raw, writer, &work) else return error.UnsupportedEncoding,
             }

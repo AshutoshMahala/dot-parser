@@ -84,6 +84,7 @@ For typed names from parser events or retained document views, `fromName`
 skips the redundant syntax check:
 
 ```zig
+// Default UTF-8 profile; dispatch on source_info.encoding for native input.
 const first_name = document.nodeReference(document.nodes[0].reference).?.name();
 const second_name = document.nodeReference(document.nodes[1].reference).?.name();
 const first = dot.identifier.fromName(document.source, first_name);
@@ -96,7 +97,11 @@ const same = try first.eql(second);
 unfinished previews, do not type-check here. Keep the producing source alive,
 unchanged and in its original encoding. Deliberately forging a name or mixing
 buffers still violates the contract. Use `try identifier.check(source, span)`
-for a caller-supplied span. Syntax recognition does not certify Unicode validity.
+for a caller-supplied span; it verifies standalone spelling, not document context.
+Name binding checks bounds in all builds, but cannot detect same-sized stale
+input or a wrong encoding. Struct literals and record helpers trust their
+caller, rather than validating forged records. Syntax recognition does not
+certify Unicode validity.
 A `Parsed` value contains only a borrowed slice; it neither allocates nor caches
 a decoded value or hash. The checked functions above are unchanged.
 You can retain compact `Name` handles and bind these views only when needed.

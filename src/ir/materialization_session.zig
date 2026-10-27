@@ -221,9 +221,9 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
             return .{ .work_used = used, .total_work = self.total_work, .pairs_visited = self.visited, .edges_created = if (self.taken) self.target else @intCast(self.stored.items.len), .outcome = self.outcome };
         }
         inline fn poll(self: *Self) bool {
-            if (has_cancellation) if (self.cancellation) |c| if (c.requested()) {
-                self.cancel();
-                return false;
+            if (has_cancellation) if (self.cancellation) |c| {
+                if (c.requested()) self.cancel();
+                return self.outcome == null;
             };
             return true;
         }
@@ -444,7 +444,7 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                                 const wanted = std.hash.Wyhash.hash(0, name) ^ @as(u64, @backingInt(attrs.Kind.edge));
                                 if (key.hash == wanted) {
                                     self.port_index = i;
-                                    self.port_match = .{ .raw = self.graph.text(key.name), .actual = self.graph.source_info.encoding };
+                                    self.port_match = .{ .name = .{ .raw = self.graph.text(key.name), .actual = @import("names.zig").reader(caps, self.graph.source_info.encoding) } };
                                     continue :machine self.successor(single, .port_name);
                                 }
                             };
@@ -452,7 +452,7 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                         } else unreachable,
                         .port_name => if (attributes) {
                             const name: []const u8 = if (self.port_index == 0) "tailport" else "headport";
-                            if (self.port_match.step(name)) |matches| {
+                            if (try self.port_match.step(name)) |matches| {
                                 if (matches) self.maps.port_keys.ids[self.port_index] = self.catalog_index;
                                 self.catalog_index += 1;
                                 continue :machine self.successor(single, .port_catalog);
@@ -856,96 +856,21 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
     };
 }
 
-/// Collision-safe comparison to the two ASCII port keys. Trusted identifier
-/// spelling, including HTML operands, empty operands and arbitrarily long glue.
-/// A step inspects one code unit; no complete-name decoding hides in a credit.
+/// Collision-safe comparison to the two ASCII port keys, reusing the session
+/// logical-name reader. A step still inspects at most one code unit/scalar.
 fn AsciiName(comptime caps: encoding.Capabilities) type {
     return struct {
-        raw: []const u8 = &.{},
-        actual: encoding.Actual = .utf8,
-        offset: u32 = 0,
+        name: @import("lowering_primitives.zig").Name(caps) = .{},
         matched: u32 = 0,
-        state: enum { initial, bare, quote, html, gap, escape, cr, slash, line, block, star } = .initial,
-        fn step(self: *@This(), wanted: []const u8) ?bool {
-            if (self.offset == self.raw.len) return self.matched == wanted.len;
-            switch (self.actual) {
-                inline else => |actual| if (comptime caps.allows(actual)) {
-                    const E = encoding.Reader(actual);
-                    const unit = E.unit(self.raw, self.offset);
-                    self.offset += E.width;
-                    if (self.state == .cr) {
-                        self.state = .quote;
-                        if (unit == '\n') return null;
-                    }
-                    switch (self.state) {
-                        .initial => switch (unit) {
-                            '"' => {
-                                self.state = .quote;
-                                return null;
-                            },
-                            '<' => {
-                                self.state = .html;
-                                return null;
-                            },
-                            else => self.state = .bare,
-                        },
-                        .bare => {},
-                        .quote => switch (unit) {
-                            '"' => {
-                                self.state = .gap;
-                                return null;
-                            },
-                            '\\' => {
-                                self.state = .escape;
-                                return null;
-                            },
-                            else => {},
-                        },
-                        .html => if (unit == '>') {
-                            self.state = .gap;
-                            return null;
-                        },
-                        .escape => {
-                            self.state = .quote;
-                            if (unit == '\r') {
-                                self.state = .cr;
-                                return null;
-                            }
-                            if (unit == '\n') return null;
-                            return false;
-                        },
-                        .gap => {
-                            switch (unit) {
-                                '"' => self.state = .quote,
-                                '<' => self.state = .html,
-                                '/' => self.state = .slash,
-                                '#' => self.state = .line,
-                                else => {},
-                            }
-                            return null;
-                        },
-                        .slash => {
-                            self.state = if (unit == '/') .line else .block;
-                            return null;
-                        },
-                        .line => {
-                            if (unit == '\r' or unit == '\n') self.state = .gap;
-                            return null;
-                        },
-                        .block => {
-                            if (unit == '*') self.state = .star;
-                            return null;
-                        },
-                        .star => {
-                            self.state = if (unit == '/') .gap else if (unit == '*') .star else .block;
-                            return null;
-                        },
-                        .cr => unreachable,
-                    }
+        fn step(self: *@This(), wanted: []const u8) r.Error!?bool {
+            switch (try self.name.step()) {
+                .pending => return null,
+                .end => return self.matched == wanted.len,
+                .byte => |unit| {
                     if (self.matched == wanted.len or unit != wanted[self.matched]) return false;
                     self.matched += 1;
                     return null;
-                } else unreachable,
+                },
             }
         }
     };

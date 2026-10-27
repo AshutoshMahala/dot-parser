@@ -42,7 +42,7 @@ pub fn Key(comptime caps: encoding.Capabilities) type {
                     if (id == a.none) return true;
                     const key = store.keys.items[id];
                     if (key.hash == self.hash and key.kind == self.kind) {
-                        self.name = .{ .raw = graph.text(key.name), .actual = if (graph.source_info.encoding == .ascii and caps.utf8) .utf8 else graph.source_info.encoding };
+                        self.name = .{ .raw = graph.text(key.name), .actual = @import("names.zig").reader(caps, graph.source_info.encoding) };
                         self.offset = 0;
                         self.phase = .compare;
                     } else self.slot = (self.slot + 1) & (store.table.slots.len - 1);

@@ -14,8 +14,10 @@ the implemented contracts.
   bulk edge updates and endpoint-port values once by default, with a topology-only
   option. Opt-in partial IR retains qualified queries, iteration and materialized
   output; Document lowering, materialization and edge streaming have resumable
-  sessions. Label-port existence/binding, event lowering, fixed storage and
-  resumable queries remain.
+  sessions, including symbolic and attribute queries. Fixed lowering and fixed
+  streaming/attribute scratch are implemented; caller-owned materialization
+  output, label-port existence/binding, event lowering and the final performance
+  pass remain. Known cgraph differences are listed in [IR semantics](IR.md#default-and-update-rules).
 - **Feeding input in pieces.** Today the whole input must be in memory before
   parsing starts.
 - **Validation in small steps**, and validation that can be cancelled.
@@ -40,9 +42,9 @@ other's rules.
   checked is the checker's `mode`: `.graphviz` is now the default,
   supplying tag and per-element attribute vocabulary checks. `.structural`
   remains available explicitly for custom vocabulary and byte-exact tag matching.
-  `extended` remains planned. Graphviz child/content rules, attribute values and
-  references remain unfinished, as does automatic selection of Graphviz label
-  contexts. For example, an HTML-like port `n:<p>` has the value
+  `extended` remains planned. Unreleased Graphviz child/content rules, local
+  attribute values and references are implemented. Automatic selection of label
+  contexts remains unfinished. For example, an HTML-like port `n:<p>` has the value
   `p`, not an opening tag.
 - **More optional rules.** Name rules and reference lists stay separate,
   independent choices. More lists, and a way to supply your own, are planned.
@@ -53,8 +55,10 @@ other's rules.
   needs its own design.
 - **String integration** for checking values inside markup. The unreleased
   [standalone string processor](STRINGS.md) supplies equality, membership and
-  custom checks, with resumable metering and cancellation. Host adapters, source maps and attribute-specific selection
-  are still needed; callers currently select contents and invoke it explicitly.
+  custom checks, with resumable metering and cancellation. Unreleased logical
+  readers, original-source mapping and attribute routing now integrate both
+  hosts. Shared-budget composition, no-tree string execution and host-aware
+  logical fixes remain.
 - **More of a partial markup document.** Unreleased DOT retention keeps later
   recovered statements with gaps; markup still retains its prefix. Gap-aware
   markup trees and pausing/resuming label checks remain unfinished.

@@ -29,6 +29,10 @@ pub fn For(comptime Graph: type, comptime Core: type, comptime caps: encoding.Ca
                     };
                     // A later statement cannot update a non-strict occurrence.
                     if (!graph._data.strict) return null;
+                    // An earlier gap can add members consumed by a later set
+                    // endpoint, which can then overwrite this explicit value.
+                    if (graph._coverage.last_set_connection) |last|
+                        if (last > @backingInt(connection)) return all;
                     // A missing first contribution can reverse an undirected
                     // edge. Do not certify tail/head values in that orientation.
                     if (edge.operator == .undirected and edge.from != edge.to) {

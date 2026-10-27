@@ -76,6 +76,8 @@ Input must be an accepted, complete parser-produced Document, with its normal
 invariants intact. Lowering checks completeness but does not repeat syntax or
 policy validation. It rejects partial Documents with `IncompleteDocument`.
 Optional child-processor validation is the caller's acceptance decision.
+Manually constructing or mutating Document records is outside this contract;
+defensive range/handle checks are not full Document revalidation.
 
 ## Partial snapshots for editors
 
@@ -138,11 +140,15 @@ span and EOF can have a zero-length span. Retained positive node/edge/member
 witnesses are known. Negative answers and defaults conservatively depend on all
 gaps: node identity is graph-wide, scopes can reopen, and missing input can
 introduce catalog keys or earlier object creation. Explicit assignments after
-the last semantic gap can still be known. Precomputed boundary/suffix indexes
+the last semantic gap can still be known, subject to the strict-edge membership
+dependency described below. Precomputed boundary/suffix indexes
 avoid per-query history or gap scans; bounded attribute queries charge those
 index probes against the same allowance as the attribute lookup. Coverage does not certify validity or
 inner-markup processing. Strict/generic and ambiguous strict interpretation
 remain unsupported rather than guessed.
+For `parsePartial`, unsupported strict interpretation leaves `ir()` null while
+preserving `checking`; it does not discard the DOT diagnostics. Explicit
+`lowerPartial` still reports `UnsupportedSemantics` to its caller.
 
 All iterator exhaustion means **all retained entries**, not all possible entries.
 Mention iteration is O(1) to initialize and per record, with no additional index.
@@ -229,7 +235,13 @@ occurrence identity remain known. Self-loop orientation is unambiguous.
 structured port views. A candidate belongs to retained `from()` / `to()`, not a
 guessed repaired orientation. Strict undirected ports remain uncertain across
 gaps even when a later port assignment is retained. Other strict explicit
-winners after the last semantic gap can be known. A non-strict edge's own
+winners after the last semantic gap can be known only when no later retained
+set-endpoint connection could consume hidden membership. For example,
+`subgraph s { broken -> ; }; a->b[color=red]; subgraph s {}->b[color=blue]`
+retains red, but filling the gap with `a` makes blue win. The current O(1)
+partial-only dependency summary conservatively qualifies a winner as unknown
+when any later set connection exists; it does not scan every later endpoint
+to prove that a particular pair is unaffected. A non-strict edge's own
 explicit assignments/suffixes remain known because other statements cannot
 update that occurrence. Defaults and absence remain conservative across gaps.
 
@@ -519,7 +531,19 @@ manufacture views or change their fields.
   from iteration/materialization, not just a node pair, so it cannot silently
   choose one parallel occurrence's attributes.
 
-These rules have focused comparisons against Graphviz 16.0.0's cgraph behavior.
+These rules have focused comparisons against Graphviz, not full cgraph parity.
+The following differences were confirmed against installed Graphviz **16.1.0**
+and remain compatibility decisions, not silent changes to this IR:
+
+| Case | Current IR | Graphviz 16.1.0 |
+| --- | --- | --- |
+| Repeated non-strict edges with the same `key` | Separate occurrences; `key` is an ordinary attribute | A repeated explicit key can identify and update one edge |
+| Undirected set products after earlier node declarations | First-mention endpoint order determines stored orientation | Node creation order can choose the opposite stored orientation and port side |
+| New grandchild of a reopened subgraph | Inherits its parent's stored graph-attribute snapshot | Can see a later ancestor dictionary value despite the parent's older value |
+| `<a>` versus `a` / `"a"` as a node name | Merge by logical contents | HTML-like and text names can be separate nodes |
+
+Spelling, contributions and provenance remain retained in the IR. Consumers
+requiring these exact cgraph behaviors should not assume compatibility yet.
 
 ### Endpoint ports
 
@@ -772,11 +796,16 @@ Lowering, streaming and materialization use the supplied allocator. Name access,
 symbolic connections; membership uses per-node postings and shared intervals.
 This is not a prebuilt adjacency index. Materialization needs memory
 proportional to its output, plus deduplication scratch for strict graphs.
+`scopeMembership` currently scans occurrence records; asking for every scope's
+membership can therefore be quadratic. No membership cache is implied.
 
 Effective node/graph values use immutable balanced maps referencing written
 attributes. Creation snapshots share map branches; there is no full default-table
 copy per node or descendant scope. Updating a key retains O(log K) map cells
-for K distinct keys in that map, plus bounded rotation cells. Reopening a scope
+for K distinct keys in that map, plus bounded rotation cells. Repeated updates
+can leave intermediate cells retained even when no final
+map references them; a wide statement can allocate O(K log K) cells. The
+`max_attribute_states` limit applies to those cells too. Reopening a scope
 after its parent's defaults change reapplies that scope's local overrides.
 Attribute-free input allocates no attribute-state storage. On the measured
 64-bit build the node record remains 24 bytes: its state handle uses existing
@@ -787,8 +816,11 @@ Non-strict edge queries inspect their own connection's list and creation map;
 strict queries scan symbolic connections and membership, retaining no expanded
 pairs. All probes, comparisons and map/traversal steps are work-limited.
 Repeated per-edge queries can therefore cost edges × connections: this is
-**not** a bulk attribute-export index. Default `materialize` supplies the
-forward-pass path described above. Its explicit-winner maps use
+**not** a bulk attribute-export index. Compact strict-undirected port resolution can also
+repeat first-contribution searches, reaching O(C²) connection work for a
+single query with C connections, before membership/name costs. It can exhaust
+`max_work` even on a modest output; use folded materialization for bulk access.
+Default `materialize` supplies the forward-pass path described above. Its explicit-winner maps use
 balanced trees: updates/lookups are O(log K) for K explicit keys on that edge,
 in addition to pair/index work. Default lookup uses the shared immutable maps.
 The operation still visits every contributed pair, including duplicates; output
@@ -1204,6 +1236,11 @@ There is no mid-session policy replacement. Direct `lowerComplete`/`lowerPartial
 keep their existing throughput-specialized driver and explicit limits/cancellation
 options, even on a profile that enables metered sessions. Existing materialization
 sessions remain explicitly selected through their own API below.
+The fixed direct calls `lowerCompleteIn` / `lowerPartialIn` follow the same
+rule: an explicitly supplied cancellation hook is honored regardless of the
+session policy. Only sessions gate that hook through `.execution.cancellation`.
+Direct lowering accepts typed, anonymous, optional and null limits; omission
+or null uses this IR profile's limits, not necessarily the library defaults.
 
 `LoweringSession` and `PartialLoweringSession` expose `advance(u32)`, `run()`,
 `cancel()`, `peakBytes()`, `takeResult()` and `deinit()`. The lifecycle matches
@@ -1297,6 +1334,11 @@ null means still active. `run().work_used` is its final advance's count;
 not published edges or final attributes. Repeated calls after termination do
 no work and preserve the outcome; explicit cancellation does not erase a prior
 resource error or success. `advance(0)` polls cancellation without semantic work.
+At an active session's lifetime work-limit boundary, cancellation is polled
+before reporting `WorkLimit` (the entry poll suffices when no work was done).
+A hook that calls `session.cancel()` and returns false still cancels: the
+explicit terminal state cannot be overwritten by a step or successful result.
+An ordinary budget pause adds no end-of-grant cancellation poll.
 
 ### Session work units and limits
 

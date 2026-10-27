@@ -311,6 +311,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "fixed_parse_override", .message = "tests/compile_fail/fixed_parse_override.zig:3:41: error: no field named 'policy' in struct /?/" },
         .{ .name = "unmetered_advance", .message = "error: metering is disabled; use run()" },
         .{ .name = "events_observations_type", .message = "error: observations must be dot.events.Observations" },
+        .{ .name = "events_legacy_early", .message = "wants_early_events was removed; use pub const observations: dot.events.Observations" },
+        .{ .name = "events_legacy_preview", .message = "wants_token_previews was removed; use pub const observations: dot.events.Observations" },
         .{ .name = "identifier_span", .message = "expected type 'dot.name.Name', found 'common.location.Span'" },
         .{ .name = "processor_fixed_override", .message = "tests/compile_fail/processor_fixed_override.zig:4:35: error: no field named 'policy' in struct /?/" },
         .{ .name = "processor_invalid_binding", .message = "error: configured processor profile must expose Policies" },

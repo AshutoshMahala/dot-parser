@@ -103,10 +103,15 @@ pub fn parsePartial(allocator: std.mem.Allocator, source: []const u8, options: O
         else => return result,
     };
     const document = &checked.document.?;
-    result._graph = try IR.lowerPartial(allocator, document, .{
+    result._graph = IR.lowerPartial(allocator, document, .{
         .interpretation = Dot.interpretation(document, .{}),
         .limits = options.lowering.limits orelse ir_api.Limits{},
         .cancellation = options.lowering.cancellation,
-    });
+    }) catch |err| switch (err) {
+        // Preserve checking when retained strict input has no supported
+        // interpretation. Deliberate resource/cancellation stops remain errors.
+        error.UnsupportedSemantics => return result,
+        else => return err,
+    };
     return result;
 }

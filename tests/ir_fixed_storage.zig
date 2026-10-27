@@ -52,6 +52,7 @@ fn check(comptime partial: bool, source: []const u8) !void {
     if (partial) {
         try compare(expected._data, direct.graph.?._data);
         try equal(expected._coverage.entries.items, direct.graph.?._coverage.entries.items);
+        try equal(expected._coverage.last_set_connection, direct.graph.?._coverage.last_set_connection);
     } else try compare(expected, direct.graph.?);
     try equal(expected.capacities(), direct.graph.?.capacities());
     try equal(memory.bound.graph.bytes.len, direct.graph.?.retainedBytes());
@@ -85,6 +86,7 @@ fn check(comptime partial: bool, source: []const u8) !void {
         if (partial) {
             try compare(expected._data, actual._data);
             try equal(expected._coverage.entries.items, actual._coverage.entries.items);
+            try equal(expected._coverage.last_set_connection, actual._coverage.last_set_connection);
         } else try compare(expected, actual);
         try std.testing.expectError(error.AlreadyTaken, operation.takeResult());
         operation.cancel();
@@ -119,6 +121,7 @@ test "fixed IR exact-fit storage matches growable semantics and bounded sessions
         "digraph {a;subgraph s{b;c->;d}",
         "digraph {{a}->{b;subgraph s{c}}->;d->e;",
         "digraph {a;x[label=\"unfinished",
+        "strict digraph { subgraph s { @@ }; a->b[color=red]; subgraph s {} -> b[color=blue] }",
     }) |source| try check(true, source);
 }
 

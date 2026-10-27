@@ -38,6 +38,18 @@ pub fn validate(value: Effective) Error!void {
     if (value.cancellation_interval == 0) return error.InvalidCancellationInterval;
 }
 
+/// Direct lowering takes explicit options independently of session policy.
+/// Share normalization across allocator-backed and caller-storage entry points.
+pub fn directLimits(options: anytype, fallback: @import("resources.zig").Limits) @import("resources.zig").Limits {
+    const Limits = @import("resources.zig").Limits;
+    return (if (@hasField(@TypeOf(options), "limits")) option(?Limits, options.limits) else null) orelse fallback;
+}
+pub fn directCancellation(options: anytype) ?@import("resources.zig").Cancellation {
+    if (!@hasField(@TypeOf(options), "cancellation")) return null;
+    if (@FieldType(@TypeOf(options), "cancellation") == void) return null;
+    return option(?@import("resources.zig").Cancellation, options.cancellation);
+}
+
 /// Anonymous options retain field checking through nested policy/limit structs.
 pub fn option(comptime T: type, value: anytype) T {
     if (@TypeOf(value) == T) return value;

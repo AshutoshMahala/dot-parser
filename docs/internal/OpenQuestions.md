@@ -33,12 +33,12 @@ has been discussed.
 | Area | Implemented | Still undecided or undelivered |
 | --- | --- | --- |
 | Policies — Q35/Q36 | Typed baselines/overrides, verification, settings migration, initial lenient syntax and optional checks | Keyword-as-name contexts, optional deviation history, semantic rules and performance gates |
-| Markup — Q40 | Structural parsing/checks, local scopes, Graphviz vocabulary/case matching, bounded typo recovery and partial-prefix retention | Graphviz placement/value/reference rules, extended dialects, catalogs, summaries and gap-aware partial trees |
+| Markup — Q40 | Structural parsing/checks, local scopes, Graphviz vocabulary/case matching, bounded typo recovery and partial-prefix retention; Unreleased Graphviz placement/value/reference checks | Extended dialects, custom catalogs, summaries and gap-aware partial trees |
 | Processors — Q40 | Custom compile-time bindings, delayed/one-shot integration, retained-attribute string routing, workspace reuse and owned label retention | No-tree string execution, fixed/resumable composition and broader profile API |
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction and fixed query scratch | Label-port binding, markup-result association, event lowering, fixed materialization output, consumer adapters and marshal/unmarshal |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction and fixed query scratch | Label-port binding, markup-result association, event lowering, fixed materialization output, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and

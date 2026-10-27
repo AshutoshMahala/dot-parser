@@ -8,6 +8,12 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Fixed IR streaming/query scratch via `edgeIteratorIn`, `edgeSessionIn`,
+  `attributesIn` and `attributesSessionIn`, including partial views. Explicit
+  bounds/layouts derive node marks and bound strict pairs; no heap fallback.
+  Entries emitted before a terminal shortfall remain usable; retry requires
+  restarting with new storage. **Breaking (Unreleased):** lowering-only helpers
+  are `loweringLayout`, `loweringBounds` and `partialLoweringBounds`.
 - Fixed-storage Document-to-IR lowering via `lowerCompleteIn`, `lowerPartialIn`,
   `loweringSessionIn` and `partialLoweringSessionIn`. Caller-owned retained pools
   and reusable scratch use the same semantics and metered/cancellable sessions,
@@ -16,7 +22,7 @@ are marked; no compatibility shims are kept.
   structured shortfalls; failed lowering publishes no graph. Returned graphs
   borrow retained storage/source, with optional storage for later queries.
   No automatic reservation is added to ordinary lowering. Includes `fixed_graph`
-  and `bench-ir-fixed`; fixed query/output storage remains separate work.
+  and `bench-ir-fixed`; fixed materialization output remains separate work.
 - Policy-bound resumable attribute access via `IR.attributeSession(view, key, options)`
   and `IR.attributesSession(view, options)`, for complete/partial node, scope,
   compact-edge and materialized-edge views. Reuses existing execution policies
@@ -153,12 +159,14 @@ are marked; no compatibility shims are kept.
   the separate early-event/preview flags; `.all`, `.none` and individual fields
   are also supported. Internal names, heads and previews share one dispatch
   continuation and cleanup flag, with unchanged metering/cancellation contracts.
-- `identifier.fromName(source, name)` (also under `ForEncoding`) provides a borrowed
+- **Breaking (Unreleased):** `identifier.fromName(source, name)` (also under `ForEncoding`) provides a borrowed
   name view with logical hash/equality that skips redundant DOT syntax checks.
   Complete identifier event fields now use a distinct eight-byte `Name`, while
   previews/general locations remain `Span`. Retained views expose typed names
-  too. Arbitrary spans use `identifier.check`; the unchecked raw constructor is
-  removed without aliases. Only complete recognized identifiers qualify; the source must stay
+  too. `events.Identifier.span` is now `.name`. Arbitrary spans use
+  `identifier.check`; the former unchecked constructor function is removed
+  without aliases. Struct literals/record helpers remain caller-trusted, not
+  validation boundaries. Only complete identifier spellings qualify; the source must stay
   unchanged. Checked helpers remain checked, and native decoding retains its
   encoding checks. No event/document fields, copies or allocations are added.
   `zig build bench-identifiers` compares both paths in an event-only name index.
@@ -289,6 +297,22 @@ are marked; no compatibility shims are kept.
 
 ### Fixed
 
+- Shared IR reader selection handles ASCII-admitted Documents in UTF-8
+  profiles, including port-key materialization sessions. Native root graph
+  names are decoded before IR publication, with budgeted session work.
+- Partial strict-edge answers account conservatively for hidden membership
+  consumed by later set endpoints. `parsePartial` preserves checking when
+  strict interpretation is unsupported, without publishing an IR.
+- IR bounds reject overflowing caller capacity envelopes. Direct fixed and
+  growable lowering normalize limits consistently and honor explicit hooks;
+  sessions latch cancellation issued inside hooks and poll before a lifetime
+  `WorkLimit`, without increasing any grant or cancellation interval.
+- Speed builds inline typed-name conversion to avoid event-dispatch conversion
+  overhead; Small builds may share it. Standalone identifier checks retain their own inlined scanner
+  body, avoiding a parse slowdown merely from linking checked-name helpers.
+  Name binding checks source bounds in every build; source/encoding
+  identity remains the caller's responsibility. Removed observation flags now
+  produce migration errors rather than silently disabling observations.
 - Token previews report the next statement's context/absent owner during
   separator-free lookahead, retain owners for preview-only consumers, and
   recognize separator-free attribute keys. Trailing trivia after `+` no longer

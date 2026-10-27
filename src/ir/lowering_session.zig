@@ -36,6 +36,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
             count,
             count_links,
             allocate,
+            root_name,
             scope,
             scope_done,
             cursor_clear,
@@ -171,7 +172,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
             if (cancellable and !fixed_storage) if (cancellation) |c| if (c.requested()) return error.Cancelled;
             if (!partial and !doc.scopeComplete()) return error.IncompleteDocument;
             if (doc.strict and (interpretation.kind == .generic or (partial and interpretation.kind == null))) return error.UnsupportedSemantics;
-            const actual = if (doc.source_info.encoding == .ascii and caps.utf8) .utf8 else doc.source_info.encoding;
+            const actual = names.reader(caps, doc.source_info.encoding);
             if (!caps.allows(actual)) return error.UnsupportedEncoding;
             _ = try r.index(doc.source.len);
             _ = try r.index(doc.order.len);
@@ -205,9 +206,10 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
             if (self.outcome == null) self.outcome = .{ .failure = error.Cancelled };
         }
         fn poll(self: *Self) bool {
-            if (cancellable) if (self.cancellation) |c| if (c.requested()) {
-                self.cancel();
-                return false;
+            if (cancellable) if (self.cancellation) |c| {
+                if (c.requested()) self.cancel();
+                // A hook may synchronously cancel and still return false.
+                return self.outcome == null;
             };
             return true;
         }
@@ -282,12 +284,13 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
             self.phase = .enter;
         }
         fn copyRange(self: *Self, range: syntax.AttributeRange, after: Phase) r.Error!void {
+            if (range.start > self.b.doc.attributes.len or range.len > self.b.doc.attributes.len - range.start) return error.InvalidDocument;
             self.range = range;
             if (!partial) {
                 self.phase = after;
                 return;
             }
-            if (range.start > self.b.doc.attributes.len or range.len > self.b.doc.attributes.len - range.start or range.len > self.b.attributes.len - self.b.attribute_count) return error.InvalidDocument;
+            if (range.len > self.b.attributes.len - self.b.attribute_count) return error.InvalidDocument;
             self.original_range = range;
             self.range.start = self.b.attribute_count;
             self.copy_index = 0;
@@ -367,11 +370,19 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                             b.occurrences[0] = .{ .scope = .root, .parent = null, .source = .{ .start = 0, .len = @intCast(doc.source.len) }, .membership = undefined };
                             self.index = 1;
                             self.phase = .scope;
+                            if (comptime caps.utf16 or caps.utf32) if (self.actual != .ascii and self.actual != .utf8) if (doc.name) |name| {
+                                self.reader = .{ .raw = try b.raw(name), .actual = self.actual };
+                                self.phase = .root_name;
+                            };
                             return;
                         },
                     }
                     self.allocation += 1;
                 },
+                .root_name => if (comptime caps.utf16 or caps.utf32) switch (try self.reader.step()) {
+                    .end => self.phase = .scope,
+                    .pending, .byte => {},
+                } else unreachable,
                 .scope => {
                     if (self.index == b.occurrences.len) {
                         b.cursors = try mem.allocate(std.meta.Elem(@FieldType(B, "cursors")), a, b.scopes.items.len, "cursors", true);
@@ -738,6 +749,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     const effective = b.interpretation.operator(self.edge.operator);
                     if (doc.strict and ((b.interpretation.kind == .digraph and effective != .directed) or (b.interpretation.kind == .undigraph and effective != .undirected))) return error.UnsupportedSemantics;
                     b.connections[b.connection_count] = .{ .left = try b.resolved(b.pending.items[self.edge_pending]), .right = try b.resolved(b.pending.items[self.edge_pending + 1]), .written_operator = self.edge.operator, .effective_operator = effective, .operator_source = self.edge.operator_range, .occurrence = @fromBackingInt(self.occurrence), .attributes = self.range };
+                    if (partial) b.publication.coverage_data.observeConnection(b.connection_count, b.connections[b.connection_count]);
                     if (b.attribute_data.scopes.len != 0) {
                         b.attribute_data.connection_defaults[b.connection_count] = b.attribute_data.scopes[@backingInt(b.occurrences[self.occurrence].scope)].edge;
                         self.origin = .{ .connection = @fromBackingInt(b.connection_count) };

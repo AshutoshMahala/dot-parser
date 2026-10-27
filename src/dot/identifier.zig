@@ -2,7 +2,7 @@
 //!
 //! Raw spelling stays in the document. These helpers validate one complete
 //! identifier (no leading/trailing trivia), then decode on demand. `fromName`
-//! skips syntax validation for typed parser-recognized names. Helpers do
+//! skips syntax validation for complete typed names from parsing/check. Helpers do
 //! not cache results, interpret layout escapes, normalize encoding, or convert
 //! numerals. Repeated calls repeat linear work. Output memory is caller-owned.
 
@@ -107,7 +107,8 @@ pub fn eql(a: []const u8, b: []const u8) error{InvalidIdentifier}!bool {
     return @import("identifier_value.zig").orderAssumeValid(a, b) == .eq;
 }
 
-/// A borrowed name with parser-certified syntax, not a cached/decoded string.
+/// A borrowed complete name spelling, not a cached/decoded string. Use
+/// fromName/check; constructing Parsed fields manually is caller-trusted.
 pub const Parsed = ParsedForEncoding(.utf8);
 
 /// Bind a recognized name to its unchanged source, without lexing it again.
@@ -126,7 +127,9 @@ pub fn check(source: []const u8, span: @import("parser_support").location.Span) 
 
 fn validate(raw: []const u8) error{InvalidIdentifier}!lex.Token {
     var lexer = lex.Lexer.initRaw(raw);
-    const result = lexer.next();
+    // Keep standalone checking from forcing the parser's shared scanner into
+    // an out-of-line call merely because both entry points are linked.
+    const result = @call(.always_inline, lex.Lexer.drive, .{ &lexer, false, 0 }).result.?;
     if (result != .token or result.token.tag != .identifier or
         result.token.span.start != 0 or result.token.span.len != raw.len)
         return error.InvalidIdentifier;
@@ -165,7 +168,7 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
         fn checked(raw: []const u8) error{InvalidIdentifier}!lex.Token {
             if (raw.len % E.width != 0) return error.InvalidIdentifier;
             var scanner = lex.scalar.ScannerWithEncoding(actual, false, false, true, false).initRaw(raw);
-            const result = scanner.next();
+            const result = @call(.always_inline, @TypeOf(scanner).drive, .{ &scanner, false, 0 }).result.?;
             if (result != .token or result.token.tag != .identifier or result.token.span.start != 0 or result.token.span.len != raw.len)
                 return error.InvalidIdentifier;
             return result.token;
