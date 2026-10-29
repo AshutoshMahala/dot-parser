@@ -188,9 +188,8 @@ pub fn Name(comptime caps: enc.Capabilities) type {
     };
 }
 
-/// One immutable AVL visit or one bounded ancestor update per step. Growth
-/// reserves one leaf or at most five update cells first; Store.add/rotate cannot
-/// allocate or copy. Tiny maps don't reserve a rotation they will never perform.
+/// One AVL visit or bounded ancestor update per step. Only this unpublished
+/// batch's cells may be reused. Reserve before updating so no step hides a copy.
 pub const Set = struct {
     root: u32,
     key: u32,
@@ -203,7 +202,7 @@ pub const Set = struct {
     pub fn init(root: u32, key: u32, attribute: u32) Set {
         return .{ .root = root, .key = key, .attribute = attribute, .cursor = root };
     }
-    pub fn step(self: *Set, store: *attrs.Store, growth: anytype, a: anytype, limit: u32) r.Error!?u32 {
+    pub fn step(self: *Set, store: *attrs.Store, growth: anytype, a: anytype, limit: u32, mutable_from: u32) r.Error!?u32 {
         switch (self.phase) {
             .probe => {
                 if (self.cursor == none) {
@@ -228,29 +227,35 @@ pub const Set = struct {
                     self.phase = .done;
                     return null;
                 }
-                // Fixed storage checks each actual write in Store.add, after
-                // the semantic limit. No artificial five-cell spare requirement.
-                if (@TypeOf(a) == std.mem.Allocator) if (!try growth.step(&store.cells, if (self.phase == .leaf) 1 else 5, a)) return null;
                 var work: r.Work = .{ .remaining = 32, .cancellation = null };
                 if (self.phase == .leaf) {
                     var cell: attrs.Cell = if (self.cursor == none) .{ .key = self.key, .attribute = self.attribute } else store.cells.items[self.cursor];
                     cell.attribute = self.attribute;
-                    self.child = try store.add(a, cell, limit, &work);
+                    if (@TypeOf(a) == std.mem.Allocator) {
+                        const count: u32 = @intFromBool(self.cursor == none or self.cursor < mutable_from);
+                        if (!try growth.step(&store.cells, count, a)) return null;
+                    }
+                    const capacity = store.cells.capacity;
+                    self.child = try store.put(a, self.cursor, cell, mutable_from, limit, &work);
+                    std.debug.assert(store.cells.capacity == capacity);
                     self.phase = .unwind;
                 } else {
-                    self.depth -= 1;
-                    var cell = store.cells.items[self.path[self.depth]];
+                    const id = self.path[self.depth - 1];
+                    var cell = store.cells.items[id];
                     if (self.key < cell.key) cell.left = self.child else cell.right = self.child;
-                    const balance = @as(i16, store.height(cell.left)) - store.height(cell.right);
-                    if (balance > 1) {
-                        const branch = store.cells.items[cell.left];
-                        if (store.height(branch.left) < store.height(branch.right)) cell.left = try store.rotate(a, cell.left, true, limit, &work);
-                        self.child = try store.rotate(a, try store.add(a, cell, limit, &work), false, limit, &work);
-                    } else if (balance < -1) {
-                        const branch = store.cells.items[cell.right];
-                        if (store.height(branch.right) < store.height(branch.left)) cell.right = try store.rotate(a, cell.right, false, limit, &work);
-                        self.child = try store.rotate(a, try store.add(a, cell, limit, &work), true, limit, &work);
-                    } else self.child = try store.add(a, cell, limit, &work);
+                    if (@TypeOf(a) == std.mem.Allocator) {
+                        // Only this ancestor may still be shared. A rotation
+                        // is caused by insertion along the changed path: its
+                        // child (and grandchild for a double rotation) was
+                        // already copied/reused while unwinding that path.
+                        const count: u32 = @intFromBool(id < mutable_from);
+                        std.debug.assert(store.updateCapacity(id, cell, mutable_from) == count);
+                        if (!try growth.step(&store.cells, count, a)) return null;
+                    }
+                    self.depth -= 1;
+                    const capacity = store.cells.capacity;
+                    self.child = try store.update(a, id, cell, mutable_from, limit, &work);
+                    std.debug.assert(store.cells.capacity == capacity);
                 }
             },
             .done => return self.child,

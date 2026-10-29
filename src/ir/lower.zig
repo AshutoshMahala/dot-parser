@@ -138,27 +138,36 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             const spelling = try self.raw(view.identifier);
             const hash = try names.hash(actual, spelling, &self.work);
             var found: ?u32 = null;
+            var vacant: usize = 0;
             if (self.node_table.slots.len != 0) {
                 var at: usize = @intCast(hash & (self.node_table.slots.len - 1));
                 while (self.node_table.slots[at] != names.empty) : (at = (at + 1) & (self.node_table.slots.len - 1)) {
                     try self.work.spend(1);
                     const id = self.node_table.slots[at];
-                    const existing = self.nodes.items[id];
+                    const existing = &self.nodes.items[id];
                     if (existing.hash == hash and try names.eql(actual, try self.raw(existing.name), spelling, &self.work)) {
                         found = id;
                         break;
                     }
                 }
+                vacant = at;
             }
             const id = found orelse blk: {
                 if (self.nodes.items.len >= self.limits.max_nodes) return error.NodeLimit;
                 const id = try r.index(self.nodes.items.len);
                 if (id >= t.node_bit) return error.IndexLimit;
+                const old_capacity = self.node_table.slots.len;
                 try mem.prepareTable(&self.node_table, self.a, &self.work, self, "node_slots");
                 const scope = @backingInt(self.occurrences[occurrence].scope);
                 const state = if (self.attribute_data.scopes.len == 0) attrs.none else self.attribute_data.scopes[scope].node;
                 try mem.append(self.a, &self.nodes, .{ .name = view.identifier, .first_mention = self.mention_count, .attribute_state = state, .hash = hash }, "nodes");
-                try self.node_table.insert(hash, id, &self.work);
+                if (self.node_table.slots.len == old_capacity) {
+                    // The unsuccessful lookup already found this empty slot.
+                    // Node-list growth cannot change the separate index.
+                    try self.work.spend(1);
+                    self.node_table.slots[vacant] = id;
+                    self.node_table.count += 1;
+                } else try self.node_table.insert(hash, id, &self.work);
                 break :blk id;
             };
             if (self.mention_count >= self.mentions.len) return error.InvalidDocument;

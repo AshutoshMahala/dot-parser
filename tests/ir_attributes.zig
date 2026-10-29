@@ -29,6 +29,49 @@ fn scope(ir: *const IR.Graph, name: []const u8) !dot.ir.ScopeId {
     return error.MissingScope;
 }
 
+test "unpublished attribute batches fit one cell per key without losing earlier maps or duplicate origins" {
+    var source: std.Io.Writer.Allocating = .init(a);
+    defer source.deinit();
+    // Intern keys independently so later batches exercise all rotation orders.
+    try source.writer.writeAll("digraph { seed[k0=seed k1=seed k2=seed k3=seed];");
+    var orders: [24][4]usize = undefined;
+    var count: usize = 0;
+    for (0..4) |first| for (0..4) |second| {
+        if (second == first) continue;
+        for (0..4) |third| {
+            if (third == first or third == second) continue;
+            const order = [4]usize{ first, second, third, 6 - first - second - third };
+            orders[count] = order;
+            try source.writer.print("n{d}[", .{count});
+            for (order) |key| try source.writer.print("k{d}=old ", .{key});
+            try source.writer.print("k{d}=last];", .{first});
+            count += 1;
+        }
+    };
+    try source.writer.writeAll("}");
+    var parsed = dot.parseAndValidate(a, source.written(), dot.diagnostic.discard, .{});
+    defer parsed.deinit(a);
+    try expect(parsed.documentValid());
+    var ir = try IR.lowerComplete(a, &parsed.document.?, .{
+        .interpretation = dot.Profile(.{}).interpretation(&parsed.document.?, .{}),
+        .limits = .{ .max_attribute_states = 100 },
+    });
+    defer ir.deinit();
+    try equal(@as(usize, 100), ir.attribute_data.cells.items.len);
+    try equal(@as(usize, 124), ir.attributes.len); // Every written duplicate survives.
+    for (0..4) |key| {
+        var key_buf: [4]u8 = undefined;
+        const name = try std.fmt.bufPrint(&key_buf, "k{d}", .{key});
+        _ = try value(&ir, try ir.nodeAttribute(try node(&ir, "seed"), name), "seed");
+        for (orders, 0..) |order, id| {
+            var node_buf: [8]u8 = undefined;
+            const target = try node(&ir, try std.fmt.bufPrint(&node_buf, "n{d}", .{id}));
+            const result = try value(&ir, try ir.nodeAttribute(target, name), if (key == order[0]) "last" else "old");
+            if (key == order[0]) try std.testing.expectEqualStrings("last", ir.text(ir.attributes[result.attribute.?].value));
+        }
+    }
+}
+
 test "IR defaults apply at object creation while explicit updates preserve other keys" {
     var ir = try lower("digraph { node[color=red]; a; node[color=blue]; b; a[shape=box]; \"a\"[shape=ellipse shape=diamond]; }");
     defer ir.deinit();

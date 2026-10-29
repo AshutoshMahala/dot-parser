@@ -803,13 +803,16 @@ proportional to its output, plus deduplication scratch for strict graphs.
 `scopeMembership` currently scans occurrence records; asking for every scope's
 membership can therefore be quadratic. No membership cache is implied.
 
-Effective node/graph values use immutable balanced maps referencing written
-attributes. Creation snapshots share map branches; there is no full default-table
-copy per node or descendant scope. Updating a key retains O(log K) map cells
-for K distinct keys in that map, plus bounded rotation cells. Repeated updates
-can leave intermediate cells retained even when no final
-map references them; a wide statement can allocate O(K log K) cells. The
-`max_attribute_states` limit applies to those cells too. Reopening a scope
+Effective node/graph values use balanced maps referencing written attributes.
+Published snapshots are immutable and share branches; there is no full
+default-table copy per node or descendant scope. Within one declaration or
+inheritance overlay, newly allocated cells are reused until the batch finishes.
+A new map with K distinct keys therefore retains K cells, including when that
+batch repeats keys. Updating a published map copies its affected paths before
+editing them; a single-key update can retain O(log K) cells. Separate batches
+can still leave older cells retained when no final map references them; there
+is no garbage-collection pass. `max_attribute_states` bounds allocated cells,
+not writes to reusable cells. Reopening a scope
 after its parent's defaults change reapplies that scope's local overrides.
 Attribute-free input allocates no attribute-state storage. On the measured
 64-bit build the node record remains 24 bytes: its state handle uses existing
@@ -1310,7 +1313,7 @@ One credit performs one bounded transition:
 | --- | --- |
 | Counting/traversal/indexing | One order slot, chain link, scope, mention or phase transition |
 | Identity hashing/equality | One byte (byte profiles), native scalar (at most two UTF-16 code units), glue unit, pending UTF-8 output byte or hash-table probe |
-| Persistent attribute maps | One tree visit or ancestor update, with at most two rotations/five appended cells |
+| Persistent attribute maps | One tree visit or ancestor update, with at most two rotations/five cell writes; published cells are copied before editing |
 | Buffer growth/initialization | At most 64 bytes copied/cleared, or one bounded storage-preparation transition |
 
 Long names, concatenation comments, hash-table rehashes, scope-default overlays

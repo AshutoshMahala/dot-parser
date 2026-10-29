@@ -93,6 +93,7 @@ test "lowering sessions match direct complete and partial lowering at budget one
         "digraph { graph[label=root]; node[color=red]; subgraph s {a;node[color=local]} node[color=blue shape=box];subgraph s{b}; c }",
         "digraph {subgraph s{a}->x;subgraph s{b}->subgraph s{c};{x->{y z}}->q[label=outside];x->{};{}->z}",
         "digraph {a[a=1 b=2 c=3 d=4 e=5 f=6 g=7 h=8 i=9];a[d=last];subgraph s{node[x=1 y=2]; b};node[z=3];subgraph s{c}}",
+        "digraph {seed[a=1 b=2 c=3 d=4];x[c=1 a=2 b=3 b=last];y[c=1 b=2 a=3];z[a=1 c=2 b=3];node[d=old a=old c=old];old;node[a=new c=new];new;subgraph s{node[b=local d=local];p};node[b=root a=root];subgraph s{q}}",
     }) |source| {
         try check(false, source);
         try check(true, source);
@@ -103,6 +104,39 @@ test "lowering sessions match direct complete and partial lowering at budget one
         "digraph { {a}-> {b; subgraph s{c}} -> ; d->e;",
         "digraph { a; x[label=\"unfinished",
     }) |source| try check(true, source);
+}
+
+test "lowering lookup slots survive wrapping collisions table growth and quoted repeats" {
+    var source: std.Io.Writer.Allocating = .init(a);
+    defer source.deinit();
+    try source.writer.writeAll("digraph {");
+    var selected: [80]u32 = undefined;
+    var count: usize = 0;
+    var candidate: u32 = 0;
+    while (count < selected.len) : (candidate += 1) {
+        var buffer: [24]u8 = undefined;
+        const name = try std.fmt.bufPrint(&buffer, "n{d}", .{candidate});
+        // Same initial slot through every growth up to 256 slots, wrapping
+        // around the end. Full logical-name equality must still decide identity.
+        if (std.hash.Wyhash.hash(0, name) & 255 != 255) continue;
+        selected[count] = candidate;
+        count += 1;
+        try source.writer.print("{s};", .{name});
+    }
+    for (selected) |id| try source.writer.print("\"n{d}\";\"n\"+\"{d}\";", .{ id, id });
+    try source.writer.writeAll("}");
+    try check(false, source.written());
+    try check(true, source.written());
+    var parsed = Dot.parseAndValidate(a, source.written(), dot.diagnostic.discard, .{});
+    defer parsed.deinit(a);
+    var graph = try Plain.lowerComplete(a, &parsed.document.?, .{ .interpretation = Dot.interpretation(&parsed.document.?, .{}) });
+    defer graph.deinit();
+    try equal(selected.len, graph.nodes.len);
+    for (selected, 0..) |id, expected| {
+        var buffer: [24]u8 = undefined;
+        const found = (try graph.findNode(try std.fmt.bufPrint(&buffer, "n{d}", .{id}))).?;
+        try equal(@as(u32, @intCast(expected)), @backingInt(found));
+    }
 }
 
 test "lowering runtime execution policy resolves once and direct operations remain available" {

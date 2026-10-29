@@ -117,6 +117,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
         overlay_depth: u8 = 0,
         overlay_next: u32 = none,
         setting: p.Set = undefined,
+        mutable_from: u32 = 0,
         reference: syntax.NodeReference = undefined,
         node_view: syntax.NodeReferenceView = undefined,
         node_for_declaration: bool = false,
@@ -510,6 +511,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     self.overlay_root = if (self.enter_stage == 0) parent.node else parent.edge;
                     self.overlay_cursor = if (self.enter_stage == 0) scope.local_node else scope.local_edge;
                     self.overlay_depth = 0;
+                    self.mutable_from = try r.index(b.attribute_data.cells.items.len);
                     self.phase = .enter_overlay;
                 },
                 .enter_overlay => {
@@ -539,7 +541,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                         self.phase = .enter;
                     }
                 },
-                .enter_overlay_set => if (try self.setting.step(&b.attribute_data, &self.cell_growth, a, b.limits.max_attribute_states)) |root| {
+                .enter_overlay_set => if (try self.setting.step(&b.attribute_data, &self.cell_growth, a, b.limits.max_attribute_states, self.mutable_from)) |root| {
                     self.overlay_root = root;
                     self.overlay_cursor = self.overlay_next;
                     self.phase = .enter_overlay;
@@ -830,6 +832,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     }
                 },
                 .apply => {
+                    if (self.attribute_index == self.range.start) self.mutable_from = try r.index(b.attribute_data.cells.items.len);
                     if (self.attribute_index == self.range.start + self.range.len) {
                         self.phase = .apply_next;
                         return;
@@ -837,7 +840,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     self.setting = p.Set.init(self.applyRoot().*, b.attribute_data.meta[self.attribute_index].key, self.attribute_index);
                     self.phase = .apply_set;
                 },
-                .apply_set => if (try self.setting.step(&b.attribute_data, &self.cell_growth, a, b.limits.max_attribute_states)) |root| {
+                .apply_set => if (try self.setting.step(&b.attribute_data, &self.cell_growth, a, b.limits.max_attribute_states, self.mutable_from)) |root| {
                     self.applyRoot().* = root;
                     self.attribute_index += 1;
                     self.phase = .apply;
@@ -948,6 +951,8 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                         if (!fixed_storage) storage.release(u32, a, slots);
                         self.table().slots = self.new_slots;
                         self.new_slots = &.{};
+                        // Growth invalidates the empty slot found by lookup.
+                        self.slot = @intCast(self.hash & (self.table().slots.len - 1));
                         self.phase = .intern_append;
                         return;
                     }
@@ -990,7 +995,8 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                             b.attribute_data.keys.appendAssumeCapacity(.{ .name = self.name, .hash = self.hash, .first_attribute = self.attribute_index, .kind = self.kind });
                         },
                     }
-                    self.slot = @intCast(self.hash & (self.table().slots.len - 1));
+                    // Without index growth, lookup already located an empty
+                    // slot. Keep it across bounded record-list growth as well.
                     self.phase = .intern_insert;
                 },
                 .intern_insert => {

@@ -122,13 +122,24 @@ pub const Table = struct {
         const capacity = if (t.slots.len == 0) 16 else std.math.mul(usize, t.slots.len, 2) catch return error.IndexLimit;
         var next: Table = .{ .slots = try a.alloc(u32, capacity) };
         errdefer next.deinit(a);
-        for (next.slots) |*slot| {
-            try work.spend(1);
-            slot.* = empty;
-        }
-        for (t.slots) |id| {
-            try work.spend(1);
-            if (id != empty) try next.insert(owner.hashFor(id), id, work);
+        if (work.cancellation == null) {
+            // Direct, non-cancellable work can charge a whole run before
+            // clearing it. Sessions retain their bounded clearing steps.
+            try work.spend(next.slots.len);
+            @memset(next.slots, empty);
+            try work.spend(t.slots.len);
+            for (t.slots) |id| {
+                if (id != empty) try next.insert(owner.hashFor(id), id, work);
+            }
+        } else {
+            for (next.slots) |*slot| {
+                try work.spend(1);
+                slot.* = empty;
+            }
+            for (t.slots) |id| {
+                try work.spend(1);
+                if (id != empty) try next.insert(owner.hashFor(id), id, work);
+            }
         }
         t.deinit(a);
         t.* = next;

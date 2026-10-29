@@ -1,5 +1,5 @@
-//! Immutable attribute maps: values and origins stay in the written pools.
-//! Snapshots share unchanged AVL branches; no node-default or edge-set copying.
+//! Published attribute maps are immutable; a batch may edit its own new cells.
+//! Snapshots share unchanged AVL branches; values/origins stay in written pools.
 const std = @import("std");
 const t = @import("topology.zig");
 const syntax = @import("../dot/syntax.zig");
@@ -116,24 +116,67 @@ pub const Store = struct {
     pub fn height(self: Store, id: u32) u8 {
         return if (id == none) 0 else self.cells.items[id].height;
     }
-    pub fn add(self: *Store, a: anytype, cell: Cell, limit: u32, work: *r.Work) r.Error!u32 {
+    /// Only cells allocated since this batch began may be overwritten. Earlier
+    /// cells can be referenced by nodes, defaults or another scope indefinitely.
+    pub inline fn put(self: *Store, a: anytype, id: u32, cell: Cell, mutable_from: u32, limit: u32, work: *r.Work) r.Error!u32 {
+        if (id != none and id >= mutable_from) {
+            try work.spend(1);
+            var value = cell;
+            value.height = 1 + @max(self.height(value.left), self.height(value.right));
+            self.cells.items[id] = value;
+            return id;
+        }
+        return self.add(a, cell, limit, work);
+    }
+    fn add(self: *Store, a: anytype, cell: Cell, limit: u32, work: *r.Work) r.Error!u32 {
         try work.spend(1);
         if (self.cells.items.len >= limit) return error.AttributeStateLimit;
-        const id = try r.index(self.cells.items.len);
+        const next = try r.index(self.cells.items.len);
         var value = cell;
         value.height = 1 + @max(self.height(value.left), self.height(value.right));
         try mem.append(a, &self.cells, value, "cells");
-        return id;
+        return next;
     }
-    pub fn rotate(self: *Store, a: anytype, root: u32, comptime left: bool, limit: u32, work: *r.Work) r.Error!u32 {
+    fn rotate(self: *Store, a: anytype, root: u32, comptime left: bool, mutable_from: u32, limit: u32, work: *r.Work) r.Error!u32 {
         var lower = self.cells.items[root];
-        var upper = self.cells.items[if (left) lower.right else lower.left];
+        const upper_id = if (left) lower.right else lower.left;
+        var upper = self.cells.items[upper_id];
         if (left) lower.right = upper.left else lower.left = upper.right;
-        const child = try self.add(a, lower, limit, work);
+        const child = try self.put(a, root, lower, mutable_from, limit, work);
         if (left) upper.left = child else upper.right = child;
-        return self.add(a, upper, limit, work);
+        return self.put(a, upper_id, upper, mutable_from, limit, work);
     }
-    pub fn set(self: *Store, a: anytype, root: u32, key: u32, attribute: u32, limit: u32, work: *r.Work) r.Error!u32 {
+    /// Exact reserve for one bounded ancestor update, including double rotation.
+    /// This prevents the session helper from hiding allocation/copying in put().
+    pub fn updateCapacity(self: Store, id: u32, cell: Cell, mutable_from: u32) u32 {
+        var count: u32 = @intFromBool(id == none or id < mutable_from);
+        const balance = @as(i16, self.height(cell.left)) - self.height(cell.right);
+        if (balance > 1) {
+            count += @intFromBool(cell.left < mutable_from);
+            const branch = self.cells.items[cell.left];
+            if (self.height(branch.left) < self.height(branch.right)) count += @intFromBool(branch.right < mutable_from);
+        } else if (balance < -1) {
+            count += @intFromBool(cell.right < mutable_from);
+            const branch = self.cells.items[cell.right];
+            if (self.height(branch.right) < self.height(branch.left)) count += @intFromBool(branch.left < mutable_from);
+        }
+        return count;
+    }
+    pub inline fn update(self: *Store, a: anytype, id: u32, value: Cell, mutable_from: u32, limit: u32, work: *r.Work) r.Error!u32 {
+        var cell = value;
+        const balance = @as(i16, self.height(cell.left)) - self.height(cell.right);
+        if (balance > 1) {
+            const branch = self.cells.items[cell.left];
+            if (self.height(branch.left) < self.height(branch.right)) cell.left = try self.rotate(a, cell.left, true, mutable_from, limit, work);
+            return self.rotate(a, try self.put(a, id, cell, mutable_from, limit, work), false, mutable_from, limit, work);
+        } else if (balance < -1) {
+            const branch = self.cells.items[cell.right];
+            if (self.height(branch.right) < self.height(branch.left)) cell.right = try self.rotate(a, cell.right, false, mutable_from, limit, work);
+            return self.rotate(a, try self.put(a, id, cell, mutable_from, limit, work), true, mutable_from, limit, work);
+        }
+        return self.put(a, id, cell, mutable_from, limit, work);
+    }
+    fn set(self: *Store, a: anytype, root: u32, key: u32, attribute: u32, mutable_from: u32, limit: u32, work: *r.Work) r.Error!u32 {
         // An AVL tree with <2^32 cells has height <48. This is an implementation
         // bound, not input nesting; no recursion or source-sized stack.
         var path: [48]u32 = undefined;
@@ -151,25 +194,16 @@ pub const Store = struct {
             depth += 1;
             cursor = if (key < cell.key) cell.left else cell.right;
         }
-        var child = if (cursor == none) try self.add(a, .{ .key = key, .attribute = attribute }, limit, work) else blk: {
+        var child = if (cursor == none) try self.put(a, none, .{ .key = key, .attribute = attribute }, mutable_from, limit, work) else blk: {
             var cell = self.cells.items[cursor];
             cell.attribute = attribute;
-            break :blk try self.add(a, cell, limit, work);
+            break :blk try self.put(a, cursor, cell, mutable_from, limit, work);
         };
         while (depth != 0) {
             depth -= 1;
             var cell = self.cells.items[path[depth]];
             if (key < cell.key) cell.left = child else cell.right = child;
-            const balance = @as(i16, self.height(cell.left)) - self.height(cell.right);
-            if (balance > 1) {
-                const branch = self.cells.items[cell.left];
-                if (self.height(branch.left) < self.height(branch.right)) cell.left = try self.rotate(a, cell.left, true, limit, work);
-                child = try self.rotate(a, try self.add(a, cell, limit, work), false, limit, work);
-            } else if (balance < -1) {
-                const branch = self.cells.items[cell.right];
-                if (self.height(branch.right) < self.height(branch.left)) cell.right = try self.rotate(a, cell.right, false, limit, work);
-                child = try self.rotate(a, try self.add(a, cell, limit, work), true, limit, work);
-            } else child = try self.add(a, cell, limit, work);
+            child = try self.update(a, path[depth], cell, mutable_from, limit, work);
         }
         return child;
     }
@@ -184,11 +218,13 @@ pub const Store = struct {
         return null;
     }
     pub fn apply(self: *Store, a: anytype, root: u32, range: syntax.AttributeRange, limit: u32, work: *r.Work) r.Error!u32 {
+        const mutable_from = try r.index(self.cells.items.len);
         var next = root;
-        for (range.start..range.start + range.len) |id| next = try self.set(a, next, self.meta[id].key, @intCast(id), limit, work);
+        for (range.start..range.start + range.len) |id| next = try self.set(a, next, self.meta[id].key, @intCast(id), mutable_from, limit, work);
         return next;
     }
     fn overlay(self: *Store, a: anytype, base: u32, local: u32, limit: u32, work: *r.Work) r.Error!u32 {
+        const mutable_from = try r.index(self.cells.items.len);
         var path: [48]u32 = undefined;
         var depth: usize = 0;
         var cursor = local;
@@ -203,7 +239,7 @@ pub const Store = struct {
             }
             depth -= 1;
             const cell = self.cells.items[path[depth]];
-            result = try self.set(a, result, cell.key, cell.attribute, limit, work);
+            result = try self.set(a, result, cell.key, cell.attribute, mutable_from, limit, work);
             cursor = cell.right;
         }
         return result;

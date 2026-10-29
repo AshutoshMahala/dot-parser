@@ -1191,6 +1191,12 @@ probes/rehashing, persistent map visits/rotations, default overlays, traversal,
 coverage/posting indexes and growth copying. Initialization does no scan or
 allocation; successful transfer releases the Document lifetime requirement,
 while source bytes stay borrowed. Direct lowering remains throughput-specialized.
+Lowering reuses a vacant index slot until table growth invalidates it. Attribute
+declarations and inherited overlays reuse only cells created within that batch;
+published roots remain immutable. Direct/fixed/session paths share the map
+updates, and resumable growth reserves before a bounded update so copying never
+hides inside a tree step. No automatic capacity reservation or edge expansion
+is introduced by these optimizations.
 Policy-bound edge streaming now reuses bounded expansion without an output
 array or attribute folding. Each advance delivers at most one complete/partial
 view, pauses, or terminates; no edge does not mean exhaustion. Views borrow IR

@@ -113,6 +113,7 @@ test "fixed IR exact-fit storage matches growable semantics and bounded sessions
         "digraph {graph[label=root];node[color=red];subgraph s{a;node[color=local]}node[color=blue shape=box];subgraph s{b};c}",
         "digraph {subgraph s{a}->x;subgraph s{b}->subgraph s{c};{x->{y z}}->q[label=outside];x->{};{}->z}",
         "digraph {a[a=1 b=2 c=3 d=4 e=5 f=6 g=7 h=8 i=9];a[d=last];subgraph s{node[x=1 y=2];b};node[z=3];subgraph s{c}}",
+        "digraph {seed[a=1 b=2 c=3 d=4];x[c=1 a=2 b=3 b=last];y[c=1 b=2 a=3];z[a=1 c=2 b=3];node[d=old a=old c=old];old;node[a=new c=new];new;subgraph s{node[b=local d=local];p};node[b=root a=root];subgraph s{q}}",
     }) |source| {
         try check(false, source);
         try check(true, source);
