@@ -8,7 +8,7 @@ const Case = enum { shared_defaults, node_updates, reopened_defaults, strict_upd
 
 pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
-    var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    var output: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &buffer);
     const w = &output.interface;
     try w.writeAll("attribute_case,source_bytes,nodes,connections,lower_ms,retained_bytes,peak_requested_bytes,arena_capacity_bytes,node_query_ns,edge_query_ns,node_view_ns,edge_view_ns,node_attributes_ns,edge_attributes_ns,attribute_scratch_bytes\n");
     inline for (std.meta.tags(Case)) |case| {

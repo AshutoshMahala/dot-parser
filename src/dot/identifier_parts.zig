@@ -34,8 +34,11 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
                 return self.nextWith(@import("identifier_cursor.zig").Unmetered{}) catch unreachable;
             }
 
-            /// Internal bounded traversal of the same trusted operand grammar.
+            /// Bounded traversal of the same trusted operand grammar. On a
+            /// work failure no operand is consumed; callers may retry it.
             pub fn nextWith(self: *@This(), work: anytype) !?Part {
+                const before = self.offset;
+                errdefer self.offset = before;
                 const bytes = self.input.bytes;
                 if (self.offset == bytes.len) return null;
                 if (self.compound) try cursor.skipGlueWith(bytes, &self.offset, work);

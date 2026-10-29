@@ -7,6 +7,65 @@ const expect = std.testing.expect;
 const Dot = dot.Profile(.{});
 const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
 
+test "ASCII-only IR retains parser-accepted name bytes in direct fixed and session paths" {
+    const P = dot.Profile(.{ .source_encodings = &.{} });
+    const I = dot.ir.Lowering(.{ .source_encodings = &.{}, .policy = .{ .execution = .{ .metering = true } } });
+    var parsed = try P.parseAndValidate(a, "digraph { subgraph \"\xff\" { \"\xfe\"[\"\xfd\"=x] }; \"\xfe\"->b }", dot.diagnostic.discard, .{});
+    defer parsed.deinit(a);
+    const doc = &parsed.document.?;
+    const options = .{ .interpretation = P.interpretation(doc, .{}) };
+    const bounds = try I.loweringBounds(doc.capacities(), options);
+    const layout = try I.loweringLayout(bounds.graph, bounds.scratch);
+    const retained = try a.alignedAlloc(u8, .@"16", layout.graph_bytes);
+    defer a.free(retained);
+    const scratch = try a.alignedAlloc(u8, .@"16", layout.scratch_bytes);
+    defer a.free(scratch);
+    const memory = try layout.bind(retained, scratch);
+    var direct = try I.lowerComplete(a, doc, options);
+    defer direct.deinit();
+    const fixed = I.lowerCompleteIn(doc, memory, options);
+    try eq(dot.ir.LoweringOutcome.success, fixed.outcome);
+    var session = try I.loweringSession(a, doc, options);
+    defer session.deinit();
+    while (session.advance(1).outcome == null) {}
+    var resumed = try session.takeResult();
+    defer resumed.deinit();
+    for ([_]*const I.Graph{ &direct, &fixed.graph.?, &resumed }) |graph| {
+        const id = (try graph.findNode("\xfe")).?;
+        const node = try graph.nodeView(id);
+        try expect(node.attribute("\xfd") != null);
+        try eq(@as(u32, 2), graph.capacities().nodes);
+    }
+}
+
+test "fixed and allocator lowering sessions normalize anonymous and absent hooks alike" {
+    var parsed = Dot.parseAndValidate(a, "digraph {a->b}", dot.diagnostic.discard, .{});
+    defer parsed.deinit(a);
+    const doc = &parsed.document.?;
+    const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
+    const bounds = try IR.loweringBounds(doc.capacities(), options);
+    const layout = try IR.loweringLayout(bounds.graph, bounds.scratch);
+    const retained = try a.alignedAlloc(u8, .@"16", layout.graph_bytes);
+    defer a.free(retained);
+    const scratch = try a.alignedAlloc(u8, .@"16", layout.scratch_bytes);
+    defer a.free(scratch);
+    const memory = try layout.bind(retained, scratch);
+    const Hook = struct {
+        fn poll(_: ?*anyopaque) bool {
+            return false;
+        }
+    };
+    inline for (.{ {}, null, .{ .context = @as(?*anyopaque, null), .is_requested = Hook.poll } }) |hook| {
+        const opts = .{ .interpretation = options.interpretation, .cancellation = hook };
+        var ordinary = try IR.loweringSession(a, doc, opts);
+        defer ordinary.deinit();
+        var fixed = try IR.loweringSessionIn(doc, memory, opts);
+        defer fixed.deinit();
+        try eq(dot.ir.LoweringOutcome.success, ordinary.run().outcome.?);
+        try eq(dot.ir.LoweringOutcome.success, fixed.run().outcome.?);
+    }
+}
+
 test "ASCII-admitted documents use the shared IR reader during materialization" {
     const Ascii = dot.Profile(.{ .source_encodings = &.{} });
     var parsed = try Ascii.parseAndValidate(a, "digraph {a:p->b[\"tail\"+\"port\"=x headport=y]}", dot.diagnostic.discard, .{});
@@ -86,7 +145,7 @@ test "caller capacity envelopes fail with IndexLimit rather than arithmetic over
     try std.testing.expectError(error.IndexLimit, IR.loweringBounds(.{ .attributes = std.math.maxInt(u32) - 1, .assignments = 2 }, .{}));
 }
 
-test "direct lowering normalizes optional limits and honors explicit cancellation for either storage" {
+test "direct lowering normalizes optional limits and honors enabled cancellation for either storage" {
     var parsed = Dot.parseAndValidate(a, "digraph {a->b}", dot.diagnostic.discard, .{});
     defer parsed.deinit(a);
     const doc = &parsed.document.?;
@@ -97,7 +156,7 @@ test "direct lowering normalizes optional limits and honors explicit cancellatio
     };
     const token: dot.ir.Cancellation = .{ .context = null, .is_requested = AlwaysStop.requested };
     inline for (.{ false, true }) |runtime| {
-        const P = dot.ir.Lowering(.{ .runtime_policy = runtime });
+        const P = dot.ir.Lowering(.{ .runtime_policy = runtime, .policy = .{ .execution = .{ .cancellation = true } } });
         const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
         const bounds = try P.loweringBounds(doc.capacities(), options);
         const layout = try P.loweringLayout(bounds.graph, bounds.scratch);
@@ -109,8 +168,9 @@ test "direct lowering normalizes optional limits and honors explicit cancellatio
         inline for (.{ false, true }) |partial| {
             const cancelled = .{ .interpretation = options.interpretation, .cancellation = token };
             try std.testing.expectError(error.Cancelled, if (partial) P.lowerPartial(a, doc, cancelled) else P.lowerComplete(a, doc, cancelled));
-            const result = if (partial) P.lowerPartialIn(doc, memory, cancelled) else P.lowerCompleteIn(doc, memory, cancelled);
-            try eq(error.Cancelled, (if (runtime) try result else result).outcome.failure);
+            const pending = if (partial) P.lowerPartialIn(doc, memory, cancelled) else P.lowerCompleteIn(doc, memory, cancelled);
+            const result = if (runtime) try pending else pending;
+            try eq(error.Cancelled, result.outcome.failure);
             inline for (.{ null, @as(?dot.ir.Limits, null), dot.ir.Limits{}, @as(?dot.ir.Limits, .{}), .{ .max_work = 100000 } }) |limits| {
                 const opts = .{ .interpretation = options.interpretation, .limits = limits };
                 var graph = if (partial) try P.lowerPartial(a, doc, opts) else try P.lowerComplete(a, doc, opts);
@@ -128,6 +188,10 @@ test "partial convenience retains checking when strict interpretation is unsuppo
         try expect(result.ir() == null);
         try expect(result.checking.validation != null);
         try expect(!result.checking.validation.?.documentValid());
+        var limited = try dot.ir.parsePartial(a, source, .{ .lowering = .{ .limits = .{ .max_work = 0, .max_bytes = 0 } } });
+        defer limited.deinit();
+        try expect(limited.ir() == null);
+        try expect(limited.checking.validation != null);
     }
 }
 

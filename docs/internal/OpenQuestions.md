@@ -301,6 +301,11 @@ event lowering and fixed materialization output remain. Fixed-storage Document
 construction now shares direct/session lowering with explicit capacity bounds,
 checked bindings, reusable scratch and terminal shortfalls, without automatic
 reservation or a construction heap fallback.
+Direct complete/partial lowering and its fixed-storage forms now apply the same
+execution policy as lowering sessions: enabled metering/cancellation runs the
+bounded engine to completion; disabled execution retains the direct fast path.
+Runtime overrides are opt-in and validated before work. Limits remain enforced
+independently, and no execution policy is stored in the resulting graph.
 Opt-in partial Document lowering now supplies qualified direct queries,
 retained attribute candidates, node mentions and explicit gap coverage without
 changing the complete-input API. Partial iteration/materialization and resumable

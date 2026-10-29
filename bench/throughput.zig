@@ -38,7 +38,7 @@ pub fn main(init: std.process.Init) !void {
     const source = source_builder.items;
 
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
+    var stdout_file_writer: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &stdout_buffer);
     const stdout = &stdout_file_writer.interface;
 
     try stdout.print("scanner backend: {s}\n", .{@tagName(Parser.baseline.scanner)});

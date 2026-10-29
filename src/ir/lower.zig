@@ -314,26 +314,36 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
         }
         fn connection(self: *Self, edge: syntax.EdgeView, occurrence: u32, left: Pending, right: Pending) r.Error!void {
             try self.work.spend(1);
+            const with_attributes = self.attribute_data.scopes.len != 0;
+            const connection_id = try self.storeConnection(edge.operator, edge.operator_range, occurrence, left, right, edge.attributes, with_attributes);
+            if (with_attributes)
+                try self.attribute_data.bind(actual, self.a, self.doc.source, self.attributes, edge.attributes, .edge, .{ .connection = connection_id }, &self.work);
+            self.connection_count += 1;
+        }
+        /// Shared by direct and resumable lowering: bounds, strict operator
+        /// support, the record, the partial dependency summary and creation
+        /// defaults. Attribute binding and the count increment stay with the driver.
+        // The driver snapshots with_attributes once for storage and binding,
+        // avoiding an alias-sensitive reload after writing the defaults pool.
+        pub fn storeConnection(self: *Self, operator: @FieldType(syntax.EdgeView, "operator"), operator_range: @FieldType(syntax.EdgeView, "operator_range"), occurrence: u32, left: Pending, right: Pending, attributes: syntax.AttributeRange, with_attributes: bool) r.Error!t.ConnectionId {
             if (self.connection_count >= self.connections.len) return error.InvalidDocument;
-            const effective = self.interpretation.operator(edge.operator);
+            const effective = self.interpretation.operator(operator);
             if (self.doc.strict and ((self.interpretation.kind == .digraph and effective != .directed) or (self.interpretation.kind == .undigraph and effective != .undirected))) return error.UnsupportedSemantics;
             self.connections[self.connection_count] = .{
                 .left = try self.resolved(left),
                 .right = try self.resolved(right),
-                .written_operator = edge.operator,
+                .written_operator = operator,
                 .effective_operator = effective,
-                .operator_source = edge.operator_range,
+                .operator_source = operator_range,
                 .occurrence = @fromBackingInt(occurrence),
-                .attributes = edge.attributes,
+                .attributes = attributes,
             };
-            const connection_id: t.ConnectionId = @fromBackingInt(self.connection_count);
             if (partial) self.publication.coverage_data.observeConnection(self.connection_count, self.connections[self.connection_count]);
-            if (self.attribute_data.scopes.len != 0) {
+            if (with_attributes) {
                 const scope = @backingInt(self.occurrences[occurrence].scope);
                 self.attribute_data.connection_defaults[self.connection_count] = self.attribute_data.scopes[scope].edge;
-                try self.attribute_data.bind(actual, self.a, self.doc.source, self.attributes, edge.attributes, .edge, .{ .connection = connection_id }, &self.work);
             }
-            self.connection_count += 1;
+            return @fromBackingInt(self.connection_count);
         }
         fn declaration(self: *Self, target: @FieldType(t.Declaration, "target"), occurrence: u32, range: syntax.AttributeRange) r.Error!void {
             const id = try r.index(self.declarations.items.len);

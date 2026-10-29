@@ -54,7 +54,7 @@ noinline fn run(comptime enabled: bool, comptime scanner: dot.ScannerBackend, co
 pub fn main(init: std.process.Init) !void {
     @setEvalBranchQuota(100_000);
     var buffer: [4096]u8 = undefined;
-    var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
+    var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &buffer);
     const w = &output.interface;
     try w.writeAll("fixture,scanner,mode,enabled,bytes,ns,MB/s,credits,callbacks,previews,ends,session_bytes\n");
     inline for (.{ "dense", "long_unicode", "unfinished" }) |fixture| {

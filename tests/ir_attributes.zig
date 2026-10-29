@@ -233,7 +233,8 @@ test "IR attribute storage cleans up every allocation failure and honors state l
     };
     for ([_]usize{ 10, 40, 100, 180 }) |after| {
         var stop: Stop = .{ .remaining = after };
-        try std.testing.expectError(error.Cancelled, IR.lowerComplete(a, &parsed.document.?, .{ .interpretation = dot.Profile(.{}).interpretation(&parsed.document.?, .{}), .cancellation = dot.ir.Cancellation{ .context = &stop, .is_requested = Stop.poll } }));
+        const Cancellable = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .cancellation = true } } });
+        try std.testing.expectError(error.Cancelled, Cancellable.lowerComplete(a, &parsed.document.?, .{ .interpretation = dot.Profile(.{}).interpretation(&parsed.document.?, .{}), .cancellation = dot.ir.Cancellation{ .context = &stop, .is_requested = Stop.poll } }));
     }
 }
 

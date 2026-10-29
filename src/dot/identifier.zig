@@ -139,7 +139,7 @@ fn validate(raw: []const u8) error{InvalidIdentifier}!lex.Token {
 /// Native spelling helpers. Values are explicitly decoded to UTF-8; raw tree
 /// ranges and operand parts continue to refer to the original source bytes.
 pub fn ForEncoding(comptime actual: encoding.Actual) type {
-    if (actual == .utf8) return struct {
+    if (actual == .utf8 or actual == .ascii) return struct {
         pub const parts = @import("identifier.zig").parts;
         pub const form = @import("identifier.zig").form;
         pub const decodedLen = @import("identifier.zig").decodedLen;

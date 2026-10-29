@@ -94,12 +94,14 @@ The rest of this page covers DOT's own settings. Every field is also listed in
 ### Lenient syntax
 
 These three inputs are rejected by Graphviz and, by default, by this library.
-The lenient preset accepts them with a warning:
+The lenient preset accepts them with a warning. A following negative numeral
+is different: `a---1` and `a---.5` are standard `a -- -1` and `a -- -.5`,
+not long operators. They need no acceptance policy or repair.
 
 | Setting | Accepts | Read as |
 | --- | --- | --- |
 | `syntax.empty_statement` | a stray `;`, as in `a;;` | nothing (the `;` is skipped) |
-| `syntax.long_operator` | `-->` and `---` | `->` and `--` |
+| `syntax.long_operator` | `-->` and `---` not introducing a negative numeral | `->` and `--` |
 | `syntax.bare_dash.acceptance` | a lone `-` as an edge, as in `a - b` | `--` in a `graph`, `->` in a `digraph` |
 
 Each takes `.reject` (default), `.warn` (accept and warn), or `.accept` (accept

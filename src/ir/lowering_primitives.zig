@@ -175,7 +175,7 @@ pub fn Name(comptime caps: enc.Capabilities) type {
         }
         fn encode(self: *@This(), comptime actual: enc.Actual, unit: u32) r.Error!void {
             self.index = 0;
-            if (actual == .utf8) {
+            if (actual == .ascii or actual == .utf8) {
                 self.output[0] = @intCast(unit);
                 self.length = 1;
             } else {

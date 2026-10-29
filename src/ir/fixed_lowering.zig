@@ -23,8 +23,8 @@ pub fn API(comptime config: anytype) type {
                 scratch_peak: pools.LoweringScratchCapacities = .{},
             };
         }
-        pub fn DirectReturn(comptime partial: bool) type {
-            return if (config.runtime_policy) execution.Error!Result(partial) else Result(partial);
+        pub fn DirectResult(comptime partial: bool) type {
+            return if (config.runtime_policy) execution.ValidationError!Result(partial) else Result(partial);
         }
         fn checkOptions(comptime Options: type, comptime require_interpretation: bool) void {
             if (require_interpretation and !@hasField(Options, "interpretation")) @compileError("fixed IR lowering requires .interpretation from the accepting DOT profile");
@@ -34,18 +34,6 @@ pub fn API(comptime config: anytype) type {
         }
         fn limitsOf(options: anytype) r.Limits {
             return execution.directLimits(options, config.limits);
-        }
-        fn effectiveOf(options: anytype) execution.Effective {
-            const override: execution.Policy = if (config.runtime_policy and @hasField(@TypeOf(options), "policy")) execution.option(execution.Policy, options.policy) else .{};
-            return execution.resolve(baseline, override);
-        }
-        fn hookOf(options: anytype, effective: execution.Effective) ?r.Cancellation {
-            if (@hasField(@TypeOf(options), "cancellation")) {
-                if (@FieldType(@TypeOf(options), "cancellation") == void) return null;
-                if (!config.runtime_policy and !baseline.cancellation) @compileError("IR cancellation is disabled by this profile");
-                return if (effective.cancellation) options.cancellation else null;
-            }
-            return null;
         }
         fn context(doc: *const syntax.Document, memory: pools.LoweringMemory, options: anytype) r.Error!pools.Context {
             return pools.Context.init(memory, doc, limitsOf(options), if (@hasField(@TypeOf(options), "query_allocator")) options.query_allocator else null);
@@ -62,19 +50,29 @@ pub fn API(comptime config: anytype) type {
             };
         }
         pub fn bounds(comptime partial: bool, counts: syntax.Capacities, options: anytype) r.Error!pools.Bounds {
+            // Sizing accepts either operation's options, but only reads limits.
             comptime checkOptions(@TypeOf(options), false);
             return pools.loweringBounds(partial, counts, limitsOf(options));
         }
-        pub fn direct(comptime partial: bool, doc: *const syntax.Document, memory: pools.LoweringMemory, options: anytype) DirectReturn(partial) {
+        pub fn direct(comptime partial: bool, doc: *const syntax.Document, memory: pools.LoweringMemory, options: anytype) DirectResult(partial) {
             comptime checkOptions(@TypeOf(options), true);
-            const effective = effectiveOf(options);
-            if (config.runtime_policy) try execution.validate(effective);
             var report: Result(partial) = .{ .outcome = .success };
-            const hook = execution.directCancellation(options);
-            if (hook) |cancel| if (cancel.requested()) {
-                report.outcome = .{ .failure = error.Cancelled };
+            const effective = if (config.runtime_policy) try execution.effectiveFor(config, options) else baseline;
+            _ = execution.cancellationFor(config, options, effective);
+            if (effective.metering or effective.cancellation) {
+                var operation = startResolved(partial, doc, memory, options, effective) catch |err| {
+                    report.outcome = .{ .failure = err };
+                    return report;
+                };
+                defer operation.deinit();
+                report.graph = execution.finish(&operation) catch |err| blk: {
+                    report.outcome = .{ .failure = err };
+                    break :blk null;
+                };
+                report.shortfall = operation.shortfall();
+                report.scratch_peak = operation.scratchPeak();
                 return report;
-            };
+            }
             const resolved = interpretation(partial, doc, options) catch |err| {
                 report.outcome = .{ .failure = err };
                 return report;
@@ -83,7 +81,7 @@ pub fn API(comptime config: anytype) type {
                 report.outcome = .{ .failure = err };
                 return report;
             };
-            report.graph = run(partial, doc, &storage, resolved, limitsOf(options), hook) catch |err| blk: {
+            report.graph = run(partial, doc, &storage, resolved, limitsOf(options)) catch |err| blk: {
                 report.outcome = .{ .failure = err };
                 break :blk null;
             };
@@ -91,7 +89,7 @@ pub fn API(comptime config: anytype) type {
             report.scratch_peak = storage.peak;
             return report;
         }
-        fn run(comptime partial: bool, doc: *const syntax.Document, storage: *pools.Context, resolved: lower.InterpretationFor(partial), limits: r.Limits, hook: ?r.Cancellation) r.Error!lower.Output(caps, partial) {
+        fn run(comptime partial: bool, doc: *const syntax.Document, storage: *pools.Context, resolved: lower.InterpretationFor(partial), limits: r.Limits) r.Error!lower.Output(caps, partial) {
             _ = try r.index(doc.source.len);
             _ = try r.index(doc.order.len);
             const reader = @import("names.zig").reader(caps, doc.source_info.encoding);
@@ -102,9 +100,7 @@ pub fn API(comptime config: anytype) type {
                         .doc = doc,
                         .interpretation = resolved,
                         .limits = limits,
-                        // The public boundary already polled before descriptor
-                        // checks. Semantic work polls through spend as usual.
-                        .work = .{ .remaining = limits.max_work, .cancellation = hook },
+                        .work = .{ .remaining = limits.max_work, .cancellation = null },
                     };
                     builder.bindFixed(storage);
                     break :blk try builder.build();
@@ -112,16 +108,18 @@ pub fn API(comptime config: anytype) type {
             };
         }
         pub fn start(comptime partial: bool, doc: *const syntax.Document, memory: pools.LoweringMemory, options: anytype) (r.Error || execution.Error)!(if (partial) FixedPartialLoweringSession else FixedLoweringSession) {
+            const effective = if (config.runtime_policy) try execution.effectiveFor(config, options) else baseline;
+            return startResolved(partial, doc, memory, options, effective);
+        }
+        fn startResolved(comptime partial: bool, doc: *const syntax.Document, memory: pools.LoweringMemory, options: anytype, effective: execution.Effective) r.Error!(if (partial) FixedPartialLoweringSession else FixedLoweringSession) {
             comptime checkOptions(@TypeOf(options), true);
             const S = if (partial) FixedPartialLoweringSession else FixedLoweringSession;
-            const effective = effectiveOf(options);
-            if (config.runtime_policy) try execution.validate(effective);
-            const hook = hookOf(options, effective);
+            const hook = execution.cancellationFor(config, options, effective);
             if (hook) |cancel| if (cancel.requested()) return error.Cancelled;
             var normalized: S.Options = .{ .interpretation = try interpretation(partial, doc, options), .limits = limitsOf(options) };
             if (@FieldType(S.Options, "cancellation") != void) normalized.cancellation = hook;
             if (config.runtime_policy and @hasField(@TypeOf(options), "policy")) normalized.policy = execution.option(execution.Policy, options.policy);
-            return S.init(try context(doc, memory, options), doc, normalized);
+            return execution.initLoweringResolved(S, try context(doc, memory, options), doc, normalized, effective);
         }
     };
 }

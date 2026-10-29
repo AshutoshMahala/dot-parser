@@ -130,7 +130,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.gpa);
     if (args.len > 2 or (args.len == 2 and !std.mem.eql(u8, args[1], "--attributes-only"))) return error.InvalidArguments;
     var buffer: [4096]u8 = undefined;
-    var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
+    var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &buffer);
     if (args.len == 2) {
         try runAttributes(init, &output.interface);
         return output.interface.flush();

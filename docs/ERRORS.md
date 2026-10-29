@@ -257,7 +257,10 @@ try dot.console.printDiagnostics(init.io, bag.items(), .{
 
 This optional helper prints numbered boxes in bag order and flushes before
 returning. It uses a 4 KiB stack buffer, no heap allocation, and the IO you
-provide. Empty input performs no IO; write and flush failures return an error.
+provide, including its stderr lock. Empty input performs no IO. Write failures
+return `WriteFailed`; IO cancellation returns `Canceled`. The lock coordinates
+with other writers using the same IO (including progress output); it does not
+synchronize unrelated IO instances. Custom IO must implement stderr locking.
 It does not add a summary, sort findings, detect terminal capabilities or change
 the parse result. The same helper is available on `markup.console`,
 `string_processor.console` and a composed `Parser.console`.

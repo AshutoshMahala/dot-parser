@@ -8,7 +8,19 @@ test {
 test "string diagnostic printer is optional and propagates IO failures" {
     try s.console.printDiagnostics(.failing, &.{}, .{});
     const finding: s.Diagnostic = .{ .code = .unequal, .span = .{ .start = 0, .len = 1 } };
-    try testing.expectError(error.WriteFailed, s.console.printDiagnostics(.failing, &.{finding}, .{}));
+    const Failure = struct {
+        writer: std.Io.File.Writer = .initStreaming(.stderr(), .failing, &.{}),
+        fn lock(raw: ?*anyopaque, _: ?std.Io.Terminal.Mode) std.Io.Cancelable!std.Io.LockedStderr {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            return .{ .file_writer = &self.writer, .terminal_mode = .no_color };
+        }
+        fn unlock(_: ?*anyopaque) void {}
+    };
+    var failure: Failure = .{};
+    var vtable = std.Io.failing.vtable.*;
+    vtable.lockStderr = Failure.lock;
+    vtable.unlockStderr = Failure.unlock;
+    try testing.expectError(error.WriteFailed, s.console.printDiagnostics(.{ .userdata = &failure, .vtable = &vtable }, &.{finding}, .{}));
 }
 
 test "consumer string views expose checked local spans" {

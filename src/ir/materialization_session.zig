@@ -221,11 +221,7 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
             return .{ .work_used = used, .total_work = self.total_work, .pairs_visited = self.visited, .edges_created = if (self.taken) self.target else @intCast(self.stored.items.len), .outcome = self.outcome };
         }
         inline fn poll(self: *Self) bool {
-            if (has_cancellation) if (self.cancellation) |c| {
-                if (c.requested()) self.cancel();
-                return self.outcome == null;
-            };
-            return true;
+            return @import("execution_policy.zig").pollSession(self, has_cancellation);
         }
         /// One credit is one bounded state transition: a record/probe/AVL node,
         /// a source code unit, or <=64 bytes of buffer copying/initialization.

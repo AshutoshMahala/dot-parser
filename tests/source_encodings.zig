@@ -3,6 +3,65 @@ const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 const gpa = std.testing.allocator;
 
+test "native scanners preserve negative endpoints adjacent to undirected operators" {
+    inline for (.{ .scalar, .block }) |scanner| {
+        const P = dot.Profile(.{ .source_encodings = &.{ .utf16, .utf32 }, .policy = .{ .scanner = scanner } });
+        inline for (.{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+            var bytes: [256]u8 = undefined;
+            const source = encode(actual, "graph { a---1; b---.5 }", &bytes, true);
+            var bag: dot.FixedDiagnosticBag(4) = .{};
+            var parsed = try P.parseAndValidate(gpa, source, bag.sink(), .{});
+            defer parsed.deinit(gpa);
+            try std.testing.expect(parsed.documentValid());
+            try std.testing.expectEqual(@as(usize, 0), bag.items().len);
+            const doc = &parsed.document.?;
+            var expected: [16]u8 = undefined;
+            for (doc.edges, [_][]const u8{ "-1", "-.5" }) |edge, name| {
+                try std.testing.expectEqualSlices(u8, encode(actual, name, &expected, false), doc.text(doc.nodeReference(edge.right).?.identifier));
+            }
+        }
+    }
+}
+
+test "UTF-16 escaped surrogate traversal never consumes a non-partner or closing quote" {
+    inline for (.{ .utf16le, .utf16be }) |actual| {
+        const E = dot.encoding.Reader(actual);
+        const H = dot.identifier.ForEncoding(actual);
+        inline for (.{ @as(u16, 0xd800), @as(u16, 0xdbff) }) |high| {
+            inline for (.{ @as(?u16, null), @as(?u16, 'x'), @as(?u16, 0xdc00), @as(?u16, 0xdfff) }) |second| {
+                var bytes: [16]u8 = undefined;
+                var n: usize = 0;
+                for ([_]u16{ '"', '\\', high }) |unit| {
+                    std.mem.writeInt(u16, bytes[n..][0..2], unit, E.endian);
+                    n += 2;
+                }
+                if (second) |unit| {
+                    std.mem.writeInt(u16, bytes[n..][0..2], unit, E.endian);
+                    n += 2;
+                }
+                std.mem.writeInt(u16, bytes[n..][0..2], '"', E.endian);
+                n += 2;
+                var parts = try H.parts(bytes[0..n], .{ .start = 0, .len = @intCast(n) });
+                const part = parts.next().?;
+                try std.testing.expectEqual(@as(u32, @intCast(n)), part.raw.len);
+                try std.testing.expectEqual(@as(u32, @intCast(n - 4)), part.inner.len);
+                try std.testing.expect(parts.next() == null);
+
+                const P = dot.Profile(.{ .source_encodings = &.{.utf16}, .policy = .{ .validation = .{ .invalid_encoding = .err, .repeated_attribute = .warning } } });
+                var source: [256]u8 = undefined;
+                const prefix = encode(actual, "graph { a[", &source, false).len;
+                @memcpy(source[prefix..][0..n], bytes[0..n]);
+                const suffix = encode(actual, "=1] }", source[prefix + n ..], false).len;
+                var bag: dot.FixedDiagnosticBag(8) = .{};
+                var parsed = try P.parseAndValidate(gpa, source[0 .. prefix + n + suffix], bag.sink(), .{ .encoding = actual });
+                defer parsed.deinit(gpa);
+                try std.testing.expect(parsed.document != null);
+                try std.testing.expectEqual(second != null and second.? >= 0xdc00 and second.? <= 0xdfff, parsed.documentValid());
+            }
+        }
+    }
+}
+
 test "native DOT Graphviz catalog compares logical case-sensitive keys" {
     const P = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .policy = .{ .validation = .{ .graphviz = .{ .unknown_attribute = .warning } } } });
     inline for (.{ .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {

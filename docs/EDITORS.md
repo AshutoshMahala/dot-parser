@@ -111,6 +111,8 @@ it does not mean every byte within the range lacks a representation.
 **not** a safe place to restart parsing, and is null if recovery reached the
 end despite errors. A missing token at EOF has no corresponding source bytes;
 consult diagnostics and completeness as well as the ranges.
+The root closing brace is retained once consumed, even if cancellation happens
+before the final EOF check. Its presence does not claim that trailing input was checked.
 If the file fails before a `graph` or `digraph` header has begun, there is no
 document.
 

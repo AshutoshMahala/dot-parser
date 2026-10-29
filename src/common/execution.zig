@@ -7,7 +7,8 @@ pub const OnError = enum { fail_fast, collect };
 
 /// Borrowed, non-failing request predicate. Parsing polls at operation entry
 /// and at most Policy.execution.cancellation_interval work steps apart.
-/// Hooks must not reenter the session. Cross-thread and signal adapters own
+/// DOT and IR hooks may call their session's cancel() synchronously; other
+/// session re-entry (advance/run/reset/deinit) is forbidden. Cross-thread and signal adapters own
 /// synchronization and signal safety; the parser does not make plain flags safe.
 pub const Cancellation = struct {
     context: ?*anyopaque,

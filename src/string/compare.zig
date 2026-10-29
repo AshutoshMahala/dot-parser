@@ -45,7 +45,7 @@ pub fn State(comptime unicode: bool, comptime ascii: bool) type {
                 .compare => {
                     // Keep the two reads local in Small, but leave the larger
                     // step/driver boundaries and speed builds to the optimizer.
-                    const read_call: @import("std").builtin.CallModifier = if (@import("builtin").mode == .small) .always_inline else .auto;
+                    const read_call: @import("std").lang.CallModifier = if (@import("builtin").mode == .small) .always_inline else .auto;
                     const a = @call(read_call, next, .{ unicode, @TypeOf(value).encoding, value.bytes, &self.left, if (unicode) &self.left_fold else {}, comparison });
                     if (a == .invalid) {
                         context.invalidValidator();

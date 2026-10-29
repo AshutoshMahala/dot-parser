@@ -107,7 +107,7 @@ test "observation kinds share dispatch but are independently selected and charge
 }
 
 test "aborted consumers do not schedule unused early observations" {
-    const input = "graph { a[x=]; b; c; d -- e; f=g; h -- i -- j; subgraph s { k; } l[x=y]; }";
+    const input = "graph { a[x=]; b; c; d -- e; f=g; h -- i -- j; subgraph s { k; } l[x=y]; node [x=1]; graph [y=2]; edge [z=3]; }";
     inline for (.{ .scalar, .block }) |scanner| inline for (.{ false, true }) |begins| {
         var work: [2]usize = .{ 0, 0 };
         var observation_count: usize = 0;

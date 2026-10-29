@@ -222,6 +222,11 @@ semantics; a queued preview may never be delivered if the operation is stopped.
 Cancellation abandons the observation, not a scanner failure already found:
 that finding is reported first. An unrecoverable failure remains `invalid_syntax`;
 if recovery was possible, cancellation stops it with the finding retained.
+This includes ambiguous-numeral findings held behind a token-end preview.
+An event consumer returning `.stop` is a different boundary: if it stops on an
+EOF preview, the pending syntax finding has not yet been delivered. `reset()`
+and `deinit()` use cancellation cleanup and can deliver a pending finding to
+the old diagnostic sink; keep that sink alive and clear reusable bags after reset.
 Callback work remains caller work. Enabling previews adds fixed-size state and
 callback work, but no parser allocation, source copy or nesting-frame growth.
 Disabled profiles compile that state, scanner-boundary bookkeeping and dispatch

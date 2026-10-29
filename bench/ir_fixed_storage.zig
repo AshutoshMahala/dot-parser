@@ -5,7 +5,8 @@ const std = @import("std");
 const dot = @import("dot_parser");
 const suite = @import("ir_lowering_sessions.zig");
 const Dot = dot.Profile(.{});
-const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
+const IR = dot.ir.Lowering(.{});
+const Scheduled = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
 const Route = enum { growable, fixed_used, fixed_bounds, fixed_session };
 const Buffers = struct {
     graph: []align(16) u8,
@@ -28,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &buffer);
     const out = &output.interface;
-    try out.print("graph_bytes,{d}\nlowering_session_bytes,{d}\nfixed_lowering_session_bytes,{d}\n", .{ @sizeOf(IR.Graph), @sizeOf(IR.LoweringSession), @sizeOf(IR.FixedLoweringSession) });
+    try out.print("graph_bytes,{d}\nlowering_session_bytes,{d}\nfixed_lowering_session_bytes,{d}\n", .{ @sizeOf(IR.Graph), @sizeOf(Scheduled.LoweringSession), @sizeOf(Scheduled.FixedLoweringSession) });
     try out.writeAll("case,route,ms,allocation_calls,retained_bytes,peak_bytes,credits,nodes,connections\n");
     for (std.meta.tags(suite.Case)) |case| {
         var source = std.Io.Writer.Allocating.init(init.gpa);
@@ -66,7 +67,7 @@ pub fn main(init: std.process.Init) !void {
             const i = (round + offset) % 4;
             const route: Route = @fromBackingInt(@intCast(i));
             const start = std.Io.Clock.Timestamp.now(init.io, .awake);
-            var session: ?IR.FixedLoweringSession = null;
+            var session: ?Scheduled.FixedLoweringSession = null;
             var graph = switch (route) {
                 .growable => try IR.lowerComplete(init.gpa, doc, options),
                 .fixed_used, .fixed_bounds => blk: {
@@ -75,7 +76,7 @@ pub fn main(init: std.process.Init) !void {
                     break :blk result.graph.?;
                 },
                 .fixed_session => blk: {
-                    session = try IR.loweringSessionIn(doc, used.bound, options);
+                    session = try Scheduled.loweringSessionIn(doc, used.bound, options);
                     const progress = session.?.run();
                     credits[i] = progress.total_work;
                     break :blk try session.?.takeResult();

@@ -8,7 +8,7 @@ const long: [4096]u8 = @splat('x');
 
 pub fn main(init: std.process.Init) !void {
     var out_buffer: [4096]u8 = undefined;
-    var output: std.Io.File.Writer = .init(.stdout(), init.io, &out_buffer);
+    var output: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &out_buffer);
     const out = &output.interface;
     try out.writeAll("value_case,values,value_bytes,operation,ns_per_value,extra_kind_bytes,retained_bytes\n");
     inline for (.{

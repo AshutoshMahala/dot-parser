@@ -14,7 +14,7 @@ fn selectedBackend() dot.ScannerBackend {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     var buffer: [4096]u8 = undefined;
-    var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    var output: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &buffer);
     try output.interface.print("scanner backend: {s}\n", .{@tagName(Parser.baseline.scanner)});
     inline for (.{ false, true }) |nested| {
         for ([_]usize{ 1000, 10000, 100000 }) |n| {

@@ -41,7 +41,7 @@ noinline fn run(comptime api: type, comptime mode: Mode, comptime expected: []co
 pub fn main(init: std.process.Init) !void {
     @setEvalBranchQuota(100_000);
     var buffer: [4096]u8 = undefined;
-    var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
+    var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &buffer);
     const w = &output.interface;
     const csv = try report.csvMode(init);
     if (csv) try w.writeAll(report.header);

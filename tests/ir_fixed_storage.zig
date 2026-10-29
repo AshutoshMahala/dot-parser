@@ -5,6 +5,7 @@ const expect = std.testing.expect;
 const equal = std.testing.expectEqualDeep;
 const Dot = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .policy = .{ .retention = .{ .partial = true } } });
 const IR = dot.ir.Lowering(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .policy = .{ .execution = .{ .metering = true } } });
+const Plain = dot.ir.Lowering(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 } });
 
 const Memory = struct {
     retained: []align(16) u8,
@@ -40,13 +41,13 @@ fn check(comptime partial: bool, source: []const u8) !void {
     defer parsed.deinit(a);
     const doc = &parsed.document.?;
     const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
-    var expected = if (partial) try IR.lowerPartial(a, doc, options) else try IR.lowerComplete(a, doc, options);
+    var expected = if (partial) try Plain.lowerPartial(a, doc, options) else try Plain.lowerComplete(a, doc, options);
     defer expected.deinit();
     const bounds = if (partial) try IR.partialLoweringBounds(doc.capacities(), options) else try IR.loweringBounds(doc.capacities(), options);
     // Retained exact fit, scratch conservatively sized. Neither is automatic.
     const memory = try Memory.init(expected.capacities(), bounds.scratch);
     defer memory.deinit();
-    var direct = if (partial) IR.lowerPartialIn(doc, memory.bound, options) else IR.lowerCompleteIn(doc, memory.bound, options);
+    var direct = if (partial) Plain.lowerPartialIn(doc, memory.bound, options) else Plain.lowerCompleteIn(doc, memory.bound, options);
     try equal(dot.ir.LoweringOutcome.success, direct.outcome);
     try expect(direct.shortfall == null);
     if (partial) {
@@ -97,7 +98,7 @@ fn check(comptime partial: bool, source: []const u8) !void {
     // Verify the conservative retained bound too, not just scratch sizing.
     const bounded = try Memory.init(bounds.graph, bounds.scratch);
     defer bounded.deinit();
-    const result = if (partial) IR.lowerPartialIn(doc, bounded.bound, options) else IR.lowerCompleteIn(doc, bounded.bound, options);
+    const result = if (partial) Plain.lowerPartialIn(doc, bounded.bound, options) else Plain.lowerCompleteIn(doc, bounded.bound, options);
     try equal(dot.ir.LoweringOutcome.success, result.outcome);
     try equal(expected.capacities(), result.graph.?.capacities());
     try bounded.canaries();
@@ -139,7 +140,7 @@ test "fixed helpers reserve explicit inline arrays without initializing the back
     var parsed = try Dot.parseAndValidate(a, "digraph {a->b}", dot.diagnostic.discard, .{});
     defer parsed.deinit(a);
     const doc = &parsed.document.?;
-    const result = IR.lowerCompleteIn(doc, memory, .{ .interpretation = Dot.interpretation(doc, .{}) });
+    const result = Plain.lowerCompleteIn(doc, memory, .{ .interpretation = Dot.interpretation(doc, .{}) });
     try equal(dot.ir.LoweringOutcome.success, result.outcome);
     // No operation state, input pools or temporary storage survives in the IR.
     @memset(&scratch.bytes, 0xcd);
@@ -168,13 +169,13 @@ test "every fixed retained and scratch pool reports an exact shortfall without a
     defer parsed.deinit(a);
     const doc = &parsed.document.?;
     const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
-    var expected = try IR.lowerPartial(a, doc, options);
+    var expected = try Plain.lowerPartial(a, doc, options);
     defer expected.deinit();
     const counts = expected.capacities();
     const bounds = try IR.partialLoweringBounds(doc.capacities(), options);
     const first_memory = try Memory.init(counts, bounds.scratch);
     defer first_memory.deinit();
-    const first = IR.lowerPartialIn(doc, first_memory.bound, options);
+    const first = Plain.lowerPartialIn(doc, first_memory.bound, options);
     try equal(dot.ir.LoweringOutcome.success, first.outcome);
     const peaks = first.scratch_peak;
     const resources = [_]dot.ir.Resource{ .node_pool, .scope_pool, .occurrence_pool, .mention_pool, .connection_pool, .declaration_pool, .attribute_pool, .attribute_key_pool, .attribute_state_pool, .coverage_gap_pool };
@@ -184,7 +185,7 @@ test "every fixed retained and scratch pool reports an exact shortfall without a
         @field(reduced, field) -= 1;
         const memory = try Memory.init(reduced, peaks);
         defer memory.deinit();
-        const direct = IR.lowerPartialIn(doc, memory.bound, options);
+        const direct = Plain.lowerPartialIn(doc, memory.bound, options);
         try equal(dot.ir.LoweringOutcome{ .failure = error.PoolExhausted }, direct.outcome);
         try expect(direct.graph == null);
         try equal(resource, direct.shortfall.?.resource);
@@ -205,7 +206,7 @@ test "every fixed retained and scratch pool reports an exact shortfall without a
         @field(reduced, field) -= 1;
         const memory = try Memory.init(counts, reduced);
         defer memory.deinit();
-        const direct = IR.lowerPartialIn(doc, memory.bound, options);
+        const direct = Plain.lowerPartialIn(doc, memory.bound, options);
         try equal(dot.ir.LoweringOutcome{ .failure = error.PoolExhausted }, direct.outcome);
         try expect(direct.graph == null);
         try equal(resource, direct.shortfall.?.resource);
@@ -228,7 +229,7 @@ test "fixed rotations check semantic limits before each pool write including int
     defer parsed.deinit(a);
     const doc = &parsed.document.?;
     const interpretation = Dot.interpretation(doc, .{});
-    var expected = try IR.lowerComplete(a, doc, .{ .interpretation = interpretation });
+    var expected = try Plain.lowerComplete(a, doc, .{ .interpretation = interpretation });
     defer expected.deinit();
     const bounds = try IR.loweringBounds(doc.capacities(), .{});
     const counts = expected.capacities();
@@ -237,10 +238,10 @@ test "fixed rotations check semantic limits before each pool write including int
         reduced.attribute_states = @intCast(limit);
         const memory = try Memory.init(reduced, bounds.scratch);
         defer memory.deinit();
-        const ordinary = IR.lowerCompleteIn(doc, memory.bound, .{ .interpretation = interpretation });
+        const ordinary = Plain.lowerCompleteIn(doc, memory.bound, .{ .interpretation = interpretation });
         try equal(dot.ir.LoweringOutcome{ .failure = error.PoolExhausted }, ordinary.outcome);
         const options = .{ .interpretation = interpretation, .limits = .{ .max_attribute_states = @as(u32, @intCast(limit)) } };
-        const limited = IR.lowerCompleteIn(doc, memory.bound, options);
+        const limited = Plain.lowerCompleteIn(doc, memory.bound, options);
         try equal(dot.ir.LoweringOutcome{ .failure = error.AttributeStateLimit }, limited.outcome);
         try expect(limited.shortfall == null and limited.graph == null);
         var session = try IR.loweringSessionIn(doc, memory.bound, options);
@@ -273,16 +274,16 @@ test "fixed layout rejects malformed regions, overlap and mismatched envelopes b
     const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
     var mixed = memory.bound;
     mixed.scratch.graph_capacities.nodes += 1;
-    try equal(dot.ir.LoweringOutcome{ .failure = error.InvalidStorage }, IR.lowerCompleteIn(doc, mixed, options).outcome);
+    try equal(dot.ir.LoweringOutcome{ .failure = error.InvalidStorage }, Plain.lowerCompleteIn(doc, mixed, options).outcome);
     const overlap = try layout.bind(&source, memory.temporary);
-    try equal(dot.ir.LoweringOutcome{ .failure = error.InvalidStorage }, IR.lowerCompleteIn(doc, overlap, options).outcome);
+    try equal(dot.ir.LoweringOutcome{ .failure = error.InvalidStorage }, Plain.lowerCompleteIn(doc, overlap, options).outcome);
     try std.testing.expectEqualStrings(text, source[0..text.len]);
     const bytes = layout.graph_bytes + layout.scratch_bytes;
-    const limited = IR.lowerCompleteIn(doc, memory.bound, .{ .interpretation = options.interpretation, .limits = .{ .max_bytes = bytes - 1 } });
+    const limited = Plain.lowerCompleteIn(doc, memory.bound, .{ .interpretation = options.interpretation, .limits = .{ .max_bytes = bytes - 1 } });
     try equal(dot.ir.LoweringOutcome{ .failure = error.MemoryLimit }, limited.outcome);
     for (memory.retained) |byte| try equal(@as(u8, 0xcd), byte);
     for (memory.temporary) |byte| try equal(@as(u8, 0xcd), byte);
-    try equal(dot.ir.LoweringOutcome.success, IR.lowerCompleteIn(doc, memory.bound, .{ .interpretation = options.interpretation, .limits = .{ .max_bytes = bytes } }).outcome);
+    try equal(dot.ir.LoweringOutcome.success, Plain.lowerCompleteIn(doc, memory.bound, .{ .interpretation = options.interpretation, .limits = .{ .max_bytes = bytes } }).outcome);
 }
 
 test "fixed construction never calls the optional query allocator and absent storage is explicit" {
@@ -294,14 +295,14 @@ test "fixed construction never calls the optional query allocator and absent sto
     const memory = try Memory.init(bounds.graph, bounds.scratch);
     defer memory.deinit();
     var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = 0 });
-    const trapped = IR.lowerCompleteIn(doc, memory.bound, .{ .interpretation = options.interpretation, .query_allocator = failing.allocator() });
+    const trapped = Plain.lowerCompleteIn(doc, memory.bound, .{ .interpretation = options.interpretation, .query_allocator = failing.allocator() });
     try equal(dot.ir.LoweringOutcome.success, trapped.outcome);
     try equal(@as(usize, 0), failing.alloc_index);
     var session = try IR.loweringSessionIn(doc, memory.bound, .{ .interpretation = options.interpretation, .query_allocator = failing.allocator() });
     try equal(dot.ir.LoweringOutcome.success, session.run().outcome.?);
     session.deinit();
     try equal(@as(usize, 0), failing.alloc_index);
-    const plain = IR.lowerCompleteIn(doc, memory.bound, options);
+    const plain = Plain.lowerCompleteIn(doc, memory.bound, options);
     try equal(dot.ir.LoweringOutcome.success, plain.outcome);
     {
         var edges = try plain.graph.?.edgeIterator(.{});
@@ -311,7 +312,7 @@ test "fixed construction never calls the optional query allocator and absent sto
     }
     try std.testing.expectError(error.StorageRequired, plain.graph.?.materialize(.{}));
     // End all borrows before rebuilding into the same storage.
-    const supplied = IR.lowerCompleteIn(doc, memory.bound, .{ .interpretation = options.interpretation, .query_allocator = a });
+    const supplied = Plain.lowerCompleteIn(doc, memory.bound, .{ .interpretation = options.interpretation, .query_allocator = a });
     try equal(dot.ir.LoweringOutcome.success, supplied.outcome);
     var expanded = try supplied.graph.?.materialize(.{});
     defer expanded.deinit();
@@ -327,7 +328,7 @@ test "fixed graphs report missing storage in later streams attribute enumeration
         const bounds = try IR.loweringBounds(doc.capacities(), options);
         const memory = try Memory.init(bounds.graph, bounds.scratch);
         defer memory.deinit();
-        var lowered = IR.lowerCompleteIn(doc, memory.bound, options);
+        var lowered = Plain.lowerCompleteIn(doc, memory.bound, options);
         try equal(dot.ir.LoweringOutcome.success, lowered.outcome);
         const graph = &lowered.graph.?;
         const from = (try graph.findNode("a")).?;
@@ -419,7 +420,7 @@ test "fixed sessions preserve work limits cancellation intervals zero grants and
     defer limited.deinit();
     try equal(dot.ir.LoweringOutcome{ .failure = error.WorkLimit }, limited.run().outcome.?);
     try expect(limited.shortfall() == null);
-    try std.testing.expectError(error.InvalidCancellationInterval, C.lowerCompleteIn(doc, memory.bound, .{ .interpretation = interpretation, .policy = .{ .execution = .{ .cancellation_interval = 0 } } }));
+    try std.testing.expectError(error.InvalidCancellationInterval, C.loweringSessionIn(doc, memory.bound, .{ .interpretation = interpretation, .policy = .{ .execution = .{ .cancellation_interval = 0 } } }));
     var disabled = try C.loweringSessionIn(doc, memory.bound, .{ .interpretation = interpretation, .policy = .{ .execution = .{ .metering = false } } });
     defer disabled.deinit();
     try std.testing.expectError(error.MeteringDisabled, disabled.advance(1));
@@ -496,14 +497,14 @@ test "zero fixed pools and complete admission fail explicitly without publishing
     var parsed = try Dot.parseAndValidate(a, "digraph {}", dot.diagnostic.discard, .{});
     defer parsed.deinit(a);
     const doc = &parsed.document.?;
-    const result = IR.lowerCompleteIn(doc, memory, .{ .interpretation = Dot.interpretation(doc, .{}) });
+    const result = Plain.lowerCompleteIn(doc, memory, .{ .interpretation = Dot.interpretation(doc, .{}) });
     try equal(dot.ir.LoweringOutcome{ .failure = error.PoolExhausted }, result.outcome);
     try expect(result.graph == null);
     try equal(dot.ir.Resource.occurrence_pool, result.shortfall.?.resource);
     var partial = try Dot.parseAndValidate(a, "digraph {a", dot.diagnostic.discard, .{});
     defer partial.deinit(a);
     const incomplete = &partial.document.?;
-    const invalid = IR.lowerCompleteIn(incomplete, memory, .{ .interpretation = Dot.interpretation(incomplete, .{}) });
+    const invalid = Plain.lowerCompleteIn(incomplete, memory, .{ .interpretation = Dot.interpretation(incomplete, .{}) });
     try equal(dot.ir.LoweringOutcome{ .failure = error.IncompleteDocument }, invalid.outcome);
     try expect(invalid.shortfall == null);
 }

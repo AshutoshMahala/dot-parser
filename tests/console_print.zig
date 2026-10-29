@@ -8,15 +8,36 @@ const Capture = struct {
     len: usize = 0,
     calls: usize = 0,
     max_write: usize = std.math.maxInt(usize),
+    wrong_file: bool = false,
+    locked: bool = false,
+    locks: usize = 0,
+    unlocks: usize = 0,
+    failure: enum { none, write, cancel } = .none,
+    file_writer: std.Io.File.Writer = undefined,
 
     const vtable: std.Io.VTable = blk: {
         var table = std.Io.failing.vtable.*;
         table.operate = operate;
+        table.lockStderr = lock;
+        table.unlockStderr = unlock;
         break :blk table;
     };
 
     fn io(self: *Capture) std.Io {
         return .{ .userdata = self, .vtable = &vtable };
+    }
+
+    fn lock(context: ?*anyopaque, _: ?std.Io.Terminal.Mode) std.Io.Cancelable!std.Io.LockedStderr {
+        const self: *Capture = @ptrCast(@alignCast(context.?));
+        self.locked = true;
+        self.locks += 1;
+        self.file_writer = .initStreaming(.stderr(), self.io(), &.{});
+        return .{ .file_writer = &self.file_writer, .terminal_mode = .no_color };
+    }
+    fn unlock(context: ?*anyopaque) void {
+        const self: *Capture = @ptrCast(@alignCast(context.?));
+        self.locked = false;
+        self.unlocks += 1;
     }
 
     fn operate(context: ?*anyopaque, operation: std.Io.Operation) std.Io.Cancelable!std.Io.Operation.Result {
@@ -25,8 +46,13 @@ const Capture = struct {
             .file_write_streaming => |request| request,
             else => unreachable,
         };
-        std.debug.assert(request.file.handle == std.Io.File.stderr().handle);
+        self.wrong_file = self.wrong_file or request.file.handle != std.Io.File.stderr().handle or !self.locked;
         self.calls += 1;
+        switch (self.failure) {
+            .none => {},
+            .write => return .{ .file_write_streaming = error.Unexpected },
+            .cancel => return error.Canceled,
+        }
         const before = self.len;
         var left = self.max_write;
         self.append(request.header, &left);
@@ -54,6 +80,9 @@ fn expectPrinted(comptime R: type, items: anytype, options: dot.console.RenderOp
     try R.printDiagnostics(capture.io(), items, options);
     try std.testing.expectEqualStrings(expected.buffered(), capture.bytes[0..capture.len]);
     try std.testing.expect(capture.calls > 0);
+    try std.testing.expect(!capture.wrong_file and !capture.locked);
+    try std.testing.expectEqual(@as(usize, 1), capture.locks);
+    try std.testing.expectEqual(capture.locks, capture.unlocks);
 }
 
 test "diagnostic printing flushes numbered boxes in order through caller IO" {
@@ -76,9 +105,14 @@ test "diagnostic printing skips IO for empty input and propagates write failures
         .{ .code = .syntax_unexpected_token, .span = .{ .start = 0, .len = 1 } },
     };
     // A short message fails on the final flush; a long list fails during rendering.
-    try std.testing.expectError(error.WriteFailed, dot.console.printDiagnostics(.failing, &findings, .{}));
+    var failure: Capture = .{ .failure = .write };
+    try std.testing.expectError(error.WriteFailed, dot.console.printDiagnostics(failure.io(), &findings, .{}));
     const many: [40]dot.Diagnostic = @splat(findings[0]);
-    try std.testing.expectError(error.WriteFailed, dot.console.printDiagnostics(.failing, &many, .{}));
+    try std.testing.expectError(error.WriteFailed, dot.console.printDiagnostics(failure.io(), &many, .{}));
+    failure.failure = .cancel;
+    try std.testing.expectError(error.Canceled, dot.console.printDiagnostics(failure.io(), &findings, .{}));
+    try std.testing.expectError(error.Canceled, dot.console.printDiagnostics(failure.io(), &many, .{}));
+    try std.testing.expectEqual(failure.locks, failure.unlocks);
 }
 
 test "markup and composed diagnostic printing use their own shared adapters" {
@@ -94,5 +128,6 @@ test "markup and composed diagnostic printing use their own shared adapters" {
     };
     try Parser.console.printDiagnostics(.failing, &.{}, .{});
     try expectPrinted(Parser.console, &findings, .{ .source = "</b>" }, 7);
-    try std.testing.expectError(error.WriteFailed, Parser.console.printDiagnostics(.failing, &findings, .{}));
+    var failure: Capture = .{ .failure = .write };
+    try std.testing.expectError(error.WriteFailed, Parser.console.printDiagnostics(failure.io(), &findings, .{}));
 }

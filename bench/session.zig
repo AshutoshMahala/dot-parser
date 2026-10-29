@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
         .edges = &.{},
     };
     var buffer: [4096]u8 = undefined;
-    var file: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    var file: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &buffer);
     try file.interface.print("scanner backend: {s}\n", .{@tagName(Parser.baseline.scanner)});
     inline for (.{ false, true }) |metering| inline for (.{ false, true }) |cancellation| {
         const Session = dot.Profile(.{ .policy = .{ .scanner = selectedBackend(), .execution = .{ .metering = metering, .cancellation = cancellation } } }).Session;

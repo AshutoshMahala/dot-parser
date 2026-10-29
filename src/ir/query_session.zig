@@ -199,11 +199,7 @@ pub fn Bound(comptime Graph: type, comptime kind: Kind, comptime config: anytype
             return .{ .work_used = used, .total_work = self.total_work, .outcome = self.outcome };
         }
         inline fn poll(self: *Self) bool {
-            if (has_cancellation) if (self.cancellation) |c| {
-                if (c.requested()) self.cancel();
-                return self.outcome == null;
-            };
-            return true;
+            return execution.pollSession(self, has_cancellation);
         }
         inline fn finish(self: *Self, found: bool) void {
             if (partial) {

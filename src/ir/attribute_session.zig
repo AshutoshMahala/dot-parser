@@ -452,7 +452,7 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                                     return;
                                 }
                                 const e = self.edgeRecord();
-                                const later_set = if (self.graph._coverage.last_set_connection) |last| last > @backingInt(id) else false;
+                                const later_set = self.graph._coverage.setConnectionAfter(id);
                                 if (!later_set and !(e.operator == .undirected and e.from != e.to and self.port_key != null)) after = @backingInt(id);
                             }
                         }
@@ -500,11 +500,7 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
             return .{ .work_used = used, .total_work = self.total_work, .outcome = self.outcome };
         }
         fn poll(self: *Self) bool {
-            if (has_hook) if (self.cancellation) |hook| {
-                if (hook.requested()) self.cancel();
-                return self.outcome == null;
-            };
-            return true;
+            return execution.pollSession(self, has_hook);
         }
         pub fn advance(self: *Self, budget: u32) (if (config.runtime_policy) execution.Error!Progress else Progress) {
             if (config.runtime_policy) {

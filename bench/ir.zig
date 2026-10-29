@@ -7,7 +7,7 @@ const IR = dot.ir.Lowering(.{});
 const Case = enum { singletons, small_sets, reopened, strict_reopened, nested, symbolic_product };
 pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
-    var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    var output: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &buffer);
     const w = &output.interface;
     try w.writeAll("case,source_bytes,nodes,connections,lower_ms,lower_MB_s,retained_bytes,peak_requested_bytes,arena_capacity_bytes,materialize_ms,edges,materialize_peak_bytes,stream_ms,stream_edges,stream_peak_bytes\n");
     inline for (std.meta.tags(Case)) |case| {

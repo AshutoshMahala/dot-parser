@@ -16,7 +16,7 @@ pub fn main(init: std.process.Init) !void {
     @setEvalBranchQuota(50_000);
     const allocator = init.arena.allocator();
     var buffer: [4096]u8 = undefined;
-    var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
+    var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &buffer);
     const writer = &output.interface;
     const args = try init.minimal.args.toSlice(allocator);
     if (args.len > 2 or (args.len == 2 and !std.mem.eql(u8, args[1], "--rules-only") and !std.mem.eql(u8, args[1], "--validation-only") and !std.mem.eql(u8, args[1], "--scopes-only") and !std.mem.eql(u8, args[1], "--graphviz-only"))) return error.InvalidArguments;

@@ -57,7 +57,7 @@ noinline fn run(comptime P: type, allocator: std.mem.Allocator, source: []const 
 
 pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
-    var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
+    var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &buffer);
     const writer = &output.interface;
     inline for (.{ "plain", "labels", "invalid", "large_first" }) |fixture| {
         var source: std.ArrayList(u8) = .empty;

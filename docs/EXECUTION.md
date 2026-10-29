@@ -147,9 +147,16 @@ var session = Session.init(source, .{ .document = storage.storage() }, bag.sink(
 defer session.deinit();
 ```
 
-A cancelled parse ends with `outcome == .cancelled`, no document, and no
-diagnostic. If the parse had already finished, a late cancel doesn't replace
-its result.
+Cancellation adds no diagnostic of its own. Findings already discovered are
+preserved; an already-discovered terminal syntax error keeps its syntax outcome.
+Otherwise the parse ends with `outcome == .cancelled` and, by default, no document.
+If parsing already finished, a late cancel does not replace its result.
+
+A DOT or IR session's cancellation hook may synchronously call that session's
+`cancel()` and return `false`; the latched outcome still stops the work. This
+does not permit `advance`, `run`, `reset` or `deinit` from the hook, cancellation
+from an allocator callback, or concurrent calls on the same session. A cross-thread
+request should use a synchronized flag that the hook reads.
 
 With [DOT](EDITORS.md#keep-the-finished-part-of-a-dot-file) or
 [markup partial results](EDITORS.md#keep-the-finished-part-of-markup) turned on,

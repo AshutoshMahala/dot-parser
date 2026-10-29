@@ -199,7 +199,9 @@ test "partial edge qualification follows child execution order and shared chain 
             const color = edge.attribute("color");
             // The partial-only dependency summary is conservative: a later
             // set connection can consume membership introduced by a gap.
-            try formatted("blue", if (color == .known) color.known.? else color.unknown.retained.?);
+            const from_a = edge.edge.from == (try ir.findNode("a")).known.?;
+            try expect((color == .unknown) == from_a);
+            try formatted("blue", if (from_a) color.unknown.retained.? else color.known.?);
         }
     }
 }

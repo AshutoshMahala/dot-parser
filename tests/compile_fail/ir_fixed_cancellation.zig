@@ -8,5 +8,5 @@ export fn rejected(doc: *const dot.Document, bytes: [*]u8, len: usize) void {
     _ = IR.loweringSessionIn(doc, memory, .{
         .interpretation = dot.Profile(.{}).interpretation(doc, .{}),
         .cancellation = @as(?dot.ir.Cancellation, null),
-    });
+    }) catch {};
 }

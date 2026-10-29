@@ -71,8 +71,7 @@ fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, c
             block_star,
             bare,
             dash,
-            /// After `--`: one byte of lookahead so `-->` / `---` are one
-            /// malformed-operator diagnostic instead of a stray byte.
+            /// After `--`: distinguish a long operator from a negative numeral.
             double_dash,
             /// After `- `: whitespace inside an operator (`- >`, `- -`) is
             /// one diagnostic covering the whole thing, with a fix.
@@ -122,9 +121,8 @@ fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, c
         pub fn init(source: []const u8) Self {
             var self = initRaw(source);
             if (self.terminal != .none) return self;
-            // A leading UTF-8 byte order mark is not content; Graphviz's
-            // scanner ignores it and so does this one. Offsets keep counting
-            // it, so every later position stays honest.
+            // Only a leading byte order mark is source framing. Preserve its
+            // bytes and count them in every later source offset.
             self.cursor = enc.bomLength(source) / enc.width;
             return self;
         }
@@ -508,9 +506,28 @@ fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, c
                     return self.fail(.operator, self.anchor, 1, self.found);
                 },
                 .double_dash => {
-                    if (byte == '>' or byte == '-') {
-                        // `-->` / `---`: one over-long operator, reported
-                        // whole so the fix ("write '->'") is obvious.
+                    if (self.cursor - self.anchor > 2) {
+                        // Position distinguishes `---` from `---.`. Reusing
+                        // this cold state keeps the ordinary dispatch unchanged;
+                        // every lookahead still consumes one charged step.
+                        if (byte) |b| {
+                            if (std.ascii.isDigit(b)) {
+                                self.cursor = self.anchor + 2;
+                                return self.finish(.edge_undirected);
+                            }
+                            if (self.cursor - self.anchor == 3 and b == '.') {
+                                self.consume();
+                                return state;
+                            }
+                        }
+                        return self.fail(.operator_long, self.anchor, 3, '-');
+                    }
+                    if (byte == '-') {
+                        self.consume();
+                        return state;
+                    }
+                    if (byte == '>') {
+                        // `-->`: one over-long operator and one repair.
                         self.consume();
                         return self.fail(.operator_long, self.anchor, 3, byte);
                     }
@@ -774,6 +791,7 @@ test "one-credit calls expose every lexical continuation and trivia mode" {
         "a\xff;",
         "-1.2 -.5 .1 1->2 3--4 5-->6",
         "7 - > 8",
+        "a---1 a---.5 a---b",
         "\"a\\\"b\" /*glue*/ + \"c\" x",
     }) |source| {
         var lexer = AuditedLexer.init(source);

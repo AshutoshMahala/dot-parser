@@ -297,6 +297,30 @@ are marked; no compatibility shims are kept.
 
 ### Fixed
 
+- UTF-16 identifier traversal checks surrogate partners before consuming them,
+  including malformed encoding accepted by the parser. A failed bounded operand
+  read restores its cursor instead of leaving it inside an operand.
+- DOT sessions honor cancellation issued from their polling hook and preserve
+  ambiguous-numeral findings queued behind previews. Normal root closers are
+  retained before the final EOF check. Metering and polling bounds are unchanged.
+- `a---1` / `a---.5` preserve their negative endpoint; neither default parsing
+  nor lenient parsing proposes a repair that changes the node name.
+- ASCII-only IR lowering preserves accepted name bytes across direct, fixed and
+  resumable paths. Fixed/allocator sessions normalize hooks consistently.
+- Direct complete/partial IR lowering, with either storage path, honors
+  `policy.execution` and opt-in runtime overrides. Metered/cancellable calls run
+  the existing bounded engine to completion; default calls retain the direct
+  driver. Limits remain enforced independently. **Breaking (Unreleased):** a
+  hook no longer implicitly enables cancellation on a configured IR profile.
+  Enable `.execution.cancellation`; runtime-disabled cancellation ignores hooks.
+  Fixed direct calls on runtime-enabled profiles require `try` for invalid
+  policies; operational failures remain in `outcome`. The convenience `ir.parse`
+  and `parsePartial` keep their explicit-hook cancellation behavior.
+- Diagnostic printing uses the caller's stderr lock and preserves IO cancellation.
+  Benchmarks use streaming stdout so redirected reports retain every section.
+  Full and IR-only test steps share one IR test build; example checks verify
+  exact output and exit status. Shared cancellation/connection/observation helpers
+  keep internal paths consistent, and the remaining deprecated Zig alias is removed.
 - Shared IR reader selection handles ASCII-admitted Documents in UTF-8
   profiles, including port-key materialization sessions. Native root graph
   names are decoded before IR publication, with budgeted session work.
@@ -309,7 +333,8 @@ are marked; no compatibility shims are kept.
   `WorkLimit`, without increasing any grant or cancellation interval.
 - Speed builds inline typed-name conversion to avoid event-dispatch conversion
   overhead; Small builds may share it. Standalone identifier checks retain their own inlined scanner
-  body, avoiding a parse slowdown merely from linking checked-name helpers.
+  body, avoiding the measured ReleaseFast parse slowdown from linking checked-name
+  helpers. ReleaseSmall and public-lexer linkage still need separate tuning.
   Name binding checks source bounds in every build; source/encoding
   identity remains the caller's responsibility. Removed observation flags now
   produce migration errors rather than silently disabling observations.

@@ -593,10 +593,11 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 // Every entry checks, including zero-budget calls. Failures and
                 // successful commits still latch before another poll.
                 if (cancellable and (fixed_interval == 1 or polling.due(interval))) {
-                    if (self.cancellation) |hook| if (hook.requested()) {
-                        _ = self.cancel();
-                        break;
-                    };
+                    if (self.cancellation) |hook| {
+                        if (hook.requested()) _ = self.cancel();
+                        // A hook can cancel explicitly while returning false.
+                        if (self.terminal != null) break;
+                    }
                 }
                 if (bounded and remaining == 0) break;
                 switch (self.work.phase) {
@@ -676,6 +677,10 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 // already found by a charged scanner step. Drop the observation,
                 // not that failure. No normal callback or new scan is performed.
                 switch (if (self.previewPending()) self.work.action else Action.preview_pause) {
+                    .preview_end_token => {
+                        _ = self.forwardWarning();
+                        if (self.terminal) |result| return result;
+                    },
                     .preview_eof, .preview_end_failure => {
                         const d = self.tokens.failureDiagnostic();
                         if (self.operatorCandidate(d) == null) {
@@ -693,6 +698,12 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         fn continuesAfterError(self: *const Self) bool {
             if (!statement_recovery) return false;
             return if (@hasDecl(Sink, "parser_retention")) Sink.parser_retention.continuesAfterError(self.events) else true;
+        }
+
+        /// An opted-in observation that a terminal sink abort has not retired.
+        /// Comptime-false selections fold away; aborted sinks spend no credit.
+        inline fn observes(self: *const Self, comptime kind: std.meta.FieldEnum(event_types.Observations)) bool {
+            return @field(observations, @tagName(kind)) and !self.aborted;
         }
 
         fn tracksStatements(self: *const Self) bool {
@@ -787,7 +798,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         .identifier => {
                             self.name_span = token.span;
                             self.state = .header_open;
-                            if (observations.document_name and !self.aborted) return self.schedule(.document_name, token);
+                            if (self.observes(.document_name)) return self.schedule(.document_name, token);
                         },
                         .left_brace => return self.beginBody(token),
                         // Unquoted keywords are not valid names (Graphviz
@@ -805,7 +816,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         .identifier => {
                             self.subgraph_name = token.span;
                             self.state = .subgraph_open;
-                            if (observations.subgraph_name and !self.aborted) return self.schedule(.subgraph_name, token);
+                            if (self.observes(.subgraph_name)) return self.schedule(.subgraph_name, token);
                         },
                         .left_brace => return self.beginSubgraphBody(token),
                         else => return self.unexpected(.{ .identifier = true, .left_brace = true }, .subgraph_header, token),
@@ -819,7 +830,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             self.operator = self.readOperator(token) orelse return self.done();
                             self.operator_span = token.span;
                             self.state = .edge_right;
-                            if (observations.statement_head and !self.aborted) return self.schedule(.head_edge, token);
+                            if (self.observes(.statement_head)) return self.schedule(.head_edge, token);
                         } else if (token.tag == .colon or token.tag == .left_bracket) {
                             // `{ a }:n` / `{ a } [x=1]`: a rule violation the
                             // renderer can state, not merely an expected set.
@@ -829,7 +840,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             return self.unexpected(expected, .subgraph_suffix, token);
                         } else {
                             self.state = .completed;
-                            if (self.dispatchThenReplay(if (observations.statement_head and !self.aborted) .head_subgraph_commit else .subgraph_statement, token)) |result| return result;
+                            if (self.dispatchThenReplay(if (self.observes(.statement_head)) .head_subgraph_commit else .subgraph_statement, token)) |result| return result;
                             if (!metered and !cancellable) return self.continueAfterStatement(token);
                             return null;
                         }
@@ -847,17 +858,17 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             if (self.left_port != null) return self.unexpected(nodeEndExpected(false), .statement, token);
                             if (self.countAttribute(self.left)) |result| return result;
                             self.state = .assignment_value;
-                            if (observations.statement_head and !self.aborted) return self.schedule(.head_assignment, token);
+                            if (self.observes(.statement_head)) return self.schedule(.head_assignment, token);
                         },
                         .left_bracket => {
                             self.openAttributes(token);
-                            if (observations.statement_head and !self.aborted) return self.schedule(.head_node, token);
+                            if (self.observes(.statement_head)) return self.schedule(.head_node, token);
                         },
                         .edge_undirected, .edge_directed => {
                             self.operator = self.readOperator(token) orelse return self.done();
                             self.operator_span = token.span;
                             self.state = .edge_right;
-                            if (observations.statement_head and !self.aborted) return self.schedule(.head_edge, token);
+                            if (self.observes(.statement_head)) return self.schedule(.head_edge, token);
                         },
                         else => return if (metered or cancellable or fixed == null)
                             self.finishPending(token, nodeEndExpected(self.left_port == null), .statement)
@@ -871,7 +882,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             self.right_scope = null;
                             self.pending = .edge;
                             self.state = .edge_terminate;
-                            if (observations.identifier and !self.aborted) return self.schedule(.name_right, token);
+                            if (self.observes(.identifier)) return self.schedule(.name_right, token);
                         },
                         .left_brace, .keyword_subgraph => return self.startSubgraph(token, .right),
                         else => return self.unexpected(.{ .identifier = true, .left_brace = true, .subgraph_keyword = true }, .edge_endpoint, token),
@@ -901,7 +912,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             self.link_right = token.span;
                             self.link_port = null;
                             self.state = .chain_after_identifier;
-                            if (observations.identifier and !self.aborted) return self.schedule(.name_link, token);
+                            if (self.observes(.identifier)) return self.schedule(.name_link, token);
                         },
                         .left_brace, .keyword_subgraph => return self.startSubgraph(token, .link),
                         else => return self.unexpected(.{ .identifier = true, .left_brace = true, .subgraph_keyword = true }, .edge_endpoint, token),
@@ -1125,7 +1136,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             };
             switch (token.tag) {
                 .identifier => {
-                    if (!observations.identifier or self.aborted) return self.beginStatement(token);
+                    if (!self.observes(.identifier)) return self.beginStatement(token);
                     if (self.beginStatement(token)) |result| return result;
                     return self.schedule(.name_left, token);
                 },
@@ -1133,6 +1144,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     if (self.nestingDepth() == 0) {
                         self.state = .epilogue;
                         if (@hasDecl(Sink, "parser_retention")) Sink.parser_retention.closeRoot(self.events);
+                        if (transactional and !self.aborted) self.retainThrough(@intCast(token.span.endOffset()));
                     } else {
                         self.state = .after_subgraph;
                         return if (metered or cancellable or fixed == null)
@@ -1154,7 +1166,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         else => .edge,
                     };
                     self.state = .attribute_open;
-                    if (observations.statement_head and !self.aborted) return self.schedule(.head_attributes, token);
+                    if (self.observes(.statement_head)) return self.schedule(.head_attributes, token);
                 },
                 else => return self.unexpected(.{
                     .identifier = true,
@@ -1173,7 +1185,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             if (!transactional) unreachable;
             self.state = .after_identifier;
             switch (token.tag) {
-                .identifier => if (observations.identifier and !self.aborted) return self.schedule(.name_left, token),
+                .identifier => if (self.observes(.identifier)) return self.schedule(.name_left, token),
                 .left_brace, .keyword_subgraph => return self.startSubgraph(token, .left),
                 .keyword_graph, .keyword_node, .keyword_edge => {
                     self.pending = .attributes;
@@ -1183,7 +1195,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         else => .edge,
                     };
                     self.state = .attribute_open;
-                    if (observations.statement_head and !self.aborted) return self.schedule(.head_attributes, token);
+                    if (self.observes(.statement_head)) return self.schedule(.head_attributes, token);
                 },
                 else => unreachable,
             }
@@ -1281,7 +1293,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 else => return self.unexpected(expected, context, token),
             }
             const action: Action = switch (self.pending) {
-                .node => if (observations.statement_head and !self.aborted and self.state == .after_identifier) .head_node_commit else .node,
+                .node => if (self.observes(.statement_head) and self.state == .after_identifier) .head_node_commit else .node,
                 .edge => .edge,
                 .edge_chain => .edge_chain,
                 .attributes => .attribute_statement,
@@ -2355,6 +2367,7 @@ test "cancellation can stop every lexical continuation and execution phase" {
         "graph {<<a>text</a>> + \"x\";}",
         "graph {-1.2 -.5 .1 1->2 3--4 5-->6}",
         "graph {7 - > 8}",
+        "graph {a---1 a---.5}",
         "graph {\"a\\\"b\" /*glue*/ + \"c\" [x=y] }",
     };
     for (sources) |source| for (0..source.len * 4 + 16) |budget| {

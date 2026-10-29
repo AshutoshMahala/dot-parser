@@ -1,4 +1,4 @@
-//! IR session execution policies use the same vocabulary as parser profiles.
+//! IR execution policies use the same vocabulary as parser profiles.
 //! Limits retain their existing IR configuration/options; DOT policies do not
 //! implicitly control an independently constructed IR operation.
 pub const Policy = struct {
@@ -13,7 +13,8 @@ pub const Effective = struct {
     cancellation: bool = false,
     cancellation_interval: u32 = 1,
 };
-pub const Error = error{ InvalidCancellationInterval, MeteringDisabled };
+pub const ValidationError = error{InvalidCancellationInterval};
+pub const Error = ValidationError || error{MeteringDisabled};
 
 /// Shared typed options for policy-bound queries and streams. Void capability
 /// fields carry neither an override nor a hook, including when options are reused.
@@ -34,12 +35,30 @@ pub fn resolve(base: Effective, policy: Policy) Effective {
         .cancellation_interval = policy.execution.cancellation_interval orelse base.cancellation_interval,
     };
 }
-pub fn validate(value: Effective) Error!void {
+pub fn validate(value: Effective) ValidationError!void {
     if (value.cancellation_interval == 0) return error.InvalidCancellationInterval;
 }
 
-/// Direct lowering takes explicit options independently of session policy.
-/// Share normalization across allocator-backed and caller-storage entry points.
+/// Resolve once at an operation boundary, before polling or allocating.
+pub fn effectiveFor(comptime config: anytype, options: anytype) (if (config.runtime_policy) ValidationError!Effective else Effective) {
+    const baseline = comptime resolve(.{}, config.policy);
+    if (!config.runtime_policy) return baseline;
+    const override = if (@hasField(@TypeOf(options), "policy")) option(Policy, options.policy) else Policy{};
+    const effective = resolve(baseline, override);
+    try validate(effective);
+    return effective;
+}
+
+/// A hook supplies runtime data; it never enables cancellation by itself.
+pub fn cancellationFor(comptime config: anytype, options: anytype, effective: Effective) ?@import("resources.zig").Cancellation {
+    if (@hasField(@TypeOf(options), "cancellation") and @FieldType(@TypeOf(options), "cancellation") != void) {
+        const baseline = comptime resolve(.{}, config.policy);
+        if (!config.runtime_policy and !baseline.cancellation) @compileError("IR cancellation is disabled by this profile");
+    }
+    return if (effective.cancellation) directCancellation(options) else null;
+}
+
+/// Share resource normalization across allocator-backed and caller-storage paths.
 pub fn directLimits(options: anytype, fallback: @import("resources.zig").Limits) @import("resources.zig").Limits {
     const Limits = @import("resources.zig").Limits;
     return (if (@hasField(@TypeOf(options), "limits")) option(?Limits, options.limits) else null) orelse fallback;
@@ -48,6 +67,16 @@ pub fn directCancellation(options: anytype) ?@import("resources.zig").Cancellati
     if (!@hasField(@TypeOf(options), "cancellation")) return null;
     if (@FieldType(@TypeOf(options), "cancellation") == void) return null;
     return option(?@import("resources.zig").Cancellation, options.cancellation);
+}
+
+/// Shared resumable-session cancellation probe. A hook may cancel the session
+/// synchronously and still return false, so the outcome decides.
+pub inline fn pollSession(session: anytype, comptime enabled: bool) bool {
+    if (enabled) if (session.cancellation) |c| {
+        if (c.requested()) session.cancel();
+        return session.outcome == null;
+    };
+    return true;
 }
 
 /// Anonymous options retain field checking through nested policy/limit structs.
@@ -59,6 +88,7 @@ pub fn option(comptime T: type, value: anytype) T {
         return option(@typeInfo(T).optional.child, value);
     }
     if (@typeInfo(T) != .@"struct") return value;
+    if (@typeInfo(@TypeOf(value)) != .@"struct") @compileError("IR option requires a struct value for " ++ @typeName(T));
     comptime for (@typeInfo(@TypeOf(value)).@"struct".field_names) |field| {
         if (!@hasField(T, field)) @compileError("unknown IR option field: " ++ field);
     };
@@ -73,6 +103,25 @@ pub fn option(comptime T: type, value: anytype) T {
             @compileError("missing IR option field: " ++ field);
     }
     return result;
+}
+
+/// Internal construction after the public boundary has validated policy.
+pub fn initLoweringResolved(comptime S: type, a: anytype, doc: *const @import("../dot/syntax.zig").Document, options: S.Options, effective: Effective) @import("resources.zig").Error!S {
+    const Core = @FieldType(S, "core");
+    const Hook = @FieldType(S.Options, "cancellation");
+    const hook = if (comptime Hook == void) {} else if (effective.cancellation) options.cancellation else null;
+    return .{
+        .core = try Core.init(a, doc, options.interpretation, options.limits.?, hook, effective.cancellation_interval),
+        .effective = if (@FieldType(S, "effective") == void) {} else effective,
+    };
+}
+
+/// Internal one-shot driver. Only successful output transfers ownership.
+pub fn finish(operation: anytype) @import("resources.zig").Error!@TypeOf(operation.*).Result {
+    switch (operation.run().outcome.?) {
+        .failure => |err| return err,
+        .success => return operation.takeResult() catch unreachable,
+    }
 }
 
 pub fn Bound(comptime caps: @import("parser_support").encoding.Capabilities, comptime partial: bool, comptime config: anytype) type {
@@ -97,10 +146,10 @@ pub fn BoundWith(comptime caps: @import("parser_support").encoding.Capabilities,
         core: Core,
         effective: if (config.runtime_policy) Effective else void,
         pub fn init(a: if (fixed_storage) @import("fixed_storage.zig").Context else @import("std").mem.Allocator, doc: *const @import("../dot/syntax.zig").Document, options: Options) (@import("resources.zig").Error || Error)!Self {
-            const effective = if (config.runtime_policy) resolve(baseline, options.policy) else baseline;
-            if (config.runtime_policy) try validate(effective);
-            const hook = if (comptime Hook == void) {} else if (effective.cancellation) options.cancellation else null;
-            return .{ .core = try Core.init(a, doc, options.interpretation, options.limits orelse config.limits, hook, effective.cancellation_interval), .effective = if (config.runtime_policy) effective else {} };
+            const effective = if (config.runtime_policy) try effectiveFor(config, options) else baseline;
+            var normalized = options;
+            normalized.limits = options.limits orelse config.limits;
+            return initLoweringResolved(Self, a, doc, normalized, effective);
         }
         pub inline fn advance(self: *Self, budget: u32) (if (config.runtime_policy) Error!@import("lowering_session.zig").Progress else @import("lowering_session.zig").Progress) {
             if (config.runtime_policy) {

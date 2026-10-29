@@ -1,0 +1,11 @@
+a -> b: color=red
+b -> c: color=blue
+coverage: partial
+┌─ Error 1: unexpected token
+│ <input>:3:15
+│
+│ 3 │     broken -> ;
+│   │               ^ expected 'subgraph', an identifier or '{'
+│
+│ Hint: an edge operator must be followed by an endpoint: a node name, a subgraph, or '{ ... }'
+└─ E1 ─ [dot_parser:E.Syntax.Grammar.003]

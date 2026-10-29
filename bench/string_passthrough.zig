@@ -75,7 +75,7 @@ fn measure(comptime backend: dot.ScannerBackend, comptime mode: Mode, comptime t
 pub fn main(init: std.process.Init) !void {
     @setEvalBranchQuota(1_000_000);
     var output_buffer: [4096]u8 = undefined;
-    var output = std.Io.File.Writer.init(.stdout(), init.io, &output_buffer);
+    var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &output_buffer);
     const writer = &output.interface;
     try writer.writeAll("DOT quote scan + optional string checks; UTF-8; discard sink; processor heap=0\nMB/s uses content bytes (excludes two quotes); no host tree or unescaping\n");
     inline for (comptime .{ dot.ScannerBackend.scalar, .block }) |backend| {

@@ -67,6 +67,7 @@ pub fn PolicyBinding(comptime Schema: type, comptime config: struct {
 /// profile's prepare method may scan input, allocate or invoke consumer callbacks.
 /// Stage/resource compatibility will be checked by the future stage composition.
 pub fn PolicySet(comptime profiles: anytype) type {
+    if (@typeInfo(@TypeOf(profiles)) != .@"struct") @compileError("processor policy set must be a struct of named profiles");
     const fields = @typeInfo(@TypeOf(profiles)).@"struct".field_names;
     inline for (fields) |field| {
         const Profile = @field(profiles, field);

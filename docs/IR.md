@@ -73,8 +73,9 @@ their interpretation. The lowering call requires this explicitly so conforming
 operators or reading `graph` as generic cannot silently change meaning.
 
 Input must be an accepted, complete parser-produced Document, with its normal
-invariants intact. Lowering checks completeness but does not repeat syntax or
-policy validation. It rejects partial Documents with `IncompleteDocument`.
+invariants intact. Lowering checks completeness but does not repeat DOT syntax
+or validation checks. It validates its own execution policy and rejects partial
+Documents with `IncompleteDocument`.
 Optional child-processor validation is the caller's acceptance decision.
 Manually constructing or mutating Document records is outside this contract;
 defensive range/handle checks are not full Document revalidation.
@@ -182,6 +183,9 @@ pools may be freed after lowering. Gap metadata and its growth count against
 lowering's work/memory limits and `retainedBytes()` / `peakBytes()`. Complete
 lowering allocates no coverage storage. Borrowed views/candidates require the
 IR to remain alive and unmoved; `_data` and `_coverage` are implementation details.
+Known answers are qualified against whole-statement fillings of recorded gaps.
+They are not a guarantee about arbitrary edits that also reinterpret retained
+tokens or statement boundaries; reparse after such edits.
 
 ### Edges without switching graph types
 
@@ -537,10 +541,10 @@ and remain compatibility decisions, not silent changes to this IR:
 
 | Case | Current IR | Graphviz 16.1.0 |
 | --- | --- | --- |
-| Repeated non-strict edges with the same `key` | Separate occurrences; `key` is an ordinary attribute | A repeated explicit key can identify and update one edge |
+| Edge `key`, including repeated non-strict keys, strict updates and edge defaults | An ordinary retained attribute | cgraph treats `key` as edge identity, with special update/default behavior |
 | Undirected set products after earlier node declarations | First-mention endpoint order determines stored orientation | Node creation order can choose the opposite stored orientation and port side |
 | New grandchild of a reopened subgraph | Inherits its parent's stored graph-attribute snapshot | Can see a later ancestor dictionary value despite the parent's older value |
-| `<a>` versus `a` / `"a"` as a node name | Merge by logical contents | HTML-like and text names can be separate nodes |
+| `<a>` versus `a` / `"a"` as a node or subgraph name | Merge by logical contents | HTML-like and text names can be distinct |
 
 Spelling, contributions and provenance remain retained in the IR. Consumers
 requiring these exact cgraph behaviors should not assume compatibility yet.
@@ -1220,27 +1224,65 @@ materialize edges, invoke child processors or change validation outcomes.
 
 ### Execution policy and lifecycle
 
-| Setting | Default | Meaning for lowering sessions |
+| Setting | Default | Meaning for direct lowering and sessions |
 | --- | --- | --- |
-| `.policy.execution.metering` | `false` | Enable `advance(budget)`; `run()` remains available either way |
-| `.policy.execution.cancellation` | `false` | Enable the borrowed `.cancellation` hook in session options |
-| `.policy.execution.cancellation_interval` | `1` | Positive maximum lowering credits between hook polls; every resume also polls, including budget zero |
-| `.runtime_policy` | `false` | Allow session options `.policy` to override the compiled baseline at initialization |
+| `.policy.execution.metering` | `false` | Use bounded execution; sessions additionally expose `advance(budget)` |
+| `.policy.execution.cancellation` | `false` | Enable the borrowed `.cancellation` hook in operation options |
+| `.policy.execution.cancellation_interval` | `1` | Positive maximum lowering credits between hook polls; session resumes also poll, including budget zero |
+| `.runtime_policy` | `false` | Allow operation options `.policy` to override the compiled baseline before work starts |
 
 Fixed policies are checked at compile time. With `.runtime_policy = true`,
 `IR.validatePolicy(override)` checks an override independently; construction
 also resolves and checks it once. Runtime `advance` returns `MeteringDisabled`
 without doing work when metering is disabled; the fixed-policy equivalent is a
 compile error. Runtime policy changes settings, not the lowering implementation.
-There is no mid-session policy replacement. Direct `lowerComplete`/`lowerPartial`
-keep their existing throughput-specialized driver and explicit limits/cancellation
-options, even on a profile that enables metered sessions. Existing materialization
-sessions remain explicitly selected through their own API below.
-The fixed direct calls `lowerCompleteIn` / `lowerPartialIn` follow the same
-rule: an explicitly supplied cancellation hook is honored regardless of the
-session policy. Only sessions gate that hook through `.execution.cancellation`.
-Direct lowering accepts typed, anonymous, optional and null limits; omission
+There is no mid-operation policy replacement. Direct `lowerComplete`/`lowerPartial`
+and fixed `lowerCompleteIn`/`lowerPartialIn` honor the same execution policy as
+their session counterparts. With metering or cancellation enabled, direct calls
+run the bounded engine to completion and transfer only successful output. They
+do not return paused operations. With both disabled, direct calls retain the
+throughput-specialized driver; no session storage is constructed.
+
+For example, the same profile/options can be used for either API:
+
+```zig
+const IR = dot.ir.Lowering(.{
+    .policy = .{ .execution = .{ .cancellation = true } },
+    .runtime_policy = true,
+});
+const options = .{
+    .interpretation = Dot.interpretation(doc, .{}),
+    .cancellation = hook,
+    .policy = .{ .execution = .{ .metering = true, .cancellation_interval = 64 } },
+};
+var graph = try IR.lowerComplete(allocator, doc, options);
+defer graph.deinit();
+// To pause/resume instead: IR.loweringSession(allocator, doc, options).
+```
+
+A hook never enables cancellation by itself. A fixed profile with cancellation
+compiled out rejects a non-void hook; a runtime policy with cancellation disabled
+ignores the supplied hook. Enabling cancellation honors its interval even when
+metering is disabled. Invalid runtime policies fail before hooks, allocation or
+storage writes. Fixed direct calls on runtime-enabled profiles require `try`
+for policy-validation failures; lowering failures remain in their `outcome`.
+Typed and anonymous hooks are accepted; a void hook means absent.
+
+Limits remain separate from execution policy and are enforced on every route.
+Changing execution policy does not reset configured limits. Direct lowering
+accepts typed, anonymous, optional and null limits; omission
 or null uses this IR profile's limits, not necessarily the library defaults.
+Sizing helpers accept direct or session options and use only their limits.
+The bounded engine uses session work credits, so enabling metering/cancellation
+can change how much `max_work` a document needs compared with the direct driver.
+For identical storage and allocation behavior, a direct bounded call and its
+session's `run()` use the same work and polling checkpoints.
+
+The convenience `dot.ir.parse` / `parsePartial` APIs have no IR profile argument;
+their explicit lowering hook selects a cancellable lowering profile. Without
+that hook they retain default direct lowering. Graph-receiver queries and
+materialization retain the explicit options documented in their sections;
+lowering does not store an execution policy in the resulting graph.
 
 `LoweringSession` and `PartialLoweringSession` expose `advance(u32)`, `run()`,
 `cancel()`, `peakBytes()`, `takeResult()` and `deinit()`. The lifecycle matches
@@ -1286,6 +1328,9 @@ No thread or shared parse-plus-IR budget is introduced. Event lowering remains
 separate work. Fixed-storage lowering is available above; bounded edge streaming and attribute
 queries are available below.
 Measure this path with `zig build bench-ir-lowering-sessions -Doptimize=fast`.
+It compares default, metered, cancellable and runtime-policy direct calls with
+session execution, including budget one. Direct calls do not expose work totals,
+so their credits column reads `not_reported`; timing, polls and memory are measured.
 
 ## Resumable materialization
 
@@ -1715,8 +1760,11 @@ stages need different policies or source encodings.
 Limits or cancellation return typed errors, **never** `false`, absence, or a
 truncated graph presented as complete. One-shot failure frees operation-owned
 storage; an iterator must be `deinit()`ed on failure or early exit too.
-For direct calls and pull iterators, work limits count table probes, comparisons and traversal work; they are not
-wall-clock deadlines. Cancellation is cooperative. Existing trusted-name
+The throughput-specialized lowering driver and ordinary graph queries/pull
+iterators use coarser work units: table probes, comparisons and traversal work,
+not wall-clock time. Policy-enabled bounded lowering uses the session credits
+described above instead. Cancellation is cooperative. In ordinary graph queries
+and pull iterators, existing trusted-name
 primitives are charged by their byte lengths and polled around each call;
 allocation, copying during growth, and an individual name operation are not
 interruptible. An iterator polls during endpoint traversal, pair visits and
@@ -1741,9 +1789,10 @@ readers with `Lowering(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 } })`.
 The Document supplies the actual encoding and original byte ranges. Unused
 native readers remain compiled out.
 ASCII-admitted Documents are also readable by the UTF-8 configuration. Native
-logical-name/value decoding can return `InvalidIdentifier` if the accepting
-parser left encoding validation off and a name or attribute value contains
-malformed code units. Native values are checked while lowering, before exposing
+logical-name/value decoding can return `InvalidIdentifier` when a name or value
+contains malformed code units. This can happen with encoding validation disabled,
+or within an HTML-like operand outside DOT's encoding-validation scope even when
+that rule is enabled. Native values are checked while lowering, before exposing
 their formatters; byte-profile values preserve their raw bytes.
 
 ## Verification

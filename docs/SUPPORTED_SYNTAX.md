@@ -28,7 +28,7 @@ few places where it differs from Graphviz on purpose are listed
 | HTML-like value | `label=<<b>hi</b>>` | Supported, kept as written. See [checking HTML-like labels](LABELS.md). |
 | Leading byte order mark | UTF-8; UTF-16 and UTF-32 when turned on | Skipped, but left in your source buffer. See [source encodings](ENCODINGS.md). |
 | Empty statement | `a;;` | Rejected by default. [Lenient](POLICIES.md#lenient-syntax) accepts it. |
-| Long operator | `a --> b`, `a --- b` | Rejected by default. Lenient reads it as `->` / `--`. |
+| Long operator | `a --> b`, `a --- b` | Rejected by default. Lenient reads it as `->` / `--`. `a---1` is already standard `a -- -1`. |
 | Lone dash | `a - b` | Rejected by default. Lenient reads it from the graph kind. |
 
 ## Names
@@ -93,7 +93,7 @@ shows how to get the value of each form.
 
 These are deliberate:
 
-| Input | Graphviz 16.0.0 | This library | Why |
+| Input | Graphviz 16.x | This library | Why |
 | --- | --- | --- | --- |
 | `graph { a // c` + CR + `b }` | Error | Accepted | A lone CR ends a line everywhere here, including in comments. |
 | `graph { a; } x` | Accepted | Error | The whole input must be one graph. Trailing text is likely a mistake. |
@@ -101,6 +101,10 @@ These are deliberate:
 | A backslash before CRLF or CR inside quotes | Only removes a backslash before LF | Removes all three forms | Line endings are treated the same everywhere. |
 | `# 10 "file.dot"` | Read as a line-number directive | A comment | Positions always refer to the bytes you passed in. |
 | `strict` | Merges duplicate edges | Only recorded | Merging is graph building, not parsing. |
+| Comma node lists, such as `a, b` | Accepted | Rejected | Follows the written statement grammar. |
+| Attribute list after a standalone subgraph | Accepted | Rejected | Follows the written subgraph grammar. |
+| Attribute macros | Accepted extension | Unsupported | Not part of the written grammar. |
+| Standalone UTF-8 BOM between tokens | Can act as whitespace | Ordinary input, not framing | Only the outer source's leading BOM is skipped. |
 
 One case goes the other way. The written grammar only joins quoted strings
 with `+`, but Graphviz 16.0.0 also joins HTML-like parts. This library follows

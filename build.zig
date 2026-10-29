@@ -72,8 +72,10 @@ pub fn build(b: *std.Build) void {
         .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "markup_parser", .module = markup } },
     }) });
     const test_ir = b.step("test-ir", "Test IR semantics, value views and examples");
-    test_ir.dependOn(&b.addRunArtifact(ir_tests).step);
+    const run_ir_tests = b.addRunArtifact(ir_tests);
+    test_ir.dependOn(&run_ir_tests.step);
     const test_step = b.step("test", "Run unit and public integration tests");
+    test_step.dependOn(&run_ir_tests.step);
     for ([_]struct { name: []const u8, message: []const u8 }{
         .{ .name = "ir_materialize_unknown", .message = "unknown IR materialization option: attributtes" },
         .{ .name = "ir_materialize_runtime", .message = "unable to resolve comptime value" },
@@ -89,6 +91,9 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ir_fixed_unknown", .message = "unknown fixed IR lowering option: partial" },
         .{ .name = "ir_fixed_limit", .message = "unknown IR option field: max_byte" },
         .{ .name = "ir_fixed_cancellation", .message = "IR cancellation is disabled by this profile" },
+        .{ .name = "ir_fixed_direct_policy", .message = "unknown fixed IR lowering option: policy" },
+        .{ .name = "ir_direct_cancellation", .message = "IR cancellation is disabled by this profile" },
+        .{ .name = "ir_direct_runtime", .message = "unknown IR lowering option: policy" },
         .{ .name = "ir_edge_metering", .message = "metering is disabled; use run()" },
         .{ .name = "ir_edge_unknown", .message = "unknown IR edge session option: attributes" },
         .{ .name = "ir_edge_runtime", .message = "unknown IR edge session option: policy" },
@@ -316,6 +321,9 @@ pub fn build(b: *std.Build) void {
         .{ .name = "identifier_span", .message = "expected type 'dot.name.Name', found 'common.location.Span'" },
         .{ .name = "processor_fixed_override", .message = "tests/compile_fail/processor_fixed_override.zig:4:35: error: no field named 'policy' in struct /?/" },
         .{ .name = "processor_invalid_binding", .message = "error: configured processor profile must expose Policies" },
+        .{ .name = "processor_invalid_set", .message = "error: processor policy set must be a struct of named profiles" },
+        .{ .name = "string_invalid_routes", .message = "error: attribute routing must be a struct of named routes" },
+        .{ .name = "string_invalid_route", .message = "error: attribute route must be a struct" },
         .{ .name = "processor_invalid_infallible_schema", .message = "error: infallible policy schema must declare a valid-only Check" },
         .{ .name = "processor_infallible_union_schema", .message = "error: infallible policy schema must declare a valid-only Check" },
     }) |fixture| {
@@ -458,6 +466,20 @@ pub fn build(b: *std.Build) void {
         "fixed_graph",
         "fixed_edge_stream",
     };
+    const ir_examples = [_]struct { name: []const u8, stderr: []const u8 }{
+        .{ .name = "build_graph", .stderr = @embedFile("tests/fixtures/build_graph.txt") },
+        .{ .name = "graph_attributes", .stderr = @embedFile("tests/fixtures/graph_attributes.txt") },
+        .{ .name = "graph_values", .stderr = @embedFile("tests/fixtures/graph_values.txt") },
+        .{ .name = "materialized_attributes", .stderr = @embedFile("tests/fixtures/materialized_attributes.txt") },
+        .{ .name = "partial_graph", .stderr = @embedFile("tests/fixtures/partial_graph.txt") },
+        .{ .name = "resumable_edges", .stderr = "a -> b: color=red, label=updated\na -> c: color=red, label=\n" },
+        .{ .name = "resumable_graph", .stderr = "a: color=blue\nb: color=red\nc: color=red\n" },
+        .{ .name = "resumable_edge_stream", .stderr = "a -> b\na -> c\n" },
+        .{ .name = "resumable_query", .stderr = "a -> c: true\n" },
+        .{ .name = "resumable_attributes", .stderr = "color=red\nlabel=updated\n" },
+        .{ .name = "fixed_graph", .stderr = "node a\nnode b\nnode c\n" },
+        .{ .name = "fixed_edge_stream", .stderr = "a -> b\n  color=blue\na -> c\n  color=red\n" },
+    };
     for (example_names) |name| {
         const example = b.addExecutable(.{
             .name = name,
@@ -474,59 +496,13 @@ pub fn build(b: *std.Build) void {
         // `zig build` never tries to link host executables.
         examples_step.dependOn(&b.addInstallArtifact(example, .{}).step);
         const run_example = b.addRunArtifact(example);
-        if (std.mem.eql(u8, name, "fixed_edge_stream")) {
-            run_example.expectStdErrEqual("a -> b\n  color=blue\na -> c\n  color=red\n");
+        // IR examples are tests: exact stderr, empty stdout, in test and test-ir.
+        for (ir_examples) |checked| if (std.mem.eql(u8, name, checked.name)) {
+            run_example.expectStdErrEqual(checked.stderr);
             run_example.expectStdOutEqual("");
             test_ir.dependOn(&run_example.step);
             test_step.dependOn(&run_example.step);
-        }
-        if (std.mem.eql(u8, name, "fixed_graph")) {
-            run_example.expectStdErrEqual("node a\nnode b\nnode c\n");
-            run_example.expectStdOutEqual("");
-            test_ir.dependOn(&run_example.step);
-            test_step.dependOn(&run_example.step);
-        }
-        if (std.mem.eql(u8, name, "resumable_edges")) test_ir.dependOn(&run_example.step);
-        if (std.mem.eql(u8, name, "resumable_graph")) test_ir.dependOn(&run_example.step);
-        if (std.mem.eql(u8, name, "resumable_edge_stream")) test_ir.dependOn(&run_example.step);
-        if (std.mem.eql(u8, name, "resumable_query")) {
-            run_example.expectStdErrEqual("a -> c: true\n");
-            test_ir.dependOn(&run_example.step);
-        }
-        if (std.mem.eql(u8, name, "resumable_attributes")) {
-            run_example.expectStdErrEqual("color=red\nlabel=updated\n");
-            run_example.expectStdOutEqual("");
-            test_ir.dependOn(&run_example.step);
-            test_step.dependOn(&run_example.step);
-        }
-        if (std.mem.eql(u8, name, "build_graph")) {
-            run_example.expectStdErrEqual(@embedFile("tests/fixtures/build_graph.txt"));
-            run_example.expectStdOutEqual("");
-            test_ir.dependOn(&run_example.step);
-            test_step.dependOn(&run_example.step);
-        }
-        if (std.mem.eql(u8, name, "graph_attributes")) {
-            run_example.expectStdErrEqual(@embedFile("tests/fixtures/graph_attributes.txt"));
-            run_example.expectStdOutEqual("");
-            test_ir.dependOn(&run_example.step);
-            test_step.dependOn(&run_example.step);
-        }
-        if (std.mem.eql(u8, name, "graph_values")) {
-            run_example.expectStdErrEqual(@embedFile("tests/fixtures/graph_values.txt"));
-            run_example.expectStdOutEqual("");
-            test_ir.dependOn(&run_example.step);
-            test_step.dependOn(&run_example.step);
-        }
-        if (std.mem.eql(u8, name, "materialized_attributes")) {
-            run_example.expectStdErrEqual(@embedFile("tests/fixtures/materialized_attributes.txt"));
-            run_example.expectStdOutEqual("");
-            test_ir.dependOn(&run_example.step);
-            test_step.dependOn(&run_example.step);
-        }
-        if (std.mem.eql(u8, name, "partial_graph")) {
-            test_ir.dependOn(&run_example.step);
-            test_step.dependOn(&run_example.step);
-        }
+        };
         examples_step.dependOn(&run_example.step);
     }
 

@@ -206,12 +206,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
             if (self.outcome == null) self.outcome = .{ .failure = error.Cancelled };
         }
         fn poll(self: *Self) bool {
-            if (cancellable) if (self.cancellation) |c| {
-                if (c.requested()) self.cancel();
-                // A hook may synchronously cancel and still return false.
-                return self.outcome == null;
-            };
-            return true;
+            return @import("execution_policy.zig").pollSession(self, cancellable);
         }
         pub fn advance(self: *Self, budget: u32) Progress {
             var used: u32 = 0;
@@ -745,14 +740,10 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     self.phase = .edge_emit;
                 },
                 .edge_emit => {
-                    if (b.connection_count >= b.connections.len) return error.InvalidDocument;
-                    const effective = b.interpretation.operator(self.edge.operator);
-                    if (doc.strict and ((b.interpretation.kind == .digraph and effective != .directed) or (b.interpretation.kind == .undigraph and effective != .undirected))) return error.UnsupportedSemantics;
-                    b.connections[b.connection_count] = .{ .left = try b.resolved(b.pending.items[self.edge_pending]), .right = try b.resolved(b.pending.items[self.edge_pending + 1]), .written_operator = self.edge.operator, .effective_operator = effective, .operator_source = self.edge.operator_range, .occurrence = @fromBackingInt(self.occurrence), .attributes = self.range };
-                    if (partial) b.publication.coverage_data.observeConnection(b.connection_count, b.connections[b.connection_count]);
-                    if (b.attribute_data.scopes.len != 0) {
-                        b.attribute_data.connection_defaults[b.connection_count] = b.attribute_data.scopes[@backingInt(b.occurrences[self.occurrence].scope)].edge;
-                        self.origin = .{ .connection = @fromBackingInt(b.connection_count) };
+                    const with_attributes = b.attribute_data.scopes.len != 0;
+                    const id = try b.storeConnection(self.edge.operator, self.edge.operator_range, self.occurrence, b.pending.items[self.edge_pending], b.pending.items[self.edge_pending + 1], self.range, with_attributes);
+                    if (with_attributes) {
+                        self.origin = .{ .connection = id };
                         self.kind = .edge;
                         self.attribute_index = self.range.start;
                         self.bind_after = .edge_bound;

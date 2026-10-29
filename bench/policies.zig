@@ -11,7 +11,7 @@ const warmup_ns = 150 * std.time.ns_per_ms;
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     var buffer: [4096]u8 = undefined;
-    var file: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    var file: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &buffer);
     const writer = &file.interface;
     try writer.print("Document={d}, Diagnostic={d}, fixed session={d}, runtime session={d}, runtime options={d}\n", .{
         @sizeOf(dot.Document), @sizeOf(dot.Diagnostic), @sizeOf(dot.Profile(.{}).Session), @sizeOf(Runtime.Session), @sizeOf(Runtime.FixedParseOptions),

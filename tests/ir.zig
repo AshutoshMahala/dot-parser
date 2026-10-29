@@ -23,6 +23,7 @@ test {
     _ = @import("ir_fixed_storage.zig");
     _ = @import("ir_fixed_queries.zig");
     _ = @import("ir_review.zig");
+    _ = @import("ir_execution.zig");
 }
 
 fn lower(allocator: std.mem.Allocator, source: []const u8) !IR.Graph {
@@ -299,7 +300,8 @@ test "IR limits and cancellation fail explicitly without pretending absence" {
         }
     };
     const cancel: dot.ir.Cancellation = .{ .context = null, .is_requested = Stop.poll };
-    try std.testing.expectError(error.Cancelled, IR.lowerComplete(a, doc, .{ .interpretation = interpretation, .cancellation = cancel }));
+    const Cancellable = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .cancellation = true } } });
+    try std.testing.expectError(error.Cancelled, Cancellable.lowerComplete(a, doc, .{ .interpretation = interpretation, .cancellation = cancel }));
     var ir = try IR.lowerComplete(a, doc, .{ .interpretation = interpretation });
     defer ir.deinit();
     try std.testing.expectError(error.PairLimit, ir.materialize(.{ .attributes = false, .limits = .{ .max_pairs = 1 } }));
@@ -608,7 +610,8 @@ test "IR cancellation during lowering and expansion discards operation-owned sto
     for ([_]usize{ 1, 10, 40, 80 }) |allowance| {
         var counter: Counter = .{ .left = allowance };
         const cancel: dot.ir.Cancellation = .{ .context = &counter, .is_requested = Counter.poll };
-        try std.testing.expectError(error.Cancelled, IR.lowerComplete(a, doc, .{ .interpretation = dot.Profile(.{}).interpretation(doc, .{}), .cancellation = cancel }));
+        const Cancellable = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .cancellation = true } } });
+        try std.testing.expectError(error.Cancelled, Cancellable.lowerComplete(a, doc, .{ .interpretation = dot.Profile(.{}).interpretation(doc, .{}), .cancellation = cancel }));
     }
     var ir = try IR.lowerComplete(a, doc, .{ .interpretation = dot.Profile(.{}).interpretation(doc, .{}) });
     defer ir.deinit();

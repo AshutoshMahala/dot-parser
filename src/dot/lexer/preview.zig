@@ -22,39 +22,26 @@ pub fn unfinished(scanner: anytype, comptime eof: bool) ?Snapshot {
         end = if (kind == .concatenation) scanner.part_end else @intCast(enc.units(scanner.source));
     } else {
         if (scanner.terminal != .none) return null;
-        kind = if (@hasField(T, "mode")) switch (scanner.mode) {
+        const between = if (@hasField(T, "mode")) scanner.mode == .trivia else scanner.state == .trivia;
+        kind = if (between) blk: {
+            // Between operands, the prefix ends at the last closed part or '+'.
+            end = scanner.part_end;
+            break :blk switch (scanner.trivia) {
+                .after_plus => Kind.concatenation,
+                .after_part => if (scanner.flags.has_html) Kind.html else Kind.quoted,
+                .ordinary => return null,
+            };
+        } else if (@hasField(T, "mode")) switch (scanner.mode) {
             .quoted => .quoted,
             .html => .html,
             .ident => .word,
             .numeral => .numeral,
-            .trivia => switch (scanner.trivia) {
-                .after_plus => blk: {
-                    end = scanner.part_end;
-                    break :blk .concatenation;
-                },
-                .after_part => blk: {
-                    end = scanner.part_end;
-                    break :blk if (scanner.flags.has_html) Kind.html else Kind.quoted;
-                },
-                .ordinary => return null,
-            },
             else => return null,
         } else switch (scanner.state) {
             .quoted, .escape => .quoted,
             .html => .html,
             .bare => .word,
             .leading_dot, .integral, .fraction => .numeral,
-            .trivia => switch (scanner.trivia) {
-                .after_plus => blk: {
-                    end = scanner.part_end;
-                    break :blk .concatenation;
-                },
-                .after_part => blk: {
-                    end = scanner.part_end;
-                    break :blk if (scanner.flags.has_html) Kind.html else Kind.quoted;
-                },
-                .ordinary => return null,
-            },
             else => return null,
         };
     }

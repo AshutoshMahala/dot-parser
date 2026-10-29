@@ -491,7 +491,8 @@ pub fn Renderer(comptime Catalog: type) type {
 
         /// Print numbered boxes to stderr through caller-supplied IO, then flush.
         /// Uses a 4 KiB stack buffer, no heap allocation or terminal detection.
-        /// Empty input performs no IO. Write/flush failures propagate.
+        /// Empty input performs no IO. Coordinates with writers using the same
+        /// IO stderr lock; write failures and cancellation propagate.
         /// Like repeated renderBoxed calls: preserves order, no list summary;
         /// source locations are resolved per finding. For large bags, use
         /// renderBoxedList with caller-owned location scratch and a writer.
@@ -1085,11 +1086,26 @@ pub fn ComposedRenderer(comptime Item: type, comptime adapters: anytype) type {
     };
 }
 
-fn printToStderr(comptime R: type, io: std.Io, items: anytype, options: RenderOptions) !void {
+fn printToStderr(comptime R: type, io: std.Io, items: anytype, options: RenderOptions) error{ WriteFailed, Canceled }!void {
     if (items.len == 0) return;
     var buffer: [4096]u8 = undefined;
-    var stderr: std.Io.File.Writer = .initStreaming(.stderr(), io, &buffer);
-    for (items, 1..) |item, number|
-        try R.renderBoxed(item, number, options, &stderr.interface);
-    try stderr.interface.flush();
+    const locked = try io.lockStderr(&buffer, .no_color);
+    defer io.unlockStderr();
+    const stderr = locked.file_writer;
+    for (items, 1..) |item, number| {
+        R.renderBoxed(item, number, options, &stderr.interface) catch |err| switch (err) {
+            // renderBoxed owns sufficient per-finding location scratch.
+            error.LocationScratchTooSmall => unreachable,
+            error.WriteFailed => return printFailure(stderr),
+        };
+    }
+    stderr.interface.flush() catch return printFailure(stderr);
+}
+
+fn printFailure(writer: *const std.Io.File.Writer) error{ WriteFailed, Canceled } {
+    if (writer.err) |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => {},
+    };
+    return error.WriteFailed;
 }

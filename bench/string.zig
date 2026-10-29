@@ -28,7 +28,7 @@ noinline fn run(comptime P: type, bytes: []const u8, actual: s.ActualEncoding) b
 pub fn main(init: std.process.Init) !void {
     @setEvalBranchQuota(1_000_000);
     var output_buffer: [4096]u8 = undefined;
-    var output = std.Io.File.Writer.init(.stdout(), init.io, &output_buffer);
+    var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &output_buffer);
     const writer = &output.interface;
     const csv = try report.csvMode(init);
     if (csv) try writer.writeAll(report.header) else try writer.print("Result={d} Diagnostic={d}; processor heap allocations=0 (discard sink)\n", .{ @sizeOf(s.Result), @sizeOf(s.Diagnostic) });

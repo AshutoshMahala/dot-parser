@@ -111,7 +111,7 @@ fn run(comptime partial: bool, init: std.process.Init, out: *std.Io.Writer, case
 
 pub fn main(init: std.process.Init) !void {
     var buf: [4096]u8 = undefined;
-    var output = std.Io.File.Writer.init(.stdout(), init.io, &buf);
+    var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &buf);
     const out = &output.interface;
     try out.print("# sizes: edge={d},partial_edge={d},folded_edge={d},partial_folded_edge={d}\n", .{
         @sizeOf(IR.Graph.EdgeView), @sizeOf(IR.PartialGraph.EdgeView), @sizeOf(IR.Graph.Materialized.EdgeView), @sizeOf(IR.PartialGraph.Materialized.EdgeView),

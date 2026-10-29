@@ -6,9 +6,16 @@ const dot = @import("dot_parser");
 const Dot = dot.Profile(.{});
 const IR = dot.ir.Lowering(.{});
 const Scheduled = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } });
+const Metered = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+const Cancellable = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .cancellation = true } } });
+const Runtime = dot.ir.Lowering(.{ .runtime_policy = true });
 pub const Case = enum { edges, attributes, reopened, nested, long_name, symbolic_product };
-const routes = [_]struct { name: []const u8, budget: ?u32, cancellation: bool = false }{
+const routes = [_]struct { name: []const u8, budget: ?u32, cancellation: bool = false, direct: enum { plain, metered, cancellable, runtime_off, runtime_on } = .plain }{
     .{ .name = "direct", .budget = null },
+    .{ .name = "direct-metered", .budget = null, .direct = .metered },
+    .{ .name = "direct-cancellable", .budget = null, .direct = .cancellable },
+    .{ .name = "direct-runtime-off", .budget = null, .direct = .runtime_off },
+    .{ .name = "direct-runtime-on", .budget = null, .direct = .runtime_on },
     .{ .name = "session-run", .budget = 0 },
     .{ .name = "session-4096", .budget = 4096 },
     .{ .name = "session-1", .budget = 1 },
@@ -89,7 +96,15 @@ pub fn main(init: std.process.Init) !void {
                 while (progress.outcome == null) progress = session.?.advance(budget);
                 credits[index] = progress.total_work;
                 break :blk try session.?.takeResult();
-            } else try IR.lowerComplete(init.gpa, doc, .{ .interpretation = interpretation });
+            } else switch (route.direct) {
+                .plain => try IR.lowerComplete(init.gpa, doc, .{ .interpretation = interpretation }),
+                .metered => try Metered.lowerComplete(init.gpa, doc, .{ .interpretation = interpretation }),
+                .cancellable => try Cancellable.lowerComplete(init.gpa, doc, .{ .interpretation = interpretation, .cancellation = dot.ir.Cancellation{ .context = &counter, .is_requested = Polls.requested } }),
+                .runtime_off, .runtime_on => try Runtime.lowerComplete(init.gpa, doc, .{
+                    .interpretation = interpretation,
+                    .policy = .{ .execution = .{ .metering = route.direct == .runtime_on } },
+                }),
+            };
             const end = std.Io.Clock.Timestamp.now(init.io, .awake);
             defer result.deinit();
             if (session) |*operation| operation.deinit();
@@ -106,7 +121,9 @@ pub fn main(init: std.process.Init) !void {
         };
         for (routes, 0..) |route, index| {
             std.mem.sort(u64, &times[index], {}, std.sort.asc(u64));
-            try out.print("{t},{s},{d:.4},{d},{d},{d},{d},{d},{d}\n", .{ case, route.name, @as(f64, @floatFromInt(times[index][5])) / 1e6, credits[index], polls[index], nodes, connections, retained[index], peaks[index] });
+            try out.print("{t},{s},{d:.4},", .{ case, route.name, @as(f64, @floatFromInt(times[index][5])) / 1e6 });
+            if (route.budget == null) try out.writeAll("not_reported") else try out.print("{d}", .{credits[index]});
+            try out.print(",{d},{d},{d},{d},{d}\n", .{ polls[index], nodes, connections, retained[index], peaks[index] });
         }
     }
     try out.flush();

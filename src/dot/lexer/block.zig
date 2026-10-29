@@ -131,7 +131,7 @@ fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, c
         pub fn WithPreviews() type {
             return ScannerConfigured(actual, metered, audited, numeral_check, comments, true);
         }
-        const Mode = enum { trivia, line_comment, block_comment, quoted, html, ident, numeral, dash_gap };
+        const Mode = enum { trivia, line_comment, block_comment, quoted, html, ident, numeral, dash_gap, triple_dash };
         const TriviaMode = enum { ordinary, after_part, after_plus };
         const NumeralPart = enum { integral, fraction };
 
@@ -173,8 +173,8 @@ fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, c
         pub fn init(source: []const u8) Self {
             var self = initRaw(source);
             if (self.terminal != .none) return self;
-            // A leading UTF-8 byte order mark is not content (Graphviz skips
-            // it too); the bytes still occupy columns 1–3 of line 1.
+            // Only a leading byte order mark is framing; its original bytes
+            // remain part of the source offsets.
             self.cursor = enc.bomLength(source) / enc.width;
             return self;
         }
@@ -453,6 +453,7 @@ fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, c
                 .ident => self.stepIdent(),
                 .numeral => self.stepNumeral(),
                 .dash_gap => self.stepDashGap(),
+                .triple_dash => self.stepTripleDash(),
             };
         }
 
@@ -481,6 +482,7 @@ fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, c
                 .ident => return self.finishIdent(),
                 .numeral => return self.emit(.identifier),
                 .dash_gap => return self.fail(.operator, self.anchor, 1, self.found),
+                .triple_dash => return self.fail(.operator_long, self.anchor, 3, '-'),
             }
         }
 
@@ -582,12 +584,29 @@ fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, c
             }
         }
 
+        // A separate token step keeps lookahead within the existing two-byte
+        // bound even when the signed numeral starts across a block boundary.
+        fn stepTripleDash(self: *Self) ?Result {
+            const byte = self.peek(0).?;
+            const after_dot = if (byte == '.') self.peek(1) else null;
+            if (std.ascii.isDigit(byte) or (after_dot != null and std.ascii.isDigit(after_dot.?))) {
+                self.restore(self.anchor + 2);
+                return self.emit(.edge_undirected);
+            }
+            return self.fail(.operator_long, self.anchor, 3, '-');
+        }
+
         fn dash(self: *Self) ?Result {
             const n1 = self.peek(1) orelse return self.fail(.operator, self.anchor, 1, null);
             switch (n1) {
                 '-' => {
                     const n2 = self.peek(2);
-                    if (n2 == '>' or n2 == '-') return self.fail(.operator_long, self.anchor, 3, n2);
+                    if (n2 == '>') return self.fail(.operator_long, self.anchor, 3, n2);
+                    if (n2 == '-') {
+                        self.jump(3);
+                        self.mode = .triple_dash;
+                        return null;
+                    }
                     self.jump(2);
                     return self.emit(.edge_undirected);
                 },

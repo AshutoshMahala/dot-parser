@@ -65,11 +65,7 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, options: Options)
     var result: Result = .{ .checking = .from(&checked) };
     if (!checked.documentValid() or checked.diagnostic_stop != null or checked.diagnostic_delivery != .complete) return result;
     const document = &checked.document.?;
-    result._graph = try IR.lowerComplete(allocator, document, .{
-        .interpretation = dot.Profile(.{}).interpretation(document, .{}),
-        .limits = options.lowering.limits orelse ir_api.Limits{},
-        .cancellation = options.lowering.cancellation,
-    });
+    result._graph = try lowerChecked(false, allocator, document, dot.Profile(.{}).interpretation(document, .{}), options.lowering);
     return result;
 }
 
@@ -103,15 +99,30 @@ pub fn parsePartial(allocator: std.mem.Allocator, source: []const u8, options: O
         else => return result,
     };
     const document = &checked.document.?;
-    result._graph = IR.lowerPartial(allocator, document, .{
-        .interpretation = Dot.interpretation(document, .{}),
-        .limits = options.lowering.limits orelse ir_api.Limits{},
-        .cancellation = options.lowering.cancellation,
-    }) catch |err| switch (err) {
+    // The default validation error on a strict retained document is an
+    // operator mismatch, which has no supported strict IR interpretation.
+    // Keep the existing checking result without allocating or polling a
+    // lowering operation that is already known to be inadmissible.
+    if (document.strict) if (checked.validation) |validation| {
+        if (validation.outcome.completed.violations != 0) return result;
+    };
+    result._graph = lowerChecked(true, allocator, document, Dot.interpretation(document, .{}), options.lowering) catch |err| switch (err) {
         // Preserve checking when retained strict input has no supported
         // interpretation. Deliberate resource/cancellation stops remain errors.
         error.UnsupportedSemantics => return result,
         else => return err,
     };
     return result;
+}
+
+fn lowerChecked(comptime partial: bool, allocator: std.mem.Allocator, document: *const dot.Document, interpretation: anytype, options: ir_api.Options) ir_api.Error!(if (partial) IR.PartialGraph else IR.Graph) {
+    // This convenience API has no IR profile argument. Its explicit hook opts
+    // into a cancellable profile; ordinary calls retain the default fast path.
+    if (options.cancellation) |hook| {
+        const Cancellable = ir_api.Lowering(.{ .policy = .{ .execution = .{ .cancellation = true } } });
+        const opts = .{ .interpretation = interpretation, .limits = options.limits, .cancellation = hook };
+        return if (partial) Cancellable.lowerPartial(allocator, document, opts) else Cancellable.lowerComplete(allocator, document, opts);
+    }
+    const opts = .{ .interpretation = interpretation, .limits = options.limits };
+    return if (partial) IR.lowerPartial(allocator, document, opts) else IR.lowerComplete(allocator, document, opts);
 }

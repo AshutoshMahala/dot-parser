@@ -18,7 +18,7 @@ const repetitions = 65536;
 
 pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
-    var file: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    var file: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &buffer);
     const out = &file.interface;
     try out.print("scanner backend: {s}\n", .{@tagName(Parser.baseline.scanner)});
     try out.print("scanner state: {d} bytes; token: {d} bytes\n", .{

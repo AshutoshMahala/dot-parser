@@ -9,6 +9,7 @@ pub const Mode = enum { none, passthrough, process };
 /// are extracted from the richer compile-time configuration.
 pub fn hostConfig(comptime T: type, comptime config: anytype) T {
     @setEvalBranchQuota(10000);
+    if (@typeInfo(@TypeOf(config)) != .@"struct") @compileError("processor configuration must be a struct");
     var result: T = .{};
     inline for (comptime @typeInfo(@TypeOf(config)).@"struct".field_names) |field| {
         const value = @field(config, field);
@@ -17,11 +18,13 @@ pub fn hostConfig(comptime T: type, comptime config: anytype) T {
                 result.policy = value;
                 continue;
             }
+            if (@typeInfo(@TypeOf(value)) != .@"struct") @compileError("policy must be a struct");
             inline for (comptime @typeInfo(@TypeOf(value)).@"struct".field_names) |leaf| {
                 if (comptime std.mem.eql(u8, leaf, "string") or std.mem.eql(u8, leaf, "attributes")) continue;
                 @field(result.policy, leaf) = coerce(@FieldType(@TypeOf(result.policy), leaf), @field(value, leaf));
             }
         } else if (comptime std.mem.eql(u8, field, "processors")) {
+            if (@typeInfo(@TypeOf(value)) != .@"struct") @compileError("processors must be a struct of bound processor types");
             inline for (comptime @typeInfo(@TypeOf(value)).@"struct".field_names) |leaf| {
                 if (comptime std.mem.eql(u8, leaf, "string")) continue;
                 @field(result.processors, leaf) = @field(value, leaf);
@@ -54,7 +57,11 @@ pub fn Routes(comptime config: anytype) type {
     const p = if (@hasField(@TypeOf(config), "policy")) config.policy else .{};
     const fallback = if (@hasField(@TypeOf(p), "string")) p.string else .passthrough;
     const attributes = if (@hasField(@TypeOf(p), "attributes")) p.attributes else .{};
+    if (@typeInfo(@TypeOf(attributes)) != .@"struct") @compileError("attribute routing must be a struct of named routes");
     const fields = @typeInfo(@TypeOf(attributes)).@"struct".field_names;
+    inline for (fields) |field| {
+        if (@typeInfo(@TypeOf(@field(attributes, field))) != .@"struct") @compileError("attribute route must be a struct");
+    }
     return struct {
         pub const count = fields.len + 1;
         pub fn rule(comptime index: usize) @TypeOf(if (index == 0) fallback else selected(index - 1)) {
@@ -70,7 +77,7 @@ pub fn Routes(comptime config: anytype) type {
         pub fn mode(comptime index: usize) Mode {
             const r = rule(index);
             if (@TypeOf(r) == @TypeOf(.enum_literal) or @typeInfo(@TypeOf(r)) == .@"enum") return @fromBackingInt(@intCast(@backingInt(@as(Mode, r))));
-            if (@hasField(@TypeOf(r), "process") and @typeInfo(@TypeOf(r)).@"struct".field_names.len == 1) return .process;
+            if (@typeInfo(@TypeOf(r)) == .@"struct" and @hasField(@TypeOf(r), "process") and @typeInfo(@TypeOf(r)).@"struct".field_names.len == 1) return .process;
             @compileError("string route must be .none, .passthrough or .{ .process = child_policy }");
         }
         pub const active = blk: {

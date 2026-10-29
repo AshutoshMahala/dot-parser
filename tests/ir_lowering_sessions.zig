@@ -4,6 +4,7 @@ const a = std.testing.allocator;
 const expect = std.testing.expect;
 const equal = std.testing.expectEqualDeep;
 const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+const Plain = dot.ir.Lowering(.{});
 const Dot = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true } } });
 
 // Credit totals include actual copies. Force moving growth for deterministic
@@ -44,7 +45,7 @@ fn check(comptime partial: bool, source: []const u8) !void {
     defer parsed.deinit(a);
     const doc = &parsed.document.?;
     const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
-    var direct = if (partial) try IR.lowerPartial(a, doc, options) else try IR.lowerComplete(a, doc, options);
+    var direct = if (partial) try Plain.lowerPartial(a, doc, options) else try Plain.lowerComplete(a, doc, options);
     defer direct.deinit();
     var work: ?u64 = null;
     var memory: NoResize = .{ .backing = a };
@@ -132,7 +133,7 @@ test "lowering runtime execution policy resolves once and direct operations rema
     try equal(dot.ir.LoweringOutcome.success, ignored.run().outcome.?);
     try equal(@as(u64, 0), stop.polls);
     try std.testing.expectError(error.Cancelled, Runtime.loweringSession(a, doc, .{ .interpretation = interpretation, .policy = .{ .execution = .{ .cancellation = true } }, .cancellation = stop.token() }));
-    var plain = try IR.lowerComplete(a, doc, .{ .interpretation = interpretation });
+    var plain = try Plain.lowerComplete(a, doc, .{ .interpretation = interpretation });
     defer plain.deinit();
     try compare(plain, result);
 }
@@ -157,7 +158,7 @@ test "lowering session admission preserves complete and partial boundaries" {
         if (view.strict) {
             try std.testing.expectError(error.UnsupportedSemantics, IR.partialLoweringSession(a, view, options));
         } else {
-            var expected = try IR.lowerPartial(a, view, options);
+            var expected = try Plain.lowerPartial(a, view, options);
             defer expected.deinit();
             var operation = try IR.partialLoweringSession(a, view, options);
             defer operation.deinit();

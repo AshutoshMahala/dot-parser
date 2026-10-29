@@ -2,6 +2,17 @@
 const std = @import("std");
 const markup = @import("markup_parser");
 
+// A host-provided Io owns stderr and its lock; the renderer must not reach
+// platform-specific File.stderr() machinery on a freestanding target.
+export fn print_markup(io: *const std.Io, source: [*]const u8, len: u32) u8 {
+    const finding: markup.Diagnostic = .{ .code = .unexpected_close, .span = .{ .start = 0, .len = @min(len, 1) } };
+    markup.console.printDiagnostics(io.*, &.{finding}, .{ .source = source[0..len] }) catch |err| return switch (err) {
+        error.Canceled => 1,
+        error.WriteFailed => 2,
+    };
+    return 0;
+}
+
 export fn render_markup(source: [*]const u8, len: u32, output: [*]u8, capacity: u32) u32 {
     return render(source, len, output, capacity, .ascii);
 }

@@ -17,7 +17,7 @@ const Request = struct {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     var output_buffer: [4096]u8 = undefined;
-    var output = std.Io.File.Writer.init(.stdout(), init.io, &output_buffer);
+    var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &output_buffer);
     const writer = &output.interface;
     try writer.writeAll("parser,fixture,scanner,policy,metered,interval,bytes,ns,MB/s,polls,credits,session_bytes\n");
     inline for (.{ false, true }) |is_markup| {

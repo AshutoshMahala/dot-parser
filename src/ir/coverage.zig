@@ -35,6 +35,10 @@ pub const Data = struct {
     /// later set-endpoint connection even when the gap precedes its winner.
     last_set_connection: ?u32 = null,
 
+    pub fn setConnectionAfter(self: *const Data, id: t.ConnectionId) bool {
+        return if (self.last_set_connection) |last| last > @backingInt(id) else false;
+    }
+
     pub fn observeConnection(self: *Data, id: u32, connection: t.Connection) void {
         if (@backingInt(connection.left.members) & t.node_bit == 0 or
             @backingInt(connection.right.members) & t.node_bit == 0)

@@ -52,7 +52,7 @@ noinline fn run(comptime trusted: bool, consumer: *Consumer(trusted)) !void {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     var buffer: [4096]u8 = undefined;
-    var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    var output: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &buffer);
     const w = &output.interface;
     try w.print("{d} statements, {d} unique names; event-only parse + reference index.\nNine alternating samples, four parses/sample; no timed allocation.\n", .{ count, unique });
     inline for (.{

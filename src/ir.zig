@@ -100,12 +100,12 @@ pub fn Lowering(comptime config: Config) type {
         }
         /// Allocation-free construction. Success borrows source and retained
         /// storage, never Document pools or scratch. Failure publishes no graph.
-        pub fn lowerCompleteIn(document: *const syntax.Document, memory: LoweringMemory, options: anytype) Fixed.DirectReturn(false) {
+        pub fn lowerCompleteIn(document: *const syntax.Document, memory: LoweringMemory, options: anytype) Fixed.DirectResult(false) {
             return Fixed.direct(false, document, memory, options);
         }
         /// Lower retained partial-source facts; a storage/work stop is still a
         /// failure, not a partially constructed graph.
-        pub fn lowerPartialIn(document: *const syntax.Document, memory: LoweringMemory, options: anytype) Fixed.DirectReturn(true) {
+        pub fn lowerPartialIn(document: *const syntax.Document, memory: LoweringMemory, options: anytype) Fixed.DirectResult(true) {
             return Fixed.direct(true, document, memory, options);
         }
         /// Same bounded session contract as loweringSession, using caller pools.
@@ -197,6 +197,10 @@ pub fn Lowering(comptime config: Config) type {
             return sessionInit(true, allocator, document, options);
         }
         fn sessionInit(comptime partial: bool, allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype) !(if (partial) PartialLoweringSession else LoweringSession) {
+            const effective = if (config.runtime_policy) try execution.effectiveFor(config, options) else baseline;
+            return sessionInitResolved(partial, allocator, document, options, effective);
+        }
+        fn sessionInitResolved(comptime partial: bool, allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype, effective: execution.Effective) Error!(if (partial) PartialLoweringSession else LoweringSession) {
             comptime {
                 if (!@hasField(@TypeOf(options), "interpretation")) @compileError("lowering session requires .interpretation from the accepting DOT profile");
                 for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
@@ -214,21 +218,26 @@ pub fn Lowering(comptime config: Config) type {
             };
             var normalized: S.Options = .{ .interpretation = resolved };
             inline for (.{ "limits", "cancellation", "policy" }) |field| {
-                if (@hasField(@TypeOf(options), field)) @field(normalized, field) = execution.option(@FieldType(S.Options, field), @field(options, field));
+                if (@hasField(@TypeOf(options), field)) {
+                    if (comptime std.mem.eql(u8, field, "cancellation")) {
+                        if (@FieldType(@TypeOf(options), field) != void) {
+                            if (@FieldType(S.Options, field) == void) @compileError("IR cancellation is disabled by this profile");
+                            normalized.cancellation = execution.directCancellation(options);
+                        }
+                    } else @field(normalized, field) = execution.option(@FieldType(S.Options, field), @field(options, field));
+                }
             }
-            return S.init(allocator, document, normalized);
+            normalized.limits = normalized.limits orelse config.limits;
+            return execution.initLoweringResolved(S, allocator, document, normalized, effective);
         }
         /// Explicitly lower retained facts, including a stopped parser's safely
         /// retained Document. This is a new bounded operation, not parse resume.
-        pub fn lowerPartial(allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype) Error!PartialGraph {
-            comptime {
-                if (!@hasField(@TypeOf(options), "interpretation")) @compileError("lowerPartial requires .interpretation from the accepting DOT profile");
-                for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
-                    if (!std.mem.eql(u8, field, "interpretation") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation")) @compileError("unknown IR lowering option: " ++ field);
-                }
-            }
+        pub fn lowerPartial(allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype) (if (config.runtime_policy) Error || execution.ValidationError else Error)!PartialGraph {
+            comptime checkDirectOptions(@TypeOf(options));
+            const effective = if (config.runtime_policy) try execution.effectiveFor(config, options) else baseline;
+            _ = execution.cancellationFor(config, options, effective);
+            if (effective.metering or effective.cancellation) return runBounded(true, allocator, document, options, effective);
             const limits = execution.directLimits(options, config.limits);
-            const cancellation = execution.directCancellation(options);
             const interpretation = options.interpretation;
             const resolved: @import("ir/lower.zig").InterpretationFor(true) = .{
                 .kind = interpretation.effectiveKind(document.kind),
@@ -236,20 +245,17 @@ pub fn Lowering(comptime config: Config) type {
                 .undirected = interpretation.effectiveOperator(document.kind, .undirected),
             };
             var memory: resources.Memory = .{ .backing = allocator, .limit = limits.max_bytes };
-            return @import("ir/lower.zig").runWith(caps, true, memory.allocator(), document, resolved, limits, cancellation) catch |err| return memory.failure(err);
+            return @import("ir/lower.zig").runWith(caps, true, memory.allocator(), document, resolved, limits, null) catch |err| return memory.failure(err);
         }
         /// Lower a complete, accepted parser-produced Document. Interpretation
         /// must come from the same profile/options used to accept that Document.
         /// Borrow only source bytes; Document pools may be released afterward.
-        pub fn lowerComplete(allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype) Error!Graph {
-            comptime {
-                if (!@hasField(@TypeOf(options), "interpretation")) @compileError("lowerComplete requires .interpretation from the accepting DOT profile");
-                for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
-                    if (!std.mem.eql(u8, field, "interpretation") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation")) @compileError("unknown IR lowering option: " ++ field);
-                }
-            }
+        pub fn lowerComplete(allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype) (if (config.runtime_policy) Error || execution.ValidationError else Error)!Graph {
+            comptime checkDirectOptions(@TypeOf(options));
+            const effective = if (config.runtime_policy) try execution.effectiveFor(config, options) else baseline;
+            _ = execution.cancellationFor(config, options, effective);
+            if (effective.metering or effective.cancellation) return runBounded(false, allocator, document, options, effective);
             const limits = execution.directLimits(options, config.limits);
-            const cancellation = execution.directCancellation(options);
             if (!document.scopeComplete()) return error.IncompleteDocument;
             const interpretation = options.interpretation;
             const resolved: @import("ir/lower.zig").Interpretation = .{
@@ -258,7 +264,20 @@ pub fn Lowering(comptime config: Config) type {
                 .undirected = interpretation.effectiveOperator(document.kind, .undirected),
             };
             var memory: resources.Memory = .{ .backing = allocator, .limit = limits.max_bytes };
-            return @import("ir/lower.zig").run(caps, memory.allocator(), document, resolved, limits, cancellation) catch |err| return memory.failure(err);
+            // Keep the complete fast driver's existing call boundary. Inlining
+            // its encoding dispatch here changes optimizer decisions in callers.
+            return @import("ir/lower.zig").run(caps, memory.allocator(), document, resolved, limits, null) catch |err| return memory.failure(err);
+        }
+        fn checkDirectOptions(comptime OptionsType: type) void {
+            if (!@hasField(OptionsType, "interpretation")) @compileError("IR lowering requires .interpretation from the accepting DOT profile");
+            for (@typeInfo(OptionsType).@"struct".field_names) |field| {
+                if (!std.mem.eql(u8, field, "interpretation") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !(config.runtime_policy and std.mem.eql(u8, field, "policy"))) @compileError("unknown IR lowering option: " ++ field);
+            }
+        }
+        fn runBounded(comptime partial: bool, allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype, effective: execution.Effective) Error!@import("ir/lower.zig").Output(caps, partial) {
+            var operation = try sessionInitResolved(partial, allocator, document, options, effective);
+            defer operation.deinit();
+            return execution.finish(&operation);
         }
     };
 }

@@ -97,7 +97,10 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
             // pair into separate logical chunks. ASCII/UTF-8 stay byte-exact.
             if (enc.width == 2) {
                 const first = enc.unit(raw, start + enc.width);
-                if (first >= 0xd800 and first <= 0xdbff) offset += enc.width;
+                if (first >= 0xd800 and first <= 0xdbff and offset < raw.len) {
+                    const second = enc.unit(raw, offset);
+                    if (second >= 0xdc00 and second <= 0xdfff) offset += enc.width;
+                }
             }
             if (enc.byteAt(raw, start + enc.width) == '\r' and offset < raw.len and enc.byteAt(raw, offset) == '\n') offset += enc.width;
             return offset;

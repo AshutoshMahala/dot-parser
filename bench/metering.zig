@@ -56,7 +56,7 @@ pub fn main(init: std.process.Init) !void {
     @setEvalBranchQuota(100_000);
     const allocator = init.arena.allocator();
     var buffer: [4096]u8 = undefined;
-    var output = std.Io.File.Writer.init(.stdout(), init.io, &buffer);
+    var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &buffer);
     const w = &output.interface;
     try w.writeAll("parser,fixture,scanner,mode,bytes,ns,MB/s,credits,polls,session_bytes\n");
     inline for (.{ dot, markup }) |api| {
