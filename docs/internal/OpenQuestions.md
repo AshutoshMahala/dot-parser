@@ -1195,8 +1195,15 @@ Lowering reuses a vacant index slot until table growth invalidates it. Attribute
 declarations and inherited overlays reuse only cells created within that batch;
 published roots remain immutable. Direct/fixed/session paths share the map
 updates, and resumable growth reserves before a bounded update so copying never
-hides inside a tree step. No automatic capacity reservation or edge expansion
+hides inside a tree step. No speculative upper-bound reservation or edge expansion
 is introduced by these optimizations.
+Allocator-backed lowering now sizes written declarations exactly, using complete
+Document counts or the existing retained-statement pass for partial input. Node
+growth is capped by the current count plus remaining mentions and the node limit;
+this is not speculative reservation or a final shrinking copy. Sessions preserve
+bounded copying and polling; fixed storage retains its caller-selected capacities.
+Sparse port storage is separate work: these changes keep the Endpoint/Connection
+representation intact.
 Policy-bound edge streaming now reuses bounded expansion without an output
 array or attribute folding. Each advance delivers at most one complete/partial
 view, pauses, or terminates; no edge does not mean exhaustion. Views borrow IR

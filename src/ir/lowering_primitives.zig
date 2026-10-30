@@ -13,6 +13,9 @@ pub fn ReserveFor(comptime T: type, comptime fixed_storage: bool, comptime field
             try context.ensure(field, std.math.add(usize, list.items.len, count) catch return error.IndexLimit);
             return true;
         }
+        pub fn stepCapped(self: *@This(), list: *std.ArrayList(T), count: usize, context: *@import("fixed_storage.zig").Context, _: usize) r.Error!bool {
+            return self.step(list, count, context);
+        }
     };
 }
 
@@ -26,6 +29,11 @@ pub fn Reserve(comptime T: type) type {
             storage.release(T, a, self.pending);
         }
         pub fn step(self: *@This(), list: *std.ArrayList(T), count: usize, a: std.mem.Allocator) r.Error!bool {
+            return self.stepCapped(list, count, a, std.math.maxInt(u32) - 1);
+        }
+        /// Cap only new growth; already-owned capacity is never copied merely
+        /// to shrink it. Pending copies still use the same 64-byte steps.
+        pub fn stepCapped(self: *@This(), list: *std.ArrayList(T), count: usize, a: std.mem.Allocator, maximum: usize) r.Error!bool {
             if (self.pending.len != 0) {
                 if (self.copied < list.items.len * @sizeOf(T)) {
                     const end = self.copied + @min(64, list.items.len * @sizeOf(T) - self.copied);
@@ -43,7 +51,8 @@ pub fn Reserve(comptime T: type) type {
             if (list.capacity - list.items.len >= count) return true;
             const wanted = std.math.add(usize, list.items.len, count) catch return error.IndexLimit;
             if (wanted >= std.math.maxInt(u32)) return error.IndexLimit;
-            const capacity = @min(std.math.maxInt(u32) - 1, std.ArrayList(T).growCapacity(wanted));
+            if (wanted > maximum) return error.InvalidDocument;
+            const capacity = @min(maximum, std.math.maxInt(u32) - 1, std.ArrayList(T).growCapacity(wanted));
             const bytes = std.math.mul(usize, capacity, @sizeOf(T)) catch return error.IndexLimit;
             const old = list.allocatedSlice();
             // rawResize avoids Debug's implicit whole-buffer poison.
@@ -81,7 +90,9 @@ pub fn Name(comptime caps: enc.Capabilities) type {
                 inline else => |actual| if (comptime caps.allows(actual)) self.read(actual) else error.UnsupportedEncoding,
             };
         }
-        fn read(self: *@This(), comptime actual: enc.Actual) r.Error!Step {
+        // Specialize the one-unit decoder within step; an extra call here is
+        // paid for every byte of quoted names and concatenation/comment glue.
+        inline fn read(self: *@This(), comptime actual: enc.Actual) r.Error!Step {
             const E = enc.Reader(actual);
             const unit = E.unit(self.raw, self.offset);
             self.offset += E.width;

@@ -160,7 +160,13 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 try mem.prepareTable(&self.node_table, self.a, &self.work, self, "node_slots");
                 const scope = @backingInt(self.occurrences[occurrence].scope);
                 const state = if (self.attribute_data.scopes.len == 0) attrs.none else self.attribute_data.scopes[scope].node;
-                try mem.append(self.a, &self.nodes, .{ .name = view.identifier, .first_mention = self.mention_count, .attribute_state = state, .hash = hash }, "nodes");
+                const record: t.Node = .{ .name = view.identifier, .first_mention = self.mention_count, .attribute_state = state, .hash = hash };
+                if (fixed_storage) {
+                    try mem.append(self.a, &self.nodes, record, "nodes");
+                } else {
+                    if (self.nodes.items.len >= self.nodes.capacity) try self.growNodes();
+                    self.nodes.appendAssumeCapacity(record);
+                }
                 if (self.node_table.slots.len == old_capacity) {
                     // The unsuccessful lookup already found this empty slot.
                     // Node-list growth cannot change the separate index.
@@ -174,6 +180,27 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             self.mentions[self.mention_count] = .{ .node = @fromBackingInt(id), .source = view.identifier, .occurrence = @fromBackingInt(occurrence) };
             self.mention_count += 1;
             return .{ .members = @fromBackingInt(t.node_bit | id), .port = view.port };
+        }
+        /// Each remaining mention can introduce at most one new node. This
+        /// bounds growth without assuming that all mentions have distinct names.
+        pub fn nodeCapacityBound(self: *const Self) r.Error!usize {
+            if (self.mention_count >= self.mentions.len) return error.InvalidDocument;
+            return @min(self.limits.max_nodes, self.nodes.items.len + (self.mentions.len - self.mention_count));
+        }
+        // Keep allocation arithmetic off the ordinary insertion path.
+        noinline fn growNodes(self: *Self) r.Error!void {
+            const capacity = @min(try self.nodeCapacityBound(), std.ArrayList(t.Node).growCapacity(self.nodes.items.len + 1));
+            try self.nodes.ensureTotalCapacityPrecise(self.a, capacity);
+        }
+        pub fn allocateDeclarations(self: *Self, count: usize, comptime metered: bool) r.Error!void {
+            if (fixed_storage) return;
+            // Written declarations have an exact retained count. Allocate with
+            // the other fixed-size records, before growing names and maps:
+            // arenas keep abandoned declaration growth buffers until reset.
+            _ = try r.index(count);
+            const records = try mem.allocate(t.Declaration, self.a, count, "declarations", metered);
+            self.declarations.items = records[0..0];
+            self.declarations.capacity = records.len;
         }
         fn prepareScopes(self: *Self) r.Error!void {
             const count = try r.index(self.doc.subgraph_records.len + 1);
@@ -356,7 +383,13 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
         }
         fn declaration(self: *Self, target: @FieldType(t.Declaration, "target"), occurrence: u32, range: syntax.AttributeRange) r.Error!void {
             const id = try r.index(self.declarations.items.len);
-            try mem.append(self.a, &self.declarations, .{ .target = target, .occurrence = @fromBackingInt(occurrence), .attributes = range }, "declarations");
+            const record: t.Declaration = .{ .target = target, .occurrence = @fromBackingInt(occurrence), .attributes = range };
+            if (fixed_storage) {
+                try mem.append(self.a, &self.declarations, record, "declarations");
+            } else {
+                if (self.declarations.items.len >= self.declarations.capacity) return error.InvalidDocument;
+                self.declarations.appendAssumeCapacity(record);
+            }
             if (range.len == 0) return;
             const kind: attrs.Kind = switch (target) {
                 .node => .node,
@@ -396,7 +429,9 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             const body = try self.scopeBody(id);
             return std.math.add(u32, body.start, body.len) catch error.InvalidDocument;
         }
-        fn walk(self: *Self) r.Error!void {
+        // Keep the hot traversal independent of allocation/setup inlining
+        // decisions. There is only one traversal call per lowering operation.
+        noinline fn walk(self: *Self) r.Error!void {
             try self.enter(0);
             while (self.stack.items.len != 0) {
                 try self.work.spend(1);
@@ -506,6 +541,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             var mention_count: u64 = 0;
             var connection_count: u64 = 0;
             var retained_attributes: u64 = 0;
+            var declaration_count: usize = if (partial) 0 else self.doc.nodes.len + self.doc.attribute_statements.len + self.doc.assignments.len;
             var statements = self.doc.statements();
             while (statements.next()) |statement| {
                 try self.work.spend(1);
@@ -517,7 +553,13 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                     else => 0,
                 };
                 switch (statement) {
-                    .node => mention_count += 1,
+                    .node => {
+                        mention_count += 1;
+                        if (partial) declaration_count += 1;
+                    },
+                    .attribute_statement, .assignment => if (partial) {
+                        declaration_count += 1;
+                    },
                     .edge, .edge_chain => {
                         const first = firstEdge(statement);
                         mention_count += @intFromBool(first.left == .node) + @as(u64, @intFromBool(first.right == .node));
@@ -538,6 +580,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             if (attribute_count > self.limits.max_attributes) return error.AttributeLimit;
             if (attribute_count >= @import("ports.zig").right) return error.IndexLimit;
             try self.prepareScopes();
+            try self.allocateDeclarations(declaration_count, false);
             self.mentions = try mem.allocate(t.Mention, self.a, @intCast(mention_count), "mentions", false);
             self.connections = try mem.allocate(t.Connection, self.a, @intCast(connection_count), "connections", false);
             self.attributes = try mem.allocate(syntax.Attribute, self.a, @intCast(attribute_count), "attributes", false);

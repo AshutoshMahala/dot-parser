@@ -107,6 +107,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
         counted_mentions: u64 = 0,
         counted_connections: u64 = 0,
         counted_attributes: u64 = 0,
+        counted_declarations: u32 = 0,
         iterator: syntax.EdgeLinkIterator,
         occurrence: u32 = 0,
         enter_id: u32 = 0,
@@ -157,7 +158,6 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
         suffix_first: u32 = 0,
         node_growth: p.ReserveFor(t.Node, fixed_storage, "nodes") = .{},
         scope_growth: p.ReserveFor(t.Scope, fixed_storage, "scopes") = .{},
-        declaration_growth: p.ReserveFor(t.Declaration, fixed_storage, "declarations") = .{},
         frame_growth: p.ReserveFor(std.meta.Elem(@FieldType(@FieldType(B, "stack"), "items")), fixed_storage, "stack") = .{},
         // Field types below are derived from the shared arrays, not duplicate
         // frame definitions or a second public event vocabulary.
@@ -195,7 +195,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
             }
             const a = self.memory.allocator();
             self.b.a = a;
-            inline for (.{ "node_growth", "scope_growth", "declaration_growth", "frame_growth", "edge_growth", "pending_growth", "key_growth", "cell_growth", "gap_growth" }) |field| @field(self, field).deinit(a);
+            inline for (.{ "node_growth", "scope_growth", "frame_growth", "edge_growth", "pending_growth", "key_growth", "cell_growth", "gap_growth" }) |field| @field(self, field).deinit(a);
             storage.release(u32, a, self.new_slots);
             self.b.deinit();
             self.* = undefined;
@@ -314,7 +314,10 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     if (self.index == doc.order.len) {
                         if (self.counted_mentions > b.limits.max_mentions) return error.MentionLimit;
                         if (self.counted_connections > b.limits.max_connections) return error.ConnectionLimit;
-                        if (!partial) self.counted_attributes = @as(u64, doc.attributes.len) + doc.assignments.len;
+                        if (!partial) {
+                            self.counted_attributes = @as(u64, doc.attributes.len) + doc.assignments.len;
+                            self.counted_declarations = try r.index(doc.nodes.len + doc.attribute_statements.len + doc.assignments.len);
+                        }
                         if (self.counted_attributes > b.limits.max_attributes) return error.AttributeLimit;
                         if (self.counted_attributes >= @import("ports.zig").right) return error.IndexLimit;
                         const count = try r.index(doc.subgraph_records.len + 1);
@@ -335,7 +338,13 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                             else => 0,
                         };
                         switch (s) {
-                            .node => self.counted_mentions += 1,
+                            .node => {
+                                self.counted_mentions += 1;
+                                if (partial) self.counted_declarations += 1;
+                            },
+                            .attribute_statement, .assignment => if (partial) {
+                                self.counted_declarations += 1;
+                            },
                             .edge, .edge_chain => {
                                 const edge = B.firstEdge(s);
                                 self.counted_mentions += @as(u64, @intFromBool(edge.left == .node)) + @intFromBool(edge.right == .node);
@@ -357,9 +366,10 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     switch (self.allocation) {
                         0 => b.occurrences = try mem.allocate(t.Occurrence, a, doc.subgraph_records.len + 1, "occurrences", true),
                         1 => b.bodies = try mem.allocate(t.Body, a, b.occurrences.len, "bodies", true),
-                        2 => b.mentions = try mem.allocate(t.Mention, a, @intCast(self.counted_mentions), "mentions", true),
-                        3 => b.connections = try mem.allocate(t.Connection, a, @intCast(self.counted_connections), "connections", true),
-                        4 => b.attributes = try mem.allocate(syntax.Attribute, a, @intCast(self.counted_attributes), "attributes", true),
+                        2 => try b.allocateDeclarations(self.counted_declarations, true),
+                        3 => b.mentions = try mem.allocate(t.Mention, a, @intCast(self.counted_mentions), "mentions", true),
+                        4 => b.connections = try mem.allocate(t.Connection, a, @intCast(self.counted_connections), "connections", true),
+                        5 => b.attributes = try mem.allocate(syntax.Attribute, a, @intCast(self.counted_attributes), "attributes", true),
                         else => {
                             if (!try self.scope_growth.step(&b.scopes, 1, a)) return;
                             b.scopes.appendAssumeCapacity(.{ .parent = null, .name = doc.name, .first_occurrence = .root, .hash = 0 });
@@ -780,7 +790,9 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     self.copy_index += 1;
                 },
                 .declaration => {
-                    if (!try self.declaration_growth.step(&b.declarations, 1, a)) return;
+                    if (fixed_storage) {
+                        try a.ensure("declarations", b.declarations.items.len + 1);
+                    } else if (b.declarations.items.len >= b.declarations.capacity) return error.InvalidDocument;
                     self.origin = .{ .declaration = try r.index(b.declarations.items.len) };
                     b.declarations.appendAssumeCapacity(.{ .target = self.target, .occurrence = @fromBackingInt(self.occurrence), .attributes = self.range });
                     if (self.range.len == 0) {
@@ -975,7 +987,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                             if (b.nodes.items.len >= b.limits.max_nodes) return error.NodeLimit;
                             self.intern_id = try r.index(b.nodes.items.len);
                             if (self.intern_id >= t.node_bit) return error.IndexLimit;
-                            if (!try self.node_growth.step(&b.nodes, 1, a)) return;
+                            if (!try self.node_growth.stepCapped(&b.nodes, 1, a, try b.nodeCapacityBound())) return;
                             const state = if (b.attribute_data.scopes.len == 0) none else b.attribute_data.scopes[@backingInt(b.occurrences[self.occurrence].scope)].node;
                             b.nodes.appendAssumeCapacity(.{ .name = self.name, .first_mention = b.mention_count, .attribute_state = state, .hash = self.hash });
                         },

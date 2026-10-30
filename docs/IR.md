@@ -795,6 +795,16 @@ source bytes alive until the IR is released. Materialized edges own their
 array but refer to IR-local node/connection IDs; retain the IR to interpret
 those IDs and read names or provenance. No source text is copied.
 
+Allocator-backed lowering allocates the declaration table at its exact retained
+count. Node lists grow on demand, with each new allocation capped by the current
+node count plus remaining node mentions, and by the node limit. This is an upper
+bound, not a reservation: repeated names do not allocate one node per mention.
+Already-owned spare capacity is not copied just to shrink it. Sessions retain
+bounded copying; fixed storage keeps the caller's supplied capacities.
+Arena backing capacity depends on allocation order and chunk growth as well as
+live pool sizes; fewer retained bytes do not
+guarantee a proportional drop in Arena capacity or process RSS.
+
 Lowering, streaming and materialization use the supplied allocator. Name access, `findNode`, `contains`,
 `scopeMembership`, and `hasEdge` allocate nothing. Pair queries currently scan
 symbolic connections; membership uses per-node postings and shared intervals.

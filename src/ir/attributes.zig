@@ -224,6 +224,7 @@ pub const Store = struct {
         return next;
     }
     fn overlay(self: *Store, a: anytype, base: u32, local: u32, limit: u32, work: *r.Work) r.Error!u32 {
+        if (local == none) return base;
         const mutable_from = try r.index(self.cells.items.len);
         var path: [48]u32 = undefined;
         var depth: usize = 0;

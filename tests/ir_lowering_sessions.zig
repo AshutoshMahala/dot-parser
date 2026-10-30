@@ -40,6 +40,11 @@ fn compare(expected: anytype, actual: anytype) !void {
         try equal(@field(expected.attribute_data, field).items, @field(actual.attribute_data, field).items);
 }
 
+fn checkRetainedCapacity(graph: anytype) !void {
+    try equal(graph.declarations.len, graph.declaration_storage.len);
+    try expect(graph.node_storage.len <= graph.mentions.len);
+}
+
 fn check(comptime partial: bool, source: []const u8) !void {
     var parsed = Dot.parseAndValidate(a, source, dot.diagnostic.discard, .{});
     defer parsed.deinit(a);
@@ -47,6 +52,7 @@ fn check(comptime partial: bool, source: []const u8) !void {
     const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
     var direct = if (partial) try Plain.lowerPartial(a, doc, options) else try Plain.lowerComplete(a, doc, options);
     defer direct.deinit();
+    try checkRetainedCapacity(if (partial) direct._data else direct);
     var work: ?u64 = null;
     var memory: NoResize = .{ .backing = a };
     for ([_]u32{ 1, 2, 7, 64, 4096, std.math.maxInt(u32) }) |budget| {
@@ -72,6 +78,7 @@ fn check(comptime partial: bool, source: []const u8) !void {
         if (work) |previous| try equal(previous, total) else work = total;
         var actual = try session.takeResult();
         defer actual.deinit();
+        try checkRetainedCapacity(if (partial) actual._data else actual);
         if (partial) {
             try compare(direct._data, actual._data);
             try equal(direct._coverage.entries.items, actual._coverage.entries.items);
@@ -137,6 +144,74 @@ test "lowering lookup slots survive wrapping collisions table growth and quoted 
         const found = (try graph.findNode(try std.fmt.bufPrint(&buffer, "n{d}", .{id}))).?;
         try equal(@as(u32, @intCast(expected)), @backingInt(found));
     }
+}
+
+test "lowering caps node growth by remaining mentions without speculative reservation" {
+    var memory: NoResize = .{ .backing = a };
+    for ([_]usize{ 0, 1, 7, 8, 9, 16, 17, 64, 65, 133, 1024 }) |count| {
+        for ([_]bool{ false, true }) |repeated| {
+            var source: std.Io.Writer.Allocating = .init(a);
+            defer source.deinit();
+            try source.writer.writeAll("digraph {");
+            for (0..count) |i| try source.writer.print("n{d};", .{if (repeated) i % 3 else i});
+            try source.writer.writeAll("}");
+            var parsed = Dot.parseAndValidate(a, source.written(), dot.diagnostic.discard, .{});
+            defer parsed.deinit(a);
+            const doc = &parsed.document.?;
+            const distinct = if (repeated) @min(count, 3) else count;
+            for ([_]u32{ std.math.maxInt(u32), @intCast(distinct) }) |limit| {
+                const options = .{ .interpretation = Dot.interpretation(doc, .{}), .limits = .{ .max_nodes = limit } };
+                var direct = try Plain.lowerComplete(memory.allocator(), doc, options);
+                defer direct.deinit();
+                try equal(distinct, direct.nodes.len);
+                try expect(direct.node_storage.len >= distinct);
+                try equal(count, direct.declaration_storage.len);
+                try expect(direct.node_storage.len <= @min(count, limit));
+                if (!repeated) try equal(distinct, direct.node_storage.len);
+                if (repeated and count == 133) try expect(direct.node_storage.len < count);
+                var session = try IR.loweringSession(memory.allocator(), doc, options);
+                defer session.deinit();
+                while (true) {
+                    const progress = session.advance(1);
+                    try expect(progress.work_used <= 1);
+                    if (progress.outcome) |outcome| {
+                        try equal(dot.ir.LoweringOutcome.success, outcome);
+                        break;
+                    }
+                }
+                var result = try session.takeResult();
+                defer result.deinit();
+                try compare(direct, result);
+                try equal(direct.node_storage.len, result.node_storage.len);
+                try equal(count, result.declaration_storage.len);
+            }
+        }
+    }
+    // Repeated mentions tighten the bound before a later growth, without
+    // assuming future names are duplicates. The last three introduce nodes.
+    const initial = std.ArrayList(std.meta.Elem(@FieldType(Plain.Graph, "nodes"))).growCapacity(1);
+    var source: std.Io.Writer.Allocating = .init(a);
+    defer source.deinit();
+    try source.writer.writeAll("digraph {");
+    for (0..initial) |i| try source.writer.print("n{d};", .{i});
+    for (0..32) |_| try source.writer.writeAll("n0;");
+    for (initial..initial + 3) |i| try source.writer.print("n{d};", .{i});
+    try source.writer.writeAll("}");
+    var parsed = Dot.parseAndValidate(a, source.written(), dot.diagnostic.discard, .{});
+    defer parsed.deinit(a);
+    const doc = &parsed.document.?;
+    const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
+    var direct = try Plain.lowerComplete(memory.allocator(), doc, options);
+    defer direct.deinit();
+    try equal(initial + 3, direct.nodes.len);
+    try equal(direct.nodes.len, direct.node_storage.len);
+    var session = try IR.loweringSession(memory.allocator(), doc, options);
+    defer session.deinit();
+    try equal(dot.ir.LoweringOutcome.success, session.run().outcome.?);
+    var result = try session.takeResult();
+    defer result.deinit();
+    try compare(direct, result);
+    try equal(direct.node_storage.len, result.node_storage.len);
 }
 
 test "lowering runtime execution policy resolves once and direct operations remain available" {
