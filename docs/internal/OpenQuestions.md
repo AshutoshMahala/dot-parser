@@ -1222,9 +1222,13 @@ preserve full-profile edge identity and partial uncertainty. Fixed edge scratch
 checks only retained pools, still rejects owner/source aliases and never falls
 back to allocation. Attribute-bearing materialization types and cross-profile
 attribute-scratch sizing reject an attribute-disabled graph at compile time.
-Capability-aware fixed lowering and its storage/parity audit remain pending;
-topology profiles reject fixed-lowering calls rather than using full storage.
-Fixed materialization follows that work.
+Capability-aware fixed lowering now uses the same representation identity for
+layouts, descriptors, bounds and direct/resumable `In` calls. Disabled pools and
+their layout descriptors are omitted; nonzero disabled reservations fail before
+writes. Bounds remain explicit and skip attribute formulas when compiled out.
+Shared full/topology tests cover exact fits, per-pool shortfalls, partial gaps,
+native encodings, runtime execution overrides, cancellation, alias rejection and
+caller ownership. Fixed materialization output remains the next storage increment.
 Speed builds specialize single-credit lowering resumes; larger grants share
 the existing loop and size builds retain one driver. Hashing inlines the
 one-unit name reader to avoid a call for every unit of comment/concatenation

@@ -83,8 +83,14 @@ export fn fixed_queries(source: [*]const u8, length: u32, parse_memory: [*]u8, p
 // Parse storage remains independently supplied. Neither fixed IR route below
 // calls an allocator or expands edges during construction.
 export fn fixed_ir(source: [*]const u8, length: u32, parse_memory: [*]u8, parse_capacity: u32, resumable: bool) u32 {
+    return fixedLowering(true, source, length, parse_memory, parse_capacity, resumable);
+}
+export fn fixed_topology_ir(source: [*]const u8, length: u32, parse_memory: [*]u8, parse_capacity: u32, resumable: bool) u32 {
+    return fixedLowering(false, source, length, parse_memory, parse_capacity, resumable);
+}
+fn fixedLowering(comptime with_attributes: bool, source: [*]const u8, length: u32, parse_memory: [*]u8, parse_capacity: u32, resumable: bool) u32 {
     const P = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true } } });
-    const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+    const IR = dot.ir.Lowering(.{ .capabilities = .{ .attributes = with_attributes }, .policy = .{ .execution = .{ .metering = true } } });
     var parse_storage = std.heap.FixedBufferAllocator.init(parse_memory[0..parse_capacity]);
     var parsed = P.parseAndValidate(parse_storage.allocator(), source[0..length], dot.diagnostic.discard, .{});
     defer parsed.deinit(parse_storage.allocator());
@@ -95,10 +101,10 @@ export fn fixed_ir(source: [*]const u8, length: u32, parse_memory: [*]u8, parse_
         .occurrences = 16,
         .mentions = 128,
         .connections = 64,
-        .declarations = 64,
-        .attributes = 128,
-        .attribute_keys = 32,
-        .attribute_states = 1024,
+        .declarations = if (with_attributes) 64 else 0,
+        .attributes = if (with_attributes) 128 else 0,
+        .attribute_keys = if (with_attributes) 32 else 0,
+        .attribute_states = if (with_attributes) 1024 else 0,
         .coverage_gaps = 16,
     });
     const Scratch = IR.FixedLoweringScratch(Retained, .{ .nesting = 32, .edge_nesting = 8, .pending_endpoints = 64 });

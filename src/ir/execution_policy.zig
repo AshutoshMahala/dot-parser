@@ -128,7 +128,6 @@ pub fn Bound(comptime rep: @import("representation.zig").Identity, comptime part
     return BoundWith(rep, partial, config, false);
 }
 pub fn BoundWith(comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime config: anytype, comptime fixed_storage: bool) type {
-    if (fixed_storage) comptime @import("representation.zig").requireFixedLowering(rep.attributes);
     const baseline = comptime resolve(.{}, config.policy);
     comptime {
         validate(baseline) catch @compileError("IR cancellation_interval must be positive");
@@ -146,7 +145,7 @@ pub fn BoundWith(comptime rep: @import("representation.zig").Identity, comptime 
         };
         core: Core,
         effective: if (config.runtime_policy) Effective else void,
-        pub fn init(a: if (fixed_storage) @import("fixed_storage.zig").Context else @import("std").mem.Allocator, doc: *const @import("../dot/syntax.zig").Document, options: Options) (@import("resources.zig").Error || Error)!Self {
+        pub fn init(a: if (fixed_storage) @import("fixed_storage.zig").For(rep).Context else @import("std").mem.Allocator, doc: *const @import("../dot/syntax.zig").Document, options: Options) (@import("resources.zig").Error || Error)!Self {
             const effective = if (config.runtime_policy) try effectiveFor(config, options) else baseline;
             var normalized = options;
             normalized.limits = options.limits orelse config.limits;

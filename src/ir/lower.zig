@@ -64,7 +64,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
         const Frame = Records.Frame;
         const EdgeFrame = Records.EdgeFrame;
         const Pending = Records.Pending;
-        a: if (fixed_storage) *pools.Context else std.mem.Allocator,
+        a: if (fixed_storage) *pools.For(rep).Context else std.mem.Allocator,
         doc: *const syntax.Document,
         interpretation: InterpretationFor(partial),
         limits: r.Limits,
@@ -99,11 +99,14 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
             next_scope: u32 = 1,
         } else bool = if (partial) .{} else false,
 
-        pub fn bindFixed(self: *Self, context: *pools.Context) void {
+        pub fn bindFixed(self: *Self, context: *pools.For(rep).Context) void {
             if (!fixed_storage) @compileError("fixed storage only");
-            inline for (.{ "nodes", "scopes", "declarations", "stack", "edge_stack", "pending" }) |field| @field(self, field) = context.list(field);
-            self.attribute_data.keys = context.list("keys");
-            self.attribute_data.cells = context.list("cells");
+            inline for (.{ "nodes", "scopes", "stack", "edge_stack", "pending" }) |field| @field(self, field) = context.list(field);
+            if (rep.attributes) {
+                self.declarations = context.list("declarations");
+                self.attribute_data.keys = context.list("keys");
+                self.attribute_data.cells = context.list("cells");
+            }
             if (partial) self.publication.coverage_data.entries = context.list("gaps");
         }
         pub fn deinit(self: *Self) void {

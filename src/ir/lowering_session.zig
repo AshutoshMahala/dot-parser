@@ -95,7 +95,7 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
         const Family = enum { node, scope, key };
         b: B,
         actual: encoding.Actual,
-        memory: if (fixed_storage) pools.Context else r.Memory,
+        memory: if (fixed_storage) pools.For(rep).Context else r.Memory,
         cancellation: Hook,
         interval: u32,
         total_work: u64 = 0,
@@ -168,7 +168,7 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
         cell_growth: if (rep.attributes) p.ReserveFor(attrs.Cell, fixed_storage, "cells") else void = if (rep.attributes) .{} else {},
         gap_growth: p.ReserveFor(coverage.EntryFor(rep.attributes), fixed_storage, "gaps") = .{},
 
-        pub fn init(a: if (fixed_storage) pools.Context else std.mem.Allocator, doc: *const syntax.Document, interpretation: lower.InterpretationFor(partial), limits: r.Limits, cancellation: Hook, interval: u32) r.Error!Self {
+        pub fn init(a: if (fixed_storage) pools.For(rep).Context else std.mem.Allocator, doc: *const syntax.Document, interpretation: lower.InterpretationFor(partial), limits: r.Limits, cancellation: Hook, interval: u32) r.Error!Self {
             // The fixed boundary polls before validating caller regions. Do not
             // poll twice for that single constructor checkpoint.
             if (cancellable and !fixed_storage) if (cancellation) |c| if (c.requested()) return error.Cancelled;

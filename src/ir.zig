@@ -85,11 +85,8 @@ pub fn Lowering(comptime config: Config) type {
         pub const parse = Source.parse;
         pub const parsePartial = Source.parsePartial;
         const Fixed = @import("ir/fixed_lowering.zig").API(config);
-        // Capability-typed fixed lowering is the next storage increment. Never
-        // return full-layout reservations for a topology-only profile.
         fn fixedStorage() type {
-            comptime @import("ir/representation.zig").requireFixedLowering(rep.attributes);
-            return fixed_storage;
+            return fixed_storage.For(rep);
         }
         pub const GraphStorage = fixedStorage().GraphStorage;
         pub const LoweringScratch = fixedStorage().LoweringScratch;

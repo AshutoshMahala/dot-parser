@@ -21,8 +21,3 @@ pub const Identity = struct {
 pub fn requireAttributes(comptime enabled: bool) void {
     if (!enabled) @compileError("IR attributes are disabled; enable .capabilities.attributes for attribute access and effective ports");
 }
-
-/// Fixed storage must specialize its pools before it accepts topology profiles.
-pub fn requireFixedLowering(comptime attributes: bool) void {
-    if (!attributes) @compileError("fixed IR lowering for .capabilities.attributes = false is not implemented yet; use allocator-backed lowering");
-}

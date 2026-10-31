@@ -130,12 +130,10 @@ cause. Views already delivered by a stream still borrow the unchanged IR;
 failed materialization publishes no output. A fixed-scratch shortfall requires
 a new operation with sufficient storage, not resuming the failed one.
 
-The capability currently supports allocator-backed complete/partial lowering,
-including its metered/cancellable execution. Capability-aware fixed lowering
-is a later storage increment: topology profiles reject fixed-lowering storage/layout,
-bounds and lowering `In` calls instead of reserving full-profile pools. This is
-separate from the supported fixed edge scratch above. Existing full-profile
-fixed-lowering APIs remain available.
+The capability supports allocator-backed and fixed-storage complete/partial
+lowering, including metered/cancellable execution. Use the topology profile's
+storage types, bounds and `In` calls; they omit attribute pools and use the smaller
+connection and coverage records. Fixed materialization output is still pending.
 
 `max_attributes` and `max_attribute_states` apply only when attributes are
 retained. Other IR limits still apply. Removing attributes does not make a
@@ -1043,6 +1041,30 @@ See [the runnable example](../examples/fixed_graph.zig). Both helper types have 
 `byte_size` and contain inline, initially undefined backing arrays. They perform
 no allocation or clearing; place large envelopes in suitable caller-managed
 storage rather than on a small stack. Zero capacity means zero, not “automatic.”
+
+For topology-only IR, select the capability on the same profile:
+
+```zig
+const IR = dot.ir.Lowering(.{ .capabilities = .{ .attributes = false } });
+const Retained = IR.FixedGraphStorage(.{
+    .nodes = 64, .scopes = 8, .occurrences = 16,
+    .mentions = 128, .connections = 64,
+});
+```
+
+The remaining scratch/binding and `In` calls are unchanged. Keep `declarations`,
+`attributes`, `attribute_keys` and `attribute_states` at zero. A nonzero disabled
+pool is a compile error in `FixedGraphStorage`, or `InvalidStorage` in runtime
+layout/binding before any writes. Bounds return zero for these pools without
+computing attribute-state bounds. Written ports, gaps, names and symbolic
+connections remain available; no attribute storage is reserved behind the scenes.
+
+Storage types belong to the profile's capability and source-encoding selection.
+Use that profile's `FixedLoweringScratch` with its `FixedGraphStorage`, and bind
+runtime byte regions with its `loweringLayout`. Different execution policies or
+limits do not change these types. Module-level graph and record exports describe
+the default full profile. The two byte buffers remain caller-owned and follow the same lifetime,
+alias checks and shortfall rules below for either capability selection.
 
 ### Capacity and sizing choices
 

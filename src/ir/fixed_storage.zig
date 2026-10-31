@@ -48,43 +48,344 @@ pub const Resource = enum {
 pub const StorageShortfall = struct { resource: Resource, limit: u32, required_at_least: u32 };
 pub const Bounds = struct { graph: GraphCapacities, scratch: LoweringScratchCapacities };
 
-// These schemas are private. Descriptors expose byte regions, not record types.
-const Retained = struct {
-    nodes: []t.Node,
-    scopes: []t.Scope,
-    occurrences: []t.Occurrence,
-    mentions: []t.Mention,
-    connections: []t.Connection,
-    endpoint_ports: []syntax.PortSyntax,
-    declarations: []t.Declaration,
-    attributes: []syntax.Attribute,
-    keys: []a.Key,
-    cells: []a.Cell,
-    gaps: []c.Entry,
-    bodies: []t.Body,
-    meta: []a.Meta,
-    attribute_scopes: []a.Scope,
-    connection_defaults: []u32,
-    offsets: []u32,
-    positions: []u32,
-    node_slots: []u32,
-    key_slots: []u32,
-};
-const Scratch = struct {
-    cursors: []records.ScopeCursor,
-    scope_slots: []u32,
-    stack: []records.Frame,
-    edge_stack: []records.EdgeFrame,
-    pending: []records.Pending,
-};
-pub const GraphStorage = struct { bytes: []u8, capacities: GraphCapacities };
-pub const LoweringScratch = struct { bytes: []u8, graph_capacities: GraphCapacities, capacities: LoweringScratchCapacities };
-pub const LoweringMemory = struct { graph: GraphStorage, scratch: LoweringScratch };
+/// Representation identity, not execution policy, determines the storage types.
+pub fn For(comptime rep: @import("representation.zig").Identity) type {
+    return struct {
+        const Family = @This();
+        // These schemas are private. Descriptors expose byte regions, not record types.
+        const Retained = struct {
+            nodes: []t.NodeFor(rep.attributes),
+            scopes: []t.Scope,
+            occurrences: []t.Occurrence,
+            mentions: []t.Mention,
+            connections: []t.ConnectionFor(rep.attributes),
+            endpoint_ports: []syntax.PortSyntax,
+            declarations: if (rep.attributes) []t.Declaration else void,
+            attributes: if (rep.attributes) []syntax.Attribute else void,
+            keys: if (rep.attributes) []a.Key else void,
+            cells: if (rep.attributes) []a.Cell else void,
+            gaps: []c.EntryFor(rep.attributes),
+            bodies: []t.Body,
+            meta: if (rep.attributes) []a.Meta else void,
+            attribute_scopes: if (rep.attributes) []a.Scope else void,
+            connection_defaults: if (rep.attributes) []u32 else void,
+            offsets: []u32,
+            positions: []u32,
+            node_slots: []u32,
+            key_slots: if (rep.attributes) []u32 else void,
+        };
+        const Scratch = struct {
+            cursors: []records.ScopeCursor,
+            scope_slots: []u32,
+            stack: []records.Frame,
+            edge_stack: []records.EdgeFrame,
+            pending: []records.Pending,
+        };
+        pub const GraphStorage = struct {
+            pub const representation = rep;
+            bytes: []u8,
+            capacities: GraphCapacities,
+        };
+        pub const LoweringScratch = struct {
+            pub const representation = rep;
+            bytes: []u8,
+            graph_capacities: GraphCapacities,
+            capacities: LoweringScratchCapacities,
+        };
+        pub const LoweringMemory = struct { graph: GraphStorage, scratch: LoweringScratch };
 
-/// A successful fixed graph always has its root scope. Nodes are the first
-/// retained region, scopes the second: when the node envelope is empty, scopes
-/// begin at offset zero instead. Recover the complete borrowed reservation,
-/// including unused pools/padding, without enlarging ordinary Graph records.
+        fn slotCount(count: u32) r.Error!usize {
+            if (count == 0) return 0;
+            const twice = std.math.mul(usize, count, 2) catch return error.IndexLimit;
+            const result = std.math.ceilPowerOfTwo(usize, @max(16, twice)) catch return error.IndexLimit;
+            if (result > std.math.maxInt(u32)) return error.IndexLimit;
+            return result;
+        }
+        fn countFor(comptime field: []const u8, g: GraphCapacities, s: LoweringScratchCapacities) r.Error!usize {
+            if (@hasField(GraphCapacities, field)) return @field(g, field);
+            if (comptime std.mem.eql(u8, field, "keys")) return g.attribute_keys;
+            if (comptime std.mem.eql(u8, field, "cells")) return g.attribute_states;
+            if (comptime std.mem.eql(u8, field, "gaps")) return g.coverage_gaps;
+            if (comptime std.mem.eql(u8, field, "bodies")) return g.occurrences;
+            if (comptime std.mem.eql(u8, field, "meta")) return g.attributes;
+            if (comptime std.mem.eql(u8, field, "attribute_scopes")) return if (g.attributes == 0) 0 else g.scopes;
+            if (comptime std.mem.eql(u8, field, "connection_defaults")) return if (g.attributes == 0) 0 else g.connections;
+            if (comptime std.mem.eql(u8, field, "offsets")) return std.math.add(usize, g.nodes, 1) catch error.IndexLimit;
+            if (comptime std.mem.eql(u8, field, "positions")) return g.mentions;
+            if (comptime std.mem.eql(u8, field, "node_slots")) return slotCount(g.nodes);
+            if (comptime std.mem.eql(u8, field, "key_slots")) return slotCount(g.attribute_keys);
+            if (comptime std.mem.eql(u8, field, "scope_slots")) return slotCount(g.scopes);
+            if (comptime std.mem.eql(u8, field, "cursors")) return g.scopes;
+            if (comptime std.mem.eql(u8, field, "stack")) return s.nesting;
+            if (comptime std.mem.eql(u8, field, "edge_stack")) return s.edge_nesting;
+            if (comptime std.mem.eql(u8, field, "pending")) return s.pending_endpoints;
+            @compileError("unknown fixed IR pool: " ++ field);
+        }
+        pub const alignment = blk: {
+            var result: usize = 1;
+            for (.{ Retained, Scratch }) |Pools| for (@typeInfo(Pools).@"struct".field_names) |field| {
+                if (@FieldType(Pools, field) == void) continue;
+                result = @max(result, @alignOf(std.meta.Elem(@FieldType(Pools, field))));
+            };
+            break :blk result;
+        };
+        fn aligned(value: usize, by: usize) r.Error!usize {
+            const plus = std.math.add(usize, value, by - 1) catch return error.IndexLimit;
+            return plus & ~(by - 1);
+        }
+        fn poolCount(comptime Pools: type) usize {
+            var count: usize = 0;
+            for (@typeInfo(Pools).@"struct".field_names) |field| {
+                if (@FieldType(Pools, field) != void) count += 1;
+            }
+            return count;
+        }
+        fn poolIndex(comptime Pools: type, comptime name: []const u8) usize {
+            var index: usize = 0;
+            for (@typeInfo(Pools).@"struct".field_names) |field| {
+                if (@FieldType(Pools, field) == void) continue;
+                if (std.mem.eql(u8, field, name)) return index;
+                index += 1;
+            }
+            @compileError("IR pool is unavailable: " ++ name);
+        }
+        fn Regions(comptime Pools: type) type {
+            return struct {
+                offsets: [poolCount(Pools)]usize,
+                counts: [poolCount(Pools)]usize,
+                bytes: usize,
+                fn init(g: GraphCapacities, s: LoweringScratchCapacities) r.Error!@This() {
+                    var result: @This() = undefined;
+                    var at: usize = 0;
+                    inline for (comptime @typeInfo(Pools).@"struct".field_names) |field| {
+                        if (@FieldType(Pools, field) == void) continue;
+                        const i = comptime poolIndex(Pools, field);
+                        const T = std.meta.Elem(@FieldType(Pools, field));
+                        at = try aligned(at, @alignOf(T));
+                        result.offsets[i] = at;
+                        result.counts[i] = try countFor(field, g, s);
+                        const size = std.math.mul(usize, result.counts[i], @sizeOf(T)) catch return error.IndexLimit;
+                        at = std.math.add(usize, at, size) catch return error.IndexLimit;
+                    }
+                    result.bytes = try aligned(at, alignment);
+                    return result;
+                }
+                fn bind(self: @This(), bytes: []u8, comptime field: []const u8) @FieldType(Pools, field) {
+                    const T = std.meta.Elem(@FieldType(Pools, field));
+                    const i = comptime poolIndex(Pools, field);
+                    if (self.counts[i] == 0) return &.{};
+                    const pointer: [*]T = @ptrCast(@alignCast(bytes.ptr + self.offsets[i]));
+                    return pointer[0..self.counts[i]];
+                }
+            };
+        }
+        pub const Layout = struct {
+            graph_bytes: usize,
+            scratch_bytes: usize,
+            alignment: usize = Family.alignment,
+            graph_capacities: GraphCapacities,
+            scratch_capacities: LoweringScratchCapacities,
+            retained: Regions(Retained),
+            temporary: Regions(Scratch),
+
+            pub fn bind(self: Layout, graph_buffer: []u8, scratch_buffer: []u8) r.Error!LoweringMemory {
+                // Recompute rather than trusting caller-modifiable derived metadata.
+                const checked = try loweringLayout(self.graph_capacities, self.scratch_capacities);
+                if (!std.meta.eql(self, checked)) return error.InvalidStorage;
+                if (graph_buffer.len < self.graph_bytes or scratch_buffer.len < self.scratch_bytes) return error.BufferTooSmall;
+                const graph = graph_buffer[0..self.graph_bytes];
+                const scratch = scratch_buffer[0..self.scratch_bytes];
+                try checkRegion(graph);
+                try checkRegion(scratch);
+                if (overlaps(graph, scratch)) return error.InvalidStorage;
+                return .{
+                    .graph = .{ .bytes = graph, .capacities = self.graph_capacities },
+                    .scratch = .{ .bytes = scratch, .graph_capacities = self.graph_capacities, .capacities = self.scratch_capacities },
+                };
+            }
+        };
+        pub fn loweringLayout(g: GraphCapacities, s: LoweringScratchCapacities) r.Error!Layout {
+            @setEvalBranchQuota(20_000);
+            if (!rep.attributes) inline for (.{ "declarations", "attributes", "attribute_keys", "attribute_states" }) |field| {
+                if (@field(g, field) != 0) return error.InvalidStorage;
+            };
+            inline for (comptime @typeInfo(GraphCapacities).@"struct".field_names) |field| _ = try r.index(@field(g, field));
+            inline for (comptime @typeInfo(LoweringScratchCapacities).@"struct".field_names) |field| _ = try r.index(@field(s, field));
+            if (g.nodes >= t.node_bit or g.scopes >= t.node_bit or g.occurrences >= t.node_bit or g.attributes >= @import("ports.zig").right) return error.IndexLimit;
+            const retained = try Regions(Retained).init(g, s);
+            const temporary = try Regions(Scratch).init(g, s);
+            _ = std.math.add(usize, retained.bytes, temporary.bytes) catch return error.IndexLimit;
+            return .{ .graph_bytes = retained.bytes, .scratch_bytes = temporary.bytes, .graph_capacities = g, .scratch_capacities = s, .retained = retained, .temporary = temporary };
+        }
+        pub fn FixedGraphStorage(comptime capacities: GraphCapacities) type {
+            const layout = comptime loweringLayout(capacities, .{}) catch @compileError("invalid IR storage capacities");
+            return struct {
+                pub const representation = rep;
+                pub const graph_capacities = capacities;
+                pub const byte_size = layout.graph_bytes;
+                bytes: [byte_size]u8 align(alignment) = undefined,
+                pub fn storage(self: *@This()) GraphStorage {
+                    return .{ .bytes = &self.bytes, .capacities = capacities };
+                }
+            };
+        }
+        pub fn FixedLoweringScratch(comptime GraphStorageType: type, comptime capacities: LoweringScratchCapacities) type {
+            if (!std.meta.eql(GraphStorageType.representation, rep)) @compileError("IR scratch and graph storage must use the same representation");
+            const graph = GraphStorageType.graph_capacities;
+            const layout = comptime loweringLayout(graph, capacities) catch @compileError("invalid IR scratch capacities");
+            return struct {
+                pub const byte_size = layout.scratch_bytes;
+                bytes: [byte_size]u8 align(alignment) = undefined,
+                pub fn storage(self: *@This()) LoweringScratch {
+                    return .{ .bytes = &self.bytes, .graph_capacities = graph, .capacities = capacities };
+                }
+            };
+        }
+        fn checkRegion(bytes: []const u8) r.Error!void {
+            if (bytes.len == 0) return;
+            if (@intFromPtr(bytes.ptr) % alignment != 0) return error.InvalidStorage;
+            _ = std.math.add(usize, @intFromPtr(bytes.ptr), bytes.len) catch return error.InvalidStorage;
+        }
+        fn overlaps(left: []const u8, right: []const u8) bool {
+            if (left.len == 0 or right.len == 0) return false;
+            const x = @intFromPtr(left.ptr);
+            const y = @intFromPtr(right.ptr);
+            // Difference form avoids overflowing pointer+length even for forged input.
+            return if (x <= y) y - x < left.len else x - y < right.len;
+        }
+
+        pub const Context = struct {
+            layout: Layout,
+            memory: LoweringMemory,
+            query_allocator: ?std.mem.Allocator,
+            shortfall: ?StorageShortfall = null,
+            peak: LoweringScratchCapacities = .{},
+
+            pub fn init(memory: LoweringMemory, doc: *const syntax.Document, limits: r.Limits, query_allocator: ?std.mem.Allocator) r.Error!Context {
+                if (!std.meta.eql(memory.graph.capacities, memory.scratch.graph_capacities)) return error.InvalidStorage;
+                const layout = try loweringLayout(memory.graph.capacities, memory.scratch.capacities);
+                const bound = try layout.bind(memory.graph.bytes, memory.scratch.bytes);
+                if (layout.graph_bytes + layout.scratch_bytes > limits.max_bytes) return error.MemoryLimit;
+                // A fixed number of descriptor checks; no source or pool-content scan.
+                try disjoint(bound, std.mem.asBytes(doc));
+                inline for (comptime @typeInfo(syntax.Document).@"struct".field_names) |field| {
+                    const T = @FieldType(syntax.Document, field);
+                    if (@typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice) {
+                        try disjoint(bound, std.mem.sliceAsBytes(@field(doc, field)));
+                    }
+                }
+                if (doc.comments) |comments| try disjoint(bound, std.mem.sliceAsBytes(comments));
+                return .{ .layout = layout, .memory = bound, .query_allocator = query_allocator };
+            }
+            fn disjoint(memory: LoweringMemory, input: []const u8) r.Error!void {
+                if (overlaps(memory.graph.bytes, input) or overlaps(memory.scratch.bytes, input)) return error.InvalidStorage;
+            }
+            pub fn slice(self: *const Context, comptime field: []const u8) (if (@hasField(Retained, field)) @FieldType(Retained, field) else @FieldType(Scratch, field)) {
+                return if (@hasField(Retained, field)) self.layout.retained.bind(self.memory.graph.bytes, field) else self.layout.temporary.bind(self.memory.scratch.bytes, field);
+            }
+            pub fn list(self: *const Context, comptime field: []const u8) std.ArrayList(std.meta.Elem(@TypeOf(self.slice(field)))) {
+                const items = self.slice(field);
+                var result: std.ArrayList(std.meta.Elem(@TypeOf(items))) = .empty;
+                result.items = items[0..0];
+                result.capacity = items.len;
+                return result;
+            }
+            fn resource(comptime field: []const u8) Resource {
+                const pairs = .{
+                    .{ "nodes", "node_pool" },                     .{ "node_slots", "node_pool" },          .{ "offsets", "node_pool" },
+                    .{ "scopes", "scope_pool" },                   .{ "scope_slots", "scope_pool" },        .{ "cursors", "scope_pool" },
+                    .{ "attribute_scopes", "scope_pool" },         .{ "occurrences", "occurrence_pool" },   .{ "bodies", "occurrence_pool" },
+                    .{ "mentions", "mention_pool" },               .{ "positions", "mention_pool" },        .{ "connections", "connection_pool" },
+                    .{ "connection_defaults", "connection_pool" }, .{ "declarations", "declaration_pool" }, .{ "attributes", "attribute_pool" },
+                    .{ "endpoint_ports", "endpoint_port_pool" },   .{ "meta", "attribute_pool" },           .{ "keys", "attribute_key_pool" },
+                    .{ "key_slots", "attribute_key_pool" },        .{ "cells", "attribute_state_pool" },    .{ "gaps", "coverage_gap_pool" },
+                    .{ "stack", "nesting_frames" },                .{ "edge_stack", "edge_frames" },        .{ "pending", "pending_endpoints" },
+                };
+                inline for (pairs) |pair| if (comptime std.mem.eql(u8, field, pair[0])) return @field(Resource, pair[1]);
+                @compileError("unknown fixed IR resource");
+            }
+            pub fn ensure(self: *Context, comptime field: []const u8, needed: usize) r.Error!void {
+                if (needed <= self.slice(field).len) return;
+                const subtract: usize = if (comptime std.mem.eql(u8, field, "offsets")) 1 else 0;
+                return self.fail(resource(field), self.slice(field).len - subtract, needed - subtract);
+            }
+            pub fn ensureTable(self: *Context, comptime field: []const u8, needed: usize) r.Error!void {
+                const limit = if (comptime std.mem.eql(u8, field, "node_slots")) self.layout.graph_capacities.nodes else if (comptime std.mem.eql(u8, field, "scope_slots")) self.layout.graph_capacities.scopes else self.layout.graph_capacities.attribute_keys;
+                if (needed > limit) return self.fail(resource(field), limit, needed);
+            }
+            fn fail(self: *Context, which: Resource, limit: usize, needed: usize) r.Error {
+                const count = r.index(needed) catch return error.IndexLimit;
+                if (self.shortfall == null) self.shortfall = .{ .resource = which, .limit = @intCast(limit), .required_at_least = count };
+                return error.PoolExhausted;
+            }
+            pub fn observe(self: *Context, comptime field: []const u8, used: usize) void {
+                if (comptime std.mem.eql(u8, field, "stack")) self.peak.nesting = @max(self.peak.nesting, @as(u32, @intCast(used)));
+                if (comptime std.mem.eql(u8, field, "edge_stack")) self.peak.edge_nesting = @max(self.peak.edge_nesting, @as(u32, @intCast(used)));
+                if (comptime std.mem.eql(u8, field, "pending")) self.peak.pending_endpoints = @max(self.peak.pending_endpoints, @as(u32, @intCast(used)));
+            }
+        };
+
+        fn index64(value: u64) r.Error!u32 {
+            if (value >= std.math.maxInt(u32)) return error.IndexLimit;
+            return @intCast(value);
+        }
+        fn avlHeight(keys: u64) u64 {
+            var previous: u64 = 0;
+            var minimum: u64 = 1;
+            var height: u64 = 0;
+            while (minimum <= keys) {
+                height += 1;
+                const next = 1 + minimum + previous;
+                previous = minimum;
+                minimum = next;
+            }
+            return height;
+        }
+        /// Arithmetic only; never automatically called by lowering.
+        pub fn loweringBounds(comptime partial: bool, counts: syntax.Capacities, limits: r.Limits) r.Error!Bounds {
+            // Validate source counts before arithmetic. Each admitted operand is u32,
+            // so the endpoint/count sums fit u64 even for caller-made envelopes.
+            // The larger attribute-state product is saturated separately below.
+            inline for (.{ "nodes", "attributes", "assignments", "subgraphs", "edges", "edge_chains", "scoped_edges", "edge_links", "scoped_edge_links", "attribute_statements", "ported_references" }) |field|
+                _ = try r.index(@field(counts, field));
+            const A: u64 = if (rep.attributes) try index64(@as(u64, counts.attributes) + counts.assignments) else 0;
+            const S = @as(u64, counts.subgraphs);
+            const owners = @as(u64, counts.edges) + counts.edge_chains + counts.scoped_edges;
+            const links = @as(u64, counts.edge_links) + counts.scoped_edge_links;
+            const endpoints = 2 * owners + links;
+            // Saturate at the enforced semantic cap using division, never overflowing.
+            var cells: u64 = @min(A, limits.max_attribute_states);
+            if (rep.attributes) for ([_]u64{ S + 2, avlHeight(A) + 5 }) |factor| {
+                cells = if (cells > limits.max_attribute_states / factor) limits.max_attribute_states else cells * factor;
+            };
+            return .{
+                .graph = .{
+                    .nodes = try index64(@as(u64, counts.nodes) + endpoints),
+                    .scopes = try index64(S + 1),
+                    .occurrences = try index64(S + 1),
+                    .mentions = try index64(@as(u64, counts.nodes) + endpoints),
+                    .connections = try index64(owners + links),
+                    // Node-statement suffixes and abandoned partial owners need no IR port
+                    // storage. A qualified chain endpoint is retained only once.
+                    .endpoint_ports = try index64(@min(counts.ported_references, endpoints)),
+                    .declarations = if (rep.attributes) try index64(@as(u64, counts.nodes) + counts.attribute_statements + counts.assignments) else 0,
+                    .attributes = try index64(A),
+                    .attribute_keys = try index64(A),
+                    .attribute_states = try index64(cells),
+                    .coverage_gaps = if (partial) try index64(@as(u64, counts.statements) / 2 + 1) else 0,
+                },
+                .scratch = .{
+                    .nesting = try index64(S + 1 + owners),
+                    .edge_nesting = try index64(owners),
+                    .pending_endpoints = try index64(endpoints),
+                },
+            };
+        }
+    };
+}
+
+/// Recover the entire borrowed reservation, including unused pools and padding.
+/// Nodes are first; when their envelope is empty the root scope starts at zero.
 pub fn borrowedGraphBytes(graph: anytype) []const u8 {
     if (graph.borrowed_bytes == 0) return &.{};
     const start: [*]const u8 = if (graph.node_storage.len != 0)
@@ -92,268 +393,4 @@ pub fn borrowedGraphBytes(graph: anytype) []const u8 {
     else
         @ptrCast(graph.scope_storage.ptr);
     return start[0..graph.borrowed_bytes];
-}
-
-fn slotCount(count: u32) r.Error!usize {
-    if (count == 0) return 0;
-    const twice = std.math.mul(usize, count, 2) catch return error.IndexLimit;
-    const result = std.math.ceilPowerOfTwo(usize, @max(16, twice)) catch return error.IndexLimit;
-    if (result > std.math.maxInt(u32)) return error.IndexLimit;
-    return result;
-}
-fn countFor(comptime field: []const u8, g: GraphCapacities, s: LoweringScratchCapacities) r.Error!usize {
-    if (@hasField(GraphCapacities, field)) return @field(g, field);
-    if (comptime std.mem.eql(u8, field, "keys")) return g.attribute_keys;
-    if (comptime std.mem.eql(u8, field, "cells")) return g.attribute_states;
-    if (comptime std.mem.eql(u8, field, "gaps")) return g.coverage_gaps;
-    if (comptime std.mem.eql(u8, field, "bodies")) return g.occurrences;
-    if (comptime std.mem.eql(u8, field, "meta")) return g.attributes;
-    if (comptime std.mem.eql(u8, field, "attribute_scopes")) return if (g.attributes == 0) 0 else g.scopes;
-    if (comptime std.mem.eql(u8, field, "connection_defaults")) return if (g.attributes == 0) 0 else g.connections;
-    if (comptime std.mem.eql(u8, field, "offsets")) return std.math.add(usize, g.nodes, 1) catch error.IndexLimit;
-    if (comptime std.mem.eql(u8, field, "positions")) return g.mentions;
-    if (comptime std.mem.eql(u8, field, "node_slots")) return slotCount(g.nodes);
-    if (comptime std.mem.eql(u8, field, "key_slots")) return slotCount(g.attribute_keys);
-    if (comptime std.mem.eql(u8, field, "scope_slots")) return slotCount(g.scopes);
-    if (comptime std.mem.eql(u8, field, "cursors")) return g.scopes;
-    if (comptime std.mem.eql(u8, field, "stack")) return s.nesting;
-    if (comptime std.mem.eql(u8, field, "edge_stack")) return s.edge_nesting;
-    if (comptime std.mem.eql(u8, field, "pending")) return s.pending_endpoints;
-    @compileError("unknown fixed IR pool: " ++ field);
-}
-pub const alignment = blk: {
-    var result: usize = 1;
-    for (.{ Retained, Scratch }) |Pools| for (@typeInfo(Pools).@"struct".field_names) |field| {
-        result = @max(result, @alignOf(std.meta.Elem(@FieldType(Pools, field))));
-    };
-    break :blk result;
-};
-fn aligned(value: usize, by: usize) r.Error!usize {
-    const plus = std.math.add(usize, value, by - 1) catch return error.IndexLimit;
-    return plus & ~(by - 1);
-}
-fn Regions(comptime Pools: type) type {
-    return struct {
-        offsets: [@typeInfo(Pools).@"struct".field_names.len]usize,
-        counts: [@typeInfo(Pools).@"struct".field_names.len]usize,
-        bytes: usize,
-        fn init(g: GraphCapacities, s: LoweringScratchCapacities) r.Error!@This() {
-            var result: @This() = undefined;
-            var at: usize = 0;
-            inline for (comptime @typeInfo(Pools).@"struct".field_names, 0..) |field, i| {
-                const T = std.meta.Elem(@FieldType(Pools, field));
-                at = try aligned(at, @alignOf(T));
-                result.offsets[i] = at;
-                result.counts[i] = try countFor(field, g, s);
-                const size = std.math.mul(usize, result.counts[i], @sizeOf(T)) catch return error.IndexLimit;
-                at = std.math.add(usize, at, size) catch return error.IndexLimit;
-            }
-            result.bytes = try aligned(at, alignment);
-            return result;
-        }
-        fn bind(self: @This(), bytes: []u8, comptime field: []const u8) @FieldType(Pools, field) {
-            const T = std.meta.Elem(@FieldType(Pools, field));
-            const i = comptime std.meta.fieldIndex(Pools, field).?;
-            if (self.counts[i] == 0) return &.{};
-            const pointer: [*]T = @ptrCast(@alignCast(bytes.ptr + self.offsets[i]));
-            return pointer[0..self.counts[i]];
-        }
-    };
-}
-pub const Layout = struct {
-    graph_bytes: usize,
-    scratch_bytes: usize,
-    alignment: usize = @import("fixed_storage.zig").alignment,
-    graph_capacities: GraphCapacities,
-    scratch_capacities: LoweringScratchCapacities,
-    retained: Regions(Retained),
-    temporary: Regions(Scratch),
-
-    pub fn bind(self: Layout, graph_buffer: []u8, scratch_buffer: []u8) r.Error!LoweringMemory {
-        // Recompute rather than trusting caller-modifiable derived metadata.
-        const checked = try loweringLayout(self.graph_capacities, self.scratch_capacities);
-        if (!std.meta.eql(self, checked)) return error.InvalidStorage;
-        if (graph_buffer.len < self.graph_bytes or scratch_buffer.len < self.scratch_bytes) return error.BufferTooSmall;
-        const graph = graph_buffer[0..self.graph_bytes];
-        const scratch = scratch_buffer[0..self.scratch_bytes];
-        try checkRegion(graph);
-        try checkRegion(scratch);
-        if (overlaps(graph, scratch)) return error.InvalidStorage;
-        return .{
-            .graph = .{ .bytes = graph, .capacities = self.graph_capacities },
-            .scratch = .{ .bytes = scratch, .graph_capacities = self.graph_capacities, .capacities = self.scratch_capacities },
-        };
-    }
-};
-pub fn loweringLayout(g: GraphCapacities, s: LoweringScratchCapacities) r.Error!Layout {
-    @setEvalBranchQuota(20_000);
-    inline for (comptime @typeInfo(GraphCapacities).@"struct".field_names) |field| _ = try r.index(@field(g, field));
-    inline for (comptime @typeInfo(LoweringScratchCapacities).@"struct".field_names) |field| _ = try r.index(@field(s, field));
-    if (g.nodes >= t.node_bit or g.scopes >= t.node_bit or g.occurrences >= t.node_bit or g.attributes >= @import("ports.zig").right) return error.IndexLimit;
-    const retained = try Regions(Retained).init(g, s);
-    const temporary = try Regions(Scratch).init(g, s);
-    _ = std.math.add(usize, retained.bytes, temporary.bytes) catch return error.IndexLimit;
-    return .{ .graph_bytes = retained.bytes, .scratch_bytes = temporary.bytes, .graph_capacities = g, .scratch_capacities = s, .retained = retained, .temporary = temporary };
-}
-pub fn FixedGraphStorage(comptime capacities: GraphCapacities) type {
-    const layout = comptime loweringLayout(capacities, .{}) catch @compileError("invalid IR storage capacities");
-    return struct {
-        pub const graph_capacities = capacities;
-        pub const byte_size = layout.graph_bytes;
-        bytes: [byte_size]u8 align(alignment) = undefined,
-        pub fn storage(self: *@This()) GraphStorage {
-            return .{ .bytes = &self.bytes, .capacities = capacities };
-        }
-    };
-}
-pub fn FixedLoweringScratch(comptime GraphStorageType: type, comptime capacities: LoweringScratchCapacities) type {
-    const graph = GraphStorageType.graph_capacities;
-    const layout = comptime loweringLayout(graph, capacities) catch @compileError("invalid IR scratch capacities");
-    return struct {
-        pub const byte_size = layout.scratch_bytes;
-        bytes: [byte_size]u8 align(alignment) = undefined,
-        pub fn storage(self: *@This()) LoweringScratch {
-            return .{ .bytes = &self.bytes, .graph_capacities = graph, .capacities = capacities };
-        }
-    };
-}
-fn checkRegion(bytes: []const u8) r.Error!void {
-    if (bytes.len == 0) return;
-    if (@intFromPtr(bytes.ptr) % alignment != 0) return error.InvalidStorage;
-    _ = std.math.add(usize, @intFromPtr(bytes.ptr), bytes.len) catch return error.InvalidStorage;
-}
-fn overlaps(left: []const u8, right: []const u8) bool {
-    if (left.len == 0 or right.len == 0) return false;
-    const x = @intFromPtr(left.ptr);
-    const y = @intFromPtr(right.ptr);
-    // Difference form avoids overflowing pointer+length even for forged input.
-    return if (x <= y) y - x < left.len else x - y < right.len;
-}
-
-pub const Context = struct {
-    layout: Layout,
-    memory: LoweringMemory,
-    query_allocator: ?std.mem.Allocator,
-    shortfall: ?StorageShortfall = null,
-    peak: LoweringScratchCapacities = .{},
-
-    pub fn init(memory: LoweringMemory, doc: *const syntax.Document, limits: r.Limits, query_allocator: ?std.mem.Allocator) r.Error!Context {
-        if (!std.meta.eql(memory.graph.capacities, memory.scratch.graph_capacities)) return error.InvalidStorage;
-        const layout = try loweringLayout(memory.graph.capacities, memory.scratch.capacities);
-        const bound = try layout.bind(memory.graph.bytes, memory.scratch.bytes);
-        if (layout.graph_bytes + layout.scratch_bytes > limits.max_bytes) return error.MemoryLimit;
-        // A fixed number of descriptor checks; no source or pool-content scan.
-        try disjoint(bound, std.mem.asBytes(doc));
-        inline for (comptime @typeInfo(syntax.Document).@"struct".field_names) |field| {
-            const T = @FieldType(syntax.Document, field);
-            if (@typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice) {
-                try disjoint(bound, std.mem.sliceAsBytes(@field(doc, field)));
-            }
-        }
-        if (doc.comments) |comments| try disjoint(bound, std.mem.sliceAsBytes(comments));
-        return .{ .layout = layout, .memory = bound, .query_allocator = query_allocator };
-    }
-    fn disjoint(memory: LoweringMemory, input: []const u8) r.Error!void {
-        if (overlaps(memory.graph.bytes, input) or overlaps(memory.scratch.bytes, input)) return error.InvalidStorage;
-    }
-    pub fn slice(self: *const Context, comptime field: []const u8) (if (@hasField(Retained, field)) @FieldType(Retained, field) else @FieldType(Scratch, field)) {
-        return if (@hasField(Retained, field)) self.layout.retained.bind(self.memory.graph.bytes, field) else self.layout.temporary.bind(self.memory.scratch.bytes, field);
-    }
-    pub fn list(self: *const Context, comptime field: []const u8) std.ArrayList(std.meta.Elem(@TypeOf(self.slice(field)))) {
-        const items = self.slice(field);
-        var result: std.ArrayList(std.meta.Elem(@TypeOf(items))) = .empty;
-        result.items = items[0..0];
-        result.capacity = items.len;
-        return result;
-    }
-    fn resource(comptime field: []const u8) Resource {
-        const pairs = .{
-            .{ "nodes", "node_pool" },                     .{ "node_slots", "node_pool" },          .{ "offsets", "node_pool" },
-            .{ "scopes", "scope_pool" },                   .{ "scope_slots", "scope_pool" },        .{ "cursors", "scope_pool" },
-            .{ "attribute_scopes", "scope_pool" },         .{ "occurrences", "occurrence_pool" },   .{ "bodies", "occurrence_pool" },
-            .{ "mentions", "mention_pool" },               .{ "positions", "mention_pool" },        .{ "connections", "connection_pool" },
-            .{ "connection_defaults", "connection_pool" }, .{ "declarations", "declaration_pool" }, .{ "attributes", "attribute_pool" },
-            .{ "endpoint_ports", "endpoint_port_pool" },   .{ "meta", "attribute_pool" },           .{ "keys", "attribute_key_pool" },
-            .{ "key_slots", "attribute_key_pool" },        .{ "cells", "attribute_state_pool" },    .{ "gaps", "coverage_gap_pool" },
-            .{ "stack", "nesting_frames" },                .{ "edge_stack", "edge_frames" },        .{ "pending", "pending_endpoints" },
-        };
-        inline for (pairs) |pair| if (comptime std.mem.eql(u8, field, pair[0])) return @field(Resource, pair[1]);
-        @compileError("unknown fixed IR resource");
-    }
-    pub fn ensure(self: *Context, comptime field: []const u8, needed: usize) r.Error!void {
-        if (needed <= self.slice(field).len) return;
-        const subtract: usize = if (comptime std.mem.eql(u8, field, "offsets")) 1 else 0;
-        return self.fail(resource(field), self.slice(field).len - subtract, needed - subtract);
-    }
-    pub fn ensureTable(self: *Context, comptime field: []const u8, needed: usize) r.Error!void {
-        const limit = if (comptime std.mem.eql(u8, field, "node_slots")) self.layout.graph_capacities.nodes else if (comptime std.mem.eql(u8, field, "scope_slots")) self.layout.graph_capacities.scopes else self.layout.graph_capacities.attribute_keys;
-        if (needed > limit) return self.fail(resource(field), limit, needed);
-    }
-    fn fail(self: *Context, which: Resource, limit: usize, needed: usize) r.Error {
-        const count = r.index(needed) catch return error.IndexLimit;
-        if (self.shortfall == null) self.shortfall = .{ .resource = which, .limit = @intCast(limit), .required_at_least = count };
-        return error.PoolExhausted;
-    }
-    pub fn observe(self: *Context, comptime field: []const u8, used: usize) void {
-        if (comptime std.mem.eql(u8, field, "stack")) self.peak.nesting = @max(self.peak.nesting, @as(u32, @intCast(used)));
-        if (comptime std.mem.eql(u8, field, "edge_stack")) self.peak.edge_nesting = @max(self.peak.edge_nesting, @as(u32, @intCast(used)));
-        if (comptime std.mem.eql(u8, field, "pending")) self.peak.pending_endpoints = @max(self.peak.pending_endpoints, @as(u32, @intCast(used)));
-    }
-};
-
-fn index64(value: u64) r.Error!u32 {
-    if (value >= std.math.maxInt(u32)) return error.IndexLimit;
-    return @intCast(value);
-}
-fn avlHeight(keys: u64) u64 {
-    var previous: u64 = 0;
-    var minimum: u64 = 1;
-    var height: u64 = 0;
-    while (minimum <= keys) {
-        height += 1;
-        const next = 1 + minimum + previous;
-        previous = minimum;
-        minimum = next;
-    }
-    return height;
-}
-/// Arithmetic only; never automatically called by lowering.
-pub fn loweringBounds(comptime partial: bool, counts: syntax.Capacities, limits: r.Limits) r.Error!Bounds {
-    // Validate source counts before arithmetic. Each admitted operand is u32,
-    // so the endpoint/count sums fit u64 even for caller-made envelopes.
-    // The larger attribute-state product is saturated separately below.
-    inline for (.{ "nodes", "attributes", "assignments", "subgraphs", "edges", "edge_chains", "scoped_edges", "edge_links", "scoped_edge_links", "attribute_statements", "ported_references" }) |field|
-        _ = try r.index(@field(counts, field));
-    const A: u64 = try index64(@as(u64, counts.attributes) + counts.assignments);
-    const S = @as(u64, counts.subgraphs);
-    const owners = @as(u64, counts.edges) + counts.edge_chains + counts.scoped_edges;
-    const links = @as(u64, counts.edge_links) + counts.scoped_edge_links;
-    const endpoints = 2 * owners + links;
-    // Saturate at the enforced semantic cap using division, never overflowing.
-    var cells: u64 = @min(A, limits.max_attribute_states);
-    for ([_]u64{ S + 2, avlHeight(A) + 5 }) |factor| {
-        cells = if (cells > limits.max_attribute_states / factor) limits.max_attribute_states else cells * factor;
-    }
-    return .{
-        .graph = .{
-            .nodes = try index64(@as(u64, counts.nodes) + endpoints),
-            .scopes = try index64(S + 1),
-            .occurrences = try index64(S + 1),
-            .mentions = try index64(@as(u64, counts.nodes) + endpoints),
-            .connections = try index64(owners + links),
-            // Node-statement suffixes and abandoned partial owners need no IR port
-            // storage. A qualified chain endpoint is retained only once.
-            .endpoint_ports = try index64(@min(counts.ported_references, endpoints)),
-            .declarations = try index64(@as(u64, counts.nodes) + counts.attribute_statements + counts.assignments),
-            .attributes = try index64(A),
-            .attribute_keys = try index64(A),
-            .attribute_states = try index64(cells),
-            .coverage_gaps = if (partial) try index64(@as(u64, counts.statements) / 2 + 1) else 0,
-        },
-        .scratch = .{
-            .nesting = try index64(S + 1 + owners),
-            .edge_nesting = try index64(owners),
-            .pending_endpoints = try index64(endpoints),
-        },
-    };
 }

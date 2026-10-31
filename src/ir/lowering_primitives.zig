@@ -9,11 +9,11 @@ const none = attrs.none;
 pub fn ReserveFor(comptime T: type, comptime fixed_storage: bool, comptime field: []const u8) type {
     if (!fixed_storage) return Reserve(T);
     return struct {
-        pub fn step(_: *@This(), list: *std.ArrayList(T), count: usize, context: *@import("fixed_storage.zig").Context) r.Error!bool {
+        pub fn step(_: *@This(), list: *std.ArrayList(T), count: usize, context: anytype) r.Error!bool {
             try context.ensure(field, std.math.add(usize, list.items.len, count) catch return error.IndexLimit);
             return true;
         }
-        pub fn stepCapped(self: *@This(), list: *std.ArrayList(T), count: usize, context: *@import("fixed_storage.zig").Context, _: usize) r.Error!bool {
+        pub fn stepCapped(self: *@This(), list: *std.ArrayList(T), count: usize, context: anytype, _: usize) r.Error!bool {
             return self.step(list, count, context);
         }
     };
