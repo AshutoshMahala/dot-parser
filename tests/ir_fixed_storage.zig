@@ -31,7 +31,7 @@ const Memory = struct {
     }
 };
 fn compare(expected: anytype, actual: anytype) !void {
-    inline for (.{ "source_info", "declared_kind", "kind", "strict", "name", "has_ports", "nodes", "scopes", "declarations", "occurrences", "bodies", "mentions", "connections", "attributes", "posting_offsets", "posting_positions" }) |field|
+    inline for (.{ "source_info", "declared_kind", "kind", "strict", "name", "has_ports", "nodes", "scopes", "declarations", "occurrences", "bodies", "mentions", "connections", "endpoint_ports", "attributes", "posting_offsets", "posting_positions" }) |field|
         try equal(@field(expected, field), @field(actual, field));
     inline for (.{ "meta", "scopes", "connection_defaults" }) |field| try equal(@field(expected.attribute_data, field), @field(actual.attribute_data, field));
     inline for (.{ "keys", "cells" }) |field| try equal(@field(expected.attribute_data, field).items, @field(actual.attribute_data, field).items);
@@ -108,6 +108,7 @@ test "fixed IR exact-fit storage matches growable semantics and bounded sessions
     for ([_][]const u8{
         "digraph {}",
         "digraph {a->b->c;a->b;z}",
+        "digraph {standalone:p;a:p->b:q:n->c:r;d->e;{x->y:s}->z:t}",
         "digraph {a;\"a\";\"a\"+<>+\"\";<a>}",
         "strict graph {node[color=red];edge[weight=1];a:p--b:q;b:r--a:s[label=last];a--c}",
         "digraph {graph[label=root];node[color=red];subgraph s{a;node[color=local]}node[color=blue shape=box];subgraph s{b};c}",
@@ -122,6 +123,7 @@ test "fixed IR exact-fit storage matches growable semantics and bounded sessions
         "digraph {a[color=red];broken->;b[color=blue]}",
         "digraph {a;subgraph s{b;c->;d}",
         "digraph {{a}->{b;subgraph s{c}}->;d->e;",
+        "digraph {a:p->b:q->c:r;broken:s->;d:t->e:u}",
         "digraph {a;x[label=\"unfinished",
         "strict digraph { subgraph s { @@ }; a->b[color=red]; subgraph s {} -> b[color=blue] }",
     }) |source| try check(true, source);
@@ -160,12 +162,16 @@ test "fixed IR bounds inherit profile limits and use distinct complete and parti
     try equal(@as(u32, 0), (try Limited.loweringBounds(.{}, .{})).graph.attribute_states);
     try std.testing.expectError(error.IndexLimit, IR.loweringBounds(.{ .nodes = std.math.maxInt(u32) }, .{}));
     try std.testing.expectError(error.IndexLimit, IR.loweringLayout(.{ .nodes = std.math.maxInt(u32) }, .{}));
+    try std.testing.expectError(error.IndexLimit, IR.loweringBounds(.{ .ported_references = std.math.maxInt(u32) }, .{}));
+    try std.testing.expectError(error.IndexLimit, IR.loweringLayout(.{ .endpoint_ports = std.math.maxInt(u32) }, .{}));
+    try equal(@as(u32, 0), (try IR.loweringBounds(.{ .nodes = 3, .ported_references = 3 }, .{})).graph.endpoint_ports);
+    try equal(@as(u32, 3), (try IR.loweringBounds(.{ .edge_chains = 1, .edge_links = 1, .ported_references = 8 }, .{})).graph.endpoint_ports);
     const compile_bounds = comptime Limited.loweringBounds(.{ .attributes = 2 }, .{}) catch unreachable;
     try equal(@as(u32, 17), compile_bounds.graph.attribute_states);
 }
 
 test "every fixed retained and scratch pool reports an exact shortfall without a graph" {
-    const source = "digraph {a[x=1 y=2 z=3];subgraph s{node[x=2];b};node[q=1];subgraph s{c}->{d->e};broken->;f}";
+    const source = "digraph {a[x=1 y=2 z=3];subgraph s{node[x=2];b};node[q=1];subgraph s{c}->{d:p->e:q};broken->;f}";
     var parsed = try Dot.parseAndValidate(a, source, dot.diagnostic.discard, .{});
     defer parsed.deinit(a);
     const doc = &parsed.document.?;
@@ -179,7 +185,7 @@ test "every fixed retained and scratch pool reports an exact shortfall without a
     const first = Plain.lowerPartialIn(doc, first_memory.bound, options);
     try equal(dot.ir.LoweringOutcome.success, first.outcome);
     const peaks = first.scratch_peak;
-    const resources = [_]dot.ir.Resource{ .node_pool, .scope_pool, .occurrence_pool, .mention_pool, .connection_pool, .declaration_pool, .attribute_pool, .attribute_key_pool, .attribute_state_pool, .coverage_gap_pool };
+    const resources = [_]dot.ir.Resource{ .node_pool, .scope_pool, .occurrence_pool, .mention_pool, .connection_pool, .endpoint_port_pool, .declaration_pool, .attribute_pool, .attribute_key_pool, .attribute_state_pool, .coverage_gap_pool };
     inline for (comptime @typeInfo(dot.ir.GraphCapacities).@"struct".field_names, resources) |field, resource| {
         var reduced = counts;
         try expect(@field(reduced, field) != 0);
@@ -511,7 +517,7 @@ test "zero fixed pools and complete admission fail explicitly without publishing
 }
 
 test "fixed graph outlives lowering scratch descriptors and Document pools" {
-    const G = IR.FixedGraphStorage(.{ .nodes = 4, .scopes = 1, .occurrences = 1, .mentions = 8, .connections = 4, .declarations = 4, .attributes = 4, .attribute_keys = 4, .attribute_states = 32 });
+    const G = IR.FixedGraphStorage(.{ .nodes = 4, .scopes = 1, .occurrences = 1, .mentions = 8, .connections = 4, .endpoint_ports = 2, .declarations = 4, .attributes = 4, .attribute_keys = 4, .attribute_states = 32 });
     var retained: G = .{};
     const Build = struct {
         fn run(g: *G) !IR.Graph {

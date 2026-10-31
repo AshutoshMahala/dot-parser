@@ -407,6 +407,26 @@ test "query scratch cannot alias owners pools or source and never calls the grap
     try std.testing.expectError(error.InvalidStorage, IR.attributesSessionIn(view, .{ .bytes = std.mem.asBytes(&folded), .capacities = .{ .winners = 1 } }, .{}));
 }
 
+test "fixed query scratch rejects sparse port storage before writing" {
+    var result = try dot.ir.parse(a, "strict digraph {a:p->b:q[x=1]}", .{});
+    defer result.deinit();
+    const graph = result.ir().?;
+    var edges = try graph.edgeIterator(.{});
+    defer edges.deinit();
+    const edge = (try edges.next()).?;
+    const bytes = std.mem.sliceAsBytes(@constCast(graph.endpoint_ports));
+    const checksum = std.hash.Wyhash.hash(0, bytes);
+    // Bind successfully first: rejection must be due to aliasing, not an
+    // alignment or capacity error in the descriptor itself.
+    const attrs = try (try IR.attributeScratchLayout(.{ .winners = 1 })).bind(bytes);
+    try std.testing.expectError(error.InvalidStorage, edge.attributesIn(attrs, .{}));
+    try std.testing.expectError(error.InvalidStorage, IR.attributesSessionIn(edge, attrs, .{}));
+    const stream = try (try IR.edgeScratchLayout(graph, .{ .members = 1 })).bind(bytes);
+    try std.testing.expectError(error.InvalidStorage, graph.edgeIteratorIn(stream, .{}));
+    try std.testing.expectError(error.InvalidStorage, IR.edgeSessionIn(graph, stream, .{}));
+    try eq(checksum, std.hash.Wyhash.hash(0, bytes));
+}
+
 test "fixed query work limits and byte accounting cover full reservation without initialization" {
     var result = try dot.ir.parse(a, "strict digraph {{a b}->{a b}[x=1];a->b[x=2]}", .{});
     defer result.deinit();

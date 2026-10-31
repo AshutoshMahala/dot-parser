@@ -10,7 +10,7 @@ const PortSyntax = @import("../dot/syntax.zig").PortSyntax;
 
 pub fn syntax(graph: anytype, reference: attrs.PortReference) PortSyntax {
     const connection = graph.connections[@backingInt(reference.connection)];
-    return (if (reference.side == .left) connection.left.port else connection.right.port).?;
+    return (if (reference.side == .left) connection.left else connection.right).portSyntax(graph).?;
 }
 
 pub fn span(port: PortSyntax) t.Range {
@@ -44,11 +44,11 @@ pub const Keys = struct {
 pub fn suffixes(connection: t.Connection, id: t.ConnectionId, edge: t.Edge) [2]?Selection {
     var result: [2]?Selection = .{ null, null };
     const loop = edge.from == edge.to;
-    if (connection.left.port != null) {
+    if (connection.left.port != .none) {
         const reversed = !loop and @backingInt(connection.left.members) & ~t.node_bit == @backingInt(edge.to);
         result[@intFromBool(reversed)] = .{ .attribute = left, .connection = id };
     }
-    if (connection.right.port != null) {
+    if (connection.right.port != .none) {
         const reversed = !loop and @backingInt(connection.right.members) & ~t.node_bit == @backingInt(edge.from);
         result[@intFromBool(!reversed)] = .{ .attribute = right, .connection = id };
     }
@@ -78,11 +78,11 @@ pub fn introduction(graph: anytype, wanted: Key, work: *r.Work) r.Error!?Selecti
     if (!graph.has_ports) return null;
     for (graph.connections, 0..) |connection, index| {
         try work.spend(1);
-        const port_on_left = connection.left.port != null;
-        if (!port_on_left and connection.right.port == null) continue;
+        const port_on_left = connection.left.port != .none;
+        if (!port_on_left and connection.right.port == .none) continue;
         if (!graph.strict or connection.effective_operator == .directed) {
-            if (wanted == .tailport and connection.left.port == null) continue;
-            if (wanted == .headport and connection.right.port == null) continue;
+            if (wanted == .tailport and connection.left.port == .none) continue;
+            if (wanted == .headport and connection.right.port == .none) continue;
         }
         const fixed = if (port_on_left) connection.left else connection.right;
         const other = if (port_on_left) connection.right else connection.left;

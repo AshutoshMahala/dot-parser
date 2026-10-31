@@ -14,6 +14,7 @@ pub const GraphCapacities = struct {
     occurrences: u32 = 0,
     mentions: u32 = 0,
     connections: u32 = 0,
+    endpoint_ports: u32 = 0,
     declarations: u32 = 0,
     attributes: u32 = 0,
     attribute_keys: u32 = 0,
@@ -31,6 +32,7 @@ pub const Resource = enum {
     occurrence_pool,
     mention_pool,
     connection_pool,
+    endpoint_port_pool,
     declaration_pool,
     attribute_pool,
     attribute_key_pool,
@@ -53,6 +55,7 @@ const Retained = struct {
     occurrences: []t.Occurrence,
     mentions: []t.Mention,
     connections: []t.Connection,
+    endpoint_ports: []syntax.PortSyntax,
     declarations: []t.Declaration,
     attributes: []syntax.Attribute,
     keys: []a.Key,
@@ -270,9 +273,9 @@ pub const Context = struct {
             .{ "attribute_scopes", "scope_pool" },         .{ "occurrences", "occurrence_pool" },   .{ "bodies", "occurrence_pool" },
             .{ "mentions", "mention_pool" },               .{ "positions", "mention_pool" },        .{ "connections", "connection_pool" },
             .{ "connection_defaults", "connection_pool" }, .{ "declarations", "declaration_pool" }, .{ "attributes", "attribute_pool" },
-            .{ "meta", "attribute_pool" },                 .{ "keys", "attribute_key_pool" },       .{ "key_slots", "attribute_key_pool" },
-            .{ "cells", "attribute_state_pool" },          .{ "gaps", "coverage_gap_pool" },        .{ "stack", "nesting_frames" },
-            .{ "edge_stack", "edge_frames" },              .{ "pending", "pending_endpoints" },
+            .{ "endpoint_ports", "endpoint_port_pool" },   .{ "meta", "attribute_pool" },           .{ "keys", "attribute_key_pool" },
+            .{ "key_slots", "attribute_key_pool" },        .{ "cells", "attribute_state_pool" },    .{ "gaps", "coverage_gap_pool" },
+            .{ "stack", "nesting_frames" },                .{ "edge_stack", "edge_frames" },        .{ "pending", "pending_endpoints" },
         };
         inline for (pairs) |pair| if (comptime std.mem.eql(u8, field, pair[0])) return @field(Resource, pair[1]);
         @compileError("unknown fixed IR resource");
@@ -319,7 +322,7 @@ pub fn loweringBounds(comptime partial: bool, counts: syntax.Capacities, limits:
     // Validate source counts before arithmetic. Each admitted operand is u32,
     // so the endpoint/count sums fit u64 even for caller-made envelopes.
     // The larger attribute-state product is saturated separately below.
-    inline for (.{ "nodes", "attributes", "assignments", "subgraphs", "edges", "edge_chains", "scoped_edges", "edge_links", "scoped_edge_links", "attribute_statements" }) |field|
+    inline for (.{ "nodes", "attributes", "assignments", "subgraphs", "edges", "edge_chains", "scoped_edges", "edge_links", "scoped_edge_links", "attribute_statements", "ported_references" }) |field|
         _ = try r.index(@field(counts, field));
     const A: u64 = try index64(@as(u64, counts.attributes) + counts.assignments);
     const S = @as(u64, counts.subgraphs);
@@ -331,20 +334,26 @@ pub fn loweringBounds(comptime partial: bool, counts: syntax.Capacities, limits:
     for ([_]u64{ S + 2, avlHeight(A) + 5 }) |factor| {
         cells = if (cells > limits.max_attribute_states / factor) limits.max_attribute_states else cells * factor;
     }
-    return .{ .graph = .{
-        .nodes = try index64(@as(u64, counts.nodes) + endpoints),
-        .scopes = try index64(S + 1),
-        .occurrences = try index64(S + 1),
-        .mentions = try index64(@as(u64, counts.nodes) + endpoints),
-        .connections = try index64(owners + links),
-        .declarations = try index64(@as(u64, counts.nodes) + counts.attribute_statements + counts.assignments),
-        .attributes = try index64(A),
-        .attribute_keys = try index64(A),
-        .attribute_states = try index64(cells),
-        .coverage_gaps = if (partial) try index64(@as(u64, counts.statements) / 2 + 1) else 0,
-    }, .scratch = .{
-        .nesting = try index64(S + 1 + owners),
-        .edge_nesting = try index64(owners),
-        .pending_endpoints = try index64(endpoints),
-    } };
+    return .{
+        .graph = .{
+            .nodes = try index64(@as(u64, counts.nodes) + endpoints),
+            .scopes = try index64(S + 1),
+            .occurrences = try index64(S + 1),
+            .mentions = try index64(@as(u64, counts.nodes) + endpoints),
+            .connections = try index64(owners + links),
+            // Node-statement suffixes and abandoned partial owners need no IR port
+            // storage. A qualified chain endpoint is retained only once.
+            .endpoint_ports = try index64(@min(counts.ported_references, endpoints)),
+            .declarations = try index64(@as(u64, counts.nodes) + counts.attribute_statements + counts.assignments),
+            .attributes = try index64(A),
+            .attribute_keys = try index64(A),
+            .attribute_states = try index64(cells),
+            .coverage_gaps = if (partial) try index64(@as(u64, counts.statements) / 2 + 1) else 0,
+        },
+        .scratch = .{
+            .nesting = try index64(S + 1 + owners),
+            .edge_nesting = try index64(owners),
+            .pending_endpoints = try index64(endpoints),
+        },
+    };
 }

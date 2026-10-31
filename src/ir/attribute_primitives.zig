@@ -179,10 +179,10 @@ pub const Introduction = struct {
             .connection => {
                 if (!graph.has_ports or self.connection == graph.connections.len) return true;
                 const c = graph.connections[self.connection];
-                self.left = c.left.port != null;
-                if ((!self.left and c.right.port == null) or
+                self.left = c.left.port != .none;
+                if ((!self.left and c.right.port == .none) or
                     ((!graph.strict or c.effective_operator == .directed) and
-                        ((self.wanted == .tailport and !self.left) or (self.wanted == .headport and c.right.port == null))))
+                        ((self.wanted == .tailport and !self.left) or (self.wanted == .headport and c.right.port == .none))))
                 {
                     self.connection += 1;
                     return false;

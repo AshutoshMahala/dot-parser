@@ -249,7 +249,7 @@ fn allocationCase(allocator: std.mem.Allocator) !void {
     try expect(folded.edges.len == 4);
 }
 test "bulk materialization releases every allocation on failure" {
-    try std.testing.checkAllAllocationFailures(a, allocationCase, .{});
+    try @import("allocation_failures.zig").check(a, allocationCase, .{});
 }
 
 test "bulk returned attribute views borrow only the IR" {

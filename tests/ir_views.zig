@@ -218,6 +218,53 @@ test "IR empty edge attributes still validate membership and preserve exact stop
     }
 }
 
+test "absent edge keys preserve admission limits cancellation and later introductions" {
+    const Polls = struct {
+        calls: u32 = 0,
+        stop: u32 = std.math.maxInt(u32),
+        fn requested(ctx: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            self.calls += 1;
+            return self.calls >= self.stop;
+        }
+    };
+    inline for (.{ "digraph {a->b;c->d;edge[label=late];a->b}", "strict digraph {a->b;c->d;edge[label=late];a->b}" }) |source| {
+        var graph = try lower(source);
+        defer graph.deinit();
+        var edges = try graph.edgeIterator(.{});
+        defer edges.deinit();
+        const first = (try edges.next()).?;
+        const second = (try edges.next()).?;
+        for ([_][]const u8{ "missing", "tailport", "headport" }) |key| {
+            var observed: Polls = .{};
+            try expect(try second.attributeWith(key, .{ .cancellation = .{ .context = &observed, .is_requested = Polls.requested } }) == null);
+            for (1..observed.calls + 1) |cutoff| {
+                var polls: Polls = .{ .stop = @intCast(cutoff) };
+                try std.testing.expectError(error.Cancelled, second.attributeWith(key, .{ .cancellation = .{ .context = &polls, .is_requested = Polls.requested } }));
+                try equal(@as(u32, @intCast(cutoff)), polls.calls);
+            }
+            try std.testing.expectError(error.WorkLimit, second.attributeWith(key, .{ .limits = .{ .max_work = 0 } }));
+            var wrong = first.edge;
+            wrong.to = second.edge.to;
+            try std.testing.expectError(error.InvalidHandle, graph.edgeAttribute(wrong, key));
+            if (graph.strict) {
+                wrong = first.edge;
+                wrong.first_connection = @fromBackingInt(2);
+                try std.testing.expectError(error.InvalidHandle, graph.edgeAttribute(wrong, key));
+            }
+        }
+        // Globally introduced keys still produce declared-empty values on
+        // earlier edges: catalog absence is distinct from a missing local value.
+        try expect((try first.attribute("label")).?.value().raw() == null);
+    }
+    var graph = try lower("strict digraph {a->b;c:p->d}");
+    defer graph.deinit();
+    var edges = try graph.edgeIterator(.{});
+    defer edges.deinit();
+    const first = (try edges.next()).?;
+    try expect(try first.tailPort() != null); // Synthetic declared-empty key.
+}
+
 test "IR views reject invalid handles and attribute iterators preserve cumulative and terminal stops" {
     var ir = try lower("strict digraph {a[x=1 y=2 z=3]; a->b[color=red]; a->b[color=blue]; c}");
     defer ir.deinit();

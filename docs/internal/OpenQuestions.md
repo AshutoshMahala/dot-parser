@@ -1202,8 +1202,21 @@ Document counts or the existing retained-statement pass for partial input. Node
 growth is capped by the current count plus remaining mentions and the node limit;
 this is not speculative reservation or a final shrinking copy. Sessions preserve
 bounded copying and polling; fixed storage retains its caller-selected capacities.
-Sparse port storage is separate work: these changes keep the Endpoint/Connection
-representation intact.
+Written edge ports now use an exactly sized sparse pool and compact endpoint
+handles; adjacent chain links share their middle port record. Node-statement
+suffixes need no edge-port allocation, while source spans and effective port
+semantics remain unchanged. Direct, resumable and fixed lowering share this
+representation; explicit capacities/bounds and shortfalls include endpoint
+ports. This layout change is independent of optional attribute capabilities,
+which remain proposed.
+Speed builds specialize single-credit lowering resumes; larger grants share
+the existing loop and size builds retain one driver. Hashing inlines the
+one-unit name reader to avoid a call for every unit of comment/concatenation
+glue. The cancellation countdown is local to each grant, since every resume
+polls at entry; no countdown state needs retaining between calls. Credit sizes, resource
+limits and cancellation checkpoints are unchanged. Absent edge-key
+queries skip later contributions after checking membership and strict-edge
+identity; globally introduced and synthetic port keys still resolve normally.
 Policy-bound edge streaming now reuses bounded expansion without an output
 array or attribute folding. Each advance delivers at most one complete/partial
 view, pauses, or terminates; no edge does not mean exhaustion. Views borrow IR

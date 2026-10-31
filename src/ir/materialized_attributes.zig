@@ -112,7 +112,7 @@ pub fn Builder(comptime with_ports: bool) type {
         pub fn apply(self: *Self, graph: anytype, edge: u32, connection: t.ConnectionId, target: if (with_ports) t.Edge else void, a: std.mem.Allocator, work: *r.Work) r.Error!void {
             const source = graph.connections[@backingInt(connection)];
             const range = source.attributes;
-            if (range.len == 0 and (!with_ports or (source.left.port == null and source.right.port == null))) return;
+            if (range.len == 0 and (!with_ports or (source.left.port == .none and source.right.port == .none))) return;
             if (with_ports and !self.ports_initialized) {
                 self.port_keys = try graph.portKeys(work);
                 self.ports_initialized = true;

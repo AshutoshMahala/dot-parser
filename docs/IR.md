@@ -801,6 +801,22 @@ node count plus remaining node mentions, and by the node limit. This is an upper
 bound, not a reservation: repeated names do not allocate one node per mention.
 Already-owned spare capacity is not copied just to shrink it. Sessions retain
 bounded copying; fixed storage keeps the caller's supplied capacities.
+
+Written edge-port syntax uses a sparse `endpoint_ports` pool, allocated exactly
+from the existing retained-statement count pass. Connections hold compact
+`PortId` references (`.none` when absent); adjacent links share the middle
+endpoint's port record. Equal spellings at different source locations remain
+separate. Node-statement suffixes do not create edge-port records. Original spans,
+effective `tailPort()` / `headPort()`, and attribute precedence are unchanged.
+Low-level users read written syntax with `connection.left.portSyntax(&graph)`
+or its right-endpoint equivalent instead of an inline optional port record.
+The returned spans borrow the graph, which does not retain Document pools.
+Allocator-backed lowering reserves connections and port records in one checked
+allocation, exposing them as separate logical pools. This adds no allocation
+when ports are used. Fixed storage keeps independently sized caller-owned
+regions. Session initialization performs at most one allocation per step;
+storing a port is one fixed-size write, with no scan or copying growth.
+
 Arena backing capacity depends on allocation order and chunk growth as well as
 live pool sizes; fewer retained bytes do not
 guarantee a proportional drop in Arena capacity or process RSS.
@@ -935,6 +951,7 @@ storage rather than on a small stack. Zero capacity means zero, not “automatic
 | `nodes`, `scopes` | Unique logical nodes and scopes, including the root scope. |
 | `occurrences`, `mentions` | Written scope bodies (including root), and node membership occurrences. |
 | `connections` | Symbolic connections, **not** expanded edge pairs. |
+| `endpoint_ports` | Qualified retained edge endpoints; a middle endpoint in a chain consumes one record. Node-statement suffixes consume none. |
 | `declarations`, `attributes` | Retained declaration contributions and written attribute/assignment records. |
 | `attribute_keys`, `attribute_states` | Interned keys and persistent map cells, including update history. |
 | `coverage_gaps` | Partial-source coverage records; complete lowering needs none. |
@@ -944,6 +961,11 @@ walk frames, including root), `edge_nesting` (live edge continuations), and
 `pending_endpoints` (buffered endpoints, never their Cartesian product).
 Hash slots, metadata, cursors and posting indexes are derived from these counts;
 callers do not need to know internal record layouts or table load factors.
+Port records use the existing mention/index and byte limits; there is no separate
+semantic port-count limit. A fixed port-pool shortfall reports
+`endpoint_port_pool` and publishes no graph. Explicit lowering bounds cap the
+port reservation by Document ported-reference and written-endpoint counts;
+ordinary lowering counts the retained edge endpoints exactly.
 
 Choose one of three sizing strategies:
 

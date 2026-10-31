@@ -35,6 +35,7 @@ pub const Scope = topology.Scope;
 pub const Occurrence = topology.Occurrence;
 pub const Mention = topology.Mention;
 pub const Connection = topology.Connection;
+pub const PortId = topology.PortId;
 pub const Declaration = topology.Declaration;
 pub const Edge = topology.Edge;
 pub const MaterializedTopology = topology.MaterializedTopology;

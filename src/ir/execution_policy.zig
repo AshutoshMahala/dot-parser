@@ -155,6 +155,11 @@ pub fn BoundWith(comptime caps: @import("parser_support").encoding.Capabilities,
             if (config.runtime_policy) {
                 if (!self.effective.metering) return error.MeteringDisabled;
             } else if (!baseline.metering) @compileError("metering is disabled; use run()");
+            // Specialize the smallest grant at the existing policy boundary;
+            // keep bulk calls and size builds on the shared driver.
+            if (comptime @import("builtin").mode != .small) {
+                if (budget == 1) return @call(.always_inline, Core.advance, .{ &self.core, @as(u32, 1) });
+            }
             return self.core.advance(budget);
         }
         pub fn run(self: *Self) @import("lowering_session.zig").Progress {

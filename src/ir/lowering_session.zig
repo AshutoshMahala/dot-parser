@@ -97,7 +97,6 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
         memory: if (fixed_storage) pools.Context else r.Memory,
         cancellation: Hook,
         interval: u32,
-        polling: Polling = .{},
         total_work: u64 = 0,
         outcome: ?Outcome = null,
         taken: bool = false,
@@ -106,6 +105,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
         allocation: u8 = 0,
         counted_mentions: u64 = 0,
         counted_connections: u64 = 0,
+        counted_ports: u64 = 0,
         counted_attributes: u64 = 0,
         counted_declarations: u32 = 0,
         iterator: syntax.EdgeLinkIterator,
@@ -213,18 +213,24 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
             var used: u32 = 0;
             if (self.outcome == null and self.poll()) {
                 self.b.a = if (fixed_storage) &self.memory else self.memory.allocator();
-                self.polling = .{};
-                _ = self.polling.due(self.interval); // Entry poll covers the first credit.
+                // Every resume polls at entry, so the countdown belongs to
+                // this grant, not the retained session. Keep it local across
+                // transitions and callbacks; the resolved interval is fixed.
+                var polling: Polling = .{};
+                const interval = self.interval;
+                _ = polling.due(interval); // Entry poll covers the first credit.
                 while (used < budget and self.outcome == null) {
                     if (self.total_work == self.b.limits.max_work) {
                         if (used == 0 or self.poll()) self.outcome = .{ .failure = error.WorkLimit };
                         break;
                     }
-                    if (used != 0 and self.polling.due(self.interval) and !self.poll()) break;
+                    if (used != 0 and polling.due(interval) and !self.poll()) break;
                     used += 1;
                     self.total_work += 1;
-                    self.polling.spend(1);
-                    self.step() catch |err| {
+                    polling.spend(1);
+                    // Keep the transition in the credit loop in speed builds:
+                    // adding a one-credit caller must not outline every step.
+                    (if (comptime @import("builtin").mode == .small) self.step() else @call(.always_inline, step, .{self})) catch |err| {
                         self.outcome = .{ .failure = if (fixed_storage) err else self.memory.failure(err) };
                     };
                 }
@@ -349,6 +355,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                                 const edge = B.firstEdge(s);
                                 self.counted_mentions += @as(u64, @intFromBool(edge.left == .node)) + @intFromBool(edge.right == .node);
                                 self.counted_connections += 1;
+                                self.counted_ports += B.countPort(edge.left) + B.countPort(edge.right);
                                 self.iterator = b.links(s);
                                 self.phase = .count_links;
                             },
@@ -360,6 +367,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     if (self.iterator.next()) |edge| {
                         self.counted_connections += 1;
                         self.counted_mentions += @intFromBool(edge.right == .node);
+                        self.counted_ports += B.countPort(edge.right);
                     } else self.phase = .count;
                 },
                 .allocate => {
@@ -367,8 +375,13 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                         0 => b.occurrences = try mem.allocate(t.Occurrence, a, doc.subgraph_records.len + 1, "occurrences", true),
                         1 => b.bodies = try mem.allocate(t.Body, a, b.occurrences.len, "bodies", true),
                         2 => try b.allocateDeclarations(self.counted_declarations, true),
-                        3 => b.mentions = try mem.allocate(t.Mention, a, @intCast(self.counted_mentions), "mentions", true),
-                        4 => b.connections = try mem.allocate(t.Connection, a, @intCast(self.counted_connections), "connections", true),
+                        3, 4 => {
+                            const connections_first = self.counted_ports < self.counted_connections;
+                            if ((self.allocation == 3) == connections_first)
+                                try b.allocateConnections(@intCast(self.counted_connections), self.counted_ports, true)
+                            else
+                                b.mentions = try mem.allocate(t.Mention, a, @intCast(self.counted_mentions), "mentions", true);
+                        },
                         5 => b.attributes = try mem.allocate(syntax.Attribute, a, @intCast(self.counted_attributes), "attributes", true),
                         else => {
                             if (!try self.scope_growth.step(&b.scopes, 1, a)) return;
@@ -716,7 +729,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     if (b.mention_count >= b.mentions.len) return error.InvalidDocument;
                     b.mentions[b.mention_count] = .{ .node = @fromBackingInt(self.intern_id), .source = self.node_view.identifier, .occurrence = @fromBackingInt(self.occurrence) };
                     b.mention_count += 1;
-                    self.node_value = .{ .members = @fromBackingInt(t.node_bit | self.intern_id), .port = self.node_view.port };
+                    self.node_value = .{ .members = @fromBackingInt(t.node_bit | self.intern_id), .port = if (self.node_for_declaration) .none else try b.storePort(self.node_view.port) };
                     if (self.node_for_declaration) {
                         self.target = .{ .node = @fromBackingInt(self.intern_id) };
                         try self.copyRange(self.range, .declaration);
@@ -864,7 +877,9 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                         self.phase = .apply;
                     } else self.phase = .walk;
                 },
-                .intern_hash => switch (try self.reader.step()) {
+                // This reader transition can run once per source unit, even
+                // when comment/concatenation glue emits no byte to hash.
+                .intern_hash => switch (try @call(.always_inline, p.Name(caps).step, .{&self.reader})) {
                     .pending => {},
                     .byte => |byte| self.hasher.update(&.{byte}),
                     .end => {
@@ -1050,7 +1065,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     entries[self.index].suffix_first = self.suffix_first;
                 } else unreachable,
                 .posting_allocate => {
-                    if (b.mention_count != b.mentions.len or b.connection_count != b.connections.len or b.attribute_count != b.attributes.len) return error.InvalidDocument;
+                    if (b.mention_count != b.mentions.len or b.connection_count != b.connections.len or b.port_count != b.endpoint_ports.len or b.attribute_count != b.attributes.len) return error.InvalidDocument;
                     if (b.offsets.len == 0) b.offsets = try mem.allocate(u32, a, b.nodes.items.len + 1, "offsets", true) else {
                         b.positions = try mem.allocate(u32, a, b.mentions.len, "positions", true);
                         self.index = 0;

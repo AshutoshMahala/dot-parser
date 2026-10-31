@@ -32,7 +32,7 @@ const NoResize = struct {
 };
 
 fn compare(expected: anytype, actual: anytype) !void {
-    inline for (.{ "source_info", "declared_kind", "kind", "strict", "name", "has_ports", "nodes", "scopes", "declarations", "occurrences", "bodies", "mentions", "connections", "attributes", "posting_offsets", "posting_positions", "node_slots" }) |field|
+    inline for (.{ "source_info", "declared_kind", "kind", "strict", "name", "has_ports", "nodes", "scopes", "declarations", "occurrences", "bodies", "mentions", "connections", "endpoint_ports", "attributes", "posting_offsets", "posting_positions", "node_slots" }) |field|
         try equal(@field(expected, field), @field(actual, field));
     inline for (.{ "meta", "scopes", "connection_defaults" }) |field|
         try equal(@field(expected.attribute_data, field), @field(actual.attribute_data, field));
@@ -94,6 +94,7 @@ test "lowering sessions match direct complete and partial lowering at budget one
     for ([_][]const u8{
         "digraph {}",
         "digraph { a->b->c; a->b; z }",
+        "digraph {standalone:p;a:p->b:q:n->c:r;d->e;{x->y:s}->z:t}",
         "digraph { a; \"a\"; \"a\"+<>+\"\"; <a>; \"x\\N\"; \"x\\\"y\"; \"a\"/*glue*/+\"b\"; <<b>x</b>> }",
         "digraph { \"a\\\nb\"; \"a\\\r\nb\"; \"a\"//glue\n+\"b\"; \"a\"#glue\n+\"b\"; \"a\\\\b\"; ab; \xff; \"\xff\" }",
         "strict graph {node[color=red];edge[weight=1];a:p--b:q; b:r--a:s[label=last]; edge[weight=2]; a--c}",
@@ -109,6 +110,7 @@ test "lowering sessions match direct complete and partial lowering at budget one
         "digraph { a[color=red]; broken -> ; b[color=blue]; }",
         "digraph {a; subgraph s {b; c->;d}",
         "digraph { {a}-> {b; subgraph s{c}} -> ; d->e;",
+        "digraph {a:p->b:q->c:r;broken:s->;d:t->e:u}",
         "digraph { a; x[label=\"unfinished",
     }) |source| try check(true, source);
 }
@@ -335,6 +337,22 @@ test "lowering sessions poll every credit and cancellation wins over work exhaus
         try equal(limit, progress.total_work);
         if (limit == total) try equal(dot.ir.LoweringOutcome.success, progress.outcome.?) else try equal(error.WorkLimit, progress.outcome.?.failure);
     }
+    // Spending exactly the allowance still pauses. A zero grant polls but
+    // does no work; only asking for another credit reports exhaustion.
+    var exact = try C.loweringSession(a, doc, .{ .interpretation = interpretation, .limits = .{ .max_work = 7 } });
+    defer exact.deinit();
+    const paused = exact.advance(7);
+    try equal(@as(u32, 7), paused.work_used);
+    try equal(@as(u64, 7), paused.total_work);
+    try equal(null, paused.outcome);
+    const zero = exact.advance(0);
+    try equal(@as(u32, 0), zero.work_used);
+    try equal(paused.total_work, zero.total_work);
+    try equal(null, zero.outcome);
+    const exhausted = exact.advance(1);
+    try equal(@as(u32, 0), exhausted.work_used);
+    try equal(paused.total_work, exhausted.total_work);
+    try equal(error.WorkLimit, exhausted.outcome.?.failure);
     var stop: Stop = .{ .at = 9 };
     var session = try C.loweringSession(a, doc, .{ .interpretation = interpretation, .limits = .{ .max_work = 7 }, .cancellation = stop.token() });
     defer session.deinit();
@@ -355,6 +373,19 @@ test "lowering cancellation intervals and budget partitions do not change credit
         try equal(dot.ir.LoweringOutcome.success, progress.outcome.?);
         try equal(1 + (progress.total_work + interval - 1) / interval, stop.polls);
         if (total) |n| try equal(n, progress.total_work) else total = progress.total_work;
+        var without_hook = try C.loweringSession(a, doc, .{ .interpretation = Dot.interpretation(doc, .{}), .policy = .{ .execution = .{ .cancellation_interval = interval } } });
+        defer without_hook.deinit();
+        var observed: Stop = .{};
+        var with_hook = try C.loweringSession(a, doc, .{ .interpretation = Dot.interpretation(doc, .{}), .policy = .{ .execution = .{ .cancellation_interval = interval } }, .cancellation = observed.token() });
+        defer with_hook.deinit();
+        var turn: usize = 0;
+        while (true) : (turn += 1) {
+            const grant = ([_]u32{ 0, 1, 2, 7, 64 })[turn % 5];
+            const unobserved = try without_hook.advance(grant);
+            const polled = try with_hook.advance(grant);
+            try equal(polled, unobserved);
+            if (polled.outcome != null) break;
+        }
     }
     var one = try IR.loweringSession(a, doc, .{ .interpretation = Dot.interpretation(doc, .{}) });
     defer one.deinit();
@@ -370,6 +401,43 @@ test "lowering cancellation intervals and budget partitions do not change credit
         const actual = mixed.advance(grant);
         try equal(expected, actual);
         if (actual.outcome != null) break;
+    }
+}
+
+test "runtime hookless direct lowering preserves exact session work limits and output" {
+    const Runtime = dot.ir.Lowering(.{ .runtime_policy = true, .limits = .{ .max_nodes = 4 } });
+    const input = "digraph {node[color=red];subgraph s{a b};a:p->b:q[x=1];subgraph s{c};c->a}";
+    var memory: NoResize = .{ .backing = a };
+    inline for (.{ false, true }) |partial| {
+        var parsed = Dot.parseAndValidate(a, if (partial) input[0 .. input.len - 1] else input, dot.diagnostic.discard, .{});
+        defer parsed.deinit(a);
+        const doc = &parsed.document.?;
+        for ([_]dot.ir.Policy{
+            .{ .execution = .{ .metering = true } },
+            .{ .execution = .{ .cancellation = true, .cancellation_interval = 64 } },
+            .{ .execution = .{ .metering = true, .cancellation = true, .cancellation_interval = 7 } },
+        }) |policy| {
+            const options = .{ .interpretation = Dot.interpretation(doc, .{}), .policy = policy };
+            var session = if (partial) try Runtime.partialLoweringSession(memory.allocator(), doc, options) else try Runtime.loweringSession(memory.allocator(), doc, options);
+            defer session.deinit();
+            const progress = session.run();
+            var expected = try session.takeResult();
+            defer expected.deinit();
+            for ([_]u64{ 0, progress.total_work - 1, progress.total_work }) |work| {
+                const limited = .{ .interpretation = options.interpretation, .policy = policy, .limits = .{ .max_work = work } };
+                const lowered = if (partial) Runtime.lowerPartial(memory.allocator(), doc, limited) else Runtime.lowerComplete(memory.allocator(), doc, limited);
+                if (work < progress.total_work) {
+                    try std.testing.expectError(error.WorkLimit, lowered);
+                } else {
+                    var actual = try lowered;
+                    defer actual.deinit();
+                    if (partial) {
+                        try compare(expected._data, actual._data);
+                        try equal(expected._coverage.entries.items, actual._coverage.entries.items);
+                    } else try compare(expected, actual);
+                }
+            }
+        }
     }
 }
 
@@ -420,7 +488,7 @@ test "long identifier glue is resumable and successful output outlives Document 
 }
 
 test "lowering frees every interrupted allocation including pending growth and map snapshots" {
-    var parsed = Dot.parseAndValidate(a, "digraph {node[x=1 y=2]; subgraph s{a b c}; node[z=3]; subgraph s{d};a->{e f g}[k=1 l=2 m=3];bad->;h}", dot.diagnostic.discard, .{});
+    var parsed = Dot.parseAndValidate(a, "digraph {node[x=1 y=2]; subgraph s{a b c}; node[z=3]; subgraph s{d};a:p->{e f g}[k=1 l=2 m=3];bad->;h:q->i:r}", dot.diagnostic.discard, .{});
     defer parsed.deinit(a);
     try std.testing.checkAllAllocationFailures(a, allocationCase, .{&parsed.document.?});
 }

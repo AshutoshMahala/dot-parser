@@ -64,7 +64,7 @@ pub fn checkGraph(buffer: []u8, graph: anytype) r.Error!void {
     if (@hasField(@TypeOf(graph.*), "_coverage")) try disjoint(buffer, graph._coverage.entries.allocatedSlice());
     const g = data(graph);
     try disjoint(buffer, fixed.borrowedGraphBytes(g));
-    inline for (.{ "source", "node_storage", "scope_storage", "declaration_storage", "nodes", "scopes", "declarations", "occurrences", "mentions", "connections", "attributes", "bodies", "node_slots", "posting_offsets", "posting_positions" }) |field| try disjoint(buffer, @field(g, field));
+    inline for (.{ "source", "node_storage", "scope_storage", "declaration_storage", "nodes", "scopes", "declarations", "occurrences", "mentions", "connections", "endpoint_ports", "attributes", "bodies", "node_slots", "posting_offsets", "posting_positions" }) |field| try disjoint(buffer, @field(g, field));
     const a = &g.attribute_data;
     try disjoint(buffer, a.keys.allocatedSlice());
     try disjoint(buffer, a.cells.allocatedSlice());

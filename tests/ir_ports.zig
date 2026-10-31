@@ -10,6 +10,36 @@ fn lower(source: []const u8) !IR.Graph {
     return IR.lowerComplete(a, &parsed.document.?, .{ .interpretation = dot.Profile(.{}).interpretation(&parsed.document.?, .{}) });
 }
 
+test "sparse endpoint ports retain written occurrences and share chain middles" {
+    var plain = try lower("digraph {a:p;b; a->b; b->c}");
+    defer plain.deinit();
+    // Node-statement suffixes do not contribute edge ports. Their syntax is
+    // still in the caller's Document, not in the effective graph's port pool.
+    try std.testing.expectEqual(@as(usize, 0), plain.endpoint_ports.len);
+    try std.testing.expect(!plain.has_ports);
+    try std.testing.expectEqual(@as(u32, 0), plain.capacities().endpoint_ports);
+    for (plain.connections) |connection| {
+        try std.testing.expectEqual(dot.ir.PortId.none, connection.left.port);
+        try std.testing.expect(connection.right.portSyntax(&plain) == null);
+    }
+
+    var graph = try lower("digraph {a:p->b:\"q:r\":n->c:<>;a:p->c;{x->y:s}->z:t}");
+    defer graph.deinit();
+    try std.testing.expectEqual(@as(usize, 6), graph.endpoint_ports.len);
+    try std.testing.expectEqual(@as(u32, 6), graph.capacities().endpoint_ports);
+    try std.testing.expect(graph.has_ports);
+    const first = graph.connections[0];
+    const second = graph.connections[1];
+    try std.testing.expectEqual(first.right.port, second.left.port);
+    const middle = first.right.portSyntax(&graph).?;
+    try std.testing.expectEqualStrings("\"q:r\"", graph.text(middle.first));
+    try std.testing.expectEqualStrings("n", graph.text(middle.second.?));
+    try std.testing.expectEqualStrings("<>", graph.text(second.right.portSyntax(&graph).?.first));
+    // Same text at another source location must retain its own provenance.
+    try std.testing.expect(first.left.port != graph.connections[2].left.port);
+    try std.testing.expect(first.left.portSyntax(&graph).?.first.start != graph.connections[2].left.portSyntax(&graph).?.first.start);
+}
+
 fn check(graph: anytype, record: dot.ir.Edge, folded: anytype, key: []const u8, expected: ?[]const u8) !void {
     const compact = try graph.edgeAttribute(record, key);
     const materialized = folded.attribute(key);
@@ -70,7 +100,7 @@ test "port syntax preserves components independently of Graphviz first-colon int
         try std.testing.expect(try split.asCompassWith(.{}) == null);
     }
     // An override does not destroy the original source endpoint.
-    try std.testing.expectEqualStrings("<p>", ir.text(ir.connections[0].right.port.?.first));
+    try std.testing.expectEqualStrings("<p>", ir.text(ir.connections[0].right.portSyntax(&ir).?.first));
 }
 
 test "port compass recognition preserves ambiguity absence and unsupported suffixes" {
@@ -217,7 +247,7 @@ test "derived ports retain raw components and provide one logical string operand
     try std.testing.expectEqualStrings("\"p\" + \"ort\" /* gap */ : n", value.raw().?);
     const port = (try edge.tailPort()).?;
     try std.testing.expectEqual(attribute.resolved, port.resolved);
-    try std.testing.expectEqual(ir.connections[0].left.port.?, port.syntax().?.spans);
+    try std.testing.expectEqual(ir.connections[0].left.portSyntax(&ir).?, port.syntax().?.spans);
     try std.testing.expect(!@hasDecl(IR.Graph.ValueView, "endpointPort"));
     try std.testing.expect(!@hasDecl(IR.Graph.OperandView, "endpointPort"));
     var parts = value.parts();

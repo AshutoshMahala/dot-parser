@@ -73,6 +73,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
         bodies: []t.Body = &.{},
         mentions: []t.Mention = &.{},
         connections: []t.Connection = &.{},
+        endpoint_ports: []syntax.PortSyntax = &.{},
         attributes: []syntax.Attribute = &.{},
         attribute_data: attrs.Store = .{},
         offsets: []u32 = &.{},
@@ -85,6 +86,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
         pending: std.ArrayList(Pending) = .empty,
         mention_count: u32 = 0,
         connection_count: u32 = 0,
+        port_count: u32 = 0,
         attribute_count: u32 = 0,
         // Keep the complete builder's field count/types unchanged. Even void
         // fields can perturb Zig's automatic layout of equal-alignment fields.
@@ -116,7 +118,8 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             self.scopes.deinit(a);
             self.declarations.deinit(a);
             self.attribute_data.deinit(a);
-            inline for (.{ "occurrences", "bodies", "mentions", "connections", "attributes", "offsets", "positions" }) |field| a.free(@field(self, field));
+            @import("topology_storage.zig").release(a, self);
+            inline for (.{ "occurrences", "bodies", "mentions", "attributes", "offsets", "positions" }) |field| a.free(@field(self, field));
         }
         pub fn raw(self: *Self, range: t.Range) r.Error![]const u8 {
             if (range.start > self.doc.source.len or range.len > self.doc.source.len - range.start) return error.InvalidDocument;
@@ -125,7 +128,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
         pub fn hashFor(self: *Self, id: u32) u64 {
             return self.nodes.items[id].hash;
         }
-        fn node(self: *Self, reference: syntax.NodeReference, occurrence: u32) r.Error!t.Endpoint {
+        fn node(self: *Self, reference: syntax.NodeReference, occurrence: u32, retain_port: bool) r.Error!t.Endpoint {
             const view = self.doc.nodeReference(reference) orelse return error.InvalidDocument;
             if (comptime encoding.Reader(actual).width != 1) if (view.port) |port| {
                 // Native derived formatting is infallible after admission.
@@ -179,7 +182,40 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             if (self.mention_count >= self.mentions.len) return error.InvalidDocument;
             self.mentions[self.mention_count] = .{ .node = @fromBackingInt(id), .source = view.identifier, .occurrence = @fromBackingInt(occurrence) };
             self.mention_count += 1;
-            return .{ .members = @fromBackingInt(t.node_bit | id), .port = view.port };
+            return .{ .members = @fromBackingInt(t.node_bit | id), .port = if (retain_port) try self.storePort(view.port) else .none };
+        }
+        /// One fixed-size write, no allocation or source scan. Both drivers
+        /// allocate the exact pool from their existing retained-statement pass.
+        pub fn storePort(self: *Self, value: ?syntax.PortSyntax) r.Error!t.PortId {
+            const port = value orelse return .none;
+            if (self.port_count >= self.endpoint_ports.len) return error.InvalidDocument;
+            const id: t.PortId = @fromBackingInt(self.port_count);
+            self.endpoint_ports[self.port_count] = port;
+            self.port_count += 1;
+            return id;
+        }
+        pub fn allocateConnections(self: *Self, connections: usize, port_count: u64, comptime metered: bool) r.Error!void {
+            const count = try r.index(std.math.cast(usize, port_count) orelse return error.IndexLimit);
+            if (fixed_storage) {
+                // Check every capacity before publishing any region. No heap
+                // fallback, and the caller's fixed pools remain independent.
+                try self.a.ensure("connections", connections);
+                try self.a.ensure("endpoint_ports", count);
+                self.connections = self.a.slice("connections")[0..connections];
+                self.endpoint_ports = self.a.slice("endpoint_ports")[0..count];
+            } else {
+                const pools_value = try @import("topology_storage.zig").allocate(self.a, connections, count, metered);
+                self.connections = pools_value.connections;
+                self.endpoint_ports = pools_value.endpoint_ports;
+            }
+        }
+        /// NodeReference's zero raw length denotes a qualified reference;
+        /// counting it needs no source scan or port-pool lookup.
+        pub fn countPort(endpoint_value: syntax.Endpoint) u32 {
+            return switch (endpoint_value) {
+                .node => |reference| @intFromBool(reference.raw_len == 0),
+                .subgraph => 0,
+            };
         }
         /// Each remaining mention can introduce at most one new node. This
         /// bounds growth without assuming that all mentions have distinct names.
@@ -329,7 +365,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
         }
         fn endpoint(self: *Self, endpoint_value: syntax.Endpoint, occurrence: u32) r.Error!void {
             switch (endpoint_value) {
-                .node => |reference| try mem.append(self.a, &self.pending, .{ .node = try self.node(reference, occurrence) }, "pending"),
+                .node => |reference| try mem.append(self.a, &self.pending, .{ .node = try self.node(reference, occurrence, true) }, "pending"),
                 .subgraph => |scope| {
                     const id = @backingInt(scope);
                     if (id == 0 or id >= self.occurrences.len) return error.InvalidDocument;
@@ -474,7 +510,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                         self.stack.items[index].scope.cursor += 1;
                         switch (statement) {
                             .node => |node_value| {
-                                const value = try self.node(node_value.reference, frame.occurrence);
+                                const value = try self.node(node_value.reference, frame.occurrence, false);
                                 try self.declaration(.{ .node = @fromBackingInt(@backingInt(value.members) & ~t.node_bit) }, frame.occurrence, try self.copyAttributes(node_value.attributes));
                             },
                             .subgraph => |scope| {
@@ -540,6 +576,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             // Count written payload only; never multiply endpoint cardinalities.
             var mention_count: u64 = 0;
             var connection_count: u64 = 0;
+            var port_count: u64 = 0;
             var retained_attributes: u64 = 0;
             var declaration_count: usize = if (partial) 0 else self.doc.nodes.len + self.doc.attribute_statements.len + self.doc.assignments.len;
             var statements = self.doc.statements();
@@ -564,11 +601,13 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                         const first = firstEdge(statement);
                         mention_count += @intFromBool(first.left == .node) + @as(u64, @intFromBool(first.right == .node));
                         connection_count += 1;
+                        port_count += countPort(first.left) + countPort(first.right);
                         var it = self.links(statement);
                         while (it.next()) |edge| {
                             try self.work.spend(1);
                             mention_count += @intFromBool(edge.right == .node);
                             connection_count += 1;
+                            port_count += countPort(edge.right);
                         }
                     },
                     else => {},
@@ -581,8 +620,17 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             if (attribute_count >= @import("ports.zig").right) return error.IndexLimit;
             try self.prepareScopes();
             try self.allocateDeclarations(declaration_count, false);
-            self.mentions = try mem.allocate(t.Mention, self.a, @intCast(mention_count), "mentions", false);
-            self.connections = try mem.allocate(t.Connection, self.a, @intCast(connection_count), "connections", false);
+            // Sparse ports (under one per connection) keep the compact
+            // connection buffer first; denser inputs keep mentions first.
+            // This reduces measured arena chunk waste without extra capacity.
+            // Backing-allocator growth still determines actual arena/RSS use.
+            if (port_count < connection_count) {
+                try self.allocateConnections(@intCast(connection_count), port_count, false);
+                self.mentions = try mem.allocate(t.Mention, self.a, @intCast(mention_count), "mentions", false);
+            } else {
+                self.mentions = try mem.allocate(t.Mention, self.a, @intCast(mention_count), "mentions", false);
+                try self.allocateConnections(@intCast(connection_count), port_count, false);
+            }
             self.attributes = try mem.allocate(syntax.Attribute, self.a, @intCast(attribute_count), "attributes", false);
             if (!partial) for (self.doc.attributes, self.attributes[0..self.doc.attributes.len]) |attr, *dest| {
                 try self.work.spend(1);
@@ -603,7 +651,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 }
                 try self.publication.coverage_data.finish(&self.work);
             }
-            if (self.mention_count != self.mentions.len or self.connection_count != self.connections.len or self.attribute_count != self.attributes.len) return error.InvalidDocument;
+            if (self.mention_count != self.mentions.len or self.connection_count != self.connections.len or self.port_count != self.endpoint_ports.len or self.attribute_count != self.attributes.len) return error.InvalidDocument;
             self.offsets = try mem.allocate(u32, self.a, self.nodes.items.len + 1, "offsets", false);
             self.positions = try mem.allocate(u32, self.a, self.mentions.len, "positions", false);
             for (self.offsets) |*offset| {
@@ -643,7 +691,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 .declared_kind = self.doc.kind,
                 .kind = self.interpretation.kind,
                 .strict = self.doc.strict,
-                .has_ports = self.doc.ported_references.len != 0,
+                .has_ports = self.endpoint_ports.len != 0,
                 .name = self.doc.name,
                 .nodes = self.nodes.items,
                 .node_storage = self.nodes.allocatedSlice(),
@@ -655,6 +703,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 .bodies = self.bodies,
                 .mentions = self.mentions,
                 .connections = self.connections,
+                .endpoint_ports = self.endpoint_ports,
                 .attributes = self.attributes,
                 .attribute_data = self.attribute_data,
                 .node_slots = self.node_table.slots,

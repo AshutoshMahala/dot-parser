@@ -9,7 +9,7 @@ const Scheduled = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = tr
 const Metered = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
 const Cancellable = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .cancellation = true } } });
 const Runtime = dot.ir.Lowering(.{ .runtime_policy = true });
-pub const Case = enum { edges, attributes, reopened, nested, long_name, symbolic_product };
+pub const Case = enum { edges, attributes, reopened, nested, long_name, symbolic_product, sparse_ports, dense_ports, port_chains };
 const routes = [_]struct { name: []const u8, budget: ?u32, cancellation: bool = false, direct: enum { plain, metered, cancellable, runtime_off, runtime_on } = .plain }{
     .{ .name = "direct", .budget = null },
     .{ .name = "direct-metered", .budget = null, .direct = .metered },
@@ -34,6 +34,17 @@ pub fn fixture(out: *std.Io.Writer, case: Case) !void {
     switch (case) {
         .edges => for (0..2000) |i| {
             try out.print("n{d}->n{d};", .{ i, i + 1 });
+        },
+        .sparse_ports, .dense_ports => for (0..2000) |i| {
+            if (case == .dense_ports or i % 100 == 0)
+                try out.print("n{d}:p:n->n{d}:q;", .{ i, i + 1 })
+            else
+                try out.print("n{d}->n{d};", .{ i, i + 1 });
+        },
+        .port_chains => for (0..1000) |i| {
+            try out.print("n{d}:p:n", .{i * 8});
+            for (1..8) |k| try out.print("->n{d}:p:n", .{i * 8 + k});
+            try out.writeAll(";");
         },
         .attributes => for (0..2000) |i| {
             try out.print("n{d}[color=red shape=box weight={d}];", .{ i, i });

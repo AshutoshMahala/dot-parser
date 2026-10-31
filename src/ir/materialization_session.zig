@@ -683,7 +683,7 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                         },
                         .apply => if (attributes) {
                             const source = self.graph.connections[self.connection];
-                            continue :machine self.successor(single, if (source.attributes.len == 0 and source.left.port == null and source.right.port == null) .pair else .roots);
+                            continue :machine self.successor(single, if (source.attributes.len == 0 and source.left.port == .none and source.right.port == .none) .pair else .roots);
                         } else unreachable,
                         .roots => if (attributes) {
                             if (self.maps.roots.items.len <= self.target) {

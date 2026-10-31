@@ -177,8 +177,8 @@ test "IR interns logical identities and keeps source order ports and raw attribu
     try equal(@as(usize, 3), ir.connections.len);
     // Inner edge commits first; outer left's node is still introduced first.
     try expect(try edge(&ir, "c", "d"));
-    try std.testing.expectEqualStrings("p", ir.text(ir.connections[1].left.port.?.first));
-    try std.testing.expectEqualStrings("n", ir.text(ir.connections[2].right.port.?.second.?));
+    try std.testing.expectEqualStrings("p", ir.text(ir.connections[1].left.portSyntax(&ir).?.first));
+    try std.testing.expectEqualStrings("n", ir.text(ir.connections[2].right.portSyntax(&ir).?.second.?));
     const attrs = ir.attributeSlice(ir.connections[1].attributes).?;
     try equal(@as(usize, 2), attrs.len);
     try std.testing.expectEqualStrings("2", ir.text(attrs[0].value));

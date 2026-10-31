@@ -21,7 +21,18 @@ pub const Node = struct { name: Range, first_mention: u32, attribute_state: u32 
 pub const Scope = struct { parent: ?ScopeId, name: ?Range, first_occurrence: OccurrenceId, hash: u64 };
 pub const Occurrence = struct { scope: ScopeId, parent: ?OccurrenceId, source: Range, membership: Membership };
 pub const Mention = struct { node: NodeId, occurrence: OccurrenceId, source: Range };
-pub const Endpoint = struct { members: Membership, port: ?syntax.PortSyntax = null };
+/// Written port syntax is stored once per qualified edge endpoint, shared by
+/// adjacent links in a chain. The sentinel costs no optional-tag storage.
+pub const PortId = enum(u32) { none = std.math.maxInt(u32), _ };
+pub const Endpoint = struct {
+    members: Membership,
+    port: PortId = .none,
+
+    /// Borrows syntax from the owning graph; this endpoint must belong to it.
+    pub fn portSyntax(self: Endpoint, graph: anytype) ?syntax.PortSyntax {
+        return if (self.port == .none) null else graph.endpoint_ports[@backingInt(self.port)];
+    }
+};
 pub const Connection = struct {
     left: Endpoint,
     right: Endpoint,
@@ -110,13 +121,14 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         node_slots: []const u32,
         posting_offsets: []const u32,
         posting_positions: []const u32,
-        /// Conservative fast-path flag; node-only suffixes may also set it.
+        /// True when retained edge endpoints have written port suffixes.
         /// Keep new cold flags after the pools: Zig's automatic layout otherwise
         /// moves the connection/membership fields used by topology-only loops.
         has_ports: bool,
         /// Nonzero only for borrowed fixed storage; includes unused pools and
         /// padding. Query allocator, if any, does not own this reservation.
         borrowed_bytes: usize = 0,
+        endpoint_ports: []const syntax.PortSyntax,
 
         const Views = @import("views.zig").For(Self, caps, connectionCovers);
         pub const NodeView = Views.Node;
@@ -167,7 +179,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
             a.free(self.scope_storage);
             a.free(self.occurrences);
             a.free(self.mentions);
-            a.free(self.connections);
+            @import("topology_storage.zig").release(a, self);
             a.free(self.attributes);
             a.free(self.declaration_storage);
             a.free(self.bodies);
@@ -183,7 +195,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         pub fn retainedBytes(self: *const Self) usize {
             if (self.borrowed_bytes != 0) return self.borrowed_bytes;
             var bytes: usize = 0;
-            inline for (.{ "node_storage", "scope_storage", "declaration_storage", "occurrences", "mentions", "connections", "attributes", "bodies", "node_slots", "posting_offsets", "posting_positions" }) |field| {
+            inline for (.{ "node_storage", "scope_storage", "declaration_storage", "occurrences", "mentions", "connections", "endpoint_ports", "attributes", "bodies", "node_slots", "posting_offsets", "posting_positions" }) |field| {
                 const slice = @field(self, field);
                 bytes += slice.len * @sizeOf(std.meta.Elem(@TypeOf(slice)));
             }
@@ -198,6 +210,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
                 .occurrences = @intCast(self.occurrences.len),
                 .mentions = @intCast(self.mentions.len),
                 .connections = @intCast(self.connections.len),
+                .endpoint_ports = @intCast(self.endpoint_ports.len),
                 .declarations = @intCast(self.declarations.len),
                 .attributes = @intCast(self.attributes.len),
                 .attribute_keys = @intCast(self.attribute_data.keys.items.len),
@@ -340,6 +353,17 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
                     if (!try self.connectionCovers(self.connections[id], edge, work)) return error.InvalidHandle;
                     const port_key: ?ports.Key = if (!self.has_ports) null else if (std.mem.eql(u8, key, "tailport")) .tailport else if (std.mem.eql(u8, key, "headport")) .headport else null;
                     const key_id = try attrs.findKey(caps, self, .edge, key, work);
+                    if (key_id == null and port_key == null) {
+                        // No written/default or synthetic value can exist.
+                        // A strict caller-supplied edge must still identify its
+                        // first contribution, even for an absent key. Later
+                        // connections cannot affect that admission check.
+                        if (self.strict) for (self.connections[0..id]) |connection| {
+                            try work.spend(1);
+                            if (try self.connectionCovers(connection, edge, work)) return error.InvalidHandle;
+                        };
+                        return null;
+                    }
                     var first: ?u32 = null;
                     var explicit: ?u32 = null;
                     var explicit_connection: ConnectionId = edge.first_connection;
