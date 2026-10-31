@@ -22,18 +22,19 @@ pub fn InterpretationFor(comptime partial: bool) type {
     };
 }
 
-pub fn run(comptime caps: encoding.Capabilities, a: std.mem.Allocator, document: *const syntax.Document, interpretation: Interpretation, limits: r.Limits, cancellation: ?r.Cancellation) r.Error!t.Graph(caps) {
-    return runWith(caps, false, a, document, interpretation, limits, cancellation);
+pub fn run(comptime rep: @import("representation.zig").Identity, a: std.mem.Allocator, document: *const syntax.Document, interpretation: Interpretation, limits: r.Limits, cancellation: ?r.Cancellation) r.Error!t.Graph(rep) {
+    return runWith(rep, false, a, document, interpretation, limits, cancellation);
 }
 
-pub inline fn runWith(comptime caps: encoding.Capabilities, comptime partial: bool, a: std.mem.Allocator, document: *const syntax.Document, interpretation: InterpretationFor(partial), limits: r.Limits, cancellation: ?r.Cancellation) r.Error!Output(caps, partial) {
+pub inline fn runWith(comptime rep: @import("representation.zig").Identity, comptime partial: bool, a: std.mem.Allocator, document: *const syntax.Document, interpretation: InterpretationFor(partial), limits: r.Limits, cancellation: ?r.Cancellation) r.Error!Output(rep, partial) {
+    const caps = rep.encodings;
     if (!partial and !document.scopeComplete()) return error.IncompleteDocument;
     if (document.strict and (interpretation.kind == .generic or (partial and interpretation.kind == null))) return error.UnsupportedSemantics;
     // An ASCII-admitted Document is byte-compatible with the UTF-8 reader.
     const reader = names.reader(caps, document.source_info.encoding);
     return switch (reader) {
         inline else => |actual| if (comptime caps.allows(actual)) blk: {
-            var builder: Builder(actual, caps, partial) = .{
+            var builder: Builder(actual, rep, partial) = .{
                 .a = a,
                 .doc = document,
                 .interpretation = interpretation,
@@ -46,14 +47,16 @@ pub inline fn runWith(comptime caps: encoding.Capabilities, comptime partial: bo
     };
 }
 
-pub fn Output(comptime caps: encoding.Capabilities, comptime partial: bool) type {
-    return if (partial) @import("partial.zig").Graph(caps) else t.Graph(caps);
+pub fn Output(comptime rep: @import("representation.zig").Identity, comptime partial: bool) type {
+    return if (partial) @import("partial.zig").Graph(rep) else t.Graph(rep);
 }
 
-pub fn Builder(comptime actual: encoding.Actual, comptime caps: encoding.Capabilities, comptime partial: bool) type {
-    return BuilderWith(actual, caps, partial, false);
+pub fn Builder(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity, comptime partial: bool) type {
+    return BuilderWith(actual, rep, partial, false);
 }
-pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Capabilities, comptime partial: bool, comptime fixed_storage: bool) type {
+pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime fixed_storage: bool) type {
+    const Node = t.NodeFor(rep.attributes);
+    const Connection = t.ConnectionFor(rep.attributes);
     return struct {
         const Self = @This();
         const Records = @import("lowering_types.zig");
@@ -66,16 +69,16 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
         interpretation: InterpretationFor(partial),
         limits: r.Limits,
         work: r.Work,
-        nodes: std.ArrayList(t.Node) = .empty,
+        nodes: std.ArrayList(Node) = .empty,
         scopes: std.ArrayList(t.Scope) = .empty,
-        declarations: std.ArrayList(t.Declaration) = .empty,
+        declarations: if (rep.attributes) std.ArrayList(t.Declaration) else void = if (rep.attributes) .empty else {},
         occurrences: []t.Occurrence = &.{},
         bodies: []t.Body = &.{},
         mentions: []t.Mention = &.{},
-        connections: []t.Connection = &.{},
+        connections: []Connection = &.{},
         endpoint_ports: []syntax.PortSyntax = &.{},
-        attributes: []syntax.Attribute = &.{},
-        attribute_data: attrs.Store = .{},
+        attributes: if (rep.attributes) []syntax.Attribute else void = if (rep.attributes) &.{} else {},
+        attribute_data: if (rep.attributes) attrs.Store else void = if (rep.attributes) .{} else {},
         offsets: []u32 = &.{},
         positions: []u32 = &.{},
         node_table: names.Table = .{},
@@ -87,12 +90,12 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
         mention_count: u32 = 0,
         connection_count: u32 = 0,
         port_count: u32 = 0,
-        attribute_count: u32 = 0,
+        attribute_count: if (rep.attributes) u32 else void = if (rep.attributes) 0 else {},
         // Keep the complete builder's field count/types unchanged. Even void
         // fields can perturb Zig's automatic layout of equal-alignment fields.
         publication: if (partial) struct {
             transferred: bool = false,
-            coverage_data: coverage.Data = .{},
+            coverage_data: coverage.DataFor(rep.attributes) = .{},
             next_scope: u32 = 1,
         } else bool = if (partial) .{} else false,
 
@@ -116,10 +119,14 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             self.node_table.deinit(a);
             self.nodes.deinit(a);
             self.scopes.deinit(a);
-            self.declarations.deinit(a);
-            self.attribute_data.deinit(a);
+            if (rep.attributes) {
+                self.declarations.deinit(a);
+                self.attribute_data.deinit(a);
+            }
             @import("topology_storage.zig").release(a, self);
-            inline for (.{ "occurrences", "bodies", "mentions", "attributes", "offsets", "positions" }) |field| a.free(@field(self, field));
+            inline for (.{ "occurrences", "bodies", "mentions", "attributes", "offsets", "positions" }) |field| {
+                if (@FieldType(Self, field) != void) a.free(@field(self, field));
+            }
         }
         pub fn raw(self: *Self, range: t.Range) r.Error![]const u8 {
             if (range.start > self.doc.source.len or range.len > self.doc.source.len - range.start) return error.InvalidDocument;
@@ -162,8 +169,8 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 const old_capacity = self.node_table.slots.len;
                 try mem.prepareTable(&self.node_table, self.a, &self.work, self, "node_slots");
                 const scope = @backingInt(self.occurrences[occurrence].scope);
-                const state = if (self.attribute_data.scopes.len == 0) attrs.none else self.attribute_data.scopes[scope].node;
-                const record: t.Node = .{ .name = view.identifier, .first_mention = self.mention_count, .attribute_state = state, .hash = hash };
+                const state = if (!rep.attributes) {} else if (self.attribute_data.scopes.len == 0) attrs.none else self.attribute_data.scopes[scope].node;
+                const record: Node = .{ .name = view.identifier, .first_mention = self.mention_count, .attribute_state = state, .hash = hash };
                 if (fixed_storage) {
                     try mem.append(self.a, &self.nodes, record, "nodes");
                 } else {
@@ -204,7 +211,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 self.connections = self.a.slice("connections")[0..connections];
                 self.endpoint_ports = self.a.slice("endpoint_ports")[0..count];
             } else {
-                const pools_value = try @import("topology_storage.zig").allocate(self.a, connections, count, metered);
+                const pools_value = try @import("topology_storage.zig").allocate(Connection, self.a, connections, count, metered);
                 self.connections = pools_value.connections;
                 self.endpoint_ports = pools_value.endpoint_ports;
             }
@@ -225,7 +232,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
         }
         // Keep allocation arithmetic off the ordinary insertion path.
         noinline fn growNodes(self: *Self) r.Error!void {
-            const capacity = @min(try self.nodeCapacityBound(), std.ArrayList(t.Node).growCapacity(self.nodes.items.len + 1));
+            const capacity = @min(try self.nodeCapacityBound(), std.ArrayList(Node).growCapacity(self.nodes.items.len + 1));
             try self.nodes.ensureTotalCapacityPrecise(self.a, capacity);
         }
         pub fn allocateDeclarations(self: *Self, count: usize, comptime metered: bool) r.Error!void {
@@ -339,7 +346,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             if (body.start > self.doc.order.len or body.len > self.doc.order.len - body.start) return error.InvalidDocument;
             const scope = @backingInt(self.occurrences[occurrence].scope);
             const parent = if (self.scopes.items[scope].parent) |id| @backingInt(id) else 0;
-            try self.attribute_data.enter(self.a, scope, parent, @backingInt(self.scopes.items[scope].first_occurrence) == occurrence, self.limits.max_attribute_states, &self.work);
+            if (rep.attributes) try self.attribute_data.enter(self.a, scope, parent, @backingInt(self.scopes.items[scope].first_occurrence) == occurrence, self.limits.max_attribute_states, &self.work);
             self.bodies[@backingInt(self.occurrences[occurrence].membership)].start = self.mention_count;
             try mem.append(self.a, &self.stack, .{ .scope = .{ .occurrence = occurrence, .cursor = body.start, .end = body.start + body.len } }, "stack");
         }
@@ -353,6 +360,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             return record.body;
         }
         inline fn copyAttributes(self: *Self, range: syntax.AttributeRange) r.Error!syntax.AttributeRange {
+            if (!rep.attributes) return .{};
             if (!partial) return range;
             if (range.start > self.doc.attributes.len or range.len > self.doc.attributes.len - range.start or range.len > self.attributes.len - self.attribute_count) return error.InvalidDocument;
             const copied: syntax.AttributeRange = .{ .start = self.attribute_count, .len = range.len };
@@ -386,9 +394,9 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
         }
         fn connection(self: *Self, edge: syntax.EdgeView, occurrence: u32, left: Pending, right: Pending) r.Error!void {
             try self.work.spend(1);
-            const with_attributes = self.attribute_data.scopes.len != 0;
+            const with_attributes = rep.attributes and self.attribute_data.scopes.len != 0;
             const connection_id = try self.storeConnection(edge.operator, edge.operator_range, occurrence, left, right, edge.attributes, with_attributes);
-            if (with_attributes)
+            if (rep.attributes and with_attributes)
                 try self.attribute_data.bind(actual, self.a, self.doc.source, self.attributes, edge.attributes, .edge, .{ .connection = connection_id }, &self.work);
             self.connection_count += 1;
         }
@@ -408,16 +416,17 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 .effective_operator = effective,
                 .operator_source = operator_range,
                 .occurrence = @fromBackingInt(occurrence),
-                .attributes = attributes,
+                .attributes = if (rep.attributes) attributes else {},
             };
             if (partial) self.publication.coverage_data.observeConnection(self.connection_count, self.connections[self.connection_count]);
-            if (with_attributes) {
+            if (rep.attributes and with_attributes) {
                 const scope = @backingInt(self.occurrences[occurrence].scope);
                 self.attribute_data.connection_defaults[self.connection_count] = self.attribute_data.scopes[scope].edge;
             }
             return @fromBackingInt(self.connection_count);
         }
         fn declaration(self: *Self, target: @FieldType(t.Declaration, "target"), occurrence: u32, range: syntax.AttributeRange) r.Error!void {
+            if (!rep.attributes) return;
             const id = try r.index(self.declarations.items.len);
             const record: t.Declaration = .{ .target = target, .occurrence = @fromBackingInt(occurrence), .attributes = range };
             if (fixed_storage) {
@@ -503,7 +512,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                                 const end = self.doc.order[frame.cursor + 1];
                                 if (end != .skipped_end or end.skipped_end < slot.skipped_start or end.skipped_end > self.doc.source.len) return error.InvalidDocument;
                                 self.stack.items[index].scope.cursor += 1;
-                                try self.publication.coverage_data.add(self.a, .{ .reason = .skipped_input, .range = .{ .start = slot.skipped_start, .len = end.skipped_end - slot.skipped_start }, .occurrence = @fromBackingInt(frame.occurrence) }, self.declarations.items.len, self.connection_count, &self.work);
+                                try self.publication.coverage_data.add(self.a, .{ .reason = .skipped_input, .range = .{ .start = slot.skipped_start, .len = end.skipped_end - slot.skipped_start }, .occurrence = @fromBackingInt(frame.occurrence) }, if (rep.attributes) self.declarations.items.len else 0, self.connection_count, &self.work);
                             }
                             continue;
                         };
@@ -531,7 +540,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                                 try mem.append(self.a, &self.stack, .{ .edge = edge_index }, "stack");
                             },
                             .attribute_statement => |statement_attrs| try self.declaration(.{ .defaults = statement_attrs.target }, frame.occurrence, try self.copyAttributes(statement_attrs.attributes)),
-                            .assignment => |attr| {
+                            .assignment => |attr| if (rep.attributes) {
                                 if (self.attribute_count >= self.attributes.len) return error.InvalidDocument;
                                 self.attributes[self.attribute_count] = attr;
                                 try self.declaration(.graph_assignment, frame.occurrence, .{ .start = self.attribute_count, .len = 1 });
@@ -554,13 +563,13 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                             // statement have executed. Reopens can change BOTH ends.
                             var at = frame.pending_start;
                             var first = frame.first;
-                            if (partial) first.attributes = try self.copyAttributes(first.attributes);
+                            if (rep.attributes and partial) first.attributes = try self.copyAttributes(first.attributes);
                             try self.connection(first, frame.occurrence, self.pending.items[at], self.pending.items[at + 1]);
                             at += 1;
                             var rest = self.links(self.doc.statementAt(frame.statement_index) orelse return error.InvalidDocument);
                             while (rest.next()) |original| {
                                 var edge = original;
-                                if (partial) edge.attributes = first.attributes;
+                                if (rep.attributes and partial) edge.attributes = first.attributes;
                                 try self.connection(edge, frame.occurrence, self.pending.items[at], self.pending.items[at + 1]);
                                 at += 1;
                             }
@@ -572,17 +581,17 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 }
             }
         }
-        pub fn build(self: *Self) r.Error!Output(caps, partial) {
+        pub fn build(self: *Self) r.Error!Output(rep, partial) {
             // Count written payload only; never multiply endpoint cardinalities.
             var mention_count: u64 = 0;
             var connection_count: u64 = 0;
             var port_count: u64 = 0;
             var retained_attributes: u64 = 0;
-            var declaration_count: usize = if (partial) 0 else self.doc.nodes.len + self.doc.attribute_statements.len + self.doc.assignments.len;
+            var declaration_count: usize = if (!rep.attributes or partial) 0 else self.doc.nodes.len + self.doc.attribute_statements.len + self.doc.assignments.len;
             var statements = self.doc.statements();
             while (statements.next()) |statement| {
                 try self.work.spend(1);
-                if (partial) retained_attributes += switch (statement) {
+                if (rep.attributes and partial) retained_attributes += switch (statement) {
                     .node => |n| n.attributes.len,
                     .edge, .edge_chain => firstEdge(statement).attributes.len,
                     .attribute_statement => |s| s.attributes.len,
@@ -592,9 +601,9 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 switch (statement) {
                     .node => {
                         mention_count += 1;
-                        if (partial) declaration_count += 1;
+                        if (rep.attributes and partial) declaration_count += 1;
                     },
-                    .attribute_statement, .assignment => if (partial) {
+                    .attribute_statement, .assignment => if (rep.attributes and partial) {
                         declaration_count += 1;
                     },
                     .edge, .edge_chain => {
@@ -615,11 +624,11 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             }
             if (mention_count > self.limits.max_mentions) return error.MentionLimit;
             if (connection_count > self.limits.max_connections) return error.ConnectionLimit;
-            const attribute_count = if (partial) retained_attributes else @as(u64, self.doc.attributes.len) + self.doc.assignments.len;
-            if (attribute_count > self.limits.max_attributes) return error.AttributeLimit;
+            const attribute_count = if (!rep.attributes) 0 else if (partial) retained_attributes else @as(u64, self.doc.attributes.len) + self.doc.assignments.len;
+            if (rep.attributes and attribute_count > self.limits.max_attributes) return error.AttributeLimit;
             if (attribute_count >= @import("ports.zig").right) return error.IndexLimit;
             try self.prepareScopes();
-            try self.allocateDeclarations(declaration_count, false);
+            if (rep.attributes) try self.allocateDeclarations(declaration_count, false);
             // Sparse ports (under one per connection) keep the compact
             // connection buffer first; denser inputs keep mentions first.
             // This reduces measured arena chunk waste without extra capacity.
@@ -631,13 +640,13 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 self.mentions = try mem.allocate(t.Mention, self.a, @intCast(mention_count), "mentions", false);
                 try self.allocateConnections(@intCast(connection_count), port_count, false);
             }
-            self.attributes = try mem.allocate(syntax.Attribute, self.a, @intCast(attribute_count), "attributes", false);
-            if (!partial) for (self.doc.attributes, self.attributes[0..self.doc.attributes.len]) |attr, *dest| {
+            if (rep.attributes) self.attributes = try mem.allocate(syntax.Attribute, self.a, @intCast(attribute_count), "attributes", false);
+            if (rep.attributes and !partial) for (self.doc.attributes, self.attributes[0..self.doc.attributes.len]) |attr, *dest| {
                 try self.work.spend(1);
                 dest.* = attr;
             };
-            if (!partial) self.attribute_count = try r.index(self.doc.attributes.len);
-            try self.attribute_data.init(self.a, self.attributes.len, self.scopes.items.len, self.connections.len, &self.work);
+            if (rep.attributes and !partial) self.attribute_count = try r.index(self.doc.attributes.len);
+            if (rep.attributes) try self.attribute_data.init(self.a, self.attributes.len, self.scopes.items.len, self.connections.len, &self.work);
             try self.walk();
             if (partial) {
                 if (self.publication.next_scope != self.occurrences.len) return error.InvalidDocument;
@@ -647,11 +656,11 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                     if (scope.subtree_end == 0) unfinished = @fromBackingInt(@as(u32, @intCast(id)));
                 }
                 if (self.doc.unrepresented() != null or unfinished != null or (!self.doc.scopeComplete() and self.publication.coverage_data.entries.items.len == 0)) {
-                    try self.publication.coverage_data.add(self.a, .{ .reason = .unfinished_input, .range = self.doc.unrepresented() orelse .{ .start = try r.index(self.doc.source.len), .len = 0 }, .occurrence = unfinished }, self.declarations.items.len, self.connection_count, &self.work);
+                    try self.publication.coverage_data.add(self.a, .{ .reason = .unfinished_input, .range = self.doc.unrepresented() orelse .{ .start = try r.index(self.doc.source.len), .len = 0 }, .occurrence = unfinished }, if (rep.attributes) self.declarations.items.len else 0, self.connection_count, &self.work);
                 }
                 try self.publication.coverage_data.finish(&self.work);
             }
-            if (self.mention_count != self.mentions.len or self.connection_count != self.connections.len or self.port_count != self.endpoint_ports.len or self.attribute_count != self.attributes.len) return error.InvalidDocument;
+            if (self.mention_count != self.mentions.len or self.connection_count != self.connections.len or self.port_count != self.endpoint_ports.len or (rep.attributes and self.attribute_count != self.attributes.len)) return error.InvalidDocument;
             self.offsets = try mem.allocate(u32, self.a, self.nodes.items.len + 1, "offsets", false);
             self.positions = try mem.allocate(u32, self.a, self.mentions.len, "positions", false);
             for (self.offsets) |*offset| {
@@ -682,10 +691,10 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
             return self.publish();
         }
         /// Shared ownership transfer; callers finish every pool/index first.
-        pub fn publish(self: *Self) Output(caps, partial) {
+        pub fn publish(self: *Self) Output(rep, partial) {
             const memory = if (fixed_storage) self.a else @as(*r.Memory, @ptrCast(@alignCast(self.a.ptr)));
             if (partial) self.publication.transferred = true else self.publication = true;
-            const graph: t.GraphWith(caps, partial) = .{
+            const graph: t.GraphWith(rep, partial) = .{
                 .source = self.doc.source,
                 .source_info = self.doc.source_info,
                 .declared_kind = self.doc.kind,
@@ -697,8 +706,8 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime caps: encoding.Cap
                 .node_storage = self.nodes.allocatedSlice(),
                 .scopes = self.scopes.items,
                 .scope_storage = self.scopes.allocatedSlice(),
-                .declarations = self.declarations.items,
-                .declaration_storage = self.declarations.allocatedSlice(),
+                .declarations = if (rep.attributes) self.declarations.items else {},
+                .declaration_storage = if (rep.attributes) self.declarations.allocatedSlice() else {},
                 .occurrences = self.occurrences,
                 .bodies = self.bodies,
                 .mentions = self.mentions,

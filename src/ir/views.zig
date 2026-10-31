@@ -53,21 +53,25 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                 };
             }
             pub fn attribute(self: Node, key: []const u8) ?Attribute {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 // Certified view/native names, no work budget: no fallible
                 // prerequisite remains. Never convert a failed query to absence.
                 const value = attrs.lookupNode(caps, self.graph, self.id, key, Unmetered{}) catch unreachable;
                 return if (value) |found| .{ .graph = self.graph, .resolved = found } else null;
             }
             pub fn attributeWith(self: Node, key: []const u8, options: r.Options) r.Error!?Attribute {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return if (try self.graph.nodeAttributeWith(self.id, key, options)) |value|
                     .{ .graph = self.graph, .resolved = value }
                 else
                     null;
             }
             pub fn attributes(self: Node, options: r.Options) r.Error!Iterator {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return Iterator.init(self.graph, .{ .node = self.id }, options);
             }
             pub fn attributesIn(self: Node, memory: scratch.AttributeScratch, options: r.Options) r.Error!FixedIterator {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return FixedIterator.initIn(self.graph, .{ .node = self.id }, memory, options);
             }
         };
@@ -77,19 +81,23 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
             id: t.ScopeId,
 
             pub fn attribute(self: Scope, key: []const u8) ?Attribute {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 const value = attrs.lookupScope(caps, self.graph, self.id, key, Unmetered{}) catch unreachable;
                 return if (value) |found| .{ .graph = self.graph, .resolved = found } else null;
             }
             pub fn attributeWith(self: Scope, key: []const u8, options: r.Options) r.Error!?Attribute {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return if (try self.graph.scopeAttributeWith(self.id, key, options)) |value|
                     .{ .graph = self.graph, .resolved = value }
                 else
                     null;
             }
             pub fn attributes(self: Scope, options: r.Options) r.Error!Iterator {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return Iterator.init(self.graph, .{ .graph = self.id }, options);
             }
             pub fn attributesIn(self: Scope, memory: scratch.AttributeScratch, options: r.Options) r.Error!FixedIterator {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return FixedIterator.initIn(self.graph, .{ .graph = self.id }, memory, options);
             }
         };
@@ -105,9 +113,11 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                 return .{ .graph = self.graph, .id = self.edge.to };
             }
             pub fn attribute(self: Edge, key: []const u8) r.Error!?Attribute {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return self.attributeWith(key, .{});
             }
             pub fn attributeWith(self: Edge, key: []const u8, options: r.Options) r.Error!?Attribute {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return if (try self.graph.edgeAttributeWith(self.edge, key, options)) |value|
                     .{ .graph = self.graph, .resolved = value }
                 else
@@ -115,27 +125,33 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
             }
             /// Effective ports belong to from()/to(), not the latest written sides.
             pub fn tailPort(self: Edge) r.Error!?Graph.PortView {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return self.tailPortWith(.{});
             }
             pub fn headPort(self: Edge) r.Error!?Graph.PortView {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return self.headPortWith(.{});
             }
             pub fn tailPortWith(self: Edge, options: r.Options) r.Error!?Graph.PortView {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return if (try self.attributeWith("tailport", options)) |found|
                     .{ .graph = found.graph, .resolved = found.resolved }
                 else
                     null;
             }
             pub fn headPortWith(self: Edge, options: r.Options) r.Error!?Graph.PortView {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return if (try self.attributeWith("headport", options)) |found|
                     .{ .graph = found.graph, .resolved = found.resolved }
                 else
                     null;
             }
             pub fn attributes(self: Edge, options: r.Options) r.Error!Iterator {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return Iterator.init(self.graph, .{ .edge = self.edge }, options);
             }
             pub fn attributesIn(self: Edge, memory: scratch.AttributeScratch, options: r.Options) r.Error!FixedIterator {
+                comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                 return FixedIterator.initIn(self.graph, .{ .edge = self.edge }, memory, options);
             }
         };

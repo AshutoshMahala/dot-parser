@@ -1207,8 +1207,18 @@ handles; adjacent chain links share their middle port record. Node-statement
 suffixes need no edge-port allocation, while source spans and effective port
 semantics remain unchanged. Direct, resumable and fixed lowering share this
 representation; explicit capacities/bounds and shortfalls include endpoint
-ports. This layout change is independent of optional attribute capabilities,
-which remain proposed.
+ports. An unreleased `.capabilities.attributes = false` now specializes the
+allocator-backed complete/partial representation and shared lowering drivers.
+It omits declarations, attribute pools/maps/defaults and attribute-only
+continuations/coverage fields; symbolic topology, provenance, written ports and
+source gaps remain. Attribute/effective-port APIs are unavailable at compile
+time. A separate IR identity combines the representation with source encodings;
+execution settings and limits do not change graph type identity. Profile-bound
+`parse` / `parsePartial` share the module conveniences' checking/ownership flow,
+using bound encodings and IR execution policy. Full attributes remain default.
+Capability-aware fixed lowering and the remaining operation/parity audit are
+still pending; topology profiles reject fixed-lowering calls rather than using
+full storage. Fixed materialization follows that work.
 Speed builds specialize single-credit lowering resumes; larger grants share
 the existing loop and size builds retain one driver. Hashing inlines the
 one-unit name reader to avoid a call for every unit of comment/concatenation

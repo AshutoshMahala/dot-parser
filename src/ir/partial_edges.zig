@@ -96,10 +96,12 @@ pub fn For(comptime Graph: type, comptime Core: type, comptime caps: encoding.Ca
                     return .{ .owner = self.stored.owner, .index = self.stored.index, .edge = self.edge };
                 }
                 pub fn attribute(self: Self, key: []const u8) if (folded) c.Knowledge(?Core.AttributeView) else r.Error!c.Knowledge(?Core.AttributeView) {
+                    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                     if (folded) return self.lookup(key, Unmetered{}) catch unreachable;
                     return self.attributeWith(key, .{});
                 }
                 pub fn attributeWith(self: Self, key: []const u8, options: r.Options) r.Error!c.Knowledge(?Core.AttributeView) {
+                    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                     var work = try r.Work.init(options.limits orelse self.graph._data.limits, options.cancellation);
                     return self.lookup(key, &work);
                 }
@@ -111,17 +113,21 @@ pub fn For(comptime Graph: type, comptime Core: type, comptime caps: encoding.Ca
                     return qualify(self.graph, self.edge, value, work);
                 }
                 pub fn tailPort(self: Self) if (folded) c.Knowledge(?Core.PortView) else r.Error!c.Knowledge(?Core.PortView) {
+                    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                     if (folded) return portAnswer(self.attribute("tailport"));
                     return self.tailPortWith(.{});
                 }
                 pub fn headPort(self: Self) if (folded) c.Knowledge(?Core.PortView) else r.Error!c.Knowledge(?Core.PortView) {
+                    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                     if (folded) return portAnswer(self.attribute("headport"));
                     return self.headPortWith(.{});
                 }
                 pub fn tailPortWith(self: Self, options: r.Options) r.Error!c.Knowledge(?Core.PortView) {
+                    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                     return portAnswer(try self.attributeWith("tailport", options));
                 }
                 pub fn headPortWith(self: Self, options: r.Options) r.Error!c.Knowledge(?Core.PortView) {
+                    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                     return portAnswer(try self.attributeWith("headport", options));
                 }
                 // The argument lists intentionally match the complete API:
@@ -135,12 +141,14 @@ pub fn For(comptime Graph: type, comptime Core: type, comptime caps: encoding.Ca
                     return .{ .graph = self.graph, .edge = self.edge, .inner = try view.attributes(options) };
                 }
                 pub fn attributesIn(self: Self, memory: scratch.AttributeScratch, options: r.Options) r.Error!Graph.FixedAttributeIterator {
+                    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                     if (folded) @compileError("materialized attributes need no scratch; use attributes or attributesWith");
                     try scratch.checkGraph(try scratch.checkedBytes(memory), self.graph);
                     const view: Core.EdgeView = .{ .graph = &self.graph._data, .edge = self.edge };
                     return .{ .graph = self.graph, .inner = try view.attributesIn(memory, options) };
                 }
                 pub fn attributesWith(self: Self, options: r.Options) r.Error!(if (folded) BoundedFoldedAttributes else CompactAttributes) {
+                    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                     if (!folded) return self.compactAttributes(options);
                     return .{ .inner = self.foldedAttributes(), .work = try r.Work.init(options.limits orelse self.graph._data.limits, options.cancellation) };
                 }

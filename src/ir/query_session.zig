@@ -220,13 +220,13 @@ pub fn Bound(comptime Graph: type, comptime kind: Kind, comptime config: anytype
             self.connection += 1;
             self.stage = .connection;
         }
-        inline fn reverseOrNext(self: *Self, connection: t.Connection) void {
+        inline fn reverseOrNext(self: *Self, connection: anytype) void {
             if (connection.effective_operator == .undirected)
                 self.member(connection.left.members, self.to, .reverse_left)
             else
                 self.nextConnection();
         }
-        inline fn transition(self: *Self, connection: t.Connection, found: bool) void {
+        inline fn transition(self: *Self, connection: anytype, found: bool) void {
             switch (self.stage) {
                 .connection => unreachable,
                 .left => if (found) self.member(connection.right.members, self.to, .right) else self.reverseOrNext(connection),

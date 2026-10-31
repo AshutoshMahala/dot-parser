@@ -124,15 +124,16 @@ pub fn finish(operation: anytype) @import("resources.zig").Error!@TypeOf(operati
     }
 }
 
-pub fn Bound(comptime caps: @import("parser_support").encoding.Capabilities, comptime partial: bool, comptime config: anytype) type {
-    return BoundWith(caps, partial, config, false);
+pub fn Bound(comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime config: anytype) type {
+    return BoundWith(rep, partial, config, false);
 }
-pub fn BoundWith(comptime caps: @import("parser_support").encoding.Capabilities, comptime partial: bool, comptime config: anytype, comptime fixed_storage: bool) type {
+pub fn BoundWith(comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime config: anytype, comptime fixed_storage: bool) type {
+    if (fixed_storage) comptime @import("representation.zig").requireFixedLowering(rep.attributes);
     const baseline = comptime resolve(.{}, config.policy);
     comptime {
         validate(baseline) catch @compileError("IR cancellation_interval must be positive");
     }
-    const Core = @import("lowering_session.zig").SessionWith(caps, partial, if (config.runtime_policy) null else baseline, fixed_storage);
+    const Core = @import("lowering_session.zig").SessionWith(rep, partial, if (config.runtime_policy) null else baseline, fixed_storage);
     const Hook = if (config.runtime_policy or baseline.cancellation) ?@import("resources.zig").Cancellation else void;
     return struct {
         const Self = @This();

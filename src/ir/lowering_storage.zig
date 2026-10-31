@@ -3,7 +3,15 @@
 const std = @import("std");
 const r = @import("resources.zig");
 pub inline fn append(a: anytype, list: anytype, value: std.meta.Elem(@TypeOf(list.items)), comptime field: []const u8) r.Error!void {
-    if (@TypeOf(a) == std.mem.Allocator) return list.append(a, value);
+    if (@TypeOf(a) == std.mem.Allocator) {
+        // Keep an ordinary write inline even when another representation is
+        // instantiated in the same binary. Growth stays on ArrayList's path.
+        if (list.items.len < list.capacity) {
+            list.appendAssumeCapacity(value);
+            return;
+        }
+        return list.append(a, value);
+    }
     try a.ensure(field, list.items.len + 1);
     list.appendAssumeCapacity(value);
     a.observe(field, list.items.len);

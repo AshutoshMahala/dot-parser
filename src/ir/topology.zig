@@ -17,7 +17,10 @@ pub const ConnectionId = enum(u32) { _ };
 pub const Membership = enum(u32) { _ };
 pub const node_bit: u32 = 1 << 31;
 pub const Body = struct { start: u32, end: u32, first: u32 };
-pub const Node = struct { name: Range, first_mention: u32, attribute_state: u32 = attrs.none, hash: u64 };
+pub const Node = NodeFor(true);
+pub fn NodeFor(comptime attributes: bool) type {
+    return struct { name: Range, first_mention: u32, attribute_state: if (attributes) u32 else void = if (attributes) attrs.none else {}, hash: u64 };
+}
 pub const Scope = struct { parent: ?ScopeId, name: ?Range, first_occurrence: OccurrenceId, hash: u64 };
 pub const Occurrence = struct { scope: ScopeId, parent: ?OccurrenceId, source: Range, membership: Membership };
 pub const Mention = struct { node: NodeId, occurrence: OccurrenceId, source: Range };
@@ -33,15 +36,18 @@ pub const Endpoint = struct {
         return if (self.port == .none) null else graph.endpoint_ports[@backingInt(self.port)];
     }
 };
-pub const Connection = struct {
-    left: Endpoint,
-    right: Endpoint,
-    written_operator: syntax.EdgeOperator,
-    effective_operator: syntax.EdgeOperator,
-    operator_source: Range,
-    occurrence: OccurrenceId,
-    attributes: syntax.AttributeRange,
-};
+pub const Connection = ConnectionFor(true);
+pub fn ConnectionFor(comptime with_attributes: bool) type {
+    return struct {
+        left: Endpoint,
+        right: Endpoint,
+        written_operator: syntax.EdgeOperator,
+        effective_operator: syntax.EdgeOperator,
+        operator_source: Range,
+        occurrence: OccurrenceId,
+        attributes: if (with_attributes) syntax.AttributeRange else void,
+    };
+}
 /// Retained raw declarations. Array order is semantic
 /// execution order (children precede the containing edge's contribution).
 pub const Declaration = struct {
@@ -88,35 +94,39 @@ fn optionalOption(comptime T: type, value: anytype) ?T {
     return result;
 }
 
-pub fn Graph(comptime caps: encoding.Capabilities) type {
-    return GraphWith(caps, false);
+pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
+    return GraphWith(rep, false);
 }
 
 /// Partial storage never guesses a concrete kind for unresolved .auto input.
-pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) type {
+pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime partial: bool) type {
+    const caps = rep.encodings;
+    const NodeRecord = NodeFor(rep.attributes);
+    const ConnectionRecord = ConnectionFor(rep.attributes);
     return struct {
         const Self = @This();
+        pub const capabilities: @import("representation.zig").Capabilities = .{ .attributes = rep.attributes };
         source: []const u8,
         source_info: encoding.Info,
         declared_kind: syntax.GraphKind,
         kind: if (partial) ?policy.GraphKind else policy.GraphKind,
         strict: bool,
         name: ?Range,
-        nodes: []const Node,
+        nodes: []const NodeRecord,
         scopes: []const Scope,
         occurrences: []const Occurrence,
         mentions: []const Mention,
-        connections: []const Connection,
-        attributes: []const syntax.Attribute,
-        declarations: []const Declaration,
-        attribute_data: attrs.Store,
+        connections: []const ConnectionRecord,
+        attributes: if (rep.attributes) []const syntax.Attribute else void,
+        declarations: if (rep.attributes) []const Declaration else void,
+        attribute_data: if (rep.attributes) attrs.Store else void,
         /// Peak live requested bytes during lowering, including scratch/growth.
         peak_bytes: usize,
         limits: r.Limits,
         allocator: std.mem.Allocator,
-        node_storage: []Node,
+        node_storage: []NodeRecord,
         scope_storage: []Scope,
-        declaration_storage: []Declaration,
+        declaration_storage: if (rep.attributes) []Declaration else void,
         bodies: []const Body,
         node_slots: []const u32,
         posting_offsets: []const u32,
@@ -148,6 +158,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         pub const CompassStatus = Ports.CompassStatus;
 
         pub fn portKeys(self: *const Self, work: anytype) r.Error!ports.Keys {
+            comptime @import("representation.zig").requireAttributes(rep.attributes);
             return ports.Keys.init(caps, self, work);
         }
 
@@ -180,13 +191,15 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
             a.free(self.occurrences);
             a.free(self.mentions);
             @import("topology_storage.zig").release(a, self);
-            a.free(self.attributes);
-            a.free(self.declaration_storage);
+            if (rep.attributes) {
+                a.free(self.attributes);
+                a.free(self.declaration_storage);
+            }
             a.free(self.bodies);
             a.free(self.node_slots);
             a.free(self.posting_offsets);
             a.free(self.posting_positions);
-            self.attribute_data.deinit(a);
+            if (rep.attributes) self.attribute_data.deinit(a);
             self.* = undefined;
         }
 
@@ -196,10 +209,11 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
             if (self.borrowed_bytes != 0) return self.borrowed_bytes;
             var bytes: usize = 0;
             inline for (.{ "node_storage", "scope_storage", "declaration_storage", "occurrences", "mentions", "connections", "endpoint_ports", "attributes", "bodies", "node_slots", "posting_offsets", "posting_positions" }) |field| {
+                if (@FieldType(Self, field) == void) continue;
                 const slice = @field(self, field);
                 bytes += slice.len * @sizeOf(std.meta.Elem(@TypeOf(slice)));
             }
-            return bytes + self.attribute_data.retainedBytes();
+            return bytes + if (rep.attributes) self.attribute_data.retainedBytes() else 0;
         }
 
         /// Used records, not reserved capacity or a bound for changed input.
@@ -211,10 +225,10 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
                 .mentions = @intCast(self.mentions.len),
                 .connections = @intCast(self.connections.len),
                 .endpoint_ports = @intCast(self.endpoint_ports.len),
-                .declarations = @intCast(self.declarations.len),
-                .attributes = @intCast(self.attributes.len),
-                .attribute_keys = @intCast(self.attribute_data.keys.items.len),
-                .attribute_states = @intCast(self.attribute_data.cells.items.len),
+                .declarations = if (rep.attributes) @intCast(self.declarations.len) else 0,
+                .attributes = if (rep.attributes) @intCast(self.attributes.len) else 0,
+                .attribute_keys = if (rep.attributes) @intCast(self.attribute_data.keys.items.len) else 0,
+                .attribute_states = if (rep.attributes) @intCast(self.attribute_data.cells.items.len) else 0,
             };
         }
 
@@ -299,6 +313,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
             return self.source[range.start..][0..range.len];
         }
         pub fn attributeSlice(self: *const Self, range: syntax.AttributeRange) ?[]const syntax.Attribute {
+            comptime @import("representation.zig").requireAttributes(rep.attributes);
             if (range.start > self.attributes.len or range.len > self.attributes.len - range.start) return null;
             return self.attributes[range.start..][0..range.len];
         }
@@ -307,9 +322,11 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         /// `.empty` is DOT's language-defined empty, not absence. Names are
         /// logical UTF-8, case-sensitive, just like findNode. No allocation.
         pub fn nodeAttribute(self: *const Self, id: NodeId, key: []const u8) r.Error!?attrs.Resolved {
+            comptime @import("representation.zig").requireAttributes(rep.attributes);
             return self.nodeAttributeWith(id, key, .{});
         }
         pub fn nodeAttributeWith(self: *const Self, id: NodeId, key: []const u8, options: r.Options) r.Error!?attrs.Resolved {
+            comptime @import("representation.zig").requireAttributes(rep.attributes);
             if (@backingInt(id) >= self.nodes.len) return error.InvalidHandle;
             var work = try r.Work.init(options.limits orelse self.limits, options.cancellation);
             return attrs.lookupNode(caps, self, id, key, &work);
@@ -317,15 +334,17 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
 
         /// Graph/subgraph attributes, including definition-time inheritance.
         pub fn scopeAttribute(self: *const Self, id: ScopeId, key: []const u8) r.Error!?attrs.Resolved {
+            comptime @import("representation.zig").requireAttributes(rep.attributes);
             return self.scopeAttributeWith(id, key, .{});
         }
         pub fn scopeAttributeWith(self: *const Self, id: ScopeId, key: []const u8, options: r.Options) r.Error!?attrs.Resolved {
+            comptime @import("representation.zig").requireAttributes(rep.attributes);
             if (@backingInt(id) >= self.scopes.len) return error.InvalidHandle;
             var work = try r.Work.init(options.limits orelse self.limits, options.cancellation);
             return attrs.lookupScope(caps, self, id, key, &work);
         }
 
-        fn connectionCovers(self: *const Self, connection: Connection, edge: Edge, work: *r.Work) r.Error!bool {
+        fn connectionCovers(self: *const Self, connection: ConnectionRecord, edge: Edge, work: *r.Work) r.Error!bool {
             if (connection.effective_operator != edge.operator) return false;
             if (try self.containsWork(connection.left.members, edge.from, work) and try self.containsWork(connection.right.members, edge.to, work)) return true;
             return edge.operator == .undirected and try self.containsWork(connection.left.members, edge.to, work) and try self.containsWork(connection.right.members, edge.from, work);
@@ -336,6 +355,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         /// This bounded query scans symbolic connections, never expands pairs.
         /// For bulk export, do not mistake per-edge queries for a folded index.
         pub fn edgeAttribute(self: *const Self, edge: Edge, key: []const u8) r.Error!?attrs.Resolved {
+            comptime @import("representation.zig").requireAttributes(rep.attributes);
             return self.edgeAttributeWith(edge, key, .{});
         }
         pub const edgeAttributeWith = EdgeAttributeQuery(false).run;
@@ -346,6 +366,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         fn EdgeAttributeQuery(comptime shared_work: bool) type {
             return struct {
                 pub fn run(self: *const Self, edge: Edge, key: []const u8, options: if (shared_work) *r.Work else r.Options) r.Error!?attrs.Resolved {
+                    comptime @import("representation.zig").requireAttributes(rep.attributes);
                     const id = @backingInt(edge.first_connection);
                     if (id >= self.connections.len or @backingInt(edge.from) >= self.nodes.len or @backingInt(edge.to) >= self.nodes.len) return error.InvalidHandle;
                     var owned_work: if (shared_work) void else r.Work = if (shared_work) {} else try r.Work.init(options.limits orelse self.limits, options.cancellation);
@@ -410,6 +431,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         /// Borrowed value view/formatter; no renderer escapes, HTML entity
         /// expansion or decoded allocation. Construct only from this IR's result.
         pub fn attributeValue(self: *const Self, resolved: attrs.Resolved) ValueView {
+            comptime @import("representation.zig").requireAttributes(rep.attributes);
             return .{ .graph = self, .selected = resolved.value };
         }
         pub fn scopeMembership(self: *const Self, id: ScopeId) r.Error!Membership {
@@ -488,18 +510,19 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
 
         pub const Materialized = @import("materialized_attributes.zig").For(Self, caps);
         pub fn MaterializationSession(comptime attributes: bool) type {
+            if (attributes) comptime @import("representation.zig").requireAttributes(rep.attributes);
             return @import("materialization_session.zig").Session(Self, caps, attributes);
         }
         /// Opt-in resumable equivalent of materialize. The same compile-time
         /// attribute selection and runtime options; no hidden preparation pass.
-        pub inline fn materializationSession(self: *const Self, options: anytype) r.Error!MaterializationSession(if (@hasField(@TypeOf(options), "attributes")) options.attributes else true) {
+        pub inline fn materializationSession(self: *const Self, options: anytype) r.Error!MaterializationSession(if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes) {
             comptime {
                 for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
                     if (!std.mem.eql(u8, field, "attributes") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation"))
                         @compileError("unknown IR materialization option: " ++ field);
                 }
             }
-            return MaterializationSession(comptime if (@hasField(@TypeOf(options), "attributes")) options.attributes else true).init(self, .{
+            return MaterializationSession(comptime if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes).init(self, .{
                 .limits = if (@hasField(@TypeOf(options), "limits")) optionalOption(r.Limits, options.limits) else null,
                 .cancellation = if (@hasField(@TypeOf(options), "cancellation")) optionalOption(r.Cancellation, options.cancellation) else null,
             });
@@ -511,7 +534,7 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
         /// Attribute results borrow this IR; topology-only records own their array.
         /// All-or-error. No attribute/endpoint-port folding code or state is
         /// instantiated by the topology-only specialization.
-        pub inline fn materialize(self: *const Self, options: anytype) r.Error!(if (if (@hasField(@TypeOf(options), "attributes")) options.attributes else true) Materialized else MaterializedTopology) {
+        pub inline fn materialize(self: *const Self, options: anytype) r.Error!(if (if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes) Materialized else MaterializedTopology) {
             comptime {
                 for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
                     if (!std.mem.eql(u8, field, "attributes") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation"))
@@ -522,12 +545,13 @@ pub fn GraphWith(comptime caps: encoding.Capabilities, comptime partial: bool) t
                 .limits = if (@hasField(@TypeOf(options), "limits")) optionalOption(r.Limits, options.limits) else null,
                 .cancellation = if (@hasField(@TypeOf(options), "cancellation")) optionalOption(r.Cancellation, options.cancellation) else null,
             };
-            return self.materializeImpl(comptime if (@hasField(@TypeOf(options), "attributes")) options.attributes else true, execution);
+            return self.materializeImpl(comptime if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes, execution);
         }
 
         // Keep execution behind one typed boundary regardless of the literal's
         // shape. The inline public adapter only selects/coerces configuration.
         fn materializeImpl(self: *const Self, comptime attributes: bool, options: r.Options) r.Error!(if (attributes) Materialized else MaterializedTopology) {
+            if (attributes) comptime @import("representation.zig").requireAttributes(rep.attributes);
             return if (attributes)
                 @import("materialized_attributes.zig").materialize(Self, self, options)
             else

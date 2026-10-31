@@ -19,19 +19,20 @@ pub const Outcome = union(enum) { success, failure: r.Error };
 pub const Progress = struct { work_used: u32, total_work: u64, nodes_created: u32, connections_created: u32, outcome: ?Outcome };
 pub const TakeError = r.Error || error{ NotReady, AlreadyTaken };
 
-pub fn Session(comptime caps: encoding.Capabilities, comptime partial: bool, comptime fixed: ?@import("execution_policy.zig").Effective) type {
-    return SessionWith(caps, partial, fixed, false);
+pub fn Session(comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime fixed: ?@import("execution_policy.zig").Effective) type {
+    return SessionWith(rep, partial, fixed, false);
 }
-pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool, comptime fixed: ?@import("execution_policy.zig").Effective, comptime fixed_storage: bool) type {
+pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime fixed: ?@import("execution_policy.zig").Effective, comptime fixed_storage: bool) type {
+    const caps = rep.encodings;
     // Builder's storage layout is encoding-independent. Only its bounded
     // structural helpers are called here; names use the selected native reader.
-    const B = lower.BuilderWith(.utf8, caps, partial, fixed_storage);
+    const B = lower.BuilderWith(.utf8, rep, partial, fixed_storage);
     const cancellable = fixed == null or fixed.?.cancellation;
     const Hook = if (cancellable) ?r.Cancellation else void;
     const Polling = @import("parser_support").execution.CancellationPolling(cancellable, if (fixed) |value| value.cancellation_interval else null);
     return struct {
         const Self = @This();
-        pub const Result = lower.Output(caps, partial);
+        pub const Result = lower.Output(rep, partial);
         const Phase = enum {
             count,
             count_links,
@@ -106,19 +107,19 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
         counted_mentions: u64 = 0,
         counted_connections: u64 = 0,
         counted_ports: u64 = 0,
-        counted_attributes: u64 = 0,
-        counted_declarations: u32 = 0,
+        counted_attributes: if (rep.attributes) u64 else void = if (rep.attributes) 0 else {},
+        counted_declarations: if (rep.attributes) u32 else void = if (rep.attributes) 0 else {},
         iterator: syntax.EdgeLinkIterator,
         occurrence: u32 = 0,
         enter_id: u32 = 0,
-        enter_stage: u2 = 0,
-        overlay_root: u32 = none,
-        overlay_cursor: u32 = none,
-        overlay_path: [48]u32 = undefined,
-        overlay_depth: u8 = 0,
-        overlay_next: u32 = none,
-        setting: p.Set = undefined,
-        mutable_from: u32 = 0,
+        enter_stage: if (rep.attributes) u2 else void = if (rep.attributes) 0 else {},
+        overlay_root: if (rep.attributes) u32 else void = if (rep.attributes) none else {},
+        overlay_cursor: if (rep.attributes) u32 else void = if (rep.attributes) none else {},
+        overlay_path: if (rep.attributes) [48]u32 else void = if (rep.attributes) undefined else {},
+        overlay_depth: if (rep.attributes) u8 else void = if (rep.attributes) 0 else {},
+        overlay_next: if (rep.attributes) u32 else void = if (rep.attributes) none else {},
+        setting: if (rep.attributes) p.Set else void = if (rep.attributes) undefined else {},
+        mutable_from: if (rep.attributes) u32 else void = if (rep.attributes) 0 else {},
         reference: syntax.NodeReference = undefined,
         node_view: syntax.NodeReferenceView = undefined,
         node_for_declaration: bool = false,
@@ -127,16 +128,16 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
         node_value: t.Endpoint = undefined,
         edge: syntax.EdgeView = undefined,
         edge_pending: u32 = 0,
-        range: syntax.AttributeRange = .{},
-        original_range: syntax.AttributeRange = .{},
-        copy_index: u32 = 0,
-        copy_after: Phase = .declaration,
-        target: @FieldType(t.Declaration, "target") = undefined,
-        kind: attrs.Kind = .node,
-        origin: attrs.Origin = undefined,
-        attribute_index: u32 = 0,
+        range: if (rep.attributes) syntax.AttributeRange else void = if (rep.attributes) .{} else {},
+        original_range: if (rep.attributes) syntax.AttributeRange else void = if (rep.attributes) .{} else {},
+        copy_index: if (rep.attributes) u32 else void = if (rep.attributes) 0 else {},
+        copy_after: if (rep.attributes) Phase else void = if (rep.attributes) .declaration else {},
+        target: if (rep.attributes) @FieldType(t.Declaration, "target") else void = if (rep.attributes) undefined else {},
+        kind: if (rep.attributes) attrs.Kind else void = if (rep.attributes) .node else {},
+        origin: if (rep.attributes) attrs.Origin else void = if (rep.attributes) undefined else {},
+        attribute_index: if (rep.attributes) u32 else void = if (rep.attributes) 0 else {},
         bind_after: Phase = .apply,
-        apply_local: bool = false,
+        apply_local: if (rep.attributes) bool else void = if (rep.attributes) false else {},
         family: Family = .node,
         name: t.Range = .{ .start = 0, .len = 0 },
         hash: u64 = 0,
@@ -156,16 +157,16 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
         gap_after: Phase = .walk,
         unfinished_scope: ?t.OccurrenceId = null,
         suffix_first: u32 = 0,
-        node_growth: p.ReserveFor(t.Node, fixed_storage, "nodes") = .{},
+        node_growth: p.ReserveFor(t.NodeFor(rep.attributes), fixed_storage, "nodes") = .{},
         scope_growth: p.ReserveFor(t.Scope, fixed_storage, "scopes") = .{},
         frame_growth: p.ReserveFor(std.meta.Elem(@FieldType(@FieldType(B, "stack"), "items")), fixed_storage, "stack") = .{},
         // Field types below are derived from the shared arrays, not duplicate
         // frame definitions or a second public event vocabulary.
         edge_growth: p.ReserveFor(std.meta.Elem(@FieldType(@FieldType(B, "edge_stack"), "items")), fixed_storage, "edge_stack") = .{},
         pending_growth: p.ReserveFor(std.meta.Elem(@FieldType(@FieldType(B, "pending"), "items")), fixed_storage, "pending") = .{},
-        key_growth: p.ReserveFor(attrs.Key, fixed_storage, "keys") = .{},
-        cell_growth: p.ReserveFor(attrs.Cell, fixed_storage, "cells") = .{},
-        gap_growth: p.ReserveFor(coverage.Entry, fixed_storage, "gaps") = .{},
+        key_growth: if (rep.attributes) p.ReserveFor(attrs.Key, fixed_storage, "keys") else void = if (rep.attributes) .{} else {},
+        cell_growth: if (rep.attributes) p.ReserveFor(attrs.Cell, fixed_storage, "cells") else void = if (rep.attributes) .{} else {},
+        gap_growth: p.ReserveFor(coverage.EntryFor(rep.attributes), fixed_storage, "gaps") = .{},
 
         pub fn init(a: if (fixed_storage) pools.Context else std.mem.Allocator, doc: *const syntax.Document, interpretation: lower.InterpretationFor(partial), limits: r.Limits, cancellation: Hook, interval: u32) r.Error!Self {
             // The fixed boundary polls before validating caller regions. Do not
@@ -195,7 +196,9 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
             }
             const a = self.memory.allocator();
             self.b.a = a;
-            inline for (.{ "node_growth", "scope_growth", "frame_growth", "edge_growth", "pending_growth", "key_growth", "cell_growth", "gap_growth" }) |field| @field(self, field).deinit(a);
+            inline for (.{ "node_growth", "scope_growth", "frame_growth", "edge_growth", "pending_growth", "key_growth", "cell_growth", "gap_growth" }) |field| {
+                if (@FieldType(Self, field) != void) @field(self, field).deinit(a);
+            }
             storage.release(u32, a, self.new_slots);
             self.b.deinit();
             self.* = undefined;
@@ -263,29 +266,33 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
             return switch (self.family) {
                 .node => &self.b.node_table,
                 .scope => &self.b.scope_table,
-                .key => &self.b.attribute_data.table,
+                .key => if (rep.attributes) &self.b.attribute_data.table else unreachable,
             };
         }
         fn storedHash(self: *Self, id: u32) u64 {
             return switch (self.family) {
                 .node => self.b.nodes.items[id].hash,
                 .scope => self.b.scopes.items[id].hash,
-                .key => self.b.attribute_data.keys.items[id].hash,
+                .key => if (rep.attributes) self.b.attribute_data.keys.items[id].hash else unreachable,
             };
         }
         fn storedName(self: *Self, id: u32) t.Range {
             return switch (self.family) {
                 .node => self.b.nodes.items[id].name,
                 .scope => self.b.scopes.items[id].name.?,
-                .key => self.b.attribute_data.keys.items[id].name,
+                .key => if (rep.attributes) self.b.attribute_data.keys.items[id].name else unreachable,
             };
         }
         fn beginEnter(self: *Self, id: u32) void {
             self.enter_id = id;
-            self.enter_stage = 0;
-            self.phase = .enter;
+            if (rep.attributes) self.enter_stage = 0;
+            self.phase = if (rep.attributes) .enter else .enter_push;
         }
         fn copyRange(self: *Self, range: syntax.AttributeRange, after: Phase) r.Error!void {
+            if (!rep.attributes) {
+                self.phase = if (after == .declaration) .walk else if (after == .edge_finish) .edge_emit else after;
+                return;
+            }
             if (range.start > self.b.doc.attributes.len or range.len > self.b.doc.attributes.len - range.start) return error.InvalidDocument;
             self.range = range;
             if (!partial) {
@@ -320,12 +327,12 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     if (self.index == doc.order.len) {
                         if (self.counted_mentions > b.limits.max_mentions) return error.MentionLimit;
                         if (self.counted_connections > b.limits.max_connections) return error.ConnectionLimit;
-                        if (!partial) {
+                        if (rep.attributes and !partial) {
                             self.counted_attributes = @as(u64, doc.attributes.len) + doc.assignments.len;
                             self.counted_declarations = try r.index(doc.nodes.len + doc.attribute_statements.len + doc.assignments.len);
                         }
-                        if (self.counted_attributes > b.limits.max_attributes) return error.AttributeLimit;
-                        if (self.counted_attributes >= @import("ports.zig").right) return error.IndexLimit;
+                        if (rep.attributes and self.counted_attributes > b.limits.max_attributes) return error.AttributeLimit;
+                        if (rep.attributes and self.counted_attributes >= @import("ports.zig").right) return error.IndexLimit;
                         const count = try r.index(doc.subgraph_records.len + 1);
                         if (count >= t.node_bit) return error.IndexLimit;
                         if (count > b.limits.max_scopes) return error.ScopeLimit;
@@ -336,7 +343,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     const statement = doc.statementAt(self.index);
                     self.index += 1;
                     if (statement) |s| {
-                        if (partial) self.counted_attributes += switch (s) {
+                        if (rep.attributes and partial) self.counted_attributes += switch (s) {
                             .node => |n| n.attributes.len,
                             .edge, .edge_chain => B.firstEdge(s).attributes.len,
                             .attribute_statement => |v| v.attributes.len,
@@ -346,9 +353,9 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                         switch (s) {
                             .node => {
                                 self.counted_mentions += 1;
-                                if (partial) self.counted_declarations += 1;
+                                if (rep.attributes and partial) self.counted_declarations += 1;
                             },
-                            .attribute_statement, .assignment => if (partial) {
+                            .attribute_statement, .assignment => if (rep.attributes and partial) {
                                 self.counted_declarations += 1;
                             },
                             .edge, .edge_chain => {
@@ -374,7 +381,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     switch (self.allocation) {
                         0 => b.occurrences = try mem.allocate(t.Occurrence, a, doc.subgraph_records.len + 1, "occurrences", true),
                         1 => b.bodies = try mem.allocate(t.Body, a, b.occurrences.len, "bodies", true),
-                        2 => try b.allocateDeclarations(self.counted_declarations, true),
+                        2 => if (rep.attributes) try b.allocateDeclarations(self.counted_declarations, true),
                         3, 4 => {
                             const connections_first = self.counted_ports < self.counted_connections;
                             if ((self.allocation == 3) == connections_first)
@@ -382,7 +389,9 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                             else
                                 b.mentions = try mem.allocate(t.Mention, a, @intCast(self.counted_mentions), "mentions", true);
                         },
-                        5 => b.attributes = try mem.allocate(syntax.Attribute, a, @intCast(self.counted_attributes), "attributes", true),
+                        5 => if (rep.attributes) {
+                            b.attributes = try mem.allocate(syntax.Attribute, a, @intCast(self.counted_attributes), "attributes", true);
+                        },
                         else => {
                             if (!try self.scope_growth.step(&b.scopes, 1, a)) return;
                             b.scopes.appendAssumeCapacity(.{ .parent = null, .name = doc.name, .first_occurrence = .root, .hash = 0 });
@@ -397,6 +406,12 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                         },
                     }
                     self.allocation += 1;
+                    // Disabled pools have no allocation transition or credit.
+                    if (!rep.attributes) self.allocation = switch (self.allocation) {
+                        2 => 3, // no declarations
+                        5 => 6, // no attributes
+                        else => self.allocation,
+                    };
                 },
                 .root_name => if (comptime caps.utf16 or caps.utf32) switch (try self.reader.step()) {
                     .end => self.phase = .scope,
@@ -464,6 +479,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                         self.index = 0;
                         self.allocation = 0;
                         self.phase = .data_allocate;
+                        if (!rep.attributes) self.beginEnter(0);
                         return;
                     }
                     const occurrence = &b.occurrences[self.index];
@@ -474,6 +490,10 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     self.index += 1;
                 },
                 .data_allocate => {
+                    if (!rep.attributes) {
+                        self.beginEnter(0);
+                        return;
+                    }
                     if (b.attributes.len == 0) {
                         self.beginEnter(0);
                         return;
@@ -489,7 +509,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     }
                     self.allocation += 1;
                 },
-                .copy_attributes => {
+                .copy_attributes => if (rep.attributes) {
                     if (self.index == doc.attributes.len) {
                         b.attribute_count = self.index;
                         self.index = 0;
@@ -498,8 +518,8 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     }
                     b.attributes[self.index] = doc.attributes[self.index];
                     self.index += 1;
-                },
-                .meta_clear => {
+                } else unreachable,
+                .meta_clear => if (rep.attributes) {
                     if (self.index == b.attribute_data.meta.len) {
                         self.index = 0;
                         self.phase = .scope_clear;
@@ -507,16 +527,20 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     }
                     b.attribute_data.meta[self.index] = .{};
                     self.index += 1;
-                },
-                .scope_clear => {
+                } else unreachable,
+                .scope_clear => if (rep.attributes) {
                     if (self.index == b.attribute_data.scopes.len) {
                         self.beginEnter(0);
                         return;
                     }
                     b.attribute_data.scopes[self.index] = .{};
                     self.index += 1;
-                },
+                } else unreachable,
                 .enter => {
+                    if (!rep.attributes) {
+                        self.phase = .enter_push;
+                        return;
+                    }
                     if (self.enter_id >= b.occurrences.len) return error.InvalidDocument;
                     const id = @backingInt(b.occurrences[self.enter_id].scope);
                     if (b.attribute_data.scopes.len == 0 or id == 0 or self.enter_stage == 2) {
@@ -537,7 +561,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     self.mutable_from = try r.index(b.attribute_data.cells.items.len);
                     self.phase = .enter_overlay;
                 },
-                .enter_overlay => {
+                .enter_overlay => if (rep.attributes) {
                     if (self.overlay_cursor != none) {
                         if (self.overlay_depth == self.overlay_path.len) return error.IndexLimit;
                         self.overlay_path[self.overlay_depth] = self.overlay_cursor;
@@ -563,12 +587,14 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                         self.enter_stage += 1;
                         self.phase = .enter;
                     }
-                },
-                .enter_overlay_set => if (try self.setting.step(&b.attribute_data, &self.cell_growth, a, b.limits.max_attribute_states, self.mutable_from)) |root| {
-                    self.overlay_root = root;
-                    self.overlay_cursor = self.overlay_next;
-                    self.phase = .enter_overlay;
-                },
+                } else unreachable,
+                .enter_overlay_set => if (rep.attributes) {
+                    if (try self.setting.step(&b.attribute_data, &self.cell_growth, a, b.limits.max_attribute_states, self.mutable_from)) |root| {
+                        self.overlay_root = root;
+                        self.overlay_cursor = self.overlay_next;
+                        self.phase = .enter_overlay;
+                    }
+                } else unreachable,
                 .enter_push => {
                     if (!try self.frame_growth.step(&b.stack, 1, a)) return;
                     const body = try b.scopeBody(self.enter_id);
@@ -638,7 +664,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                             switch (statement) {
                                 .node => |value| {
                                     self.reference = value.reference;
-                                    self.range = value.attributes;
+                                    if (rep.attributes) self.range = value.attributes;
                                     self.node_for_declaration = true;
                                     self.phase = .node_start;
                                 },
@@ -659,11 +685,11 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                                     self.iterator = b.links(statement);
                                     self.phase = .chain_scan;
                                 },
-                                .attribute_statement => |v| {
+                                .attribute_statement => |v| if (rep.attributes) {
                                     self.target = .{ .defaults = v.target };
                                     try self.copyRange(v.attributes, .declaration);
                                 },
-                                .assignment => |attribute| {
+                                .assignment => |attribute| if (rep.attributes) {
                                     if (b.attribute_count >= b.attributes.len) return error.InvalidDocument;
                                     b.attributes[b.attribute_count] = attribute;
                                     self.range = .{ .start = b.attribute_count, .len = 1 };
@@ -731,6 +757,10 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     b.mention_count += 1;
                     self.node_value = .{ .members = @fromBackingInt(t.node_bit | self.intern_id), .port = if (self.node_for_declaration) .none else try b.storePort(self.node_view.port) };
                     if (self.node_for_declaration) {
+                        if (!rep.attributes) {
+                            self.phase = .walk;
+                            return;
+                        }
                         self.target = .{ .node = @fromBackingInt(self.intern_id) };
                         try self.copyRange(self.range, .declaration);
                     } else self.phase = .pending_node;
@@ -761,13 +791,13 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     self.beginEnter(self.enter_id);
                 },
                 .edge_finish => {
-                    self.edge.attributes = self.range;
+                    if (rep.attributes) self.edge.attributes = self.range;
                     self.phase = .edge_emit;
                 },
                 .edge_emit => {
-                    const with_attributes = b.attribute_data.scopes.len != 0;
-                    const id = try b.storeConnection(self.edge.operator, self.edge.operator_range, self.occurrence, b.pending.items[self.edge_pending], b.pending.items[self.edge_pending + 1], self.range, with_attributes);
-                    if (with_attributes) {
+                    const with_attributes = rep.attributes and b.attribute_data.scopes.len != 0;
+                    const id = try b.storeConnection(self.edge.operator, self.edge.operator_range, self.occurrence, b.pending.items[self.edge_pending], b.pending.items[self.edge_pending + 1], if (rep.attributes) self.range else .{}, with_attributes);
+                    if (rep.attributes and with_attributes) {
                         self.origin = .{ .connection = id };
                         self.kind = .edge;
                         self.attribute_index = self.range.start;
@@ -793,7 +823,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                         self.phase = .walk;
                     }
                 },
-                .copy_range => {
+                .copy_range => if (rep.attributes) {
                     if (self.copy_index == self.range.len) {
                         self.phase = self.copy_after;
                         return;
@@ -801,8 +831,8 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     b.attributes[b.attribute_count] = doc.attributes[self.original_range.start + self.copy_index];
                     b.attribute_count += 1;
                     self.copy_index += 1;
-                },
-                .declaration => {
+                } else unreachable,
+                .declaration => if (rep.attributes) {
                     if (fixed_storage) {
                         try a.ensure("declarations", b.declarations.items.len + 1);
                     } else if (b.declarations.items.len >= b.declarations.capacity) return error.InvalidDocument;
@@ -825,8 +855,8 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     self.bind_after = .apply;
                     self.apply_local = false;
                     self.phase = .bind;
-                },
-                .bind => {
+                } else unreachable,
+                .bind => if (rep.attributes) {
                     if (self.attribute_index == self.range.start + self.range.len) {
                         self.attribute_index = self.range.start;
                         self.phase = self.bind_after;
@@ -837,8 +867,8 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                         return;
                     }
                     try self.startName(.key, b.attributes[self.attribute_index].key, .bind_done);
-                },
-                .bind_done => {
+                } else unreachable,
+                .bind_done => if (rep.attributes) {
                     b.attribute_data.meta[self.attribute_index] = .{ .key = self.intern_id, .origin = self.origin };
                     if (self.actual != .utf8 and self.actual != .ascii) {
                         self.reader = .{ .raw = try b.raw(b.attributes[self.attribute_index].value), .actual = self.actual };
@@ -847,16 +877,16 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                         self.attribute_index += 1;
                         self.phase = .bind;
                     }
-                },
+                } else unreachable,
                 .bind_value => {
                     if (try self.reader.step() == .end) {
-                        if (self.bind_after == .node_port) self.phase = .node_port else {
+                        if (!rep.attributes or self.bind_after == .node_port) self.phase = .node_port else {
                             self.attribute_index += 1;
                             self.phase = .bind;
                         }
                     }
                 },
-                .apply => {
+                .apply => if (rep.attributes) {
                     if (self.attribute_index == self.range.start) self.mutable_from = try r.index(b.attribute_data.cells.items.len);
                     if (self.attribute_index == self.range.start + self.range.len) {
                         self.phase = .apply_next;
@@ -864,19 +894,21 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     }
                     self.setting = p.Set.init(self.applyRoot().*, b.attribute_data.meta[self.attribute_index].key, self.attribute_index);
                     self.phase = .apply_set;
-                },
-                .apply_set => if (try self.setting.step(&b.attribute_data, &self.cell_growth, a, b.limits.max_attribute_states, self.mutable_from)) |root| {
-                    self.applyRoot().* = root;
-                    self.attribute_index += 1;
-                    self.phase = .apply;
-                },
-                .apply_next => {
+                } else unreachable,
+                .apply_set => if (rep.attributes) {
+                    if (try self.setting.step(&b.attribute_data, &self.cell_growth, a, b.limits.max_attribute_states, self.mutable_from)) |root| {
+                        self.applyRoot().* = root;
+                        self.attribute_index += 1;
+                        self.phase = .apply;
+                    }
+                } else unreachable,
+                .apply_next => if (rep.attributes) {
                     if (!self.apply_local and self.target == .defaults and self.target.defaults != .graph and b.occurrences[self.occurrence].scope != .root) {
                         self.apply_local = true;
                         self.attribute_index = self.range.start;
                         self.phase = .apply;
                     } else self.phase = .walk;
-                },
+                } else unreachable,
                 // This reader transition can run once per source unit, even
                 // when comment/concatenation glue emits no byte to hash.
                 .intern_hash => switch (try @call(.always_inline, p.Name(caps).step, .{&self.reader})) {
@@ -888,7 +920,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                             const parent = @backingInt(self.scope_parent);
                             self.hash = std.hash.Wyhash.hash(self.hash, std.mem.asBytes(&parent));
                         }
-                        if (self.family == .key) self.hash ^= @as(u64, @backingInt(self.kind));
+                        if (rep.attributes and self.family == .key) self.hash ^= @as(u64, @backingInt(self.kind));
                         const slots = self.table().slots;
                         self.slot = if (slots.len == 0) 0 else @intCast(self.hash & (slots.len - 1));
                         self.phase = .intern_probe;
@@ -904,7 +936,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     const compatible = switch (self.family) {
                         .node => true,
                         .scope => b.scopes.items[id].parent.? == self.scope_parent,
-                        .key => b.attribute_data.keys.items[id].kind == self.kind,
+                        .key => if (rep.attributes) b.attribute_data.keys.items[id].kind == self.kind else unreachable,
                     };
                     if (compatible and self.storedHash(id) == self.hash) {
                         self.intern_id = id;
@@ -948,7 +980,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                                 const field = switch (family) {
                                     .node => "node_slots",
                                     .scope => "scope_slots",
-                                    .key => "key_slots",
+                                    .key => if (rep.attributes) "key_slots" else unreachable,
                                 };
                                 try a.ensureTable(field, table_value.count + 1);
                                 break :blk a.slice(field);
@@ -1003,7 +1035,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                             self.intern_id = try r.index(b.nodes.items.len);
                             if (self.intern_id >= t.node_bit) return error.IndexLimit;
                             if (!try self.node_growth.stepCapped(&b.nodes, 1, a, try b.nodeCapacityBound())) return;
-                            const state = if (b.attribute_data.scopes.len == 0) none else b.attribute_data.scopes[@backingInt(b.occurrences[self.occurrence].scope)].node;
+                            const state = if (!rep.attributes) {} else if (b.attribute_data.scopes.len == 0) none else b.attribute_data.scopes[@backingInt(b.occurrences[self.occurrence].scope)].node;
                             b.nodes.appendAssumeCapacity(.{ .name = self.name, .first_mention = b.mention_count, .attribute_state = state, .hash = self.hash });
                         },
                         .scope => {
@@ -1016,11 +1048,11 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                                 return;
                             }
                         },
-                        .key => {
+                        .key => if (rep.attributes) {
                             if (!try self.key_growth.step(&b.attribute_data.keys, 1, a)) return;
                             self.intern_id = try r.index(b.attribute_data.keys.items.len);
                             b.attribute_data.keys.appendAssumeCapacity(.{ .name = self.name, .hash = self.hash, .first_attribute = self.attribute_index, .kind = self.kind });
-                        },
+                        } else unreachable,
                     }
                     // Without index growth, lookup already located an empty
                     // slot. Keep it across bounded record-list growth as well.
@@ -1036,7 +1068,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                 },
                 .gap => if (partial) {
                     if (!try self.gap_growth.step(&b.publication.coverage_data.entries, 1, a)) return;
-                    b.publication.coverage_data.entries.appendAssumeCapacity(.{ .gap = self.gap_value, .boundary = try r.index(b.declarations.items.len), .connection_boundary = b.connection_count });
+                    b.publication.coverage_data.entries.appendAssumeCapacity(.{ .gap = self.gap_value, .boundary = if (rep.attributes) try r.index(b.declarations.items.len) else {}, .connection_boundary = b.connection_count });
                     self.phase = self.gap_after;
                 } else unreachable,
                 .unfinished => if (partial) {
@@ -1065,7 +1097,7 @@ pub fn SessionWith(comptime caps: encoding.Capabilities, comptime partial: bool,
                     entries[self.index].suffix_first = self.suffix_first;
                 } else unreachable,
                 .posting_allocate => {
-                    if (b.mention_count != b.mentions.len or b.connection_count != b.connections.len or b.port_count != b.endpoint_ports.len or b.attribute_count != b.attributes.len) return error.InvalidDocument;
+                    if (b.mention_count != b.mentions.len or b.connection_count != b.connections.len or b.port_count != b.endpoint_ports.len or (rep.attributes and b.attribute_count != b.attributes.len)) return error.InvalidDocument;
                     if (b.offsets.len == 0) b.offsets = try mem.allocate(u32, a, b.nodes.items.len + 1, "offsets", true) else {
                         b.positions = try mem.allocate(u32, a, b.mentions.len, "positions", true);
                         self.index = 0;

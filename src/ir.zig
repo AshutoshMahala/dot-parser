@@ -57,35 +57,58 @@ pub const Knowledge = @import("ir/coverage.zig").Knowledge;
 pub const Uncertainty = @import("ir/coverage.zig").Uncertainty;
 pub const CoverageGap = @import("ir/coverage.zig").Gap;
 pub const Config = struct {
+    capabilities: Capabilities = .{},
     source_encodings: ?[]const encoding.Encoding = null,
     limits: Limits = .{},
     policy: Policy = .{},
     runtime_policy: bool = false,
 };
+pub const Capabilities = @import("ir/representation.zig").Capabilities;
 
 pub fn Lowering(comptime config: Config) type {
-    const caps = encoding.Capabilities.from(config.source_encodings);
+    const rep = @import("ir/representation.zig").Identity.from(config);
+    const caps = rep.encodings;
     const execution = @import("ir/execution_policy.zig");
     const baseline = comptime execution.resolve(.{}, config.policy);
     comptime {
         execution.validate(baseline) catch @compileError("IR cancellation_interval must be positive");
     }
     return struct {
+        pub const capabilities = config.capabilities;
+        pub const Node = topology.NodeFor(rep.attributes);
+        pub const Connection = topology.ConnectionFor(rep.attributes);
+        const Source = @import("ir/parse.zig").Bound(@This(), config, false);
+        pub const ParseOptions = Source.Options;
+        pub const ParseResult = Source.Result;
+        pub const PartialResult = Source.PartialResult;
+        /// Parse/check once, lower with this profile, then release Document pools.
+        pub const parse = Source.parse;
+        pub const parsePartial = Source.parsePartial;
         const Fixed = @import("ir/fixed_lowering.zig").API(config);
-        pub const GraphStorage = fixed_storage.GraphStorage;
-        pub const LoweringScratch = fixed_storage.LoweringScratch;
-        pub const LoweringMemory = fixed_storage.LoweringMemory;
-        pub const FixedGraphStorage = fixed_storage.FixedGraphStorage;
-        pub const FixedLoweringScratch = fixed_storage.FixedLoweringScratch;
-        pub const loweringLayout = fixed_storage.loweringLayout;
+        // Capability-typed fixed lowering is the next storage increment. Never
+        // return full-layout reservations for a topology-only profile.
+        fn fixedStorage() type {
+            comptime @import("ir/representation.zig").requireFixedLowering(rep.attributes);
+            return fixed_storage;
+        }
+        pub const GraphStorage = fixedStorage().GraphStorage;
+        pub const LoweringScratch = fixedStorage().LoweringScratch;
+        pub const LoweringMemory = fixedStorage().LoweringMemory;
+        pub const FixedGraphStorage = fixedStorage().FixedGraphStorage;
+        pub const FixedLoweringScratch = fixedStorage().FixedLoweringScratch;
+        pub const loweringLayout = fixedStorage().loweringLayout;
         pub const EdgeScratch = query_storage.EdgeScratch;
-        pub const AttributeScratch = query_storage.AttributeScratch;
+        fn attributeStorage() type {
+            comptime @import("ir/representation.zig").requireAttributes(rep.attributes);
+            return query_storage;
+        }
+        pub const AttributeScratch = attributeStorage().AttributeScratch;
         pub const FixedEdgeScratch = query_storage.FixedEdgeScratch;
-        pub const FixedAttributeScratch = query_storage.FixedAttributeScratch;
+        pub const FixedAttributeScratch = attributeStorage().FixedAttributeScratch;
         pub const edgeScratchLayout = query_storage.edgeScratchLayout;
-        pub const attributeScratchLayout = query_storage.attributeScratchLayout;
+        pub const attributeScratchLayout = attributeStorage().attributeScratchLayout;
         pub const edgeScratchBounds = query_storage.edgeScratchBounds;
-        pub const attributeScratchBounds = query_storage.attributeScratchBounds;
+        pub const attributeScratchBounds = attributeStorage().attributeScratchBounds;
         pub const FixedLoweringResult = Fixed.Result(false);
         pub const FixedPartialLoweringResult = Fixed.Result(true);
         pub const FixedLoweringSession = Fixed.FixedLoweringSession;
@@ -116,10 +139,10 @@ pub fn Lowering(comptime config: Config) type {
         pub fn partialLoweringSessionIn(document: *const syntax.Document, memory: LoweringMemory, options: anytype) (Error || execution.Error)!FixedPartialLoweringSession {
             return Fixed.start(true, document, memory, options);
         }
-        pub const Graph = topology.Graph(caps);
-        pub const PartialGraph = @import("ir/partial.zig").Graph(caps);
-        pub const LoweringSession = execution.Bound(caps, false, config);
-        pub const PartialLoweringSession = execution.Bound(caps, true, config);
+        pub const Graph = topology.Graph(rep);
+        pub const PartialGraph = @import("ir/partial.zig").Graph(rep);
+        pub const LoweringSession = execution.Bound(rep, false, config);
+        pub const PartialLoweringSession = execution.Bound(rep, true, config);
         pub const EdgeSession = @import("ir/edge_session.zig").Bound(Graph, caps, config);
         pub const PartialEdgeSession = @import("ir/edge_session.zig").Bound(PartialGraph, caps, config);
         pub const FixedEdgeSession = @import("ir/edge_session.zig").FixedBound(Graph, caps, config);
@@ -246,7 +269,7 @@ pub fn Lowering(comptime config: Config) type {
                 .undirected = interpretation.effectiveOperator(document.kind, .undirected),
             };
             var memory: resources.Memory = .{ .backing = allocator, .limit = limits.max_bytes };
-            return @import("ir/lower.zig").runWith(caps, true, memory.allocator(), document, resolved, limits, null) catch |err| return memory.failure(err);
+            return @import("ir/lower.zig").runWith(rep, true, memory.allocator(), document, resolved, limits, null) catch |err| return memory.failure(err);
         }
         /// Lower a complete, accepted parser-produced Document. Interpretation
         /// must come from the same profile/options used to accept that Document.
@@ -267,7 +290,7 @@ pub fn Lowering(comptime config: Config) type {
             var memory: resources.Memory = .{ .backing = allocator, .limit = limits.max_bytes };
             // Keep the complete fast driver's existing call boundary. Inlining
             // its encoding dispatch here changes optimizer decisions in callers.
-            return @import("ir/lower.zig").run(caps, memory.allocator(), document, resolved, limits, null) catch |err| return memory.failure(err);
+            return @import("ir/lower.zig").run(rep, memory.allocator(), document, resolved, limits, null) catch |err| return memory.failure(err);
         }
         fn checkDirectOptions(comptime OptionsType: type) void {
             if (!@hasField(OptionsType, "interpretation")) @compileError("IR lowering requires .interpretation from the accepting DOT profile");
@@ -275,7 +298,7 @@ pub fn Lowering(comptime config: Config) type {
                 if (!std.mem.eql(u8, field, "interpretation") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !(config.runtime_policy and std.mem.eql(u8, field, "policy"))) @compileError("unknown IR lowering option: " ++ field);
             }
         }
-        fn runBounded(comptime partial: bool, allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype, effective: execution.Effective) Error!@import("ir/lower.zig").Output(caps, partial) {
+        fn runBounded(comptime partial: bool, allocator: std.mem.Allocator, document: *const syntax.Document, options: anytype, effective: execution.Effective) Error!@import("ir/lower.zig").Output(rep, partial) {
             var operation = try sessionInitResolved(partial, allocator, document, options, effective);
             defer operation.deinit();
             return execution.finish(&operation);

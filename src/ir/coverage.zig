@@ -20,76 +20,90 @@ pub const Gap = struct {
     range: t.Range,
     occurrence: ?t.OccurrenceId,
 };
-pub const Entry = struct {
-    gap: Gap,
-    /// Number of declarations executed before this missing contribution.
-    boundary: u32,
-    /// Connections have their own semantic order (edge chains share attributes).
-    connection_boundary: u32,
-    /// Earliest source explanation at or after this entry (computed once).
-    suffix_first: u32 = 0,
-};
-pub const Data = struct {
-    entries: std.ArrayList(Entry) = .empty,
-    /// Partial-only dependency summary. Hidden scope members can affect a
-    /// later set-endpoint connection even when the gap precedes its winner.
-    last_set_connection: ?u32 = null,
+pub const Entry = EntryFor(true);
+pub fn EntryFor(comptime attributes: bool) type {
+    return struct {
+        gap: Gap,
+        /// Number of declarations executed before this missing contribution.
+        boundary: if (attributes) u32 else void,
+        /// Connections have their own semantic order (edge chains share attributes).
+        connection_boundary: u32,
+        /// Earliest source explanation at or after this entry (computed once).
+        suffix_first: u32 = 0,
+    };
+}
+pub const Data = DataFor(true);
+pub fn DataFor(comptime attributes: bool) type {
+    const E = EntryFor(attributes);
+    return struct {
+        const Self = @This();
+        entries: std.ArrayList(E) = .empty,
+        /// Partial-only dependency summary. Hidden scope members can affect a
+        /// later set-endpoint connection even when the gap precedes its winner.
+        last_set_connection: if (attributes) ?u32 else void = if (attributes) null else {},
 
-    pub fn setConnectionAfter(self: *const Data, id: t.ConnectionId) bool {
-        return if (self.last_set_connection) |last| last > @backingInt(id) else false;
-    }
-
-    pub fn observeConnection(self: *Data, id: u32, connection: t.Connection) void {
-        if (@backingInt(connection.left.members) & t.node_bit == 0 or
-            @backingInt(connection.right.members) & t.node_bit == 0)
-            self.last_set_connection = id;
-    }
-
-    pub fn add(self: *Data, a: anytype, gap: Gap, boundary: usize, connections: u32, work: *r.Work) r.Error!void {
-        try work.spend(1);
-        _ = try r.index(self.entries.items.len + 1);
-        try @import("lowering_storage.zig").append(a, &self.entries, .{ .gap = gap, .boundary = try r.index(boundary), .connection_boundary = connections }, "gaps");
-    }
-    pub fn finish(self: *Data, work: *r.Work) r.Error!void {
-        var i = self.entries.items.len;
-        var first: u32 = 0;
-        while (i != 0) {
-            i -= 1;
-            try work.spend(1);
-            const current = &self.entries.items[i];
-            if (i + 1 == self.entries.items.len or current.gap.range.start <= self.entries.items[first].gap.range.start) first = @intCast(i);
-            current.suffix_first = first;
+        pub fn setConnectionAfter(self: *const Self, id: t.ConnectionId) bool {
+            comptime @import("representation.zig").requireAttributes(attributes);
+            return if (self.last_set_connection) |last| last > @backingInt(id) else false;
         }
-    }
-    pub fn deinit(self: *Data, a: std.mem.Allocator) void {
-        self.entries.deinit(a);
-    }
-    pub fn retainedBytes(self: *const Data) usize {
-        return self.entries.capacity * @sizeOf(Entry);
-    }
-    /// No scan on a query: binary search the precomputed semantic boundaries.
-    pub fn uncertainty(self: *const Data, after: ?u32) ?Uncertainty {
-        return self.uncertaintyWith(after, @import("../dot/identifier_cursor.zig").Unmetered{}) catch unreachable;
-    }
-    pub inline fn uncertaintyWith(self: *const Data, after: ?u32, work: anytype) r.Error!?Uncertainty {
-        return self.afterWith("boundary", after, work);
-    }
-    pub inline fn afterConnectionWith(self: *const Data, connection: u32, work: anytype) r.Error!?Uncertainty {
-        return self.afterWith("connection_boundary", connection, work);
-    }
-    fn afterWith(self: *const Data, comptime field: []const u8, after: ?u32, work: anytype) r.Error!?Uncertainty {
-        const entries = self.entries.items;
-        var lo: usize = 0;
-        if (after) |declaration| {
-            var hi = entries.len;
-            while (lo < hi) {
+
+        pub fn observeConnection(self: *Self, id: u32, connection: anytype) void {
+            if (!attributes) return;
+            if (@backingInt(connection.left.members) & t.node_bit == 0 or
+                @backingInt(connection.right.members) & t.node_bit == 0)
+                self.last_set_connection = id;
+        }
+
+        pub fn add(self: *Self, a: anytype, gap: Gap, boundary: usize, connections: u32, work: *r.Work) r.Error!void {
+            try work.spend(1);
+            _ = try r.index(self.entries.items.len + 1);
+            try @import("lowering_storage.zig").append(a, &self.entries, .{ .gap = gap, .boundary = if (attributes) try r.index(boundary) else {}, .connection_boundary = connections }, "gaps");
+        }
+        pub fn finish(self: *Self, work: *r.Work) r.Error!void {
+            var i = self.entries.items.len;
+            var first: u32 = 0;
+            while (i != 0) {
+                i -= 1;
                 try work.spend(1);
-                const mid = lo + (hi - lo) / 2;
-                if (@field(entries[mid], field) <= declaration) lo = mid + 1 else hi = mid;
+                const current = &self.entries.items[i];
+                if (i + 1 == self.entries.items.len or current.gap.range.start <= self.entries.items[first].gap.range.start) first = @intCast(i);
+                current.suffix_first = first;
             }
         }
-        if (lo == entries.len) return null;
-        const gap = entries[entries[lo].suffix_first].gap;
-        return .{ .reason = gap.reason, .span = gap.range };
-    }
-};
+        pub fn deinit(self: *Self, a: std.mem.Allocator) void {
+            self.entries.deinit(a);
+        }
+        pub fn retainedBytes(self: *const Self) usize {
+            return self.entries.capacity * @sizeOf(E);
+        }
+        /// No scan on a query: binary search the precomputed semantic boundaries.
+        pub fn uncertainty(self: *const Self, after: ?u32) ?Uncertainty {
+            return self.uncertaintyWith(after, @import("../dot/identifier_cursor.zig").Unmetered{}) catch unreachable;
+        }
+        pub inline fn uncertaintyWith(self: *const Self, after: ?u32, work: anytype) r.Error!?Uncertainty {
+            // Only attribute queries supply a declaration boundary. Topology
+            // queries ask about all gaps; never reinterpret a declaration ID.
+            if (!attributes and after != null) return error.InvalidHandle;
+            return self.afterWith("boundary", after, work);
+        }
+        pub inline fn afterConnectionWith(self: *const Self, connection: u32, work: anytype) r.Error!?Uncertainty {
+            comptime @import("representation.zig").requireAttributes(attributes);
+            return self.afterWith("connection_boundary", connection, work);
+        }
+        fn afterWith(self: *const Self, comptime field: []const u8, after: ?u32, work: anytype) r.Error!?Uncertainty {
+            const entries = self.entries.items;
+            var lo: usize = 0;
+            if (attributes) if (after) |declaration| {
+                var hi = entries.len;
+                while (lo < hi) {
+                    try work.spend(1);
+                    const mid = lo + (hi - lo) / 2;
+                    if (@field(entries[mid], field) <= declaration) lo = mid + 1 else hi = mid;
+                }
+            };
+            if (lo == entries.len) return null;
+            const gap = entries[entries[lo].suffix_first].gap;
+            return .{ .reason = gap.reason, .span = gap.range };
+        }
+    };
+}

@@ -1,7 +1,6 @@
 //! Public fixed-lowering boundary. All semantic work remains in the shared
 //! direct builder/session, with compile-time storage specialization.
 const std = @import("std");
-const encoding = @import("parser_support").encoding;
 const syntax = @import("../dot/syntax.zig");
 const pools = @import("fixed_storage.zig");
 const lower = @import("lower.zig");
@@ -10,14 +9,15 @@ const execution = @import("execution_policy.zig");
 const session = @import("lowering_session.zig");
 
 pub fn API(comptime config: anytype) type {
-    const caps = encoding.Capabilities.from(config.source_encodings);
+    const rep = @import("representation.zig").Identity.from(config);
+    const caps = rep.encodings;
     const baseline = comptime execution.resolve(.{}, config.policy);
     return struct {
-        pub const FixedLoweringSession = execution.BoundWith(caps, false, config, true);
-        pub const FixedPartialLoweringSession = execution.BoundWith(caps, true, config, true);
+        pub const FixedLoweringSession = execution.BoundWith(rep, false, config, true);
+        pub const FixedPartialLoweringSession = execution.BoundWith(rep, true, config, true);
         pub fn Result(comptime partial: bool) type {
             return struct {
-                graph: ?lower.Output(caps, partial) = null,
+                graph: ?lower.Output(rep, partial) = null,
                 outcome: session.Outcome,
                 shortfall: ?pools.StorageShortfall = null,
                 scratch_peak: pools.LoweringScratchCapacities = .{},
@@ -27,6 +27,7 @@ pub fn API(comptime config: anytype) type {
             return if (config.runtime_policy) execution.ValidationError!Result(partial) else Result(partial);
         }
         fn checkOptions(comptime Options: type, comptime require_interpretation: bool) void {
+            @import("representation.zig").requireFixedLowering(rep.attributes);
             if (require_interpretation and !@hasField(Options, "interpretation")) @compileError("fixed IR lowering requires .interpretation from the accepting DOT profile");
             for (@typeInfo(Options).@"struct".field_names) |field| {
                 if (!std.mem.eql(u8, field, "interpretation") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !std.mem.eql(u8, field, "query_allocator") and !(config.runtime_policy and std.mem.eql(u8, field, "policy"))) @compileError("unknown fixed IR lowering option: " ++ field);
@@ -89,13 +90,13 @@ pub fn API(comptime config: anytype) type {
             report.scratch_peak = storage.peak;
             return report;
         }
-        fn run(comptime partial: bool, doc: *const syntax.Document, storage: *pools.Context, resolved: lower.InterpretationFor(partial), limits: r.Limits) r.Error!lower.Output(caps, partial) {
+        fn run(comptime partial: bool, doc: *const syntax.Document, storage: *pools.Context, resolved: lower.InterpretationFor(partial), limits: r.Limits) r.Error!lower.Output(rep, partial) {
             _ = try r.index(doc.source.len);
             _ = try r.index(doc.order.len);
             const reader = @import("names.zig").reader(caps, doc.source_info.encoding);
             return switch (reader) {
                 inline else => |actual| if (comptime caps.allows(actual)) blk: {
-                    var builder: lower.BuilderWith(actual, caps, partial, true) = .{
+                    var builder: lower.BuilderWith(actual, rep, partial, true) = .{
                         .a = storage,
                         .doc = doc,
                         .interpretation = resolved,

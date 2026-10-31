@@ -49,6 +49,71 @@ Here `a` and `"a"` are one node, edge endpoints introduce nodes implicitly,
 and the isolated `x` remains present. The example streams individual edges
 without retaining an expanded edge array; lowering keeps connections symbolic.
 
+## Choose retained capabilities
+
+An IR profile also has the one-call entry points. For topology without effective
+attributes/defaults, select the capability at compile time:
+
+```zig
+const Topology = dot.ir.Lowering(.{
+    .capabilities = .{ .attributes = false },
+});
+var result = try Topology.parse(allocator, source, .{ .diagnostics = bag.sink() });
+defer result.deinit();
+const graph = result.ir() orelse return error.GraphUnavailable;
+var nodes = graph.nodeIterator();
+while (nodes.next()) |node|
+    std.debug.print("node {f}\n", .{node.name()});
+```
+
+Full attributes remain the default. `IR.parsePartial` provides the corresponding
+opt-in partial-source route. Both calls parse once, validate normally, lower
+with the selected IR profile and release the temporary Document. They borrow
+the source and diagnostic sink and own the IR, just like the module-level calls.
+The IR's `source_encodings` selection also configures the convenience call's DOT
+reader. Other DOT policies use their library defaults; use explicit Document
+lowering for a custom accepting DOT profile.
+
+| Setting | Effect |
+| --- | --- |
+| `.capabilities.attributes = true` (default) | Retain attributes, declarations, interned keys, default snapshots and effective maps |
+| `.capabilities.attributes = false` | Omit that storage and lowering work; retain logical nodes, scopes, mentions, symbolic connections, written ports and partial-source coverage |
+| `.dot` call options | DOT checking resources and, for native-encoding profiles, source encoding selection |
+| `.lowering` call options | IR limits and the profile's enabled execution options; runtime policy overrides require `.runtime_policy = true` |
+
+Capability selection is compile-time only. It changes the representation, not
+whether DOT input is validated. `IR.capabilities` and `IR.Graph.capabilities`
+expose the selection; execution policies and limits do not change graph type
+identity. Use `IR.Node` / `IR.Connection` for profile-specific record types;
+module-level record names describe the full profile. Disabled record fields
+have zero-sized `void` types, not empty allocated pools.
+
+With attributes disabled, attribute lookup/enumeration, attribute sessions and
+effective `tailPort()` / `headPort()` queries are compile errors. Written
+endpoint syntax is still available through `endpoint.portSyntax(graph)`.
+`materialize(.{})` follows the graph's capability; explicitly requesting
+`.attributes = true` on topology IR is a compile error. Omitted attributes
+cannot be recovered from that IR: retain the Document separately and lower
+again with a full profile if you need them later.
+
+The capability currently supports allocator-backed complete/partial lowering,
+including its metered/cancellable execution. Capability-aware fixed lowering
+is a later storage increment: topology profiles reject fixed-lowering storage/layout,
+bounds and `In` calls instead of reserving full-profile pools. Existing
+full-profile fixed APIs remain available.
+
+`max_attributes` and `max_attribute_states` apply only when attributes are
+retained. Other IR limits still apply. Removing attributes does not make a
+complete topology graph partial, and does not hide gaps in incomplete input.
+Savings depend on the input: the largest reductions are on attribute-heavy
+files. Retained payload and peak requested memory differ from Arena backing
+capacity or process RSS; smaller pools alone do not guarantee lower RSS.
+
+Bound convenience calls honor their execution policy. Supplying a hook does
+not enable cancellation; enable it in the IR profile first. The existing
+module-level `dot.ir.parse` / `parsePartial` convenience still lets an explicit
+hook opt into cancellation. Neither form has a shared DOT/lowering budget.
+
 ## Already have a Document or a custom profile?
 
 Use the existing lowering entry point instead of parsing again:
@@ -758,19 +823,21 @@ IR. Nothing is copied into a new string or markup tree.
 also includes temporary growth and pair/endpoint scratch, excluding the IR.
 
 Only materialization builds these maps; ordinary parsing, lowering and streaming
-do not. `.attributes` defaults to `true`. Set it to `false` when only connectivity
+do not. `.attributes` defaults to the graph's retained capability (`true` on
+the full profile). Set it to `false` when only connectivity
 is needed or compact, on-demand attribute queries are preferable. Folding spends
 additional time and memory up front; a single read of a simple graph may be
 cheaper through compact queries. Defaults are shared, and overwritten explicit
 assignments reuse map cells instead of retaining update history.
 
 `.attributes` is a **compile-time** selection because it changes the result's
-capabilities: the default returns `IR.Graph.Materialized` with attribute views;
+capabilities: `true` returns `IR.Graph.Materialized` with attribute views;
 `false` returns `dot.ir.MaterializedTopology` with only the owning `edges` array.
 No folding state or code is instantiated in the topology-only path. `limits`
 and `cancellation` remain runtime values, including when passed together with
-`.attributes`. `dot.ir.Options` also works directly and uses the default
-attribute-enabled result. Unknown fields are compile errors.
+`.attributes`. `dot.ir.Options` also works directly and uses the profile-derived
+default. Requesting attributes absent from the IR is a compile error, as are
+unknown fields.
 
 All output is published together, or an error is returned and storage released.
 The operation's `max_pairs`, `max_edges`, `max_work`, `max_bytes` and

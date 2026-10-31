@@ -12,12 +12,15 @@ const attrs = @import("attributes.zig");
 const Unmetered = @import("../dot/identifier_cursor.zig").Unmetered;
 const scratch = @import("query_storage.zig");
 
-pub fn Graph(comptime caps: encoding.Capabilities) type {
-    const Core = t.GraphWith(caps, true);
+pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
+    const caps = rep.encodings;
+    const Coverage = c.DataFor(rep.attributes);
+    const Core = t.GraphWith(rep, true);
     return struct {
         const Self = @This();
+        pub const capabilities = Core.capabilities;
         _data: Core,
-        _coverage: c.Data,
+        _coverage: Coverage,
         pub const AttributeView = Core.AttributeView;
         const Edges = @import("partial_edges.zig").For(Self, Core, caps);
         pub const EdgeView = Edges.Edge(false);
@@ -43,11 +46,12 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         }
         /// Successful construction retains all snapshot edges, never changes
         /// source coverage. Failure frees all output; values borrow this IR.
-        pub inline fn materialize(self: *const Self, options: anytype) r.Error!(if (if (@hasField(@TypeOf(options), "attributes")) options.attributes else true) Materialized else MaterializedTopology) {
+        pub inline fn materialize(self: *const Self, options: anytype) r.Error!(if (if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes) Materialized else MaterializedTopology) {
             const data = try self._data.materialize(options);
             return .{ .graph = self, ._data = data, .edges = data.edges, .peak_bytes = data.peak_bytes };
         }
         pub fn MaterializationSession(comptime attributes: bool) type {
+            if (attributes) comptime @import("representation.zig").requireAttributes(rep.attributes);
             return struct {
                 const Session = @This();
                 pub const Result = if (attributes) Materialized else MaterializedTopology;
@@ -75,7 +79,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
                 }
             };
         }
-        pub inline fn materializationSession(self: *const Self, options: anytype) r.Error!MaterializationSession(if (@hasField(@TypeOf(options), "attributes")) options.attributes else true) {
+        pub inline fn materializationSession(self: *const Self, options: anytype) r.Error!MaterializationSession(if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes) {
             return .{ .graph = self, .inner = try self._data.materializationSession(options) };
         }
 
@@ -113,7 +117,7 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
         }
 
         pub const GapIterator = struct {
-            entries: []const c.Entry,
+            entries: []const c.EntryFor(rep.attributes),
             index: u32 = 0,
             pub fn next(self: *GapIterator) ?c.Gap {
                 if (self.index == self.entries.len) return null;
@@ -190,9 +194,11 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
                 return self.core().name();
             }
             pub fn attribute(self: NodeView, key: []const u8) c.Knowledge(?AttributeView) {
+                comptime @import("representation.zig").requireAttributes(rep.attributes);
                 return self.graph.qualifyAttribute(self.core().attribute(key));
             }
             pub fn attributeWith(self: NodeView, key: []const u8, options: r.Options) r.Error!c.Knowledge(?AttributeView) {
+                comptime @import("representation.zig").requireAttributes(rep.attributes);
                 const data = &self.graph._data;
                 if (@backingInt(self.id) >= data.nodes.len) return error.InvalidHandle;
                 var work = try r.Work.init(options.limits orelse data.limits, options.cancellation);
@@ -200,9 +206,11 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
                 return self.graph.qualifyAttributeWith(if (resolved) |value| .{ .graph = data, .resolved = value } else null, &work);
             }
             pub fn attributes(self: NodeView, options: r.Options) r.Error!AttributeIterator {
+                comptime @import("representation.zig").requireAttributes(rep.attributes);
                 return .{ .graph = self.graph, .inner = try self.core().attributes(options) };
             }
             pub fn attributesIn(self: NodeView, memory: scratch.AttributeScratch, options: r.Options) r.Error!FixedAttributeIterator {
+                comptime @import("representation.zig").requireAttributes(rep.attributes);
                 try scratch.checkGraph(try scratch.checkedBytes(memory), self.graph);
                 return .{ .graph = self.graph, .inner = try self.core().attributesIn(memory, options) };
             }
@@ -235,9 +243,11 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
                 return .{ .raw = data.text(range), .actual = names.reader(caps, data.source_info.encoding) };
             }
             pub fn attribute(self: ScopeView, key: []const u8) c.Knowledge(?AttributeView) {
+                comptime @import("representation.zig").requireAttributes(rep.attributes);
                 return self.graph.qualifyAttribute(self.core().attribute(key));
             }
             pub fn attributeWith(self: ScopeView, key: []const u8, options: r.Options) r.Error!c.Knowledge(?AttributeView) {
+                comptime @import("representation.zig").requireAttributes(rep.attributes);
                 const data = &self.graph._data;
                 if (@backingInt(self.id) >= data.scopes.len) return error.InvalidHandle;
                 var work = try r.Work.init(options.limits orelse data.limits, options.cancellation);
@@ -245,9 +255,11 @@ pub fn Graph(comptime caps: encoding.Capabilities) type {
                 return self.graph.qualifyAttributeWith(if (resolved) |value| .{ .graph = data, .resolved = value } else null, &work);
             }
             pub fn attributes(self: ScopeView, options: r.Options) r.Error!AttributeIterator {
+                comptime @import("representation.zig").requireAttributes(rep.attributes);
                 return .{ .graph = self.graph, .inner = try self.core().attributes(options) };
             }
             pub fn attributesIn(self: ScopeView, memory: scratch.AttributeScratch, options: r.Options) r.Error!FixedAttributeIterator {
+                comptime @import("representation.zig").requireAttributes(rep.attributes);
                 try scratch.checkGraph(try scratch.checkedBytes(memory), self.graph);
                 return .{ .graph = self.graph, .inner = try self.core().attributesIn(memory, options) };
             }

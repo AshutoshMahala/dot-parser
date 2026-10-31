@@ -77,6 +77,12 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit and public integration tests");
     test_step.dependOn(&run_ir_tests.step);
     for ([_]struct { name: []const u8, message: []const u8 }{
+        .{ .name = "ir_topology_attribute", .message = "IR attributes are disabled; enable .capabilities.attributes for attribute access and effective ports" },
+        .{ .name = "ir_topology_ports", .message = "IR attributes are disabled; enable .capabilities.attributes for attribute access and effective ports" },
+        .{ .name = "ir_topology_attribute_session", .message = "IR attributes are disabled; enable .capabilities.attributes for attribute access and effective ports" },
+        .{ .name = "ir_topology_materialize", .message = "IR attributes are disabled; enable .capabilities.attributes for attribute access and effective ports" },
+        .{ .name = "ir_topology_fixed", .message = "fixed IR lowering for .capabilities.attributes = false is not implemented yet; use allocator-backed lowering" },
+        .{ .name = "ir_bound_parse_cancellation", .message = "expected type 'void', found 'common.execution.Cancellation'" },
         .{ .name = "ir_materialize_unknown", .message = "unknown IR materialization option: attributtes" },
         .{ .name = "ir_materialize_runtime", .message = "unable to resolve comptime value" },
         .{ .name = "ir_materialize_limit", .message = "unknown IR materialization option field: max_pair" },

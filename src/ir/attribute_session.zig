@@ -21,6 +21,7 @@ pub fn FixedBound(comptime Graph: type, comptime caps: encoding.Capabilities, co
     return WithStorage(Graph, caps, true, config, true);
 }
 fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, comptime all: bool, comptime config: anytype, comptime fixed_storage: bool) type {
+    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
     const partial = @hasField(Graph, "_data");
     const Data = if (partial) @FieldType(Graph, "_data") else Graph;
     const baseline = comptime execution.resolve(.{}, config.policy);
