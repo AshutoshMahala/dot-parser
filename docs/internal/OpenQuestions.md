@@ -38,7 +38,7 @@ has been discussed.
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction and fixed query scratch | Label-port binding, markup-result association, event lowering, fixed materialization output, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization | Label-port binding, markup-result association, event lowering, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and
@@ -296,8 +296,8 @@ are processed implicitly. Borrowed `tailPort()`/`headPort()` views keep winning
 endpoint structure (`syntax()`) separate from the opt-in first-colon Graphviz
 reading (`graphvizParts()`). Lone compass-like identifiers remain ambiguous;
 unknown suffix text is preserved, and origins name written sides rather than
-stored orientation. No additional retained storage is needed. Label-port existence/binding,
-event lowering and fixed materialization output remain. Fixed-storage Document
+stored orientation. No additional retained storage is needed. Label-port
+existence/binding and event lowering remain. Fixed-storage Document
 construction now shares direct/session lowering with explicit capacity bounds,
 checked bindings, reusable scratch and terminal shortfalls, without automatic
 reservation or a construction heap fallback.
@@ -1181,7 +1181,8 @@ existing output types, compile-time attribute selection and runtime limits.
 Its bounded transitions include endpoint traversal, duplicate probes/rehashing,
 AVL updates, port-key code units and growth copying; cancellation polls each
 step and each resume. Only finished output transfers ownership. Allocator
-callbacks and cleanup are not time-budgeted; fixed materialization storage remains separate.
+callbacks and cleanup are not time-budgeted. Fixed materialization now uses the
+same bounded machine with caller-owned output/scratch and no allocator fallback.
 Direct materialization stays on its throughput-specialized driver, sharing
 identity, port and map semantics with sessions. Policy-bound Document lowering
 now has complete/partial sessions with the same lifecycle and output types.
@@ -1228,7 +1229,14 @@ their layout descriptors are omitted; nonzero disabled reservations fail before
 writes. Bounds remain explicit and skip attribute formulas when compiled out.
 Shared full/topology tests cover exact fits, per-pool shortfalls, partial gaps,
 native encodings, runtime execution overrides, cancellation, alias rejection and
-caller ownership. Fixed materialization output remains the next storage increment.
+caller ownership. Fixed materialization now adds complete/partial, direct/session
+output with the existing materialized view types. Attribute selection comes from
+the output descriptor; caller-selected capacities, previous output counts,
+metadata bounds and an explicit connection/body-range scan remain separate
+sizing options. Strict deduplication indexes the output directly, endpoint
+members share a buffer and defaults remain borrowed. All shortfalls are terminal
+and publish no prefix; result state preserves partial coverage. Session credits
+and cancellation retain their existing bounded transitions.
 Speed builds specialize single-credit lowering resumes; larger grants share
 the existing loop and size builds retain one driver. Hashing inlines the
 one-unit name reader to avoid a call for every unit of comment/concatenation
@@ -1271,7 +1279,7 @@ Bounds remain explicit and metadata-only (pair-universe caps and total interned
 keys). A terminal shortfall preserves already emitted entries but never certifies
 exhaustion; retries start a new stream. Lowering helpers are named `loweringLayout`,
 `loweringBounds` and `partialLoweringBounds` without legacy aliases.
-Event lowering and fixed materialization output remain;
+Event lowering remains;
 this does not complete the
 entire semantic-layer slice. *(Embodied:
 `src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*

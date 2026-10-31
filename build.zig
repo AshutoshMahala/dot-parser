@@ -125,6 +125,9 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ir_fixed_attributes_metering", .message = "metering is disabled; use run()" },
         .{ .name = "ir_fixed_edge_runtime", .message = "unknown IR edge session option: policy" },
         .{ .name = "ir_fixed_attributes_unknown", .message = "unknown IR attribute session option: attributes" },
+        .{ .name = "ir_materialization_attributes", .message = "materialization attributes must match output storage" },
+        .{ .name = "ir_materialization_capability", .message = "IR attributes are disabled; enable .capabilities.attributes for attribute access and effective ports" },
+        .{ .name = "ir_materialization_option", .message = "unknown IR materialization option: policy" },
         .{ .name = "ir_scratch_bounds_unknown", .message = "unknown IR edge scratch sizing option: max_pair" },
     }) |fixture| {
         const rejected = b.addObject(.{ .name = fixture.name, .root_module = b.createModule(.{
@@ -630,6 +633,15 @@ pub fn build(b: *std.Build) void {
     b.step("bench-ir-fixed-queries", "Compare fixed/growable query scratch, explicit bounds and session budgets")
         .dependOn(&b.addRunArtifact(ir_fixed_queries).step);
     check_benches.dependOn(&ir_fixed_queries.step);
+    const ir_fixed_materialization = b.addExecutable(.{ .name = "ir_fixed_materialization_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_fixed_materialization.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    b.step("bench-ir-fixed-materialization", "Compare growable and fixed materialization with explicit sizing")
+        .dependOn(&b.addRunArtifact(ir_fixed_materialization).step);
+    check_benches.dependOn(&ir_fixed_materialization.step);
     const ir_bench = b.addExecutable(.{ .name = "ir_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/ir.zig"),
         .target = target,

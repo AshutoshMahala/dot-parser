@@ -103,7 +103,7 @@ fn run(comptime partial: bool, init: std.process.Init, out: *std.Io.Writer, case
         try out.print(",{d:.4}", .{@as(f64, @floatFromInt(values[4])) / 1e6});
     }
     try out.print(",{d},{d},{d},{d},{d},{d}\n", .{
-        graph.retainedBytes(),  if (partial) topology.retainedBytes() else topology.storage.len * @sizeOf(dot.ir.Edge),
+        graph.retainedBytes(),  topology.retainedBytes(),
         folded.retainedBytes(), topology.peak_bytes,
         folded.peak_bytes,      arena.queryCapacity(),
     });

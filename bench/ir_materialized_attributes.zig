@@ -158,9 +158,9 @@ pub fn main(init: std.process.Init) !void {
         for (&samples) |*values| try out.print(",{d:.4}", .{milliseconds(values)});
         for (&totals) |*values| try out.print(",{d:.4}", .{milliseconds(values)});
         try out.print(",{d},{d},{d},{d},{d},{d}\n", .{
-            topology.storage.len * @sizeOf(dot.ir.Edge), folded.retainedBytes(),
-            topology.peak_bytes,                         folded.peak_bytes,
-            arena_sizes[0],                              arena_sizes[1],
+            topology.retainedBytes(), folded.retainedBytes(),
+            topology.peak_bytes,      folded.peak_bytes,
+            arena_sizes[0],           arena_sizes[1],
         });
         try out.flush();
     }

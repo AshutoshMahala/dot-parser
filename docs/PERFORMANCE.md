@@ -3053,6 +3053,78 @@ exercise zero/one/larger grants, runtime policies, cancellation stop points,
 every work-limit stop in the fixtures, and bounded generation rollover. Fixed
 streaming/enumeration are also consumed in freestanding wasm32/riscv32 checks.
 
+### Fixed-storage materialization (2026-10-31)
+
+Zig 0.17.0, macOS arm64, Apple M4 Pro. Caller-owned output/scratch now cover
+complete and partial materialization, with and without attributes, through
+direct calls and sessions. The input IR remains symbolic. Run one report with:
+
+```sh
+zig build bench-ir-fixed-materialization -Doptimize=fast
+# Also -Doptimize=safe or -Doptimize=small.
+```
+
+The report warms each route for 150 ms, then takes the median of nine samples.
+Parsing/lowering, caller buffer allocation and sizing are outside construction
+timings; sizing time is reported separately. Construction includes descriptor
+checks and lazy table initialization. Output is consumed and checked against
+growable output. The routes compare growable construction, replay of observed
+capacities, explicitly scanned bounds and fixed sessions with grants 4096/1.
+These are requested/reserved bytes, not RSS or allocator metadata.
+
+Selected Fast results with attributes, using **observed capacities**:
+
+| Workload | Edges | Growable ms | Fixed ms | Growable peak KiB | Fixed output + scratch KiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Singleton edges | 2,000 | 0.02075 | 0.01413 | 61.9 | 31.3 |
+| Eight explicit keys per edge | 2,000 | 0.16371 | 0.11396 | 741.7 | 414.1 |
+| Repeated strict set products | 1,024 | 1.24442 | 1.13642 | 502.6 | 220.5 |
+| Reopened strict subgraphs | 250 | 0.29079 | 0.28288 | 21.5 | 14.7 |
+| Endpoint ports | 2,000 | 0.05517 | 0.03629 | 257.0 | 132.8 |
+
+Observed fixed reservations reduce peak bytes by 31–56% in these cases.
+No allocation or fallback occurs inside fixed construction, including after
+shortfall/cancellation. Ordinary defaults remain shared with the IR; the fixed
+output stores only explicit/derived winner cells and its key catalog.
+
+**Bounds are not automatic reservation advice.** Scanning does not deduplicate
+strict pairs: the reopened case reserves 1,644,656 bytes using scanned bounds,
+versus 15,060 with observed capacities and 21,988 growable peak. Strict overlap
+reserves 901,664 scanned versus 225,824 observed. Singleton inputs have much
+tighter scanned bounds. Metadata-only bounds can be larger still. The scan
+cost 0.024 ms on the reopened fixture and roughly 0.0002–0.0043 ms on the other
+selected fixtures; it has its own work/cancellation allowance. Supply an
+application envelope or previous counts when tighter memory control matters.
+
+#### Ordinary-path comparison
+
+Compared with `772b6fe`, using five alternating before/after runs, the same
+consumer harness and serial timing after all builds/tests finished. Short cases
+were batched to about 2 ms per sample; the single-edge deep-nesting case was
+excluded from geometric means because its construction is below 0.001 ms.
+Positive percentages mean more elapsed time:
+
+| Mode | Attribute materialization | Topology-only materialization | Materialization session `run()` | Edge streaming |
+| --- | ---: | ---: | ---: | ---: |
+| Fast | +0.7% | +2.3% | +0.4% | +0.8% |
+| Safe | −0.5% | +0.6% | −0.1% | +0.9% |
+| Small | −4.2% | +1.8% | +1.5% | −2.7% |
+
+The mixed Fast harness's reopened topology case was +6.6%. An independently
+built topology-only consumer did not reproduce it: −3.6% on that case and
+−0.5% overall across five alternating runs. Its traversal instructions were
+unchanged; the mixed result suggests binary-layout sensitivity rather than
+added per-edge work. Keep that outlier visible rather than claiming identical
+timings for every consumer.
+
+Ordinary lowering's complete machine-code section was byte-identical in all
+three modes. All measured ordinary allocation peaks and session credit totals
+were identical. Graph and session sizes did not grow. Materialized handles
+also retain their previous size: 56 bytes for topology and 176 bytes with
+attributes in Fast/Small (200 with attributes in Safe). Ownership reuses the
+edge-capacity metadata instead of adding a second edge pointer. Attribute
+lookup carries no ownership branch or per-edge ownership tag.
+
 ## Running the benchmarks
 
 ### One-command string comparison
@@ -3138,6 +3210,7 @@ zig build bench-ir-query-sessions -Doptimize=safe
 zig build bench-ir-attribute-sessions -Doptimize=safe
 zig build bench-ir-fixed -Doptimize=fast
 zig build bench-ir-fixed-queries -Doptimize=fast
+zig build bench-ir-fixed-materialization -Doptimize=fast
 zig build check-benches  # only checks that they compile
 ```
 

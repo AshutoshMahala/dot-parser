@@ -256,7 +256,10 @@ pub fn For(comptime Graph: type, comptime Core: type, comptime caps: encoding.Ca
                     return self.graph.kind();
                 }
                 pub fn retainedBytes(self: *const Self) usize {
-                    return if (folded) self._data.retainedBytes() else self._data.storage.len * @sizeOf(t.Edge);
+                    return self._data.retainedBytes();
+                }
+                pub fn capacities(self: *const Self) @import("materialization_storage.zig").Capacities {
+                    return self._data.capacities();
                 }
                 pub const EdgeIterator = struct {
                     owner: *const Self,

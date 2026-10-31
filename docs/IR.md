@@ -409,6 +409,7 @@ For node/scope enumeration, run
 | `hasEdge(from, to)` | Whether any effective connection covers the pair; undirected edges work both ways |
 | `edgeIterator(options)` | Stream borrowed edge views in semantic order, without retaining the expanded output array |
 | `materialize(options)` | Retain edges and fold effective attributes in one forward pass; `.attributes = false` selects topology-only output |
+| `materializeIn(memory, options)` | The same explicit expansion/folding in caller-owned output and scratch; returns an outcome and a precise storage shortfall on exhaustion |
 | `nodeAttribute(node, key)` | Final node value with origin, or absence |
 | `scopeAttribute(scope, key)` | Final graph/subgraph value with origin; `.root` is the graph |
 | `edgeAttribute(edge, key)` | Final value for a streamed/materialized edge, including strict updates |
@@ -1590,9 +1591,154 @@ This is a cooperative **work bound**, not a latency deadline. Allocator calls,
 the cancellation predicate and destruction are external/unmetered; the backing
 allocator can reserve or initialize memory internally. Library-controlled copies,
 table initialization and rehashing are resumable. Fixed-storage materialization
-output remains separate work. Bounded edge streaming and attribute queries are described below.
+below avoids allocator calls during construction. Bounded edge streaming and
+attribute queries are described below.
 The session's raw allocation boundary also avoids the standard typed helpers'
 whole-buffer debug poisoning; all readable elements are initialized explicitly.
+
+## Fixed-storage materialization
+
+`materializeIn(memory, options)` and `materializationSessionIn(memory, options)`
+construct edges in caller-owned output and scratch buffers. They work with
+complete or partial IRs, whether the input IR used fixed or growable storage.
+Connections remain symbolic until this explicit operation expands them.
+Construction never calls an allocator, including the input IR's query allocator.
+
+For an input built using `Retained = IR.FixedGraphStorage(...)`, choose an
+application envelope:
+
+```zig
+const Output = IR.FixedMaterializedStorage(.{
+    .edges = 256,
+    .attribute_states = 512,
+    .attribute_keys = 32,
+}, .{});
+const Scratch = IR.FixedMaterializationScratch(Retained, Output, .{
+    .members = 128,
+}, .{});
+var output: Output = .{};
+var scratch: Scratch = .{};
+const built = graph.materializeIn(.{
+    .output = output.storage(),
+    .scratch = scratch.storage(),
+}, .{});
+if (built.outcome == .failure) {
+    if (built.shortfall) |missing|
+        std.debug.print("{t}: capacity {d}, needs at least {d}\n", .{
+            missing.resource, missing.limit, missing.required_at_least,
+        });
+    return built.outcome.failure;
+}
+var materialized = built.materialized.?;
+defer materialized.deinit();
+var edges = materialized.edgeIterator();
+while (edges.next()) |edge|
+    std.debug.print("{f} -> {f}\n", .{edge.from().name(), edge.to().name()});
+```
+
+The output helper accepts compile-time `.attributes = false` for topology-only
+output, and defaults to the IR profile's capability. Such storage must reserve
+zero attribute cells/keys. Operations infer the selection from the output type;
+an explicitly repeated `.attributes` must agree. An attribute-disabled profile
+cannot construct attribute-bearing storage. Topology-only results expose the
+same `.edges` array as ordinary topology-only materialization.
+
+Scratch derives node marks from `Retained` when `members > 0`, and strict-table
+slots from output edge capacity. One member buffer serves both endpoints.
+`.strict = false` on the scratch helper omits the table but rejects strict input,
+including an empty strict graph, before writing. Default scratch supports both;
+non-strict construction never clears or uses the reserved strict slots. The
+table references output edges directly rather than retaining duplicate pairs.
+
+For runtime capacities or allocator-backed input, compute a layout and supply
+buffers of its sizes and alignment:
+
+```zig
+// Explicit scan; neither binding nor construction performs this automatically.
+const bounds = try IR.scanMaterializationBounds(graph, options);
+const layout = try IR.materializationLayout(
+    graph, bounds.output, bounds.scratch, options,
+);
+const memory = try layout.bind(output_bytes, scratch_bytes);
+const built = graph.materializeIn(memory, options);
+```
+
+`layout.output_bytes`, `layout.scratch_bytes` and `layout.alignment` describe the
+required prefixes. Binding checks arithmetic, descriptor consistency, sizes,
+alignment and overlap without clearing or walking input. Operation construction
+also rejects overlap with source, retained IR or partial-coverage storage,
+including unused fixed reservations. These layouts are build-specific, not a
+serialization format. Descriptor variables need not outlive the operation.
+
+### Explicit sizing
+
+| Source of capacities | Cost and meaning |
+| --- | --- |
+| Application capacities | Chosen envelope; shortfall is possible. |
+| `materialized.capacities()` | Constant-time used edge, mutable winner-cell and catalog-key counts; sufficient output for replay of the same input/options. Available on ordinary and fixed results. |
+| `built.scratch_peak` / `session.scratchPeak()` | Observed shared member capacity for replay. |
+| `IR.materializationBounds(graph, options)` | Constant-time conservative arithmetic over graph metadata; no hooks, walks or allocation. |
+| `IR.scanMaterializationBounds(graph, options)` | Explicit allocation-free connection/body-range scan; no pair expansion, mention traversal, name decoding or attribute folding. |
+
+Both bounds helpers return `{ output: MaterializedCapacities,
+scratch: MaterializationScratchCapacities }`, use the input graph's limits unless
+replaced, and never allocate or shrink reservations to fit a byte budget.
+Metadata bounds cap connection products by pair/edge limits, strict output by
+the node-pair universe, cells by edges times total interned keys (plus possible
+port keys) and the attribute-state limit. They can be much larger than output.
+Scanned bounds use each written connection's endpoint sizes and attribute/port
+contributions. They include endpoint scratch even for empty products. Repeated
+mentions and strict duplicates make these estimates conservative too.
+
+The scan costs one work unit per connection and referenced body-range visit,
+with cancellation at entry, before visits and before return. Reopened subgraphs
+can cause repeated body visits; the scan is not unconditionally linear in file
+size. It runs to completion or returns an error, without partial estimates.
+Its allowance is separate from construction's, even with the same options.
+Bounds are sizing ceilings under selected limits, not proof that input satisfies
+those limits. Unrepresentable counts/layouts return `IndexLimit`.
+
+Default snapshots are borrowed from the IR. Cells store only per-edge explicit
+or derived winners; repeated updates to a key reuse its cell. A zero-cell output
+needs no root array and can still expose defaults. All reserved output bytes
+count toward `retainedBytes()`; `peak_bytes` counts the complete bound output
+and scratch reservations, including unused space/padding. Input IR/source and
+inline operation state are excluded. `max_bytes` checks that total up front.
+
+### Stops, sessions and lifetimes
+
+The direct call returns `FixedMaterializationResult(attributes)` by value:
+`materialized`, `outcome`, optional `shortfall` and `scratch_peak`. It does not
+use an outer error union. A shortfall reports `PoolExhausted` with
+`materialized_edges`, `materialized_attribute_states`,
+`materialized_attribute_keys` or `members`, the supplied capacity and the next
+required count. Semantic limits take precedence over the corresponding pool
+check; a duplicate strict edge or replacement attribute needs no new slot.
+
+Failure never publishes an output prefix, even after all edges were written
+and the final key catalog runs out of space. It is terminal: restart with new
+storage. Use edge streaming when consuming a prefix is intended. Success on a
+partial IR preserves its coverage qualifications and does not certify missing
+input as complete.
+
+`try graph.materializationSessionIn(memory, options)` returns
+`FixedMaterializationSession(attributes)` with the existing `advance`, `run`,
+`cancel`, `takeResult` and `deinit` contract, plus `shortfall()` and
+`scratchPeak()`. Table clearing, traversal and folding retain the bounded
+transitions described above. Fixed storage avoids growable copy/rehash work;
+for the same fixed envelope, total credits are invariant across grants.
+No `.policy` option is added to graph-receiver materialization methods: both
+storage paths accept runtime `.limits` and `.cancellation` as before.
+
+The result is the same materialized type as ordinary construction. `deinit`
+frees growable output; for borrowed output it only invalidates the handle.
+Keep output storage alive while its result/views are used. Attribute-bearing
+results also borrow the IR/source, and partial results borrow coverage.
+Scratch is reusable after the direct call returns or the session is destroyed,
+including after `takeResult`; results retain no scratch/session pointers.
+
+Compare reservations, construction time, sizing time and session grants with
+`zig build bench-ir-fixed-materialization -Doptimize=fast` (also `safe`/`small`).
 
 ## Resumable edge streaming
 
@@ -1760,8 +1906,8 @@ connections, body intervals and posting probes; sessions bound each advance,
 not total query complexity. Ordinary direct drivers and IR layouts are unchanged.
 Measure with `zig build bench-ir-query-sessions -Doptimize=fast` (also `safe`
 and `small`). Name lookup before constructing a handle-based query is separate
-work; this increment does not make `findNode` resumable. Event lowering and
-fixed materialization output remain separate increments. Fixed scratch for
+work; this increment does not make `findNode` resumable. Event lowering remains
+a separate increment. Fixed scratch for
 streaming and attribute enumeration is available above.
 
 ## Resumable attribute access
@@ -1985,8 +2131,9 @@ allocation-free sessions. Attribute lookup/enumeration sessions now cover compac
 and folded complete/partial views. Fixed-storage Document construction supports
 the same direct/session algorithms with explicit capacity bounds and shortfalls.
 Fixed scratch also supports direct/session edge streaming and attribute
-enumeration without a query allocator. Label-port existence/binding,
-event-based lowering and fixed materialization output remain later work.
+enumeration without a query allocator. Fixed materialization supports caller-owned
+output and scratch, explicit bounds and terminal shortfalls. Label-port
+existence/binding and event-based lowering remain later work.
 
 The final section measures value kind/operand access, joined output, bounded
 writing and exact-allocation `toString`, plus a benchmark-only kind cache.

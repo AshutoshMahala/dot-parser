@@ -432,3 +432,30 @@ export fn value_parts(source: [*]const u8, length: u32, memory: [*]u8, capacity:
     }
     return count;
 }
+
+export fn fixed_materialization(source: [*]const u8, length: u32, parse_memory: [*]u8, parse_capacity: u32, with_attributes: bool, stepped: bool) u32 {
+    return if (with_attributes) fixedMaterialization(true, source, length, parse_memory, parse_capacity, stepped) else fixedMaterialization(false, source, length, parse_memory, parse_capacity, stepped);
+}
+fn fixedMaterialization(comptime with_attributes: bool, source: [*]const u8, length: u32, parse_memory: [*]u8, parse_capacity: u32, stepped: bool) u32 {
+    const IR = dot.ir.Lowering(.{ .capabilities = .{ .attributes = with_attributes } });
+    var arena: std.heap.FixedBufferAllocator = .init(parse_memory[0..parse_capacity]);
+    var parsed = IR.parsePartial(arena.allocator(), source[0..length], .{}) catch return 0;
+    defer parsed.deinit();
+    const graph = parsed.ir() orelse return 0;
+    const Output = IR.FixedMaterializedStorage(.{ .edges = 128, .attribute_states = if (with_attributes) 256 else 0, .attribute_keys = if (with_attributes) 32 else 0 }, .{});
+    var output: Output = .{};
+    var scratch: IR.FixedMaterializationScratch(IR.FixedGraphStorage(.{ .nodes = 64 }), Output, .{ .members = 128 }, .{}) = .{};
+    const memory: IR.MaterializationMemory(with_attributes) = .{ .output = output.storage(), .scratch = scratch.storage() };
+    if (stepped) {
+        var operation = graph.materializationSessionIn(memory, .{}) catch return 0;
+        defer operation.deinit();
+        while (operation.advance(7).outcome == null) {}
+        var result = operation.takeResult() catch return 0;
+        defer result.deinit();
+        return @intCast(result.edges.len);
+    }
+    var result = graph.materializeIn(memory, .{});
+    const materialized = if (result.materialized) |*value| value else return 0;
+    defer materialized.deinit();
+    return materialized.capacities().edges;
+}

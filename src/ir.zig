@@ -17,6 +17,8 @@ pub const EdgeScratchCapacities = query_storage.EdgeScratchCapacities;
 pub const AttributeScratchCapacities = query_storage.AttributeScratchCapacities;
 pub const StorageShortfall = fixed_storage.StorageShortfall;
 pub const Resource = fixed_storage.Resource;
+pub const MaterializedCapacities = @import("ir/materialization_storage.zig").Capacities;
+pub const MaterializationScratchCapacities = @import("ir/materialization_storage.zig").ScratchCapacities;
 pub const MaterializationProgress = @import("ir/materialization_session.zig").Progress;
 pub const MaterializationOutcome = @import("ir/materialization_session.zig").Outcome;
 pub const LoweringProgress = @import("ir/lowering_session.zig").Progress;
@@ -94,6 +96,15 @@ pub fn Lowering(comptime config: Config) type {
         pub const FixedGraphStorage = fixedStorage().FixedGraphStorage;
         pub const FixedLoweringScratch = fixedStorage().FixedLoweringScratch;
         pub const loweringLayout = fixedStorage().loweringLayout;
+        const OutputStorage = @import("ir/materialization_storage.zig").API(rep);
+        pub const MaterializedStorage = OutputStorage.MaterializedStorage;
+        pub const MaterializationScratch = OutputStorage.MaterializationScratch;
+        pub const MaterializationMemory = OutputStorage.MaterializationMemory;
+        pub const FixedMaterializedStorage = OutputStorage.FixedMaterializedStorage;
+        pub const FixedMaterializationScratch = OutputStorage.FixedMaterializationScratch;
+        pub const materializationLayout = OutputStorage.materializationLayout;
+        pub const materializationBounds = OutputStorage.materializationBounds;
+        pub const scanMaterializationBounds = OutputStorage.scanMaterializationBounds;
         pub const EdgeScratch = query_storage.EdgeScratch;
         fn attributeStorage() type {
             comptime @import("ir/representation.zig").requireAttributes(rep.attributes);

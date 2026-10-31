@@ -13,6 +13,7 @@ const Growth = storage.Growth;
 const encoding = @import("parser_support").encoding;
 const none = attrs.none;
 const scratch = @import("query_storage.zig");
+const output = @import("materialization_storage.zig");
 
 pub const Outcome = union(enum) { success, failure: r.Error };
 pub const Progress = struct {
@@ -28,6 +29,9 @@ pub const TakeError = r.Error || error{ NotReady, AlreadyTaken };
 
 pub fn Session(comptime Graph: type, comptime caps: encoding.Capabilities, comptime attributes: bool) type {
     return Engine(Graph, caps, attributes, false, null, false);
+}
+pub fn FixedSession(comptime Graph: type, comptime caps: encoding.Capabilities, comptime attributes: bool) type {
+    return Engine(Graph, caps, attributes, false, null, true);
 }
 
 /// Internal record result; public streaming wraps the record in the owning
@@ -104,7 +108,7 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
         graph: *const Graph,
         limits: r.Limits,
         cancellation: if (has_cancellation) ?r.Cancellation else void,
-        memory: if (fixed_storage) scratch.EdgeState else r.Memory,
+        memory: if (fixed_storage) (if (streaming) scratch.EdgeState else output.State(attributes)) else r.Memory,
         total_work: u64 = 0,
         outcome: ?Outcome = null,
         // Keep owning sessions' field count/order unchanged. Even void fields
@@ -143,9 +147,9 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
         rehash_id: u32 = 0,
         slot: u32 = 0,
         maps: if (attributes) folded.Builder(true) else void,
-        root_growth: if (attributes) Growth(u32) else void = if (attributes) .{} else {},
-        cell_growth: if (attributes) Growth(folded.Cell) else void = if (attributes) .{} else {},
-        key_growth: if (attributes) Growth(u32) else void = if (attributes) .{} else {},
+        root_growth: if (attributes and !fixed_storage) Growth(u32) else void = if (attributes and !fixed_storage) .{} else {},
+        cell_growth: if (attributes and !fixed_storage) Growth(folded.Cell) else void = if (attributes and !fixed_storage) .{} else {},
+        key_growth: if (attributes and !fixed_storage) Growth(u32) else void = if (attributes and !fixed_storage) .{} else {},
         catalog_index: if (attributes) u32 else void = if (attributes) 0 else {},
         pending_key: if (attributes) u32 else void = if (attributes) 0 else {},
         port_index: if (attributes) u2 else void = if (attributes) 0 else {},
@@ -199,17 +203,20 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
         pub fn peakBytes(self: *const Self) usize {
             return self.memory.peak;
         }
-        pub fn initIn(graph: *const Graph, memory: scratch.EdgeScratch, options: r.Options) r.Error!Self {
+        pub fn initIn(graph: *const Graph, memory: if (streaming) scratch.EdgeScratch else output.Memory(attributes), options: r.Options) r.Error!Self {
+            return initInOwner(graph, memory, options, graph);
+        }
+        pub fn initInOwner(graph: *const Graph, memory: if (streaming) scratch.EdgeScratch else output.Memory(attributes), options: r.Options, owner: anytype) r.Error!Self {
             const limits = options.limits orelse graph.limits;
             if (has_cancellation) if (options.cancellation) |c| if (c.requested()) return error.Cancelled;
-            const bound = try scratch.EdgeState.init(memory, graph, limits);
-            return .{ .graph = graph, .limits = limits, .cancellation = if (has_cancellation) options.cancellation else {}, .memory = bound, .stored = .initBuffer(bound.pairs), .phase = .connection, .maps = {} };
+            const bound = try (if (streaming) scratch.EdgeState else output.State(attributes)).init(memory, owner, limits);
+            return .{ .graph = graph, .limits = limits, .cancellation = if (has_cancellation) options.cancellation else {}, .memory = bound, .stored = .initBuffer(if (streaming) bound.pairs else bound.edges), .phase = if (attributes and graph.has_ports) .port_catalog else .connection, .maps = if (attributes) bound.maps(true, limits.max_attribute_states) else {} };
         }
         pub fn shortfall(self: *const Self) ?@import("fixed_storage.zig").StorageShortfall {
             if (!fixed_storage) @compileError("shortfall requires fixed scratch");
             return self.memory.shortfall;
         }
-        pub fn scratchPeak(self: *const Self) scratch.EdgeScratchCapacities {
+        pub fn scratchPeak(self: *const Self) (if (streaming) scratch.EdgeScratchCapacities else output.ScratchCapacities) {
             if (!fixed_storage) @compileError("scratchPeak requires fixed scratch");
             return self.memory.used;
         }
@@ -670,7 +677,7 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                                 } else if (!try self.edge_growth.step(&self.stored, a)) continue :machine self.successor(single, phase);
                                 self.target = try r.index(self.stored.items.len);
                                 self.stored.appendAssumeCapacity(if (streaming) edges.canonical(self.candidate) else self.candidate);
-                                if (fixed_storage) self.memory.used.strict_pairs = @intCast(self.stored.items.len);
+                                if (fixed_storage and streaming) self.memory.used.strict_pairs = @intCast(self.stored.items.len);
                             }
                             if (streaming) {
                                 self.taken.emitted += 1;
@@ -687,7 +694,15 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                         } else unreachable,
                         .roots => if (attributes) {
                             if (self.maps.roots.items.len <= self.target) {
-                                if (!try self.root_growth.step(&self.maps.roots, a)) continue :machine self.successor(single, phase);
+                                if (fixed_storage) {
+                                    // Zero-cell default-only output has no roots.
+                                    // The first explicit winner checks its semantic
+                                    // limit, then the cell pool, before root access.
+                                    if (self.maps.roots.capacity == 0) {
+                                        if (self.maps.limit == 0) return error.AttributeStateLimit;
+                                        try self.memory.ensure("cells", 1);
+                                    }
+                                } else if (!try self.root_growth.step(&self.maps.roots, a)) continue :machine self.successor(single, phase);
                                 self.maps.roots.appendAssumeCapacity(none);
                             } else {
                                 self.port_index = 0;
@@ -736,7 +751,9 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                         } else unreachable,
                         .set_insert => if (attributes) {
                             if (self.maps.cells.items.len >= self.maps.limit) return error.AttributeStateLimit;
-                            if (!try self.cell_growth.step(&self.maps.cells, a)) continue :machine self.successor(single, phase);
+                            if (fixed_storage) {
+                                try self.memory.ensure("cells", self.maps.cells.items.len + 1);
+                            } else if (!try self.cell_growth.step(&self.maps.cells, a)) continue :machine self.successor(single, phase);
                             self.set_child = try r.index(self.maps.cells.items.len);
                             self.maps.cells.appendAssumeCapacity(.{ .key = self.set_key, .attribute = self.set_attribute, .connection = @fromBackingInt(self.connection) });
                             continue :machine self.successor(single, .set_unwind);
@@ -768,7 +785,9 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                             } else continue :machine self.successor(single, .finish);
                         } else unreachable,
                         .key_append => if (attributes) {
-                            if (!try self.key_growth.step(&self.maps.keys, a)) continue :machine self.successor(single, phase);
+                            if (fixed_storage) {
+                                try self.memory.ensure("keys", self.maps.keys.items.len + 1);
+                            } else if (!try self.key_growth.step(&self.maps.keys, a)) continue :machine self.successor(single, phase);
                             self.maps.keys.appendAssumeCapacity(self.pending_key);
                             continue :machine self.successor(single, .catalog);
                         } else unreachable,
@@ -813,14 +832,12 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
             const result: Result = if (attributes) .{
                 .graph = self.graph,
                 .edges = self.stored.items,
-                .storage = self.stored.allocatedSlice(),
-                .allocator = self.graph.allocator,
+                ._ownership = if (fixed_storage) .{ .borrowed = self.memory.output } else .{ .allocated = .{ .allocator = self.graph.allocator, .capacity = self.stored.capacity } },
                 .peak_bytes = self.memory.peak,
                 .folded = self.maps,
             } else .{
                 .edges = self.stored.items,
-                .storage = self.stored.allocatedSlice(),
-                .allocator = self.graph.allocator,
+                ._ownership = if (fixed_storage) .{ .borrowed = self.memory.output } else .{ .allocated = .{ .allocator = self.graph.allocator, .capacity = self.stored.capacity } },
                 .peak_bytes = self.memory.peak,
             };
             self.target = @intCast(self.stored.items.len); // Stable progress after transfer.

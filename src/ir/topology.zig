@@ -59,11 +59,16 @@ pub const Edge = struct { from: NodeId, to: NodeId, operator: syntax.EdgeOperato
 pub const MaterializedTopology = struct {
     edges: []const Edge,
     peak_bytes: usize,
-    allocator: std.mem.Allocator,
-    storage: []Edge,
+    _ownership: @import("materialization_storage.zig").Ownership,
     pub fn deinit(self: *MaterializedTopology) void {
-        self.allocator.free(self.storage);
+        if (self._ownership == .allocated) self._ownership.allocated.allocator.free(self._ownership.edgeStorage(self.edges));
         self.* = undefined;
+    }
+    pub fn capacities(self: *const MaterializedTopology) @import("materialization_storage.zig").Capacities {
+        return .{ .edges = @intCast(self.edges.len) };
+    }
+    pub fn retainedBytes(self: *const MaterializedTopology) usize {
+        return if (self._ownership == .borrowed) self._ownership.borrowed.len else self._ownership.allocated.capacity * @sizeOf(Edge);
     }
 };
 
@@ -509,6 +514,21 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
         }
 
         pub const Materialized = @import("materialized_attributes.zig").For(Self, caps);
+        pub fn FixedMaterializationResult(comptime attributes: bool) type {
+            return @import("fixed_materialization.zig").Result(Self, attributes);
+        }
+        pub fn FixedMaterializationSession(comptime attributes: bool) type {
+            if (attributes) comptime @import("representation.zig").requireAttributes(rep.attributes);
+            return @import("materialization_session.zig").FixedSession(Self, caps, attributes);
+        }
+        pub inline fn materializeIn(self: *const Self, memory: anytype, options: anytype) FixedMaterializationResult(@import("materialization_storage.zig").selected(@TypeOf(memory))) {
+            const attributes = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
+            return @import("fixed_materialization.zig").direct(Self, attributes, self, memory, @import("materialization_storage.zig").options(attributes, options));
+        }
+        pub inline fn materializationSessionIn(self: *const Self, memory: anytype, options: anytype) r.Error!FixedMaterializationSession(@import("materialization_storage.zig").selected(@TypeOf(memory))) {
+            const attributes = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
+            return FixedMaterializationSession(attributes).initIn(self, memory, @import("materialization_storage.zig").options(attributes, options));
+        }
         pub fn MaterializationSession(comptime attributes: bool) type {
             if (attributes) comptime @import("representation.zig").requireAttributes(rep.attributes);
             return @import("materialization_session.zig").Session(Self, caps, attributes);

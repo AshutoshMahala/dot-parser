@@ -91,7 +91,7 @@ pub fn main(init: std.process.Init) !void {
                 } else expected = checksum;
                 std.mem.doNotOptimizeAway(checksum);
                 count = graph.edges.len;
-                retained[index] = if (attributes) graph.retainedBytes() else graph.storage.len * @sizeOf(dot.ir.Edge);
+                retained[index] = graph.retainedBytes();
                 peak[index] = graph.peak_bytes;
             };
             if (case_index == 0) continue;

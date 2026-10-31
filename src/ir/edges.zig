@@ -5,6 +5,7 @@ const t = @import("topology.zig");
 const r = @import("resources.zig");
 const names = @import("names.zig");
 const scratch = @import("query_storage.zig");
+const output = @import("materialization_storage.zig");
 const Operator = @import("../dot/syntax.zig").EdgeOperator;
 
 const Endpoint = struct {
@@ -44,6 +45,9 @@ pub fn FixedIterator(comptime Graph: type) type {
 pub fn AttributeMaterializer(comptime Graph: type, comptime with_ports: bool) type {
     return Engine(Graph, true, true, with_ports, false);
 }
+pub fn FixedMaterializer(comptime Graph: type, comptime attributes: bool, comptime with_ports: bool) type {
+    return Engine(Graph, true, attributes, with_ports, true);
+}
 
 fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attributes: bool, comptime with_ports: bool, comptime fixed: bool) type {
     return struct {
@@ -57,7 +61,7 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
         max_pairs: u64,
         max_edges: u32,
         work: r.Work,
-        memory: if (fixed) scratch.EdgeState else r.Memory,
+        memory: if (fixed) (if (retaining) output.State(fold_attributes) else scratch.EdgeState) else r.Memory,
         left: Endpoint = .{},
         right: Endpoint = .{},
         marks: []u32 = &.{},
@@ -89,17 +93,20 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                 .folded = if (fold_attributes) .{ .limit = limits.max_attribute_states } else {},
             };
         }
-        pub fn initIn(graph: *const Graph, memory: scratch.EdgeScratch, options: r.Options) r.Error!Self {
+        pub fn initIn(graph: *const Graph, memory: if (retaining) output.Memory(fold_attributes) else scratch.EdgeScratch, options: r.Options) r.Error!Self {
+            return initInOwner(graph, memory, options, graph);
+        }
+        pub fn initInOwner(graph: *const Graph, memory: if (retaining) output.Memory(fold_attributes) else scratch.EdgeScratch, options: r.Options, owner: anytype) r.Error!Self {
             const limits = options.limits orelse graph.limits;
             const work = try r.Work.init(limits, options.cancellation);
-            const bound = try scratch.EdgeState.init(memory, graph, limits);
-            return .{ .graph = graph, .strict = graph.strict, .max_pairs = limits.max_pairs, .max_edges = limits.max_edges, .work = work, .memory = bound, .stored = .initBuffer(bound.pairs), .folded = {} };
+            const bound = try (if (retaining) output.State(fold_attributes) else scratch.EdgeState).init(memory, owner, limits);
+            return .{ .graph = graph, .strict = graph.strict, .max_pairs = limits.max_pairs, .max_edges = limits.max_edges, .work = work, .memory = bound, .stored = .initBuffer(if (retaining) bound.edges else bound.pairs), .folded = if (fold_attributes) bound.maps(with_ports, limits.max_attribute_states) else {} };
         }
         pub fn shortfall(self: *const Self) ?@import("fixed_storage.zig").StorageShortfall {
             if (!fixed) @compileError("shortfall requires fixed scratch");
             return self.memory.shortfall;
         }
-        pub fn scratchPeak(self: *const Self) scratch.EdgeScratchCapacities {
+        pub fn scratchPeak(self: *const Self) (if (retaining) output.ScratchCapacities else scratch.EdgeScratchCapacities) {
             if (!fixed) @compileError("scratchPeak requires fixed scratch");
             return self.memory.used;
         }
@@ -253,7 +260,7 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                         self.connection += 1;
                     }
                 }
-                const a = if (fixed) undefined else self.memory.allocator();
+                const a = if (fixed) &self.memory else self.memory.allocator();
                 const key = canonical(edge);
                 if (self.strict) {
                     const hash = pairHash(edge.operator, key);
@@ -293,7 +300,10 @@ fn Engine(comptime Graph: type, comptime retaining: bool, comptime fold_attribut
                     try self.pairs.insert(hash, try r.index(self.stored.items.len), &self.work);
                 } else if (self.emitted >= self.max_edges) return error.EdgeLimit;
                 if (retaining) {
-                    try self.stored.append(a, edge);
+                    if (fixed) {
+                        try self.memory.needPair(self.stored.items.len + 1);
+                        self.stored.appendAssumeCapacity(edge);
+                    } else try self.stored.append(a, edge);
                     if (fold_attributes) try self.folded.apply(self.graph, self.emitted, edge.first_connection, if (with_ports) edge else {}, a, &self.work);
                 } else if (self.strict) {
                     if (fixed) {
@@ -316,8 +326,7 @@ pub fn materialize(comptime Graph: type, graph: *const Graph, options: r.Options
     _ = try iterator.next();
     const result: t.MaterializedTopology = .{
         .edges = iterator.stored.items,
-        .storage = iterator.stored.allocatedSlice(),
-        .allocator = graph.allocator,
+        ._ownership = .{ .allocated = .{ .allocator = graph.allocator, .capacity = iterator.stored.capacity } },
         .peak_bytes = iterator.peakBytes(),
     };
     iterator.stored = .empty; // Transfer ownership, not the scoped allocator.

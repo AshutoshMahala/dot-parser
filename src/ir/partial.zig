@@ -51,12 +51,29 @@ pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
             return .{ .graph = self, ._data = data, .edges = data.edges, .peak_bytes = data.peak_bytes };
         }
         pub fn MaterializationSession(comptime attributes: bool) type {
+            return MaterializationSessionWith(attributes, false);
+        }
+        pub fn FixedMaterializationSession(comptime attributes: bool) type {
+            return MaterializationSessionWith(attributes, true);
+        }
+        pub fn FixedMaterializationResult(comptime attributes: bool) type {
+            return @import("fixed_materialization.zig").Result(Self, attributes);
+        }
+        pub inline fn materializeIn(self: *const Self, memory: anytype, options: anytype) FixedMaterializationResult(@import("materialization_storage.zig").selected(@TypeOf(memory))) {
+            const attributes = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
+            return @import("fixed_materialization.zig").direct(Self, attributes, self, memory, @import("materialization_storage.zig").options(attributes, options));
+        }
+        pub inline fn materializationSessionIn(self: *const Self, memory: anytype, options: anytype) r.Error!FixedMaterializationSession(@import("materialization_storage.zig").selected(@TypeOf(memory))) {
+            const attributes = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
+            return .{ .graph = self, .inner = try Core.FixedMaterializationSession(attributes).initInOwner(&self._data, memory, @import("materialization_storage.zig").options(attributes, options), self) };
+        }
+        fn MaterializationSessionWith(comptime attributes: bool, comptime fixed: bool) type {
             if (attributes) comptime @import("representation.zig").requireAttributes(rep.attributes);
             return struct {
                 const Session = @This();
                 pub const Result = if (attributes) Materialized else MaterializedTopology;
                 graph: *const Self,
-                inner: Core.MaterializationSession(attributes),
+                inner: if (fixed) Core.FixedMaterializationSession(attributes) else Core.MaterializationSession(attributes),
                 pub fn advance(session: *Session, budget: u32) @import("materialization_session.zig").Progress {
                     return session.inner.advance(budget);
                 }
@@ -72,6 +89,14 @@ pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
                 }
                 pub fn peakBytes(session: *const Session) usize {
                     return session.inner.peakBytes();
+                }
+                pub fn shortfall(session: *const Session) ?@import("fixed_storage.zig").StorageShortfall {
+                    if (!fixed) @compileError("shortfall requires fixed materialization");
+                    return session.inner.shortfall();
+                }
+                pub fn scratchPeak(session: *const Session) @import("materialization_storage.zig").ScratchCapacities {
+                    if (!fixed) @compileError("scratchPeak requires fixed materialization");
+                    return session.inner.scratchPeak();
                 }
                 pub fn takeResult(session: *Session) @import("materialization_session.zig").TakeError!Result {
                     const data = try session.inner.takeResult();

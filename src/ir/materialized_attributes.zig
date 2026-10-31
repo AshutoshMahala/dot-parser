@@ -8,6 +8,14 @@ const encoding = @import("parser_support").encoding;
 const Unmetered = @import("../dot/identifier_cursor.zig").Unmetered;
 const none = attrs.none;
 const ports = @import("ports.zig");
+const memory = @import("lowering_storage.zig");
+
+// Preserve the ordinary ArrayList append specialization. Only fixed output
+// dispatches to caller-pool checks; no storage branch remains in the hot path.
+inline fn append(a: anytype, list: anytype, value: std.meta.Elem(@TypeOf(list.items)), comptime field: []const u8) r.Error!void {
+    if (@TypeOf(a) == std.mem.Allocator) return list.append(a, value);
+    return memory.append(a, list, value, field);
+}
 
 pub const Cell = struct {
     key: u32,
@@ -78,7 +86,7 @@ pub fn Builder(comptime with_ports: bool) type {
                 return id;
             }
         }
-        fn set(self: *Self, a: std.mem.Allocator, root: u32, key: u32, attribute: u32, connection: t.ConnectionId, work: *r.Work) r.Error!u32 {
+        fn set(self: *Self, a: anytype, root: u32, key: u32, attribute: u32, connection: t.ConnectionId, work: *r.Work) r.Error!u32 {
             // With u32 cell IDs an AVL path has fewer than 48 entries. No recursion
             // or source-dependent stack, and rotations cannot allocate or fail.
             var path: [48]u32 = undefined;
@@ -100,7 +108,7 @@ pub fn Builder(comptime with_ports: bool) type {
             try work.spend(1);
             if (self.cells.items.len >= self.limit) return error.AttributeStateLimit;
             var child = try r.index(self.cells.items.len);
-            try self.cells.append(a, .{ .key = key, .attribute = attribute, .connection = connection });
+            try append(a, &self.cells, .{ .key = key, .attribute = attribute, .connection = connection }, "cells");
             while (depth != 0) {
                 try work.spend(1);
                 depth -= 1;
@@ -109,7 +117,7 @@ pub fn Builder(comptime with_ports: bool) type {
             }
             return child;
         }
-        pub fn apply(self: *Self, graph: anytype, edge: u32, connection: t.ConnectionId, target: if (with_ports) t.Edge else void, a: std.mem.Allocator, work: *r.Work) r.Error!void {
+        pub fn apply(self: *Self, graph: anytype, edge: u32, connection: t.ConnectionId, target: if (with_ports) t.Edge else void, a: anytype, work: *r.Work) r.Error!void {
             const source = graph.connections[@backingInt(connection)];
             const range = source.attributes;
             if (range.len == 0 and (!with_ports or (source.left.port == .none and source.right.port == .none))) return;
@@ -119,9 +127,13 @@ pub fn Builder(comptime with_ports: bool) type {
             }
             // Attribute-free materialization needs no root/cell allocation. Gaps
             // before the first explicit update carry no map, not copied defaults.
+            if (@TypeOf(a) != std.mem.Allocator and self.roots.capacity == 0) {
+                if (self.limit == 0) return error.AttributeStateLimit;
+                try a.ensure("cells", 1);
+            }
             while (self.roots.items.len <= edge) {
                 try work.spend(1);
-                try self.roots.append(a, none);
+                try append(a, &self.roots, none, "roots");
             }
             var root = self.roots.items[edge];
             if (with_ports) {
@@ -165,20 +177,25 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities) type {
         edges: []const t.Edge,
         peak_bytes: usize,
         graph: *const Graph,
-        allocator: std.mem.Allocator,
-        storage: []t.Edge,
+        _ownership: @import("materialization_storage.zig").Ownership,
         folded: Builder(true),
 
         /// Owns only output/index storage. Keep the borrowed IR and source alive,
         /// immutable and unmoved. Edge views/iterators additionally borrow this
         /// result; returned AttributeView/ValueView objects borrow only the IR.
         pub fn deinit(self: *Self) void {
-            self.allocator.free(self.storage);
-            self.folded.deinit(self.allocator);
+            if (self._ownership == .allocated) {
+                self._ownership.allocated.allocator.free(self._ownership.edgeStorage(self.edges));
+                self.folded.deinit(self._ownership.allocated.allocator);
+            }
             self.* = undefined;
         }
         pub fn retainedBytes(self: *const Self) usize {
-            return self.storage.len * @sizeOf(t.Edge) + self.folded.retainedBytes();
+            if (self._ownership == .borrowed) return self._ownership.borrowed.len;
+            return self._ownership.allocated.capacity * @sizeOf(t.Edge) + self.folded.retainedBytes();
+        }
+        pub fn capacities(self: *const Self) @import("materialization_storage.zig").Capacities {
+            return .{ .edges = @intCast(self.edges.len), .attribute_states = @intCast(self.folded.cells.items.len), .attribute_keys = @intCast(self.folded.keys.items.len) };
         }
         pub const EdgeView = struct {
             owner: *const Self,
@@ -326,27 +343,29 @@ fn materializeImpl(comptime Graph: type, comptime with_ports: bool, graph: *cons
     var iterator = try @import("edges.zig").AttributeMaterializer(Graph, with_ports).init(graph, options);
     defer iterator.deinit();
     _ = try iterator.next();
-    if (iterator.stored.items.len != 0) {
-        for (graph.attribute_data.keys.items, 0..) |key, id| {
-            try iterator.work.spend(1);
-            if (key.kind == .edge) iterator.folded.keys.append(iterator.memory.allocator(), @intCast(id)) catch |err| return iterator.memory.failure(err);
-        }
-        if (with_ports) for (iterator.folded.port_introductions, 0..) |intro, i| {
-            if (intro != null and iterator.folded.port_keys.ids[i] >= ports.right) {
-                try iterator.work.spend(1);
-                iterator.folded.keys.append(iterator.memory.allocator(), iterator.folded.port_keys.ids[i]) catch |err| return iterator.memory.failure(err);
-            }
-        };
-    }
+    try finishCatalog(with_ports, &iterator);
     const result: Graph.Materialized = .{
         .edges = iterator.stored.items,
-        .storage = iterator.stored.allocatedSlice(),
         .folded = iterator.folded.transfer(),
         .graph = graph,
-        .allocator = graph.allocator,
+        ._ownership = .{ .allocated = .{ .allocator = graph.allocator, .capacity = iterator.stored.capacity } },
         .peak_bytes = iterator.peakBytes(),
     };
     iterator.stored = .empty;
     iterator.folded = .{ .limit = 0 };
     return result;
+}
+pub fn finishCatalog(comptime with_ports: bool, iterator: anytype) r.Error!void {
+    if (iterator.stored.items.len == 0) return;
+    const a = if (@TypeOf(iterator.memory) == r.Memory) iterator.memory.allocator() else &iterator.memory;
+    for (iterator.graph.attribute_data.keys.items, 0..) |key, id| {
+        try iterator.work.spend(1);
+        if (key.kind == .edge) append(a, &iterator.folded.keys, @as(u32, @intCast(id)), "keys") catch |err| return iterator.memory.failure(err);
+    }
+    if (with_ports) for (iterator.folded.port_introductions, 0..) |intro, i| {
+        if (intro != null and iterator.folded.port_keys.ids[i] >= ports.right) {
+            try iterator.work.spend(1);
+            append(a, &iterator.folded.keys, iterator.folded.port_keys.ids[i], "keys") catch |err| return iterator.memory.failure(err);
+        }
+    };
 }

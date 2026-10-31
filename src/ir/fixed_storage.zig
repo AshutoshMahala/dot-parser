@@ -44,6 +44,9 @@ pub const Resource = enum {
     members,
     strict_pairs,
     attribute_winners,
+    materialized_edges,
+    materialized_attribute_states,
+    materialized_attribute_keys,
 };
 pub const StorageShortfall = struct { resource: Resource, limit: u32, required_at_least: u32 };
 pub const Bounds = struct { graph: GraphCapacities, scratch: LoweringScratchCapacities };

@@ -4,7 +4,7 @@ const a = std.testing.allocator;
 const expect = std.testing.expect;
 const equal = std.testing.expectEqualDeep;
 
-fn compareResults(comptime attributes: bool, expected: anytype, actual: anytype) !void {
+pub fn compareResults(comptime attributes: bool, expected: anytype, actual: anytype) !void {
     try std.testing.expectEqualSlices(dot.ir.Edge, expected.edges, actual.edges);
     if (attributes) {
         var left = expected.edgeIterator();

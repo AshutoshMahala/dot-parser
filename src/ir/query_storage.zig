@@ -22,23 +22,23 @@ pub fn checkedBytes(memory: anytype) r.Error![]u8 {
     return (try layout.bind(memory.bytes)).bytes;
 }
 
-fn appendRegion(total: *usize, comptime T: type, count: usize) r.Error!usize {
+pub fn appendRegion(total: *usize, comptime T: type, count: usize) r.Error!usize {
     const start = std.math.add(usize, total.*, @alignOf(T) - 1) catch return error.IndexLimit;
     const offset = start & ~@as(usize, @alignOf(T) - 1);
     total.* = std.math.add(usize, offset, std.math.mul(usize, count, @sizeOf(T)) catch return error.IndexLimit) catch return error.IndexLimit;
     return offset;
 }
-fn slotCount(count: u32) r.Error!u32 {
+pub fn slotCount(count: u32) r.Error!u32 {
     if (count == 0) return 0;
     const twice = std.math.mul(usize, count, 2) catch return error.IndexLimit;
     const slots = std.math.ceilPowerOfTwo(usize, @max(16, twice)) catch return error.IndexLimit;
     return r.index(slots);
 }
-fn region(comptime T: type, bytes: []u8, offset: usize, count: usize) []T {
+pub fn region(comptime T: type, bytes: []u8, offset: usize, count: usize) []T {
     if (count == 0) return &.{};
     return @as([*]T, @ptrCast(@alignCast(bytes.ptr + offset)))[0..count];
 }
-fn checkedBuffer(buffer: []u8, bytes: usize) r.Error![]u8 {
+pub fn checkedBuffer(buffer: []u8, bytes: usize) r.Error![]u8 {
     if (buffer.len < bytes) return error.BufferTooSmall;
     const bound = buffer[0..bytes];
     if (bytes != 0) {
@@ -47,7 +47,7 @@ fn checkedBuffer(buffer: []u8, bytes: usize) r.Error![]u8 {
     }
     return bound;
 }
-fn disjoint(buffer: []u8, input: anytype) r.Error!void {
+pub fn disjoint(buffer: []u8, input: anytype) r.Error!void {
     const bytes = std.mem.sliceAsBytes(input);
     if (buffer.len == 0 or bytes.len == 0) return;
     const a = @intFromPtr(buffer.ptr);
@@ -78,7 +78,8 @@ pub fn checkGraph(buffer: []u8, graph: anytype) r.Error!void {
 }
 pub fn checkMaterialized(buffer: []u8, owner: anytype) r.Error!void {
     try disjoint(buffer, @as([*]const @TypeOf(owner.*), @ptrCast(owner))[0..1]);
-    try disjoint(buffer, owner.storage);
+    if (owner._ownership == .borrowed) try disjoint(buffer, owner._ownership.borrowed);
+    try disjoint(buffer, owner._ownership.edgeStorage(owner.edges));
     inline for (.{ "roots", "cells", "keys" }) |field| try disjoint(buffer, @field(owner.folded, field).allocatedSlice());
 }
 
