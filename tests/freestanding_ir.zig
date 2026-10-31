@@ -2,6 +2,41 @@
 //! allocator: no libc, OS, global allocator, recursion, or renderer required.
 const std = @import("std");
 const dot = @import("dot_parser");
+// Capability omission also applies to query/expansion drivers. Caller scratch
+// can serve an allocator-built topology IR without any attribute reservation.
+export fn topology_operations(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32, stepped: bool) u32 {
+    const IR = dot.ir.Lowering(.{ .capabilities = .{ .attributes = false }, .policy = .{ .execution = .{ .metering = true } } });
+    var storage = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
+    const allocator = storage.allocator();
+    var result = IR.parsePartial(allocator, source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const graph = result.ir() orelse return 0;
+    const layout = IR.edgeScratchLayout(graph, .{ .members = 64, .strict_pairs = 128 }) catch return 0;
+    const bytes = allocator.alignedAlloc(u8, .@"16", layout.byte_size) catch return 0;
+    defer allocator.free(bytes);
+    const scratch = layout.bind(bytes) catch return 0;
+    var count: u32 = 0;
+    if (stepped) {
+        var edges = IR.edgeSessionIn(graph, scratch, .{}) catch return 0;
+        defer edges.deinit();
+        while (true) {
+            const p = edges.advance(7);
+            if (p.edge != null) count +%= 1;
+            if (p.outcome) |outcome| {
+                if (outcome == .failure) return 0;
+                break;
+            }
+        }
+    } else {
+        var edges = graph.edgeIteratorIn(scratch, .{}) catch return 0;
+        defer edges.deinit();
+        while (edges.next() catch return 0) |_| count +%= 1;
+    }
+    var expanded = graph.materialize(.{}) catch return 0;
+    defer expanded.deinit();
+    return if (expanded.edges.len == count) count else 0;
+}
+
 // Caller scratch works independently of the graph's storage backend. Consuming
 // both direct and stepped routes here checks that neither introduces OS calls.
 export fn fixed_queries(source: [*]const u8, length: u32, parse_memory: [*]u8, parse_capacity: u32, stepped: bool) u32 {

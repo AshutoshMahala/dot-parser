@@ -1216,9 +1216,15 @@ time. A separate IR identity combines the representation with source encodings;
 execution settings and limits do not change graph type identity. Profile-bound
 `parse` / `parsePartial` share the module conveniences' checking/ownership flow,
 using bound encodings and IR execution policy. Full attributes remain default.
-Capability-aware fixed lowering and the remaining operation/parity audit are
-still pending; topology profiles reject fixed-lowering calls rather than using
-full storage. Fixed materialization follows that work.
+The operation audit now covers direct queries, component views, symbolic edge
+streaming, explicit materialization and their bounded drivers. Topology queries
+preserve full-profile edge identity and partial uncertainty. Fixed edge scratch
+checks only retained pools, still rejects owner/source aliases and never falls
+back to allocation. Attribute-bearing materialization types and cross-profile
+attribute-scratch sizing reject an attribute-disabled graph at compile time.
+Capability-aware fixed lowering and its storage/parity audit remain pending;
+topology profiles reject fixed-lowering calls rather than using full storage.
+Fixed materialization follows that work.
 Speed builds specialize single-credit lowering resumes; larger grants share
 the existing loop and size builds retain one driver. Hashing inlines the
 one-unit name reader to avoid a call for every unit of comment/concatenation

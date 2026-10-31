@@ -157,6 +157,7 @@ pub fn Builder(comptime with_ports: bool) type {
 }
 
 pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities) type {
+    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
     return struct {
         const Self = @This();
         /// Records keep the first connection/orientation, just like topology-only

@@ -96,11 +96,46 @@ endpoint syntax is still available through `endpoint.portSyntax(graph)`.
 cannot be recovered from that IR: retain the Document separately and lower
 again with a full profile if you need them later.
 
+Core operations use the same calls for either representation:
+
+| Operation | With attributes disabled |
+| --- | --- |
+| Node/scope views, names, mentions, membership and edge-existence queries | Retained facts and checked handles behave as in full IR |
+| `edgeIterator` / `IR.edgeSession` | Same semantic order, strict deduplication and endpoint orientation; no attribute folding |
+| `edgeIteratorIn` / `IR.edgeSessionIn` | Caller-owned edge scratch works with allocator-built topology IR; no allocator fallback |
+| `materialize(.{})` / `materializationSession(.{})` | Infer topology output; no attribute-map state or effective-port resolution |
+| Attribute lookup, enumeration, scratch sizing and attribute-bearing materialization | Compile error, including helpers called through a different profile |
+
+For example, continue from the topology graph above without a different
+streaming API:
+
+```zig
+var edges = try graph.edgeIterator(.{});
+defer edges.deinit();
+while (try edges.next()) |edge|
+    std.debug.print("{f} -> {f}\n", .{ edge.from().name(), edge.to().name() });
+```
+
+Complete topology materialization retains plain `Edge` records in `.edges`, as
+when full IR explicitly selects `.attributes = false`. Partial materialization
+keeps its qualified views: gaps, unknown answers, first-connection uncertainty
+and uncertain undirected orientation survive expansion. Strict duplicate edges
+are still merged; non-strict parallel edges stay distinct. Written ports remain
+source facts and never stand in for unavailable effective-port answers.
+
+Use the same work/edge/pair/memory limits and execution policies. Session grants
+keep their existing units. A cancelled or exhausted operation never reports
+ordinary exhaustion: direct errors and terminal session outcomes retain their
+cause. Views already delivered by a stream still borrow the unchanged IR;
+failed materialization publishes no output. A fixed-scratch shortfall requires
+a new operation with sufficient storage, not resuming the failed one.
+
 The capability currently supports allocator-backed complete/partial lowering,
 including its metered/cancellable execution. Capability-aware fixed lowering
 is a later storage increment: topology profiles reject fixed-lowering storage/layout,
-bounds and `In` calls instead of reserving full-profile pools. Existing
-full-profile fixed APIs remain available.
+bounds and lowering `In` calls instead of reserving full-profile pools. This is
+separate from the supported fixed edge scratch above. Existing full-profile
+fixed-lowering APIs remain available.
 
 `max_attributes` and `max_attribute_states` apply only when attributes are
 retained. Other IR limits still apply. Removing attributes does not make a

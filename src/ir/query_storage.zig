@@ -64,12 +64,17 @@ pub fn checkGraph(buffer: []u8, graph: anytype) r.Error!void {
     if (@hasField(@TypeOf(graph.*), "_coverage")) try disjoint(buffer, graph._coverage.entries.allocatedSlice());
     const g = data(graph);
     try disjoint(buffer, fixed.borrowedGraphBytes(g));
-    inline for (.{ "source", "node_storage", "scope_storage", "declaration_storage", "nodes", "scopes", "declarations", "occurrences", "mentions", "connections", "endpoint_ports", "attributes", "bodies", "node_slots", "posting_offsets", "posting_positions" }) |field| try disjoint(buffer, @field(g, field));
-    const a = &g.attribute_data;
-    try disjoint(buffer, a.keys.allocatedSlice());
-    try disjoint(buffer, a.cells.allocatedSlice());
-    inline for (.{ "meta", "scopes", "connection_defaults" }) |field| try disjoint(buffer, @field(a, field));
-    try disjoint(buffer, a.table.slots);
+    inline for (.{ "source", "node_storage", "scope_storage", "declaration_storage", "nodes", "scopes", "declarations", "occurrences", "mentions", "connections", "endpoint_ports", "attributes", "bodies", "node_slots", "posting_offsets", "posting_positions" }) |field| {
+        if (@FieldType(@TypeOf(g.*), field) == void) continue;
+        try disjoint(buffer, @field(g, field));
+    }
+    if (@TypeOf(g.*).capabilities.attributes) {
+        const a = &g.attribute_data;
+        try disjoint(buffer, a.keys.allocatedSlice());
+        try disjoint(buffer, a.cells.allocatedSlice());
+        inline for (.{ "meta", "scopes", "connection_defaults" }) |field| try disjoint(buffer, @field(a, field));
+        try disjoint(buffer, a.table.slots);
+    }
 }
 pub fn checkMaterialized(buffer: []u8, owner: anytype) r.Error!void {
     try disjoint(buffer, @as([*]const @TypeOf(owner.*), @ptrCast(owner))[0..1]);
@@ -161,6 +166,7 @@ pub fn edgeScratchBounds(graph: anytype, options: anytype) r.Error!EdgeScratchCa
 }
 pub fn attributeScratchBounds(graph: anytype) AttributeScratchCapacities {
     const g = data(graph);
+    comptime @import("representation.zig").requireAttributes(@TypeOf(g.*).capabilities.attributes);
     return .{ .winners = if (g.strict) @intCast(g.attribute_data.keys.items.len) else 0 };
 }
 

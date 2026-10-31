@@ -134,9 +134,11 @@ pub fn For(comptime Graph: type, comptime Core: type, comptime caps: encoding.Ca
                 // compact iteration is bounded; folded iteration is infallible.
                 pub const attributes = if (folded) foldedAttributes else compactAttributes;
                 fn foldedAttributes(self: Self) FoldedAttributes {
+                    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                     return .{ .graph = self.graph, .edge = self.edge, .inner = self.core().attributes() };
                 }
                 fn compactAttributes(self: Self, options: r.Options) r.Error!CompactAttributes {
+                    comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
                     const view: Core.EdgeView = .{ .graph = &self.graph._data, .edge = self.edge };
                     return .{ .graph = self.graph, .edge = self.edge, .inner = try view.attributes(options) };
                 }
@@ -235,6 +237,7 @@ pub fn For(comptime Graph: type, comptime Core: type, comptime caps: encoding.Ca
         }
 
         pub fn Materialized(comptime folded: bool) type {
+            if (folded) comptime @import("representation.zig").requireAttributes(Graph.capabilities.attributes);
             return struct {
                 const Self = @This();
                 pub const EdgeView = Edge(folded);
