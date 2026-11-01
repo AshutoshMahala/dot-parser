@@ -38,7 +38,7 @@ has been discussed.
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization | Label-port binding, markup-result association, event lowering, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization, optional connection/scope indexes | Optional adjacency, final slice-2 verification/performance pass, label-port binding, markup-result association, event lowering, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and
@@ -1237,6 +1237,17 @@ sizing options. Strict deduplication indexes the output directly, endpoint
 members share a buffer and defaults remain borrowed. All shortfalls are terminal
 and publish no prefix; result state preserves partial coverage. Session credits
 and cancellation retain their existing bounded transitions.
+Two optional query indexes now belong to the compile-time IR representation:
+`.indexes.connections` and `.indexes.scope_memberships`, both off by default.
+Two-sided endpoint postings narrow repeated connection/contribution queries;
+symbolic fallback entries preserve sets without expanding members or pairs.
+Unselective queries keep a bounded scan. The scope table caches final handles
+without changing occurrence snapshots. Direct, resumable and fixed lowering
+build the same indexes, with explicit capacities, bounds, memory/work accounting
+and terminal shortfalls. Complete/partial and full/topology queries preserve
+existing answers and provenance. This completes delivery-plan step 4; optional
+adjacency still needs its API design (step 5), and the final slice-2 verification
+and performance pass remains step 6. Slice 2 is not yet complete.
 Speed builds specialize single-credit lowering resumes; larger grants share
 the existing loop and size builds retain one driver. Hashing inlines the
 one-unit name reader to avoid a call for every unit of comment/concatenation

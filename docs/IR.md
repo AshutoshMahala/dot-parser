@@ -147,6 +147,51 @@ not enable cancellation; enable it in the IR profile first. The existing
 module-level `dot.ir.parse` / `parsePartial` convenience still lets an explicit
 hook opt into cancellation. Neither form has a shared DOT/lowering budget.
 
+## Optional query indexes
+
+Both indexes are off by default. Select them when repeated queries justify
+extra construction work and retained memory; query methods stay the same:
+
+```zig
+const IR = dot.ir.Lowering(.{
+    .indexes = .{ .connections = true, .scope_memberships = true },
+});
+var result = try IR.parse(allocator, source, .{ .diagnostics = bag.sink() });
+defer result.deinit();
+const graph = result.ir() orelse return error.InvalidInput;
+const connected = try graph.hasEdge(from, to);
+const members = try graph.scopeMembership(scope);
+```
+
+| Index | Accelerates | Retained array payload |
+| --- | --- | --- |
+| `connections` | `hasEdge`, strict compact-edge attribute lookups and enumeration, including their sessions | Per useful endpoint side: `4 × (nodes + 1 + connections)` bytes |
+| `scope_memberships` | Final membership lookup for a semantic scope | `4 × scopes` bytes |
+
+Connection postings retain connection IDs, never expanded endpoint sets or
+edge pairs. A query chooses the smaller complete endpoint candidate list,
+includes symbolic set contributions, and checks candidates in semantic order.
+Undirected queries consider both orientations. Unselective queries use the
+ordinary scan under the same work limit and cancellation state. Tiny graphs
+and sides with no singleton endpoints allocate no connection-index arrays.
+Non-strict attribute lookups and already-materialized attributes keep their
+existing direct paths. Scope indexing caches only the final membership handle;
+written occurrence snapshots are unchanged.
+
+`.indexes` is a compile-time representation choice, alongside `.capabilities`
+and `.source_encodings`, not a runtime execution override. Both selections work
+with full/topology, complete/partial, direct/session and fixed-storage lowering.
+Disabling an index removes acceleration, not facts or query methods. Partial
+coverage still determines whether an answer is known; the index cannot turn an
+unknown answer into absence. Reading a query never builds or mutates an index.
+
+Selected index construction counts against lowering's memory and work limits.
+Sessions initialize, count and fill arrays in bounded, charged steps. Failure
+publishes no graph with an unfinished index. Disabled indexes contribute no
+arrays, construction work or query branches. The payload formulas exclude
+descriptors and allocator overhead. Measure the tradeoff with
+`zig build bench-ir-query-indexes -Doptimize=fast` (also `safe`/`small`).
+
 ## Already have a Document or a custom profile?
 
 Use the existing lowering entry point instead of parsing again:
@@ -1060,7 +1105,7 @@ layout/binding before any writes. Bounds return zero for these pools without
 computing attribute-state bounds. Written ports, gaps, names and symbolic
 connections remain available; no attribute storage is reserved behind the scenes.
 
-Storage types belong to the profile's capability and source-encoding selection.
+Storage types belong to the profile's capability, source-encoding and index selection.
 Use that profile's `FixedLoweringScratch` with its `FixedGraphStorage`, and bind
 runtime byte regions with its `loweringLayout`. Different execution policies or
 limits do not change these types. Module-level graph and record exports describe
@@ -1080,12 +1125,22 @@ alias checks and shortfall rules below for either capability selection.
 | `declarations`, `attributes` | Retained declaration contributions and written attribute/assignment records. |
 | `attribute_keys`, `attribute_states` | Interned keys and persistent map cells, including update history. |
 | `coverage_gaps` | Partial-source coverage records; complete lowering needs none. |
+| `left_offsets`, `right_offsets` | Optional connection-index offsets: `nodes + 1` on each indexed side. |
+| `left_entries`, `right_entries` | Optional connection IDs: `connections` on each indexed side, including symbolic fallback entries. |
+| `scope_memberships` | Optional final membership handles: one per semantic scope. |
 
 `dot.ir.LoweringScratchCapacities` contains `nesting` (live scope **and edge**
 walk frames, including root), `edge_nesting` (live edge continuations), and
 `pending_endpoints` (buffered endpoints, never their Cartesian product).
-Hash slots, metadata, cursors and posting indexes are derived from these counts;
+Hash slots, metadata, cursors and membership posting indexes are derived from these counts;
 callers do not need to know internal record layouts or table load factors.
+The five optional query-index pools above are explicit. Unselected pools must
+have zero capacity; nonzero reservations are rejected before writes. On selected
+profiles, `graph.capacities()` reports the arrays actually retained, and explicit
+`loweringBounds` / `partialLoweringBounds` include conservative reservations
+without inspecting endpoint contents or expanding pairs. Bounds can reserve a
+side that an actual all-set graph will not need. Shortfalls name the individual
+pool, are terminal and publish no graph; no automatic bounds reservation is added.
 Port records use the existing mention/index and byte limits; there is no separate
 semantic port-count limit. A fixed port-pool shortfall reports
 `endpoint_port_pool` and publishes no graph. Explicit lowering bounds cap the
@@ -1472,6 +1527,7 @@ One credit performs one bounded transition:
 | Identity hashing/equality | One byte (byte profiles), native scalar (at most two UTF-16 code units), glue unit, pending UTF-8 output byte or hash-table probe |
 | Persistent attribute maps | One tree visit or ancestor update, with at most two rotations/five cell writes; published cells are copied before editing |
 | Buffer growth/initialization | At most 64 bytes copied/cleared, or one bounded storage-preparation transition |
+| Optional query-index construction | One connection/occurrence, one offset, or one allocation/phase transition |
 
 Long names, concatenation comments, hash-table rehashes, scope-default overlays
 and membership/posting preparation all yield. Budget one needs no minimum

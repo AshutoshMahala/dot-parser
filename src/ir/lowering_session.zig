@@ -91,6 +91,7 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
             posting_fill,
             posting_restore,
             finish,
+            query_indexes,
         };
         const Family = enum { node, scope, key };
         b: B,
@@ -100,7 +101,10 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
         interval: u32,
         total_work: u64 = 0,
         outcome: ?Outcome = null,
-        taken: bool = false,
+        taken: if (rep.indexes.any()) struct {
+            value: bool = false,
+            builder: @import("query_indexes.zig").Builder(rep.indexes) = .{},
+        } else bool = if (rep.indexes.any()) .{} else false,
         phase: Phase = .count,
         index: u32 = 0,
         allocation: u8 = 0,
@@ -249,8 +253,8 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
         pub fn takeResult(self: *Self) TakeError!Result {
             const outcome = self.outcome orelse return error.NotReady;
             if (outcome == .failure) return outcome.failure;
-            if (self.taken) return error.AlreadyTaken;
-            self.taken = true;
+            if (if (comptime rep.indexes.any()) self.taken.value else self.taken) return error.AlreadyTaken;
+            if (comptime rep.indexes.any()) self.taken.value = true else self.taken = true;
             self.b.a = if (fixed_storage) &self.memory else self.memory.allocator();
             return self.b.publish();
         }
@@ -600,8 +604,8 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
                     const body = try b.scopeBody(self.enter_id);
                     if (body.start > doc.order.len or body.len > doc.order.len - body.start) return error.InvalidDocument;
                     if (partial and self.enter_id != 0) {
-                        if (self.enter_id != b.publication.next_scope) return error.InvalidDocument;
-                        b.publication.next_scope += 1;
+                        if (self.enter_id != b.publicationState().next_scope) return error.InvalidDocument;
+                        b.publicationState().next_scope += 1;
                     }
                     b.bodies[@backingInt(b.occurrences[self.enter_id].membership)].start = b.mention_count;
                     b.stack.appendAssumeCapacity(.{ .scope = .{ .occurrence = self.enter_id, .cursor = body.start, .end = body.start + body.len } });
@@ -612,7 +616,7 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
                     if (b.stack.items.len == 0) {
                         self.index = 0;
                         if (partial) {
-                            if (b.publication.next_scope != b.occurrences.len) return error.InvalidDocument;
+                            if (b.publicationState().next_scope != b.occurrences.len) return error.InvalidDocument;
                             self.unfinished_scope = if (!doc.root_closed) .root else null;
                             self.phase = .unfinished;
                         } else self.phase = .posting_allocate;
@@ -622,12 +626,12 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
                     switch (b.stack.items[last]) {
                         .scope => |frame| {
                             self.occurrence = frame.occurrence;
-                            if (partial and b.publication.next_scope < b.occurrences.len) {
-                                const child = doc.subgraph_records[b.publication.next_scope - 1];
+                            if (partial and b.publicationState().next_scope < b.occurrences.len) {
+                                const child = doc.subgraph_records[b.publicationState().next_scope - 1];
                                 if (@backingInt(child.parent) == frame.occurrence and child.body.start <= frame.cursor) {
-                                    const body = try b.scopeBody(b.publication.next_scope);
+                                    const body = try b.scopeBody(b.publicationState().next_scope);
                                     b.stack.items[last].scope.cursor = @max(frame.cursor, body.start + body.len);
-                                    self.beginEnter(b.publication.next_scope);
+                                    self.beginEnter(b.publicationState().next_scope);
                                     return;
                                 }
                             }
@@ -1067,8 +1071,8 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
                     } else self.slot = @intCast((self.slot + 1) & (slots.len - 1));
                 },
                 .gap => if (partial) {
-                    if (!try self.gap_growth.step(&b.publication.coverage_data.entries, 1, a)) return;
-                    b.publication.coverage_data.entries.appendAssumeCapacity(.{ .gap = self.gap_value, .boundary = if (rep.attributes) try r.index(b.declarations.items.len) else {}, .connection_boundary = b.connection_count });
+                    if (!try self.gap_growth.step(&b.publicationState().coverage_data.entries, 1, a)) return;
+                    b.publicationState().coverage_data.entries.appendAssumeCapacity(.{ .gap = self.gap_value, .boundary = if (rep.attributes) try r.index(b.declarations.items.len) else {}, .connection_boundary = b.connection_count });
                     self.phase = self.gap_after;
                 } else unreachable,
                 .unfinished => if (partial) {
@@ -1077,7 +1081,7 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
                         self.index += 1;
                         return;
                     }
-                    self.index = @intCast(b.publication.coverage_data.entries.items.len);
+                    self.index = @intCast(b.publicationState().coverage_data.entries.items.len);
                     self.phase = .gap_suffix;
                     if (doc.unrepresented() != null or self.unfinished_scope != null or (!doc.scopeComplete() and self.index == 0)) {
                         self.gap_value = .{ .reason = .unfinished_input, .range = doc.unrepresented() orelse .{ .start = @intCast(doc.source.len), .len = 0 }, .occurrence = self.unfinished_scope };
@@ -1092,7 +1096,7 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
                         return;
                     }
                     self.index -= 1;
-                    const entries = b.publication.coverage_data.entries.items;
+                    const entries = b.publicationState().coverage_data.entries.items;
                     if (self.index + 1 == entries.len or entries[self.index].gap.range.start <= entries[self.suffix_first].gap.range.start) self.suffix_first = self.index;
                     entries[self.index].suffix_first = self.suffix_first;
                 } else unreachable,
@@ -1145,13 +1149,16 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
                 .posting_restore => {
                     if (self.index == 0) {
                         b.offsets[0] = 0;
-                        self.phase = .finish;
+                        self.phase = if (comptime rep.indexes.any()) .query_indexes else .finish;
                         return;
                     }
                     b.offsets[self.index] = b.offsets[self.index - 1];
                     self.index -= 1;
                 },
                 .finish => self.outcome = .success,
+                .query_indexes => if (comptime rep.indexes.any()) {
+                    if (try self.taken.builder.step(b, true)) self.phase = .finish;
+                } else unreachable,
             }
         }
     };

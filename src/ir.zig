@@ -60,12 +60,14 @@ pub const Uncertainty = @import("ir/coverage.zig").Uncertainty;
 pub const CoverageGap = @import("ir/coverage.zig").Gap;
 pub const Config = struct {
     capabilities: Capabilities = .{},
+    indexes: Indexes = .{},
     source_encodings: ?[]const encoding.Encoding = null,
     limits: Limits = .{},
     policy: Policy = .{},
     runtime_policy: bool = false,
 };
 pub const Capabilities = @import("ir/representation.zig").Capabilities;
+pub const Indexes = @import("ir/representation.zig").Indexes;
 
 pub fn Lowering(comptime config: Config) type {
     const rep = @import("ir/representation.zig").Identity.from(config);

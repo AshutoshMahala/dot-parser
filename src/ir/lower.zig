@@ -9,6 +9,7 @@ const attrs = @import("attributes.zig");
 const coverage = @import("coverage.zig");
 const mem = @import("lowering_storage.zig");
 const pools = @import("fixed_storage.zig");
+const indexes = @import("query_indexes.zig");
 
 pub const Interpretation = InterpretationFor(false);
 pub fn InterpretationFor(comptime partial: bool) type {
@@ -93,11 +94,23 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
         attribute_count: if (rep.attributes) u32 else void = if (rep.attributes) 0 else {},
         // Keep the complete builder's field count/types unchanged. Even void
         // fields can perturb Zig's automatic layout of equal-alignment fields.
-        publication: if (partial) struct {
+        publication: if (rep.indexes.any()) struct {
+            state: Publication = if (partial) .{} else false,
+            indexes: indexes.Data(rep.indexes) = .{},
+        } else Publication = if (partial or rep.indexes.any()) .{} else false,
+
+        const Publication = if (partial) struct {
             transferred: bool = false,
             coverage_data: coverage.DataFor(rep.attributes) = .{},
             next_scope: u32 = 1,
-        } else bool = if (partial) .{} else false,
+        } else bool;
+
+        pub inline fn publicationState(self: *Self) *Publication {
+            return if (comptime rep.indexes.any()) &self.publication.state else &self.publication;
+        }
+        pub inline fn queryIndexes(self: *Self) *indexes.Data(rep.indexes) {
+            return &self.publication.indexes;
+        }
 
         pub fn bindFixed(self: *Self, context: *pools.For(rep).Context) void {
             if (!fixed_storage) @compileError("fixed storage only");
@@ -107,7 +120,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
                 self.attribute_data.keys = context.list("keys");
                 self.attribute_data.cells = context.list("cells");
             }
-            if (partial) self.publication.coverage_data.entries = context.list("gaps");
+            if (partial) self.publicationState().coverage_data.entries = context.list("gaps");
         }
         pub fn deinit(self: *Self) void {
             if (fixed_storage) return;
@@ -117,8 +130,8 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
             self.stack.deinit(a);
             self.edge_stack.deinit(a);
             self.pending.deinit(a);
-            if (if (partial) self.publication.transferred else self.publication) return;
-            if (partial) self.publication.coverage_data.deinit(a);
+            if (if (partial) self.publicationState().transferred else self.publicationState().*) return;
+            if (partial) self.publicationState().coverage_data.deinit(a);
             self.node_table.deinit(a);
             self.nodes.deinit(a);
             self.scopes.deinit(a);
@@ -126,6 +139,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
                 self.declarations.deinit(a);
                 self.attribute_data.deinit(a);
             }
+            if (comptime rep.indexes.any()) indexes.release(a, self.queryIndexes());
             @import("topology_storage.zig").release(a, self);
             inline for (.{ "occurrences", "bodies", "mentions", "attributes", "offsets", "positions" }) |field| {
                 if (@FieldType(Self, field) != void) a.free(@field(self, field));
@@ -342,8 +356,8 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
         fn enter(self: *Self, occurrence: u32) r.Error!void {
             if (occurrence >= self.occurrences.len) return error.InvalidDocument;
             if (partial and occurrence != 0) {
-                if (occurrence != self.publication.next_scope) return error.InvalidDocument;
-                self.publication.next_scope += 1;
+                if (occurrence != self.publicationState().next_scope) return error.InvalidDocument;
+                self.publicationState().next_scope += 1;
             }
             const body = try self.scopeBody(occurrence);
             if (body.start > self.doc.order.len or body.len > self.doc.order.len - body.start) return error.InvalidDocument;
@@ -421,7 +435,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
                 .occurrence = @fromBackingInt(occurrence),
                 .attributes = if (rep.attributes) attributes else {},
             };
-            if (partial) self.publication.coverage_data.observeConnection(self.connection_count, self.connections[self.connection_count]);
+            if (partial) self.publicationState().coverage_data.observeConnection(self.connection_count, self.connections[self.connection_count]);
             if (rep.attributes and with_attributes) {
                 const scope = @backingInt(self.occurrences[occurrence].scope);
                 self.attribute_data.connection_defaults[self.connection_count] = self.attribute_data.scopes[scope].edge;
@@ -488,12 +502,12 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
                     .scope => |frame| {
                         // Reserved/abandoned owners have no Statement view,
                         // but their completed children remain real contributions.
-                        if (partial and self.publication.next_scope < self.occurrences.len) {
-                            const child = self.doc.subgraph_records[self.publication.next_scope - 1];
+                        if (partial and self.publicationState().next_scope < self.occurrences.len) {
+                            const child = self.doc.subgraph_records[self.publicationState().next_scope - 1];
                             if (@backingInt(child.parent) == frame.occurrence and child.body.start <= frame.cursor) {
-                                const body = try self.scopeBody(self.publication.next_scope);
+                                const body = try self.scopeBody(self.publicationState().next_scope);
                                 self.stack.items[index].scope.cursor = @max(frame.cursor, body.start + body.len);
-                                try self.enter(self.publication.next_scope);
+                                try self.enter(self.publicationState().next_scope);
                                 continue;
                             }
                         }
@@ -515,7 +529,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
                                 const end = self.doc.order[frame.cursor + 1];
                                 if (end != .skipped_end or end.skipped_end < slot.skipped_start or end.skipped_end > self.doc.source.len) return error.InvalidDocument;
                                 self.stack.items[index].scope.cursor += 1;
-                                try self.publication.coverage_data.add(self.a, .{ .reason = .skipped_input, .range = .{ .start = slot.skipped_start, .len = end.skipped_end - slot.skipped_start }, .occurrence = @fromBackingInt(frame.occurrence) }, if (rep.attributes) self.declarations.items.len else 0, self.connection_count, &self.work);
+                                try self.publicationState().coverage_data.add(self.a, .{ .reason = .skipped_input, .range = .{ .start = slot.skipped_start, .len = end.skipped_end - slot.skipped_start }, .occurrence = @fromBackingInt(frame.occurrence) }, if (rep.attributes) self.declarations.items.len else 0, self.connection_count, &self.work);
                             }
                             continue;
                         };
@@ -652,16 +666,16 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
             if (rep.attributes) try self.attribute_data.init(self.a, self.attributes.len, self.scopes.items.len, self.connections.len, &self.work);
             try self.walk();
             if (partial) {
-                if (self.publication.next_scope != self.occurrences.len) return error.InvalidDocument;
+                if (self.publicationState().next_scope != self.occurrences.len) return error.InvalidDocument;
                 var unfinished: ?t.OccurrenceId = if (!self.doc.root_closed) .root else null;
                 for (self.doc.subgraph_records, 1..) |scope, id| {
                     try self.work.spend(1);
                     if (scope.subtree_end == 0) unfinished = @fromBackingInt(@as(u32, @intCast(id)));
                 }
-                if (self.doc.unrepresented() != null or unfinished != null or (!self.doc.scopeComplete() and self.publication.coverage_data.entries.items.len == 0)) {
-                    try self.publication.coverage_data.add(self.a, .{ .reason = .unfinished_input, .range = self.doc.unrepresented() orelse .{ .start = try r.index(self.doc.source.len), .len = 0 }, .occurrence = unfinished }, if (rep.attributes) self.declarations.items.len else 0, self.connection_count, &self.work);
+                if (self.doc.unrepresented() != null or unfinished != null or (!self.doc.scopeComplete() and self.publicationState().coverage_data.entries.items.len == 0)) {
+                    try self.publicationState().coverage_data.add(self.a, .{ .reason = .unfinished_input, .range = self.doc.unrepresented() orelse .{ .start = try r.index(self.doc.source.len), .len = 0 }, .occurrence = unfinished }, if (rep.attributes) self.declarations.items.len else 0, self.connection_count, &self.work);
                 }
-                try self.publication.coverage_data.finish(&self.work);
+                try self.publicationState().coverage_data.finish(&self.work);
             }
             if (self.mention_count != self.mentions.len or self.connection_count != self.connections.len or self.port_count != self.endpoint_ports.len or (rep.attributes and self.attribute_count != self.attributes.len)) return error.InvalidDocument;
             self.offsets = try mem.allocate(u32, self.a, self.nodes.items.len + 1, "offsets", false);
@@ -691,12 +705,19 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
                 self.offsets[i] = self.offsets[i - 1];
             }
             self.offsets[0] = 0;
+            if (comptime rep.indexes.any()) {
+                var indexer: indexes.Builder(rep.indexes) = .{};
+                while (true) {
+                    try self.work.spend(1);
+                    if (try indexer.step(self, false)) break;
+                }
+            }
             return self.publish();
         }
         /// Shared ownership transfer; callers finish every pool/index first.
         pub fn publish(self: *Self) Output(rep, partial) {
             const memory = if (fixed_storage) self.a else @as(*r.Memory, @ptrCast(@alignCast(self.a.ptr)));
-            if (partial) self.publication.transferred = true else self.publication = true;
+            if (partial) self.publicationState().transferred = true else self.publicationState().* = true;
             const graph: t.GraphWith(rep, partial) = .{
                 .source = self.doc.source,
                 .source_info = self.doc.source_info,
@@ -724,9 +745,12 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
                 .peak_bytes = if (fixed_storage) memory.layout.graph_bytes + memory.layout.scratch_bytes else memory.peak,
                 .limits = self.limits,
                 .allocator = if (fixed_storage) memory.query_allocator orelse r.unavailableAllocator() else memory.backing,
-                .borrowed_bytes = if (fixed_storage) memory.layout.graph_bytes else 0,
+                ._storage = if (comptime rep.indexes.any()) .{
+                    .borrowed_bytes = if (fixed_storage) memory.layout.graph_bytes else 0,
+                    .indexes = self.queryIndexes().*,
+                } else if (fixed_storage) memory.layout.graph_bytes else 0,
             };
-            return if (partial) .{ ._data = graph, ._coverage = self.publication.coverage_data } else graph;
+            return if (partial) .{ ._data = graph, ._coverage = self.publicationState().coverage_data } else graph;
         }
     };
 }

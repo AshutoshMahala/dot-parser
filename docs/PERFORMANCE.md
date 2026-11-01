@@ -3125,6 +3125,96 @@ attributes in Fast/Small (200 with attributes in Safe). Ownership reuses the
 edge-capacity metadata instead of adding a second edge pointer. Attribute
 lookup carries no ownership branch or per-edge ownership tag.
 
+### Optional IR query indexes (2026-10-31)
+
+Both `.indexes.connections` and `.indexes.scope_memberships` default to `false`.
+They accelerate existing symbolic queries; neither expands endpoint sets or
+edge pairs. Run the production comparison with:
+
+```sh
+zig build bench-ir-query-indexes -Doptimize=fast
+# Also -Doptimize=safe or -Doptimize=small.
+```
+
+The report compares the default profile with both indexes enabled. It separates
+lowering time, retained/peak requested bytes, Arena capacity, repeated `hasEdge`,
+single/all-attribute queries, final scope lookup, query credits and inline
+graph/session sizes. Parsing and handle/query preparation are outside timings.
+Query batches mix early/late hits and misses on existing nodes; attribute
+queries use valid edges, including repeated updates. Each process warms up,
+calibrates query samples to at least 1 ms, then reports medians. An optimizer
+barrier before every lookup prevents repeated reads from being hoisted or folded.
+Construction and query costs must be considered together: one query may not recover the
+index build cost, and broad symbolic histories may gain nothing.
+
+Apple M4 Pro, Zig 0.17.0, three serial runs per mode. These are medians of
+process medians; query times are amortized across warm batches, not isolated
+call latency. Selected **Fast** results (off → both indexes enabled):
+
+| Workload | Lowering, ms | `hasEdge`, µs/query | Extra retained arrays | Extra peak requested memory |
+| --- | ---: | ---: | ---: | ---: |
+| 8,000-link chain | 0.991 → 1.120 | 7.004 → 0.005 | 125.0 KiB | 92.7 KiB |
+| 8,000-edge star | 0.905 → 1.063 | 7.860 → 0.005 | 125.0 KiB | 92.7 KiB |
+| 2,000 one-sided sets | 0.490 → 0.513 | 1.746 → 0.013 | 23.5 KiB | 23.5 KiB |
+| 8,000 connections, 5% sets | 0.851 → 1.052 | 7.878 → 1.483 | 128.2 KiB | 98.9 KiB |
+| Reopened subgraph, 1,000 contributions | 0.190 → 0.202 | 129.469 → 42.298 | 7.8 KiB | 7.1 KiB |
+| 50,000 × 50,000 symbolic product | 4.955 → 4.926 | 0.008 → 0.008 | 12 B | 0 B |
+
+The chain recovers its measured construction cost after roughly 19 queries in
+this mix. Mixed-set lookup is 6.942 → 1.735 µs in Safe and 10.230 → 3.820 µs in
+Small. Its single-attribute query improves from 24.283 → 2.922 µs in Fast;
+enumerating all effective attributes improves from 11.590 → 2.364 µs.
+Final scope lookup across 4,001 scopes improves from 670.86 → 0.64 ns in Fast,
+with 16,004 retained bytes and about 1 µs more construction time in this run.
+
+Indexes are not universally faster. For 4,000 updates to the **same pair**, a
+single-attribute query still visits the whole relevant history: 16.014 →
+18.133 µs Fast, 17.397 → 19.763 µs Safe and 44.872 → 44.077 µs Small. Negative
+`hasEdge` queries benefit, but that does not accelerate the attribute history.
+The default scan profile is appropriate when such histories dominate or queries
+are infrequent. The large product remains exactly one connection, with no
+connection-index arrays; its 12 bytes are three cached scope handles.
+
+Arena capacity was unchanged in these fixtures: the new arrays fit existing
+Arena slack. Their requested payload is still real storage, and this result is
+not a promise for other inputs/allocators. With both indexes selected, full
+profile inline state grows by 96 bytes per graph, 120 per lowering session and
+88 per has-edge/attribute session. It does not grow per node, connection or
+query. All of this state is absent when the indexes are disabled.
+
+Default-off comparisons use the same consumers against `eda87c7`, built for
+Fast/Safe/Small and run serially with alternating before/after order. The final
+ordinary lowering, symbolic-query and attribute-access consumers have
+**byte-identical machine-code sections in all three modes**. This includes the
+query/attribute session routes instantiated by those consumers. Default graph
+and session layouts remain unchanged; new index state shares existing cold
+metadata fields to avoid perturbing Zig's automatic layout. Disabled attribute
+traversal retains its original range loop. Metering grants, cancellation
+intervals and limits are unchanged.
+Measured default credit totals, cancellation poll counts, retained bytes and
+allocation peaks also match. Lowering-session Fast/Small machine code matches;
+Safe retains its safety instrumentation, with a measured −0.1% aggregate change.
+Across three alternating runs, ordinary lowering varied −1.5% to +1.6% and
+symbolic/attribute query batches varied −3.3% to +4.2% by mode (geometric means,
+excluding batches below 0.01 ms). Since these consumers' complete machine-code
+sections match, those timing differences are not evidence of added default
+query work. They also show why tiny timing changes alone are an unreliable gate.
+
+A consumed ReleaseSmall Wasm example (caller-buffer parsing/lowering plus
+`hasEdge` and final scope lookup) grows from **89,034 to 93,447 bytes** with both
+indexes enabled: **4,413 bytes** of additional code. This is one consumer,
+not a universal library-size estimate. Fixed sizing envelopes add five `u32`
+capacity fields; selected pools remain explicit and no bounds are reserved
+automatically.
+
+Correctness gates cover complete/partial and full/topology graphs, independent
+index selections, native encodings, exact fixed fits and every new pool's
+shortfall, allocation failures, alias rejection, budget partitions including
+one/zero credits, and cancellation during construction and querying. An
+additional scan-versus-index check over the 60 bundled Graphviz 16.1.0 graphs
+agreed on 24,404 pair queries, 3,023 effective attributes and 206 final scope
+memberships. This small corpus is not a claim about real-world set frequency.
+
 ## Running the benchmarks
 
 ### One-command string comparison
@@ -3205,6 +3295,7 @@ zig build bench-ir-partial -Doptimize=fast -- --attributes-only
 zig build bench-ir-partial-edges -Doptimize=fast
 zig build bench-ir-sessions -Doptimize=fast
 zig build bench-ir-lowering-sessions -Doptimize=fast
+zig build bench-ir-query-indexes -Doptimize=fast
 zig build bench-ir-edge-sessions -Doptimize=fast
 zig build bench-ir-query-sessions -Doptimize=safe
 zig build bench-ir-attribute-sessions -Doptimize=safe

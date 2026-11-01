@@ -292,7 +292,10 @@ pub fn For(comptime Graph: type, comptime caps: encoding.Capabilities, comptime 
                     const start: usize = if (graph.strict) 0 else id;
                     const end = if (graph.strict) graph.connections.len else @as(usize, id) + 1;
                     var first: ?u32 = null;
-                    for (graph.connections[start..end], start..) |connection, index| {
+                    var scan: if (Graph.indexes.connections) @import("query_indexes.zig").Scan else void = if (Graph.indexes.connections) .init(graph, start, end, edge.from, edge.to, graph.strict) else {};
+                    for (graph.connections[start..end], start..) |direct_connection, direct_index| {
+                        const index = if (Graph.indexes.connections) scan.next() orelse break else direct_index;
+                        const connection = if (Graph.indexes.connections) graph.connections[index] else direct_connection;
                         try self.work.spend(1);
                         // Project only membership/operator fields here. An outlined
                         // wrapper copies the whole connection (including ports) per

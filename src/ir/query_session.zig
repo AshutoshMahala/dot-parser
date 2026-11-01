@@ -157,6 +157,8 @@ pub fn Bound(comptime Graph: type, comptime kind: Kind, comptime config: anytype
         to: if (kind == .has_edge) t.NodeId else void,
         connection: if (kind == .has_edge) u32 else void = if (kind == .has_edge) 0 else {},
         stage: if (kind == .has_edge) Stage else void = if (kind == .has_edge) .connection else {},
+        candidates: if (kind == .has_edge and Data.indexes.connections) ?@import("query_indexes.zig").Cursor else void = if (kind == .has_edge and Data.indexes.connections) null else {},
+        candidates_ready: if (kind == .has_edge and Data.indexes.connections) bool else void = if (kind == .has_edge and Data.indexes.connections) false else {},
 
         /// Only O(1) option/handle checks and the enabled entry poll. The graph
         /// and source must remain alive, immutable and unmoved until deinit.
@@ -220,6 +222,18 @@ pub fn Bound(comptime Graph: type, comptime kind: Kind, comptime config: anytype
             self.connection += 1;
             self.stage = .connection;
         }
+        inline fn selectConnection(self: *Self, graph: *const Data) bool {
+            if (Data.indexes.connections) {
+                if (!self.candidates_ready) {
+                    self.candidates = @import("query_indexes.zig").select(graph, self.from, self.to);
+                    self.candidates_ready = true;
+                }
+                if (self.candidates) |*cursor| {
+                    self.connection = cursor.next() orelse return false;
+                }
+            }
+            return self.connection < graph.connections.len;
+        }
         inline fn reverseOrNext(self: *Self, connection: anytype) void {
             if (connection.effective_operator == .undirected)
                 self.member(connection.left.members, self.to, .reverse_left)
@@ -242,7 +256,7 @@ pub fn Bound(comptime Graph: type, comptime kind: Kind, comptime config: anytype
                 return;
             }
             if (self.stage == .connection) {
-                if (self.connection >= graph.connections.len) {
+                if (if (Data.indexes.connections) !self.selectConnection(graph) else self.connection >= graph.connections.len) {
                     self.finish(false);
                     return;
                 }
@@ -261,7 +275,7 @@ pub fn Bound(comptime Graph: type, comptime kind: Kind, comptime config: anytype
             }
             var selected: u32 = 0;
             if (self.stage == .connection) {
-                if (self.connection >= graph.connections.len) {
+                if (if (Data.indexes.connections) !self.selectConnection(graph) else self.connection >= graph.connections.len) {
                     self.finish(false);
                     return 1;
                 }

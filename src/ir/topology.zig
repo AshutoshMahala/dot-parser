@@ -7,6 +7,7 @@ const names = @import("names.zig");
 const r = @import("resources.zig");
 const attrs = @import("attributes.zig");
 const ports = @import("ports.zig");
+const query_indexes = @import("query_indexes.zig");
 pub const Range = support.location.Range;
 pub const NodeId = enum(u32) { _ };
 pub const ScopeId = enum(u32) { root, _ };
@@ -111,6 +112,7 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
     return struct {
         const Self = @This();
         pub const capabilities: @import("representation.zig").Capabilities = .{ .attributes = rep.attributes };
+        pub const indexes = rep.indexes;
         source: []const u8,
         source_info: encoding.Info,
         declared_kind: syntax.GraphKind,
@@ -142,8 +144,20 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
         has_ports: bool,
         /// Nonzero only for borrowed fixed storage; includes unused pools and
         /// padding. Query allocator, if any, does not own this reservation.
-        borrowed_bytes: usize = 0,
+        _storage: if (rep.indexes.any()) struct {
+            borrowed_bytes: usize = 0,
+            indexes: query_indexes.Data(rep.indexes) = .{},
+        } else usize = if (rep.indexes.any()) .{} else 0,
         endpoint_ports: []const syntax.PortSyntax,
+
+        // Reuse a cold field instead of adding even a void field: field count
+        // changes can reorder Zig's automatic layout in the default profile.
+        pub inline fn borrowedBytes(self: *const Self) usize {
+            return if (comptime rep.indexes.any()) self._storage.borrowed_bytes else self._storage;
+        }
+        pub inline fn queryIndexes(self: *const Self) *const query_indexes.Data(rep.indexes) {
+            return &self._storage.indexes;
+        }
 
         const Views = @import("views.zig").For(Self, caps, connectionCovers);
         pub const NodeView = Views.Node;
@@ -186,7 +200,7 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
         }
 
         pub fn deinit(self: *Self) void {
-            if (self.borrowed_bytes != 0) {
+            if (self.borrowedBytes() != 0) {
                 self.* = undefined;
                 return;
             }
@@ -204,6 +218,7 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
             a.free(self.node_slots);
             a.free(self.posting_offsets);
             a.free(self.posting_positions);
+            if (comptime rep.indexes.any()) query_indexes.release(a, self.queryIndexes());
             if (rep.attributes) self.attribute_data.deinit(a);
             self.* = undefined;
         }
@@ -211,14 +226,14 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
         /// Retained allocation payload (including spare capacity), not source,
         /// allocator metadata, arena slack, or temporary operation scratch.
         pub fn retainedBytes(self: *const Self) usize {
-            if (self.borrowed_bytes != 0) return self.borrowed_bytes;
+            if (self.borrowedBytes() != 0) return self.borrowedBytes();
             var bytes: usize = 0;
             inline for (.{ "node_storage", "scope_storage", "declaration_storage", "occurrences", "mentions", "connections", "endpoint_ports", "attributes", "bodies", "node_slots", "posting_offsets", "posting_positions" }) |field| {
                 if (@FieldType(Self, field) == void) continue;
                 const slice = @field(self, field);
                 bytes += slice.len * @sizeOf(std.meta.Elem(@TypeOf(slice)));
             }
-            return bytes + if (rep.attributes) self.attribute_data.retainedBytes() else 0;
+            return bytes + (if (rep.attributes) self.attribute_data.retainedBytes() else 0) + (if (comptime rep.indexes.any()) query_indexes.bytes(self.queryIndexes()) else 0);
         }
 
         /// Used records, not reserved capacity or a bound for changed input.
@@ -234,6 +249,11 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
                 .attributes = if (rep.attributes) @intCast(self.attributes.len) else 0,
                 .attribute_keys = if (rep.attributes) @intCast(self.attribute_data.keys.items.len) else 0,
                 .attribute_states = if (rep.attributes) @intCast(self.attribute_data.cells.items.len) else 0,
+                .left_offsets = if (rep.indexes.connections) @intCast(self.queryIndexes().left_offsets.len) else 0,
+                .right_offsets = if (rep.indexes.connections) @intCast(self.queryIndexes().right_offsets.len) else 0,
+                .left_entries = if (rep.indexes.connections) @intCast(self.queryIndexes().left_entries.len) else 0,
+                .right_entries = if (rep.indexes.connections) @intCast(self.queryIndexes().right_entries.len) else 0,
+                .scope_memberships = if (rep.indexes.scope_memberships) @intCast(self.queryIndexes().scope_memberships.len) else 0,
             };
         }
 
@@ -384,10 +404,14 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
                         // A strict caller-supplied edge must still identify its
                         // first contribution, even for an absent key. Later
                         // connections cannot affect that admission check.
-                        if (self.strict) for (self.connections[0..id]) |connection| {
-                            try work.spend(1);
-                            if (try self.connectionCovers(connection, edge, work)) return error.InvalidHandle;
-                        };
+                        if (self.strict) {
+                            var scan: if (rep.indexes.connections) query_indexes.Scan else void = if (rep.indexes.connections) .init(self, 0, id, edge.from, edge.to, true) else {};
+                            for (self.connections[0..id]) |direct_connection| {
+                                const connection = if (rep.indexes.connections) self.connections[scan.next() orelse break] else direct_connection;
+                                try work.spend(1);
+                                if (try self.connectionCovers(connection, edge, work)) return error.InvalidHandle;
+                            }
+                        }
                         return null;
                     }
                     var first: ?u32 = null;
@@ -395,7 +419,10 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
                     var explicit_connection: ConnectionId = edge.first_connection;
                     const start: usize = if (self.strict) 0 else id;
                     const end: usize = if (self.strict) self.connections.len else @as(usize, id) + 1;
-                    for (self.connections[start..end], start..) |connection, index| {
+                    var scan: if (rep.indexes.connections) query_indexes.Scan else void = if (rep.indexes.connections) .init(self, start, end, edge.from, edge.to, self.strict) else {};
+                    for (self.connections[start..end], start..) |direct_connection, direct_index| {
+                        const index = if (rep.indexes.connections) scan.next() orelse break else direct_index;
+                        const connection = if (rep.indexes.connections) self.connections[index] else direct_connection;
                         try work.spend(1);
                         if (self.strict and !try self.connectionCovers(connection, edge, work)) continue;
                         if (port_key) |wanted| if (ports.suffixes(connection, @fromBackingInt(@as(u32, @intCast(index))), edge)[@backingInt(wanted)]) |suffix| {
@@ -442,6 +469,11 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
         pub fn scopeMembership(self: *const Self, id: ScopeId) r.Error!Membership {
             const raw = @backingInt(id);
             if (raw >= self.scopes.len) return error.InvalidHandle;
+            if (rep.indexes.scope_memberships) {
+                var work = try r.Work.init(self.limits, null);
+                try work.spend(1);
+                return self.queryIndexes().scope_memberships[raw];
+            }
             // Occurrences are in opening order, so the last is the full version.
             // Direct callers normally use an occurrence/connection snapshot.
             var work = try r.Work.init(self.limits, null);
@@ -493,6 +525,19 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
         pub fn hasEdgeWith(self: *const Self, from: NodeId, to: NodeId, options: r.Options) r.Error!bool {
             if (@backingInt(from) >= self.nodes.len or @backingInt(to) >= self.nodes.len) return error.InvalidHandle;
             var work = try r.Work.init(options.limits orelse self.limits, options.cancellation);
+            if (rep.indexes.connections) {
+                try work.spend(1);
+                if (query_indexes.select(self, from, to)) |selected| {
+                    var cursor = selected;
+                    while (true) {
+                        try work.spend(1);
+                        const id = cursor.next() orelse return false;
+                        const connection = self.connections[id];
+                        if (try self.containsWork(connection.left.members, from, &work) and try self.containsWork(connection.right.members, to, &work)) return true;
+                        if (connection.effective_operator == .undirected and try self.containsWork(connection.left.members, to, &work) and try self.containsWork(connection.right.members, from, &work)) return true;
+                    }
+                }
+            }
             for (self.connections) |connection| {
                 try work.spend(1);
                 if (try self.containsWork(connection.left.members, from, &work) and try self.containsWork(connection.right.members, to, &work)) return true;

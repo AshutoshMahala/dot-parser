@@ -75,6 +75,9 @@ pub fn checkGraph(buffer: []u8, graph: anytype) r.Error!void {
         inline for (.{ "meta", "scopes", "connection_defaults" }) |field| try disjoint(buffer, @field(a, field));
         try disjoint(buffer, a.table.slots);
     }
+    if (comptime @TypeOf(g.*).indexes.any()) inline for (@import("query_indexes.zig").slice_fields) |field| {
+        if (@FieldType(@TypeOf(g.queryIndexes().*), field) != void) try disjoint(buffer, @field(g.queryIndexes().*, field));
+    };
 }
 pub fn checkMaterialized(buffer: []u8, owner: anytype) r.Error!void {
     try disjoint(buffer, @as([*]const @TypeOf(owner.*), @ptrCast(owner))[0..1]);

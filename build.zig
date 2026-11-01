@@ -717,6 +717,15 @@ pub fn build(b: *std.Build) void {
     b.step("bench-ir-query-sessions", "Compare direct and resumable symbolic queries, budgets and memory")
         .dependOn(&b.addRunArtifact(ir_query_sessions_bench).step);
     check_benches.dependOn(&ir_query_sessions_bench.step);
+    const ir_query_indexes_bench = b.addExecutable(.{ .name = "ir_query_indexes_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_query_indexes.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    b.step("bench-ir-query-indexes", "Measure optional symbolic query indexes: construction, memory and repeated queries")
+        .dependOn(&b.addRunArtifact(ir_query_indexes_bench).step);
+    check_benches.dependOn(&ir_query_indexes_bench.step);
     const ir_attribute_sessions_bench = b.addExecutable(.{ .name = "ir_attribute_sessions_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/ir_attribute_sessions.zig"),
         .target = target,

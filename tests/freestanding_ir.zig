@@ -2,6 +2,36 @@
 //! allocator: no libc, OS, global allocator, recursion, or renderer required.
 const std = @import("std");
 const dot = @import("dot_parser");
+
+export fn indexed_fixed_ir(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32, stepped: bool) u32 {
+    const Dot = dot.Profile(.{});
+    const IR = dot.ir.Lowering(.{ .indexes = .{ .connections = true, .scope_memberships = true }, .policy = .{ .execution = .{ .metering = true } } });
+    var buffer = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
+    const allocator = buffer.allocator();
+    var parsed = Dot.parseAndValidate(allocator, source[0..length], dot.diagnostic.discard, .{});
+    defer parsed.deinit(allocator);
+    if (!parsed.documentValid()) return 0;
+    const doc = &parsed.document.?;
+    const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
+    const bounds = IR.loweringBounds(doc.capacities(), options) catch return 0;
+    const layout = IR.loweringLayout(bounds.graph, bounds.scratch) catch return 0;
+    const retained = allocator.alignedAlloc(u8, .@"16", layout.graph_bytes) catch return 0;
+    const temporary = allocator.alignedAlloc(u8, .@"16", layout.scratch_bytes) catch return 0;
+    const pools = layout.bind(retained, temporary) catch return 0;
+    var graph = if (stepped) blk: {
+        var session = IR.loweringSessionIn(doc, pools, options) catch return 0;
+        defer session.deinit();
+        while (session.advance(1).outcome == null) {}
+        break :blk session.takeResult() catch return 0;
+    } else (IR.lowerCompleteIn(doc, pools, options).graph orelse return 0);
+    defer graph.deinit();
+    if (graph.nodes.len == 0) return 0;
+    var query = IR.hasEdgeSession(&graph, @fromBackingInt(0), @fromBackingInt(@as(u32, @intCast(graph.nodes.len - 1))), .{}) catch return 0;
+    defer query.deinit();
+    while (query.advance(1).outcome == null) {}
+    if (query.outcome.? == .failure) return 0;
+    return @backingInt(graph.scopeMembership(.root) catch return 0) +% @as(u32, @intFromBool(query.outcome.?.success));
+}
 // Capability omission also applies to query/expansion drivers. Caller scratch
 // can serve an allocator-built topology IR without any attribute reservation.
 export fn topology_operations(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32, stepped: bool) u32 {

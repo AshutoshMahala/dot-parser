@@ -20,6 +20,11 @@ pub const GraphCapacities = struct {
     attribute_keys: u32 = 0,
     attribute_states: u32 = 0,
     coverage_gaps: u32 = 0,
+    left_offsets: u32 = 0,
+    right_offsets: u32 = 0,
+    left_entries: u32 = 0,
+    right_entries: u32 = 0,
+    scope_memberships: u32 = 0,
 };
 pub const LoweringScratchCapacities = struct {
     nesting: u32 = 0,
@@ -47,6 +52,11 @@ pub const Resource = enum {
     materialized_edges,
     materialized_attribute_states,
     materialized_attribute_keys,
+    left_offsets,
+    right_offsets,
+    left_entries,
+    right_entries,
+    scope_memberships,
 };
 pub const StorageShortfall = struct { resource: Resource, limit: u32, required_at_least: u32 };
 pub const Bounds = struct { graph: GraphCapacities, scratch: LoweringScratchCapacities };
@@ -76,6 +86,11 @@ pub fn For(comptime rep: @import("representation.zig").Identity) type {
             positions: []u32,
             node_slots: []u32,
             key_slots: if (rep.attributes) []u32 else void,
+            left_offsets: if (rep.indexes.connections) []u32 else void,
+            right_offsets: if (rep.indexes.connections) []u32 else void,
+            left_entries: if (rep.indexes.connections) []u32 else void,
+            right_entries: if (rep.indexes.connections) []u32 else void,
+            scope_memberships: if (rep.indexes.scope_memberships) []t.Membership else void,
         };
         const Scratch = struct {
             cursors: []records.ScopeCursor,
@@ -212,6 +227,10 @@ pub fn For(comptime rep: @import("representation.zig").Identity) type {
             if (!rep.attributes) inline for (.{ "declarations", "attributes", "attribute_keys", "attribute_states" }) |field| {
                 if (@field(g, field) != 0) return error.InvalidStorage;
             };
+            if (!rep.indexes.connections) inline for (.{ "left_offsets", "right_offsets", "left_entries", "right_entries" }) |field| {
+                if (@field(g, field) != 0) return error.InvalidStorage;
+            };
+            if (!rep.indexes.scope_memberships and g.scope_memberships != 0) return error.InvalidStorage;
             inline for (comptime @typeInfo(GraphCapacities).@"struct".field_names) |field| _ = try r.index(@field(g, field));
             inline for (comptime @typeInfo(LoweringScratchCapacities).@"struct".field_names) |field| _ = try r.index(@field(s, field));
             if (g.nodes >= t.node_bit or g.scopes >= t.node_bit or g.occurrences >= t.node_bit or g.attributes >= @import("ports.zig").right) return error.IndexLimit;
@@ -294,6 +313,7 @@ pub fn For(comptime rep: @import("representation.zig").Identity) type {
                 return result;
             }
             fn resource(comptime field: []const u8) Resource {
+                inline for (@import("query_indexes.zig").slice_fields) |name| if (comptime std.mem.eql(u8, field, name)) return @field(Resource, name);
                 const pairs = .{
                     .{ "nodes", "node_pool" },                     .{ "node_slots", "node_pool" },          .{ "offsets", "node_pool" },
                     .{ "scopes", "scope_pool" },                   .{ "scope_slots", "scope_pool" },        .{ "cursors", "scope_pool" },
@@ -376,6 +396,11 @@ pub fn For(comptime rep: @import("representation.zig").Identity) type {
                     .attribute_keys = try index64(A),
                     .attribute_states = try index64(cells),
                     .coverage_gaps = if (partial) try index64(@as(u64, counts.statements) / 2 + 1) else 0,
+                    .left_offsets = if (rep.indexes.connections and owners + links >= 8) try index64(@as(u64, counts.nodes) + endpoints + 1) else 0,
+                    .right_offsets = if (rep.indexes.connections and owners + links >= 8) try index64(@as(u64, counts.nodes) + endpoints + 1) else 0,
+                    .left_entries = if (rep.indexes.connections and owners + links >= 8) try index64(owners + links) else 0,
+                    .right_entries = if (rep.indexes.connections and owners + links >= 8) try index64(owners + links) else 0,
+                    .scope_memberships = if (rep.indexes.scope_memberships) try index64(S + 1) else 0,
                 },
                 .scratch = .{
                     .nesting = try index64(S + 1 + owners),
@@ -390,10 +415,10 @@ pub fn For(comptime rep: @import("representation.zig").Identity) type {
 /// Recover the entire borrowed reservation, including unused pools and padding.
 /// Nodes are first; when their envelope is empty the root scope starts at zero.
 pub fn borrowedGraphBytes(graph: anytype) []const u8 {
-    if (graph.borrowed_bytes == 0) return &.{};
+    if (graph.borrowedBytes() == 0) return &.{};
     const start: [*]const u8 = if (graph.node_storage.len != 0)
         @ptrCast(graph.node_storage.ptr)
     else
         @ptrCast(graph.scope_storage.ptr);
-    return start[0..graph.borrowed_bytes];
+    return start[0..graph.borrowedBytes()];
 }

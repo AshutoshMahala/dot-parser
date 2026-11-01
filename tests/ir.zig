@@ -28,6 +28,7 @@ test {
     _ = @import("ir_fixed_queries.zig");
     _ = @import("ir_review.zig");
     _ = @import("ir_execution.zig");
+    _ = @import("ir_query_indexes.zig");
 }
 
 fn lower(allocator: std.mem.Allocator, source: []const u8) !IR.Graph {

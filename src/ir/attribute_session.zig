@@ -84,7 +84,11 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         port_index: u2 = 0,
         port_winners: [2]?ports.Selection = .{ null, null },
         connection: u32 = 0,
-        first: ?u32 = null,
+        // Keep the disabled profile's field count and layout unchanged.
+        first: if (Data.indexes.connections) struct {
+            value: ?u32 = null,
+            candidates: ?@import("query_indexes.zig").Cursor = null,
+        } else ?u32 = if (Data.indexes.connections) .{} else null,
         covers: p.Covers = undefined,
         attribute_index: u32 = 0,
         selected: ?ports.Selection = null,
@@ -171,9 +175,13 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                 else => unreachable,
             };
         }
+        inline fn firstConnection(self: *const Self) ?u32 {
+            return if (Data.indexes.connections) self.first.value else self.first;
+        }
         fn prepare(self: *Self) void {
             if (self.target == .edge) {
                 self.connection = if (self.borrowed().strict) 0 else @backingInt(self.target.edge.first_connection);
+                if (Data.indexes.connections) self.first.candidates = if (self.borrowed().strict) @import("query_indexes.zig").select(self.borrowed(), self.target.edge.from, self.target.edge.to) else null;
                 self.phase = .connection;
             } else self.phase = if (all) .catalog else .select;
         }
@@ -250,8 +258,11 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                 } else unreachable,
                 .connection => {
                     const end = if (graph.strict) graph.connections.len else @as(usize, @backingInt(self.target.edge.first_connection)) + 1;
+                    if (Data.indexes.connections) if (self.first.candidates) |*cursor| {
+                        self.connection = cursor.next() orelse @intCast(end);
+                    };
                     if (self.connection == end) {
-                        if (self.first != @backingInt(self.target.edge.first_connection)) return error.InvalidHandle;
+                        if (self.firstConnection() != @backingInt(self.target.edge.first_connection)) return error.InvalidHandle;
                         self.phase = if (all) .catalog else .select;
                     } else {
                         self.covers = .{ .edge = self.target.edge };
@@ -260,9 +271,9 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                 },
                 .covers => if (self.covers.step(graph, graph.connections[self.connection])) |found| {
                     if (found.forward or found.backward) {
-                        if (self.first == null) {
-                            self.first = self.connection;
-                            if (self.first != @backingInt(self.target.edge.first_connection)) return error.InvalidHandle;
+                        if (self.firstConnection() == null) {
+                            if (Data.indexes.connections) self.first.value = self.connection else self.first = self.connection;
+                            if (self.firstConnection() != @backingInt(self.target.edge.first_connection)) return error.InvalidHandle;
                         }
                         self.phase = .suffix;
                     } else {

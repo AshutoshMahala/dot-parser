@@ -19,6 +19,7 @@ pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
     return struct {
         const Self = @This();
         pub const capabilities = Core.capabilities;
+        pub const indexes = Core.indexes;
         _data: Core,
         _coverage: Coverage,
         pub const AttributeView = Core.AttributeView;
@@ -109,7 +110,7 @@ pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
         }
 
         pub fn deinit(self: *Self) void {
-            if (self._data.borrowed_bytes == 0) self._coverage.deinit(self._data.allocator);
+            if (self._data.borrowedBytes() == 0) self._coverage.deinit(self._data.allocator);
             self._data.deinit();
             self.* = undefined;
         }
@@ -120,7 +121,7 @@ pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
             return if (self._data.kind) |value| .{ .known = value } else .{ .unknown = .{ .uncertainty = .{ .reason = .unresolved_kind, .span = null } } };
         }
         pub fn retainedBytes(self: *const Self) usize {
-            if (self._data.borrowed_bytes != 0) return self._data.borrowed_bytes;
+            if (self._data.borrowedBytes() != 0) return self._data.borrowedBytes();
             return self._data.retainedBytes() + self._coverage.retainedBytes();
         }
         pub fn capacities(self: *const Self) @import("fixed_storage.zig").GraphCapacities {

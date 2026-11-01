@@ -195,7 +195,7 @@ fn Cases(comptime enabled: bool) type {
             try equal(dot.ir.LoweringOutcome.success, first.outcome);
             const peaks = first.scratch_peak;
             const resources = [_]dot.ir.Resource{ .node_pool, .scope_pool, .occurrence_pool, .mention_pool, .connection_pool, .endpoint_port_pool, .declaration_pool, .attribute_pool, .attribute_key_pool, .attribute_state_pool, .coverage_gap_pool };
-            inline for (comptime @typeInfo(dot.ir.GraphCapacities).@"struct".field_names, resources) |field, resource| {
+            inline for (.{ "nodes", "scopes", "occurrences", "mentions", "connections", "endpoint_ports", "declarations", "attributes", "attribute_keys", "attribute_states", "coverage_gaps" }, resources) |field, resource| {
                 if (!enabled and (comptime std.mem.eql(u8, field, "declarations") or std.mem.startsWith(u8, field, "attribute"))) continue;
                 var reduced = counts;
                 try expect(@field(reduced, field) != 0);
