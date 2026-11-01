@@ -248,6 +248,11 @@ are marked; no compatibility shims are kept.
 
 ### Changed
 
+- Batch admitted adjacency-row work and long attribute-key comparisons without
+  changing credits, pause states, limits or cancellation checkpoints. Fixed
+  query scratch updates its member high-water mark only when it increases.
+  No retained pools or session fields are added; ordinary parsing/lowering and
+  adjacency-disabled materialization keep their existing drivers.
 - Reduce Safe symbolic-query session overhead by reusing posting slices within
   bounded search loops. One-credit resumes keep an inlined single-step path;
   Fast, Small and fixed interval-one cancellation profiles retain the compact
@@ -311,6 +316,7 @@ are marked; no compatibility shims are kept.
 
 ### Fixed
 
+- Release argument storage with the partial-IR benchmark's process arena.
 - UTF-16 identifier traversal checks surrogate partners before consuming them,
   including malformed encoding accepted by the parser. A failed bounded operand
   read restores its cursor instead of leaving it inside an operand.

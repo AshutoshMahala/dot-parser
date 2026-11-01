@@ -83,6 +83,12 @@ fn finish(comptime selection: choices.Selection, comptime ports: bool, comptime 
     _ = try operation.next();
     if (selection.attributes) try @import("materialized_attributes.zig").finishCatalog(ports, operation);
     while (builder.phase != .done) {
+        if (operation.work.cancellation == null and operation.work.remaining > 1) {
+            const consumed = builder.consume(selection.adjacency, operation.stored.items, @intCast(operation.graph.nodes.len), @intCast(@min(operation.work.remaining, std.math.maxInt(u32))));
+            operation.work.remaining -= consumed.used;
+            if (consumed.failure) |err| return err;
+            if (consumed.used != 0) continue;
+        }
         try operation.work.spend(1);
         try builder.step(selection.adjacency, operation.stored.items, @intCast(operation.graph.nodes.len), if (fixed) undefined else operation.memory.allocator(), pools);
     }
@@ -162,13 +168,27 @@ pub fn Session(comptime Graph: type, comptime selection: choices.Selection, comp
                 _ = self.poll();
                 return self.progress(0);
             }
-            while (used < budget) : (used += 1) {
+            while (used < budget) {
+                if (self.base.cancellation == null) {
+                    const grant: u32 = @intCast(@min(budget - used, self.base.limits.max_work - self.base.total_work));
+                    if (grant > 1) {
+                        const consumed = self.rows.consume(selection.adjacency, self.base.stored.items, @intCast(q.data(self.graph).nodes.len), grant);
+                        self.base.total_work += consumed.used;
+                        used += consumed.used;
+                        if (consumed.failure) |err| {
+                            self.outcome = .{ .failure = err };
+                            break;
+                        }
+                        if (consumed.used != 0) continue;
+                    }
+                }
                 if (!self.poll()) break;
                 if (self.base.total_work == self.base.limits.max_work) {
                     self.outcome = .{ .failure = error.WorkLimit };
                     break;
                 }
                 self.base.total_work += 1;
+                used += 1;
                 self.rows.step(selection.adjacency, self.base.stored.items, @intCast(q.data(self.graph).nodes.len), if (fixed) undefined else self.base.memory.allocator(), if (fixed) self.prepared.pools else null) catch |err| {
                     self.outcome = .{ .failure = self.base.memory.failure(err) };
                     break;

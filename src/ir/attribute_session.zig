@@ -251,16 +251,9 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                         self.phase = .query_key;
                     }
                 },
-                .query_key => if (try self.finder.step(graph)) {
-                    self.key_id = self.finder.found orelse none;
-                    self.prepare();
-                },
+                .query_key => if (try self.finder.step(graph)) self.completeKey(),
                 .port_keys => if (all) {
-                    if (try self.finder.step(graph)) {
-                        if (self.finder.found) |id| self.port_keys.ids[self.port_index] = id;
-                        self.port_index += 1;
-                        if (self.port_index == 2) self.prepare() else self.finder = .{ .bytes = "headport", .kind = .edge };
-                    }
+                    if (try self.finder.step(graph)) self.completeKey();
                 } else unreachable,
                 .connection => {
                     const end = if (graph.strict) graph.connections.len else @as(usize, @backingInt(self.target.edge.first_connection)) + 1;
@@ -513,6 +506,16 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                 },
             }
         }
+        inline fn completeKey(self: *Self) void {
+            if (all and self.phase == .port_keys) {
+                if (self.finder.found) |id| self.port_keys.ids[self.port_index] = id;
+                self.port_index += 1;
+                if (self.port_index == 2) self.prepare() else self.finder = .{ .bytes = "headport", .kind = .edge };
+            } else {
+                self.key_id = self.finder.found orelse none;
+                self.prepare();
+            }
+        }
         fn progress(self: *const Self, used: u32) Progress {
             if (all) return .{ .work_used = used, .total_work = self.total_work, .attribute = self.entry, .attributes_emitted = self.emitted, .outcome = self.outcome };
             return .{ .work_used = used, .total_work = self.total_work, .outcome = self.outcome };
@@ -539,6 +542,19 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
                     break;
                 }
                 if (used != 0 and polling.due(interval) and !self.poll()) break;
+                // Batch only the fixed, callback-free key reader. Runtime
+                // profiles and size builds keep the compact loop: adding the
+                // dispatch there regressed short queries in measurements.
+                if (@import("builtin").mode != .small and !all and !config.runtime_policy and !baseline.cancellation and self.phase == .query_key) {
+                    const grant: u32 = @intCast(@min(budget - used, self.max_work - self.total_work));
+                    if (grant > 1) {
+                        const consumed = self.finder.consume(self.borrowed(), grant);
+                        self.total_work += consumed.used;
+                        used += consumed.used;
+                        if (consumed.failure) |err| self.outcome = .{ .failure = err } else if (consumed.done) self.completeKey();
+                        continue;
+                    }
+                }
                 self.total_work += 1;
                 used += 1;
                 polling.spend(1);

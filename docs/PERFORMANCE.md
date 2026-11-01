@@ -3246,7 +3246,7 @@ baseline exactly in every measured disabled case. Ordinary lowering is +0.3%
 in a separate two-run Fast comparison; its retained/peak/Arena bytes also
 match. These small timing changes are measurements on this machine, not
 universal improvements. In particular, some fixed/session aggregates are up
-to 3.9% slower; those remain visible for the final slice-2 performance pass.
+to 3.9% slower; the final slice-2 pass below revisits those measurements.
 
 The first candidate had a much larger Fast topology-session slowdown. The hot
 machine had unchanged transitions, but generated error-union temporaries at
@@ -3286,9 +3286,154 @@ figures exclude the borrowed input IR/source and are not process RSS.
 
 Adjacency construction is substantial extra work on these inputs. Fast is
 also slower than Safe in several row-building cases, and fewer selected rows
-do not guarantee faster generated code. The final slice-2 performance pass
-still includes these opt-in paths. Ordinary queries never construct adjacency
+do not guarantee faster generated code. The final slice-2 pass below improves
+these opt-in paths. Ordinary queries never construct adjacency
 or expand symbolic sets implicitly.
+
+### Final slice-2 performance and memory pass (Unreleased, 2026-11-01)
+
+Apple M4 Pro, Zig 0.17.0; baseline `9026753`. The same 16 consumer harnesses
+were compiled against both revisions in Fast, Safe and Small. Timings ran
+serially after compilation, tests and fuzzing finished, in before/after then
+after/before order. The tables below average the two per-process medians.
+Each harness retains its documented warmups and sample count. Parsing/source
+generation remain outside IR-operation timings.
+
+Three optimizations survive the comparison:
+
+- Adjacency construction batches already-admitted edge/row work, retaining
+  exactly the scalar cursor and writes at every pause. Each edge/u32 still
+  consumes its original credit. Allocations and phase transitions remain
+  separate; an active cancellation callback keeps the stepped path.
+- Fixed-policy, callback-free attribute lookup batches comparison of ordinary
+  key bytes within the remaining grant. Quotes, escapes, concatenation glue
+  and native decoding keep the existing reader. Comparison stops at the first
+  mismatch, so hash collisions cannot introduce uncharged lookahead.
+  Runtime-policy profiles, cancellation profiles, enumeration and Small retain
+  their compact drivers: extending dispatch there slowed short queries.
+- Fixed edge scratch updates its member high-water mark only when it grows.
+  Bounds checks, failure order, reservations and reported peaks are unchanged.
+
+**Adjacency construction, milliseconds**, including topology materialization
+(`.attributes = false, .adjacency = .all`), excluding traversal/destruction:
+
+| Input | Fast before → after | Safe before → after | Small before → after |
+| --- | ---: | ---: | ---: |
+| 100,000-edge directed chain | 4.088 → 1.441 | 3.491 → 1.848 | 5.850 → 2.593 |
+| 100,000 mixed edges | 5.318 → 1.639 | 4.200 → 1.987 | 6.842 → 2.815 |
+| 500 × 500 set product | 3.258 → 2.826 | 3.856 → 2.924 | 6.287 → 3.621 |
+| 100,000 isolated nodes plus one edge | 1.864 → 0.074 | 1.341 → 0.114 | 2.064 → 0.192 |
+
+The isolated case benefits particularly from bulk clearing/prefix/restoration
+of rows. The set product still pays for its explicitly requested 250,000 edges.
+No symbolic connection is expanded during lowering.
+
+| Other operation | Fast before → after | Safe before → after | Small before → after |
+| --- | ---: | ---: | ---: |
+| 32 lookups of a 2-KiB key, fixed policy, grant 4096 | 0.269 → 0.037 ms | 0.288 → 0.033 ms | 0.362 → 0.360 ms |
+| Reopened-subgraph edge stream, fixed observed scratch | 0.129 → 0.112 ms | 0.126 → 0.120 ms | 0.240 → 0.226 ms |
+
+The key workload still consumes **66,848 credits** for 32 lookups. One-credit
+resumes cannot use this batching: Fast remains about 0.42 ms. Runtime-policy
+lookup remains about 0.27 ms in Fast. These are distinct routes, not a claim
+that every metered/cancellable query becomes seven times faster.
+
+**Default path and memory.** The complete machine-code sections are
+byte-identical before/after for nine consumers in all three modes:
+ordinary lowering, attribute lowering/querying, value access, materialized
+attributes, lowering sessions, materialization sessions, edge sessions, query
+sessions and adjacency-disabled fixed materialization. The new paths add no
+instructions to those consumers.
+
+The first broad run showed timing outliers even in those identical executables.
+Three additional alternating pairs of the lowering and bulk-attribute consumers
+did not reproduce them: geometric-mean changes were +0.4/0.0/0.0% for ordinary
+lowering, −0.3/+0.4/0.0% for attribute-heavy lowering, and +0.9/+0.7/+1.1% for
+bulk folding (Fast/Safe/Small). Cases below 0.01 ms are excluded from these
+percentage summaries. This is evidence of timing variability, not added work
+in the default driver.
+
+The deferred pre-adjacency comparison was rerun separately against `11471fb`,
+with three alternating pairs and only the required type-helper spelling
+adaptation in the consumer. The single-edge deep-nesting case is excluded.
+These percentages include both output attribute selections unless stated:
+
+| Adjacency disabled, versus `11471fb` | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| Default growable materialization, attributes included | +1.4% | 0.0% | −6.4% |
+| Fixed direct, observed capacities | +1.0% | +0.3% | +1.4% |
+| Fixed direct, scanned bounds | +1.3% | −0.9% | +2.9% |
+| Fixed session, grant 4096 | −1.8% | −3.3% | −4.1% |
+| Fixed session, grant 1 | +3.8% | −8.9% | −3.7% |
+
+The earlier Small session slowdown did not reproduce in this aggregate.
+Small fixed/scanned output and Fast one-credit fixed sessions retain small
+mixed-consumer slowdowns; this pass does not claim to eliminate every opt-in
+timing difference. Their retained/peak bytes, edge counts and work totals match
+the pre-adjacency build.
+
+Across the full matrix, retained bytes, requested peaks, Arena capacities,
+allocation counts and reported graph/session sizes match. Example Fast
+materialization footprints below exclude the borrowed IR/source; they are
+allocator measurements, not process RSS:
+
+| Output | Retained before = after | Requested peak before = after | Arena capacity before = after |
+| --- | ---: | ---: | ---: |
+| Chain, no rows | 2,211,776 B | 3,686,192 B | 8,443,256 B |
+| Chain, all rows | 3,811,792 B | 3,811,792 B | 8,443,256 B |
+| Set product, all rows | 6,984,872 B | 8,304,192 B | 19,212,190 B |
+| Isolated nodes, all rows | 800,176 B | 800,176 B | 1,200,724 B |
+
+The same topology and attribute-heavy fixtures were also compiled with
+`.capabilities.attributes = false`. Their before/after retained, peak and Arena
+figures match too. Disabling attributes reduces retained IR, but Arena backing
+is not monotonic across profiles because allocation ordering affects chunk
+growth and reuse. These Fast profile differences already occur in the baseline:
+
+| Lowering fixture | Full retained | Attributes-off retained | Full Arena | Attributes-off Arena |
+| --- | ---: | ---: | ---: | ---: |
+| 10,000 singleton edges | 1,257,404 B | 1,177,404 B | 1,982,156 B | 3,603,728 B |
+| 10,000 nodes with attribute updates | 2,734,680 B | 862,344 B | 7,565,040 B | 1,251,428 B |
+| 50,000 × 50,000 symbolic product | 7,848,888 B | 5,848,880 B | 21,827,544 B | 16,359,814 B |
+
+The product remains one connection. Fixed storage remains the option for a
+caller-selected reservation without abandoned growable buffers.
+
+Work and polling totals also agree, apart from the unchanged Safe growable-edge
+benchmark alternating between 142,320 and 142,324 credits. That variation also
+occurs between baseline runs. Growable copying is charged when needed; an
+allocator's in-place resize can avoid copy credits. Fixed storage and controlled
+allocation traces retain exact accounting.
+
+Opted-in consumer code grows modestly; ordinary consumer text sizes are
+unchanged. These are changes to the executable `__text` section, excluding
+debug information and other sections:
+
+| Consumer | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| Attribute sessions | +1,224 B | +1,528 B | +56 B |
+| Fixed query scratch | +40 B | −48 B | +88 B |
+| Adjacency | +3,208 B | +4,464 B | +2,624 B |
+
+**Remaining costs.** Strict-edge attribute enumeration still walks contributions:
+the Fast fixture takes 1.333 ms through a grant-4096 session versus 0.290 ms
+directly, for 32 enumerations. The pass does not eliminate that optional
+session overhead. A Fast query-session batching experiment improved reopened
+scopes but slowed short queries, so it was discarded. Runtime-policy long-key
+optimization and further strict-history/session tuning remain possible follow-ups;
+no polling or work unit was enlarged to improve the numbers.
+
+Validation: the full tests/examples/freestanding/benchmark/tool gate passes
+327 steps and 971 tests; the Safe IR suite passes 306 tests. Internal scalar
+comparison tests check every admitted cursor/write boundary, including name
+escapes, concatenations and collision mismatches. Another **60,000 adversarial
+inputs** passed (30,000 Safe, seed 11; 30,000 Fast, seed 12), covering complete/
+partial, full/topology, fixed/growable, sessions, limits, cancellation and
+adjacency. The partial benchmark's 16-byte argument-storage leak was also fixed.
+
+Reproduce individual measurements with `bench-ir-adjacency`,
+`bench-ir-attribute-sessions` and `bench-ir-fixed-queries`, selecting
+`-Doptimize=fast`, `safe` or `small`. Use serial runs for comparisons.
 
 ## Running the benchmarks
 

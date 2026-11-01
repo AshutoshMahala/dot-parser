@@ -5,6 +5,37 @@ const eq = std.testing.expectEqualDeep;
 const expect = std.testing.expect;
 const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
 
+test "batched key comparisons retain one-credit query state at every pause" {
+    const key: [320]u8 = @splat('k');
+    var source: std.Io.Writer.Allocating = .init(a);
+    defer source.deinit();
+    try source.writer.print("digraph {{a[\"k\" /* gap */ + \"{s}\"=value];}}", .{key[1..]});
+    var parsed = try dot.ir.parse(a, source.written(), .{});
+    defer parsed.deinit();
+    var nodes = parsed.ir().?.nodeIterator();
+    const node = nodes.next().?;
+    for ([_]u32{ 1, 2, 7, 64, 4096 }) |grant| for ([_]u64{ 0, 1, 2, 7, 63, 64, 65, 127, 300, 333, 4096 }) |limit| {
+        var scalar = try IR.attributeSession(node, &key, .{ .limits = .{ .max_work = limit } });
+        defer scalar.deinit();
+        var batched = try IR.attributeSession(node, &key, .{ .limits = .{ .max_work = limit } });
+        defer batched.deinit();
+        while (true) {
+            const actual = batched.advance(grant);
+            var expected = scalar.advance(0);
+            for (0..actual.work_used) |_| expected = scalar.advance(1);
+            // Lifetime exhaustion is observed only when attempting another
+            // credit; a grant ending exactly there remains a pause.
+            if (actual.outcome != null and expected.outcome == null) expected = scalar.advance(1);
+            try eq(expected.total_work, actual.total_work);
+            try eq(expected.outcome, actual.outcome);
+            try eq(scalar.phase, batched.phase);
+            inline for (.{ "phase", "offset", "hash", "slot", "found" }) |field| try eq(@field(scalar.finder, field), @field(batched.finder, field));
+            inline for (.{ "raw", "actual", "offset", "state", "depth", "length", "index" }) |field| try eq(@field(scalar.finder.name, field), @field(batched.finder.name, field));
+            if (actual.outcome != null) break;
+        }
+    };
+}
+
 fn lookup(comptime Profile: type, view: anytype, key: []const u8) !void {
     const expected = try view.attributeWith(key, .{});
     var total: ?u64 = null;

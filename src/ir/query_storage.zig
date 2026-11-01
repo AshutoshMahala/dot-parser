@@ -197,9 +197,9 @@ pub const EdgeState = struct {
             .peak = layout.byte_size,
         };
     }
-    pub fn needMembers(self: *EdgeState, count: usize) r.Error!void {
+    pub inline fn needMembers(self: *EdgeState, count: usize) r.Error!void {
         if (count > self.members.len) return self.missing(.members, self.members.len, count);
-        self.used.members = @max(self.used.members, @as(u32, @intCast(count)));
+        if (count > self.used.members) self.used.members = @intCast(count);
     }
     pub fn needPair(self: *EdgeState, count: usize) r.Error!void {
         if (count > self.pairs.len) return self.missing(.strict_pairs, self.pairs.len, count);

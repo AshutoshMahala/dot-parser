@@ -38,7 +38,7 @@ has been discussed.
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization, optional connection/scope indexes and materialized adjacency | Final slice-2 verification/performance pass, label-port binding, markup-result association, event lowering, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization, optional connection/scope indexes and materialized adjacency; slice-2 verification/performance pass complete | Label-port binding, markup-result association, event lowering, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide; remaining optional performance costs are recorded in the performance report |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and
@@ -1255,8 +1255,18 @@ work/memory/cancellation limits across direct/session and growable/fixed output;
 explicit capacities cover row offsets/entries and failures publish no result.
 No adjacency or graph expansion occurs during lowering. Unique-neighbor
 deduplication, attaching rows to existing output and attribute predicates remain
-follow-ups. The final slice-2 verification and performance pass remains step 6;
-slice 2 is not yet complete.
+follow-ups. Delivery-plan step 6, the final slice-2 verification and performance
+pass, is complete. It checks full/topology and complete/partial representations,
+direct/session and growable/fixed routes, selected indexes, adjacency, native
+encoding tests, allocation failures, limits and cancellation. Adjacency batches
+admitted work, fixed-policy key lookup batches ordinary byte comparisons, and
+fixed scratch avoids redundant high-water writes; retained memory and state
+sizes do not grow. Ordinary consumer machine-code sections are unchanged in
+Fast/Safe/Small. The [final measurements](../PERFORMANCE.md#final-slice-2-performance-and-memory-pass-unreleased-2026-11-01)
+record remaining optional session costs, small historical mixed-consumer timing
+deltas and the existing Arena allocation-order caveat. Further tuning of those
+costs remains possible; no metering unit or cancellation guarantee is relaxed.
+This completes slice 2's planned delivery and verification.
 Speed builds specialize single-credit lowering resumes; larger grants share
 the existing loop and size builds retain one driver. Hashing inlines the
 one-unit name reader to avoid a call for every unit of comment/concatenation

@@ -63,9 +63,95 @@ pub fn Key(comptime caps: encoding.Capabilities) type {
             }
             return false;
         }
+        pub const Consumed = struct { used: u32, done: bool = false, failure: ?r.Error = null };
+        /// Run the same key transitions within one already-admitted grant.
+        /// No allocator, callback, or unbounded name decoding occurs here.
+        pub noinline fn consume(self: *Self, graph: anytype, grant: u32) Consumed {
+            var used: u32 = 0;
+            while (used < grant) {
+                if (self.phase == .compare) {
+                    const n = self.plainPrefix(grant - used);
+                    used += n;
+                    if (used == grant) break;
+                }
+                used += 1;
+                const done = @call(.always_inline, step, .{ self, graph }) catch |err| return .{ .used = used, .failure = err };
+                if (done) return .{ .used = used, .done = true };
+            }
+            return .{ .used = used };
+        }
+        // Keep one credit per compared source byte, including the exact
+        // pending-byte state. Stop at framing/escape bytes and leave those to
+        // Name.step. This loop never looks past the admitted grant or the first
+        // mismatch, so collisions cannot turn lookahead into uncharged work.
+        fn plainPrefix(self: *Self, grant: u32) u32 {
+            if (self.name.actual != .utf8 and self.name.actual != .ascii) return 0;
+            if (self.name.index < self.name.length) return 0;
+            const quoted = self.name.state == .quote;
+            if (!quoted and self.name.state != .bare) return 0;
+            const n = @min(grant, self.name.raw.len - self.name.offset, self.bytes.len - self.offset);
+            const source = self.name.raw[self.name.offset..][0..n];
+            const query = self.bytes[self.offset..][0..n];
+            var consumed: u32 = 0;
+            for (source, query) |byte, expected| {
+                if ((quoted and (byte == '"' or byte == '\\')) or byte != expected) break;
+                consumed += 1;
+            }
+            if (consumed != 0) {
+                self.name.offset += consumed;
+                self.offset += consumed;
+                self.name.length = 1;
+                self.name.index = 1;
+                self.name.output[0] = source[consumed - 1];
+            }
+            return consumed;
+        }
         fn mismatch(self: *Self, length: usize) void {
             self.slot = (self.slot + 1) & (length - 1);
             self.phase = .probe;
+        }
+    };
+}
+
+test "key batches preserve scalar decoding and collision boundaries" {
+    const Graph = struct {
+        raw: []const u8,
+        attribute_data: a.Store,
+        source_info: encoding.Info = .{},
+        pub fn text(self: @This(), _: t.Range) []const u8 {
+            return self.raw;
+        }
+    };
+    const Reader = Key(.{ .utf8 = true });
+    const eq = std.testing.expectEqualDeep;
+    const spellings = [_][]const u8{
+        "abcdef",           "\"abcdef\"",     "\"ab\" /* glue */ + \"cdef\"",
+        "\"ab\\\"cdef\"",   "\"ab\\\\cdef\"", "\"ab\\\ncdef\"",
+        "\"ab\\\r\ncdef\"",
+        "\"café 中文\"",
+        "<abcdef>",         "\"\" + \"\"",
+    };
+    const queries = [_][]const u8{ "", "a", "abcdef", "abcdeg", "abcdefgh", "ab\"cdef", "ab\\\\cdef", "café 中文" };
+    for (spellings) |raw| for (queries) |query| for (1..18) |grant| {
+        // Enter comparison directly to exercise real and apparent hash
+        // collisions without depending on finding a Wyhash collision.
+        var slots = [_]u32{ 0, a.none };
+        const graph: Graph = .{ .raw = raw, .attribute_data = .{ .table = .{ .slots = &slots } } };
+        var scalar: Reader = .{ .bytes = query, .kind = .node, .phase = .compare, .name = .{ .raw = raw } };
+        var batched = scalar;
+        while (true) {
+            const actual = batched.consume(&graph, @intCast(grant));
+            try eq(@as(?r.Error, null), actual.failure);
+            var done = false;
+            for (0..actual.used) |_| {
+                try std.testing.expect(!done);
+                done = try scalar.step(&graph);
+            }
+            try eq(done, actual.done);
+            inline for (.{ "phase", "offset", "hash", "slot", "found" }) |field| try eq(@field(scalar, field), @field(batched, field));
+            inline for (.{ "raw", "actual", "offset", "state", "depth", "length", "index" }) |field| try eq(@field(scalar.name, field), @field(batched.name, field));
+            try std.testing.expectEqualSlices(u8, scalar.name.output[0..scalar.name.length], batched.name.output[0..batched.name.length]);
+            if (done) break;
         }
     };
 }

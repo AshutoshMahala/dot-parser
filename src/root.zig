@@ -386,13 +386,13 @@ pub const parseAndValidate = DefaultProfile.parseAndValidate;
 
 test {
     std.testing.refAllDecls(@This());
-    // Private, provisional modules are not exported but their unit tests
-    // still run (the syntax-event sink, parser driver, and document builder stay
-    // private per docs/ARCHITECTURE.md until the contract stabilizes).
+    // Include private implementation tests as well as public declarations.
     _ = @import("dot/events.zig");
     _ = @import("dot/parser.zig");
     _ = @import("dot/syntax.zig");
     _ = @import("dot/validate.zig");
     _ = @import("dot/lexer/lexer.zig");
     _ = @import("dot/policy.zig");
+    _ = @import("ir/adjacency_rows.zig");
+    _ = @import("ir/attribute_primitives.zig");
 }
