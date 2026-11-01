@@ -1,33 +1,44 @@
 # Roadmap
 
-Remaining work after 0.5.0. Items described as implemented are available in
-0.5.0 unless marked Unreleased; the other items are plans and can change. The linked guides describe
-the implemented contracts.
+What is planned but not built yet. Plans can change. Features that already
+exist are described in their guides; the ones that are not in 0.5.0 are marked
+"unreleased" there.
 
 ## DOT
 
-- **Richer graph queries and bulk attribute folding.** The unreleased
-  [semantic IR](IR.md) resolves unique nodes, shared scope membership, symbolic
-  connections, effective attributes/defaults and their origins from complete
-  Documents. Borrowed component views expose individual/all effective attributes.
-  Edge iteration/materialization is explicit and bounded. Materialization resolves
-  bulk edge updates and endpoint-port values once by default, with a topology-only
-  option. Opt-in partial IR retains qualified queries, iteration and materialized
-  output; Document lowering, materialization and edge streaming have resumable
-  sessions, including symbolic and attribute queries. Fixed lowering and fixed
-  streaming/attribute scratch are implemented; caller-owned materialization
-  output, label-port existence/binding, event lowering and the final performance
-  pass remain. Known cgraph differences are listed in [IR semantics](IR.md#default-and-update-rules).
 - **Feeding input in pieces.** Today the whole input must be in memory before
   parsing starts.
 - **Validation in small steps**, and validation that can be cancelled.
 - **A ready-made "untrusted input" preset** for DOT, like the one markup has.
 - **Step-by-step parsing of UTF-16 and UTF-32**, and source excerpts for them
-  in boxed output. One-call parsing is available in 0.5.0; see
-  [encodings](#encodings).
-- **Broader event output.** The unreleased [public DOT events](EVENTS.md) support
-  event-only one-shot parsing and UTF-8 sessions. Combined tree/event output,
-  event-driven validation, public pull events and composed execution remain.
+  in boxed output. One-call parsing is available; see [encodings](#encodings).
+- **More event output.** [DOT events](EVENTS.md) (unreleased) work in one call
+  for every encoding, and in sessions for UTF-8. Still to do: sessions for
+  UTF-16 and UTF-32, validation driven by events, a document and events from
+  the same parse, label and string checks through events, and a pull-style API
+  where you ask for the next event.
+
+## Graph layer
+
+The [semantic graph](IR.md) (unreleased) already finds unique nodes and
+subgraph membership, resolves effective attributes, streams or builds edges,
+works on unfinished files, runs in small steps or in fixed memory, and has
+optional indexes and adjacency. Still to do:
+
+- **Label ports.** Checking that a port such as `a:p` exists in the node's
+  label, and linking the port to that part of the label. Today a port is only
+  a value (`tailport`, `headport`).
+- **Building the graph from events**, without keeping a `Document` first.
+- **One budget for parsing and building the graph.** Today each has its own
+  limits and its own steps.
+- **More in small steps:** finding a node by name (`findNode`), structured
+  `tailPort()` / `headPort()` views, and formatting values.
+- **Walking the edges at a node without building the edge list first**, and
+  filtering those edges by attribute.
+- **Closer Graphviz compatibility.** A few cases still differ from Graphviz on
+  purpose, such as the edge `key` attribute. They are listed in
+  [default and update rules](IR.md#default-and-update-rules), and each needs its
+  own decision.
 
 ## Markup
 
@@ -36,16 +47,11 @@ labels are its first and most important use. HTML subsets, SVG, and custom
 dialects such as XAML should be able to build on it without inheriting each
 other's rules.
 
-- **More ways to check.** DOT's `markup` setting already chooses whether labels
-  are checked: `none` (report `<...>` as unsupported), `passthrough` (keep it
-  unchecked) or `process` (check it with the bound label checker). How they are
-  checked is the checker's `mode`: `.graphviz` is now the default,
-  supplying tag and per-element attribute vocabulary checks. `.structural`
-  remains available explicitly for custom vocabulary and byte-exact tag matching.
-  `extended` remains planned. Unreleased Graphviz child/content rules, local
-  attribute values and references are implemented. Automatic selection of label
-  contexts remains unfinished. For example, an HTML-like port `n:<p>` has the value
-  `p`, not an opening tag.
+- **Checking only the values Graphviz reads as labels.** Today DOT checks every
+  `<...>` value as a label. For example, an HTML-like port `n:<p>` has the
+  value `p`, not an opening tag.
+- **A third mode, `extended`**, next to `.graphviz` (the default) and
+  `.structural`.
 - **More optional rules.** Name rules and reference lists stay separate,
   independent choices. More lists, and a way to supply your own, are planned.
 - **Dialects that parse differently.** Some dialects need different parsing,
@@ -53,15 +59,16 @@ other's rules.
   example. The plan is an explicit, compile-time dialect rule on the same
   engine, described as a defined subset, never as full browser HTML. This still
   needs its own design.
-- **String integration** for checking values inside markup. The unreleased
-  [standalone string processor](STRINGS.md) supplies equality, membership and
-  custom checks, with resumable metering and cancellation. Unreleased logical
-  readers, original-source mapping and attribute routing now integrate both
-  hosts. Shared-budget composition, no-tree string execution and host-aware
-  logical fixes remain.
-- **More of a partial markup document.** Unreleased DOT retention keeps later
-  recovered statements with gaps; markup still retains its prefix. Gap-aware
-  markup trees and pausing/resuming label checks remain unfinished.
+- **More string integration.** [String checks](STRINGS.md) (unreleased) already
+  run on chosen DOT and markup attributes. Still to do: one shared budget for
+  DOT, its labels and its strings; string checks without a kept document, for
+  example from events; string checks in DOT sessions and with fixed storage;
+  choosing per markup attribute; and suggested fixes that edit the original
+  DOT or markup text.
+- **More of a partial markup document.** Partial DOT results (unreleased) keep
+  the statements after an error; partial markup still keeps only the part
+  before the first error. Keeping later markup with its gaps marked, and
+  pausing and resuming label checks, are still to do.
 
 ## Checking labels inside DOT
 
@@ -73,7 +80,7 @@ other's rules.
 
 ## Encodings
 
-One-call parsing of UTF-16 and UTF-32 is available in 0.5.0; see
+One-call parsing of UTF-16 and UTF-32 is available since 0.5.0; see
 [source encodings](ENCODINGS.md). It reads the original bytes without
 converting them. Still to do:
 

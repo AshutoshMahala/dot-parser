@@ -42,6 +42,29 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
             return profile.ProfileForSelectedEncoding(actual, api, config);
         }
 
+        // Native admission may stop before allocating or touching caller pools.
+        // Return the same stopped-result vocabulary as the UTF-8 worker.
+        fn cancelledResult(comptime Result: type, allocator: ?std.mem.Allocator) Result {
+            if (Result == api.ValidationResult) return .{ .completion = .cancelled };
+            if (Result == api.Report) return .{ .outcome = .cancelled };
+            if (Result == api.ParseResult) return .{
+                .outcome = .cancelled,
+                .diagnostic_delivery = .complete,
+                .counts = .{},
+                .document = null,
+                ._allocator = allocator.?,
+                ._nodes = .empty,
+                ._attributes = .empty,
+            };
+            if (Result == api.FixedParseResult) return .{
+                .outcome = .cancelled,
+                .diagnostic_delivery = .complete,
+                .counts = .{},
+                .document = null,
+            };
+            @compileError("unexpected native markup result type");
+        }
+
         pub const Prepared = struct {
             policies: Base.Policies.State,
             cancellation: @FieldType(Base.Prepared, "cancellation") = if (@FieldType(Base.Prepared, "cancellation") == void) {} else null,
@@ -58,7 +81,11 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                 const info = try enc.select(caps, input.bytes, self.encoding);
                 switch (info.encoding) {
                     inline else => |actual| if (comptime caps.allows(actual)) {
-                        if (actual != .utf8) try dispatch.checkCancellation(self.admissionHook());
+                        if (actual != .utf8 and dispatch.cancellationRequested(self.admissionHook())) return .{
+                            .parse = cancelledResult(api.ParseResult, allocator),
+                            .validation = null,
+                            .has_errors = false,
+                        };
                         const W = worker(actual);
                         const ready: W.Prepared = .{ .policies = self.policies, .cancellation = self.cancellation };
                         var result = try ready.parseAndValidate(allocator, input, sink, resources);
@@ -71,7 +98,11 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                 const info = try enc.select(caps, input.bytes, self.encoding);
                 switch (info.encoding) {
                     inline else => |actual| if (comptime caps.allows(actual)) {
-                        if (actual != .utf8) try dispatch.checkCancellation(self.admissionHook());
+                        if (actual != .utf8 and dispatch.cancellationRequested(self.admissionHook())) return .{
+                            .parse = cancelledResult(api.FixedParseResult, null),
+                            .validation = null,
+                            .has_errors = false,
+                        };
                         const W = worker(actual);
                         const ready: W.Prepared = .{ .policies = self.policies, .cancellation = self.cancellation };
                         var result = try ready.parseAndValidateIn(input, memory, scratch, sink);
@@ -89,7 +120,11 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                 switch (info.encoding) {
                     inline else => |actual| if (comptime caps.allows(actual)) {
                         const cancellation = if (config.runtime_policy) (if (self.base.prepared.policies.execution.cancellation) self.base.prepared.cancellation else null) else self.base.prepared.cancellation;
-                        if (actual != .utf8) try dispatch.checkCancellation(cancellation);
+                        if (actual != .utf8 and dispatch.cancellationRequested(cancellation)) return .{
+                            .parse = cancelledResult(api.FixedParseResult, null),
+                            .validation = null,
+                            .has_errors = false,
+                        };
                         const W = worker(actual);
                         // Move the same buffers through the selected worker. No
                         // extra pool, duplicate ownership or per-encoding cache.
@@ -147,7 +182,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                             },
                         }
                     }
-                    if (actual != .utf8) try dispatch.checkCancellation(prepared.admissionHook());
+                    if (actual != .utf8 and dispatch.cancellationRequested(prepared.admissionHook()))
+                        return cancelledResult(Result, if (Result == api.ParseResult) arguments[0] else null);
                     const W = worker(actual);
                     const Opt = comptime if (std.mem.eql(u8, method, "parseBorrowed")) W.ParseOptions else W.Options;
                     const called = @call(.auto, @field(W, method), arguments ++ .{dispatch.options(Opt, options)});
@@ -170,11 +206,19 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
             return call("measureIn", api.Report, source, .{ source, scratch, sink }, options);
         }
         pub fn validate(allocator: std.mem.Allocator, document: *const api.Document, sink: api.DiagnosticSink, options: Options) OperationError!api.ValidationResult {
+            if (!caps.allows(document.source_info.encoding)) {
+                _ = if (runtime_policy) try prepare(dispatch.options(Options, options)) else prepare(dispatch.options(Options, options));
+                return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
+            }
             var selected = options;
             selected.encoding = document.source_info.encoding;
             return call("validate", api.ValidationResult, document.source, .{ allocator, document, sink }, selected);
         }
         pub fn validateIn(document: *const api.Document, scratch: api.ValidationScratch, sink: api.DiagnosticSink, options: Options) OperationError!api.ValidationResult {
+            if (!caps.allows(document.source_info.encoding)) {
+                _ = if (runtime_policy) try prepare(dispatch.options(Options, options)) else prepare(dispatch.options(Options, options));
+                return .{ .completion = .{ .unsupported_encoding = document.source_info.encoding } };
+            }
             var selected = options;
             selected.encoding = document.source_info.encoding;
             return call("validateIn", api.ValidationResult, document.source, .{ document, scratch, sink }, selected);

@@ -1,38 +1,57 @@
-# DOT semantic graph
+# Semantic graph (IR)
 
-**Unreleased.** `dot.ir` is an optional layer above the parser. It resolves
-logical node identities, scope membership and effective attributes/defaults,
-while retaining symbolic connections and source provenance. Ordinary parsing
-does not invoke or allocate storage for it.
+> **Unreleased.** Not in 0.5.0: the whole `dot.ir` layer is new on `main`.
+
+`dot.ir` is an optional layer above the parser. It turns a parsed DOT file into
+a graph, following Graphviz's rules for names, subgraphs and attributes (with
+some [known differences](#default-and-update-rules)). You get:
+
+- **one node per name**: `a`, `"a"` and `"a" + ""` are the same node;
+- **subgraphs** and the nodes in them, with a reopened named subgraph merged
+  into one;
+- **effective attributes**: the value each node, edge or graph ends up with
+  after defaults, inheritance and later updates, and where that value came from;
+- **edge statements as written**: `{a b} -> {c d}` is kept as one connection.
+  Its four edges are produced only when you ask for them.
+
+Ordinary parsing never runs this layer or allocates anything for it.
+
+**Words used in this guide**
+
+| Word | Meaning |
+| --- | --- |
+| IR | "Intermediate representation": the graph this layer builds. `Graph` for complete input, `PartialGraph` for input with errors. |
+| Lowering | Building the IR from a parsed `Document`. `dot.ir.parse` does it for you; `lowerComplete` and `lowerPartial` do it for a Document you already have. |
+| Connection | One written edge link and its two endpoints. `a -> b -> c` has two connections; `a -> {b c}` has one. An endpoint is a node or a set of nodes (a subgraph). |
+| Expanding edges | Turning connections into individual edges (node pairs), one at a time or all at once. |
+| Materializing | Expanding every edge into an array the result owns. It can also work out each edge's attributes once ("folding") and build per-node edge lists ("adjacency"). |
+| Effective attribute | The final value after defaults, inheritance and later assignments. |
+| Scope | The root graph or a subgraph. A named subgraph written twice is one scope. |
+| Profile | A type made by `dot.ir.Lowering(config)`: compile-time choices about what the graph keeps and how its operations run. |
+| Session | An operation you drive in small steps with `advance(budget)`, so you can pause, resume and cancel it. |
 
 ## Start here
 
 ```zig
-var result = try dot.ir.parse(allocator, source, .{ .diagnostics = bag.sink() });
-defer result.deinit();
-const ir = result.ir() orelse return error.GraphUnavailable;
+fn printGraph(gpa: std.mem.Allocator, source: []const u8, sink: dot.DiagnosticSink) !void {
+    var result = try dot.ir.parse(gpa, source, .{ .diagnostics = sink });
+    defer result.deinit();
+    const ir = result.ir() orelse return error.GraphUnavailable;
 
-var nodes = ir.nodeIterator();
-while (nodes.next()) |node|
-    std.debug.print("node {f}\n", .{node.name()});
+    // a and "a" are one node; x is a node with no edges.
+    var nodes = ir.nodeIterator();
+    while (nodes.next()) |node| std.debug.print("node {f}\n", .{node.name()});
+
+    // Expand one edge at a time, without storing the whole edge list.
+    var edges = try ir.edgeIterator(.{});
+    defer edges.deinit();
+    while (try edges.next()) |edge|
+        std.debug.print("edge {f} {s} {f}\n", .{ edge.from().name(), edge.edge.operator.lexeme(), edge.to().name() });
+}
 ```
 
-`dot.ir.parse` uses the default UTF-8 DOT profile. It parses once, validates,
-lowers accepted input and releases the temporary Document pools. It does not
-copy source bytes or expand edges. The result owns the IR; keep the source
-alive and unchanged. The pointer returned by `result.ir()` is borrowed from
-that result, which must stay alive and unmoved while the pointer is used.
-
-Diagnostics go to the supplied sink. Render the bag on success too: warnings
-do not prevent a graph. A null `ir()` means DOT checking rejected **or stopped**;
-`result.checking` preserves the parse outcome/completion, validation result,
-counts and diagnostic delivery/stop reason. It must not be interpreted as
-proof of invalid input. Lowering failures return typed errors and release
-temporary storage. This complete-input entry point never publishes partial IR.
-
-See runnable [build_graph.zig](../examples/build_graph.zig). It parses
-`digraph { a -> { b c }; "a" -> d; subgraph s { x } }`, reports diagnostics,
-and prints:
+This is [build_graph.zig](../examples/build_graph.zig). For
+`digraph { a -> { b c }; "a" -> d; subgraph s { x } }` it prints:
 
 ```text
 node a
@@ -45,1036 +64,1037 @@ edge a -> c
 edge a -> d
 ```
 
-Here `a` and `"a"` are one node, edge endpoints introduce nodes implicitly,
-and the isolated `x` remains present. The example streams individual edges
-without retaining an expanded edge array; lowering keeps connections symbolic.
+What `dot.ir.parse` does:
 
-## Choose retained capabilities
+- It parses and validates with the default UTF-8 DOT settings, builds the graph
+  if the input is accepted, and frees the parsed Document. It doesn't copy the
+  source or expand edges.
+- The result owns the graph. The graph borrows the source: keep the source
+  bytes alive and unchanged until `result.deinit()`.
+- `result.ir()` points into the result. Keep the result alive and don't move it
+  while you use that pointer.
+- Diagnostics go to your sink. Print them on success too: warnings don't stop
+  the graph.
+- `ir()` is null when DOT checking rejected the input **or stopped** (a limit,
+  a stop from the diagnostic sink, a check that didn't finish). `result.checking`
+  says which. It keeps the parse outcome and completion, the syntax-error,
+  warning and accepted-deviation counts, the validation result, and how
+  diagnostics were delivered or why they stopped. A null graph on its own
+  doesn't prove the input is invalid.
+- A failure while building the graph (a limit, out of memory) is returned as an
+  error, and nothing stays allocated. You never get a half-built graph. For
+  input with errors, use [`parsePartial`](#partial-graphs-for-editors).
 
-An IR profile also has the one-call entry points. For topology without effective
-attributes/defaults, select the capability at compile time:
+**Find your task**
 
-```zig
-const Topology = dot.ir.Lowering(.{
-    .capabilities = .{ .attributes = false },
-});
-var result = try Topology.parse(allocator, source, .{ .diagnostics = bag.sink() });
-defer result.deinit();
-const graph = result.ir() orelse return error.GraphUnavailable;
-var nodes = graph.nodeIterator();
-while (nodes.next()) |node|
-    std.debug.print("node {f}\n", .{node.name()});
-```
-
-Full attributes remain the default. `IR.parsePartial` provides the corresponding
-opt-in partial-source route. Both calls parse once, validate normally, lower
-with the selected IR profile and release the temporary Document. They borrow
-the source and diagnostic sink and own the IR, just like the module-level calls.
-The IR's `source_encodings` selection also configures the convenience call's DOT
-reader. Other DOT policies use their library defaults; use explicit Document
-lowering for a custom accepting DOT profile.
-
-| Setting | Effect |
+| I want to… | Read |
 | --- | --- |
-| `.capabilities.attributes = true` (default) | Retain attributes, declarations, interned keys, default snapshots and effective maps |
-| `.capabilities.attributes = false` | Omit that storage and lowering work; retain logical nodes, scopes, mentions, symbolic connections, written ports and partial-source coverage |
-| `.dot` call options | DOT checking resources and, for native-encoding profiles, source encoding selection |
-| `.lowering` call options | IR limits and the profile's enabled execution options; runtime policy overrides require `.runtime_policy = true` |
+| Look up nodes and names, list subgraph members | [Nodes, names and subgraphs](#nodes-names-and-subgraphs) |
+| Ask whether an edge exists, without expanding edges | [Ask about connections](#ask-about-connections-without-expanding-edges) |
+| Get every edge, one at a time or as an array | [Expand edges](#expand-edges) |
+| Walk the edges at each node | [Walk the edges at a node](#walk-the-edges-at-a-node) |
+| Read attribute values, defaults and ports | [Read effective attributes](#read-effective-attributes) |
+| Keep only topology, add indexes, read UTF-16/32 | [Choose what the graph keeps](#choose-what-the-graph-keeps) |
+| Build the graph from a Document I already parsed | [Lower a Document you already have](#lower-a-document-you-already-have) |
+| Show a graph while the user is still typing | [Partial graphs for editors](#partial-graphs-for-editors) |
+| Use fixed buffers and no allocator | [Fixed buffers, no allocator](#fixed-buffers-no-allocator) |
+| Work in small steps, pause, cancel | [Small steps and cancelling](#small-steps-and-cancelling) |
+| Know the limits and what each call costs | [Limits, memory and costs](#limits-memory-and-costs) |
+| Look up a call or option | [Reference](#reference) |
 
-Capability selection is compile-time only. It changes the representation, not
-whether DOT input is validated. `IR.capabilities` and `IR.Graph.capabilities`
-expose the selection; execution policies and limits do not change graph type
-identity. Use `IR.Node` / `IR.Connection` for profile-specific record types;
-module-level record names describe the full profile. Disabled record fields
-have zero-sized `void` types, not empty allocated pools.
+## Nodes, names and subgraphs
 
-With attributes disabled, attribute lookup/enumeration, attribute sessions and
-effective `tailPort()` / `headPort()` queries are compile errors. Written
-endpoint syntax is still available through `endpoint.portSyntax(graph)`.
-`materialize(.{})` follows the graph's capability; explicitly requesting
-`.attributes = true` on topology IR is a compile error. Omitted attributes
-cannot be recovered from that IR: retain the Document separately and lower
-again with a full profile if you need them later.
+### One node per name
 
-Core operations use the same calls for either representation:
+Nodes are identified by their **logical name**: the value left after DOT's
+quoting is undone (quotes, escaped quotes, `+` joins, and the outer `<...>` of
+an HTML-like name). `a`, `"a"` and `"a" + ""` are one node. There is no case
+folding, Unicode normalization, number normalization (`1` and `1.0` are
+different nodes) or HTML entity expansion. If a UTF-8 profile accepted invalid
+bytes, the name keeps those bytes.
 
-| Operation | With attributes disabled |
+`try ir.findNode("a b")` takes the logical name as UTF-8 bytes, not a DOT
+spelling, and returns `?NodeId`. It finds `"a b"`. Hash matches are always
+confirmed by comparing the names.
+
+### Reading names
+
+| Call | Gives |
 | --- | --- |
-| Node/scope views, names, mentions, membership and edge-existence queries | Retained facts and checked handles behave as in full IR |
-| `edgeIterator` / `IR.edgeSession` | Same semantic order, strict deduplication and endpoint orientation; no attribute folding |
-| `edgeIteratorIn` / `IR.edgeSessionIn` | Caller-owned edge scratch works with allocator-built topology IR; no allocator fallback |
-| `materialize(.{})` / `materializationSession(.{})` | Infer topology output; no attribute-map state or effective-port resolution |
-| Attribute lookup, enumeration, scratch sizing and attribute-bearing materialization | Compile error, including helpers called through a different profile |
+| `node.name()` | A formatter for `{f}` that prints the logical name |
+| `try ir.nodeName(id)` | The same formatter for a node ID; checks the ID |
+| `try ir.nodeSpelling(id)` | The first written spelling, in the source's encoding, with quotes and `+` |
+| `try ir.writeNodeName(id, writer)` | Writes the logical name to a writer |
+| `try ir.writeNodeNameWith(id, writer, options)` | The same, with [limits and cancellation](#passing-limits-and-cancellation) |
 
-For example, continue from the topology graph above without a different
-streaming API:
+- UTF-16 and UTF-32 names are written as UTF-8. UTF-8 and ASCII names keep
+  their bytes.
+- Nothing is escaped for an output format, and HTML entities are not expanded.
+- Nothing is allocated or cached. Decoding happens while printing.
+- `{f}` and `writeNodeName` follow ordinary writer rules: writer errors pass
+  through, there is no IR work budget, and a failed write may have written a
+  prefix. Use `writeNodeNameWith` for a limited or cancellable write.
+
+### Order
+
+- **Nodes** are in order of first appearance, including a left endpoint seen
+  before a subgraph endpoint. `nodeIterator()` follows this order. It allocates
+  nothing and needs no `deinit`.
+- **Connections** are in the order DOT runs them: connections inside an
+  endpoint subgraph come before the edge statement that contains it. So node
+  order and connection order can differ.
+- Source ranges are byte offsets in the original source.
+
+### Subgraphs and membership
+
+- Named subgraphs with the same name under the same parent are one scope.
+  Anonymous subgraphs are always separate. `ScopeId.root` is the graph itself.
+- Each written body `{ ... }` is an **occurrence**. Each occurrence has a
+  `Membership` handle: a read-only snapshot of the scope's members at that
+  point. Reopening the subgraph later doesn't change an earlier snapshot.
+- Edge endpoints are taken after the whole edge statement has run. In
+  `subgraph s { a } -> subgraph s { b }`, both ends contain `a` and `b`.
+- `try ir.scopeMembership(scope)` gives the final snapshot.
+  `try ir.contains(membership, node)` checks one node.
+
+### The stored tables
+
+A `Graph` keeps these arrays. They are read-only, and every ID indexes into
+them.
+
+| Field | Holds |
+| --- | --- |
+| `nodes` | `Node`: name range, first mention, hash |
+| `scopes` | `Scope`: parent, optional name range, first occurrence |
+| `occurrences` | `Occurrence`: scope, parent occurrence, source range, membership |
+| `mentions` | `Mention`: each written node reference, its source range and occurrence |
+| `connections` | `Connection`: two `Endpoint`s (membership and `PortId`), written and effective operator, operator range, occurrence, raw attribute range |
+| `attributes` | The written attributes, including `key=value` statements |
+| `declarations` | Node statements, `node`/`edge`/`graph` defaults and graph assignments, in the order they run |
+| `endpoint_ports` | Written edge-endpoint ports, one per ported endpoint; a chain's middle endpoint shares one |
+| `strict`, `kind`, `declared_kind`, `name` | The graph header |
+
+- `ir.text(range)` returns the source bytes of a range from this graph, like
+  `Document.text`.
+- `connection.left.portSyntax(ir)` (or `.right`) returns the written port of an
+  endpoint, or null.
+- IDs (`NodeId`, `ScopeId`, `ConnectionId`, `Membership`) and `Edge` records
+  belong to one graph. Don't make them up or mix graphs. Public calls check that
+  a handle is in range (`error.InvalidHandle`), but an in-range ID from another
+  graph can't be detected.
+- `PartialGraph` doesn't expose these arrays; use its views and counts.
+
+## Ask about connections without expanding edges
+
+`{ a b } -> { x y }` is stored as one connection, not four edges. A set endpoint
+points at shared mention ranges and a scope snapshot; a single-node endpoint
+holds its node ID. These calls answer questions straight from the connections:
 
 ```zig
-var edges = try graph.edgeIterator(.{});
-defer edges.deinit();
-while (try edges.next()) |edge|
-    std.debug.print("{f} -> {f}\n", .{ edge.from().name(), edge.to().name() });
+const from = (try ir.findNode("a")) orelse return error.MissingNode;
+const to = (try ir.findNode("c")) orelse return error.MissingNode;
+std.debug.print("a -> c: {}\n", .{try ir.hasEdge(from, to)});
 ```
 
-Complete topology materialization retains plain `Edge` records in `.edges`, as
-when full IR explicitly selects `.attributes = false`. Partial materialization
-keeps its qualified views: gaps, unknown answers, first-connection uncertainty
-and uncertain undirected orientation survive expansion. Strict duplicate edges
-are still merged; non-strict parallel edges stay distinct. Written ports remain
-source facts and never stand in for unavailable effective-port answers.
-
-Use the same work/edge/pair/memory limits and execution policies. Session grants
-keep their existing units. A cancelled or exhausted operation never reports
-ordinary exhaustion: direct errors and terminal session outcomes retain their
-cause. Views already delivered by a stream still borrow the unchanged IR;
-failed materialization publishes no output. A fixed-scratch shortfall requires
-a new operation with sufficient storage, not resuming the failed one.
-
-The capability supports allocator-backed and fixed-storage complete/partial
-lowering, including metered/cancellable execution. Use the topology profile's
-storage types, bounds and `In` calls; they omit attribute pools and use the smaller
-connection and coverage records. Fixed materialization output supports the same
-capability selection, including optional adjacency.
-
-`max_attributes` and `max_attribute_states` apply only when attributes are
-retained. Other IR limits still apply. Removing attributes does not make a
-complete topology graph partial, and does not hide gaps in incomplete input.
-Savings depend on the input: the largest reductions are on attribute-heavy
-files. Retained payload and peak requested memory differ from Arena backing
-capacity or process RSS; smaller pools alone do not guarantee lower RSS.
-
-Bound convenience calls honor their execution policy. Supplying a hook does
-not enable cancellation; enable it in the IR profile first. The existing
-module-level `dot.ir.parse` / `parsePartial` convenience still lets an explicit
-hook opt into cancellation. Neither form has a shared DOT/lowering budget.
-
-## Optional query indexes
-
-Both indexes are off by default. Select them when repeated queries justify
-extra construction work and retained memory; query methods stay the same:
-
-```zig
-const IR = dot.ir.Lowering(.{
-    .indexes = .{ .connections = true, .scope_memberships = true },
-});
-var result = try IR.parse(allocator, source, .{ .diagnostics = bag.sink() });
-defer result.deinit();
-const graph = result.ir() orelse return error.InvalidInput;
-const connected = try graph.hasEdge(from, to);
-const members = try graph.scopeMembership(scope);
-```
-
-| Index | Accelerates | Retained array payload |
+| Call | Answers | Cost |
 | --- | --- | --- |
-| `connections` | `hasEdge`, strict compact-edge attribute lookups and enumeration, including their sessions | Per useful endpoint side: `4 × (nodes + 1 + connections)` bytes |
-| `scope_memberships` | Final membership lookup for a semantic scope | `4 × scopes` bytes |
+| `hasEdge(from, to)` | Does any connection cover this pair? Undirected connections count both ways. | Scans the connections, or uses the [connection index](#optional-query-indexes) |
+| `hasEdgeWith(from, to, options)` | The same, with limits and cancellation | The same |
+| `contains(membership, node)` | Is the node in that snapshot? | Per-node posting list and a binary search per body range |
+| `scopeMembership(scope)` | The scope's final snapshot | Scans occurrences from the end, or uses the [scope index](#optional-query-indexes) |
 
-Connection postings retain connection IDs, never expanded endpoint sets or
-edge pairs. A query chooses the smaller complete endpoint candidate list,
-includes symbolic set contributions, and checks candidates in semantic order.
-Undirected queries consider both orientations. Unselective queries use the
-ordinary scan under the same work limit and cancellation state. Tiny graphs
-and sides with no singleton endpoints allocate no connection-index arrays.
-Non-strict attribute lookups and already-materialized attributes keep their
-existing direct paths. Scope indexing caches only the final membership handle;
-written occurrence snapshots are unchanged.
+- None of these allocate or build edges. A 50,000 × 50,000 set product is
+  searched without making its 2.5 billion edges.
+- `contains` and `scopeMembership` take no options; they use the limits the
+  graph was built with.
+- Asking `scopeMembership` for every scope can be quadratic without the index.
+- For a search you want to pause, use a
+  [query session](#edge-and-membership-queries-in-small-steps).
 
-`.indexes` is a compile-time representation choice, alongside `.capabilities`
-and `.source_encodings`, not a runtime execution override. Both selections work
-with full/topology, complete/partial, direct/session and fixed-storage lowering.
-Disabling an index removes acceleration, not facts or query methods. Partial
-coverage still determines whether an answer is known; the index cannot turn an
-unknown answer into absence. Reading a query never builds or mutates an index.
+## Expand edges
 
-Selected index construction counts against lowering's memory and work limits.
-Sessions initialize, count and fill arrays in bounded, charged steps. Failure
-publishes no graph with an unfinished index. Disabled indexes contribute no
-arrays, construction work or query branches. The payload formulas exclude
-descriptors and allocator overhead. Measure the tradeoff with
-`zig build bench-ir-query-indexes -Doptimize=fast` (also `safe`/`small`).
+### One edge at a time
 
-## Already have a Document or a custom profile?
+`ir.edgeIterator(options)` streams edge views without keeping an edge array.
+The [Start here](#start-here) example uses it. An edge view has `.edge` (the
+`Edge` record: `from`, `to`, `operator`, `first_connection`), `from()` and
+`to()` node views, and attribute access.
 
-Use the existing lowering entry point instead of parsing again:
+- `next()` returns an edge, null at the end, or an error. An error is final:
+  later calls return the same error, not null.
+- You can `break` early. Always call `deinit()`; it frees the scratch without
+  visiting the rest. Don't copy a live iterator.
+- Edges already returned stay usable after a failure, but they are only a
+  prefix. If you need all or nothing, collect them yourself or use
+  [`materialize`](#all-edges-in-an-array).
+- One `next()` can do a lot of work before it returns: skip strict duplicates,
+  or read a whole endpoint set. It can be stopped between edges, but it is not a
+  fixed amount of work per call. For that, use an
+  [edge session](#stream-edges-in-small-steps).
+- Order: connections in the order they run, endpoint members in first-mention
+  order. Streaming and materializing give the same edges in the same order.
+- Memory: scratch is allocated on first need. Single-node non-strict endpoints
+  need none. Set endpoints reuse two member buffers and one `u32` mark per node,
+  sized to the largest endpoint seen, never to the product. Strict graphs also
+  remember every emitted pair (two `u32` node IDs each, plus a hash table), so
+  strict streaming is **not** constant memory. `edges.peakBytes()` reports the
+  peak.
 
-```zig
-const Dot = dot.Profile(.{}); // Your accepting profile.
-const IR = dot.ir.Lowering(.{});
+### Strict graphs, parallel edges and orientation
 
-var parsed = Dot.parseAndValidate(allocator, source, bag.sink(), .{});
-defer parsed.deinit(allocator);
-if (!parsed.documentValid()) return error.InvalidInput;
-const doc = &parsed.document.?;
-var ir = try IR.lowerComplete(allocator, doc, .{
-    .interpretation = Dot.interpretation(doc, .{}),
-});
-defer ir.deinit();
-```
+- **Non-strict:** every written occurrence is its own edge, including parallel
+  edges between the same nodes.
+- **Strict:** one edge per pair. Directed pairs are ordered; undirected pairs
+  aren't. The edge keeps the first covering connection's orientation and
+  `first_connection`. Later connections still update its attributes.
+- Ports don't change edge identity.
+- Every written contribution stays in `ir.connections`.
+- Lowering rejects, with `error.UnsupportedSemantics`, a strict graph whose kind
+  is mixed (generic) or that keeps an operator that doesn't match its kind.
+  Non-strict mixed graphs keep both edge kinds.
 
-Use the interpretation from the **same profile and runtime options** that
-accepted the Document. Runtime-policy profiles require `try` when obtaining
-their interpretation. The lowering call requires this explicitly so conforming
-operators or reading `graph` as generic cannot silently change meaning.
-
-Input must be an accepted, complete parser-produced Document, with its normal
-invariants intact. Lowering checks completeness but does not repeat DOT syntax
-or validation checks. It validates its own execution policy and rejects partial
-Documents with `IncompleteDocument`.
-Optional child-processor validation is the caller's acceptance decision.
-Manually constructing or mutating Document records is outside this contract;
-defensive range/handle checks are not full Document revalidation.
-
-## Partial snapshots for editors
-
-Use `dot.ir.parsePartial` explicitly to retain facts around recoverable syntax
-errors. It uses the default DOT profile with partial retention and collection
-enabled. Ordinary `parse` and `lowerComplete` remain unchanged.
+### All edges in an array
 
 ```zig
-var bag: dot.reporting.FixedBag(dot.Diagnostic, 100, .omit) = .{};
-var result = try dot.ir.parsePartial(allocator, source, .{ .diagnostics = bag.sink() });
-defer result.deinit();
-if (result.ir()) |ir| {
-    var nodes = ir.nodeIterator();
-    while (nodes.next()) |node| {
-        switch (node.attribute("color")) {
-            .known => |color| std.debug.print("{f}: {?f}\n", .{ node.name(), color }),
-            .unknown => |answer| std.debug.print("{f}: {?f} (may change)\n", .{ node.name(), answer.retained }),
-        }
-    }
-}
-```
-
-The [partial_graph.zig](../examples/partial_graph.zig) example streams retained
-edges and renders diagnostics. For nodes, `a[color=red]; broken -> ; b[color=blue];` retains `a` and `b`, not
-the abandoned endpoint `broken`. Red is a retained candidate; blue is known
-because its explicit assignment follows the gap. Completed child scopes inside
-an abandoned edge also survive, exactly once, without that outer edge.
-
-| Partial API | Meaning |
-| --- | --- |
-| `result.ir()` | Borrowed `?*const PartialGraph`; null means unavailable, not necessarily invalid |
-| `result.checking` | Original parse/validation outcomes, completion, counts and diagnostic delivery; IR publication never makes rejected input valid |
-| `ir.state()` | `.complete` or `.partial` semantic coverage; a complete empty graph is complete |
-| `ir.kind()` | `Knowledge(GraphKind)`; unfinished `.auto` can remain unknown |
-| `ir.nodeIterator()` / `scopeIterator()` | Infallible retained views; scopes include root and merged reopened identities |
-| `ir.nodeView(id)` / `scopeView(id)` | Checked constructors for caller-supplied handles |
-| `node.name()` / `scope.name()` | Logical name formatter; scope names are optional |
-| `node.mentions()` | Infallible iteration of source ranges and owning occurrences using the existing posting index |
-| `node.attribute(key)` / `scope.attribute(key)` | Indexed, infallible `Knowledge(?AttributeView)`; `attributeWith(key, options)` is bounded/cancellable |
-| `node.attributes(options)` / `scope.attributes(options)` | Bounded, allocation-free iteration of retained keys, yielding `Knowledge(AttributeView)` |
-| `findNode(name)` / `hasEdge(from, to)` / `contains(membership, node)` | Bounded `Error!Knowledge(...)`; `With` variants accept limits/cancellation |
-| `scope.membership()` | Bounded lookup of the last retained scope membership version, not proof of final contents |
-| `ir.gaps()` | Semantic-order coverage records: reason, source range and owning occurrence where known |
-| `edgeIterator(options)` / `edgeView(record)` | Retained edge views over the shared expansion engine; checked constructor for caller-supplied records |
-| `edge.attribute(key)` / `edge.attributes(options)` | Bounded qualified edge lookup / retained-key enumeration; reuse value/provenance views |
-| `materialize(options)` | All retained output or an error; partial-aware owning result, with `.attributes = false` for topology only |
-| `nodeCount()` / `scopeCount()` / `connectionCount()` | Retained counts, never counts of missing input; connections remain symbolic |
-
-`Knowledge(T)` is `.known: T` or `.unknown`, with `uncertainty` and an optional
-`retained` candidate. For attributes, the candidate is already optional (not a
-double optional). Known null means proven absence. Unknown null does **not**.
-An implicit empty attribute remains a non-null view with `.resolved.kind = .empty`.
-Attribute queries replay DOT
-semantics over this snapshot, with ordinary provenance, raw values and operands;
-no repaired or cached previous-document values are substituted.
-
-Uncertainty identifies a deterministic earliest relevant source range with
-`skipped_input`, `unfinished_input` or `unresolved_kind`; the last can have a null
-span and EOF can have a zero-length span. Retained positive node/edge/member
-witnesses are known. Negative answers and defaults conservatively depend on all
-gaps: node identity is graph-wide, scopes can reopen, and missing input can
-introduce catalog keys or earlier object creation. Explicit assignments after
-the last semantic gap can still be known, subject to the strict-edge membership
-dependency described below. Precomputed boundary/suffix indexes
-avoid per-query history or gap scans; bounded attribute queries charge those
-index probes against the same allowance as the attribute lookup. Coverage does not certify validity or
-inner-markup processing. Strict/generic and ambiguous strict interpretation
-remain unsupported rather than guessed.
-For `parsePartial`, unsupported strict interpretation leaves `ir()` null while
-preserving `checking`; it does not discard the DOT diagnostics. Explicit
-`lowerPartial` still reports `UnsupportedSemantics` to its caller.
-
-All iterator exhaustion means **all retained entries**, not all possible entries.
-Mention iteration is O(1) to initialize and per record, with no additional index.
-Ranges use the original source encoding; traversal follows semantic contribution
-order, not a new source sort. IDs/ordering are local to this snapshot and can
-change when missing input is filled.
-
-`parsePartial` does not launch lowering after a resource/storage failure,
-diagnostic stop/failure, processor stop or incomplete checking operation. The
-`.omit` bag above bounds retained diagnostics while permitting continued work;
-the default stopping bag deliberately stops even when accepting its last slot.
-Render diagnostics and the omitted count. Bounds on retained findings are not
-work limits. Parsing and lowering have separate resource options/budgets, just
-as in `parse`; custom cancellable/runtime/native profiles use explicit lowering.
-
-For an existing parser-produced Document (complete or retained), use:
-
-```zig
-const IR = dot.ir.Lowering(.{});
-var ir = try IR.lowerPartial(allocator, doc, .{
-    .interpretation = Dot.interpretation(doc, options),
-});
-defer ir.deinit();
-```
-
-`Dot` must match the accepting profile/options, including runtime interpretation.
-This low-level call can deliberately lower a stopped parser's retained Document
-as a **new** operation; it never resumes parsing. Lowering failures are errors,
-not unknown answers or partially built IR. Source remains borrowed; Document
-pools may be freed after lowering. Gap metadata and its growth count against
-lowering's work/memory limits and `retainedBytes()` / `peakBytes()`. Complete
-lowering allocates no coverage storage. Borrowed views/candidates require the
-IR to remain alive and unmoved; `_data` and `_coverage` are implementation details.
-Known answers are qualified against whole-statement fillings of recorded gaps.
-They are not a guarantee about arbitrary edits that also reinterpret retained
-tokens or statement boundaries; reparse after such edits.
-
-### Edges without switching graph types
-
-Stay on `PartialGraph` for both complete and incomplete input. The complete-only
-`Graph` APIs are unchanged; partial-aware views expose uncertainty instead of
-silently converting an incomplete graph into a complete one.
-
-```zig
-var edges = try ir.edgeIterator(.{});
-defer edges.deinit();
-while (try edges.next()) |edge| {
-    switch (try edge.attribute("color")) {
-        .known => |value| std.debug.print("color={?f}\n", .{value}),
-        .unknown => |u| std.debug.print("color={?f} (may change)\n", .{u.retained}),
-    }
-}
-
-var graph = try ir.materialize(.{});
+var graph = try ir.materialize(.{ .attributes = false });
 defer graph.deinit();
-var stored = graph.edgeIterator();
-while (stored.next()) |edge| {
-    const color = edge.attribute("color"); // Infallible indexed lookup; still Knowledge.
-    _ = color;
+for (graph.edges) |edge| {
+    std.debug.print("{f} -> {f}\n", .{ try ir.nodeName(edge.from), try ir.nodeName(edge.to) });
 }
 ```
 
-Both use the existing forward expansion, strict deduplication and attribute
-folding engines. Connections remain symbolic until explicitly iterated or
-materialized. Non-strict parallel occurrences stay separate; strict pairs merge
-retained contributions. An unfinished owner never creates a guessed edge.
+- `.attributes = false` gives a `dot.ir.MaterializedTopology` that owns
+  `edges: []const Edge`. The IDs refer to `ir`: keep `ir` to read names.
+- The default, `materialize(.{})`, also folds every edge's attributes. See
+  [read edge attributes in bulk](#read-edge-attributes-in-bulk).
+- `.adjacency` adds per-node edge lists. See
+  [walk the edges at a node](#walk-the-edges-at-a-node).
+- It's all or nothing. Success returns every edge. Any failure frees the output
+  and returns the error. A connection whose product is over the pair limit is
+  rejected before its edges are allocated.
+- Strict deduplication uses a collision-checked pair table that indexes the
+  output itself; there is no second edge list.
+- `.attributes` and `.adjacency` are compile-time values because they change the
+  result type. `.limits` and `.cancellation` are runtime values. Unknown fields
+  are compile errors.
+- `graph.retainedBytes()` is the output's allocated size. `graph.peak_bytes`
+  also counts temporary growth and scratch, but not `ir`.
 
-Materialization finishes the **operation**, not missing source coverage:
-`graph.state()` and `graph.kind()` preserve the input IR's qualified state/kind.
-Complete input through this same API yields complete coverage and known answers.
-`.attributes = false` returns retained topology without winner maps; its
-`edgeIterator()` still returns partial-aware compact views, with bounded
-on-demand attribute queries. The default folds once, giving infallible indexed
-attribute lookup/enumeration. `attributeWith` and `attributesWith` remain
-bounded/cancellable and charge qualification against the same work allowance.
+### Walk the edges at a node
 
-An edge's `from()`, `to()` and raw `edge` record use **retained snapshot
-orientation** and first-connection provenance. Missing earlier input can change
-the first contribution of a strict pair, including undirected orientation.
-Use `edge.orientation()` (`Knowledge` of `{ from, to }`) and
-`edge.firstConnection()` (`Knowledge(ConnectionId)`) when that certainty matters.
-Their unknown answers include retained candidates. Currently these checks are
-conservative across any source gap; directed orientation and non-strict
-occurrence identity remain known. Self-loop orientation is unambiguous.
+Ask for adjacency when you need the edges at each node. It is off by default,
+and parsing and lowering never build it.
 
-`tailPort()` / `headPort()` also return qualified answers and reuse the existing
-structured port views. A candidate belongs to retained `from()` / `to()`, not a
-guessed repaired orientation. Strict undirected ports remain uncertain across
-gaps even when a later port assignment is retained. Other strict explicit
-winners after the last semantic gap can be known only when no later retained
-set-endpoint connection could consume hidden membership. For example,
-`subgraph s { broken -> ; }; a->b[color=red]; subgraph s {}->b[color=blue]`
-retains red, but filling the gap with `a` makes blue win. The current O(1)
-partial-only dependency summary conservatively qualifies a winner as unknown
-when any later set connection exists; it does not scan every later endpoint
-to prove that a particular pair is unaffected. A non-strict edge's own
-explicit assignments/suffixes remain known because other statements cannot
-update that occurrence. Defaults and absence remain conservative across gaps.
+```zig
+var graph = try ir.materialize(.{ .adjacency = .all });
+defer graph.deinit();
 
-Node, scope and edge `attributes(...)` yield `Knowledge(AttributeView)` for
-each retained key
-(not an optional attribute inside a known answer). Unknown entries have their
-retained candidate, including implicit-empty views. Exhaustion does not certify
-that missing input introduces no more keys. Root graph attributes use
-`(try ir.scopeView(.root)).attributes(options)`; subgraphs use their scope views.
+var nodes = graph.nodeIterator();
+while (nodes.next()) |node| {
+    std.debug.print("{f}: {} incident edges\n", .{ node.name(), node.edgeCount(.{}) });
+    var edges = node.edges(.{ .direction = .forward });
+    while (edges.next()) |entry|
+        std.debug.print("  forward to {f}\n", .{entry.neighbor().name()});
+}
+```
+
+This is [graph_adjacency.zig](../examples/graph_adjacency.zig). Each entry has:
+
+- `entry.neighbor()`: the node at the other end;
+- `entry.edge()`: the edge, with its stored `from()`/`to()`, attributes and ports;
+- `entry.directions()`: `incoming`, `outgoing` and `undirected` flags relative
+  to this node. A directed self-loop is both incoming and outgoing, but appears
+  once per walk.
+
+Parallel edges stay separate, and neighbors are not deduplicated.
+
+| `node.edges(.{ .direction = … })` | Includes |
+| --- | --- |
+| `.all` (default) | Every incident edge |
+| `.outgoing` | Directed edges leaving the node |
+| `.incoming` | Directed edges entering the node |
+| `.undirected` | Undirected edges touching the node |
+| `.forward` | Outgoing and undirected edges |
+| `.backward` | Incoming and undirected edges |
+
+In an undirected graph, `.forward`, `.backward` and `.all` give the same edges,
+and the directed-only filters are empty. `node.edgeCount(options)` uses the same
+filters and counts a loop once; it is an edge count, not graph-theory degree.
+
+Choose the storage your queries need. A filter the storage can't answer is a
+compile error, including `.all` on forward-only storage.
+
+| `.adjacency =` | Filters you can use |
+| --- | --- |
+| `.none` (default) | None; the ordinary result types |
+| `.forward` | `.outgoing`, `.undirected`, `.forward` |
+| `.backward` | `.incoming`, `.undirected`, `.backward` |
+| `.all` | All |
+
+- Every node view you reach from the result has adjacency: `nodeIterator()`,
+  `nodeView(id)`, `entry.neighbor()` and `edge.from()`/`to()`. With `.all`,
+  `entry.edge().to().edges(.{})` keeps walking.
+- `Graph.MaterializedFor(.{ .attributes = …, .adjacency = … })` names the result
+  type.
+- `.attributes` stays independent. With `.attributes = false`, edge attributes
+  are read the compact way (if the graph keeps attributes). Attribute sessions
+  accept adjacency views.
+- **Cost:** building takes O(nodes + edges) work. `next()` and `edgeCount()` do
+  O(1) work and allocate nothing; walking keeps materialized-edge order.
+- **Memory:** with N nodes, E edges, U undirected non-loop edges and L loops,
+  forward or backward storage has E + U entries and `.all` has 2E − L, each a
+  `u32` edge index. Offsets take C × (N + 1) `u32`s, where C is the number of
+  non-empty edge categories (at most three for one direction, four for `.all`).
+  A purely undirected graph shares one table for both directions. Isolated
+  nodes still get offsets.
+- `max_bytes`, `max_work` and cancellation cover expansion and adjacency
+  together; `max_pairs` counts expanded pairs, not adjacency entries.
+- The result borrows `ir` and its source, even without attributes, because node
+  views need names. Keep it unmoved while its views or iterators are in use.
+- On a [partial graph](#partial-graphs-for-editors), adjacency covers the edges
+  that were kept. `edgeCount()` returns `Knowledge(u32)`: unknown when input is
+  missing, with the kept count as the candidate. A failure returns no result,
+  even if expansion finished before adjacency failed.
+
+## Read effective attributes
+
+### One attribute
+
+```zig
+// digraph { node[color=red]; a; node[color=blue]; b; a[shape=box] }
+const node = try ir.nodeView((try ir.findNode("a")).?);
+if (node.attribute("color")) |color| {
+    std.debug.print("color={f}\n", .{color}); // red: the default when a was created
+}
+```
+
+- Get views with `ir.nodeView(id)`, `ir.scopeView(id)` (`.root` is the graph)
+  and `ir.edgeView(edge)`. Iterators already return views.
+- **Node and scope** `attribute(key)` can't fail. It uses the key index and a
+  balanced map: no history scan, no allocation, no work budget. Use
+  `attributeWith(key, options)` for limits and cancellation.
+- **Edge** `attribute(key)` on a streamed edge needs `try`: it resolves
+  contributions across connections. A non-strict edge reads its own connection
+  and its creation defaults. A strict edge scans the connections (or uses the
+  [connection index](#optional-query-indexes)). Repeated per-edge queries can
+  cost edges × connections; for bulk reads, [materialize](#read-edge-attributes-in-bulk).
+- Keys are case-sensitive logical UTF-8 names, like `findNode`.
+- ID-based calls return the details directly: `nodeAttribute(id, key)`,
+  `scopeAttribute(id, key)`, `edgeAttribute(edge, key)` and their `With` forms
+  return `?ResolvedAttribute`. `ir.attributeValue(resolved)` gives its value.
+  Edge lookups need an `Edge` from iteration or materialization, not just a node
+  pair, so they can't pick the wrong parallel edge.
+- An attribute view has `.key()` (a formatter), `.value()` (a
+  [value view](#values-spelling-operands-and-joined-text)) and `.resolved` (the
+  [details](#what-a-result-tells-you)). `{f}` on the view prints the value.
+  `{?f}` on an optional view prints `null` when the key is absent and nothing
+  for an empty value.
+
+### All attributes of a node, subgraph or edge
 
 ```zig
 var nodes = ir.nodeIterator();
 while (nodes.next()) |node| {
     var attributes = try node.attributes(.{});
     defer attributes.deinit();
-    while (try attributes.next()) |answer| switch (answer) {
-        .known => |value| std.debug.print("{f}={f}\n", .{ value.key(), value }),
-        .unknown => |u| {
-            const candidate = u.retained.?; // Every enumerated key has a retained value.
-            std.debug.print("{f}={f} (may change)\n", .{ candidate.key(), candidate });
-        },
-    };
+    while (try attributes.next()) |attribute|
+        std.debug.print("node {f}: {f}=\"{f}\"\n", .{ node.name(), attribute.key(), attribute.value() });
 }
 ```
 
-Node/scope iteration uses the existing object-kind key catalog and maps, in the
-same order as complete iteration; duplicate assignments yield one winning
-value per logical key. It allocates no scratch or retained metadata
-(`peakBytes() == 0`). Call `deinit()` even on early exit. Lookup and coverage
-share one cumulative work allowance and cancellation token across all `next()`
-calls. Errors, including stops during qualification, are terminal and repeat.
-An empty iterator does not imply known absence when source coverage is partial.
+This is [graph_attributes.zig](../examples/graph_attributes.zig). For
+`node [color=red]; a; node [color=blue]; b; a [shape=box]` it prints
+`a: color="red"`, `a: shape="box"`, `b: color="blue"` and `b: shape=""`.
 
-The source/IR must remain alive, immutable and unmoved; folded edge views also
-borrow the materialized result. Returned attribute/port/value views borrow only
-the IR. There is no copied source, reparsing, extra winner cache or second
-expanded edge list. Streaming errors are terminal and repeat; materialization
-returns all retained output or frees it and returns an error. Resource exhaustion
-never becomes successful partial materialization. Pull iteration is not a
-replenishable-credit session and does not change parser metering guarantees.
+- You get **one final value per key**, in the order keys were first written for
+  that kind of object (not alphabetical). Inherited defaults and implicit empty
+  values are included, even when the key was written on another object. Repeated
+  assignments are not; read `ir.attributes` and `ir.declarations` for history.
+- For edges, written keys come first, then `tailport` and `headport` if only
+  endpoint ports introduced them.
+- `next()` returns an entry, null at the end, or an error. Limits and
+  cancellation count across the whole iterator; an error is final and repeats.
+- Always `deinit()`, also on early exit or error. Don't copy a live iterator.
+  Entries borrow the graph and source, not the iterator, so they stay usable
+  after `deinit()`.
+- Node, scope and non-strict edge iteration allocate nothing. A strict edge
+  scans its contributions once before the first entry. If it has explicit
+  assignments, it uses a table of 12 bytes per distinct edge key in the graph,
+  bounded by `max_bytes` and reported by `peakBytes()`. Endpoint sets are never
+  expanded.
+- Root graph attributes: `(try ir.scopeView(.root)).attributes(.{})`.
 
-Benchmark lowering/query costs with `zig build bench-ir-partial -Doptimize=fast`
-and expansion/qualified attribute consumption with
-`zig build bench-ir-partial-edges -Doptimize=fast` (also Safe/Small).
-For node/scope enumeration, run
-`zig build bench-ir-partial -Doptimize=fast -- --attributes-only`.
+### What a result tells you
 
-## What you can read
-
-| API/data | Meaning |
-| --- | --- |
-| `nodes` / `findNode(logical_name)` | Unique logical node identities, including implicit endpoints |
-| `nodeIterator()` | Iterate borrowed node views in first-introduction order, without checked conversions or allocation |
-| `nodeName(node)` | Borrowed logical-name formatter for `{f}`; checks the node handle, decodes only when printed |
-| `nodeSpelling(node)` | Borrowed first source spelling, in its original encoding, including quotes/concatenation |
-| `writeNodeName(node, writer)` | Stream the logical name without allocating a decoded copy or rechecking DOT syntax |
-| `scopes` | Semantic subgraphs; named scopes merge within the same semantic parent, anonymous scopes remain distinct |
-| `occurrences` | Each written scope body, its source range and immutable membership version |
-| `mentions` | Written node references with source spans and owning scope occurrence |
-| `connections` | One record per written chain link, with symbolic endpoints, ports, written/effective operators and raw attributes |
-| `contains(membership, node)` | Membership in that specific version, without edge expansion |
-| `scopeMembership(scope)` | Final version of a semantic scope |
-| `hasEdge(from, to)` | Whether any effective connection covers the pair; undirected edges work both ways |
-| `edgeIterator(options)` | Stream borrowed edge views in semantic order, without retaining the expanded output array |
-| `materialize(options)` | Retain edges and fold effective attributes in one forward pass; `.attributes = false` selects topology-only output |
-| `materializeIn(memory, options)` | The same explicit expansion/folding in caller-owned output and scratch; returns an outcome and a precise storage shortfall on exhaustion |
-| `nodeAttribute(node, key)` | Final node value with origin, or absence |
-| `scopeAttribute(scope, key)` | Final graph/subgraph value with origin; `.root` is the graph |
-| `edgeAttribute(edge, key)` | Final value for a streamed/materialized edge, including strict updates |
-| `attributeValue(resolved)` | Borrowed value view: original spelling, operands and joined output |
-| `nodeView(id)` / `scopeView(id)` / `edgeView(edge)` | Borrowed component access with `.attribute(key)` and `.attributes(options)` |
-| `attributes` / `declarations` | Retained raw attributes and node/default/graph-assignment contributions, separate from effective values |
-
-IDs and membership handles belong to one IR. Don't manufacture them or mix
-handles from different graphs. Public membership/query calls bounds-check
-handles, but equal numeric IDs from different IRs are not distinguishable.
-Keep returned arrays immutable. `text(range)` expects a range from this IR,
-as `Document.text` expects a range from its Document.
-
-Names use DOT logical identity: `a`, `"a"`, and `"a" + ""` identify one node.
-Queries take logical UTF-8 bytes, not quoted DOT expressions. There is no case
-folding, Unicode normalization, numerical normalization, or HTML entity
-expansion. If the accepting UTF-8 profile preserved invalid bytes, identity
-preserves those bytes too. Hash collisions are checked with logical equality.
-
-`writeNodeName` uses those same logical bytes: native UTF-16/32 names are
-written as UTF-8, while byte-profile names preserve their bytes. It does not
-expand HTML entities or escape names for any output format. `nodeSpelling`
-borrows the source instead; keep that source alive and unchanged. Writer
-errors propagate, and a stopped write may have emitted a prefix. There is no
-hidden decoded-name cache or allocation (the supplied writer may allocate).
-
-`nodeName` formats the same logical bytes using ordinary writer semantics:
-writer failures propagate, with no IR cancellation polling or work budget.
-Use `writeNodeNameWith` for explicitly limited/cancellable writes. A formatter
-borrows source bytes; do not manufacture or mutate its internal fields. The
-iterator and formatter add no retained storage to the IR.
-
-Node IDs follow first introduction, including a left endpoint encountered
-before its subgraph endpoint. Connections follow semantic execution order:
-nested endpoint-body connections precede their containing statement's links.
-These are distinct orderings. Source spans retain original byte offsets.
-
-## Effective attributes
-
-```zig
-// digraph { node[color=red]; a; node[color=blue]; b; a[shape=box] }
-const node = try ir.nodeView((try ir.findNode("a")).?);
-if (node.attribute("color")) |color| {
-    std.debug.print("color={f}\n", .{color.value()}); // red
-    // color.resolved.kind == .inherited; provenance points to color=red.
-}
-
-var attributes = try node.attributes(.{});
-defer attributes.deinit();
-while (try attributes.next()) |attribute|
-    std.debug.print("{f}={f}\n", .{ attribute.key(), attribute.value() });
-```
-
-See [graph_attributes.zig](../examples/graph_attributes.zig) for a runnable
-example with diagnostics, effective node values and streamed edge values.
-Query keys are case-sensitive logical UTF-8 names, just like `findNode`.
-Individual attribute lookups allocate nothing and do not expand edge sets.
-
-### Component views and all attributes
-
-`nodeView`, `scopeView` and `edgeView` create small borrowed values, without
-allocating or adding owner pointers to stored nodes/edges. Use `scopeView(.root)`
-for the graph and another scope ID for a subgraph. Use an `Edge` from this IR's
-materialized array with `edgeView`; a node pair alone cannot identify
-a non-strict parallel occurrence. The ID-oriented APIs above remain useful when
-storing compact handles rather than views. Node/edge iterators yield views
-directly: no redundant `try ir.nodeView(...)`/`edgeView(...)` in ordinary loops.
-Keep `nodeView(id)` and the other checked constructors for caller-supplied handles.
-
-All three views have `.attribute(key)`, `.attributeWith(key, options)` and
-`.attributes(options)`. A node also has `.id` and `.name()`; an edge has its
-original `.edge` record and `.from()`/`.to()` node views. A lookup/iteration
-entry exposes `.key()` as a logical formatter and `.value()` as a borrowed value
-view (also formattable), plus
-`.resolved` with the full `ResolvedAttribute` provenance described below.
-Formatting an attribute with `{f}` prints its value directly, exactly like
-`attribute.value()`, without allocating or escaping. `{?f}` accepts an optional
-attribute: absent keys print `null`, while implicit-empty and written-empty
-values print no characters. They remain distinct through `.resolved.kind`.
-
-`node.name()` and indexed node/scope `.attribute(key)` access are infallible and
-unmetered on valid views. Lookup uses the existing key index and balanced map,
-not a history scan; hashing/collision checks still have a cost. Use
-`.attributeWith(key, options)` for explicit work limits/cancellation. Edge
-attributes, all-attribute iteration and graph queries remain bounded and
-fallible: resolving symbolic contributions is not a simple value re-read.
-
-The iterator returns **one final effective value per key** in that object kind's
-first-introduction order (semantic traversal order, not alphabetical). It
-includes inherited defaults and implicit empties, even when a key was first
-written on another object of the same kind. It never returns duplicate written
-assignments. Use raw `ir.attributes`/`declarations` for source history.
-
-Each `next()` returns one entry, `null` on exhaustion, or a typed error. Limits
-and cancellation accumulate across the iterator, including preparation; an error
-is terminal and repeated on later calls. Always `deinit()`, even on early exit
-or error. Entries borrow the IR/source, **not** iterator scratch, and remain
-usable after iterator cleanup. Keep the IR alive, unmoved and immutable; don't
-manufacture or mutate views or copy a live attribute iterator. `edgeView` checks
-record bounds; membership and strict first-contribution identity are checked
-when attributes are accessed.
-
-Node, scope and non-strict-edge attribute iteration allocate nothing. Strict
-edges scan contributions once before the first entry; when matching explicit
-assignments exist, a sorted winner table uses **12 bytes per distinct edge key
-in the IR**. Repeated updates overwrite those slots, not append history, and
-keys belonging only to nodes/graphs need no slots. A strict edge with only
-inherited defaults needs no scratch. `.peakBytes()` reports this iterator's peak
-requested scratch, bounded by `.limits.max_bytes`. This merges attributes for
-one edge, not a whole-graph bulk materialization, and never expands endpoint sets.
-
-Lookups distinguish the cases below. On a view entry, these fields live under
-`.resolved`; the ID-oriented methods return `ResolvedAttribute` directly.
+On a view, these fields live under `.resolved`; the ID-based calls return the
+`ResolvedAttribute` itself.
 
 | Result | Meaning |
 | --- | --- |
-| `null` | The key was never introduced for that object kind (graph, node or edge) |
+| `null` | The key was never introduced for that kind of object (graph, node or edge) |
 | `.kind = .explicit` | An explicit assignment supplies the final value |
-| `.kind = .inherited` | A creation-time default or parent graph snapshot supplies it |
-| `.kind = .derived` | An endpoint suffix supplies an effective `tailport` or `headport` |
-| `.kind = .empty` | The key exists, but DOT supplies an implicit empty value here |
+| `.kind = .inherited` | A creation-time default or the parent graph's snapshot supplies it |
+| `.kind = .derived` | An endpoint port supplies an effective `tailport` or `headport` |
+| `.kind = .empty` | The key exists, but DOT gives this object an implicit empty value |
 
-An explicit `color=""` is still `.explicit`, with `.value = .written`.
-A language-defined empty is `.value = .empty`, not a fabricated source range.
-No Graphviz renderer defaults (such as an assumed default shape) are added.
-
-`ResolvedAttribute.attribute` is an optional index into `ir.attributes`; it is
-null for endpoint-derived values and their introduced empties. `.origin` identifies
-the declaration, connection, or `.written_left_port`/`.written_right_port` endpoint;
-`.scope` identifies that origin's scope. Derived keys are named by `.port_key`.
-Port origins name the written statement side; tail/head follow the stored edge.
-For an implicit empty, these identify the catalog's first written assignment,
-or the first effective endpoint contribution for a suffix-only key, not a source
-assignment of an empty string. A chain shares its written
-attribute list, but an explicit edge result identifies the applicable link.
-The original key/value ranges remain available, including quotes and HTML-like
-delimiters. All ranges use original source-byte offsets.
-
-### Value spelling, operands and joined output
-
-```zig
-// a [label="a" + <<b><c>bee</c></b>>]
-const value = node.attribute("label").?.value();
-// raw() is original spelling in the source's encoding (UTF-8 here).
-std.debug.print("raw: {s}\njoined: {f}\n", .{ value.raw().?, value });
-// raw: "a" + <<b><c>bee</c></b>>
-// joined: a<b><c>bee</c></b>
-
-var parts = value.parts();
-while (parts.next()) |part|
-    std.debug.print("{t}: {f}\n", .{ part.kind(), part });
-// string: a
-// markup: <b><c>bee</c></b>
-```
-
-See runnable [graph_values.zig](../examples/graph_values.zig). Reading or printing
-a value never replaces its source spelling or parses its markup. `ValueKind`
-has three cases: `.string` (including numerals), `.markup` and `.concatenation`.
-Concatenation preserves all operands, including empty ones and mixed forms.
-
-| Value operation | Meaning/cost |
-| --- | --- |
-| `kind()` | Infallible on-demand classification; O(first operand length), no stored kind byte |
-| `raw()` / `span()` | Original complete spelling/byte range, including wrappers and concatenation glue; null for implicit empty |
-| `encoding()` | Original admitted encoding and byte order, including ASCII provenance |
-| `parts()` | Allocation-free operand iterator; `next()` is infallible, no preliminary kind scan |
-| `{f}` / `writeLogical(writer)` | Stream joined logical DOT content; ordinary writer errors only |
-| `toString(allocator)` | Owned joined bytes; caller frees; uses IR work/allocation limits |
-| `kindWith`, `partsWith`, `writeLogicalWith`, `toStringWith` | Explicit `dot.ir.Options` limits/cancellation |
-
-Each operand has `kind()` (`string`/`markup`), `raw()`, `span()`, `innerSpan()`,
-`encoding()`, `{f}`, `writeLogical[With]`, and `form()` for bare/numeral/quoted/html
-spelling. A single value yields **one operand**, including an implicit empty
-string whose raw/inner spans and form are null. Written `""` and `<>` have real
-spans and different kinds. Absence is still the attribute lookup's null result.
-
-`part.fragment()` returns null for strings; a markup operand returns
-`EncodedFragment { input: processor.Fragment, encoding: encoding.Actual }`.
-It borrows the markup interior, excluding exactly one DOT angle envelope, and
-retains the original file-byte origin. Pass this explicitly to a compatible
-markup profile (and its `.encoding` option for native input). The existing
-markup Document can then navigate `b` → `c` and borrow `<c>bee</c>` with `raw()`.
-There is no second markup IR, automatic processing or result association here.
-
-Joined output removes DOT operand wrappers, `+`/glue, quoted continuations and
-lexical quote escapes. It preserves markup tags, reference spellings, unknown
-DOT escapes and numeric spellings. DOT `"a&amp;b"` stays `a&amp;b`; decoding
-markup text to `a&b` belongs to the markup logical reader. No text extraction,
-HTML-safe escaping, rendering or `\N` substitution happens here. Native UTF-16/32
-is written as UTF-8; admitted byte-profile contents remain byte-preserving.
-
-Ordinary borrowed access is unmetered, not constant-time. Bounded value traversal
-charges inspected/skipped source bytes (including repeated delimiter lookahead),
-plus output bytes/native decoding work, before doing that work. It polls inside
-long operands and glue; writer calls and allocation are not interruptible.
-`partsWith` budgets cover the entire iterator lifetime; errors are terminal and
-repeat, never becoming exhaustion. It needs no `deinit()`. This is cumulative
-work accounting, not a replenishable session or a latency deadline.
-
-`toString` makes two bounded passes (count, then write) and one exact allocation,
-with no growable buffer or cache. Both passes share the work allowance. Failure
-frees the output; no successful prefix is returned. Writer-based operations may
-have written a prefix on failure. Views/operands borrow the IR and source, not
-iterator scratch; keep their owners alive, unmoved and immutable. Do not
-manufacture views or change their fields.
+- `.value` is `.written` (a source range), `.port` (a reference to an
+  endpoint's port syntax) or `.empty`. An explicit `color=""` is `.explicit` with
+  `.value = .written`. A language-defined empty is `.value = .empty`; no source
+  range is made up.
+- `.attribute` is an index into `ir.attributes`. It is null for port-derived
+  values and the empties they introduce; `.port_key` names those.
+- `.origin` is the declaration, the connection, or the written left/right port
+  endpoint (`.written_left_port`, `.written_right_port`) that supplied the
+  value. Port sides name the written statement; tail and head follow the stored
+  edge. `.scope` is that origin's scope.
+- For an implicit empty, these name the assignment that first introduced the
+  key (or the first port that did), not an assignment of an empty string.
+- A chain shares one written attribute list, but an explicit edge result names
+  the link that applies.
+- Key and value ranges keep quotes and HTML-like delimiters, as source byte
+  offsets.
+- No Graphviz renderer defaults (such as a default `shape`) are added.
 
 ### Default and update rules
 
-- Node/edge defaults apply when the object is first created. Changing a default
-  does not replace a value on an existing object. Introducing a new key gives
-  existing objects without that key an implicit empty value.
-- Later explicit assignments update only their supplied keys; omitted keys
-  retain their earlier values. Duplicate keys within a list use the last value.
-- A subgraph captures parent **graph attributes** when first created. Reopening
-  it does not replace that snapshot. Node/edge defaults instead inherit current
-  parent defaults unless locally overridden; newly created objects use those
-  current defaults. Existing objects still keep their creation-time values.
-- A strict edge uses the first covering connection's defaults, then merges
-  explicit contributions in semantic order, including overlapping endpoint sets
-  and reversed undirected statements. There is no specificity priority.
-- Non-strict parallel edges remain independent. `edgeAttribute` takes an `Edge`
-  from iteration/materialization, not just a node pair, so it cannot silently
-  choose one parallel occurrence's attributes.
+- Node and edge defaults apply when the object is created. Changing a default
+  later doesn't change existing objects. Introducing a new key gives existing
+  objects without it an implicit empty value.
+- A later explicit assignment updates only the keys it names. Within one list,
+  the last value of a repeated key wins.
+- A subgraph takes a snapshot of its parent's **graph attributes** when it is
+  first created; reopening it doesn't refresh that snapshot. Node and edge
+  defaults are different: a subgraph sees the parent's current defaults unless it
+  overrides them, and new objects use those current defaults. Existing objects
+  keep their creation-time values.
+- A strict edge uses the first covering connection's defaults, then applies
+  explicit contributions in the order they run, including overlapping endpoint
+  sets and reversed undirected statements. There is no priority by specificity.
+- Non-strict parallel edges are independent.
 
-These rules have focused comparisons against Graphviz, not full cgraph parity.
-The following differences were confirmed against installed Graphviz **16.1.0**
-and remain compatibility decisions, not silent changes to this IR:
+These rules are compared with Graphviz on focused cases; this is not full cgraph
+compatibility. Graphviz 16.1.0 differs in these known cases:
 
-| Case | Current IR | Graphviz 16.1.0 |
+| Case | This IR | Graphviz 16.1.0 |
 | --- | --- | --- |
-| Edge `key`, including repeated non-strict keys, strict updates and edge defaults | An ordinary retained attribute | cgraph treats `key` as edge identity, with special update/default behavior |
-| Undirected set products after earlier node declarations | First-mention endpoint order determines stored orientation | Node creation order can choose the opposite stored orientation and port side |
-| New grandchild of a reopened subgraph | Inherits its parent's stored graph-attribute snapshot | Can see a later ancestor dictionary value despite the parent's older value |
-| `<a>` versus `a` / `"a"` as a node or subgraph name | Merge by logical contents | HTML-like and text names can be distinct |
+| Edge `key` | An ordinary attribute | cgraph treats `key` as part of edge identity: repeated non-strict keys, a strict statement with a different key (dropped by cgraph) and `edge [key=x]` (ignored by cgraph) all differ |
+| Undirected set products after earlier node declarations | First-mention endpoint order sets the stored orientation | Node creation order can pick the opposite orientation and port side |
+| New grandchild of a reopened subgraph | Inherits its parent's stored graph-attribute snapshot | Can see a later ancestor value despite the parent's older one |
+| `<a>` versus `a` or `"a"` as a node or subgraph name | Merged by logical contents | HTML-like and text names can be distinct |
 
-Spelling, contributions and provenance remain retained in the IR. Consumers
-requiring these exact cgraph behaviors should not assume compatibility yet.
+The IR keeps spellings, contributions and origins, so you can apply these cgraph
+rules yourself if you need them.
+
+### Values: spelling, operands and joined text
+
+```zig
+var nodes = ir.nodeIterator();
+while (nodes.next()) |node| {
+    const label = node.attribute("label") orelse continue;
+    const value = label.value();
+    // raw() is the original spelling, in the source's encoding (UTF-8 here).
+    std.debug.print("kind: {t}\nraw: {s}\njoined: {f}\n", .{
+        value.kind(), value.raw() orelse "(implicit empty)", value,
+    });
+    var parts = value.parts();
+    while (parts.next()) |part|
+        std.debug.print("{t} operand: \"{f}\"\n", .{ part.kind(), part });
+}
+```
+
+This is [graph_values.zig](../examples/graph_values.zig). For
+`a [label="first " + "second"]` it prints kind `concatenation`, the raw
+spelling, the joined text `first second` and two string operands. For
+`b [label=<<b><i>bee</i></b>>]` it prints kind `markup` and one markup operand.
+
+A value has one or more **operands**: the quoted, bare, numeral or HTML-like
+pieces that `+` joins. Reading or printing a value never rewrites its spelling
+or parses its markup.
+
+| Value call | Gives |
+| --- | --- |
+| `kind()` | `.string` (numerals too), `.markup` or `.concatenation`; reads only the first operand, nothing stored |
+| `raw()` / `span()` | The whole original spelling or byte range, with wrappers and `+`; null for an implicit empty |
+| `encoding()` | The source's encoding and byte order, including ASCII |
+| `parts()` | An operand iterator; `next()` can't fail, nothing allocated |
+| `{f}` / `writeLogical(writer)` | The joined logical text; only writer errors |
+| `toString(allocator)` | The joined text as owned bytes; you free them |
+| `kindWith`, `partsWith`, `writeLogicalWith`, `toStringWith` | The same with [limits and cancellation](#passing-limits-and-cancellation) |
+
+**Operands.** Each operand has `kind()` (`.string` or `.markup`), `raw()`,
+`span()`, `innerSpan()`, `encoding()`, `form()` (bare, numeral, quoted or html),
+`{f}` and `writeLogical[With]`. A value that isn't a concatenation has one
+operand. An implicit empty value has one string operand with null spans and
+form. Written `""` and `<>` have real spans and different kinds. Concatenation
+keeps every operand, including empty ones and mixed forms.
+
+**Markup operands.** `part.fragment()` is null for strings. For a markup operand
+it returns `EncodedFragment { input, encoding }`: the inside of the `<...>`
+(exactly one DOT angle pair removed), with its original file offset. Pass it to
+a compatible [markup profile](MARKUP.md) yourself (with `.encoding` for UTF-16
+or UTF-32 input) to read the tags. Nothing is processed automatically.
+
+**Joined text** removes DOT operand wrappers, `+`, quoted line continuations and
+quote escapes. It keeps markup tags, entity spellings, unknown DOT escapes and
+number spellings: DOT `"a&amp;b"` stays `a&amp;b`. There is no text extraction,
+HTML escaping, rendering or `\N` substitution. UTF-16 and UTF-32 are written as
+UTF-8; UTF-8 and ASCII bytes are kept.
+
+**Costs.** Ordinary access is unmetered, not constant time. The `With` forms
+charge the source bytes they read or skip (including repeated look-ahead) and the
+bytes they write, before doing the work, and check cancellation inside long
+operands: a hook can be called as often as once per source code unit, so keep it
+cheap. Writer calls and allocation can't be interrupted. A `partsWith` budget
+covers the iterator's whole life; its errors are final and repeat, and it needs
+no `deinit()`. `toString` makes two passes (count, then write) and one exact
+allocation; both passes share the budget, and on failure nothing is returned.
+Writer-based calls may have written a prefix when they fail.
 
 ### Endpoint ports
 
-Endpoint suffixes participate in effective edge attributes without changing
-written syntax or adding fake assignments to `ir.attributes`:
+Endpoint ports (`a:p:n`) count as effective `tailport` and `headport` edge
+attributes. The written syntax is kept, and no fake assignments are added to
+`ir.attributes`.
 
-| Input/contribution | Effective result |
+| Input | Effective result |
 | --- | --- |
 | `a:p:n -> b:q` | `tailport = "p:n"`, `headport = "q"` |
-| `a:p -> b [tailport=q]` | Explicit `tailport=q` wins over the suffix |
+| `a:p -> b [tailport=q]` | The explicit `tailport=q` wins over the port |
 | `strict digraph { a:p -> b:q; a -> b:r }` | Tail stays `p`; head becomes `r` |
 | `strict graph { a:p -- b:q; b:r -- a:s }` | In the first edge's `a`–`b` orientation: tail `s`, head `r` |
 | `strict graph { a:p -- b:q; b:r -- a:s [tailport=x] }` | Tail `x`, head `r`; explicit attribute names are not swapped |
-| `a:p -> {}` | No pair and no introduced port attribute |
+| `a:p -> {}` | No edge, so no port attribute is introduced |
 
-Creation defaults apply first, then suffixes, then the contribution's explicit
-attributes. Strict updates retain omitted values. Only suffixes are mapped to
-the first edge's orientation; self-loop left/right suffixes remain tail/head.
-Chains apply a middle endpoint's suffix to each adjacent link. Port names are
-case-sensitive logical DOT identifiers, not markup to process or compass names
-to validate. A single `:n` remains the string `n`: it may name a port, and the
-IR does not guess its layout meaning.
+- Order: creation defaults, then ports, then the contribution's explicit
+  attributes. Strict updates keep values they don't mention.
+- Only ports are mapped to the first edge's orientation. On a self-loop, the left
+  and right ports stay tail and head.
+- In a chain, a middle endpoint's port applies to both links next to it.
+- Port names are case-sensitive logical DOT names. They aren't parsed as markup
+  or checked as compass points. A lone `:n` stays the string `n`.
+- A port-derived value has `.kind() == .string`, `.value = .port` and one string
+  operand. `raw()`/`span()` cover from the first port name through the second,
+  including quotes, `+`, comments and the colon between, but not the node or the
+  leading colon. `{f}`, `writeLogical` and `toString` join the parts with `:`.
+  Its operand has null `form()`, `innerSpan()` and `fragment()`, even for `a:<p>`.
 
-A derived value has `.kind() == .string`, resolved `.value = .port` (a compact
-connection/side reference, not copied port syntax),
-and yields one string operand. `raw()`/`span()`
-cover from the first identifier through the second, preserving quotes, `+`,
-comments and the intervening colon, but excluding the leading node/colon.
-`{f}`, `writeLogical` and `toString` join the logical components with `:`.
-The operand has null `form()` and `innerSpan()` because it is derived, not a
-single written DOT token; `fragment()` is null even for `a:<p>`.
+`edge.tailPort()` and `edge.headPort()` return small views of the **same
+winners** as `attribute("tailport")` and `attribute("headport")`. Tail belongs to
+`edge.from()` and head to `edge.to()`. They need `try` on streamed edges and
+can't fail on materialized ones; `tailPortWith(options)` and
+`headPortWith(options)` add limits. `null` means the key is absent; an empty
+value is a view. The view's `.resolved` keeps the kind and origin, and `.value()`
+gives the value view.
 
-`edge.tailPort()` and `edge.headPort()` expose small borrowed views of the **same
-effective winners** as `attribute("tailport")` and `attribute("headport")`.
-Tail belongs to `edge.from()`, head to `edge.to()`, in stored orientation. For
-compact edges these queries remain fallible/bounded; materialized edges have
-infallible indexed lookup. Both offer `tailPortWith(options)` / `headPortWith(options)`.
-The returned view's `.resolved` keeps the attribute's kind and provenance;
-`.value()` gives its general value view. An implicit/explicit empty is a view,
-not `null`. `null` means that the key is absent.
+There are two readings of a port:
 
-Keep the two readings explicit:
-
-| Access | Meaning |
+| Call | Gives |
 | --- | --- |
-| `port.syntax()` | Winning endpoint syntax, or `null` for an attribute/default/implicit empty |
-| `syntax.first()` / `syntax.second()` | Logical first and optional second identifiers, without splitting either |
-| `syntax.spans`, `syntax.raw()`, `syntax.span()` | Original source-byte ranges and whole suffix spelling, including intervening syntax |
-| `port.graphvizParts()` | Effective logical value split at its **first** colon |
-| `parts.name()` / `parts.compassText()` | Text before and optional text after that colon; empty suffix differs from absent |
-| `syntax.compass()` / `parts.compass()` | `.absent`, `.recognized` (`dot.ir.Compass`), or `.unrecognized` (the retained text) |
-| `syntax.first().asCompass()` / `parts.asCompass()` | A compass candidate, **not** layout resolution; `parts` returns a candidate only without a colon |
+| `port.syntax()` | The winning endpoint's written port, or `null` for an attribute, default or implicit empty |
+| `syntax.first()` / `syntax.second()` | The first name and the optional second name, each kept whole |
+| `syntax.spans`, `syntax.raw()`, `syntax.span()` | Source byte ranges, and the whole written port with everything between |
+| `syntax.compass()` | `.absent`, `.recognized` (a `dot.ir.Compass`) or `.unrecognized` (the text) for the second name |
+| `port.graphvizParts()` | The effective value split at its **first** colon, the way Graphviz reads it |
+| `parts.name()` / `parts.compassText()` | The text before the colon, and the optional text after it; an empty suffix is not an absent one |
+| `parts.compass()` | Compass status of the text after the colon |
+| `syntax.first().asCompass()` / `parts.asCompass()` | A compass candidate, **not** layout resolution; `parts.asCompass()` only when there is no colon |
 
-For `a:"x:y":n`, syntax retains `x:y` and `n`; the explicit Graphviz reading
-returns `x` and the unrecognized suffix `y:n`. For `tailport="x:y:n"`, only the
-Graphviz reading is available: there are no endpoint component spans to invent.
-Neither reading rewrites or discards the original spelling.
+For `a:"x:y":n`, the syntax keeps `x:y` and `n`; the Graphviz reading gives
+`x` and the unrecognized suffix `y:n`. For `tailport="x:y:n"` only the Graphviz
+reading exists, because there is no written endpoint port.
 
 ```zig
-// A compact edge: lookup may inspect contributions under the IR limits.
 if (try edge.tailPort()) |port| {
-    if (port.syntax()) |syntax| {
-        std.debug.print("written first identifier: {f}\n", .{syntax.first()});
-    }
+    if (port.syntax()) |syntax|
+        std.debug.print("written first name: {f}\n", .{syntax.first()});
     const parts = port.graphvizParts();
     std.debug.print("name: {f}, compass text: {?f}\n", .{ parts.name(), parts.compassText() });
 }
 ```
 
-A lone `a:n` retains the identifier `n`; Graphviz prefers a shape-defined port
-named `n`, otherwise it treats it as a compass. The helpers do not inspect the
-shape. Recognition is case-sensitive (`n`, `ne`, `e`, `se`, `s`, `sw`, `w`, `nw`,
-`c`, `_`); the enum names `_` as `.automatic`. An absent second component stays
-absent: renderer defaults are not inserted. `<p>` in a port is the identifier
-`p`, **not** a markup subtree, including through `syntax.first()`.
+- Compass names are case-sensitive: `n`, `ne`, `e`, `se`, `s`, `sw`, `w`, `nw`,
+  `c` and `_` (`.automatic`). Graphviz prefers a shape-defined port named `n`
+  over the compass point; these helpers don't look at shapes. A missing second
+  part stays missing.
+- `<p>` in a port is the name `p`, not markup.
+- Text views have `{f}`, `writeLogical(writer)` and
+  `writeLogicalWith(writer, options)`. They re-read the value each time; their
+  positions are not source spans. Nothing is allocated or cached.
+- Splitting and compass checks read one value, can't fail by default, and have
+  `graphvizPartsWith`, `compassWith` and `asCompassWith` for limits. Each `With`
+  call has its own budget.
+- Every way of reading agrees: compact queries, iteration and materialization.
+  A port-only key introduced on one edge gives other edges an implicit empty.
+  Compact lookups that find these empties may inspect other ported connections
+  under the same limits; they don't allocate or expand products.
+- This resolves endpoint values only. It doesn't parse labels, check that a
+  named port exists, or compute geometry. Every connection keeps its written
+  ports even when an explicit attribute overrides them.
 
-These text views provide `{f}`, `writeLogical(writer)` and
-`writeLogicalWith(writer, options)`. They stream logical bytes through constant-size
-scratch, with no allocation or decoded cache. Native UTF-16/32 produces UTF-8;
-byte profiles preserve their bytes. Text windows are **not source spans**:
-formatting re-reads the underlying value even for a suffix. Splitting and
-compass recognition are linear single-value reads, infallible by default, with
-`graphvizPartsWith`, `compassWith` and `asCompassWith` for bounded/cancellable
-work. Each `With` call has its own work allowance; it is not a resumable session.
-All port/syntax/text views borrow only the IR and its source, not materialized
-storage. No extra per-edge fields, pools or indexes are retained for these helpers.
+### Read edge attributes in bulk
 
-All access paths agree: compact queries, all-attribute iteration and folded
-materialization. Written catalog keys retain their introduction order; additional
-suffix-only keys are appended in `tailport`, `headport` order. An introduced
-suffix-only key supplies an implicit empty on other edges; an unintroduced key
-is absent. Compact queries discovering these empties may inspect other
-port-bearing connections and their partners under the same work/cancellation
-limits. They do not allocate or expand Cartesian products. Materialization
-discovers introductions during its existing forward pass and remains indexed.
-
-This is endpoint-value resolution only. It does **not** parse a label, check
-whether a named port exists, bind a label subtree, or compute attachment geometry.
-Source suffixes remain available on every original connection even when an
-explicit attribute overrides their effective value.
-
-## Symbolic first; expand explicitly
-
-`{ a b } -> { x y }` is **one connection**, not four stored edges. Membership
-uses shared node-mention ranges and immutable scope-prefix snapshots, not
-copied ancestor sets. Singleton endpoints carry a node ID directly.
-
-All endpoint versions are captured after the whole edge statement executes.
-Thus both ends of `subgraph s { a } -> subgraph s { b }` contain `a` and `b`.
-An earlier statement's snapshot does not change when `s` reopens later.
-
-To consume individual edges without keeping them all:
-
-```zig
-var edges = try ir.edgeIterator(.{});
-defer edges.deinit();
-while (try edges.next()) |edge|
-    std.debug.print("{f} {s} {f}\n", .{
-        edge.from().name(), edge.edge.operator.lexeme(), edge.to().name(),
-    });
-```
-
-You can stop early with `break`; `deinit()` releases scratch without visiting
-the remaining pairs. Keep the IR alive, unmoved and immutable while iterating.
-Do not copy a live iterator. Each `next()` returns an edge view, `null` on
-exhaustion, or a typed error. An error is terminal: subsequent calls return
-that same error, not `null`. Already consumed edges cannot be retracted; a
-consumer that needs all-or-nothing publication must stage its own result or
-use `materialize`.
-
-Connections are visited forward, and endpoint members follow first-mention
-order. Streaming and materialization share this traversal and deduplication.
-Non-strict graphs retain parallel occurrences; strict directed pairs are
-ordered, strict undirected pairs are unordered. A strict edge keeps the first
-connection's orientation and provenance. Ports do not change edge identity.
-**All** written contributions remain in `ir.connections`. Use `edge.attribute`
-to resolve a value across them (or `ir.edgeAttribute(edge.edge, key)`). The view
-borrows context; streaming does not build per-edge attribute indexes.
-Materialization resolves attributes by default, as described below. If only
-connectivity is needed, topology-only materialization returns compact `Edge`
-records without building those indexes. Attributes remain in the IR for later
-individual queries; disabling their materialization does not discard them.
-
-To retain just the expanded edge array:
-
-```zig
-var graph = try ir.materialize(.{ .attributes = false });
-defer graph.deinit();
-for (graph.edges) |edge| {
-    // edge.from / edge.to are IDs in ir.nodes.
-}
-```
-
-Materialization uses a collision-checked pair map for strict graphs, indexing
-its output rather than retaining a second edge list. Neither expansion path
-runs a whole-graph query for every emitted edge.
-
-Strict generic graphs, and strict concrete graphs preserving an operator
-inconsistent with their effective kind, return `UnsupportedSemantics`.
-Non-strict generic graphs retain both edge kinds. No mixed-kind strict identity
-rule is invented here.
-
-### Materialize effective attributes once
-
-The ordinary call retains edges and their resolved effective attributes:
+`materialize(.{})` expands every edge and works out each edge's attributes once,
+in one forward pass:
 
 ```zig
 var graph = try ir.materialize(.{});
 defer graph.deinit(); // Before releasing ir or its source.
-
 var edges = graph.edgeIterator();
 while (edges.next()) |edge| {
-    if (edge.attribute("color")) |color|
-        std.debug.print("{f} -> {f}: {f}\n", .{
-            edge.from().name(), edge.to().name(), color,
-        });
-    var attributes = edge.attributes();
-    while (attributes.next()) |attribute|
-        std.debug.print("  {f}={f}\n", .{ attribute.key(), attribute });
+    std.debug.print("{f} -> {f}: color={?f}, label=\"{?f}\"\n", .{
+        edge.from().name(), edge.to().name(), edge.attribute("color"), edge.attribute("label"),
+    });
 }
 ```
 
-See [materialized_attributes.zig](../examples/materialized_attributes.zig).
-Construction is bounded and fallible; lookup and iteration on its certified views
-are infallible. No iterator allocation or `deinit` is needed. The output keeps
-the same `edges` records, first-connection ordering and orientation as the
-topology-only option. Attribute enumeration follows edge-key introduction order and
-includes implicit empties, just like compact attribute iteration. Values, source
-spans, winning connection/declaration origins and mixed operands are unchanged.
+This is [materialized_attributes.zig](../examples/materialized_attributes.zig).
 
-`edge.attributeWith(key, options)` and `edge.attributesWith(options)` add explicit
-work limits/cancellation for reading the folded result. The latter accumulates
-its budget across `next()` calls and repeats terminal errors. No lookup scans
-connection history or expands endpoint sets.
+- Building can fail; reading can't. `edge.attribute(key)`, `tailPort()`,
+  `headPort()` and `edge.attributes()` are indexed lookups that never scan
+  history or expand sets. The attribute iterator allocates nothing and needs no
+  `deinit`. `attributeWith(key, options)` and `attributesWith(options)` add
+  limits; the latter counts across all `next()` calls and repeats its error.
+- Results are the same as compact queries: the same `edges` records, order,
+  orientation, values, ranges and origins as `.attributes = false`, and the same
+  key order with implicit empties.
+- The pass applies every connection's explicit assignments to the pairs it
+  covers, strict duplicates included. An existing strict edge keeps its creation
+  defaults.
+- The result owns its edge array and its per-edge winners. It borrows the
+  default snapshots, keys, values and origins from `ir`: keep `ir` and its source
+  alive, unchanged and unmoved, and the result unmoved while its views are in
+  use. Attribute and value views borrow only `ir`.
+- Only materialization builds these maps; parsing, lowering and streaming don't.
+  Folding costs time and memory up front. If you only need connectivity, or a
+  few reads, `.attributes = false` with compact queries can be cheaper.
+- Defaults are shared. Each edge stores only its explicit or port-derived
+  winners, and repeated updates to a key reuse its cell. `max_attribute_states`
+  bounds those winner cells.
+- `.attributes` defaults to what the graph keeps (`true` on the default profile).
+  `true` returns `IR.Graph.Materialized`; `false` returns
+  `dot.ir.MaterializedTopology` and adds no folding code. Requesting attributes
+  the graph doesn't keep is a compile error.
 
-The forward pass applies every connection's explicit assignments to its visited
-pairs, including strict duplicates. An existing strict edge keeps its creation
-defaults; later default changes do not replace them. Non-strict parallel edges
-stay independent. The algorithm does **not** query the entire compact graph
-separately for each output edge.
+## Choose what the graph keeps
 
-The result owns its edge array and explicit-winner maps, but borrows the IR's
-default snapshots, keys, source values and provenance. Keep the IR/source alive,
-immutable and unmoved; edge views/iterators additionally require their materialized
-result to stay alive and unmoved. Returned attribute/value views borrow only the
-IR. Nothing is copied into a new string or markup tree.
-`graph.retainedBytes()` includes output allocation capacities; `graph.peak_bytes`
-also includes temporary growth and pair/endpoint scratch, excluding the IR.
+`dot.ir.Lowering(config)` makes a profile. `dot.ir.parse` uses
+`dot.ir.Lowering(.{})`.
 
-Only materialization builds these maps; ordinary parsing, lowering and streaming
-do not. `.attributes` defaults to the graph's retained capability (`true` on
-the full profile). Set it to `false` when only connectivity
-is needed or compact, on-demand attribute queries are preferable. Folding spends
-additional time and memory up front; a single read of a simple graph may be
-cheaper through compact queries. Defaults are shared, and overwritten explicit
-assignments reuse map cells instead of retaining update history.
+| `dot.ir.Config` field | Default | Effect |
+| --- | --- | --- |
+| `capabilities.attributes` | `true` | Keep attributes, defaults and effective values. `false` keeps only topology. |
+| `indexes.connections` | `false` | Build an index that speeds up `hasEdge` and strict edge attribute queries |
+| `indexes.scope_memberships` | `false` | Store each scope's final membership |
+| `source_encodings` | `null` (UTF-8) | Readers to compile in; see [other source encodings](#other-source-encodings) |
+| `limits` | `dot.ir.Limits{}` | Baseline [limits](#limits) for this profile's lowering |
+| `policy.execution.metering` | `false` | Allow `advance(budget)` on this profile's sessions; see [small steps](#small-steps-and-cancelling) |
+| `policy.execution.cancellation` | `false` | Honor a cancellation hook |
+| `policy.execution.cancellation_interval` | `1` | Most work steps between hook calls; must be positive |
+| `runtime_policy` | `false` | Let each call override `policy` with a `.policy` option |
 
-`.attributes` is a **compile-time** selection because it changes the result's
-capabilities: `true` returns `IR.Graph.Materialized` with attribute views;
-`false` returns `dot.ir.MaterializedTopology` with only the owning `edges` array.
-No folding state or code is instantiated in the topology-only path. `limits`
-and `cancellation` remain runtime values, including when passed together with
-`.attributes`. `dot.ir.Options` also works directly and uses the profile-derived
-default. Requesting attributes absent from the IR is a compile error, as are
-unknown fields.
+- `capabilities`, `indexes` and `source_encodings` change the graph type.
+  Policies and limits don't: graphs from profiles that differ only in those are
+  the same type. So a graph from `dot.ir.parse` works with a metering profile's
+  sessions, as in [resumable_attributes.zig](../examples/resumable_attributes.zig).
+  `IR.capabilities`, `IR.Graph.capabilities` and `IR.Graph.indexes` report the
+  choice. `IR.Node` and `IR.Connection` are this profile's record types;
+  `dot.ir.Node` and `dot.ir.Connection` describe the default profile.
+- Every profile has its own `IR.parse` and `IR.parsePartial`. They work like the
+  module calls, with this profile's representation, limits and policy. The
+  profile's `source_encodings` also picks the DOT reader; other DOT settings are
+  the defaults. For other DOT settings, [lower the Document
+  yourself](#lower-a-document-you-already-have).
+- Options for `IR.parse`: `.diagnostics` (default: discard), `.dot` (the DOT
+  `CheckOptions`, including `.encoding` for native-encoding profiles) and
+  `.lowering` (`.limits`, plus `.cancellation` when the profile enables
+  cancellation and `.policy` when it allows runtime overrides). Parsing and
+  lowering have separate limits; there is no shared budget.
+- A hook never turns cancellation on by itself. On a profile, enable
+  `policy.execution.cancellation` first. Without it, passing a hook is a compile
+  error; with `runtime_policy` and cancellation turned off, the hook is ignored.
+  The module-level `dot.ir.parse` and `parsePartial` are the exception: their
+  `.lowering.cancellation` hook is always honored.
 
-All output is published together, or an error is returned and storage released.
-The operation's `max_pairs`, `max_edges`, `max_work`, `max_bytes` and
-`max_attribute_states` apply throughout, including strict duplicates, map updates,
-hash probes, scratch and old/new buffers during growth. Here
-`max_attribute_states` bounds distinct explicit `(edge, key)` winners, not every
-update. Shared defaults and implicit empties need no per-edge cells.
-These are total-operation limits and cooperative cancellation, not resumable
-metering or hard deadlines.
+### Topology only
 
-Endpoint-derived values use the same winner cells as explicit assignments;
-repeated port updates replace a winner rather than retaining an update list.
-Defaults and empty values are still shared. `.attributes = false` omits all
-attribute folding, including endpoint ports, while preserving the source IR.
+```zig
+const Topology = dot.ir.Lowering(.{ .capabilities = .{ .attributes = false } });
+var result = try Topology.parse(gpa, source, .{ .diagnostics = sink });
+defer result.deinit();
+const graph = result.ir() orelse return error.GraphUnavailable;
+var edges = try graph.edgeIterator(.{});
+defer edges.deinit();
+while (try edges.next()) |edge|
+    std.debug.print("{f} -> {f}\n", .{ edge.from().name(), edge.to().name() });
+```
 
-## Ownership, limits and costs
+The graph keeps nodes, scopes, mentions, connections, written ports and partial
+coverage, and drops attributes, declarations, keys, defaults and effective maps.
+Disabled record fields are zero-sized `void`, not empty allocations.
 
-Allocator-backed IR owns its tables through the supplied allocator and borrows
-only the immutable source bytes. Fixed-storage IR instead borrows the caller's
-retained region as well (see below). Document pools may be released after lowering. Keep
-source bytes alive until the IR is released. Materialized edges own their
-array but refer to IR-local node/connection IDs; retain the IR to interpret
-those IDs and read names or provenance. No source text is copied.
+| Operation | With attributes off |
+| --- | --- |
+| Node and scope views, names, mentions, membership, `hasEdge` | Same as the full profile |
+| `edgeIterator`, `IR.edgeSession`, and their `In` forms | Same order, strict merging and orientation; no attribute folding |
+| `materialize(.{})`, `materializationSession(.{})` | Topology output: plain `Edge` records |
+| Attribute lookup and iteration, attribute sessions and scratch, `tailPort()`/`headPort()`, materializing with `.attributes = true` | Compile error |
 
-Allocator-backed lowering allocates the declaration table at its exact retained
-count. Node lists grow on demand, with each new allocation capped by the current
-node count plus remaining node mentions, and by the node limit. This is an upper
-bound, not a reservation: repeated names do not allocate one node per mention.
-Already-owned spare capacity is not copied just to shrink it. Sessions retain
-bounded copying; fixed storage keeps the caller's supplied capacities.
+- Input is still fully validated; only what is kept changes.
+- Written ports remain readable with `connection.left.portSyntax(graph)`. They
+  never stand in for effective port values.
+- Partial topology graphs still show gaps and unknown answers, and partial
+  materialization keeps its `Knowledge` answers.
+- Fixed storage works too; keep `declarations`, `attributes`, `attribute_keys`
+  and `attribute_states` at zero (see [fixed buffers](#fixed-buffers-no-allocator)).
+- `max_attributes` and `max_attribute_states` don't apply; other limits do.
+- Dropped attributes can't be recovered from the graph. Keep the Document and
+  lower it again with a full profile if you need them later.
+- Savings depend on the input; attribute-heavy files gain most. Smaller pools
+  don't guarantee lower process memory (RSS).
 
-Written edge-port syntax uses a sparse `endpoint_ports` pool, allocated exactly
-from the existing retained-statement count pass. Connections hold compact
-`PortId` references (`.none` when absent); adjacent links share the middle
-endpoint's port record. Equal spellings at different source locations remain
-separate. Node-statement suffixes do not create edge-port records. Original spans,
-effective `tailPort()` / `headPort()`, and attribute precedence are unchanged.
-Low-level users read written syntax with `connection.left.portSyntax(&graph)`
-or its right-endpoint equivalent instead of an inline optional port record.
-The returned spans borrow the graph, which does not retain Document pools.
-Allocator-backed lowering reserves connections and port records in one checked
-allocation, exposing them as separate logical pools. This adds no allocation
-when ports are used. Fixed storage keeps independently sized caller-owned
-regions. Session initialization performs at most one allocation per step;
-storing a port is one fixed-size write, with no scan or copying growth.
+### Optional query indexes
 
-Arena backing capacity depends on allocation order and chunk growth as well as
-live pool sizes; fewer retained bytes do not
-guarantee a proportional drop in Arena capacity or process RSS.
+```zig
+const Indexed = dot.ir.Lowering(.{
+    .indexes = .{ .connections = true, .scope_memberships = true },
+});
+var result = try Indexed.parse(gpa, source, .{ .diagnostics = sink });
+defer result.deinit();
+const graph = result.ir() orelse return error.InvalidInput;
+const from = (try graph.findNode("a")) orelse return error.MissingNode;
+const to = (try graph.findNode("b")) orelse return error.MissingNode;
+const members = try graph.scopeMembership(.root);
+std.debug.print("a -> b: {}, a in the graph: {}\n", .{
+    try graph.hasEdge(from, to), try graph.contains(members, from),
+});
+```
 
-Lowering, streaming and materialization use the supplied allocator. Name access, `findNode`, `contains`,
-`scopeMembership`, and `hasEdge` allocate nothing. Pair queries currently scan
-symbolic connections; membership uses per-node postings and shared intervals.
-These compact queries do not build adjacency. Materialization needs memory
-proportional to its output, plus deduplication scratch for strict graphs.
-Per-node traversal is available through explicitly selected materialized
-adjacency, described below.
-`scopeMembership` currently scans occurrence records; asking for every scope's
-membership can therefore be quadratic. No membership cache is implied.
+Both are off by default. Turn them on when repeated queries are worth extra
+build work and memory. The query calls stay the same.
 
-Effective node/graph values use balanced maps referencing written attributes.
-Published snapshots are immutable and share branches; there is no full
-default-table copy per node or descendant scope. Within one declaration or
-inheritance overlay, newly allocated cells are reused until the batch finishes.
-A new map with K distinct keys therefore retains K cells, including when that
-batch repeats keys. Updating a published map copies its affected paths before
-editing them; a single-key update can retain O(log K) cells. Separate batches
-can still leave older cells retained when no final map references them; there
-is no garbage-collection pass. `max_attribute_states` bounds allocated cells,
-not writes to reusable cells. Reopening a scope
-after its parent's defaults change reapplies that scope's local overrides.
-Attribute-free input allocates no attribute-state storage. On the measured
-64-bit build the node record remains 24 bytes: its state handle uses existing
-padding. Layout on another target follows that target's alignment rules.
+| Index | Speeds up | Array size |
+| --- | --- | --- |
+| `connections` | `hasEdge`, strict edge attribute lookup and iteration, and their sessions | `4 × (nodes + 1 + connections)` bytes per endpoint side that has single-node endpoints |
+| `scope_memberships` | `scopeMembership` | `4 × scopes` bytes |
 
-Node/scope queries perform logical key lookup followed by O(log K) map lookup.
-Non-strict edge queries inspect their own connection's list and creation map;
-strict queries scan symbolic connections and membership, retaining no expanded
-pairs. All probes, comparisons and map/traversal steps are work-limited.
-Repeated per-edge queries can therefore cost edges × connections: this is
-**not** a bulk attribute-export index. Compact strict-undirected port resolution can also
-repeat first-contribution searches, reaching O(C²) connection work for a
-single query with C connections, before membership/name costs. It can exhaust
-`max_work` even on a modest output; use folded materialization for bulk access.
-Default `materialize` supplies the forward-pass path described above. Its explicit-winner maps use
-balanced trees: updates/lookups are O(log K) for K explicit keys on that edge,
-in addition to pair/index work. Default lookup uses the shared immutable maps.
-The operation still visits every contributed pair, including duplicates; output
-edge count alone does not bound its work. It retains O(E + A + K_total) output
-storage for E edges, A distinct explicit edge/key winners, and K_total edge keys,
-plus pair/endpoint scratch. It never creates a dense edges × all-keys table.
+- The connection index stores connection IDs only, never endpoint sets or node
+  pairs. A query takes the shorter candidate list for its two nodes, adds
+  connections with set endpoints, and checks candidates in order. Undirected
+  queries look both ways. When the index wouldn't narrow the search, the
+  ordinary scan runs under the same budget.
+- Small graphs (fewer than 8 connections) and sides with no single-node
+  endpoints get no connection-index arrays.
+- Non-strict edge lookups and materialized attributes keep their direct paths.
+- The scope index stores only each scope's final membership handle; occurrence
+  snapshots are unchanged.
+- Indexes never change answers. On a partial graph, coverage still decides
+  whether an answer is known. Queries never build or change an index.
+- Building counts against lowering's memory and work limits, and sessions build
+  it in charged steps. A failure returns no graph. Disabled indexes add no
+  arrays, work or branches. Sizes exclude descriptors and allocator overhead.
 
-All-attribute iteration scans the interned key catalog (including skipping other
-object kinds). Node/scope iteration performs a map lookup per relevant key.
-Non-strict edges search their own written list per key, then their creation map.
-Strict-edge iteration scans symbolic contributions/membership once and merges
-explicit writes with O(log K) winner-table comparisons for K edge keys, then
-looks up inherited defaults for keys with no explicit winner. It does not rerun
-a graph-wide query per key, but enumerating attributes separately for every
-strict edge still revisits connections per edge. Formatting keys/values follows
-ordinary writer semantics, outside iterator work accounting.
+### Other source encodings
 
-Streaming allocates scratch lazily. Non-strict singleton-to-singleton iteration
-allocates nothing. Set endpoints reuse two member buffers and a `u32` mark per
-IR node for deduplicating mentions. These buffers grow to the largest endpoints
-visited, not to their Cartesian product. Strict streaming additionally retains
-compact pair keys and a hash table proportional to unique edges already
-emitted: it is **not** constant-memory. Output consumed by the caller is not
-part of the iterator's allocation limit.
+UTF-8 is the default; ASCII files are read by it too. To lower UTF-16 or UTF-32
+Documents, compile those readers in:
 
-Finite defaults are defined by `dot.ir.Limits`:
+```zig
+const Native = dot.ir.Lowering(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 } });
+```
 
-| Limit | Default |
-| --- | ---: |
-| Unique nodes | 1,000,000 |
-| Written scopes, including root | 100,000 |
-| Node mentions | 4,000,000 |
-| Symbolic connections | 2,000,000 |
-| Raw attributes, including assignments | 2,000,000 |
-| Persistent attribute-map cells | 8,000,000 |
-| Edges emitted or materialized | 1,000,000 |
-| Candidate pair visits during expansion | 4,000,000 |
-| Accounted work per operation | 100,000,000 |
-| Peak live requested allocation bytes per operation | 256 MiB |
+- The Document supplies the actual encoding, and ranges stay in its original
+  bytes. Readers you don't list are left out of the program. `&.{}` means
+  ASCII only. A Document in an encoding the profile doesn't read gives
+  `error.UnsupportedEncoding`.
+- UTF-8 and ASCII profiles keep a name's or value's bytes as they are.
+- For UTF-16 and UTF-32, names and values are decoded while lowering, before
+  you can print them. Malformed code units give `error.InvalidIdentifier`. This
+  can happen with the DOT `invalid_encoding` check off (the default), and
+  **also with `invalid_encoding = .err`**, because that check skips the inside
+  of HTML-like `<...>` strings. See [ENCODINGS.md](ENCODINGS.md#checking-that-the-text-is-valid).
 
-## Fixed-storage Document lowering
+## Lower a Document you already have
 
-Use the `In` calls when IR construction must use caller-provided pools without
-allocating or abandoning growth copies. They produce the same `Graph` and
-`PartialGraph`, with the same symbolic connections, views and queries. Ordinary
-allocator-backed calls are unchanged; **bounds are never computed or reserved
-automatically**.
+Use this when you parse with your own DOT settings, or want to keep the Document.
 
-| Allocator-backed | Caller-owned retained storage and scratch |
+```zig
+const Dot = dot.Profile(.{}); // The profile that accepts the Document.
+const IR = dot.ir.Lowering(.{});
+
+var parsed = Dot.parseAndValidate(gpa, source, sink, .{});
+defer parsed.deinit(gpa);
+if (!parsed.documentValid()) return error.InvalidInput;
+const doc = &parsed.document.?;
+
+var ir = try IR.lowerComplete(gpa, doc, .{
+    .interpretation = Dot.interpretation(doc, .{}),
+});
+defer ir.deinit();
+```
+
+- `.interpretation` is required. Take it from the **same profile and runtime
+  options** that accepted the Document (with `try` on runtime-policy DOT
+  profiles), so settings like conforming operators can't silently change the
+  meaning.
+- The Document must be complete, accepted and built by the parser, unchanged.
+  Lowering doesn't repeat DOT syntax or validation checks. A partial Document
+  gives `error.IncompleteDocument`. Building or editing Document records by hand
+  is outside this contract: the range checks are a safety net, not full
+  validation.
+- Whether optional label (child-processor) checks must pass is your decision.
+- After lowering you may free the Document; the graph borrows only the source.
+- Options: `.interpretation`, `.limits` (null or omitted means the profile's
+  limits), `.cancellation` (only if the profile enables cancellation) and
+  `.policy` (only with `runtime_policy`). Unknown fields are compile errors. On
+  runtime-policy profiles the call can also return
+  `error.InvalidCancellationInterval`.
+- `IR.lowerPartial(gpa, doc, options)` lowers a partial or complete Document
+  into a `PartialGraph`; see [below](#lower-a-partial-document-yourself).
+
+## Partial graphs for editors
+
+`dot.ir.parsePartial` keeps what it can around recoverable syntax errors. It uses
+the default DOT settings with [partial results](EDITORS.md#keep-the-finished-part-of-a-dot-file)
+turned on. `parse` and `lowerComplete` don't change.
+
+```zig
+var bag: dot.reporting.FixedBag(dot.Diagnostic, 100, .omit) = .{};
+var result = try dot.ir.parsePartial(gpa, source, .{ .diagnostics = bag.sink() });
+defer result.deinit();
+const ir = result.ir() orelse return error.GraphUnavailable;
+
+var edges = try ir.edgeIterator(.{});
+defer edges.deinit();
+while (try edges.next()) |edge| {
+    switch (try edge.attribute("color")) {
+        .known => |color| std.debug.print("{f} -> {f}: color={?f}\n", .{ edge.from().name(), edge.to().name(), color }),
+        .unknown => |answer| std.debug.print("{f} -> {f}: color={?f} (may change)\n", .{ edge.from().name(), edge.to().name(), answer.retained }),
+    }
+}
+std.debug.print("coverage: {t}\n", .{ir.state()});
+```
+
+This is [partial_graph.zig](../examples/partial_graph.zig). For
+
+```dot
+digraph {
+    a -> b [color=red];
+    broken -> ;
+    b -> c [color=blue];
+}
+```
+
+it prints both edges with known colors, then `coverage: partial`, then the
+syntax error. The abandoned `broken` endpoint is not made into a node.
+
+- `result.ir()` is null when no snapshot is available, which doesn't mean the
+  input is invalid. `result.checking` keeps the original parse and validation
+  results; a snapshot never makes rejected input valid.
+- No graph is built after a resource or storage failure, a diagnostic stop or
+  incomplete delivery, a processor stop, an unfinished validation, or (for a
+  strict graph) any validation error. A strict graph whose kind is mixed or
+  unresolved also leaves `ir()` null, keeping the diagnostics. Calling
+  `lowerPartial` yourself reports `error.UnsupportedSemantics` instead.
+- The `.omit` bag keeps the first 100 diagnostics and lets work continue. The
+  default `FixedBag` **stops** when it accepts its last slot, and a stop means
+  no graph. Print `bag.omitted` too. Diagnostic capacity is not a work limit.
+- Parsing and lowering have separate options and budgets, as in `parse`. Custom
+  cancellable, runtime-policy or native-encoding needs: use a profile's
+  `IR.parsePartial` or [lower the Document yourself](#lower-a-partial-document-yourself).
+
+### Known and unknown answers
+
+Answers that missing input could change come back as `dot.ir.Knowledge(T)`:
+
+- `.known: T`: the answer holds for the kept input.
+- `.unknown`: `.uncertainty` (why), and `.retained`, the answer from the kept
+  input, if any.
+
+For attributes the candidate is already optional, not a double optional. Known
+`null` means the key is proven absent; unknown `null` does **not**. An implicit
+empty is a non-null view with `.resolved.kind = .empty`.
+
+`Uncertainty` has a `.reason` (`.skipped_input`, `.unfinished_input` or
+`.unresolved_kind`) and a `.span`: the earliest relevant gap in the source. The
+span is null for `.unresolved_kind` and zero-length at the end of input.
+
+What stays known:
+
+- Things the kept input shows: a found node, an existing edge, a member.
+- An explicit node or graph assignment with no gap after it. In
+  `a [color=red]; broken -> ; b [color=blue]`, `b`'s blue is known, while `a`'s
+  red is unknown with red as the candidate: the missing statement could have
+  changed it.
+- A non-strict edge's own explicit values and ports, because no other statement
+  can update that occurrence.
+- A strict edge's explicit value with no gap after its winning connection,
+  unless a **later kept connection has a set endpoint**. Missing members could
+  join that set and overwrite the value. For example,
+  `subgraph s { broken -> ; }; a->b[color=red]; subgraph s {}->b[color=blue]`
+  keeps red, but filling the gap with `a` makes blue win. The current check is
+  conservative: any later set connection makes the value unknown, even when it
+  can't touch this pair.
+- Strict undirected `tailport` and `headport` values (except on self-loops)
+  stay unknown whenever there is a gap, because a missing earlier connection
+  could reverse the edge.
+
+Everything else is unknown when any gap exists: "not found" and `false`
+answers, absent keys, defaults and inherited values. Node identity is graph-wide,
+scopes can reopen, and missing input can add keys or create objects earlier.
+Answers replay DOT rules over the snapshot; no repaired or cached values from an
+earlier version are used.
+
+**Known answers assume each gap is filled with whole statements.** Typing more
+text keeps them true. Editing kept text, or replacing a gap with text that
+continues the statement before it (for example `[color=blue];` right after
+`a -> b [color=red] c`), can change them. Parse again after such edits.
+
+Coverage doesn't check validity or label contents. Strict mixed-kind graphs and
+strict graphs whose kind can't be resolved are refused rather than guessed.
+
+### Partial API
+
+| Call | Gives |
+| --- | --- |
+| `result.ir()` | `?*const PartialGraph`, borrowed from the result |
+| `ir.state()` | `.complete` or `.partial`; a complete empty graph is complete |
+| `ir.kind()` | `Knowledge(GraphKind)`; can be unknown when the kind depends on missing input |
+| `ir.gaps()` | The gaps in execution order: `reason`, source `range` and owning `occurrence` when known |
+| `ir.nodeIterator()` / `scopeIterator()` | Kept node and scope views; scopes include the root and merged reopened subgraphs |
+| `ir.nodeView(id)` / `scopeView(id)` | Checked views for IDs you hold |
+| `node.name()` / `scope.name()` | Logical-name formatter; a scope name is optional |
+| `node.mentions()` | Each kept mention: source range and occurrence. O(1) to start and per entry |
+| `node.attribute(key)` / `scope.attribute(key)` | `Knowledge(?AttributeView)`, can't fail; `attributeWith(key, options)` adds limits |
+| `node.attributes(options)` / `scope.attributes(options)` | Iterator of `Knowledge(AttributeView)`, one per kept key; needs `deinit` |
+| `scope.membership()` | The last kept snapshot, not proof of the final contents |
+| `findNode(name)`, `hasEdge(from, to)`, `contains(membership, node)` | `Error!Knowledge(…)`; `findNodeWith`, `hasEdgeWith` and `containsWith` add limits |
+| `edgeIterator(options)` / `edgeView(edge)` | Edge views over the kept connections |
+| `edge.attribute(key)` / `edge.attributes(options)` / `edge.attributesWith(options)` | Edge lookup and iteration with `Knowledge` answers (fallible on streamed edges) |
+| `edge.orientation()` / `edge.firstConnection()` | `Knowledge` of the stored `{ from, to }` and of the first connection |
+| `materialize(options)` | All kept edges or an error; see below |
+| `nodeCount()` / `scopeCount()` / `connectionCount()` | Counts of kept records, never of missing input |
+| `retainedBytes()` / `peakBytes()` / `capacities()` | Memory and counts, including gap records |
+
+- Every iterator ends after **the kept entries**, not all possible entries. An
+  empty attribute iterator doesn't prove absence.
+- IDs and order belong to this snapshot and can change when missing input is
+  filled in. Ranges use the original source encoding.
+- Node and scope attribute iteration uses the same key catalog and order as a
+  complete graph, allocates nothing (`peakBytes() == 0`) and shares one budget
+  across `next()` calls; errors are final and repeat. Unknown entries always
+  have a `.retained` candidate.
+- Completed child subgraphs inside an abandoned edge are kept, once, without
+  that edge.
+- Views and candidates borrow the graph: keep it alive and unmoved. `_data` and
+  `_coverage` are internal.
+
+### Partial edges
+
+Stay on `PartialGraph` for both complete and incomplete input. Its edge views
+use the same expansion, strict merging and folding as a complete graph, and show
+uncertainty instead of hiding it. An unfinished statement never creates a
+guessed edge.
+
+- An edge's `from()`, `to()` and `.edge` record use the **snapshot's**
+  orientation and first connection. Missing earlier input can change a strict
+  pair's first contribution, including undirected orientation. Use
+  `edge.orientation()` and `edge.firstConnection()` when that matters; their
+  unknown answers carry the snapshot's values. When there is any gap,
+  `orientation()` is unknown for a strict undirected edge between two different
+  nodes, and `firstConnection()` is unknown for every strict edge. Otherwise
+  both are known.
+- `tailPort()` and `headPort()` return `Knowledge` answers. A candidate belongs
+  to the snapshot's `from()`/`to()`.
+- `materialize(.{})` finishes the **operation**, not the missing input:
+  `graph.state()` and `graph.kind()` repeat the graph's own. Complete input gives
+  complete coverage and known answers. The default folds attributes, so lookups
+  and iteration can't fail (they still return `Knowledge`); `attributeWith` and
+  `attributesWith` add limits, and the known/unknown check counts against the
+  same budget.
+  `.attributes = false` keeps the partial views and answers attribute queries
+  the compact way.
+
+```zig
+var graph = try ir.materialize(.{});
+defer graph.deinit();
+var stored = graph.edgeIterator();
+while (stored.next()) |edge| {
+    switch (edge.attribute("color")) {
+        .known => |color| std.debug.print("color={?f}\n", .{color}),
+        .unknown => |answer| std.debug.print("color={?f} (may change)\n", .{answer.retained}),
+    }
+}
+```
+
+### Lower a partial Document yourself
+
+```zig
+const PartialDot = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true } } });
+const IR = dot.ir.Lowering(.{});
+
+var parsed = PartialDot.parseAndValidate(gpa, source, sink, .{});
+defer parsed.deinit(gpa);
+if (parsed.document == null) return error.NoDocument;
+const doc = &parsed.document.?;
+var ir = try IR.lowerPartial(gpa, doc, .{
+    .interpretation = PartialDot.interpretation(doc, .{}),
+});
+defer ir.deinit();
+```
+
+- Take the interpretation from the accepting profile and options, as for
+  `lowerComplete`. Complete Documents work too.
+- This can lower the Document kept by a stopped parse, as a **new** operation;
+  it never resumes parsing.
+- Lowering failures are errors, never unknown answers or a half-built graph.
+- Gap records count against lowering's work and memory limits and appear in
+  `retainedBytes()` and `peakBytes()`. Complete lowering stores no gap records.
+
+## Fixed buffers, no allocator
+
+Every operation that builds something has an `In` form that uses buffers you
+provide. It gives the same graphs, views and answers. **Nothing is sized or
+reserved for you**: you pick capacities, or ask for bounds explicitly.
+
+| Allocator-backed | Caller-owned buffers |
 | --- | --- |
 | `IR.lowerComplete(allocator, document, options)` | `IR.lowerCompleteIn(document, memory, options)` |
 | `IR.lowerPartial(allocator, document, options)` | `IR.lowerPartialIn(document, memory, options)` |
 | `IR.loweringSession(allocator, document, options)` | `IR.loweringSessionIn(document, memory, options)` |
 | `IR.partialLoweringSession(allocator, document, options)` | `IR.partialLoweringSessionIn(document, memory, options)` |
+| `graph.edgeIterator(options)` | `graph.edgeIteratorIn(scratch, options)` |
+| `IR.edgeSession(graph, options)` | `IR.edgeSessionIn(graph, scratch, options)` |
+| `view.attributes(options)` | `view.attributesIn(scratch, options)` |
+| `IR.attributesSession(view, options)` | `IR.attributesSessionIn(view, scratch, options)` |
+| `graph.materialize(options)` | `graph.materializeIn(memory, options)` |
+| `graph.materializationSession(options)` | `graph.materializationSessionIn(memory, options)` |
 
-For example, after parsing an attribute-free Document:
+The `In` calls never allocate, grow or fall back to an allocator. The scratch
+and materialization forms also work on allocator-built graphs.
+
+### Fixed-storage lowering
 
 ```zig
-const IR = dot.ir.Lowering(.{});
-// An explicit application envelope, not a prediction about the input.
+// Our application's envelope, not an automatic reservation or sizing pass.
 const Retained = IR.FixedGraphStorage(.{
-    .nodes = 64, .scopes = 8, .occurrences = 16,
-    .mentions = 128, .connections = 64, .declarations = 128,
+    .nodes = 8,
+    .scopes = 1,
+    .occurrences = 1,
+    .mentions = 16,
+    .connections = 8,
+    .declarations = 8,
 });
 const Scratch = IR.FixedLoweringScratch(Retained, .{
-    .nesting = 16, .edge_nesting = 8, .pending_endpoints = 64,
+    .nesting = 2,
+    .edge_nesting = 1,
+    .pending_endpoints = 2,
 });
 var retained: Retained = .{};
 var scratch: Scratch = .{};
-const lowered = IR.lowerCompleteIn(document, .{
-    .graph = retained.storage(), .scratch = scratch.storage(),
-}, .{ .interpretation = Dot.interpretation(document, .{}) });
+const lowered = IR.lowerCompleteIn(doc, .{
+    .graph = retained.storage(),
+    .scratch = scratch.storage(),
+}, .{ .interpretation = Dot.interpretation(doc, .{}) });
 if (lowered.outcome == .failure) {
     if (lowered.shortfall) |missing|
         std.debug.print("{t}: capacity {d}, needs at least {d}\n", .{
@@ -1086,706 +1106,228 @@ var nodes = lowered.graph.?.nodeIterator();
 while (nodes.next()) |node| std.debug.print("node {f}\n", .{node.name()});
 ```
 
-See [the runnable example](../examples/fixed_graph.zig). Both helper types have a
-`byte_size` and contain inline, initially undefined backing arrays. They perform
-no allocation or clearing; place large envelopes in suitable caller-managed
-storage rather than on a small stack. Zero capacity means zero, not “automatic.”
+This is [fixed_graph.zig](../examples/fixed_graph.zig) (for
+`digraph { a->b; b->c }`).
 
-For topology-only IR, select the capability on the same profile:
+- `FixedGraphStorage` and `FixedLoweringScratch` hold inline byte arrays (left
+  undefined) and have a `byte_size`. They don't allocate or clear anything. Put
+  large ones in memory you manage, not on a small stack.
+- Zero capacity means zero, not "automatic".
+- Storage types belong to the profile's representation (attributes, encodings,
+  indexes). Use one profile's `FixedLoweringScratch` with the same profile's
+  `FixedGraphStorage`; mixing them is a compile error. Policies and limits don't
+  change these types.
 
-```zig
-const IR = dot.ir.Lowering(.{ .capabilities = .{ .attributes = false } });
-const Retained = IR.FixedGraphStorage(.{
-    .nodes = 64, .scopes = 8, .occurrences = 16,
-    .mentions = 128, .connections = 64,
-});
-```
+`dot.ir.GraphCapacities` (all `u32`, default 0):
 
-The remaining scratch/binding and `In` calls are unchanged. Keep `declarations`,
-`attributes`, `attribute_keys` and `attribute_states` at zero. A nonzero disabled
-pool is a compile error in `FixedGraphStorage`, or `InvalidStorage` in runtime
-layout/binding before any writes. Bounds return zero for these pools without
-computing attribute-state bounds. Written ports, gaps, names and symbolic
-connections remain available; no attribute storage is reserved behind the scenes.
-
-Storage types belong to the profile's capability, source-encoding and index selection.
-Use that profile's `FixedLoweringScratch` with its `FixedGraphStorage`, and bind
-runtime byte regions with its `loweringLayout`. Different execution policies or
-limits do not change these types. Module-level graph and record exports describe
-the default full profile. The two byte buffers remain caller-owned and follow the same lifetime,
-alias checks and shortfall rules below for either capability selection.
-
-### Capacity and sizing choices
-
-`dot.ir.GraphCapacities` contains these `u32` counts, all defaulting to zero:
-
-| Fields | What consumes the capacity |
+| Fields | What uses them |
 | --- | --- |
-| `nodes`, `scopes` | Unique logical nodes and scopes, including the root scope. |
-| `occurrences`, `mentions` | Written scope bodies (including root), and node membership occurrences. |
-| `connections` | Symbolic connections, **not** expanded edge pairs. |
-| `endpoint_ports` | Qualified retained edge endpoints; a middle endpoint in a chain consumes one record. Node-statement suffixes consume none. |
-| `declarations`, `attributes` | Retained declaration contributions and written attribute/assignment records. |
-| `attribute_keys`, `attribute_states` | Interned keys and persistent map cells, including update history. |
-| `coverage_gaps` | Partial-source coverage records; complete lowering needs none. |
-| `left_offsets`, `right_offsets` | Optional connection-index offsets: `nodes + 1` on each indexed side. |
-| `left_entries`, `right_entries` | Optional connection IDs: `connections` on each indexed side, including symbolic fallback entries. |
-| `scope_memberships` | Optional final membership handles: one per semantic scope. |
+| `nodes`, `scopes` | Unique nodes and scopes, including the root scope |
+| `occurrences`, `mentions` | Written scope bodies (including the root), and node mentions |
+| `connections` | Connections, **not** expanded edges |
+| `endpoint_ports` | Ported edge endpoints; a chain's middle endpoint uses one record; node-statement ports use none |
+| `declarations`, `attributes` | Declarations, and written attributes and assignments |
+| `attribute_keys`, `attribute_states` | Distinct keys, and attribute-map cells including update history |
+| `coverage_gaps` | Partial-input gaps; complete lowering needs none |
+| `left_offsets`, `right_offsets` | Connection index offsets: `nodes + 1` per indexed side |
+| `left_entries`, `right_entries` | Connection index entries: `connections` per indexed side |
+| `scope_memberships` | Scope index: one per scope |
 
-`dot.ir.LoweringScratchCapacities` contains `nesting` (live scope **and edge**
-walk frames, including root), `edge_nesting` (live edge continuations), and
-`pending_endpoints` (buffered endpoints, never their Cartesian product).
-Hash slots, metadata, cursors and membership posting indexes are derived from these counts;
-callers do not need to know internal record layouts or table load factors.
-The five optional query-index pools above are explicit. Unselected pools must
-have zero capacity; nonzero reservations are rejected before writes. On selected
-profiles, `graph.capacities()` reports the arrays actually retained, and explicit
-`loweringBounds` / `partialLoweringBounds` include conservative reservations
-without inspecting endpoint contents or expanding pairs. Bounds can reserve a
-side that an actual all-set graph will not need. Shortfalls name the individual
-pool, are terminal and publish no graph; no automatic bounds reservation is added.
-Port records use the existing mention/index and byte limits; there is no separate
-semantic port-count limit. A fixed port-pool shortfall reports
-`endpoint_port_pool` and publishes no graph. Explicit lowering bounds cap the
-port reservation by Document ported-reference and written-endpoint counts;
-ordinary lowering counts the retained edge endpoints exactly.
+`dot.ir.LoweringScratchCapacities`: `nesting` (open scope **and edge** frames,
+including the root), `edge_nesting` (open edge statements) and
+`pending_endpoints` (buffered endpoints, never their product). Hash tables and
+cursors are derived from these counts.
 
-Choose one of three sizing strategies:
+- Pools for features the profile leaves out must be zero. A nonzero one is a
+  compile error in `FixedGraphStorage`, or `error.InvalidStorage` from
+  `loweringLayout` and binding.
+- Ports use the existing mention and byte limits; there's no separate port
+  limit.
 
-- Supply an application envelope and handle shortfalls.
-- Use `graph.capacities()` for observed retained counts. This excludes growth
-  slack and is only a hint for changed input. Fixed direct results report
-  `scratch_peak`; fixed sessions expose `scratchPeak()`. An allocator-backed
-  first run has no scratch peak: use explicit scratch or bounds-derived scratch.
-- Explicitly request conservative bounds, then bind suitably aligned byte regions:
+**Three ways to size.**
+
+1. Pick an envelope for your application and handle shortfalls.
+2. Reuse `graph.capacities()` from an earlier run: the counts actually used, with
+   no slack, so only a hint for changed input. Fixed direct results report
+   `scratch_peak`; fixed sessions have `scratchPeak()`. An allocator-backed run
+   has no scratch peak.
+3. Ask for conservative bounds and bind your own buffers:
 
 ```zig
-const options = .{ .interpretation = Dot.interpretation(document, .{}) };
-const bounds = try IR.loweringBounds(document.capacities(), options);
-// For partial input: IR.partialLoweringBounds(...).
+const options = .{ .interpretation = Dot.interpretation(doc, .{}) };
+const bounds = try IR.loweringBounds(doc.capacities(), options); // Or partialLoweringBounds.
 const layout = try IR.loweringLayout(bounds.graph, bounds.scratch);
-// Caller supplies at least layout.graph_bytes / layout.scratch_bytes,
-// each aligned to layout.alignment. This does not allocate those buffers.
-const memory = try layout.bind(graph_buffer, scratch_buffer);
-const lowered = IR.lowerCompleteIn(document, memory, options);
+// Buffers of at least layout.graph_bytes / layout.scratch_bytes,
+// aligned to layout.alignment.
+const retained = try gpa.alignedAlloc(u8, .@"16", layout.graph_bytes);
+defer gpa.free(retained);
+const scratch = try gpa.alignedAlloc(u8, .@"16", layout.scratch_bytes);
+defer gpa.free(scratch);
+const lowered = IR.lowerCompleteIn(doc, try layout.bind(retained, scratch), options);
+if (lowered.outcome == .failure) return lowered.outcome.failure;
 ```
 
-The same helpers accept compile-time Document capacity envelopes. They do checked
-count arithmetic, not a source walk or second parse. Omitted limits use the IR
-profile's limits; passing the same options to sizing and lowering keeps them
-aligned. Other recognized options are ignored by sizing, without invoking hooks.
-Bounds guarantee no pool shortfall for valid parser-produced Documents fitting
-the envelope before another enforced limit/stop; they do not guarantee semantic
-acceptance or override memory/work limits.
+- `loweringBounds` and `partialLoweringBounds` do checked arithmetic on Document
+  counts (`doc.capacities()` or a compile-time envelope). They don't read the
+  source or parse again. They use the limits in `options` (or the profile's) and
+  ignore other options without calling hooks; pass the same options to sizing and
+  lowering.
+- Bounds guarantee no pool shortfall for a valid parser-built Document within
+  the envelope, unless another limit or stop comes first. They don't guarantee
+  acceptance or override memory and work limits.
+- Bounds can reserve far more than needed, especially attribute cells:
+  `min((h(A) + 5) × A × (S + 2), max_attribute_states)`, where `A` is attributes
+  plus assignments, `S` subgraphs and `h` the AVL height bound. Index bounds may
+  reserve a side that a graph of only set endpoints won't use.
+- You can use the scratch bounds without reserving the graph-storage bounds.
 
-Bounds can substantially over-reserve, particularly persistent attribute cells:
-the bound is `min((h(A) + 5) * A * (S + 2), max_attribute_states)`, where
-`A = attributes + assignments`, `S = subgraphs`, and `h` is the integer AVL
-height bound. Pool counts cannot distinguish updates to one key from many keys,
-or edge-only attributes from attributes needing persistent history. Bounds-based
-scratch can be used without reserving the retained bounds. **Nothing reserves
-these bounds on the default path.**
+**Failures.** `FixedLoweringResult` and `FixedPartialLoweringResult` have
+`graph`, `outcome`, `shortfall` and `scratch_peak`. A graph exists exactly when
+`outcome == .success`.
 
-### Failures and ownership
+- A full pool fails with `error.PoolExhausted`; `shortfall` names the first full
+  `resource`, its `limit` and `required_at_least` (for what was read so far, not
+  the whole input). Other failures have no shortfall.
+- Nothing falls back to an allocator, drops records or returns a half-built
+  graph. Start a new operation with more storage. Semantic limits are checked
+  before each write, including attribute cells.
+- On runtime-policy profiles the direct call returns an error union for an
+  invalid policy only; other failures are in `outcome`. Fixed-policy profiles
+  need no `try`.
+- `loweringLayout` and `bind` check arithmetic, sizes, alignment and overlap in
+  every build mode: a short buffer is `error.BufferTooSmall`; a misaligned,
+  overlapping or altered descriptor is `error.InvalidStorage`. Lowering also
+  rejects buffers that overlap the source or Document. Extra buffer bytes are
+  unused. Layouts are specific to the build, not a file format.
+- `max_bytes` is checked against the **whole bound reservation** (graph storage
+  plus scratch, with padding) before any write. `peakBytes()` reports that
+  reservation and `retainedBytes()` the graph storage. Oversized pools waste memory too;
+  fixed storage removes growth copies, not the cost of large pools.
 
-`FixedLoweringResult` / `FixedPartialLoweringResult` contain `graph`, `outcome`,
-`shortfall`, and `scratch_peak`. A graph exists exactly on `.success`.
-`PoolExhausted` supplies the first exhausted `resource`, its `limit`, and
-`required_at_least`; this describes the encountered prefix, not all remaining
-requirements. Other failures use `outcome.failure` without a shortfall.
-Runtime-policy profiles add an outer error union for invalid policy configuration
-only; fixed-policy direct calls need no `try`.
+**Lifetimes.** Keep the source and graph storage alive and unchanged while the
+graph and its views are used. The Document and scratch are needed only until the
+direct call returns or the session is destroyed; the graph keeps no pointer to
+them. Don't lower into the same storage again while an old graph still uses it.
+The fixed result owns no memory and has no `deinit`. Calling the graph's
+`deinit()` is safe but unnecessary: it frees nothing. Sessions are
+`IR.FixedLoweringSession` and `IR.FixedPartialLoweringSession`, with
+`shortfall()` and `scratchPeak()` added; see
+[small steps](#lower-a-document-in-small-steps). Their setup checks a fixed
+number of descriptors without clearing pools or reading input; clearing hash
+tables is charged work, so larger envelopes can need more credits.
+`@sizeOf(IR.FixedLoweringSession)` is the inline session size.
 
-Shortfalls never allocate a fallback, discard records, or publish half-built IR.
-End the operation and restart in adequate storage. A successful partial-source
-IR is different from a failed lowering operation. Semantic limits are checked
-before the corresponding pool write, including individual attribute-map cells.
+### Queries after fixed lowering
 
-`loweringLayout` and `bind` check arithmetic, lengths, alignment and overlap in all
-build modes. Short byte regions return `BufferTooSmall`; invalid or overlapping
-regions return `InvalidStorage`. Lowering also rejects overlap with source and
-Document storage before writes. Excess buffer tails are unused. Layouts are
-build-specific, not a serialized representation.
+A fixed graph has no allocator for later operations. Add one with the fixed
+lowering option `.query_allocator = allocator`; lowering itself never uses it,
+and it must outlive the operations that use it. It defaults to null, with no
+fallback.
 
-Keep source and retained bytes alive and unchanged for the graph and borrowing
-views. Document pools and scratch are needed only until direct lowering returns,
-or its session is deinitialized. The returned graph retains no Document/scratch
-pointers. Temporary descriptors need not survive. Do not rebuild into retained
-storage while an old graph or its views still borrow it.
-
-The fixed direct result owns no memory and has no `deinit`. Calling the returned
-graph's `deinit()` is safe but unnecessary: it invalidates the handle without
-freeing caller storage, including partial coverage. Later owning query/output
-results still require their normal cleanup.
-
-For fixed construction, `max_bytes` checks the **entire bound retained + scratch
-reservation**, including padding, before writes. Construction `peakBytes()`
-reports this reservation; `retainedBytes()` reports the bound retained region.
-Source, Document, unbound buffer tails and inline operation state are excluded.
-Fixed capacities can waste memory too; they eliminate growth copies, not the
-cost of oversized pools. Use `@sizeOf(IR.FixedLoweringSession)` for inline state;
-the benchmark below reports it separately for the selected build.
-
-### Sessions and subsequent queries
-
-`IR.FixedLoweringSession` / `IR.FixedPartialLoweringSession` use the same execution
-policy, `advance`, `run`, `cancel`, `takeResult` and `deinit` contract as the
-[allocator-backed lowering sessions](#resumable-document-lowering). There is no
-new metering switch or minimum grant. Zero grants do no work; stops latch; no
-result transfers before success. `shortfall()` and `scratchPeak()` expose fixed
-storage details. Initialization checks a fixed number of descriptors without
-clearing pools or scanning input. Hash-table initialization and all semantic work
-remain bounded, metered and cancellable; larger envelopes may require more work
-to clear their tables. Direct fixed calls run to completion with the direct
-driver's accounting; use sessions when work must pause.
-
-Fixed construction and query scratch are independent. Use the `In` operations
-below for caller-owned scratch. The optional lowering option
-`.query_allocator = allocator` supplies storage
-**only for subsequent operations**; construction never calls it. Its context
-must outlive those operations/results. It defaults to null, with no heap fallback.
-
-| Ordinary operation without `query_allocator` | Result |
+| Without `query_allocator` | Result |
 | --- | --- |
-| Names/values, node iteration, indexed attributes, allocation-free symbolic queries | Available. |
-| Non-strict singleton edge streaming | Available without scratch. |
-| Streaming reaching non-empty set endpoints, or strict candidate pairs | `StorageRequired` when scratch is needed, possibly after earlier entries. |
-| Strict compact-edge attribute enumeration | `StorageRequired` when winner scratch is needed; single-key lookup remains allocation-free. |
-| Materialization needing output arrays | `StorageRequired`, including topology-only output. |
-| `toString(allocator)` and other explicitly allocated helpers | Use their explicitly supplied allocator. |
+| Names, values, node iteration, attribute lookup, `findNode`, `hasEdge`, `contains`, `scopeMembership` | Work as usual |
+| Non-strict streaming with single-node endpoints | Works; needs no scratch |
+| Streaming a non-empty set endpoint, or a strict graph's pairs | `error.StorageRequired` when scratch is needed, possibly after earlier edges |
+| Strict edge attribute iteration | `error.StorageRequired` when winner scratch is needed; single-key lookup still works |
+| `materialize` | `error.StorageRequired`, topology-only too |
+| `toString(allocator)` and other calls that take an allocator | Use the allocator you pass |
 
-`StorageRequired` is a terminal operation failure, never an empty answer or
-successful exhaustion. With an allocator supplied, normal allocation errors and
-limits apply. The fixed-scratch counterparts below never call that allocator.
-Fixed materialization output and event lowering remain later work.
-Run `zig build bench-ir-fixed -Doptimize=fast` (also `safe`/`small`) to compare
-growable lowering, observed capacities, explicit bounds and fixed sessions;
-sizing and caller-buffer allocation are outside its lowering timings.
+`error.StorageRequired` ends the operation; it is never an empty answer. Use the
+`In` forms below to stay allocation-free.
 
-## Fixed scratch for streaming and queries
-
-Use the same graph, views, ordering and execution policy with caller-owned
-scratch. These operations work with both allocator-backed and fixed IRs;
-they never allocate, grow, or fall back to the graph's allocator.
-
-| Ordinary call | Fixed-scratch call |
-| --- | --- |
-| `graph.edgeIterator(options)` | `graph.edgeIteratorIn(memory, options)` |
-| `IR.edgeSession(&graph, options)` | `IR.edgeSessionIn(&graph, memory, options)` |
-| `component.attributes(options)` | `component.attributesIn(memory, options)` |
-| `IR.attributesSession(component, options)` | `IR.attributesSessionIn(component, memory, options)` |
-
-`attributesIn` accepts compact node, scope and edge views, including partial
-views. Nodes/scopes and non-strict edges need zero external winner slots.
-`attributesSessionIn` also accepts materialized views; their folded maps need
-no winner scratch. Direct materialized attributes and single-key/existence/
-membership queries already need no allocation, so they have no additional
-`In` operation.
-
-### Explicit sizing
-
-Choose application capacities, a previous fixed operation's `scratchPeak()`,
-or the explicit metadata-only bounds below. **Nothing reserves automatically.**
+### Fixed scratch for streaming and queries
 
 ```zig
-// Retained is the application's IR.FixedGraphStorage(...) type.
-var scratch: IR.FixedEdgeScratch(Retained, .{
-    .members = 128, .strict_pairs = 256,
-}) = .{};
-var edges = try graph.edgeIteratorIn(scratch.storage(), .{});
+const layout = try IR.edgeScratchLayout(graph, try IR.edgeScratchBounds(graph, .{}));
+const bytes = try gpa.alignedAlloc(u8, .@"16", layout.byte_size);
+defer gpa.free(bytes);
+var edges = try graph.edgeIteratorIn(try layout.bind(bytes), .{});
 defer edges.deinit();
-while (try edges.next()) |edge|
-    std.debug.print("{f} {s} {f}\n", .{
-        edge.from().name(), edge.edge.operator.lexeme(), edge.to().name(),
-    });
-```
-
-`IR.FixedAttributeScratch(.{ .winners = 16 })` similarly exposes `.storage()`.
-The descriptors are `IR.EdgeScratch` and `IR.AttributeScratch`; capacity types
-are `dot.ir.EdgeScratchCapacities` and `dot.ir.AttributeScratchCapacities`.
-Helpers contain initially undefined inline bytes and expose `byte_size`.
-Put large envelopes in suitable caller-managed memory, not a small stack.
-
-| Capacity | Storage used |
-| --- | --- |
-| `members` | Shared left/right distinct-member lists, not their Cartesian product. Singletons stay inline. Left fills from the front, right immediately after it; lists are reused per connection. |
-| `strict_pairs` | One canonical key per emitted unique strict edge, plus derived collision-checked hash slots. Non-strict streams need none. |
-| `winners` | All interned edge-family keys for strict compact-edge enumeration, not just the queried edge's final keys. Suffix-only ports use inline selections. |
-
-There is no marks capacity to guess. With `members > 0`, marks derive from
-`Retained.graph_capacities.nodes`. A graph exceeding that envelope is rejected
-at construction with `InvalidStorage`. With `members = 0`, no marks are reserved
-and singleton/empty-set traversal works regardless of graph size; a non-empty
-set reports a member shortfall. `{a b c d}->x` needs four member slots, while
-`{a b c d}->{a b c d}` needs eight.
-
-For runtime-sized buffers, including allocator-backed graphs:
-
-```zig
-const capacities = try IR.edgeScratchBounds(&graph, options); // optional
-const layout = try IR.edgeScratchLayout(&graph, capacities);
-// buffer must satisfy layout.alignment and layout.byte_size.
-const memory = try layout.bind(buffer);
-var edges = try graph.edgeIteratorIn(memory, options);
-defer edges.deinit();
-```
-
-`IR.attributeScratchLayout(capacities)` has the same checked binding interface.
-Layouts allocate/clear nothing and scan no input. Marks derive from the graph's
-actual node count for a runtime edge layout. Extra buffer bytes are not bound.
-See [fixed_edge_stream.zig](../examples/fixed_edge_stream.zig) for edge streaming
-with a separate reusable attribute pool.
-
-Bounds read existing metadata only. Let `N` be node count, `C` connection count,
-`K` the **total interned-key count across all families**, and `L` effective limits:
-
-| Helper | Bound |
-| --- | --- |
-| `IR.edgeScratchBounds(&graph, options)` | `members = 2N` when `C != 0`; strict pairs = `min(L.max_edges, L.max_pairs, N²)` directed, or `min(L.max_edges, L.max_pairs, N(N+1)/2)` undirected. Zero pairs for non-strict graphs; all zero when `C = 0`. |
-| `IR.attributeScratchBounds(&graph)` | `winners = K` for strict graphs, otherwise zero. Infallible, no edge-key scan or per-family retained counter. |
-
-Both accept complete/partial graphs. Edge limits come from `options.limits` or
-the input graph, exactly as for consumption. Recognized execution options do
-not affect sizing or invoke hooks. Counts/products/byte layouts are checked;
-unrepresentable capacities fail with `IndexLimit`. Bounds can overreserve:
-they do not detect singleton-only endpoints or exclude non-edge keys. They do
-not promise success under work, byte or cancellation limits. Lowering uses the
-separate `loweringLayout`, `loweringBounds` and `partialLoweringBounds` helpers.
-
-### Ownership, limits and shortfalls
-
-Each active operation borrows scratch exclusively until `deinit`, including
-after a terminal outcome. Backing bytes must stay alive and unmoved; the
-descriptor variable need not. Cleanup never frees caller memory. Reuse starts
-a fresh operation with no stale marks, pairs or winners. Two simultaneous
-operations need disjoint scratch. Keep the input graph/source and any active
-materialized owner alive and immutable. Emitted views borrow graph/source, not
-scratch, and survive scratch reuse.
-
-Binding/admission checks lengths, alignment, derived node envelopes and overlap
-with known borrowed input regions in all build modes. Arbitrary pointer lifetimes
-and scratch already lent to another operation remain caller responsibilities.
-`peakBytes()` and `max_bytes` count the **entire bound reservation**, including
-derived tables/padding, not just touched slots. They exclude the graph/source,
-unbound buffer tail and inline operation object. `scratchPeak()` returns maximum
-combined live members, remembered pairs or activated winner slots; it excludes
-a missing request and does not predict an unvisited suffix or an edited graph.
-
-| Failure | Behavior |
-| --- | --- |
-| Short backing buffer | `BufferTooSmall` before execution. |
-| Invalid alignment/descriptor/overlap/node envelope | `InvalidStorage` before execution. |
-| Reservation above `max_bytes` | `MemoryLimit` before initialization. |
-| Needed slot unavailable | Terminal `PoolExhausted`; `shortfall()` names `.members`, `.strict_pairs` or `.attribute_winners`, with `limit` and `required_at_least`. |
-| Semantic/work/cancellation stop | Existing error; no storage shortfall. |
-
-A full strict-pair pool still skips duplicates. For a new pair, `EdgeLimit`
-precedes the corresponding pool shortfall. Earlier work/cancellation stops keep
-their normal order. Small capacities are allowed, not rejected against bounds.
-No eviction, hidden growth, alternate rescanning or enlarge-and-resume occurs.
-
-Previously emitted entries remain usable after failure; they are a prefix, not
-successful exhaustion. Direct errors repeat instead of returning null; session
-outcomes latch, with no new entry or work on later polls. To retry, end the borrow,
-provide more storage and restart; the prefix can be emitted again. Strict
-attribute enumeration resolves winners before publishing its first attribute,
-so a winner-pool shortfall emits none. A query failure does not make a complete
-graph partial, and exhausting retained partial content does not certify gaps.
-
-### Fixed sessions
-
-Use `edgeSessionIn` / `attributesSessionIn` with the same execution policy,
-`advance`, `run`, progress and outcomes as the existing sessions. Complete/partial
-types are `FixedEdgeSession` / `FixedPartialEdgeSession` and
-`FixedAttributesSession` / `FixedPartialAttributesSession`. Graph types expose
-`FixedEdgeIterator` / `FixedAttributeIterator`. No new execution setting is added.
-
-Initialization, reuse and generation rollover remain bounded and metered:
-constructors do not hide bulk clears. One/zero-credit grants, cancellation
-intervals and terminal latching keep their guarantees. Fixed work totals can
-differ from growable totals because growth/copying disappears and a larger
-explicit table can need more clearing. Partitioning a grant does not change
-work totals within the same backend, capacities and policy.
-
-Run `zig build bench-ir-fixed-queries -Doptimize=fast` (also `safe`/`small`) for
-throughput, fixed reservation versus observed usage, and inline state sizes.
-Broader session tuning remains separate; fixed materialization output is not
-part of these scratch APIs.
-
-## Resumable Document lowering
-
-Opt in through the same execution-policy vocabulary as the parsers. There is
-no separate `resumable` switch. This policy belongs to the IR operation: the
-profile that parsed a Document does not implicitly select its lowering driver.
-
-```zig
-const IR = dot.ir.Lowering(.{
-    .policy = .{ .execution = .{ .metering = true } },
-});
-var operation = try IR.loweringSession(allocator, doc, .{
-    .interpretation = Dot.interpretation(doc, .{}),
-});
-defer operation.deinit();
-while (operation.advance(4096).outcome == null) {
-    // Yield to the application's scheduler; resume this operation later.
-}
-var ir = try operation.takeResult();
-defer ir.deinit();
-```
-
-See [resumable_graph.zig](../examples/resumable_graph.zig). Already parsed and
-accepted input has the same prerequisites as `lowerComplete`. Use
-`partialLoweringSession` for an explicitly retained partial Document; its result
-is the existing `PartialGraph`, with the same retained facts and uncertainty.
-Both operations keep edges symbolic. They do not parse the source again,
-materialize edges, invoke child processors or change validation outcomes.
-
-### Execution policy and lifecycle
-
-| Setting | Default | Meaning for direct lowering and sessions |
-| --- | --- | --- |
-| `.policy.execution.metering` | `false` | Use bounded execution; sessions additionally expose `advance(budget)` |
-| `.policy.execution.cancellation` | `false` | Enable the borrowed `.cancellation` hook in operation options |
-| `.policy.execution.cancellation_interval` | `1` | Positive maximum lowering credits between hook polls; session resumes also poll, including budget zero |
-| `.runtime_policy` | `false` | Allow operation options `.policy` to override the compiled baseline before work starts |
-
-Fixed policies are checked at compile time. With `.runtime_policy = true`,
-`IR.validatePolicy(override)` checks an override independently; construction
-also resolves and checks it once. Runtime `advance` returns `MeteringDisabled`
-without doing work when metering is disabled; the fixed-policy equivalent is a
-compile error. Runtime policy changes settings, not the lowering implementation.
-There is no mid-operation policy replacement. Direct `lowerComplete`/`lowerPartial`
-and fixed `lowerCompleteIn`/`lowerPartialIn` honor the same execution policy as
-their session counterparts. With metering or cancellation enabled, direct calls
-run the bounded engine to completion and transfer only successful output. They
-do not return paused operations. With both disabled, direct calls retain the
-throughput-specialized driver; no session storage is constructed.
-
-For example, the same profile/options can be used for either API:
-
-```zig
-const IR = dot.ir.Lowering(.{
-    .policy = .{ .execution = .{ .cancellation = true } },
-    .runtime_policy = true,
-});
-const options = .{
-    .interpretation = Dot.interpretation(doc, .{}),
-    .cancellation = hook,
-    .policy = .{ .execution = .{ .metering = true, .cancellation_interval = 64 } },
-};
-var graph = try IR.lowerComplete(allocator, doc, options);
-defer graph.deinit();
-// To pause/resume instead: IR.loweringSession(allocator, doc, options).
-```
-
-A hook never enables cancellation by itself. A fixed profile with cancellation
-compiled out rejects a non-void hook; a runtime policy with cancellation disabled
-ignores the supplied hook. Enabling cancellation honors its interval even when
-metering is disabled. Invalid runtime policies fail before hooks, allocation or
-storage writes. Fixed direct calls on runtime-enabled profiles require `try`
-for policy-validation failures; lowering failures remain in their `outcome`.
-Typed and anonymous hooks are accepted; a void hook means absent.
-
-Limits remain separate from execution policy and are enforced on every route.
-Changing execution policy does not reset configured limits. Direct lowering
-accepts typed, anonymous, optional and null limits; omission
-or null uses this IR profile's limits, not necessarily the library defaults.
-Sizing helpers accept direct or session options and use only their limits.
-The bounded engine uses session work credits, so enabling metering/cancellation
-can change how much `max_work` a document needs compared with the direct driver.
-For identical storage and allocation behavior, a direct bounded call and its
-session's `run()` use the same work and polling checkpoints.
-
-The convenience `dot.ir.parse` / `parsePartial` APIs have no IR profile argument;
-their explicit lowering hook selects a cancellable lowering profile. Without
-that hook they retain default direct lowering. Graph-receiver queries and
-materialization retain the explicit options documented in their sections;
-lowering does not store an execution policy in the resulting graph.
-
-`LoweringSession` and `PartialLoweringSession` expose `advance(u32)`, `run()`,
-`cancel()`, `peakBytes()`, `takeResult()` and `deinit()`. The lifecycle matches
-materialization sessions: zero grants do no semantic work, positive grants make
-progress, terminal outcomes are latched, and ownership transfers once after
-success. `LoweringProgress` reports this call's `work_used`, cumulative
-`total_work`, factual `nodes_created`/`connections_created`, and optional
-`LoweringOutcome` (`success` or `failure`). Progress counts are not published IR.
-`run().work_used` is the last internal advance's count, not its lifetime total.
-
-Construction binds input/options and checks admission; it performs no scan or
-allocation. Keep the immutable Document, source and active session alive and
-unmoved until lowering finishes and the result is taken. After successful transfer,
-the IR borrows only source bytes: Document pools and session scratch can be freed.
-An execution pause is not a partial source. Cancellation, allocation/limit failure
-and unfinished work never publish a half-built IR; `takeResult()` returns
-`NotReady`, the actual failure, or `AlreadyTaken` as appropriate. `deinit()` is
-required on every path, including after successful transfer.
-
-### Lowering work units
-
-One credit performs one bounded transition:
-
-| Work | Maximum per credit |
-| --- | --- |
-| Counting/traversal/indexing | One order slot, chain link, scope, mention or phase transition |
-| Identity hashing/equality | One byte (byte profiles), native scalar (at most two UTF-16 code units), glue unit, pending UTF-8 output byte or hash-table probe |
-| Persistent attribute maps | One tree visit or ancestor update, with at most two rotations/five cell writes; published cells are copied before editing |
-| Buffer growth/initialization | At most 64 bytes copied/cleared, or one bounded storage-preparation transition |
-| Optional query-index construction | One connection/occurrence, one offset, or one allocation/phase transition |
-
-Long names, concatenation comments, hash-table rehashes, scope-default overlays
-and membership/posting preparation all yield. Budget one needs no minimum
-larger grant. Hash collisions still require logical equality; native validation
-and byte-profile byte preservation match direct lowering. Total credits include
-actual growth copies, so comparisons between budget partitions require the same
-allocator resize behavior. Intermediate work units need not equal the direct
-driver's coarser `max_work` accounting. Configured lifetime limits still stop
-the operation; pausing does not replenish them.
-
-Allocator callbacks, cancellation predicates and destruction are external work,
-not latency-bounded operations. This is cooperative work metering, not a deadline.
-No thread or shared parse-plus-IR budget is introduced. Event lowering remains
-separate work. Fixed-storage lowering is available above; bounded edge streaming and attribute
-queries are available below.
-Measure this path with `zig build bench-ir-lowering-sessions -Doptimize=fast`.
-It compares default, metered, cancellable and runtime-policy direct calls with
-session execution, including budget one. Direct calls do not expose work totals,
-so their credits column reads `not_reported`; timing, polls and memory are measured.
-
-## Optional materialized adjacency
-
-Request adjacency when you want to walk edges at a node. Ordinary
-`materialize(.{})` keeps adjacency off; parsing and lowering never build it.
-
-```zig
-var graph = try ir.materialize(.{ .adjacency = .all });
-defer graph.deinit(); // Borrows ir's names, values and partial coverage.
-
-var nodes = graph.nodeIterator();
-while (nodes.next()) |node| {
-    var edges = node.edges(.{}); // Every incident edge, once at this node.
-    while (edges.next()) |entry|
-        std.debug.print("{f}: neighbor {f}\n", .{
-            node.name(), entry.neighbor().name(),
-        });
+var attributes: IR.FixedAttributeScratch(.{ .winners = 1 }) = .{};
+while (try edges.next()) |edge| {
+    std.debug.print("{f} -> {f}\n", .{ edge.from().name(), edge.to().name() });
+    var values = try edge.attributesIn(attributes.storage(), .{});
+    defer values.deinit();
+    while (try values.next()) |value|
+        std.debug.print("  {f}={f}\n", .{ value.key(), value });
 }
 ```
 
-See [graph_adjacency.zig](../examples/graph_adjacency.zig) for a complete example
-with diagnostics. `entry.neighbor()` returns one node view. `entry.edge()`
-returns the existing edge with its stored `from()`/`to()` orientation, attributes
-and ports. `entry.directions()` reports `incoming`, `outgoing` and `undirected`
-booleans relative to the queried node. A directed loop is both incoming and
-outgoing, but appears only once in any one traversal. Parallel edges remain
-separate; neighbors are not deduplicated.
+This is [fixed_edge_stream.zig](../examples/fixed_edge_stream.zig). It works the
+same on allocator-built and fixed graphs.
 
-The compile-time `.direction` filter selects which edges are visible:
-
-| `node.edges(.{ .direction = … })` | Includes |
+| Capacity | Used for |
 | --- | --- |
-| `.all` (default) | All incident edges |
-| `.outgoing` | Directed edges leaving this node |
-| `.incoming` | Directed edges entering this node |
-| `.undirected` | Undirected edges touching this node |
-| `.forward` | Outgoing and undirected edges |
-| `.backward` | Incoming and undirected edges |
+| `members` (`EdgeScratchCapacities`) | Distinct members of the current left and right endpoints, not their product; single nodes stay inline. `{a b c d}->x` needs 4; `{a b c d}->{a b c d}` needs 8. |
+| `strict_pairs` (`EdgeScratchCapacities`) | One key per unique strict edge emitted, plus derived hash slots. Non-strict streams need none. |
+| `winners` (`AttributeScratchCapacities`) | Every edge key in the graph, for strict edge attribute iteration. Node, scope, non-strict and materialized edges need none. |
 
-For an undirected graph, `.forward`, `.backward` and `.all` traverse the same
-edges; directed-only filters are empty. `node.edgeCount(options)` uses these
-same filters and counts a loop once. It is an edge count, not graph-theory degree.
+- Compile-time helpers: `IR.FixedEdgeScratch(Retained, capacities)` (node marks
+  sized from `Retained`, a `FixedGraphStorage` type) and
+  `IR.FixedAttributeScratch(capacities)`, each with `.storage()` and
+  `byte_size`. Runtime: `IR.edgeScratchLayout(graph, capacities)` (marks sized
+  from the graph's node count) and `IR.attributeScratchLayout(capacities)`, each
+  with `bind(buffer)`. Descriptors are `IR.EdgeScratch` and `IR.AttributeScratch`.
+- There's no marks capacity to guess. With `members > 0`, a graph with more
+  nodes than the envelope is `error.InvalidStorage`. With `members = 0`, no marks
+  are reserved and single-node and empty endpoints work at any size; a non-empty
+  set reports a member shortfall.
+- `IR.edgeScratchBounds(graph, options)`: `members = 2N` when there are
+  connections, and for strict graphs `strict_pairs = min(max_edges, max_pairs, N²)`
+  (directed) or `min(max_edges, max_pairs, N(N+1)/2)` (undirected); all zero with
+  no connections. `IR.attributeScratchBounds(graph)` (can't fail):
+  `winners = K` (all keys in the graph) for strict graphs, else zero. Both read
+  only metadata, accept complete and partial graphs, may reserve too much, and
+  give `error.IndexLimit` when a size doesn't fit.
+- `attributesIn` takes compact node, scope and edge views, partial ones too.
+  `attributesSessionIn` also takes materialized edge views.
 
-Choose storage for the queries your application needs:
+**Rules.**
 
-| Materialization selection | Supported filters |
+- An operation borrows its scratch exclusively until `deinit`, even after it
+  fails. Keep the bytes alive and unmoved; the descriptor variable may go away.
+  `deinit` never frees your memory. Reuse starts fresh. Two operations at once
+  need separate scratch.
+- Emitted views borrow the graph and source, not the scratch, and survive scratch
+  reuse.
+- Binding and starting the operation check length, alignment, the node
+  envelope and overlap with the graph's own memory. Pointer lifetimes and
+  scratch already lent to another operation are your responsibility.
+- `peakBytes()` and `max_bytes` count the **whole bound reservation**.
+  `scratchPeak()` reports the most members, pairs or winner slots used; it
+  doesn't predict unvisited input.
+
+| Failure | What happens |
 | --- | --- |
-| `.adjacency = .none` (default) | No adjacency methods; existing result types/layouts |
-| `.adjacency = .forward` | `.outgoing`, `.undirected`, `.forward` |
-| `.adjacency = .backward` | `.incoming`, `.undirected`, `.backward` |
-| `.adjacency = .all` | Every filter |
+| Buffer too short | `error.BufferTooSmall` before any work |
+| Misaligned, altered or overlapping descriptor, or node envelope too small | `error.InvalidStorage` before any work |
+| Reservation above `max_bytes` | `error.MemoryLimit` before any work |
+| A needed slot is missing | Final `error.PoolExhausted`; `shortfall()` names `.members`, `.strict_pairs` or `.attribute_winners` |
+| Limit, work or cancellation stop | The usual error, no shortfall |
 
-Unsupported filters fail at compile time, including neutral `.all` on
-forward-only storage. All node views reached from a selected result have the
-same type: `nodeIterator()`, checked `nodeView(id)`, `entry.neighbor()` and
-`edge.from()`/`to()`. For example, `entry.edge().to().edges(.{})` can keep walking
-when `.all` storage was selected. The ordinary no-adjacency types are unchanged.
-`Graph.MaterializedFor(selection)` selects the result type; selecting only
-`.attributes = true` or `false` gives the existing materialized types.
+- A full strict-pair pool still skips duplicates. For a new pair, `EdgeLimit`
+  comes before the pool shortfall.
+- Edges or attributes already returned stay usable, but they are a prefix. Retry
+  with more storage from the start; the prefix will be emitted again. Strict
+  attribute iteration resolves its winners before the first entry, so a winner
+  shortfall emits nothing.
+- There is no eviction, hidden growth or enlarge-and-resume.
 
-Attribute capabilities and output selection remain independent. With
-`.attributes = false`, adjacency adds no folded attribute maps; attribute
-queries use the existing compact path if the input retains attributes. A
-profile with `.capabilities.attributes = false` still rejects attribute access.
-Attribute sessions accept adjacency views without rebuilding or copying data.
-
-### Costs, partial input and ownership
-
-Construction walks the explicitly materialized edges and builds compact rows
-in O(nodes + edges) work. Queries allocate nothing: initialization, `next()`
-and `edgeCount()` do bounded O(1) work. Iteration preserves materialized-edge
-order, merging at most four disjoint category ranges without scanning rejected
-edges. Compact IR node traversal and attribute predicates remain separate work.
-
-Let N be node count, E edge count, U the number of undirected non-loop edges,
-and L the number of loops. Forward/backward storage has E + U entries;
-all-direction storage has 2E − L. Each entry is a `u32` edge index. Offsets
-occupy C × (N + 1) `u32`s, where C is the number of nonempty selected categories
-(at most three for one direction, four for all). A purely undirected graph
-shares one row table for both directions. No extra port or attribute copy is
-made. Even isolated nodes contribute offsets when a category exists.
-
-Partial adjacency visits retained edges only. `edgeCount()` returns
-`Knowledge(u32)`: unknown counts include the retained count and uncertainty;
-finishing iteration does not prove that unseen edges are absent. Node/edge
-attribute qualifications are unchanged. An interrupted materialization publishes
-no result, even if edge expansion finished before adjacency failed.
-
-The selected result borrows the input IR/source, including when attributes are
-omitted, because node views need names and identity. Keep the result unmoved
-while its views or iterators are alive. Growable results own their row buffers;
-fixed results borrow the complete output reservation. Scratch can be reused
-after construction/session destruction. Existing `max_bytes`, `max_work` and
-cancellation cover expansion and row construction together; `max_pairs` still
-counts expanded pairs, not adjacency entries. No implicit reservation is added.
-
-Use `zig build bench-ir-adjacency -Doptimize=fast` (also `safe`/`small`) to compare
-ordinary output, forward/all adjacency and budgeted construction, including
-traversal time, retained/requested peak memory and Arena capacity.
-Measured costs and the default-off comparison are in
-[Performance](PERFORMANCE.md#optional-materialized-adjacency-unreleased-2026-11-01).
-
-## Resumable materialization
-
-Keep `materialize(.{})` for a direct call. Opt into a session when your
-application needs control **during** expansion, attribute folding or selected
-adjacency construction:
+### Fixed-storage materialization
 
 ```zig
-var operation = try ir.materializationSession(.{});
-defer operation.deinit();
-
-while (operation.advance(4096).outcome == null) {
-    // Yield to your application's scheduler here if needed.
-    // Keep operation, ir and source alive and unmoved until the next advance.
-}
-var graph = try operation.takeResult();
-defer graph.deinit();
-```
-
-In an event-driven application, store the operation and call `advance` once
-per scheduling turn instead of spinning this loop. No thread, clock, callback
-dispatch or automatic yielding is introduced. See
-[resumable_edges.zig](../examples/resumable_edges.zig) for a runnable example.
-
-Options have the same form as `materialize`: compile-time `.attributes = false`
-excludes folding and `.adjacency` selects rows; `.limits` and `.cancellation`
-are runtime values. Omitted limits inherit the IR's baseline. Named session
-types take selection records, for example
-`Graph.MaterializationSession(.{ .attributes = true, .adjacency = .all })`,
-including on `PartialGraph`. `takeResult()` returns the same selected type as
-the direct call. `edges_created` can be final while row construction is pending.
-A partial source stays partial even when the operation finishes successfully.
-An unfinished operation is a **pause**, not a new partial graph.
-
-| Method | Contract |
-| --- | --- |
-| `advance(budget: u32)` | At most `budget` defined steps; exhaustion yields without losing progress. |
-| `run()` | Drives the same machine to a terminal outcome, honoring total limits and cancellation. |
-| `cancel()` | Permanently cancels an active operation; terminal outcomes are unchanged. |
-| `takeResult()` | Transfers finished output once; `NotReady` while active, `AlreadyTaken` after transfer, actual error on failure. |
-| `peakBytes()` | Peak requested bytes, including scratch and overlapping old/new growth buffers. |
-| `deinit()` | Frees scratch, pending growth buffers and any untransferred output, including after failure. |
-
-`advance` and `run` return `dot.ir.MaterializationProgress`: `work_used` for
-that advance, `total_work: u64`, factual `pairs_visited`, `edges_created`, and
-optional `outcome`. Outcome is `.success` or `.{ .failure = error.… }`;
-null means still active. `run().work_used` is its final advance's count;
-`total_work` remains cumulative. Edge counts before success are progress only,
-not published edges or final attributes. Repeated calls after termination do
-no work and preserve the outcome; explicit cancellation does not erase a prior
-resource error or success. `advance(0)` polls cancellation without semantic work.
-At an active session's lifetime work-limit boundary, cancellation is polled
-before reporting `WorkLimit` (the entry poll suffices when no work was done).
-A hook that calls `session.cancel()` and returns false still cancels: the
-explicit terminal state cannot be overwritten by a step or successful result.
-An ordinary budget pause adds no end-of-grant cancellation poll.
-
-### Session work units and limits
-
-One credit is one bounded state transition, not one edge and not a byte count:
-
-| Work | Maximum per credit |
-| --- | --- |
-| Endpoint traversal | One body or mention, or one singleton/phase transition |
-| Pair expansion/deduplication | One candidate, one hash-table probe, or one rehash entry/probe |
-| Attribute folding | One attribute, AVL node visit or ancestor update (at most two rotations) |
-| Port-key comparison | One original source code unit, including concatenation glue/comments |
-| Buffer copying/initialization | At most 64 bytes |
-| Storage preparation | One bounded transition with allocation/resize/free calls; no hidden library copy |
-| Selected adjacency | One edge with at most two incidences, one offset, or a bounded phase transition/allocation |
-
-Initial construction only binds the IR/options and polls cancellation; it does
-not scan, allocate, expand or run an unmetered sizing pass. Positive budgets
-advance even with budget one. Cancellation polls at every resume and before
-each credit, including while initializing tables, copying growth buffers and
-walking long names. This leaves DOT, markup and string accounting unchanged.
-
-The driver specializes cancellation presence once per resume and has a compact
-one-credit entry into the same transition machine. Neither optimization batches
-credits or reduces polling: budget one uses the entry poll for its only step;
-larger budgets poll before each additional step. See the
-[session measurements](PERFORMANCE.md#resumable-ir-materialization-2026-10-24)
-for measured costs versus the direct driver.
-
-Per-call exhaustion is resumable; cumulative `limits.max_work`, memory/edge/
-pair/map limits, allocation failure and cancellation are terminal. A rejected
-product is checked before its expanded edges are allocated. No terminal failure
-publishes a partially materialized graph. Session storage remains owned until
-`deinit`, which is also required after a successful `takeResult` for scratch.
-The transferred result owns its buffers and, when attributes or adjacency are included,
-continues borrowing the IR and source. Do not copy active sessions or owning
-results; borrowed views do not extend their owners' lifetimes.
-
-For the same allocator behavior, results and total credits are independent of
-budget partitioning. Credits include actual copying, so an allocator accepting
-in-place growth can consume less work and peak memory than one requiring a move.
-Yielding never replenishes the lifetime allowance. Session credits differ from
-the direct driver's coarser cumulative accounting: the same small `max_work`
-need not admit both. Values/order/provenance agree when both complete.
-
-This is a cooperative **work bound**, not a latency deadline. Allocator calls,
-the cancellation predicate and destruction are external/unmetered; the backing
-allocator can reserve or initialize memory internally. Library-controlled copies,
-table initialization and rehashing are resumable. Fixed-storage materialization
-below avoids allocator calls during construction. Bounded edge streaming and
-attribute queries are described below.
-The session's raw allocation boundary also avoids the standard typed helpers'
-whole-buffer debug poisoning; all readable elements are initialized explicitly.
-
-## Fixed-storage materialization
-
-`materializeIn(memory, options)` and `materializationSessionIn(memory, options)`
-construct edges in caller-owned output and scratch buffers. They work with
-complete or partial IRs, whether the input IR used fixed or growable storage.
-Connections remain symbolic until this explicit operation expands them.
-Construction never calls an allocator, including the input IR's query allocator.
-
-For an input built using `Retained = IR.FixedGraphStorage(...)`, choose an
-application envelope:
-
-```zig
+// Retained is the input graph's IR.FixedGraphStorage(...) type.
 const Output = IR.FixedMaterializedStorage(.{
     .edges = 256,
     .attribute_states = 512,
     .attribute_keys = 32,
 }, .{});
-const Scratch = IR.FixedMaterializationScratch(Retained, Output, .{
-    .members = 128,
-}, .{});
+const Scratch = IR.FixedMaterializationScratch(Retained, Output, .{ .members = 128 }, .{});
 var output: Output = .{};
 var scratch: Scratch = .{};
-const built = graph.materializeIn(.{
-    .output = output.storage(),
-    .scratch = scratch.storage(),
-}, .{});
+const memory: IR.MaterializationMemory(.{}) = .{ .output = output.storage(), .scratch = scratch.storage() };
+const built = graph.materializeIn(memory, .{});
 if (built.outcome == .failure) {
     if (built.shortfall) |missing|
         std.debug.print("{t}: capacity {d}, needs at least {d}\n", .{
@@ -1797,549 +1339,689 @@ var materialized = built.materialized.?;
 defer materialized.deinit();
 var edges = materialized.edgeIterator();
 while (edges.next()) |edge|
-    std.debug.print("{f} -> {f}\n", .{edge.from().name(), edge.to().name()});
+    std.debug.print("{f} -> {f}\n", .{ edge.from().name(), edge.to().name() });
 ```
 
-The output helper accepts compile-time `.attributes = false` for topology-only
-output, and defaults to the IR profile's capability. Such storage must reserve
-zero attribute cells/keys. It also accepts `.adjacency = .forward`, `.backward`
-or `.all`; reserve `adjacency_offsets` and `adjacency_entries` in the output
-capacities. The default `.none` requires both counts to be zero. Operations
-infer the selection from the output type; explicitly repeated `.attributes`
-and `.adjacency` must agree. An attribute-disabled profile
-cannot construct attribute-bearing storage. Topology-only results expose the
-same `.edges` array as ordinary topology-only materialization.
-
-Scratch derives node marks from `Retained` when `members > 0`, and strict-table
-slots from output edge capacity. One member buffer serves both endpoints.
-`.strict = false` on the scratch helper omits the table but rejects strict input,
-including an empty strict graph, before writing. Default scratch supports both;
-non-strict construction never clears or uses the reserved strict slots. The
-table references output edges directly rather than retaining duplicate pairs.
-
-For runtime capacities or allocator-backed input, compute a layout and supply
-buffers of its sizes and alignment:
+- Works on complete and partial graphs, fixed or allocator-built. It never calls
+  an allocator, including a `query_allocator`.
+- `IR.FixedMaterializedStorage(capacities, selection)`: `dot.ir.MaterializedCapacities`
+  has `edges`, `attribute_states`, `attribute_keys`, `adjacency_offsets` and
+  `adjacency_entries`. The selection takes `.attributes` (default: what the
+  profile keeps; `false` needs zero attribute cells and keys) and `.adjacency`
+  (`.none` needs zero adjacency counts). The operation reads the selection from
+  the output type; repeating `.attributes` or `.adjacency` in its options must
+  agree.
+- `IR.FixedMaterializationScratch(Retained, Output, .{ .members = … }, .{})`:
+  one member buffer serves both endpoints, node marks come from `Retained`, and
+  the strict table is sized from the output edge capacity and points into the
+  output. `.{ .strict = false }` leaves the table out but rejects strict input
+  (even an empty strict graph) before writing.
+- For runtime sizes or allocator-built input, compute a layout:
 
 ```zig
-// Explicit scan; neither binding nor construction performs this automatically.
-const bounds = try IR.scanMaterializationBounds(graph, options);
-const layout = try IR.materializationLayout(
-    graph, bounds.output, bounds.scratch, options,
-);
-const memory = try layout.bind(output_bytes, scratch_bytes);
-const built = graph.materializeIn(memory, options);
+// An explicit scan; binding and building never do this for you.
+const bounds = try IR.scanMaterializationBounds(graph, .{});
+const layout = try IR.materializationLayout(graph, bounds.output, bounds.scratch, .{});
+const output_bytes = try gpa.alignedAlloc(u8, .@"16", layout.output_bytes);
+defer gpa.free(output_bytes);
+const scratch_bytes = try gpa.alignedAlloc(u8, .@"16", layout.scratch_bytes);
+defer gpa.free(scratch_bytes);
+const built = graph.materializeIn(try layout.bind(output_bytes, scratch_bytes), .{});
+if (built.outcome == .failure) return built.outcome.failure;
+var materialized = built.materialized.?;
+defer materialized.deinit();
 ```
 
-`layout.output_bytes`, `layout.scratch_bytes` and `layout.alignment` describe the
-required prefixes. Binding checks arithmetic, descriptor consistency, sizes,
-alignment and overlap without clearing or walking input. Operation construction
-also rejects overlap with source, retained IR or partial-coverage storage,
-including unused fixed reservations. These layouts are build-specific, not a
-serialization format. Descriptor variables need not outlive the operation.
-
-### Explicit sizing
-
-| Source of capacities | Cost and meaning |
+| Where capacities come from | Cost and meaning |
 | --- | --- |
-| Application capacities | Chosen envelope; shortfall is possible. |
-| `materialized.capacities()` | Constant-time used edge, mutable winner-cell, catalog-key and selected adjacency counts; sufficient output for replay of the same input/options. Available on ordinary and fixed results. |
-| `built.scratch_peak` / `session.scratchPeak()` | Observed shared member capacity for replay. |
-| `IR.materializationBounds(graph, options)` | Constant-time conservative arithmetic over graph metadata; no hooks, walks or allocation. |
-| `IR.scanMaterializationBounds(graph, options)` | Explicit allocation-free connection/body-range scan; no pair expansion, mention traversal, name decoding or attribute folding. |
+| Your own envelope | Chosen by you; a shortfall is possible |
+| `materialized.capacities()` | Counts used by an earlier result (ordinary or fixed); enough to replay the same input and options |
+| `built.scratch_peak` / `session.scratchPeak()` | Member capacity used, for replay |
+| `IR.materializationBounds(graph, options)` | Constant-time arithmetic on graph counts; no hooks, walks or allocation |
+| `IR.scanMaterializationBounds(graph, options)` | A scan of connections and body ranges, without expanding pairs, reading names or folding |
 
-Both bounds helpers return `{ output: MaterializedCapacities,
-scratch: MaterializationScratchCapacities }`, use the input graph's limits unless
-replaced, and never allocate or shrink reservations to fit a byte budget.
-Metadata bounds cap connection products by pair/edge limits, strict output by
-the node-pair universe, cells by edges times total interned keys (plus possible
-port keys) and the attribute-state limit. They can be much larger than output.
-Scanned bounds use each written connection's endpoint sizes and attribute/port
-contributions. They include endpoint scratch even for empty products. Repeated
-mentions and strict duplicates make these estimates conservative too.
-For adjacency, both helpers bound entries by twice the edge bound and offsets
-by three/four times (node count + 1); an empty edge bound reserves no rows.
-These estimates do not inspect edge kinds. Observed capacities use the actual
-category count and loop sharing. The two adjacency fields are combined pools,
-not separate capacities per direction. Explicit type helpers such as
-`IR.MaterializationMemory(.{ .attributes = true, .adjacency = .all })` and
-`IR.MaterializedStorage(...)` and `IR.MaterializationScratch(...)` take the same
-compile-time selection record. Scratch descriptors therefore agree with the
-selected output type as well as its capacities.
+- Both bounds helpers return `{ output, scratch }`, use the graph's limits unless
+  `options.limits` replaces them, and never shrink to fit a byte budget.
+- Metadata bounds cap products by the pair and edge limits, strict output by the
+  number of possible node pairs, and cells by edges × keys (plus port keys) and
+  `max_attribute_states`. They can be much larger than the output. Scanned bounds
+  use each connection's endpoint sizes and contributions; repeated mentions and
+  strict duplicates still make them conservative.
+- Adjacency bounds: entries up to twice the edge bound, offsets three or four
+  times (nodes + 1); none when the edge bound is zero. The two adjacency
+  capacities are combined pools, not per direction.
+- The scan charges one work unit per connection and per body-range visit and
+  checks cancellation as it goes; reopened subgraphs can repeat visits. It
+  finishes or fails, with its own budget separate from building. Sizes that
+  don't fit give `error.IndexLimit`.
+- `IR.MaterializationMemory(selection)`, `IR.MaterializedStorage(selection)` and
+  `IR.MaterializationScratch(selection)` name the descriptor types.
+- Binding checks sizes, alignment and overlap without clearing or reading the
+  input; building also rejects overlap with the source, the graph and its gap
+  storage.
+- **Result.** `materializeIn` returns `FixedMaterializationResult(selection)` by
+  value: `materialized`, `outcome`, `shortfall`, `scratch_peak`; no error union.
+  Shortfall resources are `materialized_edges`, `materialized_attribute_states`,
+  `materialized_attribute_keys`, `members`, `adjacency_offsets` and
+  `adjacency_entries`. Semantic limits come before pool checks; a strict
+  duplicate or a replaced attribute needs no new slot.
+- A failure returns no result, even if every edge was written. Restart with new
+  storage, or stream edges if a prefix is enough.
+- All reserved output bytes count in `retainedBytes()`. `peak_bytes` and the
+  up-front `max_bytes` check count the whole output and scratch reservation.
+- The result is the ordinary materialized type. Its `deinit()` only invalidates
+  the handle. Keep the output storage alive while the result is used; results
+  with attributes or adjacency also borrow the graph and source (and gap storage
+  for partial graphs). Scratch can be reused after the call returns or the
+  session is destroyed.
 
-The scan costs one work unit per connection and referenced body-range visit,
-with cancellation at entry, before visits and before return. Reopened subgraphs
-can cause repeated body visits; the scan is not unconditionally linear in file
-size. It runs to completion or returns an error, without partial estimates.
-Its allowance is separate from construction's, even with the same options.
-Bounds are sizing ceilings under selected limits, not proof that input satisfies
-those limits. Unrepresentable counts/layouts return `IndexLimit`.
+## Small steps and cancelling
 
-Default snapshots are borrowed from the IR. Cells store only per-edge explicit
-or derived winners; repeated updates to a key reuse its cell. A zero-cell output
-needs no root array and can still expose defaults. All reserved output bytes
-count toward `retainedBytes()`; `peak_bytes` counts the complete bound output
-and scratch reservations, including unused space/padding. Input IR/source and
-inline operation state are excluded. `max_bytes` checks that total up front.
+Ordinary calls run to completion. Sessions let you do a bounded amount of work
+per call, so an editor or server can pause, resume and cancel. There are no
+threads, clocks or callbacks inside: you call `advance` from your own scheduler.
 
-### Stops, sessions and lifetimes
+### Turn on metering or cancellation
 
-The direct call returns `FixedMaterializationResult(.{ .attributes = attributes })` by value:
-`materialized`, `outcome`, optional `shortfall` and `scratch_peak`. It does not
-use an outer error union. A shortfall reports `PoolExhausted` with
-`materialized_edges`, `materialized_attribute_states`,
-`materialized_attribute_keys`, `members`, `adjacency_offsets` or
-`adjacency_entries`, the supplied capacity and the next
-required count. Semantic limits take precedence over the corresponding pool
-check; a duplicate strict edge or replacement attribute needs no new slot.
+Sessions on a profile (`IR.loweringSession`, `IR.edgeSession`, the query and
+attribute sessions) use **that profile's** execution policy. The same settings as
+the [parser](EXECUTION.md):
 
-Failure never publishes an output prefix, even after all edges were written
-and the final key catalog runs out of space. It is terminal: restart with new
-storage. Use edge streaming when consuming a prefix is intended. Success on a
-partial IR preserves its coverage qualifications and does not certify missing
-input as complete.
-
-`try graph.materializationSessionIn(memory, options)` returns
-`FixedMaterializationSession(.{ .attributes = attributes })` with the existing `advance`, `run`,
-`cancel`, `takeResult` and `deinit` contract, plus `shortfall()` and
-`scratchPeak()`. Table clearing, traversal and folding retain the bounded
-transitions described above. Fixed storage avoids growable copy/rehash work;
-for the same fixed envelope, total credits are invariant across grants.
-No `.policy` option is added to graph-receiver materialization methods: both
-storage paths accept runtime `.limits` and `.cancellation` as before.
-
-The result is the same materialized type as ordinary construction. `deinit`
-frees growable output; for borrowed output it only invalidates the handle.
-Keep output storage alive while its result/views are used. Attribute-bearing or adjacency-selected
-results also borrow the IR/source, and partial results borrow coverage.
-Scratch is reusable after the direct call returns or the session is destroyed,
-including after `takeResult`; results retain no scratch/session pointers.
-
-Compare reservations, construction time, sizing time and session grants with
-`zig build bench-ir-fixed-materialization -Doptimize=fast` (also `safe`/`small`).
-
-## Resumable edge streaming
-
-Use `edgeIterator(.{})` for ordinary pull iteration. When one call must do a
-bounded amount of work, opt into a streaming session instead of materializing
-the entire expanded graph:
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `.policy.execution.metering` | `false` | Sessions allow `advance(budget)`. Direct lowering also runs the step-by-step engine to completion. |
+| `.policy.execution.cancellation` | `false` | Honor the `.cancellation` hook in the call's options |
+| `.policy.execution.cancellation_interval` | `1` | Most work credits between hook calls; positive. Every resume also checks, even with budget 0. |
+| `.runtime_policy` | `false` | Allow a `.policy` option per call, applied before any work |
 
 ```zig
+const Request = struct {
+    stop: bool = false,
+    fn poll(context: ?*anyopaque) bool {
+        const self: *@This() = @ptrCast(@alignCast(context.?));
+        return self.stop;
+    }
+};
 const IR = dot.ir.Lowering(.{
-    .policy = .{ .execution = .{ .metering = true } },
+    .policy = .{ .execution = .{ .cancellation = true } },
+    .runtime_policy = true,
 });
-var stream = try IR.edgeSession(&graph, .{});
+var request: Request = .{};
+const options = .{
+    .interpretation = Dot.interpretation(doc, .{}),
+    .cancellation = dot.ir.Cancellation{ .context = &request, .is_requested = Request.poll },
+    .policy = .{ .execution = .{ .metering = true, .cancellation_interval = 64 } },
+};
+var graph = try IR.lowerComplete(gpa, doc, options);
+defer graph.deinit();
+// To pause and resume instead: IR.loweringSession(gpa, doc, options).
+```
+
+- Nothing is inherited from the parser that made the Document, or from an
+  earlier operation. There is no shared parse-plus-IR budget.
+- A hook never enables cancellation. A fixed profile without cancellation
+  rejects a hook at compile time; a runtime policy with cancellation off ignores
+  it. A `void` hook means none. Typed and anonymous hooks are accepted.
+- With cancellation on, the interval applies even without metering.
+- Fixed policies are checked at compile time. With `runtime_policy`,
+  `IR.validatePolicy(policy)` checks an override ahead of time, and each call
+  checks once before hooks, allocation or writes
+  (`error.InvalidCancellationInterval`). A policy can't change mid-operation.
+- `advance` with metering off is a compile error on a fixed policy, and
+  `error.MeteringDisabled` (no work done) on a runtime policy.
+- With metering or cancellation on, direct `lowerComplete`, `lowerPartial`,
+  `lowerCompleteIn` and `lowerPartialIn` run the step-by-step engine to the end
+  and return only a finished graph. With both off they use the faster direct
+  path and build no session.
+- Graph methods (`edgeIterator`, `hasEdgeWith`, `materialize`,
+  `materializationSession`, `attributeWith` and the others) take `.limits` and
+  `.cancellation` as plain options and always honor a hook; no policy is
+  involved. Graphs don't store a policy.
+- A hook may call the session's own `cancel()` and return `false`; the session
+  still stops. A hook may not call `advance`, `run` or `deinit`, and
+  cancellation from an allocator callback isn't supported. See
+  [EXECUTION.md](EXECUTION.md#cancelling).
+
+### What every session has in common
+
+| Call | What it does |
+| --- | --- |
+| `advance(budget: u32)` | Does at most `budget` work credits and returns a progress record. Running out of budget is a pause, not a result. Needs metering on profile sessions. |
+| `run()` | Drives to the end (streams: to the next item), within the total limits. Works without metering. |
+| `cancel()` | Stops an active session for good; a finished outcome is not replaced |
+| `takeResult()` | Lowering and materialization only. Moves the result out once: `error.NotReady` while active, `error.AlreadyTaken` after, or the actual failure |
+| `peakBytes()` | Peak requested bytes, including scratch and overlapping old and new buffers during growth |
+| `deinit()` | Frees scratch, growth buffers and any result not taken. Required on every path, also after `takeResult()`. |
+
+- A progress record has `work_used` (this call), `total_work` (all calls) and
+  `outcome`: null while active, then `.success` or `.failure` with the error.
+- `advance(0)` does no work but checks cancellation (when a hook is enabled).
+  Any positive budget makes progress, even 1. Outcomes latch: later calls do no
+  work and return the same outcome.
+- Total limits such as `max_work` never refill when you pause. Running out of a
+  call's budget pauses; running out of a total limit, allocation failure and
+  cancellation end the session.
+- `run().work_used` is the count of its last internal advance; `total_work` is
+  the full count.
+- Construction checks options and handles and polls cancellation, but doesn't
+  scan or allocate.
+- Keep the session, its inputs and the source alive and unmoved between calls.
+  Don't copy an active session or an owning result.
+- A pause is not a partial graph, and nothing is handed out before success.
+- Work credits are not wall time. Allocator calls, hook calls and destruction
+  are outside the budget, and the allocator may do its own work. This is a
+  cooperative work bound, not a deadline.
+- With the same allocator behavior, results and total credits don't depend on
+  how you split the budget. Credits include real copying, so an allocator that
+  grows in place can use fewer. Session credits are finer than the direct
+  calls' work counts, so the same tight `max_work` need not suit both; results
+  agree when both finish.
+
+### Lower a Document in small steps
+
+```zig
+const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+
+var operation = try IR.loweringSession(gpa, doc, .{ .interpretation = Dot.interpretation(doc, .{}) });
+defer operation.deinit();
+while (operation.advance(64).outcome == null) {
+    // Return to your scheduler here. Keep the operation, Document and source
+    // alive and unmoved until a later call to advance finishes lowering.
+}
+var ir = try operation.takeResult();
+defer ir.deinit();
+```
+
+This is [resumable_graph.zig](../examples/resumable_graph.zig).
+
+- `IR.loweringSession` and `IR.partialLoweringSession` take the same options and
+  prerequisites as `lowerComplete` and `lowerPartial`, and give the same `Graph`
+  or `PartialGraph`. They don't parse again, expand edges, run label checks or
+  change validation results.
+- `IR.LoweringSession` and `IR.PartialLoweringSession` are the types. Progress
+  (`dot.ir.LoweringProgress`) adds `nodes_created` and `connections_created`;
+  these are counts, not a finished graph.
+- After `takeResult()` the graph borrows only the source; free the Document and
+  the session.
+
+### Materialize in small steps
+
+```zig
+var operation = try ir.materializationSession(.{});
+defer operation.deinit();
+while (operation.advance(64).outcome == null) {
+    // Return to your scheduler here; keep the operation, IR and source alive.
+}
+var graph = try operation.takeResult();
+defer graph.deinit();
+```
+
+This is [resumable_edges.zig](../examples/resumable_edges.zig).
+
+- `materializationSession(options)` is a graph method, so it needs no profile
+  policy: `advance` always works and a `.cancellation` hook is always honored.
+  Options are the same as `materialize`: compile-time `.attributes` and
+  `.adjacency`, runtime `.limits` (default: the graph's) and `.cancellation`.
+- `takeResult()` returns the same type as `materialize`. Session types are
+  `Graph.MaterializationSession(.{ .attributes = …, .adjacency = … })`, also on
+  `PartialGraph`.
+- Progress (`dot.ir.MaterializationProgress`) adds `pairs_visited` (including
+  strict duplicates) and `edges_created`. These are progress, not finished edges;
+  `edges_created` can be final while adjacency is still being built.
+- Cancellation is checked at every resume and before every credit. A session at
+  its `max_work` limit checks cancellation before reporting `WorkLimit`.
+- A rejected product is detected before its edges are allocated. No failure
+  returns a partial result. The result owns its buffers and, with attributes
+  or adjacency, still borrows the graph and source.
+
+### Stream edges in small steps
+
+```zig
+const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+
+var stream = try IR.edgeSession(graph, .{});
 defer stream.deinit();
 while (true) {
-    const progress = stream.advance(4096);
-    if (progress.edge) |edge| {
-        // Consume this edge; attribute queries are separate work.
+    const progress = stream.advance(64);
+    if (progress.edge) |edge|
         std.debug.print("{f} -> {f}\n", .{ edge.from().name(), edge.to().name() });
-    }
     if (progress.outcome) |outcome| switch (outcome) {
         .success => break,
         .failure => |err| return err,
     };
-    // Yield to the application's scheduler here if needed.
+    // Yield to your scheduler here. No edge does not mean end of stream.
 }
 ```
 
-See [resumable_edge_stream.zig](../examples/resumable_edge_stream.zig). The
-same call accepts this profile's `Graph` or `PartialGraph`; the named session
-types are `IR.EdgeSession` and `IR.PartialEdgeSession`. It uses **the explicitly
-selected IR profile's execution policy**, not settings retained from a parser
-or an earlier lowering operation. There is no policy stored in the Document
-and no implicit shared budget between operations. Runtime overrides are
-default-off, enabled with `.runtime_policy = true`, resolved once from session
-options `.policy`, and checked by the existing `IR.validatePolicy` contract.
+This is [resumable_edge_stream.zig](../examples/resumable_edge_stream.zig).
 
-Settings are the same `.execution.metering`, `.cancellation` and positive
-`.cancellation_interval` used by lowering sessions. `advance` requires metering;
-fixed-policy misuse is a compile error, and disabled runtime metering returns
-`MeteringDisabled` without work. `.limits` and the enabled `.cancellation` hook
-are session options. Omitted limits inherit the **input graph's** limits, not
-the settings of a former operation. No attribute-folding option is accepted.
+- Takes this profile's `Graph` or `PartialGraph`; types are `IR.EdgeSession` and
+  `IR.PartialEdgeSession` (fixed: `IR.FixedEdgeSession`,
+  `IR.FixedPartialEdgeSession`). Options: `.limits` (default: the graph's),
+  `.cancellation` and `.policy` as the profile allows.
+- `advance` returns early once one edge is ready. `progress.edge` holds at most
+  one edge, delivered once. `run()` runs to the next edge or the end; it doesn't
+  drain the stream.
+- **No edge doesn't mean the end**: preparing a large endpoint, rehashing or
+  skipping strict duplicates can use the whole budget. Only `.success` means the
+  stream is finished. A budget of 0 never replays an edge.
+- Progress adds `pairs_visited` and `edges_emitted`.
+- There is no `takeResult`. Edges borrow the graph and source, not the session,
+  and stay usable after `deinit()`.
+- Order, deduplication, orientation and first connections match `edgeIterator`.
+  Attribute and port queries on a delivered edge are separate operations with
+  their own limits, not charged to `advance`.
+- Memory as for `edgeIterator`. The pair limit counts duplicates; a stream may
+  deliver a prefix of a product larger than `max_pairs` and stops at the pair
+  that would go over. A failure doesn't take back delivered edges, but they are
+  not a finished stream.
 
-| Method/result | Contract |
-| --- | --- |
-| `advance(budget)` | At most the granted bounded steps; returns early when one edge is ready |
-| `run()` | Runs until the next edge or terminal outcome; does not drain/discard the stream |
-| `Progress.edge` | At most one existing complete/partial edge view, delivered once |
-| `Progress.outcome` | Null means active; `success` means exhausted; `failure` preserves the stop cause |
-| Progress counters | `work_used`, `total_work`, `pairs_visited` and `edges_emitted`; cumulative limits never reset on yield |
-| `cancel()`, `peakBytes()`, `deinit()` | Same stop, requested-memory accounting and cleanup obligations as other sessions |
-
-No edge **does not mean exhaustion**: preparing a large endpoint, rehashing or
-skipping strict duplicates may use the entire grant without an edge. Zero
-grants poll enabled cancellation but do no semantic work and never replay a
-previous edge. Terminal outcomes latch. There is no `takeResult`: delivered
-views borrow the immutable IR/source, not session scratch, and remain usable
-after the session is destroyed while those owners remain alive and unmoved.
-
-Streaming and materialization sessions share their bounded traversal engine.
-A step visits one body/mention, candidate pair, hash slot, or storage transition;
-copies/clears cover at most 64 bytes. Preparation does not scan or allocate
-before the first advance. Enabled hooks poll on initialization, each resume
-(even zero grants), and within the configured number of credits. Allocator
-callbacks, cancellation predicates and destruction are not wall-time bounded.
-`run().work_used` is its final internal advance's count; `total_work` is cumulative.
-
-Order, deduplication, orientation and first-connection provenance match ordinary
-edge iteration. Partial views retain their existing qualified answers;
-successful enumeration of a partial IR does not certify missing source. Views'
-attribute/port queries remain separate operations with their existing limits
-and costs, not hidden work charged to `advance`.
-
-Non-strict streaming retains no emitted-edge array. Set traversal still needs
-reusable endpoint buffers and marks; strict streaming also keeps two `u32` node
-IDs per emitted pair plus a hash table. It is not generally constant-memory.
-All scratch and overlapping growth buffers count against `max_bytes`.
-Pair limits count duplicates too; unlike owning materialization, streaming may
-consume a prefix of a product larger than `max_pairs` and stops when the next
-pair would exceed the allowance. Failure never retracts delivered edges, but
-the prefix is not a successfully exhausted stream. Stage consumer output
-yourself when all-or-nothing publication is required.
-
-Measure with `zig build bench-ir-edge-sessions -Doptimize=fast` (also `safe`
-and `small`). Ordinary iteration/materialization retain their direct drivers.
-
-## Resumable symbolic queries
-
-Use direct `graph.hasEdge(from, to)` and `graph.contains(membership, node)` for
-ordinary calls. To yield during a large connection or reopened-subgraph search,
-select the same IR execution policy used by other sessions:
+### Edge and membership queries in small steps
 
 ```zig
-const IR = dot.ir.Lowering(.{
-    .policy = .{ .execution = .{ .metering = true } },
-});
-var query = try IR.hasEdgeSession(&graph, from, to, .{});
+const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+
+var query = try IR.hasEdgeSession(graph, from, to, .{});
 defer query.deinit();
 while (true) {
-    const progress = query.advance(4096);
+    const progress = query.advance(64);
     if (progress.outcome) |outcome| switch (outcome) {
         .success => |found| {
-            std.debug.print("edge exists: {}\n", .{found});
+            std.debug.print("a -> c: {}\n", .{found});
             break;
         },
         .failure => |err| return err,
     };
-    // Yield to the application here; a pause is not a negative answer.
+    // Yield to your scheduler. No outcome yet does not mean "no edge".
 }
 ```
 
-See [resumable_query.zig](../examples/resumable_query.zig) for a complete example.
-`IR.containsSession(&graph, membership, node, options)` uses the same lifecycle.
-Both accept this profile's `Graph` or `PartialGraph`. Named types are
-`HasEdgeSession`, `ContainsSession`, `PartialHasEdgeSession` and
-`PartialContainsSession`. The graph/source must remain alive, immutable and
-unmoved while a session borrows them. Handles belong to that graph; numeric
-bounds are checked at initialization, but foreign in-range handles cannot be
-identified. Initialization performs no traversal or allocation.
+This is [resumable_query.zig](../examples/resumable_query.zig).
+`IR.containsSession(graph, membership, node, options)` works the same way.
 
-| Operation/result | Meaning |
+| Result | Meaning |
 | --- | --- |
-| `advance(budget)` | At most the granted work; `Progress` has `work_used`, `total_work`, `outcome` |
-| `run()` | Run to a terminal answer or failure, without needing metering enabled |
-| Null `outcome` | Still searching; not false, absent, or partial-source uncertainty |
-| Complete `success` | Plain `bool`, matching the direct query |
-| Partial `success` | Existing `Knowledge(bool)`; retained positives are known, missing evidence can remain unknown |
-| `failure` | Actual stop cause, such as `WorkLimit` or `Cancelled`; no answer is published |
-| `cancel()` / `deinit()` / `peakBytes()` | Latched explicit stop / release the borrowed session / zero allocated scratch bytes |
+| Null `outcome` | Still searching; not false, not absent |
+| `.success` on a `Graph` | A `bool`, as from the direct call |
+| `.success` on a `PartialGraph` | `Knowledge(bool)`, with the same rules as the direct call |
+| `.failure` | The real cause, such as `WorkLimit` or `Cancelled`; no answer |
 
-The selected IR profile controls `.execution.metering`, `.cancellation` and
-`.cancellation_interval`; nothing is inherited from a previous parser or lowering
-operation. Runtime `.policy` overrides require `.runtime_policy = true` and
-are resolved and validated once. The `.limits` option defaults to the input
-graph's limits. Only `max_work` is consumed: these queries neither allocate
-nor visit expanded pairs, so `max_bytes = 0` and `max_pairs = 0` are valid.
-`advance` with metering disabled is a compile error for fixed policy, or
-`MeteringDisabled` for runtime policy, without advancing the search.
+- Types: `IR.HasEdgeSession`, `IR.ContainsSession`, `IR.PartialHasEdgeSession`,
+  `IR.PartialContainsSession`. Outcome types: `dot.ir.QueryOutcome` and
+  `dot.ir.PartialQueryOutcome`.
+- Only `max_work` applies: these queries don't allocate (`peakBytes()` is 0) or
+  visit pairs, so `max_bytes = 0` and `max_pairs = 0` are fine.
+- Handles are checked for range at construction; handles from another graph
+  can't be detected. Finding a node by name first (`findNode`) is a separate,
+  direct call.
+- A found edge can finish early; "no" means finishing the search. The state is a
+  small inline cursor, even across reopened scopes. Each `advance` is bounded,
+  but total cost still grows with the connections and body ranges searched.
 
-A credit inspects one connection (including exhaustion), singleton, membership
-body, or binary-search probe. Constant-size transitions and final coverage
-qualification accompany that step. No name scan, set expansion or unbounded
-loop hides in a credit. Session credit counts need not equal a direct call's
-coarser work count: the same tight `max_work` need not admit both. A positive
-edge witness can finish immediately; an absent answer requires finishing the
-relevant retained search. The partial
-coverage rule is unchanged from direct calls. Query success on a partial
-snapshot never certifies the missing source or the whole graph's validity.
+### Attribute lookups in small steps
 
-Zero grants poll enabled cancellation but do no semantic work. Hooks poll on
-initialization, each active resume and at most the configured number of credits
-apart. Outcomes latch; repeated calls after success/failure consume no work and
-do not poll. Cumulative `max_work` never replenishes on a yield; exhausting only
-the call's grant pauses. `run().work_used` describes its final internal advance;
-`total_work` covers the entire operation. Callbacks are not wall-time bounded.
-
-The implementation can reuse a posting slice across several probes, but only
-within the remaining grant, lifetime allowance and next cancellation checkpoint.
-Batching does not change credit units, pause positions or the polling interval.
-
-Both queries keep only inline cursor state, including across reopened scope
-versions. A 50,000 × 50,000 symbolic product is searched without materializing
-its 2.5 billion possible edges. Worst-case searches still scale with relevant
-connections, body intervals and posting probes; sessions bound each advance,
-not total query complexity. Ordinary direct drivers and IR layouts are unchanged.
-Measure with `zig build bench-ir-query-sessions -Doptimize=fast` (also `safe`
-and `small`). Name lookup before constructing a handle-based query is separate
-work; this increment does not make `findNode` resumable. Event lowering remains
-a separate increment. Fixed scratch for
-streaming and attribute enumeration is available above.
-
-## Resumable attribute access
-
-Use ordinary attribute access for ordinary calls. `attributeWith` adds limits
-and cancellation but runs to completion; a session adds the ability to yield
-inside a lookup. Existing direct APIs are unchanged.
-
-| Component | Ordinary lookup | Bounded direct lookup | Resumable lookup |
+| Object | Ordinary | Bounded, runs to the end | In small steps |
 | --- | --- | --- | --- |
 | Node or scope | `view.attribute(key)` | `try view.attributeWith(key, options)` | `try IR.attributeSession(view, key, options)` |
-| Compact edge | `try edge.attribute(key)` | `try edge.attributeWith(key, options)` | `try IR.attributeSession(edge, key, options)` |
-| Materialized edge with folded attributes | `edge.attribute(key)` | `try edge.attributeWith(key, options)` | `try IR.attributeSession(edge, key, options)` |
-
-Each constructor takes the direct call's receiver, then its arguments, then
-options. The view is passed by value; no new graph or decoded value is created.
-The IR profile selects execution policy, not the parser that produced the data:
+| Streamed edge | `try edge.attribute(key)` | `try edge.attributeWith(key, options)` | `try IR.attributeSession(edge, key, options)` |
+| Materialized edge with attributes | `edge.attribute(key)` | `try edge.attributeWith(key, options)` | `try IR.attributeSession(edge, key, options)` |
 
 ```zig
-const IR = dot.ir.Lowering(.{
-    .policy = .{ .execution = .{ .metering = true } },
-});
-var query = try IR.attributeSession(node, "color", .{});
-defer query.deinit();
+const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+
+var stream = try IR.attributesSession(edge, .{});
+defer stream.deinit();
 while (true) {
-    const progress = query.advance(4096);
+    const progress = stream.advance(64);
+    if (progress.attribute) |attribute|
+        std.debug.print("{f}={f}\n", .{ attribute.key(), attribute.value() });
     if (progress.outcome) |outcome| switch (outcome) {
-        .success => |attribute| {
-            std.debug.print("color={?f}\n", .{attribute});
-            break;
-        },
+        .success => break,
         .failure => |err| return err,
     };
-    // Yield here. No outcome is not "no color".
+    // Yield to your scheduler here, even if an entry was delivered.
 }
 ```
 
-`IR.attributesSession(view, options)` enumerates final effective attributes in
-the same order as the direct iterator, including implicit empties and derived
-ports. `advance` delivers at most one `progress.attribute`; `run()` stops at the
-next entry or terminal outcome. Consume each entry once. Null `attribute` alone
-is not exhaustion; only `outcome = .success` proves the retained enumeration
-finished. A later failure leaves already delivered views usable but does not
-turn that prefix into a successful full enumeration.
-See [resumable_attributes.zig](../examples/resumable_attributes.zig).
+This is [resumable_attributes.zig](../examples/resumable_attributes.zig).
 
-| Session types | Answer/entry | Progress fields |
+| Session type | Answer | Progress fields |
 | --- | --- | --- |
 | `IR.AttributeSession` | `?AttributeView` in `outcome.success` | `work_used`, `total_work`, `outcome` |
-| `IR.PartialAttributeSession` | `Knowledge(?AttributeView)` in `outcome.success` | Same |
-| `IR.AttributesSession` | `AttributeView` in `attribute` | Same, plus `attribute`, `attributes_emitted` |
-| `IR.PartialAttributesSession` | `Knowledge(AttributeView)` in `attribute` | Same as the complete stream |
+| `IR.PartialAttributeSession` | `Knowledge(?AttributeView)` in `outcome.success` | The same |
+| `IR.AttributesSession` | `AttributeView` in `progress.attribute` | The same plus `attribute`, `attributes_emitted` |
+| `IR.PartialAttributesSession` | `Knowledge(AttributeView)` in `progress.attribute` | The same as `AttributesSession` |
 
-All four accept this profile's node, scope, compact-edge or attribute-bearing
-materialized-edge views. Constructors select complete/partial types from the
-view. Raw IDs/edge records first use the existing checked view constructors;
-this is not an adapter contract for arbitrary structs with an `attribute` method.
-Partial successes preserve direct-query qualifications. Finishing a session
-does not certify missing source or whole-document validity.
+- The view is passed by value and the session type is picked from it. Node,
+  scope, streamed-edge, materialized-edge (with attributes) and adjacency views
+  are accepted. For IDs, make a checked view first.
+- `attributesSession` gives the same entries in the same order as the direct
+  iterator, at most one per `advance`; `run()` stops at the next entry. Only
+  `outcome = .success` means the list is finished. Entries delivered before a
+  failure stay usable but aren't a full list.
+- **The key is borrowed until `deinit()`**, unlike the direct call. If you queue
+  a session, keep the key bytes somewhere stable (a string literal, or an owned
+  copy stored with the session). Keys are logical UTF-8 whatever the source
+  encoding.
+- There is no `takeResult`: answers borrow the graph and source and outlive the
+  session and any materialized owner. A materialized view's owner must stay
+  alive until the session is destroyed.
+- Single-key lookups use only inline state (`peakBytes() == 0`). Strict streamed
+  edge iteration allocates the 12-byte-per-edge-key winner table when needed,
+  bounded by `max_bytes`; everything else allocates nothing. `max_pairs = 0` is
+  fine. Fixed forms: `IR.attributesSessionIn` with `IR.FixedAttributesSession`
+  and `IR.FixedPartialAttributesSession`.
+- Sessions return `tailport` and `headport` as ordinary attributes. The
+  structured `tailPort()`/`headPort()` helpers and value formatting stay direct.
 
-Execution policy, optional runtime overrides, shared `.Options`, zero grants,
-latched `.Outcome`, `cancel`, and `deinit` follow the
-[symbolic-query session contract](#resumable-symbolic-queries). Streams follow
-the same delivery convention as `edgeSession`. Limits default to the input
-graph's limits; explicit limits replace them rather than merging fields.
-There is no `takeResult`: returned views borrow the IR/source, not session scratch.
-The nested outcome type is consistently named `Outcome` for queries and streams.
+### What a credit buys
 
-### Borrowed owners and keys
+Lowering:
 
-Keep the IR/source alive, immutable and unmoved during the operation. Materialized
-views also borrow their materialized owner until session cleanup. They read its
-existing folded maps, never rescan contribution history. Returned attributes
-borrow only IR/source and survive session and materialized-owner destruction.
+| Work | At most, per credit |
+| --- | --- |
+| Counting, traversal, indexing | One order slot, chain link, scope, mention or phase step |
+| Name hashing and comparison | One byte (UTF-8, ASCII), one character (UTF-16/32, up to two code units), one `+` glue unit, one pending UTF-8 output byte, or one hash probe |
+| Attribute maps | One tree visit or ancestor update, with at most two rotations and five cell writes |
+| Buffer growth and setup | 64 bytes copied or cleared, or one bounded storage step |
+| Query-index building | One connection or occurrence, one offset, or one allocation or phase step |
 
-Unlike a direct call, **the lookup key is borrowed until `deinit`**. Keys are
-case-sensitive logical UTF-8, regardless of the source encoding. Literals need
-no special handling. A queued job can retain an external stable buffer or own
-a copy; the session does not allocate one implicitly:
+Materialization and edge streaming:
 
-```zig
-const Job = struct {
-    key: []u8, // Stable heap bytes, not an inline array moved with the job.
-    query: IR.AttributeSession,
+| Work | At most, per credit |
+| --- | --- |
+| Endpoint traversal | One body or mention, or one single-node or phase step |
+| Pair expansion and deduplication | One candidate pair, one hash probe, or one rehash entry |
+| Attribute folding | One attribute, tree visit or ancestor update (at most two rotations) |
+| Port-key comparison | One source code unit, including `+` glue and comments |
+| Buffer copying and setup | 64 bytes |
+| Storage preparation | One step with an allocation, resize or free call |
+| Adjacency | One edge (at most two incidences), one offset, or one phase step or allocation |
 
-    fn init(gpa: std.mem.Allocator, node: IR.Graph.NodeView, key: []const u8) !Job {
-        const owned = try gpa.dupe(u8, key);
-        errdefer gpa.free(owned);
-        return .{ .key = owned, .query = try IR.attributeSession(node, owned, .{}) };
-    }
-    fn deinit(self: *Job, gpa: std.mem.Allocator) void {
-        self.query.deinit();
-        gpa.free(self.key);
-        self.* = undefined;
-    }
-};
-```
+Queries: one connection, single node, membership body or binary-search probe,
+with small fixed transitions and the final coverage check folded in.
 
-### Bounded work and scratch
+Attribute sessions: hashing up to 64 key bytes, decoding one name or glue unit or
+pending UTF-8 byte, one table, map, membership or coverage probe, one
+contribution or attribute visit, setting up one winner, or one small phase step.
 
-Initialization checks bounds and polls enabled cancellation, but performs no
-hashing, traversal or allocation. Each credit hashes at most 64 query bytes,
-decodes one source-name/glue unit or pending UTF-8 byte, inspects one table/map/
-membership/coverage probe, visits one contribution/attribute, initializes one
-winner, or performs a constant-size phase transition. Long concatenated keys,
-comments, reopened membership, port introductions and partial qualification can
-all pause at budget one. Counts need not equal direct calls' coarser work counts.
-Allocator/cancellation callbacks remain outside the cooperative work bound.
+Long names, comments in concatenations, rehashing, scope-default overlays,
+reopened membership and partial checks all pause at budget 1. Hash matches are
+still confirmed by comparing names.
 
-Single-key lookup uses only inline cursors (`peakBytes() == 0`). Node, scope,
-non-strict-edge and materialized enumeration allocate no scratch either. Strict
-compact-edge enumeration lazily allocates 12 bytes per distinct written **edge**
-key in the IR when a matching contribution has written attributes. It updates
-winners once in contribution order; it does not scan history afresh for each key.
-Port winners use two inline slots. Initialization and probing of scratch remain
-metered, and `max_bytes` bounds it. `max_pairs = 0` is valid: none of these
-operations expand endpoint products. `peakBytes` excludes inline session state
-and the borrowed graph; the benchmark reports state size separately.
+## Limits, memory and costs
 
-Sessions resolve `tailport`/`headport` as effective attributes with their existing
-provenance and orientation. Structured `tailPort()`/`headPort()` conveniences
-remain direct-only; obtaining the attribute through a session does not make
-port parsing or subsequent value formatting resumable.
+### Limits
 
-Measure with `zig build bench-ir-attribute-sessions -Doptimize=fast` (also `safe`
-and `small`). Ordinary direct drivers and retained IR layouts are unchanged.
+`dot.ir.Limits`. Every limit is a finite default, not a promise about acceptable
+graph sizes. There is no "zero means unlimited".
 
-## Applying resource options
+| Field | Default | Counts | Error |
+| --- | ---: | --- | --- |
+| `max_nodes` | 1,000,000 | Unique nodes | `NodeLimit` |
+| `max_scopes` | 100,000 | Written scopes, including the root | `ScopeLimit` |
+| `max_mentions` | 4,000,000 | Node mentions | `MentionLimit` |
+| `max_connections` | 2,000,000 | Connections | `ConnectionLimit` |
+| `max_attributes` | 2,000,000 | Written attributes and assignments | `AttributeLimit` |
+| `max_attribute_states` | 8,000,000 | Attribute-map cells while lowering (including history), or per-edge winner cells while materializing | `AttributeStateLimit` |
+| `max_edges` | 1,000,000 | Edges emitted or materialized | `EdgeLimit` |
+| `max_pairs` | 4,000,000 | Candidate pairs visited, duplicates included (`u64`) | `PairLimit` |
+| `max_work` | 100,000,000 | Work units per operation (`u64`) | `WorkLimit` |
+| `max_bytes` | 256 MiB | Peak live requested bytes per operation (`usize`) | `MemoryLimit` |
 
-Set a compile-time baseline with `Lowering(.{ .limits = ... })`, or pass
-`.limits` at lowering. `findNodeWith`, `writeNodeNameWith`, `hasEdgeWith`, `edgeIterator`, and `materialize` accept
-operation-specific `.limits` and `.cancellation`; so does
-`materializationSession`. There is no unlimited-by-zero
-special case. Counts/indices are `u32`, pair/work totals are `u64`; byte limits
-use the allocator's `usize` domain. Candidate products use checked arithmetic.
-`nodeAttributeWith`, `scopeAttributeWith` and `edgeAttributeWith` accept the
-same options. `max_attribute_states` bounds retained map cells; exhausting it
-returns `AttributeStateLimit`, with no incomplete IR published.
+- Counts are `u32`. Sizes that don't fit give `error.IndexLimit`. Products use
+  checked arithmetic.
+- `max_bytes` includes temporary old and new buffers during growth. Fixed
+  operations count their whole bound reservation. It excludes the borrowed
+  input, inline operation state, allocator overhead and process memory (RSS).
+- Limits are totals for one operation (or one iterator's whole life), not
+  refilling credits or deadlines.
 
-Iterator limits accumulate across all `next()` calls; they do not reset per
-edge. Pair visits include strict duplicates, while `max_edges` counts emitted
-edges. Streaming can consume a small prefix of a product larger than its pair
-allowance; attempting to visit the next pair beyond the allowance returns
-`PairLimit`. Materialization, which promises a whole result, rejects an
-over-budget connection product before allocating its expanded output.
+### Passing limits and cancellation
 
-For `dot.ir.parse`, `.dot` supplies ordinary default-profile `CheckOptions`
-(parse/validation resources); `.lowering` supplies the IR operation options.
-IR limits/cancellation apply to lowering only, not to DOT parsing/validation
-or a combined peak across both stages. The temporary Document overlaps IR
-construction before it is released. There is no shared budget or metered
-session in this convenience call. Use explicit profiles/lowering when those
-stages need different policies or source encodings.
+- **Lowering:** set a profile baseline with `Lowering(.{ .limits = … })`, or pass
+  `.limits` per call. Omitted or null means the profile's limits.
+  `dot.ir.parse` takes `.lowering = .{ .limits = …, .cancellation = … }`.
+- **Graph operations** take `dot.ir.Options { limits: ?Limits, cancellation:
+  ?Cancellation }`: `findNodeWith`, `writeNodeNameWith`, `hasEdgeWith`,
+  `nodeAttributeWith`, `scopeAttributeWith`, `edgeAttributeWith`, the views'
+  `attributeWith` and `attributes`, value `With` calls, `edgeIterator`,
+  `materialize` and `materializationSession`. Omitted limits mean the limits the
+  graph was built with. Explicit limits replace them as a whole; fields are not
+  merged.
+- **Iterators** count across all `next()` calls; limits don't reset per edge.
+- Streaming may use a small prefix of a product larger than `max_pairs` and
+  fails at the pair that would go over; materialization rejects that product
+  before allocating it.
+- A limit or cancellation is always an error, **never** `false`, absence, or a
+  shorter graph presented as complete. A failed one-shot call frees what it
+  allocated; an iterator still needs `deinit()`.
+- Direct graph queries and pull iterators use coarser work units (table probes,
+  comparisons, traversal steps) than sessions. Name operations are charged by
+  their byte length and checked around each call. Allocation, copying during
+  growth and a single name operation can't be interrupted. An iterator checks
+  cancellation during endpoint traversal, pair visits and deduplication, but one
+  `next()` may read whole endpoint sets first.
+- None of this changes the parser's own metering or cancellation.
 
-Limits or cancellation return typed errors, **never** `false`, absence, or a
-truncated graph presented as complete. One-shot failure frees operation-owned
-storage; an iterator must be `deinit()`ed on failure or early exit too.
-The throughput-specialized lowering driver and ordinary graph queries/pull
-iterators use coarser work units: table probes, comparisons and traversal work,
-not wall-clock time. Policy-enabled bounded lowering uses the session credits
-described above instead. Cancellation is cooperative. In ordinary graph queries
-and pull iterators, existing trusted-name
-primitives are charged by their byte lengths and polled around each call;
-allocation, copying during growth, and an individual name operation are not
-interruptible. An iterator polls during endpoint traversal, pair visits and
-deduplication, including when one `next()` skips many duplicates. A call may
-need to enumerate whole endpoint memberships before yielding an edge. Pull
-iteration allows stopping between edges, but is **not** a fixed-work-per-call
-metered session with replenishable credits. Use `materializationSession` when
-bounded owning expansion is needed, or `IR.edgeSession` for bounded streaming.
-None of this changes the parser's
-existing metering or cancellation guarantees.
+### Errors
 
-`retainedBytes()` reports retained allocation payload including spare capacity.
-`peak_bytes` includes temporary scratch and overlapping growth buffers, but
-excludes source/Document storage, allocator metadata and process RSS. A
-materialization peak excludes the already-retained IR. `edges.peakBytes()`
-reports the corresponding iterator scratch peak. Arena allocators may
-retain freed blocks or reserve extra chunk capacity; use a bounded backing
-allocator when that physical capacity must have a hard cap.
+All IR operations use `dot.ir.Error`:
 
-UTF-8 is the default. To lower native Documents, enable the corresponding
-readers with `Lowering(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 } })`.
-The Document supplies the actual encoding and original byte ranges. Unused
-native readers remain compiled out.
-ASCII-admitted Documents are also readable by the UTF-8 configuration. Native
-logical-name/value decoding can return `InvalidIdentifier` when a name or value
-contains malformed code units. This can happen with encoding validation disabled,
-or within an HTML-like operand outside DOT's encoding-validation scope even when
-that rule is enabled. Native values are checked while lowering, before exposing
-their formatters; byte-profile values preserve their raw bytes.
+| Error | Meaning |
+| --- | --- |
+| `OutOfMemory` | The allocator failed |
+| `MemoryLimit`, `WorkLimit`, `NodeLimit`, `ScopeLimit`, `MentionLimit`, `ConnectionLimit`, `AttributeLimit`, `AttributeStateLimit`, `EdgeLimit`, `PairLimit` | A [limit](#limits) was reached |
+| `IndexLimit` | A count or size doesn't fit its integer type |
+| `Cancelled` | The cancellation hook or `cancel()` stopped the operation |
+| `IncompleteDocument` | `lowerComplete` was given a partial Document |
+| `InvalidDocument` | The Document's records are inconsistent (not built by the parser, or changed) |
+| `InvalidIdentifier` | A UTF-16 or UTF-32 name or value has malformed code units |
+| `InvalidHandle` | An ID, membership or edge is out of range, or an edge isn't one of this graph's edges |
+| `UnsupportedEncoding` | The Document's encoding isn't compiled into this profile |
+| `UnsupportedSemantics` | A strict graph with mixed or unresolved kind, or an operator that doesn't match its kind |
+| `PoolExhausted` | A fixed pool is full; see the `shortfall` |
+| `BufferTooSmall` | A caller buffer is shorter than its layout |
+| `InvalidStorage` | A caller buffer is misaligned, overlaps, has an altered descriptor, or reserves a pool the profile leaves out |
+| `StorageRequired` | A fixed graph without `query_allocator` needed scratch |
 
-## Verification
+Also: `error.InvalidCancellationInterval` (runtime policy with interval 0),
+`error.MeteringDisabled` (`advance` with runtime metering off), and
+`error.NotReady` / `error.AlreadyTaken` from `takeResult()`.
+
+### What each operation costs
+
+| Operation | Allocates | Work |
+| --- | --- | --- |
+| `dot.ir.parse` | The Document (freed after) and the graph | Parse and validation, then lowering; the Document overlaps the graph while it is built |
+| Lowering | Graph tables only | One pass over the Document's records, with name hashing and O(log K) attribute-map updates; reopening a subgraph after its parent's defaults change reapplies that subgraph's own overrides |
+| `nodeIterator`, names, node and scope `attribute` | Nothing | O(1) per step; one key lookup and O(log K) map lookup per attribute |
+| `findNode` | Nothing | Name length plus hash probes |
+| `hasEdge` | Nothing | Scans connections and membership (or the index) |
+| `contains` | Nothing | Bodies in the snapshot × a binary search |
+| `scopeMembership` | Nothing | Scans occurrences (or the index); for every scope, can be quadratic |
+| Streamed edge `attribute(key)` | Nothing | Non-strict: its own connection. Strict: all connections and membership. Repeating for every edge can cost edges × connections. |
+| Strict undirected compact `tailPort()` / `headPort()` | Nothing | Can repeat first-contribution searches: O(C²) for C connections, and can exhaust `max_work` on modest output. Materialize for bulk access. |
+| Node, scope, edge `attributes(options)` | Strict edges: 12 bytes per edge key | Scans the key catalog; a strict edge scans its contributions once |
+| `edgeIterator` | Member buffers and marks; strict pairs | Visits every candidate pair, duplicates included |
+| `materialize(.{ .attributes = false })` | The edge array and strict pair table | Every candidate pair |
+| `materialize(.{})` | Edges, winner cells and key list: O(E + A + K) for E edges, A explicit winners, K edge keys, plus scratch | Every pair plus O(log K) map work per explicit write; never a dense edges × keys table |
+| Adjacency | Row tables | O(nodes + edges) |
+
+- **Lowering memory.** The declaration and port tables are allocated at their
+  exact size. Node storage grows as needed, capped by the remaining mentions and
+  `max_nodes`, so repeated names don't reserve one node per mention. Connections
+  and port records share one checked allocation.
+- **Attribute maps.** Effective node and graph values live in balanced maps that
+  point at the written attributes. Snapshots are read-only and share branches,
+  so no node or subgraph copies the whole default table. A new map with K keys
+  keeps K cells; updating a finished map copies its O(log K) path. Older cells
+  aren't garbage-collected. Attribute-free input allocates no attribute-map
+  storage. A node record is 24 bytes on 64-bit targets.
+- **Ports.** Written edge ports are stored once per ported endpoint and referred
+  to by `PortId`. Equal spellings at different places stay separate.
+- **Memory numbers.** `retainedBytes()` is the allocated payload including spare
+  capacity. `peak_bytes` (or `peakBytes()`) also counts temporary scratch and
+  growth buffers, but not the source, the Document, allocator metadata or RSS. A
+  materialization peak excludes the graph it reads. Arenas can keep freed blocks
+  and extra chunk capacity, so fewer retained bytes don't always mean a smaller
+  arena or process. Use a bounded backing allocator for a hard cap.
+
+Measured numbers are in [Performance](PERFORMANCE.md).
+
+## Reference
+
+### `dot.ir` module
+
+| Name | What it is |
+| --- | --- |
+| `parse(allocator, source, options)` | Parse, validate and lower with the default profile; returns `ParseResult` |
+| `parsePartial(allocator, source, options)` | The same with partial results; returns `PartialResult` |
+| `ParseOptions` | `.diagnostics`, `.dot` (DOT `CheckOptions`), `.lowering` (`Options`) |
+| `ParseResult`, `PartialResult` | `.checking`, `ir()`, `deinit()` |
+| `Lowering(config)` | Makes a profile; see [Choose what the graph keeps](#choose-what-the-graph-keeps) |
+| `Config`, `Capabilities`, `Indexes`, `Policy` | Profile settings |
+| `Limits`, `Options`, `Cancellation`, `Error` | Limits, per-call options, the hook type and the error set |
+| `NodeId`, `ScopeId`, `OccurrenceId`, `ConnectionId`, `Membership`, `PortId` | Handles |
+| `Node`, `Scope`, `Occurrence`, `Mention`, `Connection`, `Declaration`, `Edge` | Record types; `Node` and `Connection` are the default profile's (use `IR.Node` and `IR.Connection` for others) |
+| `MaterializedTopology` | Topology-only materialized result |
+| `ResolvedAttribute`, `AttributeValue`, `AttributeOrigin`, `PortReference`, `PortAttributeKey` | Attribute details |
+| `ValueKind`, `OperandKind`, `EncodedFragment`, `Compass` | Value and port helpers |
+| `Knowledge`, `Uncertainty`, `CoverageGap` | Partial answers |
+| `GraphCapacities`, `LoweringScratchCapacities`, `EdgeScratchCapacities`, `AttributeScratchCapacities`, `MaterializedCapacities`, `MaterializationScratchCapacities` | Fixed-storage capacities |
+| `StorageShortfall`, `Resource` | Shortfall details |
+| `Adjacency`, `EdgeDirection`, `IncidentEdgeOptions` | Adjacency selection and filters |
+| `LoweringProgress`, `LoweringOutcome`, `MaterializationProgress`, `MaterializationOutcome`, `EdgeStreamingOutcome`, `QueryOutcome`, `PartialQueryOutcome` | Session progress and outcomes |
+
+### Profile `IR = dot.ir.Lowering(config)`
+
+| Name | What it is |
+| --- | --- |
+| `capabilities`, `Node`, `Connection`, `Graph`, `PartialGraph` | This profile's choices and types |
+| `parse`, `parsePartial`, `ParseOptions`, `ParseResult`, `PartialResult` | One-call parsing with this profile |
+| `lowerComplete`, `lowerPartial` | Lower a Document |
+| `loweringSession`, `partialLoweringSession`, `LoweringSession`, `PartialLoweringSession` | Lower in small steps |
+| `lowerCompleteIn`, `lowerPartialIn`, `FixedLoweringResult`, `FixedPartialLoweringResult` | Fixed-storage lowering |
+| `loweringSessionIn`, `partialLoweringSessionIn`, `FixedLoweringSession`, `FixedPartialLoweringSession` | Fixed-storage lowering in small steps |
+| `FixedGraphStorage`, `FixedLoweringScratch`, `GraphStorage`, `LoweringScratch`, `LoweringMemory`, `loweringLayout`, `loweringBounds`, `partialLoweringBounds` | Lowering storage and sizing |
+| `FixedMaterializedStorage`, `FixedMaterializationScratch`, `MaterializedStorage`, `MaterializationScratch`, `MaterializationMemory`, `materializationLayout`, `materializationBounds`, `scanMaterializationBounds` | Materialization storage and sizing |
+| `FixedEdgeScratch`, `FixedAttributeScratch`, `EdgeScratch`, `AttributeScratch`, `edgeScratchLayout`, `attributeScratchLayout`, `edgeScratchBounds`, `attributeScratchBounds` | Query scratch and sizing |
+| `edgeSession`, `edgeSessionIn`, `EdgeSession`, `PartialEdgeSession`, `FixedEdgeSession`, `FixedPartialEdgeSession` | Edge streams in small steps |
+| `hasEdgeSession`, `containsSession`, `HasEdgeSession`, `PartialHasEdgeSession`, `ContainsSession`, `PartialContainsSession` | Queries in small steps |
+| `attributeSession`, `attributesSession`, `attributesSessionIn`, `AttributeSession`, `PartialAttributeSession`, `AttributesSession`, `PartialAttributesSession`, `FixedAttributesSession`, `FixedPartialAttributesSession` | Attribute access in small steps |
+| `validatePolicy(policy)` | Check a runtime override (runtime-policy profiles only) |
+
+### `Graph`
+
+| Call | Notes |
+| --- | --- |
+| `nodeIterator()`, `nodeView(id)`, `scopeView(id)`, `edgeView(edge)` | Views; constructors check handles |
+| `findNode(name)`, `findNodeWith(name, options)` | `?NodeId` |
+| `nodeName(id)`, `nodeSpelling(id)`, `writeNodeName(id, writer)`, `writeNodeNameWith(id, writer, options)` | Names |
+| `text(range)`, `attributeSlice(range)` | Source bytes; a raw attribute range |
+| `nodeAttribute[With]`, `scopeAttribute[With]`, `edgeAttribute[With]`, `attributeValue(resolved)` | ID-based attribute access |
+| `hasEdge[With]`, `contains`, `scopeMembership` | Connection queries |
+| `edgeIterator(options)`, `edgeIteratorIn(scratch, options)` | Edge streams |
+| `materialize(options)`, `materializeIn(memory, options)`, `materializationSession(options)`, `materializationSessionIn(memory, options)` | Edge arrays |
+| `retainedBytes()`, `capacities()`, `peak_bytes`, `limits`, `deinit()` | Memory, used counts, limits used, cleanup |
+| `NodeView`, `ScopeView`, `EdgeView`, `AttributeView`, `AttributeIterator`, `FixedAttributeIterator`, `ValueView`, `OperandView`, `PortView`, `PortSyntaxView`, `GraphvizPortParts`, `PortText`, `CompassStatus`, `NodeIterator`, `EdgeIterator`, `FixedEdgeIterator` | View and iterator types |
+| `Materialized`, `MaterializedFor(selection)`, `MaterializationSession(selection)`, `FixedMaterializationResult(selection)`, `FixedMaterializationSession(selection)` | Result and session types |
+
+Views on a `Graph`:
+
+| View | Has |
+| --- | --- |
+| Node view | `.id`, `name()`, `attribute(key)`, `attributeWith(key, options)`, `attributes(options)`, `attributesIn(scratch, options)` |
+| Scope view | `.id`, `attribute`, `attributeWith`, `attributes`, `attributesIn` |
+| Streamed edge view | `.edge`, `from()`, `to()`, `attribute`, `attributeWith`, `tailPort`, `headPort`, `tailPortWith`, `headPortWith`, `attributes(options)`, `attributesIn` (lookups need `try`) |
+| Materialized edge view | `.edge`, `from()`, `to()`, `attribute`, `tailPort`, `headPort` (can't fail), `attributeWith`, `tailPortWith`, `headPortWith`, `attributes()` (no `deinit`), `attributesWith(options)` |
+| Adjacency node view | The node view's calls plus `edges(.{ .direction })` and `edgeCount(.{ .direction })`; `mentions()` on partial results |
+| Adjacency entry | `neighbor()`, `edge()`, `directions()` |
+| Attribute view | `key()`, `value()`, `{f}`, `.resolved` |
+
+`PartialGraph` calls are in the [partial API](#partial-api) table.
+
+## Testing and benchmarks
 
 ```sh
 zig build test-ir
 zig build test-ir -Doptimize=safe
-zig build bench-ir -Doptimize=fast
-zig build bench-ir-edge-sessions -Doptimize=fast
-zig build bench-ir-fixed -Doptimize=fast
-zig build bench-ir-adjacency -Doptimize=fast
 zig build fuzz-ir -Doptimize=safe -- --cases 10000 --seed 1
 ```
 
-`fuzz-ir` is a deterministic grammar-generation and byte-mutation runner, not a
-coverage-guided fuzzer. It exercises complete and partial lowering, fixed storage,
-symbolic edge expansion, adjacency filters, strict merging, query indexes,
-streaming edges and attribute sessions. It compares direct and resumable results
-under random credit grants, checks adjacency against an independent scan of the
-edge array, injects memory/work limits and cancellation, and checks undersized
-pools and allocation leaks. Inputs and operation limits are bounded so the
-campaign itself does not expand arbitrary products without a cap.
+`test-ir` runs the IR tests and checks the exact output of every IR example.
+`fuzz-ir` is a deterministic runner that generates and mutates inputs; it is not
+coverage-guided. It covers complete and partial lowering, fixed storage, edge
+expansion, adjacency, strict merging, query indexes, streaming and attribute
+sessions. It compares direct and step-by-step results under random budgets,
+checks adjacency against a separate scan of the edge array, injects memory and
+work limits and cancellation, and checks undersized pools and leaks. Inputs and
+limits are bounded so the run itself can't expand huge products. A failure
+prints the seed, case number and input bytes; replay it with
+`zig build fuzz-ir -Doptimize=safe -- --seed 1 --start N --cases 1`. Leave out
+`-Doptimize` for Debug, or use `fast`. Generated inputs are UTF-8; UTF-16 and
+UTF-32 are covered by the unit tests. Passing is evidence of robustness on those
+inputs, not a security guarantee.
 
-Failures print the seed, case number and exact input bytes. Replay one with
-`zig build fuzz-ir -Doptimize=safe -- --seed 1 --start N --cases 1`.
-Run the same command without `-Doptimize` for Debug, or with `fast` to compare
-optimized behavior. The generated source is byte-oriented UTF-8-profile input;
-native encoding coverage remains in the unit tests. The regular IR suite also
-checks large symbolic products, deep nesting and repeated loops. Passing these
-checks is evidence of robustness on those inputs, not a security guarantee.
+Benchmarks (add `-Doptimize=fast`; most also run with `safe` or `small`):
 
-The 2026-11-01 campaign ran the final harness against 100,000 inputs in
-ReleaseSafe (seed 3), 50,000 in ReleaseFast (seed 4), and 10,000 in Debug
-(seed 5), all starting at case 0. No crashes, leaks, cross-path mismatches or
-budget-accounting failures were found. Earlier harness iterations also passed
-30,000 inputs. These are generated/mutated cases, not a claim of exhaustive
-coverage. No library change was required by this campaign.
+| Step | Measures |
+| --- | --- |
+| `bench-ir` | Lowering, streaming, materialization, attribute queries and value access |
+| `bench-ir-materialized` | Bulk attribute folding against compact edge queries |
+| `bench-ir-sessions` | Direct and step-by-step materialization, budgets and memory |
+| `bench-ir-lowering-sessions` | Direct, metered, cancellable and runtime-policy lowering against sessions; direct calls report no credit counts |
+| `bench-ir-edge-sessions` | Direct and step-by-step edge streaming |
+| `bench-ir-query-sessions` | Direct and step-by-step `hasEdge` and `contains` |
+| `bench-ir-attribute-sessions` | Direct and step-by-step attribute access |
+| `bench-ir-query-indexes` | Index build cost, memory and repeated queries |
+| `bench-ir-partial` | Partial lowering and queries; `-- --attributes-only` for node and scope iteration |
+| `bench-ir-partial-edges` | Partial streaming and folding |
+| `bench-ir-fixed` | Fixed lowering: observed capacities, bounds and sessions (sizing and buffer allocation are not timed) |
+| `bench-ir-fixed-queries` | Fixed query scratch: throughput, reservation against use, state sizes |
+| `bench-ir-fixed-materialization` | Fixed materialization: reservations, build and sizing time, session budgets |
+| `bench-ir-adjacency` | Adjacency build, traversal and memory |
 
-The benchmark reports lowering separately from parsing, materialization and
-streaming, including strict deduplication and a 1,000-edge prefix of a
-50,000 × 50,000 endpoint product. It reports retained/requested peak bytes and
-arena capacity separately. This is the first
-production topology baseline, not a comparison with a previously shipped IR.
-Recorded numbers are in [Performance](PERFORMANCE.md#document-to-ir-topology-unreleased-2026-10-21).
+Measured results are in [Performance](PERFORMANCE.md).
 
-The same command also reports attribute-bearing lowering and direct query costs,
-including shared defaults, repeated updates, reopened/deep scopes and a symbolic
-product. The bulk attribute benchmark compares construction, full attribute
-consumption, retained/requested peak bytes and total arena capacity with compact
-queries. Run it alone with `zig build bench-ir-materialized -Doptimize=fast`.
-Compare direct materialization with session `run()` and budgets 1/64/4096 using
-`zig build bench-ir-sessions -Doptimize=fast`. It consumes the same results and
-reports time, actual credits, retained/requested peak bytes and session state
-size. Document lowering, materialization and edge streaming now have resumable
-sessions. Edge-existence and membership queries now also have policy-bound,
-allocation-free sessions. Attribute lookup/enumeration sessions now cover compact
-and folded complete/partial views. Fixed-storage Document construction supports
-the same direct/session algorithms with explicit capacity bounds and shortfalls.
-Fixed scratch also supports direct/session edge streaming and attribute
-enumeration without a query allocator. Fixed materialization supports caller-owned
-output and scratch, explicit bounds and terminal shortfalls. Label-port
-existence/binding and event-based lowering remain later work.
+## Not available yet
 
-The final section measures value kind/operand access, joined output, bounded
-writing and exact-allocation `toString`, plus a benchmark-only kind cache.
-See the [value-access comparison](PERFORMANCE.md#value-access-and-view-producing-iterators-2026-10-22)
-for memory results, the on-demand classification decision and the remaining
-reopened-subgraph streaming caveat.
+- Lowering straight from parser events, without a Document
+- Checking that a port name exists in a node's label, or binding it to the label
+- Finding a node by name (`findNode`) in small steps
+- Structured `tailPort()`/`headPort()` and value formatting in small steps
+- One shared budget for parsing and lowering
+- Full cgraph compatibility; see the [known differences](#default-and-update-rules)
+
+See the [roadmap](ROADMAP.md).
+
+## Examples
+
+- [build_graph.zig](../examples/build_graph.zig): one-call parse, nodes and
+  streamed edges
+- [graph_attributes.zig](../examples/graph_attributes.zig): effective node
+  attributes, defaults and implicit empties, and edge values
+- [graph_values.zig](../examples/graph_values.zig): value spelling, operands and
+  joined text
+- [materialized_attributes.zig](../examples/materialized_attributes.zig):
+  materialize once, then read edge attributes directly
+- [graph_adjacency.zig](../examples/graph_adjacency.zig): walk the edges at each
+  node
+- [partial_graph.zig](../examples/partial_graph.zig): a partial graph from input
+  with a syntax error, its edge colors as known/unknown answers, and its coverage
+- [fixed_graph.zig](../examples/fixed_graph.zig): lower into caller-owned storage
+- [fixed_edge_stream.zig](../examples/fixed_edge_stream.zig): stream edges and
+  attributes with caller-owned scratch
+- [resumable_graph.zig](../examples/resumable_graph.zig): lower a Document in
+  small steps
+- [resumable_edges.zig](../examples/resumable_edges.zig): materialize in small
+  steps
+- [resumable_edge_stream.zig](../examples/resumable_edge_stream.zig): stream
+  edges in small steps
+- [resumable_query.zig](../examples/resumable_query.zig): an edge query in small
+  steps
+- [resumable_attributes.zig](../examples/resumable_attributes.zig): a strict
+  edge's attributes in small steps
+
+Run them with `zig build examples`. Each program is also installed in
+`zig-out/bin/`.

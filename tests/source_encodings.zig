@@ -3,6 +3,115 @@ const dot = @import("dot_parser");
 const markup = @import("markup_parser");
 const gpa = std.testing.allocator;
 
+test "cancelled source operations return stopped results in every encoding" {
+    const Stop = struct {
+        fn requested(_: ?*anyopaque) bool {
+            return true;
+        }
+    };
+    const Consumer = struct {
+        pub fn onEvent(_: *@This(), _: dot.events.Event) error{}!dot.events.Action {
+            unreachable;
+        }
+        pub fn onAbort(_: *@This(), _: dot.events.Abort) void {}
+    };
+    const hook: dot.Cancellation = .{ .context = null, .is_requested = Stop.requested };
+    const a = std.testing.failing_allocator;
+    inline for (.{ false, true }) |runtime| {
+        const D = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .runtime_policy = runtime, .policy = .{ .execution = .{ .cancellation = true } } });
+        const M = markup.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .runtime_policy = runtime, .policy = .{ .execution = .{ .cancellation = true } } });
+        const C = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .runtime_policy = runtime, .processors = .{ .markup = markup.Profile(.{}) }, .policy = .{
+            .execution = .{ .cancellation = true },
+            .retention = .{ .markup = true },
+        } });
+        inline for (.{ .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| {
+            var buffer: [256]u8 = undefined;
+            const source = encode(actual, "digraph {a[label=<>]}", &buffer, true);
+            var bag: dot.FixedDiagnosticBag(4) = .{};
+            var parsed = try D.parseBorrowed(a, source, bag.sink(), .{ .cancellation = hook });
+            defer parsed.deinit(a);
+            try std.testing.expectEqual(.cancelled, parsed.outcome);
+            try std.testing.expect(parsed.document == null);
+            try std.testing.expectEqual(.cancelled, (try D.parseBorrowedIn(source, .{ .document = .{} }, bag.sink(), .{ .cancellation = hook })).outcome);
+            try std.testing.expectEqual(.cancelled, (try D.measure(a, source, bag.sink(), .{ .cancellation = hook })).outcome);
+            try std.testing.expectEqual(.cancelled, (try D.measureIn(source, .{}, bag.sink(), .{ .cancellation = hook })).outcome);
+            var checked = try D.parseAndValidate(a, source, bag.sink(), .{ .cancellation = hook });
+            defer checked.deinit(a);
+            try std.testing.expectEqual(.cancelled, checked.outcome);
+            try std.testing.expect(checked.validation == null);
+            var consumer: Consumer = .{};
+            const E = D.Events(Consumer);
+            const events = try E.parse(a, source, &consumer, bag.sink(), .{ .cancellation = hook });
+            try std.testing.expectEqual(.cancelled, events.outcome);
+            try std.testing.expectEqual(actual, events.source_info.encoding);
+            try std.testing.expectEqual(.cancelled, (try E.parseIn(source, .{}, &consumer, bag.sink(), .{ .cancellation = hook })).outcome);
+            var composed = try C.parseAndValidate(a, source, C.DiagnosticSink.discard, .{ .dot = .{ .cancellation = hook } });
+            defer composed.deinit(a);
+            try std.testing.expectEqual(.cancelled, composed.dot.outcome);
+            try std.testing.expect(composed.dot.document == null);
+            try std.testing.expect(composed.markup.requested and !composed.markup.complete);
+            try std.testing.expectEqual(@as(usize, 0), composed.markupResults().?.len);
+            try std.testing.expectEqual(@as(usize, 0), bag.items().len);
+
+            const text = encode(actual, "<B>x</B>", &buffer, true);
+            var mbag: markup.FixedDiagnosticBag(4) = .{};
+            var mp = try M.parseBorrowed(a, text, mbag.sink(), .{ .cancellation = hook });
+            defer mp.deinit();
+            try std.testing.expectEqual(.cancelled, mp.outcome);
+            try std.testing.expect(mp.document == null);
+            try std.testing.expectEqual(.cancelled, (try M.parseBorrowedIn(text, .{}, mbag.sink(), .{ .cancellation = hook })).outcome);
+            try std.testing.expectEqual(.cancelled, (try M.measure(a, text, mbag.sink(), .{ .cancellation = hook })).outcome);
+            try std.testing.expectEqual(.cancelled, (try M.measureIn(text, .{}, mbag.sink(), .{ .cancellation = hook })).outcome);
+            const input: markup.Fragment = .{ .bytes = text, .origin = 8 };
+            var mc = try M.parseAndValidate(a, input, mbag.sink(), .{ .cancellation = hook });
+            defer mc.deinit();
+            try std.testing.expectEqual(.cancelled, mc.parse.outcome);
+            try std.testing.expect(mc.validation == null and !mc.has_errors);
+            try std.testing.expectEqual(.cancelled, (try M.parseAndValidateIn(input, .{}, .{}, mbag.sink(), .{ .cancellation = hook })).parse.outcome);
+            const ready = if (runtime) try M.prepare(.{ .cancellation = hook }) else M.prepare(.{ .cancellation = hook });
+            var workspace = ready.initWorkspace(a, .{});
+            defer workspace.deinit();
+            try std.testing.expectEqual(.cancelled, (try workspace.parseAndValidate(input, mbag.sink())).parse.outcome);
+            try std.testing.expectEqual(.cancelled, (try M.validateSource(a, text, mbag.sink(), .{ .cancellation = hook })).completion);
+            try std.testing.expectEqual(.cancelled, (try M.validateSourceIn(text, .{}, mbag.sink(), .{ .cancellation = hook })).completion);
+            try std.testing.expectEqual(@as(usize, 0), mbag.items().len);
+        }
+    }
+}
+
+test "missing document readers report unsupported coverage in all profile shapes" {
+    const D32 = dot.Profile(.{ .source_encodings = &.{.utf32} });
+    const M32 = markup.Profile(.{ .source_encodings = &.{.utf32} });
+    var dbuf: [128]u8 = undefined;
+    var mbuf: [128]u8 = undefined;
+    var dp = try D32.parseBorrowed(gpa, encode(.utf32le, "digraph {}", &dbuf, true), dot.diagnostic.discard, .{});
+    defer dp.deinit(gpa);
+    var mp = try M32.parseBorrowed(gpa, encode(.utf32le, "<B>x</B>", &mbuf, true), markup.diagnostic.discard, .{});
+    defer mp.deinit();
+    const expected_dot = dot.validate(&dp.document.?, dot.diagnostic.discard, .{});
+    const expected_markup = markup.validate(gpa, &mp.document.?, markup.diagnostic.discard, .{});
+    inline for (.{ false, true }) |runtime| {
+        const D = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16 }, .runtime_policy = runtime });
+        const M = markup.Profile(.{ .source_encodings = &.{ .utf8, .utf16 }, .runtime_policy = runtime });
+        try std.testing.expectEqualDeep(expected_dot, try D.validate(&dp.document.?, dot.diagnostic.discard, .{}));
+        try std.testing.expectEqualDeep(expected_markup, try M.validate(gpa, &mp.document.?, markup.diagnostic.discard, .{}));
+        try std.testing.expectEqualDeep(expected_markup, try M.validateIn(&mp.document.?, .{}, markup.diagnostic.discard, .{}));
+    }
+}
+
+test "empty HTML-like labels remain valid during native DOT composition" {
+    const P = dot.Profile(.{ .source_encodings = &.{ .utf8, .utf16, .utf32 }, .processors = .{ .markup = markup.Profile(.{}) } });
+    inline for (.{ .utf8, .utf16le, .utf32be }) |actual| {
+        var buffer: [128]u8 = undefined;
+        var bag: P.FixedDiagnosticBag(8) = .{};
+        var checked = try P.parseAndValidate(gpa, encode(actual, "digraph { a[label=<>] }", &buffer, true), bag.sink(), .{});
+        defer checked.deinit(gpa);
+        try std.testing.expect(checked.documentValid());
+        try std.testing.expectEqual(@as(u32, 1), checked.markup.valid);
+        try std.testing.expectEqual(@as(usize, 0), bag.items().len);
+    }
+}
+
 test "native scanners preserve negative endpoints adjacent to undirected operators" {
     inline for (.{ .scalar, .block }) |scanner| {
         const P = dot.Profile(.{ .source_encodings = &.{ .utf16, .utf32 }, .policy = .{ .scanner = scanner } });
@@ -997,7 +1106,9 @@ test "native runtime policy variants and admission cancellation are explicit" {
     var buffer: [128]u8 = undefined;
     const source = encode(.utf16le, "graph {}", &buffer, true);
     var bag: dot.FixedDiagnosticBag(16) = .{};
-    try std.testing.expectError(error.Cancelled, D.parseBorrowed(gpa, source, bag.sink(), .{ .policy = .{ .execution = .{ .cancellation = true } }, .cancellation = hook }));
+    var cancelled = try D.parseBorrowed(gpa, source, bag.sink(), .{ .policy = .{ .execution = .{ .cancellation = true } }, .cancellation = hook });
+    defer cancelled.deinit(gpa);
+    try std.testing.expectEqual(.cancelled, cancelled.outcome);
     try std.testing.expectEqual(@as(usize, 0), bag.items().len);
 }
 

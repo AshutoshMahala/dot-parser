@@ -7,9 +7,9 @@ New here? Start with [Getting started](GETTING_STARTED.md).
 | Guide | Read it when you want to… |
 | --- | --- |
 | [Getting started](GETTING_STARTED.md) | parse your first DOT file and read the result |
-| [Reading a parsed graph](READING_DOCUMENTS.md) | walk nodes, edges, attributes, ports and subgraphs |
-| [Semantic graph (IR)](IR.md) | resolve names, symbolic connections and effective attributes, including partial snapshots, sessions and fixed storage (Unreleased) |
-| [DOT events](EVENTS.md) | build your own output without document pools (Unreleased) |
+| [Reading a parsed graph](READING_DOCUMENTS.md) | walk nodes, edges, attributes, ports and subgraphs as written |
+| [Semantic graph](IR.md) (unreleased) | get unique nodes, effective attributes and individual edges, also for unfinished files, in small steps or in fixed memory |
+| [DOT events](EVENTS.md) (unreleased) | build your own index, outline or graph straight from the parse, without the library's document |
 | [Supported syntax](SUPPORTED_SYNTAX.md) | check exactly which DOT input is accepted |
 | [DOT error codes](ERRORS.md#dot-error-codes) | look up a DOT error or warning |
 
@@ -24,10 +24,9 @@ New here? Start with [Getting started](GETTING_STARTED.md).
 
 ## Strings
 
-[Standalone string checks](STRINGS.md) covers equality, allowed values, custom
-validators, encodings and optional Unicode folding (**Unreleased**), plus
-logical readers and opt-in DOT/markup attribute routing. Passthrough remains
-the host default.
+| Guide | Read it when you want to… |
+| --- | --- |
+| [Standalone string checks](STRINGS.md) (unreleased) | check string values against exact matches, allowed lists or your own rules, on their own or in DOT and markup attributes |
 
 ## Both parsers
 
@@ -38,9 +37,9 @@ These work the same way in DOT and markup.
 | [Errors and diagnostics](ERRORS.md) | show errors, understand results, or apply suggested fixes |
 | [Memory](MEMORY.md) | use an arena or fixed buffers, or work with no allocator at all |
 | [Settings](POLICIES.md) | make parsing stricter or more lenient, add checks, or set limits |
-| [Source encodings](ENCODINGS.md) | Read UTF-16 or UTF-32 files without converting them |
 | [Parsing in small steps](EXECUTION.md) | spread parsing over time, or cancel it |
-| [Using it in an editor](EDITORS.md) | Keep the finished part of unfinished files, label trees and comments |
+| [Using it in an editor](EDITORS.md) | keep the finished part of unfinished files, label trees and comments, or convert positions to editor lines and columns |
+| [Source encodings](ENCODINGS.md) | read UTF-16 or UTF-32 files without converting them |
 
 ## Project
 

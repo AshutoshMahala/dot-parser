@@ -178,10 +178,15 @@ pub fn Profile(comptime config: anytype) type {
 
                 fn cancelled(self: *Self) bool {
                     if (self.result.completion != .complete) return true;
-                    if (can_cancel) if (self.effective().execution.cancellation) if (self.cancellation) |token| if (token.requested()) {
-                        self.result.completion = .cancelled;
-                        return true;
-                    };
+                    if (can_cancel) {
+                        if (self.effective().execution.cancellation) if (self.cancellation) |token| if (token.requested()) {
+                            self.result.completion = .cancelled;
+                            return true;
+                        };
+                        // cancel() from inside the hook latches the result even
+                        // when the predicate itself returns false.
+                        return self.result.completion != .complete;
+                    }
                     return false;
                 }
                 fn emit(self: *Self, finding: Diagnostic) bool {

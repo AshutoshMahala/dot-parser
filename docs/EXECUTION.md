@@ -16,8 +16,8 @@ programs that don't use them.
 
 DOT and markup have sessions that work the same way. The examples here use DOT;
 the markup differences are in [the markup parser](#in-the-markup-parser).
-The standalone [string validator](#standalone-string-validation) also supports
-resumption, using its own bounded validation steps.
+The standalone [string checker](#standalone-string-validation) also has
+sessions, with its own kind of steps.
 
 ## The basic loop
 
@@ -57,7 +57,8 @@ One credit pays for one of these:
 - looking at one byte of input (or one 64-byte block, with the
   [block scanner](#two-scanners))
 - one step of the grammar
-- adding one item to the document
+- handing one finished item to the document (or to your
+  [event callback](EVENTS.md))
 
 A few rules make budgets predictable:
 
@@ -67,37 +68,31 @@ A few rules make budgets predictable:
 - Running out of credits is a pause, not an error.
 - However you split the budget across calls, the result is the same.
 
-**Unreleased optimization:** a metered scalar scanner can handle several ordinary bytes in a
-tight loop. Each examined byte still costs its own credit; scanning stops at
-the first boundary and never looks beyond the budget or the next cancellation
-poll. This is an optimization, not a larger credit unit. One-credit calls and
-the block scanner keep their existing accounting, with no extra session storage.
-
-Credits measure work, not time. They don't count time spent in your own
-callbacks (your diagnostic sink, your cancel check). DOT/markup validation,
-explicit decoding and rendering are separate steps and aren't metered.
-The standalone string processor has its own metered validation steps described
-[below](#standalone-string-validation).
-
-To compare execution costs on dense syntax and long ASCII/Unicode text, run
-`zig build bench-metering -Doptimize=fast` (or `safe`). It reports
-default parsing, budgets 1/64/4096, cancellation intervals 1/64 and runtime
-policies for both scanners. Input and fixed pools are prepared before timing;
-results include credits, poll counts and session sizes. Validation is not timed.
+Credits measure work, not time. They don't count the time spent inside your
+own callbacks (your diagnostic sink, your cancel check, your event callbacks).
+DOT and markup validation, decoding names and printing diagnostics are
+separate steps and aren't metered. The standalone string checker meters its
+own checks; see [below](#standalone-string-validation).
 
 ## Standalone string validation
 
-> **Unreleased.**
+> **Unreleased.** Not in 0.5.0.
 
-`string_processor.Profile` uses the same `.policy.execution` fields (`metering`,
-`cancellation`, positive `cancellation_interval`), default-off features, and
-`Session.init/advance/run/result/cancel/reset/deinit` lifecycle. Unlike DOT and
-markup, its content validation itself is resumable: encoding, built-in checks
-and custom `State`/`step` validators all advance within the budget. No allocator
-or fixed pools are needed. With runtime policies, `advance` needs `try` and can
-return `MeteringDisabled`. See [string execution](STRINGS.md#metering-cancellation-and-sessions)
-for its credit units, custom contract, borrowed lifetimes and preparation costs.
-This does not yet connect string work to a parent DOT/markup session budget.
+The `string_processor` module's `Profile` has sessions too. It uses the same
+`.policy.execution` settings (`metering`, `cancellation` and
+`cancellation_interval`, all off or `1` by default) and the same calls:
+`Session.init`, `advance`, `run`, `result`, `cancel`, `reset` and `deinit`.
+
+Unlike DOT and markup, here the checking itself runs in steps: the encoding
+check, the built-in checks and your own `State`/`step` checks all stay within
+the budget. No allocator or buffers are needed. With run-time settings,
+`advance` returns an error union and gives `error.MeteringDisabled` when
+metering is off.
+
+A string session has its own budget. It isn't counted in the budget of a DOT
+or markup session. [String sessions](STRINGS.md#metering-cancellation-and-sessions)
+explains what a credit buys there, how to write a resumable check, and how
+long the input must stay alive.
 
 ## Checking progress
 
@@ -107,9 +102,19 @@ This does not yet connect string work to a parent DOT/markup session budget.
 | --- | --- |
 | `outcome` | `null` while paused; the final outcome once finished |
 | `work_used` | credits spent in this call |
-| `source_frontier` | how far into the input the parser has looked |
-| `completed_statements` | statements accepted so far |
+| `phase` | where the parser paused: `.scan` (reading input), `.grammar` (a token is waiting for its grammar step), `.dispatch` (a finished item is waiting to be stored or handed to your callback) or `.terminal` (finished) |
+| `source_frontier` | how far into the input the parser has looked, in bytes. Looking at the end of the input costs a credit but doesn't move it. |
+| `completed_statements` | statements finished so far |
+| `completed_pairs` | `key=value` pairs finished so far, including `key = value` statements |
 | `syntax_errors` | syntax errors found so far |
+| `warnings` | warnings found so far |
+| `accepted_deviations` | [lenient](POLICIES.md#lenient-syntax) mistakes accepted so far |
+| `diagnostic_delivery` | `.failed` if a diagnostic couldn't be handed to your sink, otherwise `.complete` |
+| `diagnostic_stop` | why diagnostics stopped (for example, `.requested` when the bag [asked to stop](ERRORS.md#where-diagnostics-go)), or `null` |
+
+The counts show progress only. If an error later throws away part of a
+statement, the counts already include it. The document itself is never
+readable before the session has finished.
 
 Once finished, `session.result()` returns the full result. Calling `advance`
 again after that does nothing and keeps the result.
@@ -147,16 +152,15 @@ var session = Session.init(source, .{ .document = storage.storage() }, bag.sink(
 defer session.deinit();
 ```
 
-Cancellation adds no diagnostic of its own. Findings already discovered are
-preserved; an already-discovered terminal syntax error keeps its syntax outcome.
-Otherwise the parse ends with `outcome == .cancelled` and, by default, no document.
-If parsing already finished, a late cancel does not replace its result.
+What you get after a cancel:
 
-A DOT or IR session's cancellation hook may synchronously call that session's
-`cancel()` and return `false`; the latched outcome still stops the work. This
-does not permit `advance`, `run`, `reset` or `deinit` from the hook, cancellation
-from an allocator callback, or concurrent calls on the same session. A cross-thread
-request should use a synchronized flag that the hook reads.
+- The outcome is `.cancelled` and, by default, there is no document.
+- Cancelling adds no diagnostic of its own, and it never throws away a
+  finding the parser had already made. Errors and warnings found before the
+  cancel still reach your bag and are counted.
+- If one of those findings is an error and `on_error` is `.fail_fast`, the
+  outcome is `.invalid_syntax` instead.
+- If parsing had already finished, a late cancel doesn't replace its result.
 
 With [DOT](EDITORS.md#keep-the-finished-part-of-a-dot-file) or
 [markup partial results](EDITORS.md#keep-the-finished-part-of-markup) turned on,
@@ -169,12 +173,31 @@ The same `.cancellation` option works on the one-call functions
 The check is a plain function call. There are no threads, signals or timers
 inside the library. If another thread sets your flag, make it an atomic.
 
+### Calling the session from a callback
+
+While your cancel check, diagnostic sink or event callback runs, the session
+is in the middle of a step. So there are rules for what that code may do:
+
+- (unreleased) A cancel check may call its own session's `cancel()` and then
+  return `false`. The session still stops as cancelled, just as if the check
+  had returned `true`. This works for DOT and markup sessions, and for
+  [IR](IR.md#small-steps-and-cancelling) and [string](STRINGS.md) sessions.
+- No callback may call `advance`, `run`, `reset` or `deinit` on the session
+  that is running.
+- Your diagnostic sink and event callbacks must not call the session at all.
+  To stop from there, return `.stop`. A sink that stops gives the outcome
+  `.diagnostic_stopped`; see [writing your own sink](ERRORS.md#writing-your-own-sink).
+- Don't call `cancel()` from inside an allocator the session is using, and
+  don't call one session from two threads at the same time. To cancel from
+  another thread, set a flag that your cancel check reads.
+
 ### Cancellation interval
 
-> **Unreleased.** The 0.5.0 release always uses interval 1.
+> **Unreleased.** Not in 0.5.0, which always checks before every step.
 
-Both parsers accept `execution.cancellation_interval`, a positive `u32`, default
-`1`. It limits the number of existing **work steps** between callback checks:
+Calling the cancel check before every step can cost noticeable time. Both
+parsers accept `execution.cancellation_interval` to call it less often. It is
+the most **work steps** between two calls, at least `1`, and `1` by default:
 
 ```zig
 const Parser = dot.Profile(.{ .policy = .{ .execution = .{
@@ -184,49 +207,46 @@ const Parser = dot.Profile(.{ .policy = .{ .execution = .{
 } } }); // markup.Profile accepts the same execution settings
 ```
 
-Larger intervals reduce polling overhead but can notice cancellation later.
-The minimum multiplier is **1 for both scanners**, not 64 for the block scanner.
-Scalar lexical steps examine one source code unit; block steps classify or
-process windows of up to 64 units. UTF-8 units are bytes; UTF-16/32 units are
-two/four bytes. Classification, token processing, grammar, output and recovery
-also consume steps, so the interval is **not an exact byte count or time limit**.
-It does not change block width, work-credit costs, or charge callbacks by time.
+A larger interval costs less time but notices a cancel later. A work step is
+the same unit a credit pays for. That is not a fixed number of bytes: one step
+of the scalar scanner looks at one character unit (one byte in UTF-8, two in
+UTF-16, four in UTF-32), one step of the block scanner can cover up to 64 of
+them, and grammar, storing and recovery steps look at none. So the interval is
+**not a byte count or a time limit**. It doesn't change what a credit buys or
+the block size.
 
-- Every active `advance`/`run` call checks on entry, including `advance(0)`.
-  Small caller budgets can therefore cause more frequent checks than requested.
-- `advance(N)` still spends at most N credits, even when the interval is larger.
-  Pausing needs no cancellation request; the next call resumes normally.
-- A concrete failure or successful commit still takes precedence over a later
-  cancellation check. Finished sessions do not poll again; `cancel()` remains
-  immediate and terminal.
-- Fixed profiles specialize the interval at compile time. Runtime-enabled
-  profiles validate and resolve it once at initialization/reset; it stays fixed
-  across yields. An invalid reset preserves the existing session.
-- `0` is invalid even when cancellation is disabled. Fixed baselines fail to
-  compile; runtime patches return `error.InvalidCancellationInterval` before
-  reading input, allocating storage or calling the cancellation hook.
-- The interval applies to parsing and measurement, including event-only DOT
-  execution. Markup validation keeps its existing safe-point checks; those
-  passes are not work-metered. Inner processors use their own execution policy.
+- Every `advance` and `run` call checks on entry, even `advance(0)`. So with
+  small budgets the check runs more often than the interval says.
+- `advance(N)` still spends at most N credits, whatever the interval. A pause
+  needs no cancel request, and the next call carries on normally.
+- An error or a successful end found in a step wins over a cancel noticed
+  later. A finished session doesn't call the check again. `session.cancel()`
+  still stops the session at once.
+- With fixed settings the interval is built into the code. With run-time
+  settings it is checked and fixed when the session starts or is reset, and
+  stays the same across pauses. If a `reset` has an invalid interval, the
+  session keeps its current parse.
+- `0` is invalid, even when cancellation is off. With fixed settings it is a
+  compile error. A run-time patch returns `error.InvalidCancellationInterval`
+  before reading any input, allocating, or calling your check.
+- The interval applies to parsing and to `measure`, including DOT
+  [event-only parsing](EVENTS.md). Markup validation keeps its own fixed
+  checking points and isn't metered. A label checker used during DOT parsing
+  follows its own execution settings.
 
-Runtime override example (also valid with `markup.Profile`):
+A run-time patch can set it per session (this works with `markup.Profile`
+too):
 
 ```zig
 const Runtime = dot.Profile(.{ .runtime_policy = true, .policy = .{
     .execution = .{ .metering = true, .cancellation = true },
 } });
-var session = try Runtime.Session.init(source, memory, bag.sink(), .{
+var session = try Runtime.Session.init(source, .{ .document = storage.storage() }, bag.sink(), .{
     .policy = .{ .execution = .{ .cancellation_interval = 64 } },
-    .cancellation = hook,
+    .cancellation = .{ .context = &request, .is_requested = Request.poll },
 });
 defer session.deinit();
 ```
-
-Use `zig build bench-cancellation -Doptimize=fast` (or `safe`) to
-compare intervals 1, 4, 16, 64 and 256 on both scanners and both parsers, with
-fixed/runtime policies and metering on/off. The benchmark reports throughput,
-callback counts, credits and session sizes; source/pool allocation is outside
-timing. Interval 1 remains the default, not a claim that larger is always faster.
 
 ## Rules while a session is paused
 
@@ -238,6 +258,10 @@ timing. Interval 1 remains the default, not a claim that larger is always faster
 - Call `deinit()` when you abandon a session. It never frees your buffers.
 - `session.reset(source, sink, options)` starts a new parse in the same
   buffers. Documents from the earlier parse become invalid.
+- `reset` and `deinit` end an unfinished parse first. For an
+  [event session](EVENTS.md#sessions-and-encodings) with token previews on, that
+  can still deliver one finding the old parse had already made, to the old
+  bag. If you reuse that bag, clear it after `reset`.
 - Once the session has finished with a document, `session.validate(sink, .{})`
   validates it. Validation doesn't use credits. For an
   [unfinished document](EDITORS.md#keep-the-finished-part-of-a-dot-file),
@@ -251,7 +275,9 @@ timing. Interval 1 remains the default, not a claim that larger is always faster
 | `dot.Profile(.{ .policy = .{ .execution = .{ .metering = true, .cancellation = true } } }).Session` | budgets and a cancel check |
 | `dot.Profile(.{ .policy = .{ .execution = .{ .cancellation = true } } }).Session` | a cancel check without budgets; call `run()` |
 
-Calling `advance` on a session without metering is a compile error.
+Calling `advance` on a session without metering is a compile error. With
+run-time settings, `advance` returns an error union instead, and gives
+`error.MeteringDisabled` when the call's settings turn metering off.
 
 ## Two scanners
 
@@ -267,10 +293,11 @@ DOT parser:
   or comments. It is slower on targets without vector instructions, such as
   plain wasm32.
 
-On aarch64 macOS with Zig 0.16.0, scalar state is 64 bytes in Debug/ReleaseSafe
-and 56 bytes in ReleaseFast/ReleaseSmall. Block state is 152 bytes in all four
-modes. They can differ on other targets; see [type sizes](PERFORMANCE.md#type-sizes)
-and use `@sizeOf` for your own build.
+On aarch64 macOS, scalar state is 64 bytes in `debug` and `safe` builds and
+56 bytes in `fast` and `small` builds. Block state is 152 bytes in all four. A
+[layout test](../tests/layouts.zig) checks these numbers. They can differ on
+other targets; see [type sizes](PERFORMANCE.md#type-sizes) and use `@sizeOf`
+for your own build.
 
 ```zig
 const Parser = dot.Profile(.{ .policy = .{ .scanner = .block } });
@@ -281,7 +308,7 @@ Measured numbers are in [Performance](PERFORMANCE.md).
 ## In the markup parser
 
 Markup sessions follow everything above, with the same calls (`advance`,
-`run`, `cancel`, `reset`, `result`) and the same rules while paused:
+`run`, `cancel`, `reset`, `result`, `deinit`) and the same rules while paused:
 
 ```zig
 var session = markup.BoundedSession.init(source, .{
@@ -299,7 +326,41 @@ The differences:
 - The memory to pass is described in
   [the markup parser's memory](MEMORY.md#in-the-markup-parser).
 - Checking labels during DOT parsing runs to completion. A DOT profile with a
-  label processor has no `Session`.
+  label processor has no `Session`. Neither has one with
+  [string rules](POLICIES.md#string-rules-for-attribute-values) turned on
+  (unreleased).
+
+## Measuring the cost
+
+> **Unreleased.** Not in 0.5.0.
+
+Two benchmarks compare the cost of sessions. Build them with
+`-Doptimize=fast` (or `safe`). Input and buffers are prepared before timing,
+and validation isn't timed.
+
+- `zig build bench-metering -Doptimize=fast` compares a normal parse with
+  budgets of 1, 64 and 4096, cancellation intervals 1 and 64, and run-time
+  settings, for both scanners, on dense syntax and on long ASCII and Unicode
+  text. It reports credits, cancel-check calls and session sizes.
+- `zig build bench-cancellation -Doptimize=fast` compares intervals 1, 4, 16,
+  64 and 256 on both scanners and both parsers, with fixed and run-time
+  settings, with and without metering. It reports speed, cancel-check calls,
+  credits and session sizes.
+
+The default interval stays `1`. A larger one isn't always faster.
+
+## Not available yet
+
+- Validation in steps, or cancellation during DOT validation. Markup validation
+  can already be cancelled at fixed points, but isn't metered.
+- Checking HTML-like labels in steps.
+- Feeding input in pieces. The whole input must be in memory before parsing
+  starts.
+- A total budget across calls. `advance(n)` limits one call. If you keep
+  calling it, keep your own running total.
+- Sessions for UTF-16 and UTF-32 input.
+
+See the [roadmap](ROADMAP.md).
 
 ## Examples
 
@@ -307,18 +368,8 @@ The differences:
   session
 - [policies.zig](../examples/policies.zig): a session whose scanner and checks
   are chosen at run time
+- [string_processor.zig](../examples/string_processor.zig): among other
+  string checks, a string session run in small budgets
 
 Run them with `zig build examples`. Each program is also installed in
 `zig-out/bin/`.
-
-## Not available yet
-
-- Validation in steps, or cancellation during DOT validation. Markup validation
-  already checks cancellation at safe points, without work-credit metering.
-- Checking HTML-like labels in steps.
-- Feeding input in pieces. The whole input must be in memory before parsing
-  starts.
-- A total budget across calls. `advance(n)` limits one call. If you keep
-  calling it, keep your own running total.
-
-See the [roadmap](ROADMAP.md).

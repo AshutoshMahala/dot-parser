@@ -2,8 +2,8 @@
 
 This page lists exactly which DOT input the parser accepts. It follows the
 written [DOT grammar](https://graphviz.org/doc/info/lang.html) first, and uses
-Graphviz 16.0.0 as the reference where the grammar leaves something open. The
-few places where it differs from Graphviz on purpose are listed
+Graphviz 16 as the reference where the grammar leaves something open. Every
+known place where it reads input differently from Graphviz is listed
 [below](#differences-from-graphviz).
 
 ## At a glance
@@ -28,8 +28,9 @@ few places where it differs from Graphviz on purpose are listed
 | HTML-like value | `label=<<b>hi</b>>` | Supported, kept as written. See [checking HTML-like labels](LABELS.md). |
 | Leading byte order mark | UTF-8; UTF-16 and UTF-32 when turned on | Skipped, but left in your source buffer. See [source encodings](ENCODINGS.md). |
 | Empty statement | `a;;` | Rejected by default. [Lenient](POLICIES.md#lenient-syntax) accepts it. |
-| Long operator | `a --> b`, `a --- b` | Rejected by default. Lenient reads it as `->` / `--`. `a---1` is already standard `a -- -1`. |
-| Lone dash | `a - b` | Rejected by default. Lenient reads it from the graph kind. |
+| Long operator | `a --> b`, `a --- b` | Rejected by default. Lenient reads it as `->` / `--`. |
+| `--` before a negative number | `a---1`, `a---.5` | (unreleased) Supported, as in Graphviz: the edge `a -- -1`. Not a long operator. |
+| Lone dash | `a - b` | Rejected by default. Lenient reads it as `--` after `graph` and `->` after `digraph`. |
 
 ## Names
 
@@ -86,29 +87,43 @@ shows how to get the value of each form.
 - Lines can end with LF, CRLF or a lone CR.
 - Control bytes (other than tab and line endings) are errors outside comments,
   quotes and HTML-like values. A NUL byte inside quotes is also an error.
-- A UTF-8 byte order mark at the very start is skipped. Positions still count
-  its three bytes.
+- A UTF-8 byte order mark (BOM) at the very start is skipped. Positions still
+  count its three bytes. A BOM anywhere else is not skipped: its bytes are read
+  like any other byte from 0x80 to 0xFF, so they become part of a name. See
+  the [differences](#differences-from-graphviz).
 
 ## Differences from Graphviz
 
-These are deliberate:
+These are known and kept on purpose. Each was confirmed with Graphviz 16
+(16.0.0 or 16.1.0).
 
-| Input | Graphviz 16.x | This library | Why |
+| Input | Graphviz 16 | This library | Why |
 | --- | --- | --- | --- |
 | `graph { a // c` + CR + `b }` | Error | Accepted | A lone CR ends a line everywhere here, including in comments. |
 | `graph { a; } x` | Accepted | Error | The whole input must be one graph. Trailing text is likely a mistake. |
 | `graph {} /* unfinished` | Accepted | Error | Same reason. |
 | A backslash before CRLF or CR inside quotes | Only removes a backslash before LF | Removes all three forms | Line endings are treated the same everywhere. |
 | `# 10 "file.dot"` | Read as a line-number directive | A comment | Positions always refer to the bytes you passed in. |
-| `strict` | Merges duplicate edges | Only recorded | Merging is graph building, not parsing. |
-| Comma node lists, such as `a, b` | Accepted | Rejected | Follows the written statement grammar. |
-| Attribute list after a standalone subgraph | Accepted | Rejected | Follows the written subgraph grammar. |
-| Attribute macros | Accepted extension | Unsupported | Not part of the written grammar. |
-| Standalone UTF-8 BOM between tokens | Can act as whitespace | Ordinary input, not framing | Only the outer source's leading BOM is skipped. |
+| `strict` | Merges duplicate edges | Only recorded | Merging is graph building, not parsing. The optional [semantic graph](IR.md) merges them. |
+| Comma node lists: `a, b [color=red]`, `a -> b, c` | Accepted: the list or edge applies to every node named | Error at the `,` | The written grammar has no node lists. |
+| An attribute list after a standalone subgraph: `{ a } [color=red]` | Accepted, but the list isn't applied to anything | Error at the `[` | The written grammar doesn't allow it. |
+| Attribute macros: `node m = [color=red]` | Accepted with a warning that macros aren't implemented; the list still applies | Error | The written grammar has no macros. |
+| A BOM between tokens, not touching a name: `a ->` BOM ` b` | Skipped like a space | Read as a name made of the BOM's bytes. Here that is the edge `a ->` BOM, and `b` is a separate node. In other places, such as inside `[ ]`, it is a syntax error. | Only a BOM at the very start of the input is skipped. |
+| A BOM at the very start, directly followed by `digraph` | Error: the BOM is read as part of the keyword | Accepted | Same reason. |
+
+A BOM that touches a name, as in `a` BOM `b`, is part of that name in both.
+
+The comma error comes with a suggested fix that replaces `,` with `;`. It is
+marked as one possible repair, because it changes the meaning: `a; b [color=red]`
+colors only `b`. To keep Graphviz's meaning, write `a [color=red]; b [color=red]`.
 
 One case goes the other way. The written grammar only joins quoted strings
-with `+`, but Graphviz 16.0.0 also joins HTML-like parts. This library follows
+with `+`, but Graphviz 16 also joins HTML-like parts. This library follows
 Graphviz there.
+
+This page is about reading the text. For differences in the graph built from
+it, such as edge `key` and HTML-like names, see the
+[semantic graph](IR.md#default-and-update-rules).
 
 ## Size limits
 
@@ -119,8 +134,28 @@ Graphviz there.
 
 ## How this page stays accurate
 
-Every supported construct has test files in
-[tests/corpus/valid](../tests/corpus/valid/), and malformed variants in
-[tests/corpus/invalid](../tests/corpus/invalid/). When a construct becomes
-supported, its test file moves into `valid/` in the same change that updates
-this page. See [tests/corpus/README.md](../tests/corpus/README.md).
+The [test corpus](../tests/corpus/) has example files for the main
+constructs: [valid](../tests/corpus/valid/) input,
+[invalid](../tests/corpus/invalid/) variants, and input reported as
+[unsupported](../tests/corpus/unsupported/) when a feature is turned off. The
+tests check each file's expected result. Other cases, such as ports and
+HTML-like values, have their own tests in [tests](../tests/). See
+[tests/corpus/README.md](../tests/corpus/README.md) for the rules.
+
+## Examples
+
+- [identifiers.zig](../examples/identifiers.zig): joined quoted strings,
+  numbers and non-ASCII names, with their spelling and their value
+- [attributes.zig](../examples/attributes.zig): attribute lists, default
+  statements and assignments
+- [edge_chains.zig](../examples/edge_chains.zig): edge chains
+- [ports.zig](../examples/ports.zig): ports, including a compass point
+- [subgraphs.zig](../examples/subgraphs.zig) and
+  [subgraph_endpoints.zig](../examples/subgraph_endpoints.zig): nested
+  subgraphs, and subgraphs as edge ends
+- [comments.zig](../examples/comments.zig): keeping comments
+- [policies.zig](../examples/policies.zig): the lenient preset accepting
+  `;;`, `-->` and a lone `-`
+
+Run them with `zig build examples`. Each program is also installed in
+`zig-out/bin/`.

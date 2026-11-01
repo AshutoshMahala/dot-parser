@@ -229,8 +229,8 @@ test "native event admission cancellation precedes callbacks and honors runtime 
     const opts: P.Options = .{ .policy = .{ .execution = .{ .cancellation = true } }, .cancellation = .{ .context = null, .is_requested = Stop.requested } };
     var log: Recorder = .{};
     var frames: P.FixedParseScratch(.{ .nesting = 2 }) = .{};
-    try std.testing.expectError(error.Cancelled, P.parse(std.testing.allocator, source, &log, discard, opts));
-    try std.testing.expectError(error.Cancelled, P.parseIn(source, frames.storage(), &log, discard, opts));
+    try std.testing.expectEqual(.cancelled, (try P.parse(std.testing.allocator, source, &log, discard, opts)).outcome);
+    try std.testing.expectEqual(.cancelled, (try P.parseIn(source, frames.storage(), &log, discard, opts)).outcome);
     try equal(@as(u32, 0), log.len);
     var disabled = opts;
     disabled.policy = .{ .execution = .{ .cancellation = false } };

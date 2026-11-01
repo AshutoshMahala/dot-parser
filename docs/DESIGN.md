@@ -12,8 +12,10 @@ use these tags to point back here. Plans that aren't built yet are in the
 
 ### A parser, not a graph library
 
-The library hands back DOT's own structure. It doesn't lay out graphs, doesn't
+The parser hands back DOT's own structure. It doesn't lay out graphs, doesn't
 depend on any graph library, and doesn't convert into a node-and-edge model.
+The optional [graph layer](#the-graph-layer) (unreleased) is a separate step
+on top, and ordinary parsing never runs it.
 
 **Why:** people want very different things from a DOT file: a layout engine, a
 linter, a formatter, a converter into their own types. A parser built around
@@ -26,7 +28,9 @@ Tags: R-FUNC-003
 
 Defaults are not applied. `a -> { b c }` is not expanded into edges. Repeated
 subgraphs are not merged. Numbers stay text. Duplicate attributes are kept.
-Ports are not resolved.
+Ports are not resolved. This is what the parser and its `Document` do; the
+optional [graph layer](#the-graph-layer) (unreleased) applies DOT's rules only
+when you call it, and still keeps edge sets compact.
 
 **Why:** three reasons.
 
@@ -64,7 +68,9 @@ as the correct one.
 
 The core takes a byte slice. It doesn't open files or use the OS, threads,
 environment variables, global setup, standard output or floating point. Nothing
-in the input is ever run or fetched.
+in the input is ever run or fetched. The one exception is the optional
+`printDiagnostics` helper (unreleased): when you call it, it writes to
+standard error through the `Io` you pass in.
 
 **Why:** the same code has to run on a microcontroller, in WebAssembly and on a
 server. How to read files, which paths are allowed and how big files may be are
@@ -228,8 +234,8 @@ Tags: R-ROB-003, R-PORT-005
 
 Each operation returns a small outcome value for your control flow. The
 details go to a diagnostic destination you own. Whether delivery worked is a
-third, separate fact. The library never prints, never exits, and doesn't use
-Zig errors for bad input.
+third, separate fact. The library never prints unless you call a printing
+helper, never exits, and doesn't use Zig errors for bad input.
 
 **Why:** Zig error values can't carry details like where the problem is and
 what was expected. A library that prints takes control of output away from you.
@@ -310,10 +316,12 @@ Tags: R-ARCH-001, R-MOD-007, R-PERF-005
 
 ### Leniency is opt-in, counted and warned
 
-Three mistakes that Graphviz rejects (`a;;`, `-->`, a lone `-`) can be
-accepted. They are rejected by default; the lenient preset accepts them with
-warnings. Every accepted mistake is counted, even when accepted quietly. The
-default preset is called `standard`, because `strict` is already a DOT keyword.
+Three mistakes that Graphviz rejects can be accepted: a stray `;` (`a;;`), a
+long operator (`-->`, or `---` when no number follows), and a lone `-`. They
+are rejected by default; the lenient preset accepts them with warnings. Every
+accepted mistake is counted, even when accepted quietly. `a---1` is not one of
+them: Graphviz reads it as `a -- -1`, and so does this library. The default
+preset is called `standard`, because `strict` is already a DOT keyword.
 
 **Why:** these are common in hand-written files, but accepting them silently
 would hide real mistakes. A lone `-` takes its direction from the written
@@ -335,14 +343,18 @@ the document.
 Step-by-step sessions are optional. One credit is one tiny step: one byte
 looked at, one grammar step, or one item added. A session pauses when its
 budget runs out and resumes exactly where it stopped. Cancelling is a callback
-you provide, checked between steps. Sessions only use fixed buffers. The same
-state machine runs both one-call parsing and sessions.
+you provide, checked between steps; with `cancellation_interval` (unreleased)
+it is checked at most that many steps apart instead of between every step. Parser
+sessions only use fixed buffers. The same state machine runs both one-call
+parsing and sessions.
 
 **Why:** a clock isn't available on bare metal and isn't repeatable. Credits
 are predictable and testable: the result is the same however the budget is
 split. Allocation and your callbacks are outside the parser's control, so they
 aren't metered. Fixed buffers are required because growing a list could copy a
-lot of data in what should be one small step.
+lot of data in what should be one small step. Calling the cancel callback
+costs time on every check; the interval lets you trade a slower response to a
+cancel for fewer calls. The default of 1 still checks between every step.
 
 Tags: R-MOD-010
 
@@ -366,13 +378,14 @@ Current, target-qualified state sizes are in
 
 ### One event contract builds the document or consumer-defined output
 
-The grammar emits the same events to our document builders, sizing sink or a
-user-provided consumer. All use `onEvent` and infallible `onAbort`; there is no
-separate builder protocol or translation adapter. Unreleased
-[DOT events](EVENTS.md) describe that contract. Pool indices, reservations and
-private saved scope state belong to the builder, not event payloads. Static
-dispatch lets builders inline event handling and omit unneeded statement-begin
-notifications without a runtime observer layer.
+The grammar emits the same events to our document builders, the sizing sink or
+a consumer you provide. All use `onEvent` and an `onAbort` that can't fail;
+there is no separate builder protocol or translation layer.
+[DOT events](EVENTS.md) (unreleased) describe that contract. Pool indices,
+reservations and saved scope state belong to the builder, not to the events.
+Because the consumer is chosen at compile time, builders can inline event
+handling and skip statement-begin notifications they don't need, with no
+run-time observer layer.
 
 **Why:** one grammar can then feed every builder: allocator-backed, fixed
 buffers, and the counting pass behind `measure`. A consumer might act before a
@@ -384,6 +397,48 @@ so a collecting consumer can retain later statements without buffering an
 entire large attribute list before receiving it.
 
 Tags: R-MOD-011
+
+### Early names and previews are opt-in, and never guess
+
+> **Unreleased.** Not in 0.5.0.
+
+An event consumer can ask, with `observations`, for names and statement starts
+before a statement finishes, and for a preview of an unfinished token at a
+pause or at the end of the input. Both are off by default.
+
+**Why:**
+
+- An editor's outline needs names while the user is still typing, before the
+  statement is complete or valid.
+- Consumers that don't ask get no extra callbacks and spend no extra work
+  credits.
+- One typed `dot.events.Observations` value selects them, either one
+  observation at a time or with presets such as `.previews`. It is one place,
+  shared by the library's own consumers and yours, and it replaced scattered
+  declarations without forcing every observation on together.
+- They report only what has been read. `graph { a` gives the name `a`, but
+  not a guess about what kind of statement it will become, and a preview is
+  never repaired. Like a [repaired tree](#markup-recovery-never-guesses-a-tree),
+  a guess could quietly differ from what the author meant.
+
+### Names the parser recognized have their own type
+
+> **Unreleased.** Not in 0.5.0.
+
+Complete names in events, and the names that document views return, are
+`dot.Name` values, not plain spans. `identifier.fromName` can hash and compare
+a `Name` without checking its spelling again.
+
+**Why:**
+
+- The parser already checked the spelling. Checking it again for every lookup
+  in an index is wasted work, but the general `identifier.hash` and `eql`
+  helpers must check, because they accept any bytes.
+- A separate type keeps spans that aren't complete names (previews, keywords,
+  skipped regions) from reaching the unchecked path by accident.
+- It protects against mistakes, not against deliberate misuse: a `Name` built
+  by hand isn't checked, and a changed source of the same size can't be
+  detected.
 
 ## HTML-like labels
 
@@ -406,7 +461,7 @@ positions exact.
 
 Checks such as UTF-8, XML 1.0 names and the list of known references are
 separate choices. Each is off by default, except duplicate attributes and, in
-Graphviz mode, the Graphviz vocabulary checks. Turning one on never turns on
+Graphviz mode, the Graphviz checks. Turning one on never turns on
 another. A whole processor can be
 [replaced with your own](CUSTOM_PROCESSORS.md) at compile time.
 
@@ -436,10 +491,12 @@ Graphviz's tags and attributes and matches tag names ignoring ASCII case.
 - Other dialects choose `.structural`, and get none of Graphviz's rules. That
   keeps the previous decision intact: only the default changed, and no dialect
   inherits another's rules by accident.
-- The vocabulary is a first step. Passing it doesn't mean Graphviz will accept
-  the label, and the docs never present it that way. Checking which tags may
-  contain which, attribute values and references is
-  [planned](ROADMAP.md#markup).
+- Passing the checks doesn't mean Graphviz will accept the label, and the
+  docs never present it that way. Since 0.5.0 Graphviz mode checks tag and
+  attribute names; it now also checks which elements may contain which,
+  attribute values and named references (unreleased). Some differences from
+  Graphviz remain on purpose; see
+  [Graphviz vocabulary](MARKUP.md#graphviz-vocabulary).
 
 ### Markup recovery never guesses a tree
 
@@ -483,21 +540,21 @@ as closing that element while recovering.
 > **Available since 0.5.0.**
 
 With `retention.partial = true`, a DOT or markup parse that fails can still
-return completed syntax. Unreleased DOT collection also retains later safely
-recovered statements and explicit gaps; markup still keeps its prefix.
-The document says whether
-it is complete, and so does each DOT subgraph and each markup node.
-`unrepresented()` gives the unfinished suffix; DOT's `skippedRanges()` gives
-internal gaps. Keeping label
-trees from a DOT file is a separate choice.
+return completed syntax. With `.collect`, DOT also keeps the statements it
+safely recovered after an error, and marks the gaps (unreleased); markup keeps
+only the part before the first error. The document says whether it is
+complete, and so does each DOT subgraph and each markup node.
+`unrepresented()` gives the unfinished end of the file; DOT's
+`skippedRanges()` gives the gaps inside it (unreleased). Keeping label trees
+from a DOT file is a separate choice.
 
 **Why:**
 
 - Editors need it. While someone is typing, the file is unfinished most of
   the time, and an outline or highlighting still needs the part that is done.
-- Markup keeps only the part before the first error. DOT collection can resume
-  at certified statement boundaries, retaining completed syntax and explicit
-  gaps. Neither returns a guessed or repaired tree.
+- Markup keeps only the part before the first error. DOT can resume at
+  statement boundaries it knows are safe, keeping completed syntax and marking
+  the gaps. Neither returns a guessed or repaired tree.
 - It is opt-in and clearly marked, because a partial tree could pass for a
   complete one. The parse outcome still reports the failure, and
   `documentValid()` is always false for a partial document.
@@ -547,6 +604,178 @@ checking on by default, and DOT's presets don't touch `markup`.
 - Adding a preset such as `lenient` for its syntax rules can't silently switch
   label checking off. When an earlier version tied the two together, it did
   exactly that.
+
+## String checks
+
+> **Unreleased.** Not in 0.5.0.
+
+### A separate string processor
+
+`string_processor` checks string values by itself. DOT and markup can run it
+on attributes you choose, but only for those you set to `.process`. Binding
+the processor alone changes nothing: values pass through unchecked.
+
+**Why:**
+
+- Like the markup parser, it is its own module, so people who don't check
+  strings pay nothing, and string checks don't need DOT or markup.
+- DOT and markup own their quoting, escapes, references and recovery. The
+  string processor only sees the value, so one validator works for standalone
+  text, DOT names and markup attributes.
+- The host decides whether a value is checked, and the processor decides how,
+  as with [labels](#dot-decides-whether-labels-are-checked-the-checker-decides-how).
+- The defaults differ from labels on purpose. Binding a string processor makes
+  validators available, and the routing rules choose which values need them;
+  passthrough is the chosen default. Binding a markup checker opts into
+  checking an established markup grammar, so checking turns on. This is a
+  choice of defaults, not a technical limit.
+
+### Values are checked as decoded text, without a copy
+
+Logical readers hand a validator the value that DOT or markup means, a piece at
+a time: `"Sea" + "ttle"` is `Seattle`, and `A&amp;B` is `A&B`. Findings point
+at the original bytes.
+
+**Why:**
+
+- A rule like "must be one of these cities" is about the value, not its
+  spelling. The readers reuse each host's own decoding rules rather than a
+  second, possibly different, interpretation.
+- No decoded copy means no allocation, and positions stay exact, as with
+  [results that point into your source](#results-point-into-your-source).
+
+## The graph layer
+
+> **Unreleased.** Not in 0.5.0.
+
+### An optional graph layer on top of the parser
+
+`dot.ir` turns an accepted `Document` into a graph: one node per name,
+subgraph membership, and effective attributes after DOT's default and update
+rules, with where each value came from. It is a separate step you call.
+Building it from a `Document` is called *lowering*.
+
+**Why:**
+
+- The parser stays [a parser](#a-parser-not-a-graph-library). Ordinary parsing
+  gets no extra work, storage or linked code from the graph layer.
+- Linters, adapters and graph builders need the same answers: which nodes
+  exist, which subgraphs they are in, which attribute value wins. The layer
+  answers them once, and says where each fact came from.
+- It reads the `Document` the parser already built, with the interpretation
+  from the same profile that accepted it, so settings such as reading `graph`
+  as generic can't silently change what the file means.
+
+### Edge sets stay compact until you ask for edges
+
+`a -> { b c }` is kept as one connection. Individual edges exist only when you
+stream them (`edgeIterator`) or build the edge list (`materialize`).
+
+**Why:**
+
+- **Safety.** `{ a b c } -> { d e f }` is nine edges, and the number grows as a
+  product. Keeping sets compact means building the graph never needs memory
+  for the product.
+- Many questions, such as `hasEdge` and subgraph membership, can be answered
+  from the compact form.
+- Expanding is an explicit call, so its cost is visible and covered by limits.
+- When you do want every edge, `materialize` builds them in one forward pass,
+  with each edge's final attributes, instead of asking about each pair
+  separately.
+
+### Graph operations have finite default limits
+
+Unlike parsing, where limits are off by default, building the graph starts
+with finite limits on work, memory, nodes, edges and pairs (`dot.ir.Limits`),
+and so does every operation that takes `dot.ir.Options`: expanding or
+streaming edges, building the edge list, and the `With` forms of queries and
+attribute reads. Hitting a limit is an error; it is never reported as a smaller
+answer or as "no such edge". Plain accessors such as `node.attribute(key)` are
+deliberately unmetered and can't fail; use their `With` forms when you need a
+bound.
+
+**Why:** a small file can describe a huge number of edges, so the simple path,
+`dot.ir.parse` with no options, has to be bounded without extra setup. You
+can raise or lower each limit.
+
+### Unfinished files give answers marked known or unknown
+
+`dot.ir.parsePartial` builds a graph from a file with errors. An answer that
+the missing text could still change comes back as `.unknown`, often with the
+value seen so far.
+
+**Why:**
+
+- Editors need graph facts while the file is broken, just as they need
+  [partial documents](#partial-documents-for-editors).
+- DOT has no way to delete a node or an edge, so a fact that was written stays
+  true. But whether something is absent, and which value finally wins, can
+  still change. Marking those answers keeps a partial answer from being
+  mistaken for a final one.
+- It has its own entry points, so code for complete files never sees these
+  answers.
+
+### Optional parts are chosen at compile time
+
+Keeping attributes (`.capabilities.attributes`), query indexes (`.indexes`) and
+adjacency (`.adjacency` when building the edge list) are compile-time choices.
+Attributes are on by default; indexes and adjacency are off.
+
+**Why:**
+
+- A part you don't choose has no storage, no construction work and no code.
+- Asking for something only a missing part can give, such as an attribute on
+  a graph without attributes, or incoming edges from forward-only adjacency,
+  is a compile error, not an empty or incomplete answer. Without indexes, the
+  same queries still work, only without the speed-up.
+- The same calls work whichever parts you choose. There is one graph API, not
+  a basic one and an extended one.
+- Indexes cost construction time and memory, and pay off only when you ask
+  many questions of the same graph, so they are opt-in.
+- Adjacency is built only from an explicitly built edge list, so the compact
+  graph never stores per-node edge lists.
+
+### Fixed storage never falls back to the heap
+
+The `In` calls (`lowerCompleteIn`, `materializeIn`, `edgeIteratorIn`, …)
+build into caller-owned buffers. When a buffer is too small, the operation
+stops with a shortfall that names the resource. A graph or edge list that
+didn't fit is never published (edges already streamed stay usable), and you
+start again with more room. Sizing helpers compute safe sizes, but only when
+you call them.
+
+**Why:**
+
+- Same reason as [you provide all memory](#you-provide-all-memory): some users
+  need a hard memory ceiling and no allocator.
+- A fixed-buffer allocator under the growable path would bound memory too, but
+  it would still waste space on abandoned growth copies and mix temporary and
+  kept data.
+- Sizing is a separate step, so ordinary calls don't pay for it, and you can
+  size from your own limits or from a previous result.
+- Running out of room ends the operation; you can't resume it with bigger
+  buffers. That keeps a failure final, and avoids a contract for swapping
+  buffers under partly built state. Resuming with replacement storage would be
+  possible, but it isn't worth the extra complexity.
+
+### Graph work can pause, too
+
+Building the graph, building the edge list, streaming edges, edge and
+membership queries, and attribute lookups each have a session. It runs in
+credit-sized steps and can be cancelled, using the same execution settings as
+parsing.
+
+**Why:**
+
+- The same reasons as [for parsing](#work-is-measured-in-credits-not-time).
+  Graph work can also be much larger than the input, so an application may
+  need control during it.
+- A paused or stopped session never hands out a half-built graph or a guessed
+  "no". Only a finished operation publishes its result.
+- Sessions may use an allocator, but they copy growing buffers in small,
+  charged chunks, so one step stays small.
+- Direct calls keep their own fast path, so you pay for pausing only when you
+  use a session.
 
 ## How the project is run
 

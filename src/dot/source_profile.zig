@@ -39,7 +39,8 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
             const info = try enc.select(caps, source, options.encoding);
             switch (info.encoding) {
                 inline else => |actual| if (comptime caps.allows(actual)) {
-                    if (actual != .utf8) try dispatch.checkCancellation(cancellation);
+                    if (actual != .utf8 and dispatch.cancellationRequested(cancellation))
+                        return .{ .outcome = .cancelled, .diagnostic_delivery = .complete };
                     const W = profile.ProfileForEncoding(actual, api, config);
                     const Opt = comptime if (std.mem.eql(u8, method, "parseAndValidate")) W.CheckOptions else if (std.mem.eql(u8, method, "parseBorrowedIn") or std.mem.eql(u8, method, "measureIn")) W.FixedParseOptions else W.ParseOptions;
                     const called = @call(.auto, @field(W, method), arguments ++ .{dispatch.options(Opt, options)});
@@ -71,7 +72,7 @@ pub fn Profile(comptime api: type, comptime config: policy.Config, comptime caps
                     const W = profile.ProfileForEncoding(selected, api, config);
                     const value = W.validate(document, sink, options);
                     return if (config.runtime_policy) try value else value;
-                } else return error.UnsupportedEncoding,
+                } else return .{ .outcome = .{ .unsupported_encoding = document.source_info.encoding }, .diagnostic_delivery = .complete },
             }
         }
         pub fn interpretation(document: *const api.Document, options: Options) (if (config.runtime_policy) policy.Error!Interpretation else Interpretation) {
@@ -109,7 +110,20 @@ fn Composition(comptime api: type, comptime config: policy.Config, comptime caps
             const info = try enc.select(caps, source, options.encoding);
             switch (info.encoding) {
                 inline else => |actual| if (comptime caps.allows(actual)) {
-                    if (actual != .utf8) try dispatch.checkCancellation(cancellation);
+                    if (actual != .utf8 and dispatch.cancellationRequested(cancellation)) {
+                        const parsing = if (config.runtime_policy) prepared.dot.parsing else Base.baseline.parsing;
+                        const requested = parsing.markup == .process;
+                        return .{
+                            .dot = .{ .outcome = .cancelled, .diagnostic_delivery = .complete },
+                            .markup = .{ .requested = requested },
+                            ._markup_retained = requested and parsing.retention.markup,
+                            ._delayed = if (@FieldType(CheckResult, "_delayed") != void) .{
+                                .mode = parsing.markup,
+                                .enabled = parsing.retention.markup,
+                                .on_error = parsing.on_error,
+                            } else {},
+                        };
+                    }
                     const W = profile.ProfileForEncoding(actual, api, config);
                     var result = try W.parseAndValidate(allocator, source, sink, dispatch.options(W.CheckOptions, options));
                     dispatch.stamp(&result, info);

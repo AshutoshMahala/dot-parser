@@ -477,7 +477,11 @@ pub fn MachineWithInputEncoding(comptime actual: support.encoding.Actual, compti
             }
         }
         fn requested(self: *const Self) bool {
-            return if (cancellable) (if (self.hook) |h| h.requested() else false) else false;
+            if (!cancellable) return false;
+            const signalled = if (self.hook) |h| h.requested() else false;
+            // A hook may synchronously cancel this session and return false.
+            // Re-read the terminal state before touching its aborted builder.
+            return signalled or self.terminal != null;
         }
         pub fn cancel(self: *Self, stack: *scratch.Stack, sink: anytype) result.Report {
             if (self.terminal == null) self.finish(stack, sink, .cancelled, null);

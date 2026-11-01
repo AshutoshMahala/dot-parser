@@ -37,9 +37,10 @@ defer result.deinit(allocator);
 - Listing a reader twice is harmless.
 - This is a compile-time choice, not a run-time setting. A call can pick among
   the compiled readers, but can't add one.
-- A UTF-8-only profile keeps its usual functions and behaviour. With any other
-  choice, functions can also return encoding errors, and calls accept an
-  `.encoding` option.
+- A UTF-8-only profile (the option left out, or `&.{.utf8}`) keeps its usual
+  functions and behaviour. With any other choice, including ASCII, functions
+  can also return encoding errors, calls accept an `.encoding` option, and
+  there is no step-by-step `Session`.
 
 ## How the reader is chosen for a file
 
@@ -71,25 +72,46 @@ The choices are `.ascii`, `.utf8`, `.utf16le`, `.utf16be`, `.utf32le` and
   retries with another reader. `.encoding` can't turn on a reader that wasn't
   compiled in.
 - A byte order mark for a reader that isn't compiled in returns
-  `error.UnsupportedEncoding` through the encoding-selecting facade; a shorter
-  matching mark isn't tried instead. The UTF-8-only fast API retains its
-  existing return type; use preflight below for positioned admission failures.
+  `error.UnsupportedEncoding`; a shorter matching mark isn't tried instead.
+- **A UTF-8-only profile has no encoding errors.** It reads every file as
+  UTF-8, so a UTF-16 file gives syntax errors in DOT. Markup reports a UTF-16
+  or UTF-32 byte order mark as `unsupported_feature`. To explain the real
+  problem instead, [check the encoding first](#check-the-encoding-yourself).
 
 ## Checks before parsing
 
-### Positioned preflight
+A profile with any readers other than UTF-8 alone first checks that it can read
+the file. This looks only at the first few bytes and the length, and allocates
+nothing:
 
-> **Unreleased.**
+| Error | Meaning |
+| --- | --- |
+| `error.EncodingRequired` | The file has no byte order mark, and no reader can be picked without one. Pass `.encoding`. |
+| `error.TruncatedCodeUnit` | A UTF-16 or UTF-32 file ends partway through a code unit: its length isn't a whole number of 2- or 4-byte units |
+| `error.UnsupportedEncoding` | The file needs a reader that isn't compiled in |
+| `error.SourceTooLarge` | The file is 4 GiB or larger |
+These come before any diagnostic or document, so they never leave a partial
+document. If cancellation is on and already requested, nothing is read and you
+get the ordinary cancelled result (`outcome == .cancelled`, or
+`completion == .cancelled` from markup validation), the same for every
+encoding. In 0.5.0, UTF-16, UTF-32 and ASCII input returned `error.Cancelled`
+instead. Whether the text itself is valid is a separate check, described
+[below](#checking-that-the-text-is-valid). No setting turns these checks off.
 
-Every standalone or composed profile provides
-`Parser.inspectSource(source, explicit_encoding)`. `dot.inspectSource` and
-`markup.inspectSource` use their default UTF-8 capabilities. Pass `null` for
-BOM/default selection, or the same explicit encoding you will pass to parsing:
+### Check the encoding yourself
+
+> **Unreleased.** Not in 0.5.0.
+
+`Parser.inspectSource(source, encoding)` runs the same checks without parsing.
+It works on every profile, including UTF-8-only ones, which is where it helps
+most. `dot.inspectSource` and `markup.inspectSource` use the default UTF-8
+reader. Pass `null` to let it pick the reader as parsing would, or the same
+`.encoding` you will pass to parsing:
 
 ```zig
 switch (Parser.inspectSource(source, null)) {
     .selected => |info| {
-        _ = info; // encoding, BOM and selection provenance
+        _ = info; // the encoding, whether there is a byte order mark, and how it was chosen
     },
     .failure => |failure| {
         try writer.print("{s}\n", .{failure.message()});
@@ -99,35 +121,24 @@ switch (Parser.inspectSource(source, null)) {
 }
 ```
 
-The failure's `reason` is a typed admission error; `encoding` is the selected or
-detected reader. An unsupported BOM points at the whole mark and suggests
-saving as UTF-8 or enabling `.source_encodings`. Truncation points at the first
-byte of the incomplete final code unit. Missing encoding, unsupported explicit
-choices and oversized sources have no span. `admission.require()` returns the
-selected `Info` or the ordinary error value.
+A failure has:
 
-Inspection reads at most four prefix bytes and allocates nothing. It neither
-checks content nor links native grammar readers into a UTF-8-only build. It is
-explicit, not extra work hidden in default parsing. `check_file` uses it so an
-unsupported BOM gets an encoding explanation instead of grammar errors.
-Native parsing still returns ordinary admission errors, not bag diagnostics;
-content-validation findings already carry their own spans.
-
-### Automatic checks in the encoding-selecting facade
-
-Before parsing, the library only checks that it can read the file. This doesn't
-scan the file or allocate:
-
-| Error | Meaning |
+| Field | Meaning |
 | --- | --- |
-| `error.TruncatedCodeUnit` | A UTF-16 or UTF-32 file ends partway through a code unit: its length isn't a whole number of 2- or 4-byte units |
-| `error.UnsupportedEncoding` | The file needs a reader that isn't compiled in |
-| `error.SourceTooLarge` | The file is larger than 4 GiB |
-| `error.Cancelled` | Cancellation is on and was already requested. Only for UTF-16, UTF-32 and ASCII files; a UTF-8 parse reports `outcome == .cancelled` instead. |
+| `reason` | The error parsing would return, such as `error.UnsupportedEncoding` |
+| `span` | The bytes at fault, if any: the whole unsupported byte order mark, or the incomplete last code unit. `null` for a missing or unsupported `.encoding`, and for a file that is too large. |
+| `encoding` | The reader that was picked or found, if any |
+| `message()` | A short explanation. For an unsupported encoding, it suggests saving as UTF-8 or adding the reader to `.source_encodings`. |
 
-These come before any diagnostic or document, so they never leave a partial
-document. Whether the text itself is valid is a separate check, described next.
-No setting turns these checks off.
+`.require()` on the result gives you the encoding info, or the error parsing
+would return.
+
+It reads at most the first four bytes and allocates nothing. It doesn't check
+the text, and it doesn't add readers to a UTF-8-only program. A UTF-8-only
+profile never runs these checks while parsing; profiles with other readers run
+them and report problems as Zig errors, not diagnostics. [check_file.zig](../examples/check_file.zig) uses it, so a file
+with an unsupported byte order mark gets an encoding message instead of syntax
+errors.
 
 ## Checking that the text is valid
 
@@ -172,11 +183,13 @@ labels. That part belongs to the label checker and its own
   CDATA. `validateScope` and `validateScopeIn` check only the range you give
   them. A UTF-16 surrogate pair split by the edge of that range counts as
   invalid.
+- [String checks](STRINGS.md) (unreleased) don't depend on these settings: a
+  value whose text isn't valid in its encoding never passes a string check.
 
 Markup's [closing-tag search allowance](MARKUP.md#closing-tag-typo-recovery)
 counts code units, not bytes, so a UTF-16 or UTF-32 file gets the same search
-work as the same markup in UTF-8. Positions, limits, session steps and cancel
-checks still use bytes.
+work as the same markup in UTF-8. Positions, limits and cancel checks still use
+bytes.
 
 ## DOT and markup together
 
@@ -227,9 +240,10 @@ try dot.console.render(finding, .{
 
 - Lines end at encoded LF, CRLF or CR. Columns count **bytes**, not UTF-16
   units or the characters an editor shows.
-- For optional zero-based UTF-8/UTF-16/code-point editor coordinates, use
-  [`location.textPosition`](EDITORS.md#editor-position-conversion). Stored spans
-  and ordinary diagnostic locations remain original-byte based.
+- For zero-based positions in UTF-8 bytes, UTF-16 units or code points, as
+  editors use, call
+  [`location.textPosition`](EDITORS.md#editor-position-conversion)
+  (unreleased). Stored spans and diagnostic positions stay in original bytes.
 - The console renderer writes UTF-8. Tag names quoted in a message are decoded
   in a small fixed buffer.
 - For UTF-16 and UTF-32 files, boxed output currently shows compact location
@@ -249,7 +263,19 @@ try dot.console.render(finding, .{
   document stays 256 bytes and the markup document 56 bytes on aarch64.
 - Supported so far: one-call parsing with an allocator or fixed buffers,
   measuring, validation, markup workspaces, and both ways of checking labels.
-  Step-by-step sessions for UTF-16 and UTF-32 aren't available yet; UTF-8
-  sessions are unchanged.
+  Event-only parsing ([EVENTS.md](EVENTS.md)), the graph layer
+  ([IR.md](IR.md)) and [string checks](STRINGS.md) also read these encodings
+  (unreleased).
+- Step-by-step sessions exist only on UTF-8-only profiles. A profile that lists
+  any other reader, including ASCII, has no `Session`.
 - This isn't a string converter, a Unicode normaliser, a way to detect the
   encoding of files without a byte order mark, or a browser or XML transcoder.
+
+## Examples
+
+- [check_file.zig](../examples/check_file.zig): check the encoding with
+  `inspectSource` before parsing, and report a clear message for a file that
+  needs another reader (unreleased)
+
+No example program reads UTF-16 or UTF-32 yet. Run the examples with
+`zig build examples`; each program is also installed in `zig-out/bin/`.

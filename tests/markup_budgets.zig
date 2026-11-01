@@ -8,6 +8,74 @@ const expect = std.testing.expect;
 const discard = markup.diagnostic.discard;
 const Untrusted = markup.Profile(.{ .policy = markup.presets.untrusted });
 
+test "markup hooks may cancel their own session without spending another credit" {
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ 1, 4 }) |interval| {
+        const P = markup.Profile(.{ .policy = .{ .mode = .structural, .scanner = scanner, .execution = .{
+            .metering = true,
+            .cancellation = true,
+            .cancellation_interval = interval,
+        } } });
+        const Stop = struct {
+            session: ?*P.Session = null,
+            calls: u32 = 0,
+            at: u32,
+            fn poll(raw: ?*anyopaque) bool {
+                const self: *@This() = @ptrCast(@alignCast(raw.?));
+                self.calls += 1;
+                if (self.calls != self.at) return false;
+                if (self.session) |session| {
+                    _ = session.cancel();
+                    return false;
+                }
+                return true;
+            }
+        };
+        for ([_]u32{ 0, 1, 3, 64 }) |budget| for (1..80) |at| {
+            var expected: ?markup.FixedParseResult = null;
+            var expected_work: u64 = 0;
+            var expected_frontier: u32 = 0;
+            var expected_polls: u32 = 0;
+            for ([_]bool{ false, true }) |self_cancel| {
+                var output: markup.FixedDocumentStorage(.{ .nodes = 16, .attributes = 16 }) = .{};
+                var frames: markup.FixedParseScratch(8) = .{};
+                var stop: Stop = .{ .at = @intCast(at) };
+                var session = P.Session.init("<a x='1'><b/>text</a>", .{ .document = output.storage(), .scratch = frames.storage() }, discard, .{
+                    .cancellation = .{ .context = &stop, .is_requested = Stop.poll },
+                });
+                defer session.deinit();
+                if (self_cancel) stop.session = &session;
+                var work: u64 = 0;
+                var frontier: u32 = 0;
+                if (budget == 0) {
+                    _ = session.run();
+                } else while (session.result() == null) {
+                    const progress = session.advance(budget);
+                    try expect(progress.work_used <= budget);
+                    work += progress.work_used;
+                    frontier = progress.source_frontier;
+                }
+                const result = session.result().?;
+                if (!self_cancel) {
+                    expected = result;
+                    expected_work = work;
+                    expected_frontier = frontier;
+                    expected_polls = stop.calls;
+                } else {
+                    try equal(expected.?.outcome, result.outcome);
+                    try equal(expected.?.counts, result.counts);
+                    try equal(expected_work, work);
+                    try equal(expected_frontier, frontier);
+                    try equal(expected_polls, stop.calls);
+                    try equal(@as(u32, 0), session.advance(0).work_used);
+                    try equal(@as(u32, 0), session.advance(99).work_used);
+                    _ = session.run();
+                    try equal(expected_polls, stop.calls);
+                }
+            }
+        };
+    };
+}
+
 test "16 MiB invalid-byte floods retain at most 1024 diagnostics, including alternating bytes" {
     const source = try std.testing.allocator.alloc(u8, 16 * 1024 * 1024);
     defer std.testing.allocator.free(source);

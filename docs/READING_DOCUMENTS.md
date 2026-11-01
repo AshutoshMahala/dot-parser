@@ -14,7 +14,9 @@ values that point into your source text.
 | `document.strict` | `true` if the file starts with `strict` |
 | `document.name` | The graph's name as a range, or `null` if it has none |
 | `document.statementCount()` | Number of statements, including those inside subgraphs |
-| `document.root_closed` | **Unreleased:** whether the root closing brace was seen; independent of gaps inside a partially retained Document |
+| `document.root_closed` | (unreleased) `true` once the parser has read the graph's closing `}`. Always `true` for a complete document. A [partial document](EDITORS.md#keep-the-finished-part-of-a-dot-file) can have gaps inside and still be `true`. |
+| `document.source` | The source text the document points into |
+| `document.source_info` | The source's encoding (`.encoding`) and whether it starts with a byte order mark (`.has_bom`). See [source encodings](ENCODINGS.md). |
 
 Why `undigraph`? In this library "graph" means any graph, directed or not. So
 the undirected kind needs its own name.
@@ -43,45 +45,51 @@ expand HTML entities, or convert numbers. It also doesn't check that text is
 valid UTF-8. That is an optional check in [settings](POLICIES.md#optional-checks).
 
 If you need the decoded size first,
-`try dot.identifier.decodedLen(document.text(range))` gives it.
+`try dot.identifier.decodedLen(document.text(range))` gives it for UTF-8 input.
+For other encodings, use `dot.identifier.ForEncoding(actual).decodedLen`.
 
-For incremental logical characters with original-source locations, the
-**unreleased** `dot.identifier.LogicalReader(actual)` accepts one selected
-identifier expression. It has fixed state and needs no decoded buffer. Unlike
-the raw identifier decoder, it requires valid character encoding and explicitly
-stops at HTML-like operands instead of exposing their body as string contents.
-See the [shared reader contract](STRINGS.md#logical-readers).
+To read a value one character at a time, each with its position in your
+source, use `dot.identifier.LogicalReader(actual)` (unreleased). It reads one
+name you choose, with a small fixed state and no buffer. Unlike decoding, it
+requires valid text in the source encoding, and it stops at an HTML-like part
+instead of returning its inside as text. See
+[logical readers](STRINGS.md#logical-readers).
 
 ### Comparing and indexing names
 
-> **Unreleased.**
+> **Unreleased.** Not in 0.5.0.
 
-`a`, `"a"` and `"a" + ""` name the same node. Compare or hash their logical
-values without allocating a decoded buffer:
+`a`, `"a"` and `"a" + ""` name the same node. You can compare or hash their
+values without decoding them into a buffer:
 
 ```zig
 const same = try document.identifiersEqual(first_range, second_range);
 const hash = try document.hashIdentifier(first_range);
 ```
 
-For standalone UTF-8/raw spellings, use `dot.identifier.eql(a, b)` and
-`dot.identifier.hash(raw)`. Both validate complete spellings. Document helpers
-also check ranges and use the document's encoding.
-`dot.identifier.ForEncoding(actual)` supplies these helpers for a known reader.
-Valid native text hashes like its decoded UTF-8 value; malformed native text
-returns `InvalidIdentifier`, like explicit decoding. UTF-8 helpers preserve
-invalid raw bytes without checking their encoding.
-
-Hashes can collide: compare values after a hash match. Hashes are not a stable
-on-disk format or a defense against malicious hash-table keys. There is no case
-folding, Unicode normalization, layout-escape interpretation or numeric
-conversion (`01` and `1` differ). Work is linear in the supplied spellings,
-on request only; nothing is cached in the tree.
+- The document functions check that each range is one whole name inside the
+  document, and read it in the document's encoding.
+- For a name you have as UTF-8 bytes, use `dot.identifier.eql(a, b)` and
+  `dot.identifier.hash(raw)`. They check that each one is a whole DOT name.
+  `dot.identifier.ForEncoding(actual)` has the same functions for UTF-16 and
+  UTF-32 text.
+- In UTF-16 and UTF-32, a name hashes the same as its UTF-8 value, and a
+  broken character gives `error.InvalidIdentifier`, as decoding does. In UTF-8,
+  bytes that aren't valid UTF-8 are compared as they are, without an error.
+- Equal names have equal hashes, but different names can have the same hash
+  too, so compare the names after a hash match. Don't store hashes on disk,
+  and don't rely on them against keys chosen by an attacker.
+- Decoded names are compared exactly: no case folding, no Unicode
+  normalization and no number conversion (`01` and `1` differ). `\n` stays two
+  characters, as in decoding.
+- The work grows with the length of the names and happens only when you call
+  these functions. Nothing is cached in the document.
 
 #### Names already recognized by the parser
 
-For typed names from parser events or retained document views, `fromName`
-skips the redundant syntax check:
+Names that come from the parser, through [events](EVENTS.md) or document
+views, have already been checked. `fromName` uses them without checking the
+spelling again:
 
 ```zig
 // Default UTF-8 profile; dispatch on source_info.encoding for native input.
@@ -93,28 +101,35 @@ const hash = try first.hash();
 const same = try first.eql(second);
 ```
 
-`dot.Name` is a distinct eight-byte handle; arbitrary `Span` values, including
-unfinished previews, do not type-check here. Keep the producing source alive,
-unchanged and in its original encoding. Deliberately forging a name or mixing
-buffers still violates the contract. Use `try identifier.check(source, span)`
-for a caller-supplied span; it verifies standalone spelling, not document context.
-Name binding checks bounds in all builds, but cannot detect same-sized stale
-input or a wrong encoding. Struct literals and record helpers trust their
-caller, rather than validating forged records. Syntax recognition does not
-certify Unicode validity.
-A `Parsed` value contains only a borrowed slice; it neither allocates nor caches
-a decoded value or hash. The checked functions above are unchanged.
-You can retain compact `Name` handles and bind these views only when needed.
-Attribute pairs expose `keyName()` / `valueName()`, port syntax exposes
-`firstName()` / `secondName()`, and scope views expose `recognizedName()`.
-The original range fields and retained pool layouts remain unchanged.
+- A `dot.Name` is an 8-byte handle (a start and a length) for a name the
+  parser recognized. Document views give you one: `name()` on a node
+  reference, `keyName()` and `valueName()` on an attribute pair, `firstName()`
+  and `secondName()` on a port, and `recognizedName()` on a scope. You can keep
+  these small handles and call `fromName` only when you need the value.
+- `fromName(source, name)` returns a `dot.identifier.Parsed`: just the name's
+  bytes, borrowed from `source`, with `hash()` and `eql()`. It doesn't
+  allocate, decode or cache anything.
+- A plain `Span`, including an unfinished
+  [preview](EVENTS.md#unfinished-token-previews), is a different type, so you
+  can't pass one by mistake. For a span you made yourself, use
+  `try dot.identifier.check(source, span)`. It checks that the span is one
+  whole name (not that it belongs to a document) and returns a `Name`.
+- Keep the source alive, unchanged and in its original encoding. Using a name
+  with another source, or building a `Name` or `Parsed` value by hand, breaks
+  these rules, and the library can't always tell. It does check that a name
+  lies inside the source, and panics if not, in every build. It can't notice
+  a source of the same size that has changed, or the wrong encoding.
+- Being recognized by the parser doesn't mean the text is valid Unicode. For
+  UTF-16 and UTF-32, `hash()` and `eql()` still decode the text and return
+  `error.InvalidIdentifier` for a broken character. For UTF-8, the bytes are
+  used as they are.
 
-For native input, use `dot.identifier.ForEncoding(actual).fromName(source, name)`,
-selecting the document's encoding (or `begin_document.source_info.encoding`
-for events). Both operands of `eql` use the same encoding. Native decoding still
-rejects malformed characters with `InvalidIdentifier`; skipping the DOT syntax
-check does not turn off encoding checks needed to compute the logical value.
-UTF-8/raw-byte behavior is unchanged. See [event-only indexing](EVENTS.md#indexing-recognized-names).
+For UTF-16 or UTF-32 input, use
+`dot.identifier.ForEncoding(actual).fromName(source, name)` with the source's
+encoding: `document.source_info.encoding`, or
+`begin_document.source_info.encoding` with events. Both names given to `eql`
+must use the same encoding. See
+[indexing names from events](EVENTS.md#indexing-recognized-names).
 
 ## Statements
 
@@ -124,7 +139,7 @@ Each one is a tagged union. You switch on its kind:
 | You wrote | Kind | What it holds |
 | --- | --- | --- |
 | `a;` or `a [color=red];` | `.node` | `reference` (the node) and `attributes` |
-| `a -> b;` | `.edge` | `left`, `operator`, `right`, `attributes` |
+| `a -> b;` | `.edge` | `left`, `operator`, `operator_range` (where the operator is written), `right`, `attributes` |
 | `a -> b -> c;` | `.edge_chain` | `first` (the first edge) and the rest of the chain |
 | `subgraph s { ... }` or `{ ... }` | `.subgraph` | the subgraph's id |
 | `rankdir = LR;` | `.assignment` | `key` and `value` |
@@ -273,6 +288,10 @@ your program, so they are left to you:
   `nodeReferences(.recursive)`.
 - **What does a port mean?** Look at the node's shape or label.
 
+(unreleased) The optional [semantic graph](IR.md) answers the first three for
+you: it merges nodes by name, applies defaults and later statements to find
+each attribute's value, and expands edges to subgraphs when you ask.
+
 ## Comments
 
 > **Available since 0.5.0.**
@@ -292,7 +311,7 @@ if (parsed.document) |document| {
         _ = comment.kind; // .slash_line, .block, or .hash_line
         _ = comment.span; // byte start and length in document.source
         _ = comment.raw(document.source); // with `//`, `/* */` or `#`
-        _ = comment.body(document.source); // without them, otherwise unchanged
+        _ = document.commentBody(comment); // without them, otherwise unchanged
         _ = comment.span.locate(document.source); // line and byte column
     }
 }
@@ -302,6 +321,8 @@ if (parsed.document) |document| {
   it is on but the file has no comments.
 - Comments are listed in source order, separately from statements. They aren't
   attached to the statement next to them.
+- `document.commentBody(comment)` works in any [source encoding](ENCODINGS.md).
+  `comment.body(source)` does the same for UTF-8 only.
 - Every comment is kept, wherever it is: before or after the graph, inside a
   header or attribute list, or between the parts of a joined name like
   `"a" /* note */ + "b"`.
@@ -369,6 +390,11 @@ Editors can keep the finished part of a DOT file after an error. See
   and `nextScoped()`
 - [subgraph_endpoints.zig](../examples/subgraph_endpoints.zig): edges whose end
   is a subgraph
+- [comments.zig](../examples/comments.zig): keeping comments and reading their
+  positions
+- [string_processor.zig](../examples/string_processor.zig) (unreleased): among
+  other string checks, `dot.identifier.LogicalReader` reading `"Sea" + "ttle"`
+  as `Seattle`
 
 Run them with `zig build examples`. Each program is also installed in
 `zig-out/bin/`.

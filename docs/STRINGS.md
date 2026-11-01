@@ -1,17 +1,32 @@
-# Standalone string checks
+# String checks
 
-**Unreleased.** This module is on the development branch, not in v0.5.0.
+> **Unreleased.** Not in 0.5.0.
 
-`string_processor` checks borrowed string **contents** independently of DOT and
-markup. It does not recognize quotes, unescape text, expand references, remove
-a BOM, normalize text, or build a tree. `"SF"` (including its quotes), `&amp;`
-and `\n` are literal contents on the standalone path. Explicit
-[logical-reader binding](#validating-logical-values) supports decoded host values;
-[attribute processing](#attribute-processing-in-dot-and-markup) connects it to
-DOT and markup with default passthrough.
+The `string_processor` module checks a piece of text against rules you choose:
+
+- is it equal to an expected value?
+- is it one of a set of allowed values?
+- does it pass your own check (a *validator*)?
+
+It reports problems as diagnostics, the same way the DOT and markup parsers do,
+and tells you whether the text passed. You can use it in three ways:
+
+- on plain text, on its own ([quick start](#quick-start));
+- on the decoded value of DOT or markup text, read through a
+  [logical reader](#logical-readers);
+- on attribute values while a DOT or markup document is parsed
+  ([attribute processing](#attribute-processing-in-dot-and-markup)).
+
+The module never changes or copies the text. It takes no allocator, allocates
+nothing, and owns no source, tree or diagnostic storage.
+
+## Quick start
+
+Add `dependency.module("string_processor")` to your build's imports. Then:
 
 ```zig
 const strings = @import("string_processor");
+
 const City = strings.Profile(.{ .policy = .{ .validation = .{
     .one_of = .{ .values = &.{ "SF", "Seattle" }, .severity = .err },
 } } });
@@ -22,139 +37,237 @@ const result = try City.parseAndValidate(
     .{ .bytes = "Seattle", .origin = 0 }, bag.sink(), .{},
 );
 if (!result.valid()) {
-    // Check result.completion as well as the findings in bag.items().
+    // bag.items() holds the findings. result.completion says whether
+    // every check ran to the end.
 }
 ```
 
-Add `dependency.module("string_processor")` to your build's imports. See the
-[runnable example](../examples/string_processor.zig). The processor takes no
-allocator and owns no source, tree, scratch allocation or diagnostic storage.
-The growable bag above is caller-owned (default cap: 1,024 entries); fixed bags
-and `City.Sink.discard` work too. A discard/filtering sink does not change validity.
+- A *profile* (`strings.Profile(...)`) is a type that fixes the rules at
+  compile time.
+- `parseAndValidate` checks one piece of text and returns a `Result`.
+- Findings go to the diagnostic bag you pass in. You own the bag. The growable
+  bag keeps at most 1,024 findings by default. A fixed bag
+  (`City.FixedDiagnosticBag(8)`) or `City.Sink.discard` works too. Where the
+  findings go never changes whether the text is valid.
 
-## Input and results
+The runnable program is [string_processor.zig](../examples/string_processor.zig).
 
-Input is `Fragment{ .bytes, .origin }`. The operation checks its bounds, including
-the `u32` original-source range. `origin` is the physical byte offset of these
-contents in the original source, not a character column. Source must remain
-unchanged for the duration of the call or session. Do not concatenate or decode host
-spellings and pretend their positions still have a simple origin offset.
+## What gets checked
 
-The first stage verifies the **entire** selected encoding, including suffixes an
-early-failing equality check would not inspect. Adjacent malformed units produce
-one error per run. There is no replacement decoding. Content checks require
-well-formed input; they are marked `unavailable` if that prerequisite failed.
-Invalid encoding is a mandatory error for this logical-string API, not an
-optional syntax/character repertoire rule. NUL and valid Unicode noncharacters
-are not rejected merely because a host language might forbid them.
+The input is a `Fragment`:
 
-`Result` contains:
+- `.bytes`: the text. It is borrowed, not copied.
+- `.origin`: the byte offset where this text starts in your original source.
+  Use 0 when there is no larger source.
 
-| Field | Meaning |
+Findings report positions as byte offsets in the original source (origin plus
+the byte offset inside the text). They are bytes, not character columns.
+`bytes.len` and `origin + bytes.len` must both fit in a `u32`, otherwise you
+get `error.InvalidFragment`. Keep the source unchanged while a call or session
+uses it.
+
+**The text is taken literally.** The standalone check does not remove quotes,
+decode escapes or character references, strip a byte-order mark (BOM), or
+normalize Unicode. `"SF"` with its quotes, `&amp;` and `\n` are checked exactly
+as written. To check what DOT or markup text *means*, use a
+[logical reader](#logical-readers). Don't decode or join text into a new buffer
+and pass it with the old origin: its positions would no longer match the source.
+
+**The encoding is checked first.** Every operation first checks that the
+**whole** text is well-formed in the selected encoding. That includes any part
+after an early mismatch, which an equality check alone would never read.
+
+- Each run of adjacent malformed bytes gives one `invalid_encoding` error.
+- Nothing is replaced or repaired.
+- If the text is not well-formed, the content checks don't run. They are
+  reported as `unavailable`.
+- Bad encoding is always an error here. It is not an optional rule.
+- NUL and Unicode noncharacters are accepted. A host language may forbid them,
+  but this module does not.
+
+## Reading the result
+
+| `Result` field | Meaning |
 | --- | --- |
-| `completion` | `complete`, `fail_fast`, `cancelled`, `diagnostic_stop(reason)`, or `invalid_validator`; reader-bound operations can also return `input_unavailable` |
-| `checks.encoding/equals/one_of/custom` | `disabled`, `not_run`, `incomplete`, `complete`, or `unavailable` |
-| `errors`, `warnings` | Factual findings, independent of diagnostic visibility |
-| `delivery` | Whether attempted diagnostic delivery succeeded |
-| `valid()` | All scheduled work completed, delivery succeeded, and no error was found |
+| `completion` | How the operation ended (next table) |
+| `checks.encoding`, `checks.equals`, `checks.one_of`, `checks.custom` | The state of each check (table below) |
+| `errors`, `warnings` | How many error and warning findings were found. They count findings even when the sink dropped them. |
+| `delivery` | `.complete`, or `.failed` if handing a finding to the sink failed |
+| `valid()` | `true` only if the operation completed, the encoding check and every enabled check completed, delivery succeeded, and there were no errors |
+| `input_failure` | Only on [reader-bound results](#findings-and-unavailable-input): why the reader could not supply the value |
 
-A complete check can have errors; completion is not validity. A disabled check
-is not a passed check. A sink stop cancels further work immediately, even when
-the last finding fit exactly. Operational stops do not turn into ordinary input
-errors. Invalid policy/input bounds or uncompiled encoding selection are returned
-as Zig errors before content processing starts; malformed content is a finding.
-There is no partial tree or result deinitialization.
+| `completion` | Meaning |
+| --- | --- |
+| `complete` | All scheduled work finished. The text can still have errors. |
+| `fail_fast` | `on_error = .fail_fast` stopped at the first error |
+| `cancelled` | A cancellation request or `cancel()` stopped the work |
+| `diagnostic_stop` | The sink asked to stop, was full, or failed. The payload says which: `requested`, `capacity`, `failure` or `out_of_memory`. |
+| `invalid_validator` | A validator broke its contract (see [custom validators](#custom-validators)), or a finding counter would overflow |
+| `input_unavailable` | Reader-bound only: the reader could not produce the whole value |
 
-## Policies and encodings
+| Check state | Meaning |
+| --- | --- |
+| `disabled` | The check is off. This is not the same as passed. |
+| `not_run` | Enabled, but never started because work stopped earlier |
+| `incomplete` | Started but did not finish |
+| `complete` | Finished. It may have found errors. |
+| `unavailable` | Could not run: the text was not well-formed, or the reader failed |
+
+Points to remember:
+
+- A complete check can still have errors. "Complete" is not "valid": use
+  `valid()`.
+- A sink that asks to stop ends the work at once. A fixed bag asks to stop when
+  it stores its last free entry, so a bag of size 1 stops after one finding.
+- Stops are never turned into input errors.
+- There is no tree and nothing to free in a result.
+
+### Errors returned before any checking
+
+These come back as Zig errors before the text is read. Malformed text is never
+one of them: it is a finding.
+
+| Error | Cause |
+| --- | --- |
+| `InvalidFragment` | The text is longer than a `u32`, or `origin + len` doesn't fit in one |
+| `UnsupportedEncoding` | `options.encoding` names an encoding this profile didn't compile, or one that conflicts with a bound reader |
+| `EncodingRequired` | No `options.encoding`, and the profile compiles neither UTF-8 nor ASCII |
+| `UnicodeFoldingDisabled`, `InvalidPatternEncoding`, `CustomValidatorRequired`, `InvalidCustomSettings`, `InvalidCancellationInterval`, `NonResumableValidator` | A per-call policy override is invalid. Only profiles with `runtime_policy = true` return these; fixed profiles report the same problems at compile time. |
+
+The error set also contains `InvalidSpan`, which `Fragment.child` and
+`Fragment.rebase` use; checking itself reports out-of-range input as
+`InvalidFragment`.
+
+## Choosing checks
+
+### Profile settings
+
+These are the fields of `strings.Profile(.{ ... })`. Unknown fields are compile
+errors.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `policy` | `.{}` | The baseline settings (next table) |
+| `custom` | none | Your [validator](#custom-validators) type. Binding it does not turn it on. |
+| `source_encodings` | UTF-8 only | Encodings to compile: `.ascii`, `.utf8`, `.utf16`, `.utf32`. `&.{}` means ASCII only. `.utf16` and `.utf32` compile both byte orders. |
+| `unicode_case_folding` | `false` | Compile full Unicode case folding, so `.case_insensitive` can be used |
+| `runtime_policy` | `false` | Allow settings to be changed per call ([runtime settings](#changing-settings-per-call)) |
+
+### Policy settings
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `comparison` | `.case_sensitive` | How text is compared ([comparison](#comparison)) |
+| `on_error` | `.collect` | `.collect` runs every enabled check. `.fail_fast` stops at the first error; warnings never stop it. |
+| `diagnostics.fixes` | `.all` | Which fix offers findings keep: `.all`, `.machine_applicable` or `.off`. Validity doesn't change. |
+| `execution.metering` | `false` | Allow checking in steps with [sessions](#metering-cancellation-and-sessions) |
+| `execution.cancellation` | `false` | Poll a cancellation hook. Independent of metering. |
+| `execution.cancellation_interval` | `1` | Poll at most this many work steps apart. Must be positive. |
+| `validation.equals` | off | Equality check: `.{ .expected, .severity, .comparison }` |
+| `validation.one_of` | off | Allowed-values check: `.{ .values, .severity, .comparison }` |
+| `validation.custom` | `.off` | Severity of the bound custom validator: `.off`, `.warning` or `.err` |
+| `custom` | the validator's `defaults` | The settings value passed to the bound validator |
+
+| `equals` / `one_of` field | Default | Meaning |
+| --- | --- | --- |
+| `expected` (`equals`) | `""` | The required value |
+| `values` (`one_of`) | empty | The allowed values |
+| `severity` | `.off` | `.off`, `.warning` or `.err` |
+| `comparison` | `null` | Override `comparison` for this check only; `null` uses the policy's |
+
+How they behave:
+
+- Every content check is off by default. Setting `expected` or `values` does
+  not turn a check on: set its `severity`.
+- With `.collect`, enabled checks run in this order: `equals`, `one_of`,
+  `custom`.
+- An empty `values` list rejects every value, including empty text. A list
+  that contains `""` accepts empty text.
+- `expected` and `values` are always UTF-8, whatever the source encoding. A
+  pattern that isn't valid UTF-8 is a configuration error.
+- A fixed profile's policy is checked at compile time. That costs nothing per
+  call.
+
+### Changing settings per call
+
+With `runtime_policy = true`, pass a `.policy` patch in the options:
 
 ```zig
-const Text = strings.Profile(.{
-    .runtime_policy = true, // default false
-    .source_encodings = &.{ .utf8, .utf16, .utf32 }, // omitted: UTF-8
-    .unicode_case_folding = true, // default false; compiles folding capability
-    .policy = .{
-        .comparison = .case_sensitive,
-        .on_error = .collect,
-        .validation = .{
-            .equals = .{ .expected = "Seattle", .severity = .warning },
-            .one_of = .{
-                .values = &.{ "SF", "Seattle" }, .severity = .err,
-                .comparison = .case_insensitive, // override for this check only
-            },
-        },
-    },
-});
+const result = try Text.parseAndValidate(fragment, bag.sink(), .{ .policy = .{
+    .validation = .{ .equals = .{ .expected = "SF", .severity = .err } },
+} });
 ```
 
-All content checks default off. Specifying a check's arguments does not implicitly
-enable it: set its severity to `err` or `warning`. Under `collect`, enabled checks
-run in order: `equals`, `one_of`, `custom`. Under `fail_fast`, the first **error**
-stops work; warnings do not. An empty allowed set rejects every value, including
-empty input; a set containing `""` accepts the empty string.
+- Fields you leave out keep the baseline value.
+- `equals`, `one_of` and `custom` settings are replaced whole, not merged
+  field by field. In the example, `equals.comparison` goes back to `null`.
+- A patch can't replace the validator, and can't turn on an encoding or Unicode
+  folding the profile didn't compile.
+- `Text.validatePolicy(patch)` checks a patch without running anything. It
+  returns `.valid` or `.invalid` with an issue. On fixed profiles,
+  `validatePolicy` works at compile time only.
+- Checking a patch scans the patterns it enables (to verify their UTF-8) and may
+  call the validator's `validateSettings`. This happens before the text is read.
+- A runtime profile allowed to pick Unicode folding keeps the folding code and
+  data in the binary, even for calls that don't use it.
 
-Compile-time policy is checked at compilation. With `runtime_policy = true`,
-`Text.validatePolicy(patch)` returns `valid` or `invalid(issue)`, and
-`parseAndValidate(..., .{ .policy = patch })` prepares it before scanning input.
-Omitted fields inherit the baseline. Supplied `equals`, `one_of` and custom
-settings are **whole setting values**, not recursively merged patches. Runtime
-overrides cannot replace the validator or enable excluded encoding/folding code.
-Runtime pattern verification has a cost proportional to the supplied/effective
-UTF-8 patterns; fixed policy verification has no per-call cost.
+### Source encodings
 
-`source_encodings = &.{}` means ASCII-only. UTF-16/32 compile native readers for
-both byte orders; select `options.encoding = .utf16le`, `.utf16be`, `.utf32le` or
-`.utf32be`. Without a selection, use UTF-8 if compiled, otherwise ASCII if
-compiled; native-only profiles require an explicit encoding. These are already
-bounded string contents, **not files**: a leading U+FEFF remains content and is
-not an encoding detector. No transcoded buffer is allocated. Patterns in policies
-and the shared comparator are always UTF-8, independent of source encoding.
+Pick the encoding with `options.encoding`: `.ascii`, `.utf8`, `.utf16le`,
+`.utf16be`, `.utf32le` or `.utf32be`. The profile must compile it.
+
+- Without `options.encoding`, UTF-8 is used if compiled, otherwise ASCII.
+  Profiles that compile only UTF-16 or UTF-32 need an explicit encoding.
+- This is the text's contents, **not a file**. A leading U+FEFF is ordinary
+  content, not a BOM, and nothing guesses the encoding.
+- No converted copy is made.
 
 ### Comparison
 
-- `case_sensitive`: scalar-value equality, with no folding or normalization.
-- `ascii_case_insensitive`: fold only ASCII `A`–`Z` to `a`–`z`, leaving every
-  non-ASCII scalar unchanged. Locale-independent and available without
-  `unicode_case_folding`. This applies to UTF-8/16/32 contents too; it does not
-  select ASCII input encoding.
-- `case_insensitive`: Unicode **17.0.0 full default case folding** (C + F mappings,
-  excluding Turkic T and simple S), including expansions such as `ß` → `ss`.
-  This is neither ASCII-only matching nor locale-tailored collation.
+| `comparison` | What it does |
+| --- | --- |
+| `.case_sensitive` (default) | Compares Unicode scalar values exactly. No case folding, no normalization. |
+| `.ascii_case_insensitive` | Treats ASCII `A`–`Z` like `a`–`z` and nothing else. Works for UTF-8, UTF-16 and UTF-32 text (it doesn't mean the text is ASCII). The same in every locale. Needs no Unicode tables. |
+| `.case_insensitive` | Full Unicode case folding as defined by Unicode 17.0.0: the C and F entries of `CaseFolding.txt`, without the Turkish/Azeri T entries or the simple S entries. So `ß` matches `ss`. It is neither ASCII-only matching nor locale-aware sorting. Needs `unicode_case_folding = true`. |
 
-`case_sensitive` remains the default. All three choices work as the baseline,
-as per-check overrides for `equals`/`one_of`, and through the shared comparison
-helpers used by custom validators, including sessions. With runtime policies
-enabled, ASCII comparison may be selected without enabling Unicode folding.
+Any of the three works as the profile baseline, as a per-check override for
+`equals` and `one_of`, and in the shared comparison helpers custom validators
+use (in sessions too). Runtime profiles may select `.ascii_case_insensitive`
+without compiling Unicode folding. Asking for `.case_insensitive` without
+`unicode_case_folding = true` is a compile error on fixed profiles and
+`UnicodeFoldingDisabled` on runtime ones.
 
-For example, ASCII comparison equates `TRUE` and `true`, but not `ellipſe` and
-`ellipse`, `É` and `é`, or `Straße` and `STRASSE`. Punctuation is not folded.
-Use it for application rules requiring ASCII-insensitive words, not as a blanket
-Graphviz attribute policy: DOT attribute names and many values are case-sensitive.
-This option does not change existing DOT keyword or markup vocabulary matching.
+ASCII comparison treats `TRUE` and `true` as equal, but not `ellipſe` and
+`ellipse`, `É` and `é`, or `Straße` and `STRASSE`. Punctuation is never folded.
+Use it for application rules that ignore ASCII case. Don't use it as a blanket
+Graphviz policy: DOT attribute names and many values are case-sensitive. This
+setting doesn't change how DOT keywords or markup vocabulary are matched.
 
-The [pinned Unicode data](https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt)
-does not imply normalization: `é` and `e` followed by a combining acute accent
-remain different. Folded scalars are streamed through bounded three-scalar
-buffers, not copied into a new string. Built-in failures highlight the original
-whole value; folding never changes its stored span or source.
+Folding is not normalization: `é` and `e` followed by a combining acute accent
+stay different. Folded characters stream through small fixed buffers (at most
+three characters per side). No folded copy is built. Findings from built-in
+checks highlight the original whole value; folding never moves positions or
+changes the source.
 
-Exact/ASCII-only profiles do not reference Unicode folding tables or use Unicode
-expansion buffers. Requesting `case_insensitive` without
-`unicode_case_folding = true` is a configuration error. Fixed profiles with no
-enabled ASCII-insensitive comparison also exclude its comparison paths. A
-runtime profile allowed to select Unicode folding necessarily retains its code
-and data even on exact/ASCII calls. Non-comparison validators need neither a case field
-nor a folding capability. The generated table and Unicode license live in
-`src/string/`; its generator verifies the compressed table against the pinned
-input across the full code-point range.
+What gets linked into your program:
+
+- Profiles that never use Unicode folding don't include its tables or buffers.
+- Fixed profiles that never use ASCII folding don't include that code either.
+- Validators that don't compare text need no comparison setting.
+
+The folding table is generated from the pinned
+[Unicode 17.0.0 data](https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt).
+Its license is in `src/string/UNICODE_LICENSE.txt`.
 
 ## Custom validators
 
-Policies configure checks and their behavior; validators implement those checks.
+A *validator* is the code behind a check. The built-in
+`strings.validators.Equals` and `strings.validators.OneOf` use the same
+interface as yours. You bind one custom validator per profile at compile time
+with `.custom = MyValidator`, and turn it on with
+`.policy.validation.custom = .err` or `.warning`. There is no run-time registry.
 
-Built-in `strings.validators.Equals` and `OneOf` use the same contract as custom
-validators; there is no runtime callback registry. Bind one custom implementation
-per profile with `.custom = Validator`. Binding does **not** run it: enable
-`.policy.validation.custom = .err` or `.warning`.
+### The simplest validator: a predicate
 
 ```zig
 const Nonempty = strings.validators.Predicate(void, {}, struct {
@@ -168,7 +281,13 @@ const Text = strings.Profile(.{
 });
 ```
 
-A structured validator supplies:
+`Predicate(Settings, default_settings, function)` wraps a function that returns
+`true` to pass. A `false` result gives one generic finding. A predicate runs to
+completion in one call, so it can't be paused or cancelled halfway. Enabling it
+together with metering is rejected: a compile error on fixed profiles,
+`NonResumableValidator` on runtime ones.
+
+### A full validator
 
 ```zig
 const RequiredInitial = struct {
@@ -184,7 +303,7 @@ const RequiredInitial = struct {
             context.invalidValidator();
             return .stopped;
         };
-        if (first == settings.scalar) return .passed;
+        if (first != null and first.? == settings.scalar) return .passed;
         if (!context.report(.{ .detail = .wrong_initial })) return .stopped;
         return .failed;
     }
@@ -197,147 +316,243 @@ const RequiredInitial = struct {
 };
 ```
 
-`Settings`, `defaults` and `uses_comparison` are required. Supply `check` for a
-synchronous validator, or `State(Context)` and `step` for a resumable validator
-(both forms can coexist). Optional
-`validateSettings(settings) bool` must be pure, allocation-free, source-independent
-configuration verification; it must not invoke execution callbacks. Policy
-`.custom` supplies the settings, while `.validation.custom` supplies severity.
-`Text.Policy` has the bound validator's settings type. Defaults are checked even
-when a validator is bound but disabled.
+This one uses `value.cursor()`, which exists on plain text only. For a
+validator that also works on decoded DOT and markup values, see
+[one validator interface](#one-validator-interface).
 
-The value exposes borrowed `bytes`, original `origin`, its compile-time `encoding`,
-a scalar `cursor().next()` and a checked **local** `try span()` (`SourceTooLarge`
-for consumer-constructed values exceeding the u32 domain). Raw byte length is not a
-character count. A validator sees no node, element, attribute name or host AST.
-It must not retain context pointers or mutate source. Consumer code is trusted
-Zig code: binding it at compile time is not a sandbox.
+| Declaration | Required | Meaning |
+| --- | --- | --- |
+| `Settings` | yes | The type of the settings value |
+| `defaults` | yes | The default `Settings` value |
+| `uses_comparison` | yes | `true` to use the shared comparison helpers (`equals`, `equalsStep`, `equalsBatch`) |
+| `check(value, settings, context) Outcome` | `check`, or `State` + `step` | Runs to completion in one call |
+| `State(Context)` and `step(state, value, settings, context) Step` | | The resumable form, needed for metering. See [resumable validators](#resumable-custom-validators). |
+| `batch(state, value, settings, context, allowance) u32` | no | An optional faster path for sessions; needs `State` and `step` |
+| `validateSettings(settings) bool` | no | Rejects bad settings |
+| `Detail` | no | A type your findings can carry |
+| `message(detail, writer)`, `hint(detail, writer)` | no | Wording for findings that carry a `Detail` |
 
-The outcomes are `passed`, `failed`, `stopped`. An unexplained `failed` produces
-one generic custom-check finding. Detailed findings suppress that fallback, so
-multiple reports do not gain a duplicate generic error. A `passed` return cannot
-erase reports. Returning `stopped` without signalling cancellation, a sink stop
-or validator failure produces `invalid_validator`, not success.
+- You can provide both `check` and `State`/`step`.
+- `.policy.custom` supplies the settings and `.policy.validation.custom` the
+  severity. `Text.Policy` uses your `Settings` type for `custom`.
+- `validateSettings` must be pure: no allocation, no source access and no
+  context calls. The library calls it on the effective settings (`defaults`
+  unless you supplied others) even while the validator is off.
+
+### What a validator sees
+
+On plain text the `value` has:
+
+| Member | Meaning |
+| --- | --- |
+| `bytes` | The borrowed text |
+| `origin` | Its byte offset in the original source |
+| `encoding` | Its encoding, known at compile time |
+| `cursor()` | A cursor whose `next()` returns the next character, or null at the end |
+| `span()` | The whole value as a local span. Returns `SourceTooLarge` for a hand-made value longer than a `u32`. |
+| `location()`, `contiguous()` | The same views a [logical value](#one-validator-interface) has |
+
+Byte length is not a character count. A validator never sees a node, element,
+attribute name or host syntax tree. Don't keep the value, the context or
+pointers into them after returning, and don't change the source. Validators are
+trusted Zig code: binding one at compile time is not a sandbox.
+
+### Outcomes
+
+`check` returns `passed`, `failed` or `stopped`. (`step` can also return
+`pending`.)
+
+- `failed` with no finding reported gives one generic custom-check finding.
+- If you reported findings, no extra generic finding is added, however many you
+  reported.
+- `passed` can't erase findings already reported.
+- `stopped` must have a reason: a cancellation, a sink stop, or a call to
+  `context.invalidValidator()`. Without one the result is `invalid_validator`,
+  never success.
 
 ### Shared comparisons and diagnostics
 
-With `uses_comparison = true`, `context.equals(value, expected_utf8)` returns
-`?bool`: null means stop. It uses the profile's comparison setting. Nonparticipating
-validators cannot call it; their original input is never silently lowercased.
-This synchronous helper is available only to the unstepped fast path. Any
-validator compiled for the session engine must use `equalsStep` instead,
-including cancellable and runtime-policy profiles with metering disabled.
-Pass the original supplied value, not a fabricated view or substring; this
-ensures comparisons reuse the verified input prerequisite. An independently
-configured regex can instead own its comparison semantics.
-There is no bundled regex engine.
+The `context` a validator receives offers these services:
 
-`context.report(finding)` returns false when work must stop. A finding can contain
-local `span`, `related`, typed `detail`, and `fix`. Missing primary span means
-the whole value. **Every standard span field** is checked against the fragment and rebased once,
-including ignored fix offers. Invalid ranges produce `invalid_validator` even in
-fast. Rule severity is authoritative; a custom report cannot secretly
-promote a warning rule or bypass an error rule.
+| Method | What it does |
+| --- | --- |
+| `report(finding) bool` | Emits a finding. `false` means stop now. |
+| `cancelled() bool` | `true` when cancellation was requested or the operation has already stopped |
+| `invalidValidator()` | Declares that your validator broke its own contract |
+| `equals(value, expected) ?bool` | Compares with the profile's comparison setting. `null` means stop. For `check` only. |
+| `equalsStep(&state, value, expected) Step` | The same comparison, one step at a time, for `step` |
+| `readStep(&cursor, value)` | Reads one character of the value; see [one validator interface](#one-validator-interface) |
 
-The WDP `custom_check_failed`/`custom_check_warning` family identifies the custom
-rule; optional `Validator.Detail` retains its finer typed identity and payload.
-Optional `message(detail, writer)` and `hint(detail, writer)` customize wording
-without allocated message strings. All reports retain their `detail`; consumers
-can switch on it independently of rendered wording. Findings without detail use
-the generic message. Each bound profile exposes its matching `Diagnostic`,
-`FixedDiagnosticBag(N)`, `GrowableDiagnosticBag`, `Sink` and `console` renderer.
-Console layout/positions/annotations come from the common renderer, not a new
-format. Render against the **original** source and select its source encoding.
+The comparison helpers:
 
-Fix replacement text is borrowed UTF-8; an edit application must encode it for a
-UTF-16/32 source. `diagnostics.fixes = all` is the default; `machine_applicable`
-filters uncertain offers and `off` removes all offers, without changing validity.
-No edit is applied automatically. Any borrowed references in details or fixes
-must outlive their retained diagnostics; do not report pointers to callback-local
-buffers.
+- need `uses_comparison = true`. Validators without it can't call them, and
+  their input is never silently lowercased;
+- use the policy's `comparison` setting (custom validators don't get the
+  per-check overrides `equals` and `one_of` have);
+- must get the original `value` you were handed, not a substring or a value
+  you built (anything else gives `invalid_validator`);
+- check that `expected` is valid UTF-8 every time, including any part after a
+  mismatch.
+
+`equals` is for `check` only. Calling it from `step` is a compile error whenever
+the session engine is compiled; use `equalsStep` there. There is no bundled
+regex engine. A validator can implement its own matching.
+
+### Findings
+
+| `Finding` field | Meaning |
+| --- | --- |
+| `span` | A byte range inside the value (plain text only). Omitted: the whole value. |
+| `related` | A second local range, shown as "related value" |
+| `at` | A location in the original source, from `value.location()` or `readStep` |
+| `related_at` | A related location in the original source |
+| `detail` | Your `Detail` value |
+| `fix` | A fix offer with a local span (plain text only) |
+
+- Every span, including the span of a fix offer that is then filtered out, is
+  checked against the value and moved to source coordinates once. A range
+  outside the value gives `invalid_validator`, in every build mode.
+- Don't combine `at` with `span`, or `related_at` with `related`.
+- The rule decides the severity. Custom findings use `custom_check_failed` for an
+  error rule and `custom_check_warning` for a warning rule. A validator can't
+  change that.
+- Built-in codes are `invalid_encoding`, `unequal` / `unequal_warning` and
+  `not_one_of` / `not_one_of_warning`. All codes are in the
+  `string_processor` namespace.
+- Every finding keeps its `detail`, so you can switch on it instead of on the
+  rendered text. Findings without a detail use the generic wording.
+
+Fix offers:
+
+- Replacement text is borrowed UTF-8. To apply it to UTF-16 or UTF-32 source,
+  encode it yourself.
+- `diagnostics.fixes` filters offers (`.all` by default) without changing
+  validity. Nothing is ever applied automatically.
+- Anything borrowed in a detail or fix must outlive the stored diagnostics.
+  Don't point at a buffer local to your validator.
+
+Each profile has its own `Diagnostic`, `FixedDiagnosticBag(N)`,
+`GrowableDiagnosticBag`, `Sink` and `console` renderer. The console output looks
+the same as for the other parsers. Render against the **original** source,
+with its encoding.
 
 ## Metering, cancellation and sessions
 
-Execution uses the same policy names and session lifecycle as DOT and markup:
+*Metering* lets you check text in small steps. A *session* does at most `N`
+*credits* of work per `advance(N)` call and then returns, so a long check
+doesn't block your event loop. *Cancellation* lets a hook you supply stop the
+work. These use the same setting names and session lifecycle as DOT and markup
+(see [parsing in small steps](EXECUTION.md)).
 
 ```zig
 const Text = strings.Profile(.{ .policy = .{
     .execution = .{
         .metering = true,             // default false
         .cancellation = true,         // default false; independent of metering
-        .cancellation_interval = 1,   // positive work-step count, default 1
+        .cancellation_interval = 1,   // positive, default 1
     },
     .validation = .{ .equals = .{ .expected = "Seattle", .severity = .err } },
 } });
+var bag = Text.GrowableDiagnosticBag.init(allocator, .{});
+defer bag.deinit();
 var session = try Text.Session.init(
     .{ .bytes = source, .origin = 0 }, bag.sink(),
-    .{ .cancellation = cancel_token }, // optional borrowed hook
+    .{ .cancellation = cancel_hook }, // a strings.Cancellation you own
 );
 defer session.deinit();
 while (true) {
     const progress = session.advance(64);
-    // At most 64 credits used; return to your event loop here if unfinished.
+    // At most 64 credits were used. Return to your event loop here if needed.
     if (progress.outcome != null) break;
 }
 const result = session.result().?;
 ```
 
-`parseAndValidate` remains a single run-to-completion call. `Session.run()` also
-runs to completion without a credit limit. `advance(budget)` yields without
-restarting a check; `advance(0)` does no content work but checks cancellation at
-entry. `result()` is null until terminal, including after a pause. `cancel()`
-and `deinit()` end unfinished work without creating input-error diagnostics.
-After termination, further calls do no work or polling and keep the same result.
-`reset(fragment, sink, options)` starts a fresh operation; an invalid reset leaves
-the previous session unchanged. There is no allocation to free. Sessions can move
-between calls, but cannot be driven concurrently or reentered by a callback.
+| Session method | What it does |
+| --- | --- |
+| `Session.init(fragment, sink, options)` | Prepares a session. Returns an error before any work if the input or settings are bad. |
+| `advance(budget) Progress` | Does at most `budget` credits of work. Needs metering: on a fixed profile without it this is a compile error; on a runtime profile it returns `error.MeteringDisabled` (so use `try`). |
+| `run() Result` | Runs to the end with no credit limit |
+| `result() ?Result` | `null` until the session has finished, including while paused |
+| `cancel() Result` | Stops unfinished work. Creates no input findings. |
+| `reset(fragment, sink, options)` | Starts a fresh check. If the new input or settings are invalid, the old session is left as it was. |
+| `deinit()` | The same as `cancel()`. There is nothing to free. |
 
-With `runtime_policy = true`, execution overrides are resolved and latched at
-init/reset; `advance` returns an error union and needs `try`. It returns
-`MeteringDisabled` if metering is off. For fixed profiles, calling `advance` with
-metering off is a compile error. The top-level `strings.BoundedSession` enables
-metering with all content rules off. Cancellation lives under
-`.policy.execution.cancellation`, not a separate top-level profile setting.
+| Option | When it exists | Meaning |
+| --- | --- | --- |
+| `encoding` | always | The text's encoding ([source encodings](#source-encodings)) |
+| `policy` | `runtime_policy = true` | A per-call settings patch, fixed at `init`/`reset` |
+| `cancellation` | runtime profiles, or when `execution.cancellation` is on | An optional borrowed hook |
+
+| `Progress` field | Meaning |
+| --- | --- |
+| `outcome` | `null` while unfinished, otherwise the `completion` |
+| `work_used` | Credits used by this call only |
+| `source_frontier` | Bytes of the text the encoding pass has read so far, counted from the start of the fragment. It stays at the full length while the content checks run. |
+| `stage` | `encoding`, `equals`, `one_of`, `custom` or `done` |
+
+- `parseAndValidate` and `Session.run()` both run to completion. If metering or
+  cancellation is on, they use the same bounded steps internally.
+- `advance(0)` does no work, but still checks for cancellation.
+- Once a session has finished, further calls do no work, don't poll, and return
+  the same result.
+- `strings.BoundedSession` is a ready-made session type with metering on and no
+  content checks (it checks the encoding only).
+- Sessions can be moved between calls. Don't drive one from two threads at once.
+  A sink or validator must not call any method of the session that is running
+  it. A cancellation hook may call that session's `cancel()` and return
+  `false`; the session still ends as `cancelled`. It must not call any other
+  session method.
 
 ### Credit and cancellation guarantees
 
-One credit dispatches one bounded state-machine step. Built-in steps perform
-one of these operations:
+One credit runs one bounded step. A built-in step does one of these:
 
-- Decode one source or expected scalar (at most four physical bytes), or advance
-  one malformed physical code unit.
-- Compare at most one scalar per side, including producing or consuming a
-  bounded Unicode-fold expansion.
-- Emit a finding, finish a check/candidate, or move to the next stage. A finishing
-  comparison may also emit its one generic failure finding within that step.
+- decodes one character (at most four bytes) of the text or of a pattern, or
+  skips one malformed code unit;
+- compares at most one character from each side, including one character of a
+  Unicode folding expansion;
+- emits a finding, finishes a check or candidate value, or moves to the next
+  stage. A comparison that finishes may also emit its one generic finding in
+  the same step.
 
-Credits are **not bytes or wall-clock time**, and are not interchangeable with
-DOT/markup scanner credits. Budget one always permits progress. Partitioning the
-same work into different positive budgets does not change total charged work,
-findings or results. No scan of an entire value or candidate list is hidden in
-one built-in step. Membership retains its candidate position; folding retains its
-pending expansion across pauses. `work_used` counts this call only.
-`source_frontier` counts physical source bytes classified by the encoding pass,
-relative to the fragment; it stays at the source length while content checks
-continue. `stage` distinguishes `encoding`, `equals`, `one_of`, `custom`, `done`.
+What that means for you:
 
-When enabled, cancellation is checked on every live entry and at most
-`cancellation_interval` work steps apart. Larger intervals do not change credits
-or allow `advance` to exceed its budget. A cancelled check stays incomplete;
-scheduled later checks stay not run. A finished result wins over late cancellation.
-No clocks, threads or synchronization are created. The caller owns hook lifetime,
-thread safety, and delivery cost.
+- Credits are **not bytes or time**. They are not the same unit as DOT or
+  markup credits.
+- A budget of 1 always makes progress.
+- Splitting the same work into different budgets gives the same total credits,
+  findings and result.
+- No built-in step hides a scan of a whole value or a whole list. A membership
+  check remembers which allowed value it was comparing, and folding remembers a
+  half-finished expansion, across pauses.
 
-Fragment/policy preparation occurs at init/reset, **outside** the work budget.
-Runtime policy verification scans effective patterns and may call custom
-`validateSettings`; this is not resumable. Sinks and hooks are synchronous callbacks,
-not preemptible operations. Their execution time is not bounded by credits.
+Cancellation, when enabled:
+
+- is checked on every call that still has work, including `advance(0)`, and at
+  most `cancellation_interval` steps apart;
+- larger intervals don't change credit counts and never let `advance` go over
+  its budget;
+- leaves a check that was running as `incomplete`, and later checks as
+  `not_run`;
+- loses to a result that has already finished.
+
+The module creates no clocks, threads or locks. You own the hook: its lifetime,
+its thread safety and its cost. The hook only answers "stop or not"; it must not
+call methods on the session.
+
+Not counted in credits:
+
+- preparing the fragment and policy at `init`/`reset`, including checking a
+  runtime patch's patterns and calling `validateSettings`. This can't be paused;
+- the time your sink and hook take. They run synchronously, so credits don't
+  bound them.
 
 ### Resumable custom validators
 
-Built-ins and custom validators use exactly the same `State(Context)` / `step`
-contract, with optional `batch` and unmetered `check` fast paths. For example,
-a custom comparison can use the shared bounded helpers:
+Built-in and custom validators share the same resumable form: `State(Context)`
+plus `step`, with optional `batch` and `check` shortcuts. For example, a custom
+equality check using the shared helpers:
 
 ```zig
 const Match = struct {
@@ -358,128 +573,161 @@ const Match = struct {
 };
 ```
 
-Bind it with `.custom = Match` and enable `.policy.validation.custom` as usual.
-Each `step` costs one credit and returns `pending`, `passed`, `failed` or
-`stopped`. State starts with its default field values. Those defaults must be bounded
-and must not scan input, invoke callbacks or allocate. Store progress in that state, not
-in retained context/session pointers. Do bounded work per call and yield
-`pending` when unfinished; the engine cannot enforce a time limit on arbitrary
-trusted Zig code. A custom loop or regex call does not become bounded just by
-being placed inside `step`.
+Bind it with `.custom = Match` and enable `.policy.validation.custom`.
 
-`equalsStep` validates its UTF-8 expected argument incrementally, then compares
-using the profile's case setting. Pass the original value and the same unchanged
-expected slice until terminal, and reset its state before a new comparison.
-Patterns and custom settings remain borrowed and must outlive the session.
-Calling synchronous `context.equals` from a session-engine validator is a compile
-error, even when metering is disabled for that call.
-Use `context.report` for detailed diagnostics as before; reports survive pauses
-and suppress the generic failure fallback across the whole check.
+**`step`:**
 
-An optional `batch(state, value, settings, context, allowance) u32` can replace
-**consecutive pending steps** with equivalent bounded work. Return their exact
-credit count, no greater than `allowance`. Returning zero must leave state
-unchanged and requests the scalar fallback. It must preserve the state and work
-count that repeated `step` calls would produce: do not skip reports, polls,
-terminal outcomes or other callback side effects. Overcharging is reported as
-`invalid_validator`; arbitrary trusted Zig code still owns its work bounds.
+- Each call costs one credit and returns `pending`, `passed`, `failed` or
+  `stopped`.
+- `State` starts from its field defaults. Those defaults must be cheap: no
+  scanning, no callbacks, no allocation.
+- Keep progress in the state, never in pointers to the context or session.
+- Do a small, bounded amount of work per call and return `pending` when not
+  done. The engine can't enforce a time limit on your code: a loop or regex
+  call placed inside `step` is not made bounded by being there.
+- `equalsStep` first checks the UTF-8 of `expected` step by step, then compares
+  using the profile's comparison setting. Pass the original value and the same
+  unchanged `expected` pattern until it finishes, and reset its state before a
+  new comparison.
+- Patterns and custom settings are borrowed and must outlive the session.
+- Use `context.report` as in `check`. Findings survive pauses and suppress the
+  generic failure finding for the whole check.
 
-The batch context deliberately exposes no `report` or `cancelled` methods. Its
-`equalsBatch` helper consumes matching ASCII runs or expected-pattern ASCII runs;
-zero leaves the original `step` to handle Unicode, folding, mismatches, malformed
-patterns and completion. This helper is not available in a single-step context.
-Both `equals` and `one_of` use this same optional contract. A validator with only
-`State`/`step` remains supported without modification. Never rely on a batch
-being called: small budgets, poll intervals and unsuitable input can bypass it.
+**`batch` (optional):**
 
-When binding this validator through `WithReader`, **both** `step` and `batch`
-receive a logical value, not the standalone `Value`. Use the context helpers
-shown above; a `batch` that directly reads `value.bytes` is standalone-only.
-To keep a byte-specialized batch and a portable step in one validator, return
-zero without mutation for logical values (for example, a compile-time
-`if (!@hasField(@TypeOf(value), "bytes")) return 0;` guard). The portable step
-then handles that input. No new capability declaration is required.
+- It may do the work of several **consecutive `pending` steps** at once. It
+  returns how many steps' worth of credits it used, never more than
+  `allowance`. Returning more gives `invalid_validator`.
+- Returning 0 must leave the state unchanged; the engine then calls `step`.
+- It must leave exactly the state and credit count repeated `step` calls would
+  have. It must not skip findings, polls, final outcomes or other side effects.
+- The batch context has no `report` or `cancelled`, only `equalsBatch`.
+  `equalsBatch` consumes matching ASCII runs. Returning 0 leaves Unicode,
+  folding, mismatches, malformed patterns and the final answer to `step`.
+- Never rely on `batch` being called: small budgets, short poll intervals and
+  unsuitable input skip it. A validator with only `State`/`step` works
+  unchanged. `equals` and `one_of` use this same optional contract.
+- When the validator is bound through [`WithReader`](#validating-logical-values),
+  both `step` and `batch` get a logical value, which has no `bytes`. A `batch`
+  that reads `value.bytes` directly works on plain text only. To keep one in a
+  portable validator, return 0 without changing anything for logical values,
+  for example with
+  `if (!@hasField(@TypeOf(value), "bytes")) return 0;`. The portable `step`
+  then handles that input.
 
-An optional `check` provides an unmetered fast path, exactly as it does for
-built-ins. It must agree with `step` on acceptance and diagnostics. A step-only
-validator also works unmetered. A check-only validator (including `Predicate`)
-is accepted unmetered but rejected by `validatePolicy`/init if active metering is
-requested; it is never silently treated as bounded. Cancellation-only execution
-can call it, but it must poll `context.cancelled()` inside long work itself.
+**`check` alongside `step`:** an optional `check` is used on the plain one-shot
+path (no metering, no cancellation). It must agree with `step` on the answer and
+the findings. A validator with only `step` also works without metering.
+
+A validator with only `check` (such as a `Predicate`):
+
+- works without metering;
+- is rejected when metering is on and the check is enabled: a compile error on
+  fixed profiles, an invalid `validatePolicy` result or `init` error on runtime
+  ones. It is never silently treated as bounded;
+- can run with cancellation on (without metering), but must call
+  `context.cancelled()` itself during long work.
 
 ## Execution costs
 
-With both execution features off, the one-shot path has no session state,
-credit counters or cancellation polling. Opting into metering or cancellation
-uses bounded work, even when calling `parseAndValidate` or `Session.run`. Small
-budgets and cancellation intervals use the scalar driver directly. Larger
-allowances can combine equivalent ASCII steps without changing their credits;
-a failed batch probe falls back to a bounded scalar run instead of probing
-overlapping windows at every scalar. No batch or fallback crosses the remaining
-budget or next cancellation poll. Budget one and interval one remain scalar.
-Larger budgets can reduce both resume and per-step overhead, but do not reduce
-the charged work. Session storage includes only compiled-in
-rules and folding capability; runtime-configurable profiles retain the possible
-rule states. Storage is fixed-size and caller-owned, not proportional to input
-length or membership-list length.
+- With metering and cancellation both off, a one-shot check has no session
+  state, credit counters or cancellation polling.
+- With either on, checks run in bounded steps, even through
+  `parseAndValidate` or `Session.run`.
+- Small budgets and short cancellation intervals use the one-step-at-a-time
+  driver. Larger ones may combine plain ASCII steps without changing their
+  credits. A failed attempt to combine falls back to a short run of single
+  steps rather than retrying at every character. Combining never crosses the
+  remaining budget or the next cancellation poll. A budget of 1 and an interval
+  of 1 always use single steps.
+- Larger budgets can cut resume and per-step overhead. They never reduce the
+  credits charged.
+- Session storage has a fixed size: it covers only the compiled rules and
+  folding support. It doesn't grow with the text or the number of allowed
+  values. Runtime profiles keep state for every rule they might enable. Check
+  `@sizeOf(Text.Session)` for a given profile.
 
-Source encoding is checked before the enabled rules; comparisons may scan
-it again. Uncancellable UTF-8 uses the standard validator's ASCII fast path;
-malformed input then takes a locating pass for diagnostic runs. Exact UTF-8/ASCII
-comparison can use byte equality after validation; ASCII-insensitive comparison
-can use bytewise ASCII folding. Native readers fold only the decoded ASCII
-scalars. Metered ASCII runs can batch equivalent pending comparisons, preserving
-credits and poll boundaries; tails, mismatches and non-ASCII use scalar steps.
-Cancellable comparisons retain cooperative polling. Membership is a short-circuit
-linear search through candidates, not a
-compiled hash index. Custom settings, code and sink behavior determine their own
-additional costs. The shared comparator also verifies its UTF-8 expected argument,
-equally for built-ins and custom code. An unmetered, uncancellable exact byte match
-can reuse the input's encoding proof instead of scanning identical bytes again;
-a mismatch still checks the entire expected argument, including malformed suffixes.
-Metered/cancellable checks retain their original expected-scan credits and polling.
-Do not assume dynamic expected patterns are free to prepare or scan.
-No heap allocations occur in the processor or comparators;
-only caller-selected bags or consumer callbacks may allocate. There is no string
-tree, retained processor per value, normalization buffer or source copy.
+Where time goes:
 
-For a single before/after report, run `zig build perf-string -- --baseline HEAD`.
-It covers native comparisons and sessions in fast/safe and saves
-timings, ranges, sizes and work counters; see [report options](PERFORMANCE.md#one-command-string-comparison).
+- The encoding is checked before the rules run; comparisons may read the text
+  again.
+- With metering and cancellation both off, UTF-8 text is checked with the
+  standard library's validator, which skips ASCII runs quickly. Malformed text
+  then gets a second pass to locate each bad run.
+- Exact comparison of UTF-8 or ASCII text can compare bytes directly once the
+  encoding is known to be good. ASCII-insensitive comparison can fold bytes.
+  UTF-16 and UTF-32 readers fold only the decoded ASCII characters.
+- With metering, plain ASCII runs can be compared in groups, keeping the same
+  credits and poll points. Tails, mismatches and non-ASCII text use single
+  steps. Cancellable comparisons still poll as configured.
+- Membership is a linear search through the allowed values that stops at the
+  first match. It is not a hash lookup.
+- The shared comparison helper checks the UTF-8 of `expected` for built-in and
+  custom validators alike. On fixed profiles without metering or cancellation,
+  an exact byte match skips that second scan (the text's own encoding check already covers
+  it); a mismatch still checks the whole pattern, including a malformed tail.
+  Metered or cancellable checks keep their original pattern-check credits and
+  polls. Don't assume patterns chosen at run time are free.
+- Custom settings, validator code and your sink add their own costs.
+- No heap allocation happens in the processor or the comparison helpers. Only a
+  bag you chose, or your own callbacks, may allocate. There is no string tree,
+  no per-value processor object, no normalization buffer and no source copy.
 
-Run `zig build test-string`, `zig build bench-string -Doptimize=fast`,
-`zig build bench-string-sessions -Doptimize=fast`, and `zig build check-wasm`.
-`zig build bench-string-passthrough -Doptimize=fast` compares real DOT
-quote scanning with simulated handoff to string checks; it is not host integration.
-The session benchmark reports time, credits, hook calls and state size for
-fixed/runtime policies and multiple budgets/intervals. The last command builds
-consumed, stripped Wasm probes for exact, ASCII-insensitive, Unicode folding and
-non-comparison builds and uses Node to execute their exports and verify
-folding-table exclusion. `zig build check` includes these
-Wasm checks alongside the repository's other correctness/build checks, without
-running benchmarks. DOT/markup hot paths are not
-modified by this standalone module. Explicit logical-reader binding is available
-below, followed by optional automatic host dispatch. Shared-budget composition
-remains later work.
-See the [initial performance measurements](PERFORMANCE.md#standalone-strings-unreleased).
+### Measuring
+
+| Command | What it measures |
+| --- | --- |
+| `zig build test-string` | Tests the standalone module |
+| `zig build test-logical` | Tests the logical readers: positions, native encodings, bounded progress, agreement with the host decoders |
+| `zig build bench-string -Doptimize=fast` | Exact, ASCII-insensitive, Unicode-folding and custom checks |
+| `zig build bench-string-sessions -Doptimize=fast` | Metering and cancellation: time, credits, hook calls and state size, fixed and runtime policies, several budgets and intervals |
+| `zig build bench-logical-strings -Doptimize=fast` | Reader-bound checks on plain, DOT and markup text: short, long, Unicode and concatenation-heavy input, `run` versus budgets of 1 and 64, session size and credits. `-- --csv` writes the repository's benchmark CSV format. |
+| `zig build bench-string-integration -Doptimize=fast` | Host defaults, passthrough and processed attribute routes, including allocator-request totals |
+| `zig build bench-string-passthrough -Doptimize=fast` | Real DOT quote scanning against a simulated hand-off to string checks. It is not host integration. |
+| `zig build check-wasm` | Builds stripped Wasm programs for exact, ASCII-insensitive, Unicode-folding and non-comparing profiles, runs their exports with Node, and checks the folding table is left out where unused. `zig build check` includes it. |
+| `zig build perf-string -- --baseline HEAD` | A before/after report for your working tree against a Git revision. See [report options](PERFORMANCE.md#one-command-string-comparison). |
+
+`perf-string` suites are `native`, `sessions` (the default pair), `logical`,
+`integration` and `host-defaults`. For example:
+
+```sh
+zig build perf-string -- --baseline HEAD --suites logical,native,sessions
+zig build perf-string -- --baseline HEAD --suites host-defaults,integration \
+  --modes fast,safe,small --runs 5
+```
+
+`host-defaults` builds only the ordinary host operations on both sides, so
+string routes can't affect the binary-size or default-path numbers.
+`integration` also builds the routed profiles; rows that don't exist in the
+baseline are marked new rather than compared with a made-up baseline. Keeping
+the two suites apart stops code-layout changes in a mixed benchmark from looking
+like a cost that applications without string checks pay.
+
+This module doesn't touch the DOT or markup parsing hot paths. Measurements are
+in [performance](PERFORMANCE.md#standalone-strings).
 
 ## Logical readers
 
-> **Unreleased.** A shared reader foundation, not automatic string processing.
+> **Unreleased.** Not in 0.5.0.
 
-These allocation-free readers expose the same `step()`, `location()`,
-`contiguous()` and `position()` interface. Select the actual encoding, including
-byte order, at compile time. Supply a borrowed `Fragment` with its **original**
-byte origin. Initialization checks coordinates without scanning or BOM detection.
+A *logical value* is what host text means after the host's own spelling rules
+are applied. In DOT, `"Sea" + "ttle"` means `Seattle`. In markup, `A&amp;B`
+means `A&B`. A *logical reader* walks such text one character at a time,
+without building a decoded copy, and tells you where each character came from
+in the original source.
 
-| Reader | Input and interpretation |
-| --- | --- |
-| `strings.LogicalReader(actual)` | Already-logical contents; no unescaping, reference decoding or BOM stripping |
-| `dot.identifier.LogicalReader(actual)` | One host-selected identifier expression; removes DOT quoting, escaped quotes, line continuations and concatenation glue; preserves layout/unknown escapes |
-| `markup.LogicalReader(actual)` | One text or attribute-content scope **without delimiters**; decodes numeric and selected named references |
+| Reader | Reads | Decodes |
+| --- | --- | --- |
+| `strings.LogicalReader(encoding)` | Plain contents | Nothing: no escapes, references or BOM removal |
+| `dot.identifier.LogicalReader(encoding)` | One DOT identifier expression, as written (with its quotes) | Removes quotes, `\"` escapes, line continuations (backslash + newline) and the `+` glue between parts, including comments between them. Other escapes, such as `\n` or `\\`, are kept as written. |
+| `markup.LogicalReader(encoding)` | The contents of one markup text or attribute value, **without** its quotes | Numeric references, and named references from the selected catalog |
 
-The shared types are available as `strings.logical`, `dot.logical` and
-`markup.logical`. A caller can use one generic consumption loop for all three:
+`encoding` is the actual encoding, including byte order (`.utf8`,
+`.utf16le`, ...), fixed at compile time. Give each reader a `Fragment` with the
+text's **original** origin. `init` checks the coordinates only: it doesn't scan
+the text or look for a BOM. The shared types (`SourceLocation`, `Scalar`,
+`Failure`, `Step`, `BorrowedContents`) are available as `strings.logical`,
+`dot.logical` and `markup.logical`, so one loop works for all three readers:
 
 ```zig
 var reader = try markup.LogicalReader(.utf8).init(
@@ -490,7 +738,7 @@ while (true) {
     switch (reader.step()) {
         .pending => {},
         .scalar => |item| {
-            // Characters: A, &, B. The '&' span is { start = 101, len = 5 }.
+            // Characters: A, &, B. The '&' covers { .start = 101, .len = 5 }.
             consume(item.codepoint, item.location);
         },
         .end => break,
@@ -502,82 +750,107 @@ while (true) {
 }
 ```
 
-`consume` and `handleReadFailure` are application callbacks in this illustration,
-not library functions. Readers do not emit diagnostics or decide severity.
-Failures distinguish `invalid_encoding`, `invalid_syntax`,
-`unresolved_reference` and `unsupported_form`. They are terminal; repeated calls
-return the same failure without further work. Previously delivered characters
-are only a prefix, not a successfully resolved whole value. Successful EOF is
-likewise stable. DOT's reader is not an identifier grammar validator: select
-one value using the host parser, or validate its syntax independently. Malformed
-caller input still cannot cause out-of-bounds reads.
+`consume` and `handleReadFailure` stand for your own code; they are not
+library functions.
+
+| Reader member | Meaning |
+| --- | --- |
+| `init(fragment)` (markup: `init(fragment, options)`) | Creates a reader. Returns `error.InvalidFragment` for out-of-range coordinates. |
+| `step()` | Returns `pending` (no character yet, call again), `scalar` (a character and its location), `end`, or `failure` |
+| `location()` | The whole original input as a location |
+| `contiguous()` | The unchanged contents as one borrowed view, when the reader knows that's safe; otherwise `null` |
+| `position()` | Where the reader is in the input, in bytes |
+| `fragment()`, `restarted()` | The input, and a fresh reader over the same input |
+| `encoding_kind` | The reader's encoding, at compile time |
+| `asciiRun()`, `skipAscii(count)` | Optional fast path; see [sessions and costs](#sessions-and-costs) |
+
+Readers don't emit diagnostics or decide severity. A failure is one of:
+
+| Failure reason | Meaning |
+| --- | --- |
+| `invalid_encoding` | Malformed bytes for the encoding |
+| `invalid_syntax` | Text the reader can't read as its host form (for example an unterminated DOT quote, or a malformed markup reference with `.malformed_reference = .reject`) |
+| `unresolved_reference` | A well-formed markup reference whose name isn't in the catalog |
+| `unsupported_form` | A DOT HTML-like part (`<...>`), which has no plain-text value |
+
+- Failures are final: later `step()` calls return the same failure and do no
+  work. Characters already returned are only a prefix, not a resolved value.
+  A successful `end` is final in the same way.
+- The DOT reader is not a full identifier checker. Give it one value the DOT
+  parser selected, or check the syntax yourself. Malformed input can never make
+  any reader read out of bounds.
 
 ### Mapping and borrowed contents
 
-Each scalar carries its original physical byte `span`, including the complete
-escape/reference spelling, and `segment_start` identifying its operand's opening
-quote or content start. Native UTF-16/32 coordinates remain physical bytes.
-`Fragment.child` composes origins once; never add enclosing origins again.
-
-`SourceLocation.mapping` distinguishes exact item spellings from enclosing
-whole-value highlights. `reader.location()` supplies the whole original input,
-including DOT quotes and concatenation glue; an empty markup/raw value has a
-zero-length location at its origin. A DOT empty string has an enclosing location
-covering its quotes. **Neither kind authorizes a raw text edit.** Cross-operand
-selection helpers, insertion-boundary validation and host-aware fix materialization
-remain future integration work. Mapped custom findings are supported below.
-
-`contiguous()` returns optional borrowed, unchanged contents with their encoding
-and location. It does not validate them or scan to discover a fast path. Plain
-contents and unquoted DOT values can return a view; quoted DOT values and nonempty
-markup conservatively return null. Null means use `step()`, not allocate a
-decoded string. No tree, mapping array or decoded buffer is created. Source must
-remain immutable and outlive readers and retained locations/views. Reader fields
-are implementation state: initialize through `init` and do not modify them.
+- Each character carries its original byte `span`, covering the whole escape or
+  reference spelling (`&amp;` for `&`), and a `segment_start`: the opening
+  quote or content start of the part it came from. UTF-16 and UTF-32 positions
+  are bytes too.
+- `Fragment.child` combines origins once. Never add an enclosing origin again.
+- `SourceLocation.mapping` is `exact` for one character's own spelling, or
+  `enclosing` for a whole-value highlight.
+- `reader.location()` covers the whole original input, including DOT quotes and
+  concatenation glue. An empty markup or plain value gives a zero-length
+  location at its origin. An empty DOT string gives an enclosing location over
+  its quotes.
+- **Neither kind of location is permission to edit the source.** Helpers that
+  select ranges across parts, validate insertion points or build host-aware
+  fixes don't exist yet.
+- `contiguous()` returns the unchanged contents with their encoding and
+  location, or `null`. It doesn't check validity or scan for a fast path. Plain
+  contents and unquoted DOT values return a view. Quoted or empty DOT values
+  and non-empty markup return `null`; empty markup returns a view. `null` means
+  "use `step()`", not "allocate a decoded string".
+- No tree, position table or decoded buffer is created. The source must stay
+  unchanged and outlive readers and any locations or views you keep.
+- Reader fields are internal. Create readers with `init` and don't change their
+  fields.
 
 ### Host rules and bounded work
 
-Markup options are explicit because a raw content fragment has no enclosing
-profile/context. `references` defaults to `.xml_predefined`; `.graphviz` enables
-the existing HTML4-plus-`apos` catalog. Names are case-sensitive. Unknown names
-remain unresolved, not invented text or replacement characters. Numeric
-references use the existing markup character-validity rules and saturating
-accumulation. There is no recursive expansion, DTD or external entity lookup.
+A markup fragment on its own doesn't know its surrounding profile, so markup
+rules are explicit options:
 
-`malformed_reference` defaults to `.reject`. With `.warn` or `.accept`, malformed
-spellings are read literally, matching host syntax acceptance; the **host** owns
-any warning. `normalize_attribute_whitespace` defaults to false. Set it to true
-for the existing Graphviz attribute-check behavior: literal tabs/CR/LF become
-spaces, but numeric references keep their decoded characters. CDATA contents
-should use the plain reader instead of the reference-decoding reader.
+| `markup.LogicalOptions` field | Default | Meaning |
+| --- | --- | --- |
+| `references` | `.xml_predefined` | Named references to decode. `.xml_predefined` is the five XML names (`amp`, `lt`, `gt`, `quot`, `apos`); `.graphviz` is Graphviz's HTML 4 catalog plus `apos`. |
+| `malformed_reference` | `.reject` | `.reject` makes a malformed reference a failure. `.warn` and `.accept` read it literally, as the host scanner accepts it; the **host** owns any warning. |
+| `normalize_attribute_whitespace` | `false` | `true` turns literal tabs, CR and LF into spaces, as Graphviz attribute checks do. Numeric references keep their decoded characters. |
 
-DOT HTML-like operands return `unsupported_form`, including in mixed
-concatenations. The reader never strips tags, flattens markup or expands DOT
-layout escapes. Comments between quoted operands are skipped, one unit at a
-time; encoding checks on skipped comment contents remain the host's responsibility.
+- Reference names are case-sensitive. An unknown name is a failure, never
+  invented text or a replacement character.
+- Numeric references use the markup parser's character rules. Very large
+  numbers saturate rather than wrap.
+- There is no recursive expansion, no DTD and no external entity lookup.
+- For CDATA contents, use the plain reader, not the markup one.
+- DOT HTML-like parts return `unsupported_form`, also inside a mixed
+  concatenation. No reader strips tags, flattens markup or expands DOT layout
+  escapes.
+- Comments between quoted DOT parts are skipped one code unit at a time. Their
+  bytes are not checked for encoding: that is the host's job.
 
-Each step consumes at most one physical source code unit, with fixed-size scalar
-decoding (at most four bytes) or fixed-catalog lookup. Multi-unit scalars, long
-references and concatenation glue yield `pending`. Accepted malformed references
-may replay their spelling as literal text, so `position()` is a traversal cursor,
-**not** a monotonic validation frontier or work counter. Replay remains linear.
-No step scans an arbitrarily long name or comment. State is fixed-size and can
-be copied/moved between steps without pointers into the reader itself.
+Every step does a small, fixed amount of work: it reads at most one code unit,
+decodes at most four bytes, or looks up a fixed catalog. Multi-unit characters,
+long references and concatenation glue return `pending` along the way. No step
+scans a long name or comment. State has a fixed size and can be copied or moved
+between steps.
 
-Callers may pause between steps or check cancellation before another step.
-These are reader steps, **not a redefinition of existing parser/string-session
-credits**. The readers themselves do not implement a scheduler or automatic
-polling. The explicit binding below adds string-session scheduling without
-changing standalone credit accounting or batching.
-Run `zig build test-logical` for mapping, native encodings, bounded progress and
-host-decoder parity tests.
+An accepted malformed reference is replayed as literal text, so `position()`
+can move backwards. It is a cursor, **not** a progress mark or a work counter.
+Replay is still linear.
+
+You can pause between steps or check for cancellation before the next one.
+These are reader steps, not parser or string-session credits, and readers don't
+schedule work or poll anything themselves. [Binding a reader](#validating-logical-values)
+to a string profile adds session scheduling.
 
 ## Validating logical values
 
-> **Unreleased.** Explicit binding; not automatic DOT/markup attribute routing.
+> **Unreleased.** Not in 0.5.0.
 
-Bind the reader type at compile time to reuse a string profile's checks, policy,
-diagnostics and execution settings:
+Bind a reader type to a string profile at compile time with `WithReader`. You
+get the same checks, settings, diagnostics and execution options, applied to the
+decoded value:
 
 ```zig
 const Text = strings.Profile(.{ .policy = .{ .validation = .{
@@ -592,33 +865,41 @@ const result = try Label.parseAndValidate(reader, bag.sink(), .{});
 std.debug.assert(result.valid());
 ```
 
-`Text.WithReader(dot.identifier.LogicalReader(.utf8))` also reads quoted
-concatenations as one value. `Text.WithReader(strings.LogicalReader(.utf8))`
-uses the same interface on already-logical contents. Bound native encodings must
-be enabled by the string profile's `source_encodings`; a conflicting explicit
-`Options.encoding` is rejected. No encoding is guessed or converted.
-
-Each call starts a fresh traversal, even if the supplied reader was previously
-advanced. Its source and host options are retained. The reader contract adds
-`encoding_kind`, `fragment()` and checked `restarted()`; third-party reader
-implementations must obey the same bounded-work, immutable-source and movable
-state contract. Compile-time binding does not sandbox custom Zig code.
+- `Text.WithReader(dot.identifier.LogicalReader(.utf8))` reads a quoted DOT
+  concatenation as one value. `Text.WithReader(strings.LogicalReader(.utf8))`
+  uses the same interface on plain contents.
+- The reader's encoding must be one the string profile compiles (otherwise a
+  compile error). An `options.encoding` that differs from the reader's gives
+  `UnsupportedEncoding`. No encoding is guessed or converted.
+- Each call starts from the beginning of the input, even if you already
+  stepped the reader. The reader's source and options are kept.
+- You can write your own reader. It must provide `encoding_kind`, `fragment()`,
+  `restarted()`, `step()`, `location()`, `contiguous()` and `position()`, keep
+  each step bounded, never change the source, and be safe to copy or move
+  between steps. Binding it is not a sandbox.
 
 ### One validator interface
 
-The same `State(Context)` / `step` and optional synchronous `check` contract is
-used for plain and host-decoded values. Built-in equality/membership also use
-this interface, including ASCII-only and full Unicode folding. Patterns remain
-UTF-8 configuration independently of source encoding.
+Plain and decoded values use the same `State(Context)` / `step` and optional
+`check` interface. The built-in equality and membership checks use it too,
+including ASCII-only and full Unicode folding. Patterns stay UTF-8 whatever the
+source encoding.
 
-Portable custom validators use `value.location()`, `value.contiguous()` and
-`context.readStep(&cursor, value)`. A `Context.Cursor` starts as `.{}` and retains
-fixed-size traversal state. `readStep` returns `pending`, `scalar` (codepoint plus
-original-source location), `end` or `stopped`. Do not treat `pending` as EOF. The
-session step context allows at most one `readStep` per validator step; a second call is an
-`invalid_validator` contract failure. Custom work beyond the supplied services
-must still be bounded. Comparison helpers retain their `equalsStep`/`equals`
-contract; never compare `contiguous().bytes` without respecting its encoding.
+A portable validator uses only:
+
+- `value.location()` and `value.contiguous()`;
+- `context.readStep(&cursor, value)`, where the cursor (`Context.Cursor`)
+  starts as `.{}` and lives in your state. It returns `pending`, `scalar` (a
+  character plus its original location), `end` or `stopped`. `pending` is not
+  the end;
+- the comparison helpers, with their usual rules.
+
+Rules:
+
+- In a session, call `readStep` at most once per `step`. A second call gives
+  `invalid_validator`.
+- Other work in `step` must still be bounded.
+- Never compare `contiguous().bytes` without taking its encoding into account.
 
 ```zig
 const NoAmpersands = struct {
@@ -645,90 +926,112 @@ const NoAmpersands = struct {
 };
 ```
 
-Bind with `.custom = NoAmpersands` and `.policy.validation.custom = .err`.
-This example runs unchanged on standalone values or any bound reader. Existing
-standalone-only validators using `value.bytes`/`cursor()` remain valid there;
-decoded host values deliberately do not expose raw spelling as logical bytes.
-Do not retain the value view/context or their pointers across calls. Retain
-cursors and source locations in validator state instead.
+Bind it with `.custom = NoAmpersands` and `.policy.validation.custom = .err`.
+It runs unchanged on plain text and on any bound reader. Validators that use
+`value.bytes` or `cursor()` still work on plain text. Decoded values
+deliberately don't expose the raw spelling as if it were the decoded text.
+Don't keep the value, the context or pointers to them across calls; keep
+cursors and locations in your state instead.
 
 ### Findings and unavailable input
 
-Use `Finding.at` and `related_at` for original-source locations. They are
-**not rebased again**. A finding on the `&` above spans all of `&amp;`; native
-spans include the physical bytes of every code unit. Omitted `at` highlights the
-whole original value (including DOT quotes/glue). `detail`, severity, fail-fast,
-sink stops and generic-failure suppression work as for standalone strings.
+- Use `Finding.at` and `related_at` for locations. They are already source
+  locations and are **not moved again**. A finding at the `&` above covers all
+  of `&amp;`. For UTF-16 and UTF-32 text, spans cover every byte of each code
+  unit. Without `at`, the finding highlights the whole original value,
+  including DOT quotes and glue.
+- `detail`, severity, fail-fast, sink stops and the generic failure finding
+  work as for plain text.
+- Plain and bound contexts both check that a location lies inside the value,
+  that its `segment_start` is consistent, and (for UTF-16 and UTF-32) that it is
+  aligned to code units, in every build mode. Combining `at` with `span`, or
+  `related_at` with `related`, is invalid.
+- Bound contexts reject `span`, `related` and `fix`, even a fix that
+  `diagnostics.fixes` would filter out. Local byte ranges can't describe edits to
+  host text. A location is a highlight, not proof that a range can be edited,
+  and these checks don't prove a hand-made location came from the reader.
+  Host-aware replacements don't exist yet.
 
-Both standalone and bound contexts check location bounds, segment origin and
-native code-unit alignment even in fast. Combining `at` with local `span`,
-or `related_at` with local `related`, is invalid. Bound contexts reject local
-`span`/`related` and raw `fix` offers: those cannot safely describe logical host
-edits. This includes offers filtered by `diagnostics.fixes`. Locations are
-highlights, not proof of editability; these checks do not certify that a
-hand-fabricated location came from the reader. Host-aware logical replacements
-and their materialization are not exposed yet.
+Before any check runs, the binding reads the **whole logical value**. If the
+reader fails (an unresolved reference, bad encoding, malformed host spelling,
+or an unsupported part):
 
-Before running checks, the binding traverses the **whole logical input**. An
-unresolved reference, invalid encoding/framing or unsupported operand produces
-`completion = .input_unavailable` and a typed `result.input_failure` with its
-original location. Requested checks become `unavailable`, `checks.encoding`
-stays `incomplete`, and `valid()` is false. No string finding is fabricated for
-this prerequisite failure: the host owns syntax/reference reporting. A completed
-prerequisite covers the logical reader's domain, not skipped DOT comment bytes
-or full host grammar. This prevents an early equality mismatch or empty `one_of`
-from hiding an invalid suffix. Standalone `Result` has no failure payload cost.
+- `completion` is `.input_unavailable`, and `result.input_failure` holds the
+  reason and its original location;
+- requested checks become `unavailable`, `checks.encoding` stays `incomplete`,
+  and `valid()` is false;
+- no string finding is made up for it: the host reports syntax and reference
+  problems.
+
+So an early mismatch or an empty `one_of` list can't hide a bad tail. A
+completed read covers what the reader reads; it doesn't cover skipped DOT
+comment bytes or the full host grammar. The plain `Result` has no
+`input_failure` field and pays nothing for it.
 
 ### Sessions and costs
 
-The bound type exposes `Session.init`, `advance`, `run`, `result`, `cancel`,
-`reset` and `deinit`, following standalone string-session rules. Enable
-`.execution.metering` to advance by budgets; runtime policy overrides remain
-opt-in. Reset validates its replacement before discarding existing progress.
+The bound type has `Session.init`, `advance`, `run`, `result`, `cancel`,
+`reset` and `deinit`, with the same rules as plain sessions. Turn on
+`.execution.metering` to advance by budgets; runtime overrides need
+`runtime_policy = true` as usual. `reset` checks the replacement before
+discarding the current progress.
 
-One bound input-pass credit performs at most one reader step. A comparison step
-performs at most one reader step plus bounded pattern/scalar/folding work, or
-one pattern-validation step. Long references and concatenation comments yield;
-they are not hidden behind one credit. Credit totals are independent of budget
-partitioning. Cancellation is polled at entry and the configured interval;
-completed operations remain terminal. `source_frontier` is the input pass's
-physical-byte high-water mark, not a count of decoded characters or completed
-checks. Reference replay never moves it backwards.
+Credits:
 
-The standalone path remains separate at compile time. Reader-bound execution can
-group 16 unchanged ASCII steps using the same optional validator batch contract.
-Each consumed byte still costs its original credit. A batch never crosses the
-remaining budget or next cancellation poll, and never skips a terminal step,
-finding, reference, escape or pending Unicode fold. Short inputs, small budgets,
-native UTF-16/32 and readers without batch support keep scalar execution.
+- One credit of the reading pass does at most one reader step.
+- A comparison step does at most one reader step plus a bounded amount of
+  pattern, character or folding work, or one pattern-checking step.
+- Long references and comments between DOT parts return `pending` along the
+  way; they are not hidden in one credit.
+- Totals don't depend on how you split the budget. Cancellation is checked on
+  entry and at the configured interval. Finished operations stay finished.
+- `source_frontier` is the furthest byte the reading pass has reached. It is not
+  a count of decoded characters or finished checks, and replayed references
+  never move it backwards.
 
-Reader batching is optional: `asciiRun()` borrows an unchanged ASCII run without
-advancing; `skipAscii(count)` commits only a checked run and otherwise returns
-false without mutation. Only bytes equivalent to one ordinary scalar step each
-may be exposed. The built-in readers expose 16 bytes at a time. Custom readers
-need neither method; custom validators without `batch` keep their `step` path.
+Speed:
 
-There is no decoded-value allocation or source-sized mapping table. Sessions
-retain the initial reader, input-pass cursor, and active
-validator cursors; inspect `@sizeOf(Label.Session)` for a chosen profile. Checks
-and `one_of` candidates can traverse/decode the input again. Diagnostic bags
-retain their caller-selected memory cost. Automatic attribute dispatch is
-available below; shared DOT/markup/string budgets and host-aware fixes remain
-separate work.
+- Plain-text checking is compiled separately and doesn't pay for any of this.
+- Bound checks can do 16 unchanged ASCII steps at once, using the same optional
+  validator `batch` contract. Each byte still costs its own credit. A group
+  never crosses the remaining budget or the next cancellation poll, and never
+  skips a final step, finding, reference, escape or half-finished fold.
+- Values shorter than 64 bytes, small budgets, short cancellation intervals,
+  UTF-16 and UTF-32, and readers without the fast path use single steps.
+- The reader fast path is optional: `asciiRun()` returns an unchanged ASCII run
+  without moving the reader, and `skipAscii(count)` moves over a run it has
+  checked, or returns `false` and changes nothing. A reader may only expose
+  bytes that each equal one plain step. The built-in readers expose 16 bytes at
+  a time. Custom readers need neither method, and validators without `batch`
+  keep using `step`.
 
-Run `zig build bench-logical-strings -Doptimize=fast` for explicit binding
-costs (plain/DOT/markup, short/long/Unicode/glue-heavy inputs, run/budget-one/
-budget-64, session bytes and credits). `-- --csv` produces the repository's
-benchmark CSV format. Use `zig build perf-string -- --baseline HEAD --suites
-logical,native,sessions` to compare bound and standalone paths before/after a
-change. Bound execution still has reader/provenance work that contiguous input
-does not.
+Memory:
+
+- No decoded copy and no source-sized position table. A session holds the
+  reader, the reading-pass cursor and the cursors of active validators. Check
+  `@sizeOf(Label.Session)` for a given profile.
+- Each check, and each `one_of` candidate, may read and decode the value again.
+- Diagnostic bags cost whatever memory you gave them.
+- Bound execution still does reader and position-tracking work that plain
+  contiguous text doesn't.
 
 ## Attribute processing in DOT and markup
 
-**Unreleased.** Both hosts support compile-time string routing. Binding a string
-processor does **not** enable it: the default is `.passthrough`. Only `.process`
-invokes the child; `.none` and `.passthrough` are host decisions.
+> **Unreleased.** Not in 0.5.0.
+
+DOT and markup profiles can send attribute values to a string profile while
+they parse. You bind the string profile at compile time and choose, per
+attribute name, what happens to its value. A *route* is that choice:
+
+| Route | What happens |
+| --- | --- |
+| `.passthrough` | The value is left alone (the default) |
+| `.process` | The value is decoded and checked by the bound string profile with its own baseline settings |
+| `.{ .process = child_policy }` | The same, with `child_policy` applied on top of the string profile's baseline |
+| `.none` | String values are reported as unsupported, using the host's `diagnostics.unsupported` severity |
+
+Binding a string profile does **not** turn checking on: every route defaults to
+`.passthrough`. Only `.process` runs the string profile.
 
 ```zig
 const Text = strings.Profile(.{});
@@ -757,129 +1060,182 @@ defer result.deinit(allocator);
 std.debug.assert(result.documentValid());
 ```
 
-The same `.processors.string`, `.policy.string` and `.policy.attributes` fields
-work in `markup.Profile`. Its input remains a fragment and its result uses
-`deinit()` without an allocator argument. Markup supplies decoded attribute
-contents: `A&amp;B` becomes `A&B`, with findings pointing back to the original
-reference spelling. Binding that markup profile into DOT also runs its string
-checks, including through reused workspaces and delayed markup processing.
-All stages can use one composed bag and renderer.
+- `markup.Profile` takes the same `.processors.string`, `.policy.string` and
+  `.policy.attributes` fields. Its input is still a `Fragment`, and its result's
+  `deinit()` takes no allocator.
+- Markup hands over decoded attribute contents: `A&amp;B` is checked as `A&B`,
+  and findings point back at the original `&amp;`.
+- If you bind such a markup profile into DOT, its string checks run too:
+  during parsing, in reused workspaces, and for delayed markup processing. Their
+  results count toward that label's validity.
+- All stages can share one bag and one console renderer.
 
 ### Selection and precedence
 
-| Situation | Selected handling |
+| Situation | Route used |
 | --- | --- |
-| Attribute has an explicit `.string` rule | That rule, including explicit `.none` or `.passthrough` |
-| Attribute entry omits `.string`, or no entry matches | Host `.policy.string` |
-| Host `.policy.string` omitted | `.passthrough`, even with a processor bound |
-| `.process` | Child baseline, with no delegated changes |
-| `.{ .process = child_policy }` | Child baseline overridden by the supplied child policy |
-| Child runtime policies enabled | Operation's `.string.policy` overrides each selected delegated baseline |
+| The attribute has an entry with `.string` | That route, including an explicit `.none` or `.passthrough` |
+| The entry has no `.string`, or no entry matches | The host's `.policy.string` |
+| `.policy.string` is omitted | `.passthrough`, even with a string profile bound |
+| `.process` | The string profile's baseline, unchanged |
+| `.{ .process = child_policy }` | The baseline with `child_policy` applied |
+| The string profile has `runtime_policy = true` | The operation's `.string.policy` is applied on top of each processing route's settings |
 
-Delegation uses the child's normal policy resolution: for built-in strings,
-`equals` and `one_of` settings replace their respective settings records rather
-than implicitly merging their members. Unspecified checks and other policy
-branches inherit. Processor implementations, route names and route choices
-are compile-time bindings, not a runtime registry. Runtime host policies stay
-under `.dot` (DOT) or `.markup` (markup); child runtime patches and cancellation
-hooks are under `.string`. A delegated policy can enable child cancellation.
-The host alone selects the source encoding; the child cannot reinterpret it.
+- `child_policy` is applied like any [settings patch](#changing-settings-per-call):
+  `equals` and `one_of` settings replace the whole setting; other fields you
+  leave out are inherited.
+- String profiles, route names and route choices are fixed at compile time.
+  There is no run-time registry.
+- Per-call options: host settings go under `.dot` (DOT) or `.markup` (markup);
+  the string profile's runtime patch and cancellation hook go under `.string`.
+  A route's `child_policy` can turn on cancellation for the string profile.
+- The host picks the source encoding; the string profile can't reinterpret it.
+  If the string profile lists `source_encodings`, the host compiles those
+  encodings as well; if it doesn't, it follows the host.
 
-DOT matches logical attribute names exactly, including quoted/concatenated
-keys. It visits written attribute pairs and standalone assignments, without
-applying graph defaults or merging declarations. Markup matches names exactly
-in structural mode and ASCII-insensitively in Graphviz mode. Ambiguous
-ASCII-insensitive route names are rejected at compile time when Graphviz mode
-is available. Route names are UTF-8 configuration, independent of source
-encoding.
+Matching attribute names:
 
-String rules select attribute **values**, not identifiers elsewhere, markup
-text nodes, comments or attribute names. A pure HTML-like DOT value belongs to
-the markup path and never reaches a string validator. Mixed quoted/HTML
-concatenations cannot be flattened: `.process` records unavailable string
-coverage; `.none` rejects the string form according to the host's unsupported
-severity. This slice does not add per-attribute `.markup` routing; existing
-global markup handling is unchanged, and unsupported routing fields are
-compile-time errors.
+- DOT compares the logical attribute name exactly, so a quoted or concatenated
+  key such as `"la"+"bel"` matches `label`. It visits every written attribute
+  pair and every standalone assignment (`label=x;`). It doesn't apply graph
+  defaults or merge declarations.
+- Markup compares names exactly in structural mode and ignoring ASCII case in
+  Graphviz mode. Route names that differ only in ASCII case are a compile error
+  when Graphviz mode is possible.
+- Route names are UTF-8, whatever the source encoding.
 
-`.none` needs no processor binding. The host's `diagnostics.unsupported`
-controls error, warning or silent continuation. Silent handling constructs no
-diagnostic. Neither rejection nor a failed child check falls back to another
-route.
+What reaches the string profile:
+
+- Only attribute **values**. Identifiers elsewhere, markup text, comments and
+  attribute names are never routed.
+- A DOT value that is entirely HTML-like (`<...>`) belongs to the markup path
+  and never reaches a string validator.
+- A DOT concatenation that mixes quoted and HTML-like parts can't be turned into
+  plain text. With `.process` it counts as `unavailable`; with `.none` it is
+  reported as unsupported; with `.passthrough` it is left alone.
+- Routes support only `.string`. Any other field in a route entry is a compile
+  error. Markup handling of whole labels is unchanged.
+
+`.none` needs no string profile. The host's `diagnostics.unsupported` decides
+between an error, a warning or silence (default `.err`); silence creates no
+diagnostic. A rejected value, or one that fails its checks, is never retried
+with another route.
 
 ### Results, scheduling and costs
 
-Active routing profiles return `result.host` (the existing host result) and
-`result.string` (a constant-size aggregate). `result.documentValid()` requires
-both host acceptance and complete, error-free requested string work.
-`result.scopeComplete()` still describes the outer document alone.
+With at least one route that isn't `.passthrough`, the profile returns a
+combined result:
 
-The string report exposes `processed`, `passed`, `passthrough`, `unsupported`,
-`unavailable`, error/warning totals, delivery/stop status and the first typed
-unavailable-input location. `complete` means the selected attribute traversal
-finished on a complete host tree, not that every string check passed. No
-per-attribute result array or decoded string storage is retained.
+| Member | Meaning |
+| --- | --- |
+| `result.host` | The ordinary host result |
+| `result.string` | A small fixed-size summary of the string work (next table) |
+| `documentValid()` | Host accepted the document **and** all requested string work completed without errors |
+| `scopeComplete()` | The host document is complete. It says nothing about strings. |
+| `subtreeComplete()` | The host's completeness check (for DOT with markup, including the labels), plus string coverage complete with nothing unavailable |
+| `deinit(allocator)` (DOT), `deinit()` (markup) | Frees the host result |
+| `stopped()`, `has_errors` | Markup only: whether the host or strings stopped early, and whether any errors were found |
 
-These are synchronous stages: host parsing/validation runs first, then strings
-visit retained attributes in source order. Ordinary host validation errors do
-not suppress strings under `collect`. Host fail-fast and operational stops
-prevent later stages. A child's fail-fast stops that value; a collecting host
-continues other values. Sink stops, cancellation and invalid-validator failures
-stop the batch. Diagnostic order follows stage order, not a global source sort.
+| `result.string` field | Meaning |
+| --- | --- |
+| `complete` | The attribute walk finished over a complete host tree. It doesn't mean every check passed. |
+| `processed`, `passed` | Values checked, and values that passed |
+| `passthrough` | Values left alone |
+| `unsupported` | Values rejected by a `.none` route |
+| `unavailable` | Values that couldn't be read as plain text |
+| `errors`, `warnings` | Totals across all values |
+| `delivery`, `diagnostic_stop` | Whether delivery to the sink failed, and why the sink stopped |
+| `stop` | Why the walk stopped early: `parent_error`, `cancelled`, `invalid_validator` or `diagnostic_stop` |
+| `first_unavailable` | The reason and location of the first unavailable value |
+| `valid()`, `stopped()` | Summary checks used by the result methods above |
 
-Partial trees check their retained attributes but leave string coverage
-incomplete. With no retained tree, automatic string work does not run; this is
-not reported as successfully checked input. Tree-independent attribute checking
-after discarded syntax, event-stream checking and shared-budget composed
-sessions remain future work.
+No per-attribute list and no decoded strings are kept.
 
-Use `Parser.Outer` for the underlying host API. For DOT with markup bound this
-is the existing markup composition, not a new DOT-only session facade.
-Explicit delayed
-string checking is allocation-free:
+Order of work:
+
+- The host parses (and validates) first. Then strings visit the kept attributes
+  in source order. Diagnostics follow this stage order; they are not sorted by
+  position across stages.
+- String checks run only if the host finished without stopping: its outcome is
+  success, or recovered syntax errors under `on_error = .collect`, with no sink
+  stop and no failed delivery. Under `.collect`, ordinary host validation errors
+  don't prevent them. Under `.fail_fast`, any host error does. Other host stops
+  (cancellation, limits, unsupported input) also prevent them.
+- A string profile's own fail-fast ends the check of that value. A collecting
+  host goes on to the other values.
+- Sink stops, cancellation and `invalid_validator` stop the whole walk.
+- With [partial results](EDITORS.md#keep-the-finished-part-of-a-dot-file), the
+  kept attributes are checked but `complete` stays false. With no tree at all,
+  string checks don't run; that is not reported as checked input.
+
+Underlying host API and delayed checks:
+
+- `Parser.Outer` is the underlying host profile (sessions, fixed storage and so
+  on). For DOT with markup bound, it is the markup composition.
+- `processStrings` checks a document you already have, later. It allocates
+  nothing and returns a separate summary; it doesn't change an earlier result.
+  Pass a document this profile's parser produced (hand-edited documents are not
+  supported). Values and their source stay borrowed.
 
 ```zig
 // DOT document, same routed profile and diagnostic type:
 const checked = try Parser.processStrings(&document, bag.sink(), .{});
-// Markup additionally takes the original fragment origin:
+// Markup also takes the fragment's original origin:
 const checked_markup = try MarkupParser.processStrings(
     &markup_document, original_origin, markup_bag.sink(), .{},
 );
 ```
 
-These calls return a separate report; they do not mutate an earlier result.
-Documents must obey the same trusted representation contract as other document
-validation APIs. Raw values and their source remain borrowed.
+Markup reference and whitespace rules come from the host markup profile:
 
-Markup reference and whitespace rules remain host-owned. Graphviz attributes
-use XML-predefined references by default (HTML4 text references are a different
-scope); an explicitly enabled reference-catalog rule supplies that catalog.
-Graphviz literal attribute whitespace is normalized, while numeric references
-keep their decoded character. Accepted malformed references remain literal.
-Unresolved references cannot pass a string check merely because host reporting
-was disabled; they leave string coverage unavailable without a duplicate finding.
+- Attribute values use the five XML references when the markup profile is in
+  Graphviz mode with its `validation.references` rule off. Otherwise they use
+  that rule's `catalog` setting (`.xml_predefined` unless you changed it).
+  Graphviz's HTML 4 names apply to text, not attribute values, by default.
+- In Graphviz mode, literal tabs and newlines in values become spaces; numeric
+  references keep their decoded character.
+- The markup `syntax.malformed_reference` setting decides whether a malformed
+  reference is read literally.
+- An unresolved reference can't pass a string check just because the host
+  doesn't report it. The value counts as `unavailable`, without a duplicate
+  finding.
 
-Profiles with no active routes return the original host profile type: no
-string traversal, aggregate, diagnostic union or processor state is added.
-Active routes add matching and logical-reader validation work, fixed-size
-aggregate/session state and a diagnostic union sized for its largest payload.
-The library adds no heap allocation for routing or built-in string checks;
-host pools, diagnostic bags and consumer callbacks retain their own costs.
-Markup keeps its fixed-pool and reusable-workspace entry points. DOT's composed
-operation remains allocator-backed; existing outer-only sessions are unchanged.
+Costs:
 
-Run `zig build bench-string-integration -Doptimize=fast` for default,
-passthrough and enabled costs, including allocator-request totals. For an
-alternating before/after report:
+- Profiles with no active route return the original host profile type. No
+  attribute walk, summary, diagnostic union or string state is added.
+- Active routes add name matching, reader-bound checking, a fixed-size summary
+  and session state, and a diagnostic union sized for the largest payload.
+- The library adds no heap allocation for routing or built-in checks. Host
+  pools, diagnostic bags and your callbacks keep their own costs.
+- Markup keeps its fixed-storage and reusable-workspace entry points
+  (`prepare`, `parseAndValidateIn`, `initWorkspace`). The routed DOT operation
+  is `parseAndValidate` with an allocator; for sessions, use `Parser.Outer`,
+  which doesn't run string checks.
 
-```sh
-zig build perf-string -- --baseline HEAD --suites host-defaults,integration \
-  --modes fast,safe,small --runs 5
-```
+`zig build bench-string-integration -Doptimize=fast` measures default,
+passthrough and processing costs, including allocator-request totals. See
+[measuring](#measuring) for before/after reports and
+[performance](PERFORMANCE.md#attribute-string-processing) for measurements.
 
-`host-defaults` builds only the existing host operations on both sides, keeping
-enabled processors out of the binary-size/default-path comparison.
-`integration` also builds the enabled routes; newly introduced passthrough/
-process rows are marked new, not given a fabricated baseline. Keeping these
-suites separate avoids confusing changes in mixed-benchmark code layout with
-costs paid by an application that never enables strings.
+## Not available yet
+
+- One shared work budget across DOT, markup and string checks.
+- Host-aware fix offers for decoded values, and helpers that select ranges
+  across concatenated parts.
+- Checking attributes without a kept tree, for example after syntax was
+  discarded, or from [DOT events](EVENTS.md).
+- Routed DOT sessions or fixed-storage routed DOT parsing.
+- Per-attribute markup routing (`.markup` in a route entry).
+- A regex engine, and Unicode normalization.
+
+## Examples
+
+- [string_processor.zig](../examples/string_processor.zig): a standalone
+  allowed-values check, a custom predicate, a resumable custom validator in a
+  metered session, markup and DOT logical readers bound with `WithReader`, and
+  attribute routing through DOT and an embedded markup label with one shared
+  bag
+
+Run it with `zig build examples`. The program is also installed in
+`zig-out/bin/`.

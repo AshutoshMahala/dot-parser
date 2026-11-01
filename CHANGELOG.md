@@ -6,391 +6,156 @@ are marked; no compatibility shims are kept.
 
 ## Unreleased
 
+Changes on `main` since 0.5.0. They are not in a release yet, and they need
+Zig 0.17.0.
+
+This adds an optional graph layer for DOT (`dot.ir`), events for building your
+own output from a DOT parse, a third module for checking string values, and
+more Graphviz label checks. Partial DOT results for editors now keep the
+statements after an error, too.
+
 ### Added
 
-- Reproducible `zig build fuzz-ir` adversarial IR/adjacency checks, including
-  damaged syntax, random session budgets, cancellation, memory limits and fixed
-  pool shortfalls. Targeted tests cover large symbolic products, repeated loops
-  and hostile nesting.
-- Optional materialized adjacency via `.adjacency = .forward/.backward/.all`,
-  off by default. Node views expose `edges`, `edgeCount` and incident entries
-  with `neighbor`, `edge` and relative directions. Compile-time filters preserve
-  edge order, parallel edges, loops and partial uncertainty. Complete/partial,
-  full/topology, growable/fixed and direct/session routes share the existing
-  resource limits, cancellation and bounded work accounting. Fixed output adds
-  explicit adjacency capacities and terminal shortfalls. Includes
-  `graph_adjacency` and `bench-ir-adjacency`. **Breaking (Unreleased):** materialized
-  storage, result and session type helpers now take a selection record instead
-  of an attributes boolean; no compatibility aliases.
-- Fixed IR streaming/query scratch via `edgeIteratorIn`, `edgeSessionIn`,
-  `attributesIn` and `attributesSessionIn`, including partial views. Explicit
-  bounds/layouts derive node marks and bound strict pairs; no heap fallback.
-  Entries emitted before a terminal shortfall remain usable; retry requires
-  restarting with new storage. **Breaking (Unreleased):** lowering-only helpers
-  are `loweringLayout`, `loweringBounds` and `partialLoweringBounds`.
-- Fixed-storage Document-to-IR lowering via `lowerCompleteIn`, `lowerPartialIn`,
-  `loweringSessionIn` and `partialLoweringSessionIn`. Caller-owned retained pools
-  and reusable scratch use the same semantics and metered/cancellable sessions,
-  with no construction allocations or heap fallback. Adds explicit capacity
-  bounds, observed capacities/scratch peaks, checked byte-region binding and
-  structured shortfalls; failed lowering publishes no graph. Returned graphs
-  borrow retained storage/source, with optional storage for later queries.
-  No automatic reservation is added to ordinary lowering. Includes `fixed_graph`
-  and `bench-ir-fixed`; fixed materialization output is also available.
-- Policy-bound resumable attribute access via `IR.attributeSession(view, key, options)`
-  and `IR.attributesSession(view, options)`, for complete/partial node, scope,
-  compact-edge and materialized-edge views. Reuses existing execution policies
-  and shared session options; bounded steps include keys, contribution/membership
-  searches, port introductions, winner scratch and coverage qualification.
-  Single lookup allocates no scratch; materialized views read existing maps.
-  Streams deliver one final effective attribute at a time, preserving direct
-  order/provenance and partial uncertainty. No expansion or implicit key copy.
-  Includes a runnable example and `bench-ir-attribute-sessions`. Direct APIs
-  and retained layouts are unchanged. Unreleased symbolic-query session members
-  `QueryOutcome` are renamed `Outcome` to match the other query/stream types.
-- Policy-bound resumable symbolic queries via `IR.hasEdgeSession` and
-  `IR.containsSession`, for complete and partial IRs. Reuses metering,
-  cancellation intervals and opt-in runtime policies; bounded steps cover
-  connections, membership intervals and posting probes. No expansion or heap
-  scratch, and no implicit negative answer on pause/stop. Partial successes
-  retain existing known/unknown semantics. Direct queries remain unchanged.
-  Includes `resumable_query` and `bench-ir-query-sessions`.
-- Policy-bound resumable edge streaming via `IR.edgeSession` for complete and
-  partial IR. Each `advance` delivers at most one existing edge view or a
-  budget pause/terminal outcome; `run` stops at the next edge. Shares bounded
-  expansion with materialization, without its output array or attribute folding.
-  Strict streams retain pair keys; non-strict streams retain no emitted edges.
-  Execution policy/runtime overrides match lowering sessions; limits remain
-  cumulative and partial qualifications survive. Adds a runnable example and
-  `bench-ir-edge-sessions`; ordinary pull iteration remains unchanged.
-- Policy-bound resumable Document-to-IR lowering via `loweringSession` and
-  `partialLoweringSession`. Reuses `.execution.metering`, cancellation and its
-  interval, with default-off runtime overrides and `validatePolicy`. Budgeted
-  steps include logical-name hashing/equality, collision probes/rehashing,
-  persistent attribute updates, scope-default overlays, coverage/posting indexes
-  and growth copies. No eager edge expansion or hidden preparation pass; only
-  successful output transfers ownership. Existing direct calls remain unchanged.
-  Includes native/partial/partition/stop tests, `resumable_graph` and the
-  `bench-ir-lowering-sessions` report command.
-- Opt-in `ir.materializationSession(options)` for complete and partial IRs,
-  with `advance(u32)`, `run`, `cancel`, `deinit` and one-time `takeResult`.
-  Per-call credits cover endpoint traversal, strict deduplication/rehashing,
-  attribute-map updates, port-key reading and bounded growth copies. Existing
-  `materialize` and its output types stay unchanged. Partial-source coverage
-  survives successful materialization; pauses/failures never publish half-built
-  output. Includes allocation/cancellation/partition tests, a runnable example
-  and `bench-ir-sessions`. Allocator callbacks are not wall-time bounded.
-- Partial IR node and graph/subgraph attribute iteration via
-  `node.attributes(options)` and `scope.attributes(options)`. Retained keys
-  yield qualified values with provenance and implicit-empty candidates;
-  enumeration uses the existing catalogs/maps without allocating scratch and
-  shares one cumulative lookup/coverage work allowance and cancellation token.
-  Complete-input APIs and retained layouts are unchanged.
-- Partial IR edge iteration and materialization reuse the existing expansion,
-  strict deduplication and attribute folding engines. Retained edge views expose
-  qualified attributes, ports, orientation and first contributions; folded
-  lookups remain infallible. Complete-input APIs are unchanged. Includes native,
-  compatible-gap-filling, cancellation/allocation-failure tests and
-  `bench-ir-partial-edges`; incomplete sources never become complete merely
-  because materialization finished.
-- Opt-in `dot.ir.parsePartial` / `Lowering.lowerPartial`: retained node/scope
-  views, mention iteration, symbolic existence/membership queries and indexed
-  attribute candidates. `Knowledge(T)` separates known facts from source gaps;
-  coverage never disguises syntax rejection or an execution stop. Complete IR
-  entry points remain unchanged. Includes an editor example, native-encoding/
-  failure/compatible-filling tests and `bench-ir-partial`.
-- Partial DOT Documents retain factual `root_closed` delimiter coverage, so an
-  unfinished root is distinguishable from internal recovery gaps even at EOF.
-- Borrowed IR `tailPort()` / `headPort()` views share effective attribute
-  precedence and provenance. `syntax()` preserves written endpoint components;
-  explicit `graphvizParts()` provides the first-colon interpretation without
-  losing ambiguous names, unknown compass text or empties. Helpers allocate
-  nothing, add no retained storage, and offer bounded/cancellable variants.
-  **Breaking:** port-specific access moved off general value/operand views;
-  endpoint origins are `.written_left_port` / `.written_right_port` to distinguish
-  written sides from stored edge orientation. No legacy aliases.
-- IR attribute views format directly as their logical value with `{f}`;
-  optional views use `{?f}` without forced unwrapping. The materialized-edges
-  example prints explicit label updates alongside creation-time defaults.
-- IR endpoint suffixes now resolve to effective `headport`/`tailport` across
-  compact queries, enumeration and folded materialization. Explicit attributes
-  override suffixes; strict updates respect first-edge orientation, including
-  reversed undirected edges. Derived values retain component spans and format
-  without a decoded allocation. Label-port existence/layout remain separate.
-  **Breaking:** `ResolvedAttribute.attribute` is now optional (null for derived origins).
-- `ir.materialize(.{})` now folds effective edge attributes during
-  forward expansion, including strict duplicate contributions and creation-time
-  defaults. Materialized views provide infallible indexed lookup/enumeration,
-  with bounded variants. Values/defaults/provenance borrow the IR; mutable maps
-  retain only winning explicit assignments. Output, scratch, growth, pair visits
-  and updates share enforced limits/cancellation. `.attributes = false` is the compile-time topology-only option;
-  limits/cancellation remain runtime values. Includes a printable example and
-  `bench-ir-materialized`.
-- Optional `console.printDiagnostics(io, items, options)` for DOT, markup,
-  string and composed profiles: numbered boxes to stderr using shared rendering,
-  a fixed stack buffer and caller IO. No heap allocation; write/flush failures
-  propagate. The three introductory IR examples use this helper.
-- Optional `dot.ir.Lowering(...).lowerComplete` topology layer from accepted
-  complete Documents: logical node identity, shared scope-membership snapshots,
-  symbolic connections, allocation-free existence queries and explicit bounded
-  materialization or streaming edge iteration. Streaming reuses endpoint
-  scratch, preserves non-strict parallel occurrences and deduplicates strict
-  pairs, with cumulative limits/cancellation and explicit early cleanup.
-  Effective node/graph/edge attribute queries resolve creation defaults and
-  source-ordered updates, distinguish absent/implicit-empty values, and retain
-  source origins. Immutable maps share default states; strict edge queries
-  inspect symbolic contributions without expanding pairs. Attribute maps have
-  explicit work/memory/state limits; no state is allocated for attribute-free
-  input. Endpoint-derived port values require no additional lowering pools.
-  Borrowed node/scope/edge views offer `.attribute(key)` and bounded
-  `.attributes(options)` iteration with logical formatters and provenance.
-  Strict-edge iteration merges contributions once using key-sized scratch;
-  other attribute iterators allocate nothing. Retained record layouts are unchanged.
-  Node/edge iterators yield borrowed component views directly. Name access and
-  indexed node/scope attribute lookup are infallible on valid views, with bounded
-  variants for explicit limits. Value views expose string/markup/concatenation
-  kinds, original spelling/encoding/spans, allocation-free operand iteration,
-  markup fragments and joined output. `toString` uses one exact allocation;
-  bounded traversal and output preserve cancellation/work failures. No operand
-  cache, automatic markup parsing or loss of concatenation boundaries.
-  Includes one-call `dot.ir.parse`,
-  allocation-free node iteration/name formatting, `test-ir`, `bench-ir` and a
-  short graph example with diagnostics; its checks live outside the example.
-  Ordinary parsing is unchanged.
-- DOT `Consumer.observations = events.Observations.previews` exposes raw
-  unfinished name-expression spans at EOF and metered pauses, through the same
-  events interface. Updates carry known context and original encoding/offsets;
-  explicit completion/rejection events retire previews. Callbacks consume their
-  own credits, including queued delivery after a budget is exhausted. No repair,
-  trusted-name promotion, source copy or parser allocation; default off.
-  `zig build bench-previews` reports enabled/disabled timing, credits and sizes.
-- Opt-in early DOT event observations with `Consumer.observations = events.Observations.early`:
-  complete identifiers, recognized statement heads and document/subgraph names
-  can feed an outline before their enclosing syntax finishes. The same event
-  interface retains commit/abort, original byte spans and separate callback
-  work credits. No event queue or partial-token guessing; default off.
-- **Breaking (Unreleased):** one typed `events.Observations` selection replaces
-  the separate early-event/preview flags; `.all`, `.none` and individual fields
-  are also supported. Internal names, heads and previews share one dispatch
-  continuation and cleanup flag, with unchanged metering/cancellation contracts.
-- **Breaking (Unreleased):** `identifier.fromName(source, name)` (also under `ForEncoding`) provides a borrowed
-  name view with logical hash/equality that skips redundant DOT syntax checks.
-  Complete identifier event fields now use a distinct eight-byte `Name`, while
-  previews/general locations remain `Span`. Retained views expose typed names
-  too. `events.Identifier.span` is now `.name`. Arbitrary spans use
-  `identifier.check`; the former unchecked constructor function is removed
-  without aliases. Struct literals/record helpers remain caller-trusted, not
-  validation boundaries. Only complete identifier spellings qualify; the source must stay
-  unchanged. Checked helpers remain checked, and native decoding retains its
-  encoding checks. No event/document fields, copies or allocations are added.
-  `zig build bench-identifiers` compares both paths in an event-only name index.
-- Opt-in attribute string processing for DOT and markup, including nested
-  DOT → markup → string and delayed retained-document checks. Explicit attribute
-  rules override the host default; omission stays passthrough. Child-owned
-  delegated policies and enabled runtime patches use the existing validators,
-  logical readers and original-source diagnostics. Shared bags/renderers retain
-  all processor payloads. Default/pass-only profiles keep the original host
-  type; routing adds no processor-owned heap allocation. Shared-budget
-  composition and host-aware logical fixes remain deferred.
-- `perf-string --suites host-defaults,integration` compares isolated host
-  defaults, bound passthrough and active attribute processing with one
-  alternating before/after report.
-- Shared, opt-in logical readers for plain string contents, DOT identifiers and
-  markup text/attribute contents. Fixed-state, bounded steps decode native
-  encodings, DOT lexical quoting/concatenation and markup references while
-  preserving original-byte locations and operand provenance. No decoded copy,
-  automatic processing, validator API change or metering-policy change.
-- String `.ascii_case_insensitive` comparison, independent of optional full
-  Unicode folding. Case-sensitive remains the default; ASCII-only comparisons
-  do not pull in Unicode tables.
-- `zig build perf-string` creates alternating before/after reports from one
-  command, using the same current harness and compiler for both snapshots.
-- Optional outward scalar-boundary rounding for `location.textPosition` so
-  byte-oriented diagnostic ranges can be converted to editor positions.
-
-- Standalone `string_processor`: borrowed contents, native encoding validation,
-  `equals`/`one_of` and compile-time custom validators through one contract,
-  fixed/default-off runtime policies, common diagnostic bags/rendering, and
-  resumable metering and cooperative cancellation. Built-ins and custom validators
-  share `State`/`step`, with optional unmetered fast checks; active synchronous-only
-  validators are rejected under metering. Execution settings live under
-  `policy.execution`, with positive cancellation intervals and default-off features.
-  Unicode 17.0.0 full default case folding is an
-  optional compiled capability; exact-only builds exclude its tables. No tree
-  or processor-owned allocations. Optional host integration is described above.
-
-- Graphviz label content grammar, local attribute values/required attributes,
-  and HTML4 named-reference checks. Each has independent fixed/runtime
-  severity. Structural mode stays unaffected; local scope validation does not
-  claim whole-label content coverage. No new tree/scratch allocations.
-- Optional DOT Graphviz attribute-name checking via
-  `validation.graphviz.unknown_attribute` (default off), plus
-  `attribute_catalog.lookup`/`entries` metadata for 177 documented attributes.
-  DOT value validation and target enforcement are not part of the catalog yet.
-
-- Compile-time-bound DOT event consumers via `Profile.Events(Sink)`, with
-  event-only one-shot/fixed-scratch parsing and UTF-8 sessions. Statement
-  commit/abort, nested scopes and skipped ranges allow consumer-defined output
-  without allocating the library's document pools.
-  Builders and the sizing sink consume the same public event contract; storage
-  bookkeeping remains private, with no event translation adapter.
-- Opt-in DOT partial retention now keeps later completed statements after safe
-  recovery. `skippedRanges()` exposes gaps; `unrepresented()` remains the
-  unfinished suffix. No guessed lexical boundaries or repaired source.
-- Allocation-free logical identifier hash/equality helpers, including checked
-  document ranges and native encodings.
-- `Document.capacities()` for reusing retained DOT pool counts as growth hints.
-- Optional `location.textPosition` conversion to zero-based UTF-8, UTF-16 or
-  code-point columns without changing stored byte spans.
-- `inspectSource` on standalone and composed profiles, reporting encoding
-  admission reasons, detected encoding and offending byte spans. `check_file`
-  uses it to explain unsupported BOMs before parsing.
+- **Semantic graph layer, `dot.ir`.** It turns an accepted DOT document into a
+  graph: one node per name (`a` and `"a"` are the same node), subgraph
+  membership, and the effective attributes of each node, edge and graph after
+  defaults and later updates, with where each value came from. Edge sets such
+  as `a -> { b c }` stay compact until you ask for individual edges.
+  `dot.ir.parse` parses, checks and builds the graph in one call; ordinary
+  parsing doesn't run or allocate any of it. See
+  [Semantic graph](docs/IR.md).
+  - **Reading the graph.** Node, subgraph and edge views; `findNode`,
+    `hasEdge` and membership queries; attribute lookup and listing; value views
+    that keep the original spelling and print the joined value with `{f}`; edge
+    ports with `tailPort()` / `headPort()`, including ports written as `a:p`.
+  - **Edges when you ask.** `edgeIterator` gives edges one at a time.
+    `materialize` builds the whole edge list once, with each edge's final
+    attributes. Optional adjacency (`.adjacency = .forward`, `.backward` or
+    `.all`) lets you walk the edges at each node.
+  - **Unfinished files.** `dot.ir.parsePartial` and `lowerPartial` build a
+    graph from a file with syntax errors. Answers that the missing text could
+    still change come back as unknown (`Knowledge(T)`).
+  - **Compile-time choices.** `.capabilities.attributes = false` keeps only
+    nodes, subgraphs and connections. `.indexes` adds optional lookup indexes
+    for repeated queries.
+  - **Limits, small steps and fixed memory.** Building the graph, expanding
+    or streaming edges, and the `With` forms of queries and attribute reads
+    count work, memory, edges and pairs against limits with finite defaults,
+    and can be cancelled. Plain accessors such as `node.attribute(key)` are
+    unmetered. Sessions run in small steps for building the graph, building
+    the edge list, streaming edges, edge and membership queries, and attribute
+    lookups. The `In` variants (`lowerCompleteIn`,
+    `materializeIn`, `edgeIteratorIn`, `attributesIn` and their sessions) use
+    caller-owned buffers instead of an allocator.
+  - 13 runnable examples, `zig build test-ir`, `zig build fuzz-ir` and
+    `bench-ir` benchmarks.
+- **DOT events.** `dot.Profile(...).Events(Consumer)`, or
+  `dot.Events(Consumer)`, sends parse events straight to your own type, so you
+  can build an index, an outline or your own graph without the library's
+  document. It works in one call, with fixed scratch (`parseIn`) and in UTF-8
+  sessions. A consumer can also ask for early observations (names and
+  statement starts before a statement finishes) and previews of unfinished
+  tokens, for live outlines in editors. Complete names arrive as `dot.Name`;
+  `identifier.fromName` hashes and compares them without checking the spelling
+  again. See [DOT events](docs/EVENTS.md).
+- **`string_processor`, a third module** for checking string values on their
+  own: exact matches (`equals`), allowed values (`one_of`) and your own
+  validators, with optional ASCII or full Unicode case-insensitive comparison,
+  step-by-step sessions and cancellation. It allocates nothing. Logical
+  readers (`dot.identifier.LogicalReader`, `markup.LogicalReader`) give it the
+  decoded value of a DOT name or markup text, and findings point at the
+  original bytes. See [Standalone string checks](docs/STRINGS.md).
+- **String checks on DOT and markup attributes.** Bind a string processor with
+  `.processors.string`, then choose `.process` for the attributes to check in
+  `.policy.attributes`. Without that choice, values pass through unchecked.
+  See [attribute processing](docs/STRINGS.md#attribute-processing-in-dot-and-markup).
+- **More Graphviz label checks.** In Graphviz mode, markup also checks which
+  elements may contain which, attribute values and required attributes, and
+  HTML 4 named references such as `&nbsp;`. Each check has its own setting:
+  `validation.graphviz.invalid_content`, `invalid_value` and
+  `unknown_reference`. See
+  [Graphviz vocabulary](docs/MARKUP.md#graphviz-vocabulary), and the breaking
+  change below.
+- **Graphviz attribute names in DOT.** `validation.graphviz.unknown_attribute`
+  (off by default) reports attribute names that Graphviz doesn't document.
+  `dot.attribute_catalog` lists the 177 documented attributes.
+- **`execution.cancellation_interval`** for DOT and markup (default 1). The
+  cancellation hook is checked at least every that many work steps. A larger
+  value means fewer hook calls and a slower response to a cancel.
+- **Editor helpers.**
+  - `location.textPosition` turns a byte offset into a zero-based line and a
+    UTF-8, UTF-16 or code-point column, optionally rounded to whole characters.
+  - `inspectSource` tells you which encoding a file would be read as, or why
+    it can't be read, without parsing it. `check_file` uses it.
+  - `Document.capacities()` gives a document's pool sizes, to reuse as size
+    hints for the next parse.
+  - `identifier.hash` / `identifier.eql` and `Document.hashIdentifier` /
+    `identifiersEqual` compare names by value without allocating.
+- **`console.printDiagnostics(io, items, options)`** prints numbered diagnostic
+  boxes to standard error through the `Io` you pass in, using a fixed buffer
+  and no allocation.
+- **Build steps:** `check` (all tests, examples and build checks), `test-ir`,
+  `test-string`, `test-logical`, `fuzz-ir`, `check-tools`, `check-unicode`,
+  `check-wasm`, `perf-string`, `generate-console-widths`,
+  `generate-string-casefold`, and benchmarks for the new features. The Unicode
+  table generators are Zig programs now, so regenerating tables no longer
+  needs Python.
 
 ### Changed
 
-- Batch admitted adjacency-row work and long attribute-key comparisons without
-  changing credits, pause states, limits or cancellation checkpoints. Fixed
-  query scratch updates its member high-water mark only when it increases.
-  No retained pools or session fields are added; ordinary parsing/lowering and
-  adjacency-disabled materialization keep their existing drivers.
-- Reduce Safe symbolic-query session overhead by reusing posting slices within
-  bounded search loops. One-credit resumes keep an inlined single-step path;
-  Fast, Small and fixed interval-one cancellation profiles retain the compact
-  driver. Credit counts, pause states, polling checkpoints, inline state sizes
-  and ordinary direct queries are unchanged.
-- Reduce resumable edge-streaming overhead with allocation-free non-strict
-  transition fusion and inlined one-credit dispatch. Credit totals, pause/stop
-  boundaries, cancellation checkpoints, partial views and scratch sizes are
-  unchanged; active cancellation hooks retain the original stepped path.
-  `bench-ir-edge-sessions` now warms each fixture for at least 50 ms before
-  measuring, in addition to its four rotated warmup rounds.
-- Reduce opt-in IR materialization-session dispatch/accounting overhead without
-  changing credits, cancellation checkpoints, storage or the direct driver.
-  Share exhausted-grant exits and cache endpoint cardinality in existing scratch
-  space to reduce code size and plain-edge overhead.
-  The session benchmark now covers topology/attributes, enabled cancellation
-  and budgets 1/64/4096 as well as run-to-completion.
-- **Breaking:** require Zig 0.17.0. Build steps, compile-time reflection and
-  development tools use the new compiler APIs; optimization modes are
-  `debug`, `safe`, `fast` and `small`. Parser policies and execution guarantees
-  are unchanged. On the measured 64-bit target, standard-library safety metadata
-  increases Debug/Safe markup sessions by 16 bytes, DOT/markup growable diagnostic
-  bags from 48 to 56 bytes, and `markup.ParseResult` from 176 to 192 bytes.
-  Other ArrayList-owning builders/workspaces can also grow. Fast/Small sizes are
-  unchanged. Earlier performance tables retain their original toolchain.
-- **Breaking (Unreleased API):** `events.Event` adds four early-observation tags
-  and two token-preview tags.
-  Exhaustive switches must handle them or use `else`; callback delivery stays
-  unchanged unless the consumer opts in.
-- Recovery resumes after certified boundaries, reporting independent errors
-  previously missed while avoiding cascades when resuming an enclosing edge.
-  For example, `digraph { a -> { b -> } -> c; }` now reports the one local error,
-  not two. Partial retention does not make invalid input valid.
-- **Breaking (Unreleased API):** string `Value.span()` now returns an error union,
-  rejecting oversized consumer-constructed views rather than trapping/truncating.
-- **Breaking (Unreleased API):** reader-bound string sessions now invoke optional
-  custom `batch` methods with logical values. Like `step`, a portable `batch`
-  must use reader-compatible helpers or return zero for logical input. Direct
-  `value.bytes` access remains supported only for standalone values. No change
-  to credit costs, cancellation polling or the scalar fallback contract.
-
-- **Breaking:** Graphviz mode now rejects previously unchecked label content
-  and values under its default policies. The new rules can be individually
-  disabled; parsing alone still retains structurally valid input unchanged.
-
-- Add `execution.cancellation_interval` to DOT and markup policies, default 1,
-  with fixed/runtime selection and unchanged work-credit metering. Larger
-  intervals trade cancellation responsiveness for fewer callback checks.
-- **Breaking:** runtime markup policy entry points now return configuration
-  errors, including `prepare`, parsing/validation and session init/reset.
-  Interval 0 is rejected; fixed-policy entry points remain compile-time checked.
-- Specialize DOT's interval-1 runtime driver at initialization/reset and keep
-  its single-credit scanner path separate from batched execution. No change to
-  polling frequency, work credits, cancellation precedence or session storage.
-- Reduce DOT scalar-scanner dispatch and cancellable-session overhead without
-  changing event, recovery or work-budget contracts, or increasing storage.
-- **Breaking:** partial DOT `order` storage can contain paired `skipped_start`
-  and `skipped_end` metadata. Normal statement views hide them; use
-  `skippedRanges()` for recovery gaps. `unrepresented()` describes only an
-  unfinished suffix and can be null even when the document is partial.
+- **Breaking:** requires Zig 0.17.0. For Zig 0.16.0, use the `v0.5.0` tag.
+  Build commands use Zig 0.17's optimize names, such as `-Doptimize=fast`
+  instead of `-Doptimize=ReleaseFast`.
+- **Breaking:** Graphviz markup mode, the default, now runs the new content,
+  attribute-value and reference checks as errors. Labels that passed in 0.5.0
+  can fail now, on their own and when checked from DOT. Turn each check off
+  with its `validation.graphviz` setting, or use `.mode = .structural`.
+  Parsing alone is unchanged.
+- **Breaking:** markup profiles with run-time settings (`runtime_policy =
+  true`) now return `error.InvalidCancellationInterval` for an interval of 0,
+  so `prepare`, the parse and validate calls, and session `init` and `reset`
+  need `try`. `markup.PolicyValidation` can now be `.invalid`. DOT's policy
+  error set and `dot.PolicyIssue` gain the same case.
+- **Breaking:** partial DOT results (`retention.partial = true`) now also keep
+  the completed statements after a syntax error, not only the part before it.
+  See [Keep the finished part of a DOT file](docs/EDITORS.md#keep-the-finished-part-of-a-dot-file).
+  - `Document.skippedRanges()` lists the gaps, and `firstUnrepresented()`
+    gives the first byte that isn't covered.
+  - `unrepresented()` now covers only an unfinished end of the file, so it can
+    be null for a partial document.
+  - `Document.order` can contain `skipped_start` and `skipped_end` entries.
+    The statement views skip them; exhaustive switches on `StatementId` must
+    handle them.
+  - `Document.root_closed` says whether the root's closing `}` was read.
+- **Breaking:** new enum values. Exhaustive switches must handle the new DOT
+  and markup diagnostic codes and markup detail kinds, `Feature.string_value`
+  in both parsers, and markup's `ReferenceCatalog.graphviz`.
+- Error recovery resumes in more places. You can now see independent errors
+  that 0.5.0 missed, and fewer follow-on errors: `digraph { a -> { b -> } -> c; }`
+  reports one error, not two.
+- A cancellation hook may now call its own session's `cancel()`, in DOT and
+  markup sessions (and the new IR and string sessions). Any other call back
+  into the session from a hook is still not allowed.
+- **Breaking:** with UTF-16, UTF-32 or ASCII input, a cancel requested before
+  parsing starts now gives the usual `cancelled` result, as UTF-8 input does,
+  instead of `error.Cancelled`. `validate` on a profile that reads several
+  encodings now reports `.unsupported_encoding` (markup:
+  `completion.unsupported_encoding`) instead of returning
+  `error.UnsupportedEncoding`.
 
 ### Fixed
 
-- Release argument storage with the partial-IR benchmark's process arena.
-- UTF-16 identifier traversal checks surrogate partners before consuming them,
-  including malformed encoding accepted by the parser. A failed bounded operand
-  read restores its cursor instead of leaving it inside an operand.
-- DOT sessions honor cancellation issued from their polling hook and preserve
-  ambiguous-numeral findings queued behind previews. Normal root closers are
-  retained before the final EOF check. Metering and polling bounds are unchanged.
-- `a---1` / `a---.5` preserve their negative endpoint; neither default parsing
-  nor lenient parsing proposes a repair that changes the node name.
-- ASCII-only IR lowering preserves accepted name bytes across direct, fixed and
-  resumable paths. Fixed/allocator sessions normalize hooks consistently.
-- Direct complete/partial IR lowering, with either storage path, honors
-  `policy.execution` and opt-in runtime overrides. Metered/cancellable calls run
-  the existing bounded engine to completion; default calls retain the direct
-  driver. Limits remain enforced independently. **Breaking (Unreleased):** a
-  hook no longer implicitly enables cancellation on a configured IR profile.
-  Enable `.execution.cancellation`; runtime-disabled cancellation ignores hooks.
-  Fixed direct calls on runtime-enabled profiles require `try` for invalid
-  policies; operational failures remain in `outcome`. The convenience `ir.parse`
-  and `parsePartial` keep their explicit-hook cancellation behavior.
-- Diagnostic printing uses the caller's stderr lock and preserves IO cancellation.
-  Benchmarks use streaming stdout so redirected reports retain every section.
-  Full and IR-only test steps share one IR test build; example checks verify
-  exact output and exit status. Shared cancellation/connection/observation helpers
-  keep internal paths consistent, and the remaining deprecated Zig alias is removed.
-- Shared IR reader selection handles ASCII-admitted Documents in UTF-8
-  profiles, including port-key materialization sessions. Native root graph
-  names are decoded before IR publication, with budgeted session work.
-- Partial strict-edge answers account conservatively for hidden membership
-  consumed by later set endpoints. `parsePartial` preserves checking when
-  strict interpretation is unsupported, without publishing an IR.
-- IR bounds reject overflowing caller capacity envelopes. Direct fixed and
-  growable lowering normalize limits consistently and honor explicit hooks;
-  sessions latch cancellation issued inside hooks and poll before a lifetime
-  `WorkLimit`, without increasing any grant or cancellation interval.
-- Speed builds inline typed-name conversion to avoid event-dispatch conversion
-  overhead; Small builds may share it. Standalone identifier checks retain their own inlined scanner
-  body, avoiding the measured ReleaseFast parse slowdown from linking checked-name
-  helpers. ReleaseSmall and public-lexer linkage still need separate tuning.
-  Name binding checks source bounds in every build; source/encoding
-  identity remains the caller's responsibility. Removed observation flags now
-  produce migration errors rather than silently disabling observations.
-- Token previews report the next statement's context/absent owner during
-  separator-free lookahead, retain owners for preview-only consumers, and
-  recognize separator-free attribute keys. Trailing trivia after `+` no longer
-  creates whitespace-only updates. A queued preview cannot hide an already-found
-  scanner failure behind later cancellation. Aborted consumers no longer incur
-  extra early-observation dispatch work.
-- Replace deprecated Zig reflection/`std.builtin` aliases, share ASCII batch
-  width with logical readers, and correct observation lifecycle, trusted-name
-  guidance and historical benchmark reproduction instructions.
-- Reduced endpoint-port IR overhead in edge expansion, streaming and attribute
-  iteration/folding: cache immutable connection/graph facts, isolate port
-  preparation and avoid redundant AVL height work. Follow-up repairs keep
-  singleton membership checks inline, avoid copying full connections during
-  attribute iteration and specialize folded reads for port-free graphs.
-  APIs, retained storage,
-  work accounting and cancellation boundaries are unchanged. See the focused
-  performance report for measurements and remaining pre-port gaps.
-- Long reader-bound string checks batch unchanged ASCII runs without changing
-  credits, pause boundaries, cancellation polls or session size. Short values
-  and decoding boundaries retain scalar execution.
-- DOT string routing no longer re-tokenizes already parsed attribute values.
-  This also avoids a shared-scanner optimization regression in mixed-profile
-  ReleaseSmall builds. Public identifier helpers retain their input checks.
-- Partial DOT validation excludes unattached attributes, discarded port
-  occurrences and uncertified edge operators; delayed markup selection rejects
-  identifiers outside retained syntax while allowing retained nested scopes.
-- DOT event aborts pair with delivered begins and exclude an enclosing closing
-  brace. Native events preserve encoding provenance and admission cancellation.
-- Graphviz malformed-reference coverage, attribute reference catalogs, signed
-  CELLSPACING and literal whitespace handling; catalog metadata is decoded.
-- Explicit UTF-8 markup selection no longer probes a different encoding again.
-- Oversized string patterns are rejected consistently before scanning, and
-  performance reporting handles subdirectory repositories and invalid flags/paths.
+- `a---1` and `a---.5` are read as `a -- -1` and `a -- -.5`, as Graphviz reads
+  them. 0.5.0 rejected them with a fix marked machine-applicable that changed
+  the node name, and lenient mode built `a -- 1`.
+- Reading a UTF-16 name that contains `\` followed by an unpaired high
+  surrogate no longer runs past the end of the name. This affected the
+  `identifier` helpers, validation and label checking on UTF-16 input.
+- Validating a partial DOT document no longer reports a port from the
+  statement that failed to parse.
+- Markup with an explicit `.encoding` no longer reports a UTF-16 or UTF-32 byte
+  order mark at the start as an unsupported encoding. The explicit choice wins,
+  as documented.
 
 ## 0.5.0 — 2026-10-12
 

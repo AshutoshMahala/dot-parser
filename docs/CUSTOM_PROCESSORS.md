@@ -4,7 +4,7 @@ The DOT parser finds every HTML-like `<...>` value and can hand each one to a
 *processor* to check what is inside. The built-in processor is the markup
 parser, `markup.Profile(...)`. You can bind your own instead, for example to:
 
-- allow only the tags Graphviz supports
+- allow only your own tags and attributes
 - check a different markup dialect
 - add your own checks before or after the built-in ones
 
@@ -46,25 +46,26 @@ The compiler checks that your processor type declares all of these:
 | Declaration | Requirement |
 | --- | --- |
 | `Policies` | Its settings binding. See [giving your processor settings](#giving-your-processor-settings). |
-| `Options` | Per-call options. The caller passes them as `.markup`. |
+| `Options` | Per-call options. The caller passes them as `.markup`. Every field needs a default value. |
 | `prepare(options)` | Returns `Prepared`, or an error union with `Policies.Error`. Must not scan, allocate or call back. DOT calls it on every `parseAndValidate`, even when checking is off, so bad settings are always reported. |
-| `Prepared.initWorkspace(allocator, resources)` | Returns a `Workspace`. Must not scan, allocate or call back; buffers grow later. DOT calls it only when `markup` is `.process`. |
+| `Prepared.initWorkspace(allocator, resources)` | Returns a `Workspace`. Must not scan, allocate or call back; buffers grow later. DOT calls it only when `markup` is `.process` and label trees aren't kept (`retention.markup` off). |
 | `Workspace.parseAndValidate(fragment, sink)` | Checks one value. Returns `InputError!Result`. |
 | `Workspace.deinit()` | Frees the workspace's buffers. DOT calls it exactly once for each workspace it created, on every exit, including failures. |
-| `Diagnostic` | Your diagnostic type. It must have a `span` field. |
+| `Diagnostic` | Your diagnostic type. It must have a `span` field or a `span()` method. |
 | `DiagnosticSink` | `dot.reporting.Sink(Diagnostic)` |
-| `ParseResources` | Passed to `initWorkspace`. The caller supplies them as `.markup_resources`. |
-| `InputError` | Errors for bad fragment input, such as `markup.Fragment.Error` |
+| `ParseResources` | Passed to `initWorkspace`. The caller supplies them as `.markup_resources`. Every field needs a default value. |
+| `InputError` | Errors for bad fragment input, such as `markup.Fragment.Error`. DOT returns it from `parseAndValidate` if your processor returns it. |
 | `console.Adapter` | Optional. Needed only if the caller uses `Parser.console` to print diagnostics. |
 
-`Result` needs three members, with the same meaning as
+`Result` needs these members, with the same meaning as
 [markup results](MARKUP.md#checking-many-fragments):
 
 | Member | Meaning |
 | --- | --- |
-| `has_errors` | Errors were found in this value |
+| `has_errors` | A `bool` field: errors were found in this value |
 | `documentValid()` | The value was fully checked and has no errors |
 | `stopped()` | A stop that isn't about the input: cancel, a memory or buffer failure, or the sink stopping or failing |
+| `subtreeComplete()` | Optional. Whether the whole value was parsed into a tree, valid or not. DOT uses it for `result.subtreeComplete()`, `result.state()` and `result.markup.representation`. Without it, DOT counts a value as complete only when `documentValid()` is true. |
 
 ## Rules it must follow
 
@@ -93,16 +94,20 @@ To let DOT keep each label's result, also declare:
 
 | Declaration | Requirement |
 | --- | --- |
-| `CheckResult` | A result that owns its buffers. Same members as `Result`, plus `deinit()` with no arguments. It may point into the unchanged source. |
+| `CheckResult` | A result that owns its buffers. Same members as `Result`, including the optional `subtreeComplete()`, plus `deinit()` with no arguments. It may point into the unchanged source. |
 | `Prepared.parseAndValidate(allocator, fragment, sink, resources)` | Checks one value and returns `InputError!CheckResult`. Don't return views into a workspace from here. |
-| `CheckResult.subtreeComplete()` | Optional. Whether the whole value was parsed into the tree, whether or not it is valid. Without it, DOT counts a value as complete only when `documentValid()` is true. |
 
 - DOT takes ownership of each `CheckResult` and calls its `deinit()` exactly
   once.
+- While `retention.markup` is on, DOT uses this call for every value and
+  creates no workspace.
 - The rules above still apply: report in original positions, and respect the
   sink.
 - When checking chosen labels later, DOT calls `prepare` again with that call's
   options before it starts. It never swaps the processor bound at compile time.
+- Without these declarations, `retention.markup = true` in the compiled
+  settings is a compile error, and in per-call settings the call returns
+  `error.MarkupRetentionUnsupported`.
 
 ### Supporting other source encodings
 
@@ -117,6 +122,7 @@ types:
 | --- | --- |
 | `withSourceEncodings(capabilities)` | Optional. Returns a version of your processor for the readers the DOT profile compiled in. |
 | `forSourceEncoding(actual)` | Returns the processor that reads labels in one encoding. DOT also asks for the `.utf8` one. |
+| `declared_source_encodings` | Optional. A `?[]const dot.SourceEncoding`, like the `source_encodings` option. DOT adds these readers to its own, as it does for `markup.Profile(.{ .source_encodings = ... })`. |
 
 - DOT picks the encoding once for the file and uses the matching processor for
   every label. Nothing is swapped at run time.
@@ -178,7 +184,7 @@ const MyLabels = struct {
 that also uses `ParseResources` to count the labels it checks.
 
 A processor that doesn't wrap the markup parser needs its own diagnostic type,
-its own result type with the three members above, and, if you want console
+its own result type with the members above, and, if you want console
 output, its own `console.Adapter`.
 
 ## Giving your processor settings
@@ -195,7 +201,13 @@ that from a *schema* you write:
 | `resolve(baseline, patch)` | Combines the defaults with a patch. No allocation, no side effects. |
 | `check(effective, patch)` | Returns `.valid`, or `.invalid` with an `Issue`. No side effects. |
 | `Error` | `error{}` if every combination is valid |
-| `Check`, `Issue` | `union(enum) { valid }` when nothing can fail. Otherwise `union(enum) { valid, invalid: Issue }`, where `Issue` is an enum with an `asError()` method. |
+| `Check`, `Issue` | When nothing can fail, `Check` is `enum { valid }` or `union(enum) { valid }`. Otherwise `Check` is `union(enum) { valid, invalid: Issue }`, where `Issue` is an enum with an `asError()` method. |
+
+`PolicyBinding(Schema, .{ .policy = patch, .runtime_policy = true })` takes two
+options. `.policy` changes the compiled defaults; it is checked at compile time,
+so an invalid one is a compile error. `.runtime_policy = true` lets each call
+pass a patch, which `prepare` checks. The binding gives you `Options`,
+`prepare`, `Error` and `validatePolicy` to use in your processor.
 
 ```zig
 const Schema = struct {
@@ -241,6 +253,16 @@ A set only prepares settings. It doesn't run processors or decide their order.
 Your code calls each one, and `fragment.child(span)` keeps positions correct for
 a value nested inside another.
 
+## String checks
+
+> **Unreleased.** Not in 0.5.0.
+
+DOT and markup profiles also take `.processors.string`, for
+[string checks](STRINGS.md#attribute-processing-in-dot-and-markup) on
+attribute values. That slot takes a `string_processor.Profile(...)`; its
+interface isn't a contract for other types. To add your own string rules, give
+that profile a [custom validator](STRINGS.md#custom-validators).
+
 ## Limits
 
 - During DOT parsing, label processing runs to completion. A profile with a
@@ -256,6 +278,10 @@ a value nested inside another.
   processor and pass it resources
 - [composed_markup.zig](../examples/composed_markup.zig): the built-in processor
   bound the same way
+- [attached_markup.zig](../examples/attached_markup.zig): owned results kept in
+  the DOT result and checked later
+- [string_processor.zig](../examples/string_processor.zig): a string checker
+  bound to DOT and markup (unreleased)
 
 Run them with `zig build examples`. Each program is also installed in
 `zig-out/bin/`.

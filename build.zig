@@ -51,8 +51,7 @@ pub fn build(b: *std.Build) void {
     });
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
-    // Public integration tests import only the "dot_parser" module, exactly
-    // like an external consumer would.
+    // Public integration tests use the exported modules, like consumers do.
     const integration_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/integration.zig"),
@@ -767,8 +766,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "dot_parser", .module = mod }},
     }) });
+    const run_ir_partial_bench = b.addRunArtifact(ir_partial_bench);
+    run_ir_partial_bench.addPassthruArgs();
     b.step("bench-ir-partial", "Measure partial IR coverage, candidates, mentions and symbolic queries")
-        .dependOn(&b.addRunArtifact(ir_partial_bench).step);
+        .dependOn(&run_ir_partial_bench.step);
     check_benches.dependOn(&ir_partial_bench.step);
     const ir_partial_edges_bench = b.addExecutable(.{ .name = "ir_partial_edges_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/ir_partial_edges.zig"),

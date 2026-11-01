@@ -12,9 +12,10 @@ This page shows how to check what is inside those labels while you parse DOT
 files. To parse HTML-like markup without DOT, see
 [Parsing markup on its own](MARKUP.md).
 
-For optional string-value checks in DOT or inside markup attributes, see
-[attribute string processing](STRINGS.md#attribute-processing-in-dot-and-markup).
-Those checks default to passthrough and can share this pipeline's diagnostic bag.
+To check ordinary string values, in DOT or in markup attributes, see
+[string checks](STRINGS.md#attribute-processing-in-dot-and-markup)
+(unreleased). They are off unless you turn them on, and can share the same
+diagnostic bag as label checking.
 
 > **Available since 0.4.0.** Label checking and the `markup_parser` module
 > are included in the package.
@@ -42,9 +43,10 @@ checker's own settings decide **how**, through its [mode](MARKUP.md#two-modes):
   attributes must be well-formed.
 - Since 0.5.0 it defaults to `.graphviz`, which also checks
   [Graphviz's tags and attributes](MARKUP.md#graphviz-vocabulary) and matches
-  tag names ignoring ASCII case. Unreleased also checks content placement,
-  local attribute values and named references. Color-scheme, resource and
-  layout resolution remain outside this parser.
+  tag names ignoring ASCII case.
+- Graphviz mode also checks where content may go (a `TD` only inside a `TR`,
+  for example), attribute values and named references (unreleased). It doesn't
+  check colors, fonts, image files or layout.
 
 Neither mode is a browser HTML parser. Checking every label while parsing
 covers **every** `<...>` value, not only labels. To check only labels, pick
@@ -185,6 +187,13 @@ Editors can keep each checked label's tree in the result, or queue chosen
 labels and check them later as part of the same result. See
 [Using it in an editor](EDITORS.md#keep-the-label-trees-from-a-dot-file).
 
+Keeping trees needs a label checker that can hand over results it owns. The
+built-in `markup.Profile` can. With [your own checker](CUSTOM_PROCESSORS.md#optional-owned-results)
+that can't, `retention.markup = true` in the compiled settings is a compile
+error, and in per-call settings the call returns
+`error.MarkupRetentionUnsupported`. Without any bound checker, it is treated
+like `.process`: a compile error, or `error.MarkupProcessorRequired`.
+
 ## Check the labels you choose
 
 For more control, parse the DOT first, then check the values you pick:
@@ -234,22 +243,24 @@ Instead of `markup.Profile(...)`, you can bind your own label processor, for
 example one for a different dialect or an application-specific vocabulary.
 See [Bringing your own processor](CUSTOM_PROCESSORS.md).
 
+## Not available yet
+
+- Automatically picking the values Graphviz treats as labels, instead of every
+  `<...>` value
+- Checking labels in small steps, or with one budget for DOT and its labels
+
+See the [roadmap](ROADMAP.md).
+
 ## Examples
 
 - [composed_markup.zig](../examples/composed_markup.zig): check every label
   while parsing, with one bag
 - [delayed_markup.zig](../examples/delayed_markup.zig): check only `label`
   values after parsing
+- [attached_markup.zig](../examples/attached_markup.zig): queue chosen labels,
+  check them later and keep their trees in the same result
 - [custom_processor.zig](../examples/custom_processor.zig): bind your own label
   checker
 
 Run them with `zig build examples`. Each program is also installed in
 `zig-out/bin/`.
-
-## Not available yet
-
-- Complete Graphviz label grammar, attribute-value and reference checking
-- Automatically selecting Graphviz label contexts instead of every `<...>` value
-- Checking labels in small steps, or with one budget for DOT and its labels
-
-See the [roadmap](ROADMAP.md).

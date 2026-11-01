@@ -54,10 +54,10 @@ cuts the arena's memory from about 14 times the source size to about 3 times.
 
 ### Reuse counts from a previous document
 
-> **Unreleased.**
+> **Unreleased.** Not in 0.5.0.
 
-For edited files, you can skip the counting pass and use previous pool counts
-as growth hints:
+When a file is edited and parsed again, you can skip the counting pass and use
+the previous document's counts as size hints:
 
 ```zig
 const hints = previous_document.capacities();
@@ -67,15 +67,18 @@ var next = dot.parseBorrowed(gpa, next_source, bag.sink(), .{
 defer next.deinit(gpa);
 ```
 
-`capacities()` is an allocation-free O(1) snapshot with no borrowed pointers;
-keep it after freeing the old document if needed. It counts retained records,
-not allocation slack. Partial documents include retained staged records, not
-the discarded suffix. Nesting scratch, diagnostics and markup trees are excluded.
+- `capacities()` is instant and allocates nothing. The counts hold no
+  pointers, so you can keep them after freeing the old document.
+- They count the records the document holds, not the spare room in its lists.
+  For a [partial document](EDITORS.md#keep-the-finished-part-of-a-dot-file),
+  they count what was kept, including records of an unfinished statement, not
+  the part that wasn't parsed.
+- Nesting space, diagnostics and label trees aren't counted.
 
-These are hints, not limits: the next parse grows if needed. A larger previous
-document can over-reserve for a smaller new one, so hints do not guarantee lower
-peak memory. Use `measure` for exact counts of the current input, or fixed
-buffers for a hard bound. Temporary nesting space remains separate.
+These are hints, not limits: the next parse still grows if it needs more. If
+the old document was bigger, the hints can reserve more than the new one needs,
+so they don't promise lower peak memory. Use `measure` for exact counts of the
+new input, or fixed buffers for a hard limit.
 
 ## Option 3: fixed buffers, no allocator
 
@@ -109,7 +112,7 @@ you leave out are zero.
 
 | Field | Counts | Example |
 | --- | --- | --- |
-| `statements` | every statement, including those inside subgraphs | |
+| `statements` | every statement, including those inside subgraphs. (unreleased) With `retention.partial` and `on_error = .collect`, also two for each part skipped after an error. | |
 | `nodes` | node statements | `a;` |
 | `edges` | single edges between two nodes | `a -> b` |
 | `edge_chains` | chains between nodes | `a -> b -> c` |
@@ -121,6 +124,7 @@ you leave out are zero.
 | `attributes` | `key=value` pairs inside `[ ]` | `[x=1, y=2]` needs 2 |
 | `assignments` | `key = value` statements | `rankdir = LR` |
 | `attribute_statements` | `graph`, `node` or `edge` default statements | `node [shape=box]` |
+| `comments` | comments, when you [keep them](#comment-storage) | `// note` |
 
 The easiest way to pick numbers is to run `measure` (or `measureIn`, which needs
 no allocator) on typical inputs and add some headroom. The

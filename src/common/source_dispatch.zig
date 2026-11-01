@@ -35,10 +35,11 @@ pub fn options(comptime T: type, value: anytype) T {
 
 /// Framing is checked by encoding.select. Content validity belongs to each
 /// processor's invalid_encoding policy, not an unconditional admission pass.
-pub fn checkCancellation(cancellation: anytype) encoding.InputError!void {
+pub fn cancellationRequested(cancellation: anytype) bool {
     if (@TypeOf(cancellation) != void) {
-        if (cancellation) |hook| if (hook.requested()) return error.Cancelled;
+        if (cancellation) |hook| return hook.requested();
     }
+    return false;
 }
 
 pub fn stamp(value: anytype, info: encoding.Info) void {

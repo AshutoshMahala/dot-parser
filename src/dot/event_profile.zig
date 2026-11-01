@@ -230,7 +230,8 @@ pub fn Source(comptime api: type, comptime config: policy.Config, comptime caps:
             const info = try support.encoding.select(caps, source, options.encoding);
             switch (info.encoding) {
                 inline else => |actual| if (comptime caps.allows(actual)) {
-                    if (actual != .utf8) try dispatch.checkCancellation(cancellation);
+                    if (actual != .utf8 and dispatch.cancellationRequested(cancellation))
+                        return .{ .outcome = .cancelled, .source_info = info };
                     const Worker = Bound(actual, api, config, Sink);
                     const value = @call(.auto, @field(Worker, method ++ "Selected"), arguments ++ .{ dispatch.options(Worker.Options, options), info });
                     return if (config.runtime_policy) try value else value;

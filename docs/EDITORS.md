@@ -9,7 +9,8 @@ outline, highlighting and errors for the part that is done.
 
 This page collects the opt-in features for that:
 
-- [observing complete names before statements finish](EVENTS.md#outline-while-typing) (Unreleased)
+- [converting byte positions to editor lines and columns](#editor-position-conversion) (unreleased)
+- [seeing complete names before their statement is finished](EVENTS.md#outline-while-typing) (unreleased)
 - keeping the finished part of a DOT file, or of markup
 - keeping the trees of HTML-like labels, and checking chosen labels later
 - keeping comments
@@ -20,10 +21,11 @@ All of them are off by default. Their small fixed costs are listed under
 
 ## Editor position conversion
 
-> **Unreleased.**
+> **Unreleased.** Not in 0.5.0.
 
-Stored spans always count original bytes. Both `dot.location` and
-`markup.location` can derive editor coordinates on request:
+Positions in the library are byte offsets into your source. Editors and
+language servers usually want a line and a column. `textPosition` converts one
+offset when you ask:
 
 ```zig
 const position = try dot.location.textPosition(source, byte_offset, .{
@@ -33,41 +35,54 @@ const position = try dot.location.textPosition(source, byte_offset, .{
 // position.line and position.character are zero-based, like LSP positions.
 ```
 
-Source encoding defaults to UTF-8. Column encoding defaults to `.utf16`;
-`.utf8` counts UTF-8 bytes and `.utf32` counts Unicode scalars, irrespective of
-the source encoding. These are not grapheme or display-cell columns. A tab
-counts as one, and a leading BOM counts as a scalar if present in `source`.
-Match the text your editor holds: if it strips the BOM, account for that at
-the integration boundary.
+- `line` and `character` count from zero, as in the Language Server Protocol
+  (LSP).
+- `.source_encoding` is the encoding of `source`; the default is `.utf8`. For a
+  document, pass `document.source_info.encoding`.
+- `.column_encoding` chooses what a column counts, whatever the source
+  encoding: `.utf16` (the default, as in LSP) counts UTF-16 units, `.utf8`
+  counts UTF-8 bytes, and `.utf32` counts characters (Unicode scalar values).
+  None of them counts what you see on screen: a tab is one, and so is each
+  part of a combined character.
+- A BOM at the start of `source` is counted like any other character. If your
+  editor's text has no BOM, adjust for that yourself.
+- Lines end at LF, CRLF or a lone CR, as everywhere else in the library.
+- Each broken code unit (a bad byte in UTF-8, a bad 2-byte unit in UTF-16,
+  and so on, including an incomplete one at the end) counts as one replacement
+  character, U+FFFD. Your source is not changed.
 
-LF, CRLF and standalone CR follow the ordinary physical-line policy. Malformed
-code units, including an incomplete final unit, count as one U+FFFD replacement
-each for positions only; source bytes are unchanged. Queries inside a scalar or
-code unit return `InvalidBoundary`; out-of-range offsets return `InvalidOffset`.
-This can also happen at the end of a one-byte diagnostic on a valid non-ASCII
-character. Use `.boundary = .before` for a range's start and `.boundary = .after`
-for its end to round outward to scalar boundaries. The default `.strict` keeps
-the boundary error; ordinary byte locations and stored spans are unchanged.
-Sources beyond the u32 domain return `SourceTooLarge`; a converted column that
-cannot fit in u32 returns `PositionOverflow` instead of wrapping.
+| Error | When |
+| --- | --- |
+| `error.InvalidOffset` | The offset is past the end of `source`. |
+| `error.InvalidBoundary` | The offset is inside a character. This can happen at the end of a one-byte diagnostic on a non-ASCII character. |
+| `error.SourceTooLarge` | `source` is larger than 4 GiB. |
+| `error.PositionOverflow` | The column doesn't fit in a `u32`. |
 
-This helper allocates nothing, stores no line index, and scans O(offset) per
-call. It is not work-metered or cancellable. Many arbitrary queries may warrant
-an editor-owned line index; don't recompute every token's location on each
-keystroke. Ordinary parsing, byte spans and byte columns incur no added work.
+To round instead of failing on `InvalidBoundary`, pass `.boundary = .before` for
+the start of a range and `.boundary = .after` for its end; both round outwards
+to a whole character. The default, `.strict`, returns the error. Stored
+positions don't change.
+
+It allocates nothing and keeps no line index, so each call reads the source
+from the start up to the offset. It isn't metered and can't be cancelled. For
+many lookups, keep your own line index rather than converting every token on
+every keystroke. Parsing does no extra work for this. `markup.location` has the
+same function.
 
 ## Keep the finished part of a DOT file
 
-For an outline **before a statement finishes**, use the Unreleased
-[early event observations](EVENTS.md#outline-while-typing) with
-`Consumer.observations = dot.events.Observations.early`. Complete names can be exposed even when
-their statement never commits, without retaining the library's tree. This is
-separate from the partial-document option below. For raw unfinished names,
-select `dot.events.Observations.previews` (or `.all` for both): [token previews](EVENTS.md#unfinished-token-previews)
-cover actual EOF and metered pauses, with separately charged callbacks and
-explicit retirement. Their raw spans are not trusted identifiers or tree nodes.
+To show names **before** their statement is finished, use
+[early events](EVENTS.md#outline-while-typing) (unreleased) instead of a
+document: set `Consumer.observations = dot.events.Observations.early`. Your
+consumer then hears about each complete name as soon as it is read, even if
+its statement never finishes, and the library builds no tree. To also see a
+name that is still being typed, use `dot.events.Observations.previews`, or
+`.all` for both. [Token previews](EVENTS.md#unfinished-token-previews) report
+the unfinished name at the end of the input or when a session pauses, and tell
+you when it is finished or rejected. A preview is only raw text; it isn't a
+checked name or part of the document.
 
-Turn on `retention.partial`:
+To keep the finished part as a document, turn on `retention.partial`:
 
 ```zig
 const Editor = dot.Profile(.{ .policy = .{
@@ -78,11 +93,11 @@ defer result.deinit(allocator);
 if (result.document) |*document| {
     _ = document.state;           // .complete or .partial
     _ = document.scopeComplete(); // is the DOT itself complete (not: is it valid)
-    _ = document.unrepresented(); // unfinished suffix, or null
+    _ = document.unrepresented(); // the end of the file that wasn't kept, or null
     var gaps = document.skippedRanges();
     while (gaps.next()) |gap| {
-        _ = gap.range;            // failed/skipped statement or region
-        _ = gap.scope;            // containing DOT scope
+        _ = gap.range;            // a part skipped after an error
+        _ = gap.scope;            // the scope it was in
     }
     var scopes = document.subgraphs();
     while (scopes.next()) |scope| {
@@ -92,45 +107,57 @@ if (result.document) |*document| {
 }
 ```
 
-**What you get.** The usual `Document` type, read the usual way. It has retained
-completed statements and every subgraph that was opened;
-unfinished subgraphs are marked partial. A statement only appears once it is
-complete, so you never see half an edge.
+**What you get.** The usual `Document` type, read the usual way. It has the
+statements that were finished and every subgraph that was opened; unfinished
+subgraphs are marked partial. A statement only appears once it is complete, so
+you never see half an edge. If the file fails before a `graph` or `digraph`
+header has begun, there is no document.
 
-**Unreleased: later recovered statements are kept too.** With
-`on_error = .collect`, a failed statement is abandoned and later completed
-statements are retained after a safe synchronization boundary. With
-`.fail_fast`, only the safe prefix is kept. Partial retention remains off by
-default and does not change acceptance. Nothing is guessed: an unclosed quote
-or comment leaves the rest uncovered; no closing brace or name is invented.
+**Statements after an error** (unreleased). With `on_error = .collect`, the
+parser skips the statement that failed, and keeps the finished statements
+after it once it has found a safe place to carry on. With `.fail_fast`, it
+keeps only the part before the error. Nothing is guessed: an unclosed quote or
+comment leaves the rest of the file uncovered, and no closing brace or name is
+invented. This setting never changes whether a file is accepted.
 
-`skippedRanges()` gives internal recovery gaps in encounter order. A failed
-outer edge's range may contain independently retained endpoint-body statements;
-it does not mean every byte within the range lacks a representation.
-`unrepresented()` gives only the unfinished suffix, not those gaps. It is
-**not** a safe place to restart parsing, and is null if recovery reached the
-end despite errors. A missing token at EOF has no corresponding source bytes;
-consult diagnostics and completeness as well as the ranges.
-The root closing brace is retained once consumed, even if cancellation happens
-before the final EOF check. Its presence does not claim that trailing input was checked.
-If the file fails before a `graph` or `digraph` header has begun, there is no
-document.
+**Finding the gaps.**
+
+- `skippedRanges()` (unreleased) lists the parts skipped after errors, in the
+  order the parser met them, each with the scope it was in. A gap can still
+  contain kept statements: when the edge `{ d } -> ;` fails, its whole text is
+  a gap, but the statement `d` inside the braces is kept.
+- `unrepresented()` gives the end of the file that wasn't kept, or `null` if
+  the kept part reaches the end. Such an end is left when the parse stopped
+  early: at a fail-fast error, a cancel, a full limit or buffer, or an
+  unclosed quote or comment. When recovery reaches the end of the file, even
+  with errors, it is `null`. It never includes the `skippedRanges()` gaps. It
+  is **not** a safe place to restart parsing.
+- Something missing at the end, such as a final `}`, has no bytes, so no range
+  shows it. Look at the diagnostics and the completeness calls as well as the
+  ranges.
+- `document.root_closed` (unreleased) is `true` once the parser has read the
+  graph's closing `}`. That `}` is kept even if the parse is cancelled right
+  after it. It doesn't mean the rest of the file was checked:
+  `unrepresented()` can still show text after the `}`, such as a trailing
+  comment.
 
 **Where it works.** Fixed and growing storage, both scanners, cancellation,
 limits, run-time settings and [sessions](EXECUTION.md). A session's document is
 readable only once the session has finished, not while it is paused. `measure`
 still returns sizes only for a successful parse.
 
-`scope.state()` currently scans that scope's statement interval on partial
-documents. Querying every nested scope can be quadratic in deep outlines;
-complete-document checks are constant-time. Avoid repeated queries on every
-keystroke until a cached outline-state pass is available.
+**Cost of `scope.state()`** (unreleased). On a partial document, it reads
+through all the statements inside that scope each time you call it. Calling it for every
+scope of a deeply nested outline can take time that grows with the square of
+the size, so don't do it on every keystroke. On a complete document it is
+instant.
 
 **Complete isn't valid.** A complete document can still fail validation, and a
 partial document is never `documentValid()`. Validating a partial document
-checks only what was kept, and reports that it didn't cover everything
-(`coverage.incomplete` names the earliest gap or unfinished suffix, also
-available through `document.firstUnrepresented()`). `parseAndValidate`
+checks only what was kept, and reports that it didn't cover everything: the
+validation result's `coverage` is `.incomplete`, with the byte offset of the
+first part that wasn't kept. `document.firstUnrepresented()` (unreleased) gives
+the same offset. `parseAndValidate`
 validates the kept part after a syntax error when collecting errors, but not
 after a stop or a fail-fast error.
 
@@ -144,8 +171,8 @@ Graph-kind restrictions only apply once the kind is known.
 Use the statement and scope views; they always give a safe outline. The raw
 arrays can contain things the views hide:
 
-- port references or chain links of a statement that wasn't finished;
-  unattached attribute pairs are discarded on abort
+- port references or chain links of a statement that wasn't finished. Its
+  attribute pairs are removed (unreleased).
 - order entries for statements still being built. `statement(id)` returns
   `null` for those, and iterators and counts skip them.
 - a subgraph at the start of a statement only becomes a standalone statement
@@ -184,8 +211,8 @@ if (parsed.document) |document| {
   agree, because an unfinished child also leaves its parents unfinished.
   Neither says the markup is valid. The `.not_processed` state is reserved and
   isn't returned yet.
-- **Markup keeps only the part before the first error**. Unlike DOT collection,
-  it does not retain later recovered statements. So a parse that
+- **Markup keeps only the part before the first error**, even when collecting
+  errors. Unlike DOT, it doesn't keep anything after the error. So a parse that
   reached the end (`parsed.completion == .complete`) can still have a partial
   document, for example when only a closing tag is missing. Missing quotes,
   comments and closing tags are never filled in.
@@ -314,10 +341,28 @@ ignores other parts. It doesn't decode or copy anything, and it can't prove a
 range you built yourself came from the document, so use ranges from the
 document.
 
-- For a partial DOT document, choose only values inside the kept part.
+- For a partial DOT document, choose only names and values that were kept.
 - Queue values in source order, without overlaps. A repeat or a step backwards
   returns `error.SelectionOutOfOrder`.
 - A bad range or spelling, or running out of memory, leaves the queue as it was.
+
+| Error from `requestMarkup` | Cause |
+| --- | --- |
+| `error.MarkupRetentionDisabled` | DOT `retention.markup` is off. |
+| `error.MarkupNotPassthrough` | `markup` isn't `.passthrough`. |
+| `error.DocumentUnavailable` | There is no DOT document. |
+| `error.CompositionStopped` | The DOT step can't be continued: it stopped early, a diagnostic wasn't delivered or the bag asked to stop, or it failed with `.fail_fast`. |
+| `error.SelectionOutOfOrder` | The value starts before the end of the one queued before it. |
+| `error.SelectionClosed` | `processPendingMarkup` was already called. |
+| `error.InvalidSpan` | The range is outside the source or, in a partial document, isn't a kept name or value. |
+| `error.InvalidIdentifier` | The range isn't exactly one DOT name or value. |
+| `error.OutOfMemory` | The queue couldn't grow. |
+
+`processPendingMarkup` returns the first four in the same way, and
+`error.SelectionClosed` if it was already called. It can also return the label
+checker's configuration and input errors. Running out of memory while keeping
+a label's result isn't returned as an error: it is reported as a diagnostic,
+and `result.markup.stop` is `.retention_storage`.
 
 **How the labels' state changes.** The DOT side never changes.
 
@@ -329,7 +374,7 @@ document.
 | Any tree missing or partial | `.partial` |
 | Stopped before all were checked | The rest stay queued; not complete |
 
-`result.markup.selection` is then `.selected_operands`, so `markup.allValid()`
+`result.markup.selection` is then `.selected_operands`, so `result.markup.allValid()`
 covers only the labels you chose, not every `<...>` in the file. The `visited`,
 `valid`, `rejected` and `unprocessed` counts cover the labels that were checked;
 any still queued are in `pendingMarkup()`. Queued labels keep
@@ -382,8 +427,8 @@ an error.
 
 Some editors and Windows tools save files as UTF-16. To parse them without
 converting, see [source encodings](ENCODINGS.md). Positions and columns are
-always counted in bytes of your source; converting them to an editor's line
-and column is optional through [textPosition](#editor-position-conversion).
+always counted in bytes of your source. To turn them into an editor's line and
+column, use [textPosition](#editor-position-conversion) (unreleased).
 
 ## Memory
 
@@ -393,14 +438,16 @@ and column is optional through [textPosition](#editor-position-conversion).
   kept 26–34% more memory. Exact size hints or fixed buffers avoid that.
   `result.deinit` frees everything.
 - **With fixed buffers**, nothing extra is allocated.
-- **Terminal salvage** needs no extra scanning or allocation. Continuing DOT
-  recovery retains later syntax normally and stores two compact order slots
-  (16 bytes on current targets) per skipped region. Growing order storage may
-  allocate; fixed-buffer callers must reserve these slots. Exhaustion stops
-  recovery honestly rather than silently losing gaps. Document, node, edge and
-  subgraph record sizes are unchanged by this extension.
-- **DOT documents are 8 bytes larger** even with partial results off, and
-  allocator-owned results have one extra pointer. Node, edge and subgraph
+- **Keeping the part before a failure** needs no extra scanning or
+  allocation: the parser returns what it had already built.
+- **Keeping statements after an error** (unreleased) stores them like any
+  others. Each skipped part also takes two extra statement slots (16 bytes in
+  all, on current targets). Growing storage allocates them as needed; with
+  fixed buffers, count them in `statements`. If there is no room, the parse
+  stops with a storage failure, rather than losing track of a gap. The
+  document, node, edge and subgraph records are no bigger.
+- **Partial results make every DOT document 8 bytes larger**, even when they
+  are off, and allocator-owned results have one extra pointer. Node, edge and subgraph
   records are unchanged.
 - **Keeping label trees** holds all of them at once, instead of one reused set
   of buffers. No list is allocated while it's off, and fixed settings without it
@@ -412,19 +459,6 @@ and column is optional through [textPosition](#editor-position-conversion).
 
 Speed costs are in [Performance](PERFORMANCE.md#cost-of-opt-in-features).
 
-## Examples
-
-- [partial_documents.zig](../examples/partial_documents.zig): a partial DOT
-  document, and a complete one with a partial label
-- [attached_markup.zig](../examples/attached_markup.zig): check chosen labels
-  later, in the same result
-- [markup_partial.zig](../examples/markup_partial.zig): the finished part of
-  markup on its own
-- [comments.zig](../examples/comments.zig): keep comments with their positions
-
-Run them with `zig build examples`. Each program is also installed in
-`zig-out/bin/`.
-
 ## Not available yet
 
 - Keeping markup parts after the first error that the parser recovered safely
@@ -433,3 +467,19 @@ Run them with `zig build examples`. Each program is also installed in
 - Resumable sessions for UTF-16 and UTF-32 input
 
 See the [roadmap](ROADMAP.md).
+
+## Examples
+
+- [partial_documents.zig](../examples/partial_documents.zig): a partial DOT
+  document, and a complete one with a partial label
+- [partial_graph.zig](../examples/partial_graph.zig) (unreleased): the edges
+  and colors kept from before and after a broken statement, read through the
+  [semantic graph](IR.md#partial-graphs-for-editors)
+- [attached_markup.zig](../examples/attached_markup.zig): check chosen labels
+  later, in the same result
+- [markup_partial.zig](../examples/markup_partial.zig): the finished part of
+  markup on its own
+- [comments.zig](../examples/comments.zig): keep comments with their positions
+
+Run them with `zig build examples`. Each program is also installed in
+`zig-out/bin/`.

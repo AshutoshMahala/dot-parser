@@ -5,6 +5,7 @@ const expect = std.testing.expect;
 
 test "Graphviz complete labels accept documented content, references and values" {
     const valid = [_][]const u8{
+        "",
         "hello &nbsp; &copy; &alpha; &euro; &apos;",
         "<b>bold</B><BR/><I>italic</I><SUB>2</SUB><SUP>3</SUP><S>x</S><O>y</O>",
         "<BR></BR>",
@@ -59,8 +60,9 @@ test "Graphviz attribute reference catalog has document source and runtime parit
 
 test "Graphviz content and value rejections stay independent of syntax acceptance" {
     const invalid = [_][]const u8{
+        "\n",
+        "<!-- comment -->",
         "<FONT POINT-SIZE='255.000000000000000000000000000001'>x</FONT>",
-        "",
         "<B/>",
         "<TABLE/>",
         "<TABLE><TD>x</TD></TABLE>",

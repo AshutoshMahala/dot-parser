@@ -1,38 +1,47 @@
 # Performance
 
-How fast the parsers are and how much memory they use. Everything here was
-measured for 0.5.0 on 2026-10-12, at commit `2ea1311`, except where a section
-says otherwise. Measurements use one machine and made-up test files. Use the
-numbers as a rough guide: your files, hardware and settings will give different
-results.
+How fast the parsers are and how much memory they use. Measurements use one
+machine and made-up test files. Use the numbers as a rough guide: your files,
+hardware and settings will give different results.
+
+Where the numbers come from:
+
+- **0.5.0 sections.** From [Parse and validate](#parse-and-validate) to
+  [DOT with label checking](#dot-with-label-checking), the numbers were
+  measured for 0.5.0 on 2026-10-12, at commit `2ea1311`, with Zig 0.16.0.
+  They haven't been re-measured as a set on `main`.
+- **Unreleased sections: development measurements.** Features added after
+  0.5.0 were measured while they were being built, at the commit named at the
+  top of each section, not at the current `main`. Later commits changed some of
+  this code, including optimizations, so these are not benchmark results for
+  the next release. Treat them as development measurements until they are
+  re-run for a release, and compare numbers within one table, not across
+  sections.
+- **Compiler.** `main` builds with Zig 0.17.0. Numbers from Zig 0.16.0 builds
+  are not claims about Zig 0.17.0. To compare two revisions yourself, build
+  both with the same compiler; see [running the benchmarks](#running-the-benchmarks).
+
 [How these were measured](#how-these-were-measured) has the details.
-
-The development toolchain is now Zig 0.17.0. Tables labelled Zig 0.16.0 are
-historical measurements, not claims about 0.17 performance. Current build
-commands use `fast`, `safe` and `small` (previously `ReleaseFast`,
-`ReleaseSafe` and `ReleaseSmall`). Re-measure with the same compiler on both
-sides when comparing revisions.
-
-For a current working-tree comparison, use a Zig-0.17-compatible baseline:
-
-```sh
-zig build perf-string -- --baseline HEAD --modes fast,safe,small --runs 3
-```
-
-`HEAD` compares the committed baseline to the working tree; choose another
-0.17-compatible revision when appropriate. The current reporter builds both
-sides with one compiler. It cannot reproduce the older 0.16 studies below by
-passing their baseline hashes to Zig 0.17, and its `--modes` option does not
-accept the legacy `Release*` names.
 
 Reading the tables:
 
-- **MB** means 1,000,000 bytes, and **MB/s** means MB per second.
+- **MB** means 1,000,000 bytes, and **MB/s** means MB per second. **KiB** means
+  1,024 bytes.
 - A timing cell like `7.85 / 348.2` means **7.85 ms, which is 348.2 MB/s**.
   Both numbers describe the same run.
-- **Fast** and **Safe** mean `ReleaseFast` and `ReleaseSafe` builds.
+- **Fast**, **Safe** and **Small** are optimized builds: `-Doptimize=fast`,
+  `safe` and `small` with Zig 0.17.0, or `ReleaseFast`, `ReleaseSafe` and
+  `ReleaseSmall` with Zig 0.16.0.
+- Memory is the number of bytes the library asked its allocator for, unless a
+  table says otherwise. It is not the program's total memory use (RSS).
+- **Identical machine code** means the benchmark program compiled to
+  byte-for-byte the same code with and without a feature. This is the best
+  evidence here that a feature you don't use costs nothing. Two identical
+  programs can still time a few percent apart; treat that as noise.
 
 ## At a glance
+
+Measured for 0.5.0:
 
 - **DOT:** parsing and validating a 2.7 MB file takes 7.9 ms (about 350 MB/s)
   in a Fast build, or 6.8 ms (about 400 MB/s) with size hints.
@@ -50,1250 +59,24 @@ Reading the tables:
 - **Labels in DOT:** a file with 1,000 small labels is parsed and checked at
   about 150 MB/s, with only 7 allocations (labels in structural mode).
 
-## Document-to-IR topology (Unreleased, 2026-10-21)
-
-First production baseline, not a comparison against a shipped IR. Apple M4 Pro,
-Zig 0.17.0; `zig build bench-ir -Doptimize=fast` and `safe`.
-Nine timed samples after two warmups, median shown. Parsing/source construction
-and destruction are outside lowering timing. Allocations during lowering are
-included; this uses the process general-purpose allocator.
-
-| Workload | Source bytes | Fast ms / MB/s | Safe ms / MB/s |
-| --- | ---: | ---: | ---: |
-| 10,000 singleton connections | 127,794 | 1.960 / 65.2 | 1.923 / 66.5 |
-| 10,000 three-member set connections | 148,900 | 2.558 / 58.2 | 2.796 / 53.3 |
-| 1,000 reopened scope connections | 21,900 | 0.163 / 134.3 | 0.182 / 120.5 |
-| 10,000 nesting levels, one connection | 20,015 | 0.301 / 66.6 | 0.464 / 43.1 |
-| 50,000 × 50,000 symbolic product | 688,906 | 5.412 / 127.3 | 7.069 / 97.5 |
-
-The last row retains **100,000 nodes and one connection**, not 2.5 billion
-edges. Materialization is deliberately not requested for it. Explicit Fast
-materialization took 0.178 ms for 10,000 singleton edges, 0.215 ms for 30,000
-small-set edges, and 2.822 ms for the reopened case's 500,500 edge occurrences.
-These are synthetic baseline measurements; small timing differences are not
-claims about one optimization mode always winning.
-
-| Workload | Retained MB | Peak requested MB, Fast / Safe | Arena capacity MB (Fast) |
-| --- | ---: | ---: | ---: |
-| Singleton connections | 1.662 | 1.671 / 1.671 | 2.402 |
-| Three-member sets | 3.386 | 3.565 / 3.565 | 9.689 |
-| Reopened scopes | 0.218 | 0.223 / 0.223 | 0.414 |
-| Deep nesting | 0.693 | 1.136 / 1.136 | 1.907 |
-| Symbolic product | 8.901 | 8.901 / 10.313 | 27.399 |
-
-Retained bytes include pool capacity. Requested peaks include temporary scratch
-and old/new growth overlap; allocator resize success can change that overlap.
-Neither is RSS, and both exclude the already-built Document and borrowed source.
-The separate arena measurement includes reserved chunks and unreclaimed growth
-buffers: **arena usage is not claimed to equal retained payload**. Deep ordinary
-nesting uses 16-byte continuation frames instead of reserving an edge-sized
-frame for every scope.
-
-Unused-feature check against `8615e9f`: generated ReleaseFast assembly was
-byte-identical for both `bench/identifiers.zig` (event-only parsing/indexing) and
-`examples/quick_start.zig` (retained parsing/validation). No existing parser,
-metering or cancellation implementation changed. IR itself has one-shot work
-limits and cooperative cancellation, not resumable sessions.
-
-Correctness checks include 16 focused tests in Debug/ReleaseSafe, allocation
-failure injection, a generated eager-set oracle, and 200 existing Graphviz
-16.0.0 reference graphs: all 95,033 materialized edge occurrences agreed.
-See [IR coverage and costs](IR.md); effective attributes/defaults are not yet
-part of these measurements.
-
-### Streaming edge consumption (2026-10-21)
-
-Same machine/toolchain, ReleaseFast. Five alternating process runs against
-`5c36bd3`, each reporting the median of nine timed samples after two warmups;
-the table uses the median of those five reports. Expansion includes scratch
-and output allocation, but excludes parsing, lowering, consumer output/I/O
-and destruction. `zig build bench-ir -Doptimize=fast` now reports both
-owning and streaming expansion, including their requested allocation peaks.
-
-| Workload | Emitted edges | Materialize before ms | Materialize now ms | Stream ms | Materialize peak bytes | Stream peak bytes |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Singleton connections | 10,000 | 0.123 | 0.078 | 0.086 | 323,072 | 0 |
-| Three-member sets | 30,000 | 0.197 | 0.173 | 0.215 | 1,131,936 | 40,144 |
-| Reopened scopes | 500,500 | 2.768 | 2.594 | 3.157 | 18,672,020 | 11,036 |
-| Strict reopened scopes | 1,000 | — | 2.989 | 2.902 | 44,292 | 33,564 |
-| First 1,000 of the 50,000 × 50,000 product | 1,000 | — | — | 0.395 | — | 1,096,892 |
-
-Streaming avoids the output array; it is not inherently faster. Pull calls and
-per-visited-pair limit checks have costs. The strict row still visits 500,500
-candidate pairs and retains deduplication keys for 1,000 unique edges. It was
-added to the benchmark here, so no earlier number is shown in this comparison.
-The product row stops after 1,000 edges: it enumerates both endpoint sets but
-does **not** visit the other 2,499,999,000 pairs. These are operation-requested
-peaks, excluding the IR, source, consumer storage, allocator overhead and RSS.
-
-The owning path shares traversal with streaming without retaining duplicate
-output/key arrays. Its existing workloads did not regress in this run. Default
-quick-start ReleaseFast code/data remained identical to `5c36bd3` after
-excluding debug/source-location metadata; parser metering and cancellation
-implementations were untouched. Thirty focused IR tests pass in Debug,
-ReleaseSafe and ReleaseFast, including allocation failures, early cleanup,
-cumulative limits, cancellation, strict overlap and an independent eager oracle.
-
-### Effective attributes and defaults (2026-10-22)
-
-Apple M4 Pro, Zig 0.17.0, against `08537a9`. Five alternating process runs
-per configuration; each reports the median of nine samples after two warmups.
-The tables use the median of those five reports. Parsing, source generation,
-output and destruction are outside lowering time. Reproduce the topology and
-attribute reports together with:
-
-```sh
-zig build bench-ir -Doptimize=fast
-zig build bench-ir -Doptimize=safe
-```
-
-**This is additional semantic work:** the baseline retained raw attributes but
-could not answer effective-value queries. The new lowering interns keys,
-captures creation defaults and folds node/graph updates into shared immutable
-maps. It still does not expand edge products or copy source strings.
-
-| Attribute workload | Fast raw-only ms | Fast effective ms | Safe raw-only ms | Safe effective ms |
-| --- | ---: | ---: | ---: | ---: |
-| 64 defaults shared by 10,000 nodes | 0.470 | 0.476 | 0.656 | 0.722 |
-| 10,000 nodes, two keys then one update each | 0.848 | 1.696 | 1.154 | 2.329 |
-| 1,000 reopened scopes with changing defaults | 0.165 | 0.254 | 0.233 | 0.346 |
-| 10,000 nested scopes sharing defaults | 0.285 | 0.319 | 0.439 | 0.509 |
-| 50,000 × 50,000 symbolic product with defaults | 5.123 | 5.228 | 6.416 | 6.512 |
-
-Memory below is decimal MB, measured in ReleaseFast. Each pair is baseline →
-effective-attribute implementation. Requested payload/peaks exclude source,
-Document storage, stack frames, allocator metadata and RSS. Arena capacity is
-measured separately; its growth boundaries can move in either direction.
-
-| Workload | Retained MB | Requested peak MB | Arena capacity MB |
-| --- | ---: | ---: | ---: |
-| Shared defaults | 0.944 → 0.959 | 1.051 → 1.065 | 2.679 → 2.636 |
-| Node updates | 1.764 → 3.072 | 1.925 → 3.444 | 4.375 → 8.742 |
-| Reopened defaults | 0.309 → 0.420 | 0.353 → 0.464 | 0.851 → 1.659 |
-| Deep defaults | 0.693 → 0.973 | 1.136 → 1.416 | 1.907 → 2.133 |
-| Symbolic product | 8.900684 → 8.901156 | 10.313012 → 10.313484 | 27.399 → 27.399 |
-
-The symbolic product adds **472 retained bytes**, not 2.5 billion attribute
-records. Conversely, repeated per-node updates retain path-copied map cells:
-that workload's roughly doubled lowering time and increased memory are real
-costs, not claimed improvements. `max_attribute_states`, work and allocation
-limits bound this construction.
-
-Repeated hot-key queries, excluding name lookup, expansion and value rendering,
-take 10–16 ns for nodes and 20–23 ns for non-strict edges in ReleaseFast;
-ReleaseSafe takes 13–18 ns and 24–28 ns respectively. A strict edge query over
-1,000 reopened contributions takes **8.66 µs / 9.01 µs** (Fast/Safe). Queries
-allocate nothing, but strict queries scan contributions: repeated per-edge
-queries are not a bulk attribute materializer.
-
-**Attribute-free costs:** all six existing topology workloads retain exactly
-the same requested heap payload, peaks and arena capacities as the baseline.
-The measured 64-bit node record remains 24 bytes. Lowering timings:
-
-| Workload | Fast before → after ms | Safe before → after ms |
-| --- | ---: | ---: |
-| Singleton connections | 1.046 → 1.033 | 1.306 → 1.351 |
-| Three-member sets | 1.982 → 2.026 | 2.512 → 2.688 |
-| Reopened scopes | 0.143 → 0.141 | 0.169 → 0.175 |
-| Strict reopened scopes | 0.136 → 0.143 | 0.171 → 0.178 |
-| Deep nesting | 0.285 → 0.272 | 0.430 → 0.447 |
-| Symbolic product | 5.084 → 5.174 | 6.568 → 6.580 |
-
-This is **not a blanket zero-regression claim for optional IR execution**.
-Expansion remains sensitive to code generation despite unchanged heap use.
-The iterator now retains only its applicable limits and inlines its shared
-engine into the error-state wrapper; budgets, polling and terminal-error
-behavior are unchanged. The remaining expansion movements include:
-
-| Expansion | Fast before → after ms | Safe before → after ms |
-| --- | ---: | ---: |
-| Materialize 10,000 singleton edges | 0.071 → 0.075 | 0.128 → 0.141 |
-| Stream 10,000 singleton edges | 0.080 → 0.086 | 0.091 → 0.099 |
-| Stream 30,000 set edges | 0.211 → 0.214 | 0.249 → 0.269 |
-| Stream 500,500 reopened-scope edges | 3.024 → 3.289 | 3.869 → 3.724 |
-| Stream 1,000 strict reopened-scope edges | 2.770 → 2.688 | 2.883 → 2.952 |
-| Stream first 1,000 product edges | 0.374 → 0.383 | 0.347 → 0.362 |
-
-Ordinary DOT parsing does not use this layer: default quick-start ReleaseFast
-code/data is identical to `08537a9` after excluding debug/source-location
-metadata. No parser metering/cancellation implementation changed. Verification
-adds allocation-failure and mid-operation cancellation checks, native values,
-512-key persistent-map stress, 10,000 nested scopes, a symbolic product under
-a small memory/state cap, and 48 generated graphs compared with an independent
-eager attribute oracle. See [IR contracts and remaining work](IR.md).
-
-### Borrowed component views and attribute iteration (2026-10-22)
-
-Compared with the working effective-attribute implementation immediately before
-adding views (not the raw-only `08537a9` baseline above), on the same machine
-and toolchain, using five alternating runs and nine-sample medians. `bench-ir`
-now includes view lookups, whole-attribute iteration and iterator scratch.
-
-All twelve topology/attribute workloads have **identical retained heap,
-lowering peak and arena capacity** before/after. Default-parser ReleaseFast
-code/data and topology-benchmark ReleaseFast/ReleaseSafe code/data are identical
-after excluding debug/source-location metadata. Existing topology timing
-variation therefore does not indicate a view-induced change to that code.
-Parser metering/cancellation implementations are untouched.
-
-Views aren't a claim of free result wrapping: a hot node lookup measured about
-13–16 ns through a view versus 11–16 ns directly in ReleaseFast; non-strict edge
-lookups measured 23–25 ns through a view versus 20–23 ns directly. Neither
-allocates. Full iteration includes initialization, preparation, consuming every
-entry and cleanup, but excludes key/value formatting and edge expansion:
-
-| Effective attributes consumed | Fast | Safe | Peak scratch |
-| --- | ---: | ---: | ---: |
-| Node with 64 defaults | 630 ns | 810 ns | 0 B |
-| Node with two updated keys | 28 ns | 33 ns | 0 B |
-| Non-strict edge with one written key | 30 ns | 32 ns | 0 B |
-| Strict edge, 1,000 reopened contributions, inherited key | 8.42 µs | 8.24 µs | 0 B |
-| Strict edge, 1,000 explicit updates, 33 effective keys | 11.73 µs | 12.88 µs | 396 B |
-| One edge of the 50,000 × 50,000 product, two keys | 36 ns | 44 ns | 0 B |
-
-Strict merging scans symbolic contributions once per attribute iterator and
-uses 12 bytes per distinct edge key, not per update or expanded pair. Returned
-entries borrow the IR, not that scratch. These costs are optional and separate
-from the retained graph. This is still not a bulk attribute index across all
-edges. The 54 focused IR tests pass in Debug, ReleaseFast and ReleaseSafe,
-including native Unicode keys/values, terminal stops, allocation failures and
-iteration checked against both direct queries and the eager attribute oracle.
-
-### Value access and view-producing iterators (2026-10-22)
-
-Compared with `57d3674` on Apple M4 Pro, Zig 0.17.0: five alternating process
-runs, each reporting nine-sample medians after warmup. Builds finished before
-timing. IR lowering excludes parsing; formatting excludes lookup and output I/O.
-These are local measurements, not a cross-machine guarantee.
-
-- The consumed ordinary DOT session probe (plain, metered, cancellable and both)
-  has identical non-debug code/data before/after in ReleaseFast and ReleaseSafe.
-- All twelve topology/attribute fixtures retain the same heap payload, requested
-  lowering peak and arena capacity. Expansion scratch/output sizes are unchanged.
-  Borrowed views add no per-node/per-attribute heap allocation; their stack values
-  and iterator context are not included in those heap numbers.
-- Lowering times span −1.3% to +1.4% in Fast, −1.8% to +1.7% in Safe.
-- Infallible indexed node-view lookup drops from 13.1–15.6 ns to 6.5–10.4 ns
-  in representative Fast cases, and 16.4–19.2 ns to 8.9–13.8 ns in Safe.
-
-The ordinary formatter now reuses the existing unmetered name/value writer;
-bounded traversal is an explicit separate specialization. The long-string
-slowdown seen in the first implementation was removed. Small values still show
-sub-nanosecond changes; they must not be described as all faster:
-
-| Joined value | Fast before / after (ns) | Safe before / after (ns) |
-| --- | ---: | ---: |
-| Bare string | 3.62 / 3.85 | 4.12 / 4.36 |
-| Quoted Unicode | 9.00 / 8.67 | 8.78 / 8.87 |
-| Mixed concatenation | 24.28 / 23.40 | 23.98 / 24.16 |
-| Short markup | 9.92 / 10.87 | 10.89 / 10.63 |
-| 4 KiB quoted value | 1,415 / 1,422 | 994 / 1,002 |
-
-**Remaining performance caveat:** the existing whole-benchmark edge loop,
-which consumes each raw edge through an optimization barrier, still reports
-slower reopened-subgraph streaming after wrapping records in borrowed views:
-
-| Streaming workload | Fast before / after (ms) | Safe before / after (ms) |
-| --- | ---: | ---: |
-| Reopened, 500,500 non-strict edges | 3.405 / 3.557 (+4.5%) | 3.701 / 4.124 (+11.4%) |
-| Reopened, 1,000 strict edges | 2.897 / 2.991 (+3.2%) | 3.025 / 2.985 (−1.3%) |
-
-An isolated loop consuming endpoint/connection IDs into a checksum showed
-smaller paired-median differences: approximately +1.9% / +1.6% for non-strict
-Fast/Safe, +0.7% / +1.2% for strict Fast/Safe. This demonstrates harness/call-site
-sensitivity, **not proof that the remaining slowdown is absent**. Forcing the
-whole streaming engine inline traded regressions between cases and was rejected.
-The retained implementation inlines only the thin view wrapper and preserves
-the expansion engine's compact return type. Work, pair, memory and cancellation
-checks were not removed to obtain these results.
-
-`zig build bench-ir -Doptimize=fast` now also runs
-[`bench/ir_values.zig`](../bench/ir_values.zig): kind classification, operand
-iteration, formatting, bounded writing, owning output and a benchmark-only
-one-byte-per-written-attribute kind cache. Repeat with ReleaseSafe as needed.
-The cache's allocation is excluded from timing (an optimistic layout); its
-construction includes the mandatory first-operand scan.
-
-Production keeps **on-demand kind classification**: small Fast values cost
-roughly 3–9 ns, a 4 KiB quoted first operand 1.38 µs, and a 4 KiB markup operand
-2.75 µs in this run. Cached probes cost about 0.2–0.5 ns, but require the same
-upfront classification plus storage even when values are never inspected.
-The experiment adds 10,000 bytes for 10,000 written values (512 bytes in the
-large-value fixtures). Repeated classification of long values benefits from a
-cache; classify once and reuse the returned kind when that is the workload.
-No mandatory IR cache or parser metadata was added.
-
-`toString` uses two bounded passes and one exact output allocation. The measured
-4 KiB quoted case takes about 2.98 µs in Fast; streaming its joined content takes
-about 1.00 µs. These are different ownership/work contracts, not a free copying
-API. Empty output needs no allocated payload. Source bytes/operand boundaries
-remain unchanged in all forms.
-
-## Bulk edge attributes (2026-10-23, Unreleased)
-
-Apple M4 Pro, Zig 0.17.0; five process runs in each of ReleaseFast and
-ReleaseSafe. Each case takes nine measured rounds after two warmups, alternating
-topology + compact queries with attribute-folding materialization within each round.
-Numbers below are medians of the five process medians. Parsing/lowering and
-output IO are excluded from operation timings. The total includes construction,
-one complete read of all effective attributes, and result disposal; it does not
-time formatted strings. Both routes check the same consumed checksum.
-
-| Workload | Edges | Fast compact / folded total (ms) | Safe compact / folded total (ms) |
-| --- | ---: | ---: | ---: |
-| No attributes | 2,000 | 0.0329 / 0.0197 | 0.0468 / 0.0296 |
-| 64 shared defaults | 2,000 | 0.7252 / 0.3585 | 1.1593 / 0.6109 |
-| Eight explicit keys per edge | 2,000 | 0.1014 / 0.1771 | 0.1400 / 0.3380 |
-| 32 overlapping strict products, eight keys | 1,024 | 0.8893 / 1.3273 | 1.2279 / 1.4052 |
-| Reopened named subgraph, 31,375 pair contributions | 250 | 5.5093 / 0.2715 | 5.9959 / 0.3433 |
-
-Folding is **not universally faster for one consumption**. Explicit-heavy input
-pays to build winner indexes; the compact API can answer a one-time read more
-cheaply. Subsequent reads avoid that construction cost: Fast explicit-heavy
-reads were 0.0840 → 0.0169 ms, and overlapping-strict reads 0.7592 → 0.0094 ms.
-Reopened-subgraph total time improved about 20× in Fast and 17× in Safe. These
-are particular generated workloads, not a throughput guarantee.
-
-The topology path does not retain resolved attributes. Comparing its retained
-output with the folded output makes the extra storage cost explicit:
-
-| Workload | Retained topology / folded (bytes) | Peak requested topology / folded (bytes) |
-| --- | ---: | ---: |
-| No attributes | 38,064 / 38,064 | 63,344 / 63,344 |
-| 64 shared defaults | 38,064 / 38,396 | 63,344 / 63,344 |
-| Eight explicit keys per edge | 38,064 / 484,796 | 63,344 / 759,476 |
-| Overlapping strict products | 16,752 / 312,156 | 36,536 / 514,632 |
-| Reopened subgraph | 4,752 / 13,236 | 11,956 / 21,988 |
-
-These output-operation peaks include pair/endpoint scratch and old/new growth
-overlap but exclude the borrowed IR/source, stack and allocator metadata/RSS.
-Winner cells are 24 bytes on this build, plus root/key indexes and spare array
-capacity. Default snapshots stay shared; updates overwrite existing cells.
-The benchmark also reports total arena capacity for lowering plus output:
-in Fast, explicit-heavy input used 1,443,728 / 3,079,880 bytes, while the
-reopened workload stayed at 234,456 bytes on both routes. Arena retention and
-requested live peaks are different measurements; folding is not a general
-arena-memory optimization.
-
-A 5,000-level nested fixture also matched both paths. A 2,500 × 2,500 product
-remained symbolic until expansion was requested, then returned `PairLimit`
-under the existing four-million-pair default rather than publishing a prefix.
-
-### Unused-path comparison
-
-API selection is now `materialize(.{})` for folded attributes and
-`materialize(.{ .attributes = false })` for topology-only output. This deliberately
-changes the work performed by an unqualified materialization call; it does not
-add work to parsing, lowering or streaming. The tables above compare those two
-algorithms, not old and new defaults. The topology harness explicitly opts out of
-attributes so its historical comparisons remain like-for-like.
-
-The existing six-workload topology harness was compiled before this increment
-(`2b227a2`) and after bulk folding/API selection, **before endpoint-port support**,
-with five alternating before/after runs per build mode.
-The `__TEXT,__text` machine-code sections are **byte-identical** in both Fast
-and Safe. Retained IR bytes, lowering peaks, arena capacity, topology output
-peaks and streaming scratch are identical on every workload. Rechecking the
-unified API with `.attributes = false` preserves those identical machine-code
-sections; its executables gained 24 / 40 bytes of non-code data in Fast / Safe
-relative to the baseline. No attribute-folding code is present in that harness.
-Timing differences had overlapping run ranges (including the noisy product-prefix
-stream); they are not evidence of added default-path work. This comparison does
-not resolve the earlier view-wrapper streaming caveat recorded above.
-
-Run `zig build bench-ir-materialized -Doptimize=fast` (or `safe`)
-for the focused report. `zig build bench-ir` includes it after the existing
-topology, compact-attribute and value benchmarks, sequentially. See
-[`bench/ir_materialized_attributes.zig`](../bench/ir_materialized_attributes.zig).
-
-### Endpoint-port increment (2026-10-23)
-
-Same machine/compiler and nine samples after two warmups; five alternating
-process runs per side, with no builds running during measurement. The topology
-baseline is the unified `materialize` API immediately before port support. The
-bulk baseline is the earlier bulk-folding build from this section, before that
-API rename; it performs the same operations but is not an exact one-change
-source comparison. The new harness handles nullable written-attribute indices.
-All times below are medians of process medians, not release-wide throughput.
-
-Endpoint suffixes now participate in effective values. New workloads compare
-topology plus compact attribute reads against materialization with folded values:
-
-| Workload | Effective edges | Fast compact / folded total (ms) | Safe compact / folded total (ms) |
-| --- | ---: | ---: | ---: |
-| Two endpoint suffixes per edge | 2,000 | 0.0569 / 0.0582 | 0.0860 / 0.1228 |
-| 3,200 strict contributions, reversed suffixes and explicit overrides | 100 | 2.3527 / 0.0696 | 2.4744 / 0.0913 |
-
-For the first workload, retained topology/folded output is 38,064 / 177,308
-bytes; peak requested output-operation allocation is 63,344 / 263,192 bytes.
-For strict updates those figures are 1,952 / 9,988 retained and 4,176 / 15,632
-peak bytes. Folding keeps only the winning values, not all 3,200 updates.
-
-Port-free retained/peak allocation and arena measurements remain unchanged
-against their respective baselines. No lowering pool was added; folded winner
-cells remain 24 bytes. On this native build the owning IR struct grows from
-456 to 464 bytes, and a returned `ResolvedAttribute` from 32 to 36 bytes.
-These are object/view sizes, not extra bytes per retained node or attribute.
-Ordinary operand views use one tagged payload rather than separate optional
-written/port payloads. These measurements exclude stack, allocator metadata
-and process RSS.
-
-**The timing gate is not clean.** Specializing port-free folding and avoiding
-redundant origin resolution recovered some overhead, but the following
-port-free regressions remain:
-
-| Operation/workload | Fast before → after (ms) | Safe before → after (ms) |
-| --- | ---: | ---: |
-| Reopened-subgraph topology expansion, 500,500 edges | 2.685 → 2.918 (+8.7%) | 4.365 → 4.401 (+0.8%) |
-| Strict reopened-subgraph streaming, 1,000 edges | 3.016 → 3.504 (+16.2%) | 2.955 → 3.019 (+2.2%) |
-| Eight explicit keys/edge, folded construction + consumption | 0.1922 → 0.2175 (+13.2%) | 0.3661 → 0.3834 (+4.7%) |
-| 64 defaults, compact construction + consumption | 0.7913 → 0.8811 (+11.3%) | 1.2758 → 1.4474 (+13.5%) |
-| No attributes, compact construction + consumption | 0.0366 → 0.0413 (+12.8%) | 0.0517 → 0.0565 (+9.3%) |
-
-Port-free lowering stayed within about 2% in this run; singleton/small-set
-topology expansion and streaming stayed within about 3%. A cold-field layout
-adjustment restored hot connection-field offsets but did **not** remove the
-reopened-subgraph regression. The bulk measurements include the larger returned
-provenance view/nullable-index consumption; they do not isolate its cost from
-code-generation changes. Do not describe this increment as regression-free.
-DOT/markup parsing and their metering/cancellation implementations were not
-changed or rebenchmarked here. IR work/limit/cancellation checks remain enabled.
-
-Correctness coverage includes 79 focused IR tests, native UTF-16/32 port values,
-allocation-failure cleanup, strict reversal/loops and cancellation boundaries.
-A separate Graphviz 16.0.0 cgraph comparison covered 256 generated graphs:
-4,850 effective edges and 9,700 head/tail values agreed. That corpus covers
-singleton↔set contributions; it is not an exhaustive equivalence claim for
-every possible endpoint ordering, renderer interpretation or label-port lookup.
-
-### Structured port views (2026-10-23)
-
-Compared the immediately preceding endpoint implementation with the borrowed
-`tailPort()`/`headPort()`, written-syntax and explicit Graphviz-splitting helpers.
-The existing bulk harness does not invoke the new helpers: its `__TEXT,__text`
-sections are **byte-identical** before/after in ReleaseFast and ReleaseSafe.
-The helpers add no retained fields or pools. Five alternating process runs per
-side/mode (nine samples after two warmups, no concurrent builds) give identical
-retained, peak-requested and arena byte counts on all eight successful workloads;
-the oversized symbolic product still fails with `PairLimit`.
-
-For example, port-free compact construction + consumption is 0.0373 → 0.0374 ms
-(Fast), 0.0514 → 0.0508 ms (Safe); folded explicit attributes are
-0.2084 → 0.2118 ms (Fast), 0.3714 → 0.3631 ms (Safe). Other tiny phases and
-reopened compact reads were noisier despite identical machine code; these are
-not claimed speedups. This checks the **unused-helper path**, not the cost of
-calling the new readers: first-colon splitting/text formatting re-read a value
-linearly with constant scratch and no allocation. Their bounded variants keep
-work limits/cancellation. This unused-helper check did not resolve the earlier
-endpoint-port gate; the performance repair below revisits it.
-
-### Endpoint-port performance repair (2026-10-23)
-
-This is the first repair checkpoint; the follow-up below revisits its remaining
-empty-attribute and default-folding gaps.
-
-Apple M4 Pro, Zig 0.17.0; freshly built `4e525ac` versus the repair, in
-ReleaseFast and ReleaseSafe. Five process runs per side with rotated ordering,
-after warming every executable; each harness takes nine samples after two
-warmups. Builds/tests were finished before timing. The pre-port topology source
-is `2b227a2`; the retained pre-port bulk executable has the same baseline
-qualification described above. All figures are medians of process medians.
-
-The topology-only loop did not acquire per-pair port processing. Disassembly
-comparisons also showed code-generation/layout sensitivity, not one isolated
-new operation explaining every slowdown. The retained changes reduce actual
-work or keep optional preparation out of the hot path:
-
-- Cache the immutable graph classification and current connection operator
-  in the expansion iterator instead of loading them for each candidate pair.
-- Outline port-specific attribute preparation, while keeping per-value reads
-  inline. Inline the provenance projection specifically in compact iteration.
-- Read AVL child heights once when balancing folded winners; rotations already
-  refresh their affected cells, so do not refresh them redundantly beforehand.
-
-| Operation/workload | Fast `4e525ac` → repaired (ms) | Safe `4e525ac` → repaired (ms) |
-| --- | ---: | ---: |
-| Reopened-subgraph topology expansion, 500,500 edges | 2.928 → 2.502 (−14.5%) | 4.314 → 4.178 (−3.2%) |
-| Strict reopened-subgraph streaming, 1,000 edges | 3.368 → 2.857 (−15.2%) | 3.004 → 2.792 (−7.1%) |
-| Eight explicit keys/edge, folded construction + consumption | 0.2073 → 0.1889 (−8.9%) | 0.3724 → 0.3297 (−11.5%) |
-| 64 defaults, compact construction + consumption | 0.8439 → 0.7850 (−7.0%) | 1.4037 → 1.0777 (−23.2%) |
-| No attributes, compact construction + consumption | 0.0378 → 0.0379 (+0.3%) | 0.0513 → 0.0508 (−1.0%) |
-
-The first four originally flagged workloads are now within 1% of, or faster
-than, the pre-port baseline in both modes. **This is not a clean overall
-pre-port gate:** these remaining gaps were also measured, including paths
-outside the original five-row table:
-
-| Remaining case | Mode | Pre-port → repaired (ms) | Change |
-| --- | --- | ---: | ---: |
-| No attributes, compact total, 2,000 edges | Fast | 0.0333 → 0.0379 | +13.8% |
-| No attributes, compact total, 2,000 edges | Safe | 0.0467 → 0.0508 | +8.8% |
-| 64 defaults, folded total | Safe | 0.6479 → 0.7161 | +10.5% |
-| Strict overlapping sets, compact total | Fast | 0.9224 → 0.9853 | +6.8% |
-| Eight explicit keys/edge, compact total | Fast | 0.1078 → 0.1143 | +6.0% |
-
-The empty-attribute gap is about 4–5 µs across 2,000 edges, but is still a
-regression, not rounded away. Broader inlining, outlined allocation growth and
-specialized enumeration experiments were discarded when they hurt other cases.
-Small topology workloads varied by up to about 4%; sub-microsecond phases are
-too short to interpret their rounded percentage changes. There is no claim
-that all IR workloads are now regression-free.
-
-The ordinary-query harness was also rerun with five alternating process runs.
-Most lookup/iteration medians stayed within 5% or improved. Its very small
-Fast loops still varied: one node-view lookup was 6.8 → 7.8 ns, and symbolic
-edge-attribute iteration 34.2 → 37.5 ns, with overlapping process ranges.
-These observations are not evidence of an across-the-board no-regression gate.
-
-Counts, retained allocations, peak requested bytes and arena capacity are
-identical before/after on every workload within each build mode. ReleaseSafe
-public edge/attribute iterators remain 304 / 176 bytes. No source pools, decoded
-copies or retained histories were added. APIs, validation of supplied handles,
-pair/work limits and cancellation checks are unchanged; parser metering and
-DOT/markup parsing code were not changed.
-
-Verification: `zig build check` passes all 238 steps / 731 tests; `test-ir`
-passes 86 tests in Debug and ReleaseSafe. An additional 24,576-case comparison
-against `4e525ac` matches output/error traces and cancellation poll counts for
-work-limit and cancellation cutoffs across materialization, streaming and
-compact/folded attribute reads. The saved Graphviz reference corpus still
-matches all 256 generated graphs (4,850 edges / 9,700 port values).
-
-Reproduce the focused workloads with `zig build bench-ir-materialized` and
-`zig build bench-ir`, selecting `-Doptimize=fast` or `safe`.
-The broader command also covers ordinary attribute queries and value access.
-
-### Endpoint-port follow-up: attribute reads (2026-10-23)
-
-Compared `9349221` with the follow-up on the same Apple M4 Pro / Zig 0.17.0.
-Five rotated process runs per side and mode, after warming every executable;
-each process takes nine samples after two warmups. No builds/tests ran during
-timing. Results are medians of process medians. The pre-port topology source
-remains `2b227a2`; the retained pre-port bulk executable has the earlier
-same-operation, not exact-one-commit comparison qualification.
-
-Disassembly identified two concrete call-boundary changes. Compact iteration
-had stopped inlining the membership wrapper, copying an 80-byte connection
-and making an extra call for each candidate. Folded reads in ReleaseSafe had
-an outlined port projection that prevented immutable owner data being hoisted
-out of the value loop. The follow-up:
-
-- Inlines that membership wrapper at the attribute-iteration call site.
-- Keeps singleton membership checks inline and the interval/posting search in
-  a separate function. The checks, short-circuit order and work charges stay
-  unchanged; set membership is not replaced by a guess or skipped check.
-- Specializes folded reads for port-free graphs and keeps the small derived
-  port projection inline. It does not duplicate stored defaults or add caches.
-
-| Operation/workload | Fast `9349221` → follow-up (ms) | Safe `9349221` → follow-up (ms) |
-| --- | ---: | ---: |
-| No attributes, compact total, 2,000 edges | 0.0405 → 0.0325 (−19.8%) | 0.0535 → 0.0464 (−13.3%) |
-| 64 defaults, folded construction + consumption | 0.4073 → 0.4077 (+0.1%) | 0.7513 → 0.6928 (−7.8%) |
-| Strict overlapping sets, compact total | 0.9985 → 0.9662 (−3.2%) | 1.3298 → 1.2870 (−3.2%) |
-| Eight explicit keys/edge, compact total | 0.1168 → 0.1163 (−0.4%) | 0.1383 → 0.1306 (−5.6%) |
-| Two endpoint suffixes per edge, compact total | 0.0580 → 0.0512 (−11.7%) | 0.0848 → 0.0727 (−14.3%) |
-| Strict suffix updates/reversals, compact total | 2.2141 → 0.6560 (−70.4%) | 2.2776 → 0.7196 (−68.4%) |
-
-Against the pre-port executables in this same run, empty-attribute compact
-iteration is now 11.4% faster in Fast and 9.6% faster in Safe. Safe default-heavy
-folding is within 1.9%; the remaining Fast strict-overlap and explicit-key compact
-gaps are 3.2% and 2.9%. All port-free bulk totals are within 3.2% of, or faster
-than, that historical baseline. This is a focused improvement, not a universal
-zero-regression claim or a release-wide throughput measurement.
-
-The topology harness stayed within about 3% of `9349221`, apart from a 4.9%
-improvement in Fast reopened-subgraph expansion. Ordinary attribute-query
-benchmarks also improved on the expensive paths: strict repeated-edge lookups
-fell about 33–35%, and reopened edge-attribute iteration fell 13–15% in both
-modes. Tiny queries still have overlapping process ranges: Safe shared-default
-edge iteration was 71.3 → 75.0 ns by median, with ranges 70.4–80.4 and
-65.4–77.9 ns. Do not infer a robust slowdown or an across-the-board timing
-guarantee from that small loop.
-
-All output counts, retained allocations, peak requested bytes and arena
-capacities match `9349221` within each build mode. ReleaseSafe edge/attribute
-iterator sizes remain 304 / 176 bytes. The bulk harness executables are also
-essentially unchanged in size: Fast 578,024 → 578,008 bytes; Safe
-714,392 → 714,264 bytes. These are whole harness sizes, not isolated library
-code-size claims; allocation measurements exclude stack, allocator metadata
-and process RSS.
-
-Verification: `zig build check` passes 238 steps / 732 tests; `test-ir` passes
-87 tests in Debug and ReleaseSafe. The new empty-catalog test checks exact
-work/cancellation boundaries and rejects false membership and later strict
-contributors even when there are no values to return. All 24,576 differential
-operation/budget/cancellation traces still match the earlier endpoint build,
-including poll counts and terminal errors. The saved Graphviz corpus continues
-to match 256 graphs / 4,850 edges / 9,700 port values. No API, retained layout,
-parser implementation, work accounting or cancellation guarantee changed.
-
-## Attribute string integration (Unreleased)
-
-Measured on 2026-10-19 against `fb64cc9`, Apple M4 Pro, Zig 0.16.0. The same
-[`bench/string_integration.zig`](../bench/string_integration.zig) was compiled
-for both snapshots. Five alternating process runs per side; each uses nine
-timed batches after three warmups. Source construction is excluded; host
-parsing, validation, allocation and disposal are included. Diagnostics are
-discarded.
-
-### Unused-feature cost
-
-Profiles with no active string route—including a bound string processor with
-passthrough handling—resolve to the original host profile type. Tests assert
-this identity. The isolated `host-defaults` executables had **identical machine
-code sections and identical executable sizes** before/after in all three modes:
-
-| Mode | Executable bytes, before / after | Geometric mean time change, 8 fixtures |
-| --- | ---: | ---: |
-| ReleaseFast | 353,872 / 353,872 | +0.06% |
-| ReleaseSafe | 386,784 / 386,784 | +0.95% |
-| ReleaseSmall | 257,328 / 257,328 | −2.74% |
-
-These timings still contain noise: the long DOT case varied substantially
-despite identical generated code. No isolated default case crossed the report's
-5% slowdown threshold with non-overlapping run ranges. This supports an
-unchanged default path, not a universal timing guarantee.
-
-The original mixed `integration` binary also included active processing, so
-its code layout and optimization decisions differ from the older default-only
-binary. Its default rows changed by −0.11% / +4.04% / +19.98% in Fast / Safe /
-Small; the last result included two flagged DOT slowdowns. Those samples remain
-in the report, but this mixed comparison does not isolate unused-feature cost.
-The follow-up below addresses the DOT mixed-profile regression. Applications
-compiling both active and inactive variants should still measure their own
-combination, especially with ReleaseSmall.
-
-### Enabled processing cost
-
-Each document below contains 2,000 selected `label` values and 2,000 untouched
-attributes. The selected child checks logical encoding and exact equality.
-Markup uses structural mode. These ReleaseFast cells show **ms / MB/s** for
-whole-document operations in the initial candidate binary:
-
-| Host / value | Physical bytes | Bound passthrough | Process equality |
-| --- | ---: | ---: | ---: |
-| DOT / `Seattle` | 60,007 | 0.158 / 379.6 | 0.727 / 82.5 |
-| DOT / quoted concatenation | 74,007 | 0.164 / 451.0 | 0.847 / 87.3 |
-| DOT / Unicode | 84,007 | 0.160 / 525.4 | 1.167 / 72.0 |
-| DOT / long ASCII values | 4,654,007 | 1.685 / 2,761.3 | 85.856 / 54.2 |
-| Markup / `Seattle` | 66,013 | 0.139 / 476.5 | 0.527 / 125.2 |
-| Markup / reference decoding | 66,013 | 0.151 / 437.7 | 0.510 / 129.5 |
-| Markup / Unicode | 100,013 | 0.188 / 532.3 | 1.143 / 87.5 |
-| Markup / long ASCII values | 4,660,013 | 2.426 / 1,921.2 | 80.942 / 57.6 |
-
-These are the initial integration measurements, before the optimization below.
-That version used scalar reader-bound steps throughout. Active logical checks
-are still **not free** and can traverse a value again for each check, but unchanged
-ASCII runs can now batch equivalent steps. None of this work runs for passthrough.
-
-Allocation probes verify identical allocator-request counts and cumulative
-requested bytes for default, passthrough and processing on every fixture.
-All DOT fixtures used 3 allocations / 147,632 cumulative requested bytes;
-all markup fixtures used 4 / 138,228.
-Routing and built-in string checks allocate no extra heap storage or decoded
-copy. They do add fixed-size aggregate/cursor state. This is not a peak-stack
-or process-RSS measurement; retained diagnostics and custom callbacks have
-their own costs.
-
-A separate standalone comparison covered 54 native and 84 session cases per
-mode: aggregate time changes ranged from −0.59% to +0.40%, with no changed
-session sizes, metering credits or cancellation-poll counts.
-
-This historical host study used baseline `fb64cc9`, suites
-`host-defaults,integration`, and five runs under Zig 0.16 with its then-current
-reporter. Reproducing these numbers requires the original compatible snapshots
-and toolchain; `fb64cc9` cannot be built by the current Zig 0.17 reporter.
-
-Use `--suites native,sessions` for the standalone study, and `logical` for
-explicit reader-bound sessions; all five suites can share one report.
-`zig build bench-string-integration -Doptimize=fast`
-also prints allocator-request totals. See [string integration](STRINGS.md#attribute-processing-in-dot-and-markup)
-for precedence, scheduling and partial-result semantics.
-
-### Reader-bound processing follow-up (2026-10-20)
-
-Compared against `b58db00` with Zig 0.16.0 on the same ARM64 Mac. Three
-alternating process runs per side; the integration harness and accounting
-method above are unchanged. Each long-ASCII document contains 2,000 checked
-values: 4,654,007 source bytes for DOT and 4,660,013 for markup.
-
-| Mode / host | Before ms / MB/s | After ms / MB/s |
-| --- | ---: | ---: |
-| ReleaseFast / DOT | 82.731 / 56.25 | 8.226 / 565.76 |
-| ReleaseFast / markup | 79.920 / 58.31 | 6.548 / 711.68 |
-| ReleaseSafe / DOT | 93.026 / 50.03 | 9.597 / 484.93 |
-| ReleaseSafe / markup | 88.529 / 52.64 | 7.932 / 587.49 |
-| ReleaseSmall / DOT | 200.408 / 23.22 | 13.173 / 353.30 |
-| ReleaseSmall / markup | 206.417 / 22.58 | 11.761 / 396.21 |
-
-The logical prerequisite and equality passes now group 16 unchanged ASCII
-steps. They retain the original credits and do not cross a budget, cancellation
-poll, decoding boundary or terminal transition. References, escapes, folding
-expansions and short values still use scalar work. Only the encoding-reader
-leaf is forced inline; the larger state machines remain independently compiled.
-
-The mixed-profile ReleaseSmall regression also had a separate cause: routing
-called the public, input-validating identifier iterator on already parsed
-attribute values. Besides scanning those values again, that extra scanner
-caller changed the optimizer's sharing decisions for ordinary DOT parsing.
-Internal document traversal now uses trusted operands directly; public
-identifier helpers still validate arbitrary input.
-
-These are the **default DOT rows inside the mixed-profile binary**, which also
-contains active string processing:
-
-| Value fixture | Before ms | After ms | Time change |
-| --- | ---: | ---: | ---: |
-| Short | 0.237 | 0.175 | −26.1% |
-| Concatenated | 0.251 | 0.198 | −21.1% |
-| Unicode | 0.250 | 0.188 | −24.9% |
-| Long ASCII | 3.356 | 1.738 | −48.2% |
-
-The isolated `host-defaults`, standalone `native` and standalone `sessions`
-executables have identical before/after machine-code hashes in Fast, Safe and
-Small. The isolated default executable sizes also remain identical. Some
-timings still cross the report threshold despite identical code: repeated runs
-of the **same** Small default-only executable put the long DOT case in two
-bands (candidate 1.602–2.254 ms; baseline 1.753–2.281 ms). Those timing flags
-are not evidence of a changed default implementation.
-The mixed Fast long-DOT default/passthrough rows also flagged roughly 35–37%
-in the first report. Three further alternating runs of those unchanged binaries
-gave 1.555–1.563 ms before and 1.531–1.718 ms after: the original large flag did
-not persist. Keep the raw variation separate from the repeatable Small recovery.
-
-No measured session sizes, credits or poll counts changed. The bound equality
-sessions remain 344 bytes for plain readers and 464 for DOT/markup readers.
-Integration's allocation-count/requested-byte parity checks still pass; this
-is not a peak-stack or RSS claim. The mixed integration executable is unchanged
-in size for Fast/Safe; Small grows from 316,560 to 334,416 bytes, **17,856 bytes**
-for this multi-profile harness. Unused-feature binaries do not pay that cost.
-
-This is not a blanket win on every enabled-reader workload. The Small logical
-suite still flags comment-heavy DOT at about 8–10% more time (roughly 7 µs/value)
-and explicit plain-reader Unicode binding at 12–14% (about 0.08–0.09 µs/value).
-The latter is `WithReader(LogicalReader(...))`, not standalone string parsing.
-These non-target control cases remain recorded, not hidden by the long-value
-gains. The final suite has no flagged Small end-to-end integration slowdowns.
-
-The historical comparison used baseline `b58db00`, suites
-`host-defaults,integration,logical,native,sessions`, and three runs with the
-compatible pre-migration toolchain/report snapshot. It is not reproducible by
-building that baseline with today's Zig 0.17 compiler. Use a compatible baseline
-and the current command above for new measurements, not as a reproduction of
-this table.
-
-## Parser-recognized names (Unreleased)
-
-Measured on this machine with Zig 0.16.0 on 2026-10-20 using
-`zig build bench-identifiers -Doptimize=fast` (and `safe` /
-`small`). Each fixture contains 10,000 node statements and 1,000 unique
-names. The event consumer builds a hash-based reference index, without a syntax
-tree. Source generation and equal table reservations are outside timing.
-Numbers are medians of nine alternating samples, four parses per sample.
-
-| Name spelling | ReleaseFast checked → trusted | ReleaseSafe checked → trusted | ReleaseSmall checked → trusted |
-| --- | ---: | ---: | ---: |
-| Quoted | 0.647 → 0.460 ms | 0.728 → 0.502 ms | 1.254 → 0.776 ms |
-| Concatenated | 0.944 → 0.639 ms | 1.029 → 0.700 ms | 1.621 → 1.029 ms |
-| Unicode quoted | 0.914 → 0.647 ms | 0.981 → 0.677 ms | 1.651 → 1.001 ms |
-| Long quoted (10.36 MB input) | 23.818 → 14.421 ms | 23.689 → 14.442 ms | 37.271 → 17.417 ms |
-
-Here “trusted” means binding complete recognized names (now
-`identifier.fromName(source, name)`, with typed handles) from identifier fields
-delivered by the parser. It skips repeated syntax checks, not logical-value
-hashing/equality. Across all six fixtures (also bare and escaped names),
-parse-plus-index time fell 24–40% in Fast, 29–40% in Safe and 33–53% in Small.
-These are indexing-workload results, **not** a speedup to ordinary parsing.
-Both paths reserved 43,032 bytes in one allocation for the index, with no
-allocations during parsing. The helper itself is one borrowed slice and adds
-no parser/event/document storage. The existing checked helpers are unchanged.
-Before/after builds of the fixed/runtime-policy benchmark had identical machine
-code in ReleaseFast, ReleaseSafe and ReleaseSmall when the new API was unused.
-
-## Early outline events (Unreleased)
-
-Checked on 2026-10-20, Apple M4 Pro, Zig 0.16.0, against a working-tree
-snapshot immediately before adding early observations (including the recognized
-name helpers above). The unchanged `bench/policies.zig` and `bench/metering.zig`
-harnesses produced **identical machine-code sections before/after** in
-ReleaseFast, ReleaseSafe and ReleaseSmall. This covers both scanners, fixed and
-runtime policies, ordinary parsing, one-credit/batched metering and cancellation
-intervals 1 and 64. Disabled early events add no session storage or allocation.
-
-The fixed/runtime-policy harness executable sizes were 616,520 → 616,520 bytes
-(Fast), 665,848 → 665,848 (Safe), and 428,368 → 428,360 (Small). Three alternating
-process runs per side showed no default-path regression attributable to the
-feature. Identical code still has timing noise, especially in short long-text
-microbenchmarks; timing variation is not a claimed speedup. The event-only name
-index also retained identical Fast/Small machine code; its Safe build changed
-slightly, with no measured slowdown across its six fixtures.
-An additional same-executable-path session rerun had much larger timing swings,
-including broad Safe slowdowns. The Safe binaries' entire contents up to their
-code signatures were byte-identical, not just their code sections. These runs
-therefore cannot establish a feature-induced slowdown or a precise percentage
-guarantee; use the code-generation comparison as the disabled-path evidence.
-
-**Enabling** early observations (`observations = events.Observations.early`) does add work. A fixed-scratch event consumer
-counting callbacks on 10,000 `a[x=1];` statements (80,010 bytes, including a named
-header) measured the following in ReleaseFast. Nine alternating timed batches
-of four parses followed three warmup batches; source construction was excluded.
-This is a **historical Zig 0.16, one-off harness** which was not committed.
-The table is not a current Zig 0.17 overhead guarantee or a reproducible committed
-benchmark. Enabled costs depend on the consumer's callback work as well as the
-parser; counting tags and consuming full event payloads are different workloads.
-
-| Execution | Scalar off → on | Block off → on |
-| --- | ---: | ---: |
-| Unmetered | 0.552 → 0.586 ms | 0.528 → 0.823 ms |
-| One-credit resumes | 1.286 → 1.423 ms | 1.297 → 1.511 ms |
-| 4,096-credit resumes | 0.568 → 0.623 ms | 0.708 → 0.711 ms |
-| 4,096-credit resumes, cancellation interval 1 | 0.644 → 0.690 ms | 0.693 → 0.729 ms |
-
-That opt-in delivered 50,003 callbacks instead of 30,002. Metered work increased
-by exactly the 20,001 added callbacks: 230,020 → 250,021 scalar credits and
-191,263 → 211,264 block credits, independently of resume budget. No credits were
-coarsened or polling sites removed. Consumer callback execution remains outside
-parser work-credit accounting, not a wall-clock time guarantee.
-
-On this target the opt-in still fits existing session padding: scalar session
-sizes remain 448 / 488 / 512 bytes (plain / metered / metered+cancellable), block
-544 / 584 / 608. A single event-consumer nesting frame remains 100 bytes and
-`Event` remains 116 bytes. The parser stores no event list or provisional tree;
-retaining outline entries costs whatever the consumer chooses to store. These
-are target-specific layout observations, not a stable ABI or RSS measurement.
-
-## Unfinished-token previews (Unreleased)
-
-Checked against `75ce950` on 2026-10-20 with Zig 0.17.0, Apple M4 Pro.
-With previews disabled, `bench/policies.zig` and `bench/metering.zig` produced
-identical machine-code sections before/after in `fast`, `safe` and `small`.
-These exercise both scanners, fixed/runtime policies, ordinary/fixed-pool
-parsing, tiny/batched budgets and cancellation. The identifier-index benchmark
-also produced identical Fast/Small code; Safe changed only two enum-range
-comparison constants for the two new public event tags, with no extra
-instructions. Ordinary document/session layout guards pass unchanged.
-
-The opt-in uses no new allocation or source copy. In the Fast-mode fixed event sessions
-measured here, it adds 16 bytes: scalar 448 → 464 (plain), 488 → 504 (metered),
-block 544 → 560 and 584 → 600. These are target/mode-qualified instance sizes,
-not RSS or a portable ABI. Consumer-owned outline storage is separate.
-
-Run `zig build bench-previews -Doptimize=fast` (or `safe` / `small`) for one CSV
-report of enabled/disabled timing, decimal MB/s, callback counts, exact credits
-and session sizes. Source construction is excluded; the allocation-free event
-consumer counts callbacks and consumes preview spans. Seven alternating sample
-medians follow two warmup rounds, with eight parses per sample.
-
-Selected Fast-mode observations from that report (milliseconds per parse):
-
-| Input / execution | Scalar off → on | Block off → on |
-| --- | ---: | ---: |
-| 5,000 `a[x=1];` statements, unmetered (35,007 bytes) | 0.207 → 0.220 | 0.236 → 0.238 |
-| Same dense input, 4,096-credit resumes | 0.238 → 0.325 | 0.294 → 0.336 |
-| Long Unicode quoted value, 4,096-credit resumes (95,018 bytes) | 0.0396 → 0.0392 | 0.0387 → 0.0391 |
-| Same Unicode value, one-credit resumes | 0.470 → 1.382 | 0.0422 → 0.0687 |
-| Unterminated Unicode value, unmetered (95,015 bytes) | 0.0461 → 0.0456 | 0.0395 → 0.0396 |
-
-Enabled execution is not free even when a pause happens to align with a token
-boundary and no preview is delivered: the enabled dispatch/control path still
-has checks. These are local measurements, not universal percentage guarantees;
-sub-microsecond differences are noise, not claimed speedups.
-
-Unlike complete-name early observations, pause-preview counts **depend on the
-resume budget and backend**. Every added update/retirement is a separately
-charged callback; the benchmark verifies `enabled credits = ordinary credits +
-preview callbacks`. A one-credit scalar session can deliver an update for each
-additional byte and therefore materially increase time/callback volume. Larger
-budgets coalesce observations without coarsening lexical credits or cancellation
-guarantees. Use the report to choose a UI resume budget, not to infer a regression
-in ordinary parsing with previews disabled.
-
-### Preview correctness follow-up (2026-10-25)
-
-Checked against `a484fef`, Apple M4 Pro, Zig 0.17.0. Preview-only scanner
-bookkeeping is specialized at compile time: ordinary scanners do not record
-the unfinished `+` boundary. The complete machine-code (`__text`) sections of
-the existing policy, metering and string-integration benchmarks are byte-identical
-to the baseline in all three optimized modes:
-
-| Benchmark | `fast` code bytes | `safe` code bytes | `small` code bytes |
-| --- | ---: | ---: | ---: |
-| `bench/policies.zig` | 612,172 | 677,788 | 267,252 |
-| `bench/metering.zig` | 1,184,456 | 1,038,172 | 421,020 |
-| `bench/string_integration.zig` | 440,968 | 490,776 | 182,836 |
-
-These are whole-harness code sizes, not library-only or file sizes. They cover
-fixed/runtime policies, ordinary/metered/cancellable parsing and string
-processing, with token previews disabled. This is stronger evidence for the
-unchanged default path than noisy sub-millisecond timing differences; it is not
-a claim that every application produces identical code.
-Final before/after smoke runs of those harnesses and `bench/previews.zig` in all
-three modes also agreed on work credits, poll counts, callback counts, session
-sizes and integration allocation totals for their unchanged fixtures. Timing
-samples fluctuated even for identical code, so no percentage speedup is claimed.
-
-The fixes add no fields, allocations or source copies. Preview-enabled sessions
-keep their existing credit/polling contract; trailing whitespace after `+` now
-omits redundant preview callbacks and their credits, not scanner work. Tests
-cover both scanners, one-credit resumes, cancellation between failure detection
-and preview delivery, recoverable failures, runtime policies and event-sink
-stop/failure. The existing checked-identifier helper inlining interaction and
-broader observation/API redesign are not addressed by this correctness pass.
-
-### Unified observations and typed names (2026-10-26)
-
-Compared with `cb950e9`, Apple M4 Pro, Zig 0.17.0. Early observations and
-unfinished-token previews now share one compile-time selection and internal
-event scheduler. Recognized identifiers carry `Name` rather than an arbitrary
-`Span`; binding one with `identifier.fromName` does not rescan its syntax.
-
-Three alternating process runs of the policy and name-index harnesses gave
-these geometric-mean time changes across each harness's cases (negative is
-faster):
-
-| Harness | `fast` | `safe` | `small` |
-| --- | ---: | ---: | ---: |
-| Fixed/runtime policies | 0.0% | -0.4% | +0.7% |
-| Checked/recognized-name indexing | -0.8% | -1.5% | +0.1% |
-
-For event sessions, longer samples used the preview fixtures with a 150 ms
-warmup per case, seven measured batches after two warmup batches, and 32 parses
-per one-credit sample or 128 otherwise. Final Fast/Safe checks across both
-scanners and plain/1/64/4096-credit execution averaged -0.6%/+0.7% with
-observations disabled. Individual short cases still varied substantially;
-these aggregate results are not a guarantee of identical generated code or
-zero regression in every workload.
-
-One opt-in cost remains: **Small's scalar, preview-enabled, one-credit cases
-take about 6–8% longer** in two alternating warmed comparisons. For example,
-the dense fixture took 1.979 → 2.133 ms and 2.031 → 2.153 ms. Disabled-preview
-one-credit cases were flat or faster in those same runs. Applications choosing
-larger budgets coalesce previews, but the implementation does not enlarge
-grants or weaken cancellation to improve these numbers.
-
-Compared fixtures retain identical work-credit, cancellation-poll, callback
-and session-size totals. `Name` remains 8 bytes, matching `Span`; retained
-document pools are unchanged, and the unification adds no allocations or
-source copies. Tests check no observations, each individual early-observation
-kind, previews alone and all observations across both scanners and several
-budgets: these selections add exactly their delivered callback credits, with
-no additional lexical work. This is not exhaustive coverage of all subsets.
-
-### IR/name review fixes (2026-10-26)
-
-Compared with `aa04bb3`, Apple M4 Pro, Zig 0.17.0, with all compilation/tests
-finished before sequential timings. Three process runs alternate before/after
-order; numbers below are medians of run medians. The node-session harness uses
-200,000 `a;` statements, fixed pools, 22 warmup parses and nine measured parses.
-It measures parsing only, not source construction or allocation.
-
-| Ordinary node session | Before, ms | After, ms |
-| --- | ---: | ---: |
-| Fast | 2.15 | 2.21 |
-| Safe | 2.54 | 2.52 |
-| Small | 4.52 | 4.60 |
-
-The broader scalar/block metering harness covers dense statements, long ASCII
-and long Unicode values, plain execution, budgets 1/64/4096, cancellation and
-runtime policies. Its DOT geometric-mean time changes were -0.5% Fast, -0.6%
-Safe and +0.7% Small. These aggregates do not certify every case: short scalar
-string timings are particularly unstable. For example, Small's plain long-ASCII
-run medians ranged from 0.156–0.202 ms before and 0.143–0.205 ms after; choosing
-just the middle of three samples suggests a slowdown despite those overlapping
-ranges. The longer-warmed investigation likewise showed substantial variation.
-
-The proposed conversion-at-storage change was **not retained**: it slowed the
-ordinary Small node session. Speed builds instead inline the existing conversion;
-Small lets the optimizer share it. Parser/document state sizes and pools stay
-unchanged. No credits are combined and no polling interval is enlarged.
-
-A separate Fast linking probe reproduces the checked-identifier interaction:
-the same parser becomes slower merely when a standalone checked helper is
-linked. The helper runs outside the timed parsing loop. The comparison below
-uses an intermediate build with the outlined checked scanner versus the final
-inlined helper, 50,000-node/edge fixtures and three process runs:
-
-| Linked helper | Nodes before → after, ms | Edges before → after, ms |
-| --- | ---: | ---: |
-| None | 0.600 → 0.600 | 2.354 → 2.299 |
-| `document.hashIdentifier` | 0.733 → 0.604 | 2.984 → 2.399 |
-| `identifier.check` + `fromName` | 0.735 → 0.604 | 2.840 → 2.287 |
-| `document.decodeIdentifier` | 0.731 → 0.605 | 2.958 → 2.408 |
-
-The checked helper now inlines its scanner body without changing the parser's
-scanner or skipping validation. This removes the reproduced outlining penalty;
-it is not a promise that linking arbitrary helpers never affects code layout.
-
-Direct IR lowering was within -1.7% to +1.2% in Fast for five of six fixtures;
-the symbolic-product fixture improved 6.7%. Safe's direct cases were within
--1.0% to +0.5%; Small's ranged from -10.0% to +2.7%. Remaining opt-in costs are
-not hidden by those results: Fast materialization's strict-overlap one-credit
-case took 3.144 → 3.445 ms, and some cancellable one-credit cases were about
-13% slower. Topology-only reopened-subgraph materialization took 0.179 →
-0.197 ms. Broader IR/session tuning remains separate work; this is not a blanket
-zero-regression claim for every configuration.
-
-Successful compared fixtures have identical work totals, poll counts, results
-and measured retained/peak **allocator-requested bytes**. Native root-name
-validation adds required bounded work when that previously unchecked name is
-present. Complete IR stays 472 bytes; partial IR grows 496 → 504 bytes for its
-conservative set-dependency summary. Attribute-enabled materialization sessions
-grow 888 → 896 bytes by reusing the logical-name reader; topology-only sessions
-stay 448 bytes. These are inline state sizes, not extra heap pools or process RSS.
-
-## Standalone strings (Unreleased)
-
-Measured on 2026-10-18, Apple M4 Pro, Zig 0.16.0, ReleaseFast, using
-[`bench/string.zig`](../bench/string.zig). These are new-module baselines, not
-DOT/markup before-and-after numbers. Each cell is the median of three runs;
-each run uses seven measured batches after two warmups. Source allocation is
-outside timing. Each call verifies encoding, runs equality and consumes the
-result with a discard sink. Profiles compile UTF-8/16/32 readers, with fixed
-policies. Case folding is enabled only in the folding variants.
-
-For the same logical value, `Straße 中文 😀`:
-
-| Source encoding | Physical bytes | Exact, ns/value (MB/s) | Unicode folding, ns/value (MB/s) |
-| --- | ---: | ---: | ---: |
-| UTF-8 | 19 | 14.4 (1,319) | 119.3 (159) |
-| UTF-16LE | 24 | 55.5 (432) | 116.8 (205) |
-| UTF-32LE | 44 | 40.6 (1,084) | 102.5 (429) |
-
-MB/s counts physical bytes, so wider encodings are not directly comparable by
-throughput alone; compare ns/value too. For seven-byte ASCII `Seattle`, UTF-8
-exact checking took about 7.2 ns/value and folding 40.5 ns/value. On a 4,200-byte
-ASCII value, exact checking took about 235 ns/value (17,895 MB/s), using the
-standard validator's ASCII fast path and validated byte equality. Folding took
-about 25 µs/value, with appreciable run variation (19–29 µs): these microbenchmarks
-are not guarantees for arbitrary text or diagnostics-heavy work.
-
-The harness also binds the supplied Equals validator through the custom slot.
-It uses the same verification/comparison/reporting contract; code generation
-and timings are not promised identical. For the 19-byte UTF-8 value, exact custom
-checking took about 17.6 ns/value versus 14.4 ns for the named built-in. Membership,
-runtime-policy preparation, callbacks and retained diagnostic costs depend on
-their configuration; they are not represented by the equality table.
-
-Processor/comparator heap allocations: **zero**. Source stays borrowed, with no
-tree or decoded/folded string buffer. On this target `Result` is 24 bytes and
-the default diagnostic is 72 bytes; custom details can enlarge diagnostics.
-Growable bags and consumer callbacks can allocate independently. Folding uses
-bounded three-scalar buffers per comparison side plus cursors, not input-sized
-scratch. These are library payload/cost facts, not process RSS measurements.
-
-Consumed, stripped Wasm32 ReleaseSmall probes, without console rendering:
-
-| Probe | Module bytes | Folding table |
-| --- | ---: | --- |
-| Exact UTF-8 equality | 3,136 | absent |
-| Unicode-folded equality | 10,091 | present |
-| Non-comparison predicate, folding capability enabled but unused | 2,833 | absent |
-
-Reproduce with `zig build check-wasm` (requires Node; also included in
-`zig build check`). The script executes the exports and checks
-table retention, not just file size. This change does not modify DOT, markup or
-shared parsing/validation code. Their existing throughput tables below are
-unchanged; no new DOT/markup regression measurement is claimed here.
-
-### String execution: metering and default-path check
-
-Measured on Apple M4 Pro, Zig 0.16.0, 2026-10-18 against `b59a9a0` (before bounded
-batching). Compilation is excluded from timing. The default UTF-8 encoding-only
-path, with all content rules and execution features off, measured as follows in
-a paired ReleaseFast harness (15 measured batches after four warmups, alternating
-order):
-
-| Input | Before, ns/value | After, ns/value |
-| --- | ---: | ---: |
-| 7-byte ASCII | 4.26 | 4.28 |
-| 19-byte Unicode | 8.05 | 8.63 |
-| 4,200-byte ASCII | 80.79 | 81.36 |
-
-The default path retains bulk encoding validation and no session state/counters.
-Standalone probes exporting default encoding, exact equality and Unicode-folded
-equality produced **identical machine-code sections before and after**, in both
-ReleaseFast and ReleaseSafe. Processor allocations remain zero, Result/Diagnostic
-sizes remain 24/72 bytes, and all three Wasm probes above remain exactly the same
-size. The paired ReleaseSafe encoding-only measurements were 5.02 → 5.02 ns,
-10.12 → 10.12 ns and 82.69 → 82.83 ns respectively.
-
-With equality enabled but execution features still off, paired long exact
-checking measured 249.35 → 251.31 ns in ReleaseFast and 311.70 → 312.18 ns in
-ReleaseSafe. Timing still depends on layout: the paired executable measured
-long folding +4.6% / +6.7%, despite the standalone probes having identical code.
-These hot-buffer microbenchmarks do not establish a universal percentage bound
-for every application/profile; no new default-path work or instructions were added.
-
-For opt-in execution, run
-`zig build bench-string-sessions -Doptimize=fast`. These are medians of
-three alternating before/after runs, each with seven measured batches after two
-warmups. They include session init, execution and consuming the result; inputs
-are allocated outside timing, and diagnostics are discarded. Values use exact
-UTF-8 equality. Times below are for the 4,200-byte ASCII input, in ReleaseFast.
-
-| Execution | Before, µs | After, µs | Session bytes (unchanged) |
-| --- | ---: | ---: | ---: |
-| Unmetered one-shot | 0.255 | 0.257 | none |
-| Metered, budget 1 | 48.01 | 46.63 | 128 |
-| Metered, budget 64 | 46.54 | 1.96 | 128 |
-| Session run to completion | 46.36 | 2.03 | 128 |
-| Budget 64, cancellation interval 1 | 47.54 | 46.74 | 152 |
-| Budget 64, cancellation interval 64 | 41.26 | 2.33 | 152 |
-| Budget 1, runtime policies | 70.70 | 51.11 | 256 |
-| Budget 64, runtime policies | 46.70 | 2.55 | 256 |
-| Budget 1, Equals bound as custom | 62.50 | 47.58 | 128 |
-| Budget 64, Equals bound as custom | 40.87 | 1.95 | 128 |
-| Budget 64, step-only custom equality | 41.20 | 33.84 | 128 |
-| Budget 64, two-candidate membership | 43.34 | 2.28 | 136 |
-
-ReleaseSafe large-ASCII budget 1 improved 65.66 → 61.31 µs, runtime-policy
-budget 1 improved 76.47 → 68.09 µs, and budget 64 improved 53.03 → 2.47 µs.
-The seven-byte budget-one check measured 95.0 → 92.4 ns in ReleaseFast and
-143.4 → 128.0 ns in ReleaseSafe.
-
-Unicode fallback checks, using the same run protocol:
-
-| Contents | ReleaseFast budget 1, before → after µs | ReleaseFast budget 64, before → after µs | ReleaseSafe budget 64, before → after µs |
-| --- | ---: | ---: | ---: |
-| 1,216-byte mixed Unicode | 11.45 → 11.27 | 11.37 → 11.44 | 12.68 → 12.67 |
-| 384-byte Chinese | 2.85 → 2.87 | 2.89 → 2.92 | 3.24 → 3.27 |
-| 256-byte emoji | 1.56 → 1.55 | 1.55 → 1.55 | 1.50 → 1.46 |
-| 1,728-byte mostly ASCII with Chinese | 18.98 → 19.11 | 19.20 → 4.70 | 22.07 → 5.31 |
-
-Session size is fixed caller-owned payload, not process RSS or total stack use;
-custom states/folding can increase it. There are no processor heap allocations.
-The seven-byte and large-ASCII inputs cost 26 and 12,605 credits respectively, independent of budget
-partition and cancellation interval. On the large value, interval 1 polled
-12,605 times and interval 64 polled 197 times. Runtime policy preparation is
-included in these timings but is outside the credit budget.
-
-The fast lane groups 16 equivalent pending ASCII steps, charging all 16 credits.
-It never crosses the caller's remaining budget or next cancellation poll. Budget
-one has a direct scalar path; cancellation interval one also stays scalar.
-Failed ASCII probes fall back for a bounded group of scalar steps, avoiding a
-new overlapping probe at every Unicode character. Built-in and custom validators
-share the optional batch contract; step-only custom validators remain supported.
-Dense Unicode and folding still require scalar work, and metering remains much
-slower than unmetered bulk validation there. Use it for bounded responsiveness;
-no step/counter overhead is added when both execution features are off.
-
-### ASCII comparison regression follow-up
-
-Measured on 2026-10-19, Apple M4 Pro, Zig 0.16.0, against `6661630`
-(before ASCII-insensitive comparison). The single-command report used three
-alternating process runs per side, seven timed batches after two warmups, and
-the same captured harness for both source trees:
-
-This used baseline `6661630` and the then-current Zig 0.16 reporter. The current
-reporter cannot build that baseline with Zig 0.17; use compatible snapshots and
-the original compiler to reproduce this historical comparison.
-
-Geometric mean **time** changes; negative means faster. These are overlapping
-groups, not quantities to add. The 18 newly available native ASCII-comparison
-cases per build have no baseline and are excluded from the means.
-
-| Matched group | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| 18 runtime-policy cases | −12.9% | −13.7% | −15.0% |
-| 36 native-encoding/comparison cases | −4.0% | −6.1% | −20.2% |
-| 84 execution/session cases, including runtime policies | −9.4% | −9.2% | −13.9% |
-
-Matching scalars and ASCII batches no longer dispatch into ASCII folding.
-The private scalar-read result fits one word, and Small builds retain useful
-comparison-loop boundaries instead of outlining tiny operations inside the loop.
-Unmetered, uncancellable exact UTF-8/ASCII checks can reuse the input's encoding
-proof for byte-identical patterns; mismatches still validate the entire pattern.
-These changes do not remove validation from metered or cancellable checks.
-
-For example, Small mixed-text one-shot equality improved from 0.869 to 0.546 µs
-against the pre-feature baseline (the initial regressed candidate measured
-1.109 µs). Small Unicode runtime-policy checks at budget 64 improved from
-24.417 to 20.226 µs. Fast long-ASCII runtime checks at budget 64 measured
-2.593 to 2.558 µs. All compared session sizes, work-credit totals and poll counts
-were unchanged; the discard-sink processor paths still allocate no heap memory.
-
-**This is not an all-green regression result.** The broad harness still flagged
-Small long-ASCII runtime/budget-64 checks at +9.5%, tiny UTF-32 exact checks at
-+8.6%/+10.2%, and emoji checks with cancellation interval 64 at +7.1%.
-It also flagged a long Unicode-folded custom check in Fast at +59.1%, a short
-folded custom check in Safe at +8.7%, and Fast default-only long ASCII at +11.9%.
-Do not hide these behind the aggregate improvements or dismiss every flag as noise.
-
-Isolation changes the picture: the Fast default-only and Unicode-folded custom
-probes have byte-identical machine-code sections before and after. Default-only
-code also matches in Safe and Small. A paired default-only harness (nine timed
-batches after two warmups, alternating sides, one million calls per batch) gave:
-
-| 4,200-byte ASCII, default encoding check | Before ns/value | After ns/value |
-| --- | ---: | ---: |
-| Fast | 79.23 | 79.78 |
-| Safe | 79.62 | 79.74 |
-| Small | 87.26 | 87.19 |
-
-A longer-running isolated Small runtime/budget-64 check measured 2.86–2.87 µs
-before and 2.75–2.81 µs after, with the same 256-byte session and 12,605 credits.
-Thus the broad executable's layout/code-generation effects matter; the remaining
-mixed-profile outliers are not a demonstrated default-path algorithm change,
-but still need investigation before claiming every configuration is regression-free.
-
-There is a code-size tradeoff for enabled execution profiles: the consumed Small
-session harness grew from 321,088 to 342,248 bytes, while the native harness
-shrank from 281,048 to 258,296 bytes despite adding 18 ASCII-comparison cases.
-These are whole multi-profile executables, not library or heap sizes. Current
-consumed Small Wasm probes are 3,240 bytes for exact equality, 3,370 for ASCII
-folding and 10,247 for Unicode folding; only the last retains the Unicode table.
-
-### Simulated string passthrough versus processing
-
-`zig build bench-string-passthrough -Doptimize=fast` uses the **actual DOT
-lexer** to scan one quoted identifier through EOF, then optionally hands the
-borrowed contents to the standalone string processor. Every timed variant calls
-the same scanner helper. This is a benchmark simulation, not implemented
-DOT/string composition. There is no tree construction, escape decoding,
-concatenation or retained diagnostics. Inputs contain neither escapes nor
-concatenations, so raw and logical contents agree without a copy.
-
-Apple M4 Pro, Zig 0.16.0, 2026-10-18. Median of three runs; each run has nine
-measured batches after two warmups and alternates variant order. Compilation
-and input allocation are outside timing. The default scalar scanner measured:
-
-| UTF-8 contents | Passthrough scan | Scan + encoding | Scan + encoding/equality | Scan + metered encoding/equality, budget 64 |
-| --- | ---: | ---: | ---: | ---: |
-| 7-byte ASCII | 10.13 ns | 14.89 ns | 18.47 ns | 89.06 ns |
-| 19-byte Unicode | 13.40 ns | 23.32 ns | 29.43 ns | 182.25 ns |
-| 4,200-byte ASCII | 1.409 µs | 1.515 µs | 1.671 µs | 3.501 µs |
-| 1,216-byte Unicode | 0.560 µs | 0.997 µs | 1.379 µs | 10.228 µs |
-
-The ASCII fixtures are `Seattle` and repeated `The quick brown fox. `; Unicode
-uses `Straße 中文 😀` once or repeated 64 times. Exact comparisons match the whole
-value, without case folding. All processor paths are allocation-free and use
-fixed policies, with cancellation off.
-
-For the 4,200-byte ASCII contents, these medians correspond to approximately
-**2,980 / 2,773 / 2,513 / 1,200 MB/s**, respectively (decimal content bytes; excludes
-the two quotes from the byte count, but includes scanning them in the time).
-Unmetered encoding/equality adds about 19% time over scanning; metered equality
-takes about 2.5× the scan time. Long-ASCII scalar scan medians varied from
-1.332–1.929 µs across runs, so treat these as approximate hot-buffer measurements,
-not sustained whole-file throughput or precise regression thresholds.
-
-The opt-in block scanner also runs in the harness:
-
-| Contents | Block passthrough | Block scan + encoding/equality | Block scan + metered encoding/equality |
-| --- | ---: | ---: | ---: |
-| 7-byte ASCII | 31.26 ns | 38.11 ns | 109.48 ns |
-| 19-byte Unicode | 32.48 ns | 46.16 ns | 201.73 ns |
-| 4,200-byte ASCII | 1.664 µs | 1.951 µs | 3.828 µs |
-| 1,216-byte Unicode | 0.506 µs | 1.375 µs | 10.190 µs |
-
-Passthrough does inspect bytes for quotes, escapes and host lexical restrictions;
-it is **not encoding validation**. The harness verifies that quoted `0xff` passes
-the quote scanner but fails the standalone encoding check. If a caller already
-has the bounded contents, retaining that span requires no additional contents
-scan; do not add the host scan twice. These figures cannot predict whole DOT
-parse times or the eventual costs of decoding, source mapping and integration.
+Development measurements of unreleased features, at the commits named in each
+section (see [where the numbers come from](#performance)):
+
+- **Graph IR (unreleased):** building the IR for 10,000 connections took
+  1.111 ms in a Fast build. `{a b} -> {c d}` stays one connection: a
+  50,000 × 50,000 product keeps 7,848,888 bytes, not 2.5 billion edges. See
+  [the graph IR](#the-graph-ir).
+- **Strings (unreleased):** an exact check of a 19-byte UTF-8 value took
+  14.4 ns, with no heap allocation. See [standalone strings](#standalone-strings).
+- **Optional features (unreleased):** early outline events, token previews,
+  attribute string checks and IR query indexes are off by default. With them
+  off, the measured benchmark programs compiled to identical machine code.
+  What they cost when on is in
+  [cost of opt-in features](#cost-of-opt-in-features).
 
 ## Parse and validate
+
+Measured for 0.5.0 (commit `2ea1311`, Zig 0.16.0).
 
 The [DOT throughput benchmark](../bench/throughput.zig) uses a 2.733 MB file
 with 200,000 statements: numbered nodes alternating with `--` edges. Settings
@@ -1311,6 +94,8 @@ The time it would take `measure` to work them out is **not** included.
 | Safe | block | 10.06 / 271.7 | 8.42 / 324.6 |
 
 ## Memory
+
+Measured for 0.5.0 (commit `2ea1311`, Zig 0.16.0).
 
 For the same 200,000-statement file. The sizes were the same for both scanners
 and both builds:
@@ -1333,13 +118,12 @@ for the source, diagnostics, sessions and nesting space separately.
 
 ## Type sizes
 
-`@sizeOf` values for 0.5.0 on this machine (aarch64 macOS,
-Zig 0.16.0), checked 2026-10-12. They are the size of each value itself, not
-memory used while parsing, and they can differ on other targets or Zig
-versions. A [layout test](../tests/layouts.zig) checks this table in all four
-build modes.
+`@sizeOf` values on this machine (aarch64 macOS). They are the size of each
+value itself, not memory used while parsing, and they can differ on other
+targets or Zig versions. A [layout test](../tests/layouts.zig) checks the DOT
+rows below in all four build modes, so they hold for both 0.5.0 and `main`.
 
-| Type | Debug / Safe | Fast / ReleaseSmall |
+| Type | Debug / Safe | Fast / Small |
 | --- | ---: | ---: |
 | `dot.Profile(.{}).Session` | 1,128 bytes | 1,120 bytes |
 | DOT session with metering and cancellation | 1,192 bytes | 1,184 bytes |
@@ -1352,18 +136,18 @@ source, document buffers, nesting space or diagnostics, which you supply
 separately. Use `@sizeOf` on your own profile and target rather than copying
 these numbers.
 
-Keeping comments makes the document and storage types a little
-larger even when it is off. With the additional DOT completeness metadata, the
-default fixed session is now 40 bytes bigger than in 0.4.0. Scanner sizes and per-statement records are unchanged. With
-comment retention off, no comment records are allocated. With it on, each
-comment takes 12 bytes, plus spare room in growing lists unless you give exact
-sizes or fixed buffers. The comment text itself is never copied.
+Keeping comments makes the document and storage types a little larger even
+when it is off. With comment retention off, no comment records are allocated.
+With it on, each comment takes 12 bytes, plus spare room in growing lists
+unless you give exact sizes or fixed buffers. The comment text itself is never
+copied.
 
-Additional type sizes in the Zig 0.16 baseline, the same in Fast and Safe builds:
+More sizes, the same in Fast and Safe builds. The markup rows were measured for
+0.5.0 with Zig 0.16.0:
 
 | Type | Size (bytes) |
 | --- | ---: |
-| DOT session with run-time settings (Unreleased) | 1,424 |
+| DOT session with run-time settings | 1,424 on `main` (1,408 in 0.5.0) |
 | Markup node / attribute | 20 / 20 |
 | Markup nesting frame / attribute-key scratch entry | 12 / 8 |
 | Markup diagnostic / validation result | 36 / 32 |
@@ -1372,67 +156,43 @@ Additional type sizes in the Zig 0.16 baseline, the same in Fast and Safe builds
 | Markup node / attribute view | 64 / 64 |
 | Markup root/child iterator / attribute iterator | 64 / 64 |
 
-**Zig 0.17 development layouts:** the two `ArrayList` safety locks in the
-markup builder add 16 bytes in `debug` and `safe`: default / bounded /
-run-time sessions are **456 / 464 / 544 bytes**. With exact closing-tag
-recovery, default / bounded are **448 / 456 bytes**. `fast` and `small`
-retain the sizes above. These are constant session costs, not per-node
-allocations; DOT's guarded session and scanner sizes are unchanged.
-Other growable builders/workspaces also inherit the per-list safety-lock
-overhead; these locks are compiled out in `fast` and `small`.
-For example, DOT/markup growable diagnostic bags grow from 48 to 56 bytes,
-and `markup.ParseResult` from 176 to 192 bytes in `debug`/`safe`.
+**Zig 0.17.0 debug and safe builds.** Two list safety locks in the markup
+builder add 16 bytes in `debug` and `safe`: default / bounded / run-time
+sessions are **456 / 464 / 544 bytes**. With exact closing-tag recovery,
+default / bounded are **448 / 456 bytes**. `fast` and `small` keep the sizes
+above. These are fixed session costs, not per-node allocations; DOT's session
+and scanner sizes are not affected. Other growable builders and workspaces
+carry the same per-list locks in `debug` and `safe`. For example, DOT and
+markup growable diagnostic bags are 56 bytes instead of 48, and
+`markup.ParseResult` is 192 bytes instead of 176.
 
-Changes since 0.4.0 to these sizes:
+What adds to these sizes:
 
-- **Closing-tag typo recovery**, on by default, adds 8 bytes to sessions with
-  fixed settings and 24 bytes to the run-time-settings session. With a fixed
-  `closing_tag_recovery = .exact`, the default and bounded sessions are 432 and
-  440 bytes again; run-time settings keep room for every choice. No choice
+- **DOT completeness metadata** makes the default fixed DOT session 40 bytes
+  bigger than in 0.4.0. Scanner sizes and per-statement records are unchanged.
+- **Closing-tag typo recovery**, on by default, adds 8 bytes to markup sessions
+  with fixed settings and 24 bytes to the run-time-settings session. With a
+  fixed `closing_tag_recovery = .exact`, the default and bounded sessions are
+  432 and 440 bytes; run-time settings keep room for every choice. No choice
   allocates or makes node or attribute records bigger.
-- **Markup partial results** add 8 bytes to the run-time-settings session; other
-  sessions are unchanged. The markup `Document` grew from 48 to 56 bytes, even
-  with partial results off, so views and iterators that hold it grew by 8 bytes
-  too. Copying a view still copies no source or tree and doesn't allocate.
-  Node and attribute records are still 20 bytes. Keeping the finished part after
-  a failure reuses the same buffers, without allocating. Growing buffers keep
-  their spare room after a failure: an owned result holds it until `deinit()`,
-  and a workspace keeps it for the next call.
+- **Markup partial results** add 8 bytes to the run-time-settings session;
+  other sessions are unchanged. They make the markup `Document` 56 bytes
+  instead of 48, even with partial results off, so views and iterators that
+  hold it are 8 bytes bigger too. Copying a view still copies no source or tree and doesn't
+  allocate. Node and attribute records are still 20 bytes. Keeping the
+  finished part after a failure reuses the same buffers, without allocating.
+  Growing buffers keep their spare room after a failure: an owned result holds
+  it until `deinit()`, and a workspace keeps it for the next call.
 - **DOT partial results and kept label trees** have their own
-  [memory costs](EDITORS.md#memory). The default DOT session grew by 8 bytes,
-  and run-time-settings sessions by 56 bytes, because they must be able to keep
-  partial results too. Default node and edge allocations are unchanged, and no
-  list of label results is allocated unless label trees are kept.
-
-## Cost of opt-in features
-
-> The compile-time numbers in this section were measured during 0.5.0
-> development, on the same machine, and weren't re-run for the release.
-
-**Partial DOT results** ([editors](EDITORS.md#keep-the-finished-part-of-a-dot-file)):
-
-- **Off:** with compile-time settings, no measurable change (−1.0% to +0.5%
-  across scanners, storage and both builds). Profiles with run-time settings
-  weren't compared with the version before this feature.
-- **On:** parsing is a few percent slower. Scalar scanner, Fast build:
-
-| Input | Fixed buffers | Growing buffers |
-| --- | ---: | ---: |
-| Nodes | −6.0% | −2.5% |
-| Edges | −5.3% | −6.9% |
-| Subgraph edge ends | −7.9% | −8.9% |
-
-- **On, with run-time settings:** 0–2% slower than the same profile with it
-  off (`runtime_partial` against `runtime_baseline` in the
-  [settings tables](#compile-time-and-run-time-settings)).
-- **Memory, on:** fixed buffers use nothing extra. Growing buffers use 104 bytes
-  more at their peak, and keep 26–34% more memory afterwards, because the lists
-  aren't trimmed when parsing ends. Exact size hints or fixed buffers avoid that.
-
-**Keeping label trees** costs memory for every kept tree; how much depends on
-the labels. It hasn't been timed yet.
+  [memory costs](EDITORS.md#memory). They add 8 bytes to the default DOT
+  session and 56 bytes to run-time-settings sessions, because those must be
+  able to keep partial results too. Default node and edge allocations are
+  unchanged, and no list of label results is allocated unless label trees are
+  kept.
 
 ## Scanners
+
+Measured for 0.5.0 (commit `2ea1311`, Zig 0.16.0).
 
 The [lexer benchmark](../bench/lexer.zig) times the DOT scanner on its own, in
 a Fast build. Each pattern is repeated 65,536 times. The `long HTML label` row
@@ -1455,6 +215,8 @@ stays the default; see [two scanners](EXECUTION.md#two-scanners).
 
 ## Step-by-step sessions
 
+Measured for 0.5.0 (commit `2ea1311`, Zig 0.16.0).
+
 The [session benchmark](../bench/session.zig) parses 200,000 `a;` statements
 (0.400 MB) in a fixed-buffer session with the scalar scanner, without
 validation. Metered sessions spend 256 credits per `advance` call; the others
@@ -1472,109 +234,95 @@ these numbers show the cost of checking, not how quickly a cancel takes
 effect. Your own callback's work adds to it. Setting up the session and its
 memory isn't timed.
 
-### Cancellation intervals (unreleased)
+### Cancellation intervals
 
-Measured on 2026-10-17 with Zig 0.16.0 on Apple M4 Pro, 48 GiB RAM.
-The interval-relative tables below are the initial `ca71148` snapshot, before
-the interval-1 follow-up described below; they are not updated-build speedups.
+> **Unreleased.** Not in 0.5.0.
+
+Measured with Zig 0.16.0 on 2026-10-17: markup at commit `ca71148`, DOT at
+commit `2597811`.
+
 The [interval benchmark](../bench/cancellation.zig) covers intervals 1, 4, 16,
-64 and 256, both parsers/scanners, fixed/runtime policies, and metering on/off.
-It uses dense 30,000-statement inputs (DOT 0.210 MB, markup 0.300 MB) and
-1.350 MB of long quoted/text content. Markup uses structural mode; validation
-is not timed. Pools and session initialization are outside timing. Each case
-warms for at least 150 ms, then takes the median of nine samples. The numbers
-below take the median across three interleaved runs. Metered calls grant 4,096
-credits; the callback counts polls and never requests cancellation.
+64 and 256, both parsers and both scanners, fixed and run-time settings, and
+metering on and off. It uses dense 30,000-statement inputs (DOT 0.210 MB,
+markup 0.300 MB) and 1.350 MB of long quoted or text content. Markup uses
+structural mode, and validation isn't timed. Buffers and session setup are
+outside the timing. Each case warms up for at least 150 ms, then takes the
+median of nine samples; the tables use the median of three interleaved runs.
+Metered calls grant 4,096 credits. The callback counts checks and never asks
+to stop.
 
-Throughput change relative to **interval 1 in the same build**, geometric mean
-across both inputs, fixed/runtime policies and metering on/off:
+**What a larger interval changes.** The work credits are the same at every
+interval; only the number of cancel checks changes. For dense DOT, intervals 1
+and 64 made 600,161 and 9,522 checks for the same **600,015 credits**. Dense
+markup made 480,153 and 7,618 checks for **480,036 credits**. The extra checks
+come from checking on entry to each call. The interval adds no heap allocation,
+no per-record storage, and doesn't change session sizes.
 
-| Parser / scanner | Build | 4 | 16 | 64 | 256 |
+Markup throughput against interval 1 in the same build (geometric mean across
+both inputs, fixed and run-time settings, metering on and off; higher is
+faster):
+
+| Markup scanner | Build | 4 | 16 | 64 | 256 |
 | --- | --- | ---: | ---: | ---: | ---: |
-| DOT scalar | Fast | +45.4% | +76.3% | +82.2% | +87.9% |
-| DOT scalar | Safe | +40.3% | +65.6% | +83.2% | +85.6% |
-| DOT block | Fast | +0.4% | +3.3% | +6.2% | +6.2% |
-| DOT block | Safe | -0.7% | -0.3% | +2.8% | +4.2% |
-| Markup scalar | Fast | +6.3% | +5.7% | +9.4% | +10.5% |
-| Markup scalar | Safe | +3.8% | +3.3% | +5.2% | +6.5% |
-| Markup block | Fast | +4.9% | +4.5% | +4.6% | +4.8% |
-| Markup block | Safe | +2.2% | +2.7% | +2.2% | +4.4% |
+| scalar | Fast | +6.3% | +5.7% | +9.4% | +10.5% |
+| scalar | Safe | +3.8% | +3.3% | +5.2% | +6.5% |
+| block | Fast | +4.9% | +4.5% | +4.6% | +4.8% |
+| block | Safe | +2.2% | +2.7% | +2.2% | +4.4% |
 
-Long text drives much of DOT's gain; this is not a representative-file average.
-For context, these are actual **Fast, scalar, fixed-policy, metered** timings:
+Markup timings, Fast build, scalar scanner, fixed settings, metered:
 
-| Input | Interval 1: ms / MB/s | Interval 64: ms / MB/s |
+| Input | Interval 1 | Interval 64 |
 | --- | --- | --- |
-| DOT dense | 1.763 / 119.1 | 1.346 / 156.1 |
-| DOT long text | 3.021 / 446.9 | 0.766 / 1,762.4 |
 | Markup dense | 1.567 / 191.5 | 1.403 / 213.9 |
 | Markup long text | 4.017 / 336.0 | 3.734 / 361.5 |
 
-Credits were identical at every interval. For dense DOT, interval 1/64 used
-600,161/9,522 polls but **600,015 credits** in both cases. Dense markup used
-480,153/7,618 polls and **480,036 credits**. Entry checks account for extra polls
-at resume boundaries. Measured session sizes were unchanged against the previous
-commit; the countdown is local to a drive call, with no new heap allocations or
-per-record storage. This is not a process peak-RAM measurement.
+There are no current DOT figures for intervals above 1.
 
-**DOT interval-1 follow-up.** The initial implementation changed LLVM's inlining:
-sharing grammar helpers between one-credit and batched loops introduced calls
-on the runtime default's hot path. DOT now selects the polling class once at
-operation start/session init/reset. The interval-1 machine has no countdown work;
-its runtime scalar scanner executes the same single lexical microstep directly.
-Document, event-only and proactive-composition entry points share this approach.
-No work unit, polling boundary, pause budget or terminal precedence changed.
+**What the default interval costs DOT.** Throughput at interval 1 against the
+version before intervals existed (commit `702d4ea`). The geometric mean covers
+metering on and off and six 30,000-statement inputs: dense, long text, nodes
+(`a;`), subgraph ends (`{a;}->{b;};`), ports and attributes
+(`a:p->b:q[x=1];`) and HTML-like labels passed through unchecked
+(`a[label=<<b>x</b>>];`). Dense and long text use five alternating runs, the
+others three. Higher is faster:
 
-Matched interval-1-only builds compare `702d4ea` (pre-interval), `ca71148` and
-the follow-up. Dense and long-text inputs use five alternating runs; four extra
-30,000-statement inputs use three: nodes (`a;`), subgraph endpoints
-(`{a;}->{b;};`), ports/attributes (`a:p->b:q[x=1];`) and passthrough HTML-like
-identifiers (`a[label=<<b>x</b>>];`). The latter does not process markup.
-Warmup, sampling and budget rules are as above. Geometric mean throughput changes
-against **pre-interval `702d4ea`**, across six inputs and metering on/off:
-
-| DOT scanner | Fast fixed | Fast runtime | Safe fixed | Safe runtime |
+| DOT scanner | Fast, fixed | Fast, run-time | Safe, fixed | Safe, run-time |
 | --- | ---: | ---: | ---: | ---: |
 | Scalar | -0.6% | +10.9% | +1.5% | +5.4% |
 | Block | +1.0% | -0.7% | -0.1% | -0.4% |
 
-Against the regressed `ca71148`, runtime scalar improves **20.7% Fast / 16.2%
-Safe**, and runtime block improves **5.2% / 10.0%**. Cancellation-disabled
-controls average +1.9% / -0.5% against pre-interval. Exact poll counts, metered
-credit totals and session sizes match all three versions, with no new heap
-allocation or retained-record storage.
+With cancellation turned off, the same comparison averages +1.9% (Fast) and
+-0.5% (Safe). Credits, check counts and session sizes match the earlier
+version exactly.
 
-**Residual variation is not a blanket performance sign-off.** The mixed-profile
-binary still has individual slower cases: dense runtime-metered block is -6.6%
-Fast / -4.0% Safe, and fixed unmetered scalar reaches -4.5% Fast on ports.
-Separate single-profile binaries also use five alternating runs. Their dense
-input comparisons against pre-interval are:
+Some cases are still slower (negative numbers). In the benchmark program that
+compiles all these settings together, dense run-time metered block parsing is
+-6.6% (Fast) and -4.0% (Safe), and fixed unmetered scalar parsing reaches -4.5%
+(Fast) on the ports input. Programs that each compile only one setting, same
+comparison on the dense input, five alternating runs:
 
-| Isolated profile | Fast | Safe |
+| One-setting program | Fast | Safe |
 | --- | ---: | ---: |
 | Fixed scalar, unmetered | -3.5% | +6.6% |
-| Runtime scalar, unmetered | +8.0% | +2.2% |
-| Runtime block, unmetered | -5.0% | +0.6% |
-| Runtime block, metered | +0.1% | -1.7% |
+| Run-time scalar, unmetered | +8.0% | +2.2% |
+| Run-time block, unmetered | -5.0% | +0.6% |
+| Run-time block, metered | +0.1% | -1.7% |
 
-This sensitivity to the surrounding compiled profiles matters: compare the
-actual application, not just an aggregate. Assembly inspection also finds the
-same fixed scalar default hot loop structure as pre-interval, apart from
-relocated addresses and error-code mapping. We have removed the added
-default-path work, not demonstrated zero regression for every configuration.
+Results depend on which other settings are compiled into the same program, so
+measure your own application. The default fixed scalar loop has the same
+structure as before intervals existed, apart from moved addresses and
+error-code mapping. Run-time settings cost code: specializing their cancel
+checks adds 29.0 KiB (Fast) and 32.9 KiB (Safe) to the all-settings
+benchmark's `__TEXT`. A fixed scalar program is within 40 bytes (Fast) and 48
+bytes (Safe) of the version before intervals existed.
 
-The mixed-profile benchmark's `__TEXT` grows by 29.0 KiB Fast / 32.9 KiB Safe
-against `ca71148`, from specializing runtime polling classes. This is not a
-fixed-policy-only cost: the isolated fixed scalar binary differs from
-pre-interval by only 40 bytes Fast / 48 bytes Safe of `__TEXT`. Markup is unchanged
-by this follow-up; its initial interval-1 comparisons ranged from +0.4% to -2.3%
-by configuration.
-
-Interval **1 remains the default**. Larger intervals trade responsiveness for
-fewer polls; they neither increase work budgets nor guarantee faster parsing.
+Interval **1 stays the default**. Larger intervals trade responsiveness for
+fewer checks; they neither increase work budgets nor guarantee faster parsing.
 See the [interval contract](EXECUTION.md#cancellation-interval).
 
 ## Compile-time and run-time settings
+
+Measured for 0.5.0 (commit `2ea1311`, Zig 0.16.0).
 
 The [settings benchmark](../bench/policies.zig) parses three files into fixed
 buffers, without validation:
@@ -1624,6 +372,8 @@ settings in general. Measure the settings and files you actually use.
 
 ## Subgraphs
 
+Measured for 0.5.0 (commit `2ea1311`, Zig 0.16.0).
+
 The [subgraph benchmark](../bench/subgraphs.zig) parses empty subgraphs into
 fixed buffers with the scalar scanner. Each `{}` is two bytes, plus eight bytes
 for the surrounding graph. `siblings` puts them side by side; `nested` puts
@@ -1644,6 +394,8 @@ on top of the 4.4 MB document. Setting up that memory isn't timed, and an
 allocator that grows as it goes may use more at its peak.
 
 ## Markup on its own
+
+Measured for 0.5.0 (commit `2ea1311`, Zig 0.16.0).
 
 The [markup benchmark](../bench/markup.zig) parses markup into fixed buffers of
 exactly the right size, with compile-time settings in structural mode. Parsing
@@ -1804,6 +556,8 @@ aren't timed.
 
 ## DOT with label checking
 
+Measured for 0.5.0 (commit `2ea1311`, Zig 0.16.0).
+
 The [composition benchmark](../bench/composition.zig) uses a DOT profile with
 the markup parser bound as its
 [label checker](LABELS.md#check-every-label-while-parsing), in structural mode,
@@ -1811,8 +565,8 @@ and calls `parseAndValidate`. Times include parsing the DOT, checking the labels
 validating, and freeing the result. Both parsers use the scanner shown.
 Diagnostics are thrown away.
 
-The benchmark covers both fixed and runtime policies for both parsers, labelled
-`fixed` and `runtime` in its output. The recorded table below uses fixed policies.
+The benchmark covers both fixed and run-time settings for both parsers, labelled
+`fixed` and `runtime` in its output. The table below uses fixed settings.
 
 - `plain`: 1,000 nodes and no labels. The label checker is bound but has
   nothing to do.
@@ -1836,47 +590,1449 @@ The benchmark covers both fixed and runtime policies for both parsers, labelled
 **Peak** is the most memory the library had asked for at any one moment
 during a call, measured with a separate counting allocator. It doesn't include
 the source, the allocator's own bookkeeping or the copies it makes while
-resizing, or the program's total memory use. The last column counts calls to the allocator, not requests to the
-operating system.
+resizing, or the program's total memory use. The last column counts calls to
+the allocator, not requests to the operating system.
 
 The label checker's buffers can stay allocated while DOT's own buffers grow;
 `large_first` tests exactly that. After each call, the counting allocator
 confirms that everything was freed.
 
+## Standalone strings
+
+> **Unreleased.** Not in 0.5.0.
+
+The [string processor](STRINGS.md) checks one value at a time: its encoding,
+and optionally rules such as equality. It never allocates, and it never copies
+or decodes the value into a buffer.
+
+### Equality checks
+
+Measured with Zig 0.16.0 on 2026-10-18, at commit `608038f`, Fast build.
+
+[`bench/string.zig`](../bench/string.zig) (`bench-string`): each cell is the
+median of three runs; each run uses seven measured batches after two warm-ups.
+Source allocation is outside timing. Each call checks the encoding, runs the
+equality check and consumes the result with a discard sink. Profiles compile
+UTF-8, UTF-16 and UTF-32 readers, with fixed settings. Case folding is on only
+in the folding columns.
+
+For the same logical value, `Straße 中文 😀`:
+
+| Source encoding | Physical bytes | Exact, ns/value (MB/s) | Unicode folding, ns/value (MB/s) |
+| --- | ---: | ---: | ---: |
+| UTF-8 | 19 | 14.4 (1,319) | 119.3 (159) |
+| UTF-16LE | 24 | 55.5 (432) | 116.8 (205) |
+| UTF-32LE | 44 | 40.6 (1,084) | 102.5 (429) |
+
+MB/s counts physical bytes, so wider encodings can't be compared by throughput
+alone; compare ns/value too. For the seven-byte ASCII value `Seattle`, UTF-8
+exact checking took about 7.2 ns/value and folding 40.5 ns/value. On a
+4,200-byte ASCII value, exact checking took about 235 ns/value
+(17,895 MB/s), using the standard validator's ASCII fast path and a byte
+comparison. Folding took about 25 µs/value, with large run-to-run variation
+(19–29 µs). These microbenchmarks are not guarantees for arbitrary text or for
+work that produces many diagnostics.
+
+The same equality check bound as a custom validator does the same work, but
+its code and timing can differ: for the 19-byte UTF-8 value it took about
+17.6 ns/value, against 14.4 ns for the built-in one. Membership checks, run-time
+settings, callbacks and kept diagnostics depend on their configuration and
+aren't covered by this table.
+
+Later changes (commit `32ecc3d`) made the native comparison cases faster:
+-4.0% (Fast), -6.1% (Safe) and -20.2% (Small) in time, as a geometric mean.
+The table above wasn't re-recorded.
+
+**Memory.** The processor and comparators make **no** heap allocations. The
+source stays borrowed, and there is no tree or decoded or folded copy. On this
+target `Result` is 24 bytes and the default diagnostic is 72 bytes; custom
+details can make diagnostics larger. Growable diagnostic bags and your own
+callbacks can allocate. Folding uses small fixed buffers (three Unicode scalars
+per side) plus cursors, not scratch that grows with the input.
+
+### Code size
+
+Measured with Zig 0.16.0 at commit `32ecc3d`; the predicate probe at `608038f`.
+
+Consumed, stripped Wasm32 `ReleaseSmall` probes, without console printing:
+
+| Probe | Module bytes | Unicode folding table |
+| --- | ---: | --- |
+| Exact UTF-8 equality | 3,240 | absent |
+| ASCII-insensitive equality | 3,370 | absent |
+| Unicode-folded equality | 10,247 | present |
+| Check other than comparison, with folding allowed but unused | 2,833 | absent |
+
+Only the Unicode-folded probe keeps the folding table. `zig build check-wasm`
+(needs Node; also part of `zig build check`) runs the probes' exports and
+checks which probes keep the table; it doesn't check their size.
+`zig build string-size-probes` installs the probes so you can measure them.
+
+### Metering and cancellation
+
+Measured with Zig 0.16.0 on 2026-10-18 at commit `16935f8`, except where noted.
+
+**The default check** (encoding only; no rules, metering or cancellation) keeps
+bulk encoding validation and has no session state or counters. Time per value:
+
+| Input | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| 7-byte ASCII | 4.28 ns | 5.02 ns | — |
+| 19-byte Unicode | 8.63 ns | 10.12 ns | — |
+| 4,200-byte ASCII | 79.78 ns | 79.74 ns | 87.19 ns |
+
+The 7- and 19-byte rows used 15 measured batches after four warm-ups. The
+4,200-byte row was measured at commit `32ecc3d`: nine batches after two
+warm-ups, one million calls per batch. With exact equality on but metering and
+cancellation off, the 4,200-byte check took 251.31 ns (Fast) and 312.18 ns
+(Safe).
+
+**Sessions** ([metering and cancellation](STRINGS.md#metering-cancellation-and-sessions)) are opt-in. The
+[session benchmark](../bench/string_sessions.zig) (`bench-string-sessions`)
+uses the median of three runs, each with seven measured batches after two
+warm-ups. Times include setting up the session, running it and consuming the
+result. Inputs are allocated outside timing, diagnostics are thrown away, and
+values use exact UTF-8 equality. 4,200-byte ASCII input, Fast build:
+
+| Execution | µs | Session bytes |
+| --- | ---: | ---: |
+| Unmetered one-shot | 0.257 | none |
+| Metered, budget 1 | 46.63 | 128 |
+| Metered, budget 64 | 1.96 | 128 |
+| Session run to completion | 2.03 | 128 |
+| Budget 64, cancellation interval 1 | 46.74 | 152 |
+| Budget 64, cancellation interval 64 | 2.33 | 152 |
+| Budget 1, run-time settings | 51.11 | 256 |
+| Budget 64, run-time settings | 2.55 | 256 |
+| Budget 1, Equals bound as custom | 47.58 | 128 |
+| Budget 64, Equals bound as custom | 1.95 | 128 |
+| Budget 64, step-only custom equality | 33.84 | 128 |
+| Budget 64, two-candidate membership | 2.28 | 136 |
+
+In a Safe build the same input took 61.31 µs at budget 1, 68.09 µs at budget 1
+with run-time settings, and 2.47 µs at budget 64. The seven-byte value at
+budget 1 took 92.4 ns (Fast) and 128.0 ns (Safe).
+
+Unicode input, µs:
+
+| Contents | Fast, budget 1 | Fast, budget 64 | Safe, budget 64 |
+| --- | ---: | ---: | ---: |
+| 1,216-byte mixed Unicode | 11.27 | 11.44 | 12.67 |
+| 384-byte Chinese | 2.87 | 2.92 | 3.27 |
+| 256-byte emoji | 1.55 | 1.55 | 1.46 |
+| 1,728-byte mostly ASCII with Chinese | 19.11 | 4.70 | 5.31 |
+
+Why budget 64 is so much faster on ASCII: metered checking takes 16 ASCII
+steps at a time and charges all 16 credits. It never goes past the
+remaining budget or the next cancel check, so budget 1 and cancellation
+interval 1 still go one step at a time. Dense Unicode and case folding always
+go one step at a time, so metering stays much slower than unmetered checking
+there. With both metering and cancellation off, no step counting happens at
+all.
+
+The seven-byte and 4,200-byte inputs cost 26 and 12,605 credits, whatever the
+budget or cancellation interval. On the large value, interval 1 made 12,605
+cancel checks and interval 64 made 197. Preparing run-time settings is
+included in the timings but isn't charged as credits. Session size is a fixed
+payload you own, not total stack use or RSS; custom states and folding can make
+it larger. There are no processor heap allocations.
+
+Later changes (commit `32ecc3d`) made these session cases faster: -9.4%
+(Fast), -9.2% (Safe) and -13.9% (Small) in time, as a geometric mean over 84
+cases. The tables above weren't re-recorded.
+
+**Compiling many profiles together.** In a benchmark program that compiles many
+string profiles at once, single cases can move by several percent between
+builds even when the code they run is unchanged. One long Unicode-folded custom
+check moved by +59.1% in such a program while an isolated program of the same
+check had identical machine code. Measure the combination you ship.
+
+### Scanning DOT quotes, then checking the contents
+
+Measured with Zig 0.16.0 on 2026-10-18, at commit `16935f8`.
+
+`zig build bench-string-passthrough -Doptimize=fast` uses the **actual DOT
+lexer** to scan one quoted name up to the end of the input, then optionally
+hands the borrowed contents to the string processor. Every timed variant calls
+the same scanner. This simulates the hand-off; it isn't the real DOT
+integration. There is no tree, escape decoding, concatenation or kept
+diagnostics. The inputs have no escapes or concatenations, so the raw and
+logical contents are the same without a copy.
+
+Median of three runs; each run has nine measured batches after two warm-ups
+and alternates the variant order. Compiling and allocating the input are
+outside timing. The default scalar scanner, Fast build:
+
+| UTF-8 contents | Scan only | Scan + encoding | Scan + encoding/equality | Scan + metered encoding/equality, budget 64 |
+| --- | ---: | ---: | ---: | ---: |
+| 7-byte ASCII | 10.13 ns | 14.89 ns | 18.47 ns | 89.06 ns |
+| 19-byte Unicode | 13.40 ns | 23.32 ns | 29.43 ns | 182.25 ns |
+| 4,200-byte ASCII | 1.409 µs | 1.515 µs | 1.671 µs | 3.501 µs |
+| 1,216-byte Unicode | 0.560 µs | 0.997 µs | 1.379 µs | 10.228 µs |
+
+The ASCII inputs are `Seattle` and repeated `The quick brown fox. `; the
+Unicode inputs are `Straße 中文 😀` once or repeated 64 times. Exact comparisons
+match the whole value, without case folding. All processor paths are
+allocation-free and use fixed settings, with cancellation off.
+
+For the 4,200-byte ASCII contents these are about
+**2,980 / 2,773 / 2,513 / 1,200 MB/s** (content bytes, excluding the two
+quotes, which are still scanned in the timed work). Unmetered encoding and
+equality add about 19% over scanning; metered equality takes about 2.5 times
+the scan time. Long-ASCII scan medians varied from 1.332 to 1.929 µs across
+runs, so treat these as rough hot-buffer measurements, not whole-file
+throughput.
+
+The opt-in block scanner, same harness:
+
+| Contents | Block scan only | Block scan + encoding/equality | Block scan + metered encoding/equality |
+| --- | ---: | ---: | ---: |
+| 7-byte ASCII | 31.26 ns | 38.11 ns | 109.48 ns |
+| 19-byte Unicode | 32.48 ns | 46.16 ns | 201.73 ns |
+| 4,200-byte ASCII | 1.664 µs | 1.951 µs | 3.828 µs |
+| 1,216-byte Unicode | 0.506 µs | 1.375 µs | 10.190 µs |
+
+Scanning does look at the bytes for quotes, escapes and DOT's own rules, but it
+is **not encoding validation**: the harness checks that a quoted `0xff` passes
+the scanner and fails the string processor's encoding check. If you already
+have the bounded contents, keeping that span needs no second scan; don't scan
+twice. These figures can't predict whole DOT parse times.
+
+## Attribute string processing
+
+> **Unreleased.** Not in 0.5.0.
+
+Measured with Zig 0.16.0 on 2026-10-19 and 2026-10-20, at commits `b58db00`
+and `75ce950`.
+
+DOT and markup can [pass chosen attribute values to the string
+processor](STRINGS.md#attribute-processing-in-dot-and-markup) while parsing.
+[`bench/string_integration.zig`](../bench/string_integration.zig)
+(`bench-string-integration`) times whole documents: parsing, validation,
+allocation and freeing are included, building the source isn't, and
+diagnostics are thrown away. Each process takes nine timed batches after three
+warm-ups.
+
+**With no string check selected,** including a bound string processor that only
+passes values through, the profile is the same type as the plain DOT or markup
+profile; tests check this. The `host-defaults` benchmark programs had identical
+machine code and identical sizes with and without the feature: 353,872 bytes
+(Fast), 386,784 (Safe) and 257,328 (Small). Their timing changed by +0.06%,
++0.95% and -2.74% (geometric mean, eight fixtures), within noise. A program
+that compiles both checked and unchecked profiles has a different code layout,
+so measure your own combination, especially in Small builds.
+
+**With checks on,** each document has 2,000 selected `label` values and 2,000
+attributes that are left alone. The selected check verifies the logical
+encoding and exact equality; markup uses structural mode. For long ASCII
+values (4,654,007 source bytes for DOT, 4,660,013 for markup), three
+alternating runs:
+
+| Build | DOT | Markup |
+| --- | --- | --- |
+| Fast | 8.226 / 565.76 | 6.548 / 711.68 |
+| Safe | 9.597 / 484.93 | 7.932 / 587.49 |
+| Small | 13.173 / 353.30 | 11.761 / 396.21 |
+
+Checks are not free: each check can read the value again. Unchanged ASCII runs
+are checked 16 steps at a time, with the same credits, without crossing a
+budget or cancel check. References, escapes, case-folding expansions and short
+values are checked one step at a time. Short-value timings haven't been
+re-measured on the current implementation.
+
+**Memory.** Routing and the built-in checks add no heap storage and no decoded
+copy, only fixed-size state. Allocation probes gave the same number of
+allocator requests and the same requested bytes with checks off,
+pass-through only, and checks on: 3 allocations and 147,632 bytes for every
+DOT fixture, 4 and 138,228 for every markup fixture (commit `b58db00`). Bound
+equality sessions are 344 bytes for plain readers and 464 bytes for DOT and
+markup readers. This isn't a peak-stack or RSS measurement; kept diagnostics
+and your own callbacks have their own costs.
+
+To compare revisions, use `zig build perf-string -- --suites host-defaults,integration`
+(see [running the benchmarks](#one-command-string-comparison)).
+
+## Names, outline events and previews
+
+> **Unreleased.** Not in 0.5.0.
+
+Event features for tools such as editors: binding names the parser has already
+checked, and the opt-in early outline events and previews of unfinished
+tokens. See [events](EVENTS.md).
+
+### Parser-recognized names
+
+Measured with Zig 0.16.0 on 2026-10-20, at commit `75ce950`.
+
+`zig build bench-identifiers -Doptimize=fast` (and `safe` / `small`). Each
+input has 10,000 node statements and 1,000 different names. An event consumer
+builds a hash-based index of name references, without a syntax tree. Building
+the source and reserving equal tables are outside timing. Numbers are medians
+of nine alternating samples of four parses.
+
+| Name spelling | Fast, checked → trusted | Safe, checked → trusted | Small, checked → trusted |
+| --- | ---: | ---: | ---: |
+| Quoted | 0.647 → 0.460 ms | 0.728 → 0.502 ms | 1.254 → 0.776 ms |
+| Concatenated | 0.944 → 0.639 ms | 1.029 → 0.700 ms | 1.621 → 1.029 ms |
+| Unicode quoted | 0.914 → 0.647 ms | 0.981 → 0.677 ms | 1.651 → 1.001 ms |
+| Long quoted (10.36 MB input) | 23.818 → 14.421 ms | 23.689 → 14.442 ms | 37.271 → 17.417 ms |
+
+"Checked" re-checks each name's spelling with the standalone helpers.
+"Trusted" binds the name the parser delivered with
+`identifier.fromName(source, name)`, which skips the repeated syntax check but
+still hashes and compares the logical value. Across all six inputs (also bare
+and escaped names), parsing plus indexing took 24–40% less time in Fast, 29–40%
+in Safe and 33–53% in Small. This is an indexing result, **not** a speedup of
+ordinary parsing. Both paths reserved 43,032 bytes in one allocation for the
+index and allocated nothing while parsing. A `Name` handle is 8 bytes, the same
+as a `Span`, and adds no parser, event or document storage.
+
+Since commit `c936fd1`, the checked helpers' scanner is inlined. That made
+checked hashing of long quoted names 14–20% slower per byte in Fast builds and
+about 20% faster in Small builds, so the "checked" column above is optimistic
+for long quoted names in Fast.
+
+**Linking a checked helper.** Measured at commit `c936fd1` with Zig 0.17.0,
+Fast build, 50,000-node and 50,000-edge inputs, three process runs. The helper
+is linked into the program but runs outside the timed loop:
+
+| Linked helper | Nodes, ms | Edges, ms |
+| --- | ---: | ---: |
+| None | 0.600 | 2.299 |
+| `Document.hashIdentifier` | 0.604 | 2.399 |
+| `identifier.check` + `fromName` | 0.604 | 2.287 |
+| `Document.decodeIdentifier` | 0.605 | 2.408 |
+
+So in Fast builds, linking a checked helper makes little difference to
+ordinary parsing. Two linking costs remain, measured with a separate probe at
+the same commit:
+
+- **Small builds:** linking a checked helper such as `identifier.hash` or
+  `Document.hashIdentifier` makes ordinary parsing 26–31% slower on edge-heavy
+  input and 10–13% slower on node input. Two small parser helpers then have a
+  second caller, and Small builds don't inline them.
+- **Fast builds:** linking the public `dot.lexer.Lexer.next()` makes ordinary
+  parsing 20–23% slower, because the parser's scanner then gets an out-of-line
+  copy.
+
+### Early outline events
+
+Measured with Zig 0.16.0 on 2026-10-20, at commit `75ce950`.
+
+**Off (the default):** the [settings](../bench/policies.zig) and
+[metering](../bench/metering.zig) benchmarks compiled to identical machine
+code with and without the feature, in Fast, Safe and Small. That covers both
+scanners, fixed and run-time settings, ordinary parsing, one-credit and batched
+metering, and cancellation intervals 1 and 64. Early events that are off add no
+session storage or allocation.
+
+**On** (declare `pub const observations = dot.events.Observations.early;` in
+your event consumer), the parser does more work. These numbers come from a
+one-off harness that isn't in the repository: an event consumer with fixed
+scratch counts callbacks on 10,000 `a[x=1];` statements (80,010 bytes,
+including a named header). Fast build, nine alternating timed batches of four
+parses after three warm-up batches; building the source isn't timed.
+
+| Execution | Scalar off → on | Block off → on |
+| --- | ---: | ---: |
+| Unmetered | 0.552 → 0.586 ms | 0.528 → 0.823 ms |
+| One-credit resumes | 1.286 → 1.423 ms | 1.297 → 1.511 ms |
+| 4,096-credit resumes | 0.568 → 0.623 ms | 0.708 → 0.711 ms |
+| 4,096-credit resumes, cancellation interval 1 | 0.644 → 0.690 ms | 0.693 → 0.729 ms |
+
+With early events on, this input delivered 50,003 callbacks instead of 30,002.
+Metered work grew by exactly the 20,001 extra callbacks: 230,020 → 250,021
+scalar credits and 191,263 → 211,264 block credits, whatever the resume budget.
+Your callback's own work isn't charged as parser credits, and it adds to the
+time.
+
+Session sizes on this target are the same with early events on or off: scalar
+448 / 488 / 512 bytes (plain / metered / metered and cancellable), block
+544 / 584 / 608. One event-consumer nesting frame is 100 bytes and `Event` is
+116 bytes. The parser stores no event list or partial tree; keeping outline
+entries costs whatever your consumer stores.
+
+### Unfinished-token previews
+
+Measured with Zig 0.17.0 on 2026-10-20, at commit `8615e9f`. The "off" check
+was repeated at commit `cb950e9`.
+
+**Off (the default):** the settings, metering and string-integration benchmarks
+compile to identical machine code with and without previews in `fast`, `safe`
+and `small`. They cover both scanners, fixed and run-time settings, ordinary
+and fixed-buffer parsing, small and large budgets, and cancellation. The
+name-index benchmark also has identical Fast and Small code; Safe changes only
+two constants for the two new event tags.
+
+**On,** previews allocate nothing and copy no source. Fixed event sessions are
+16 bytes larger in a Fast build: scalar 464 (plain) and 504 (metered), block
+560 and 600, against 448 / 488 and 544 / 584 with previews off. Outline storage
+in your consumer is separate.
+
+`zig build bench-previews -Doptimize=fast` (or `safe` / `small`) prints one CSV
+report: time with previews off and on, MB/s, callback counts, exact credits and
+session sizes. Building the source isn't timed. The event consumer allocates
+nothing; it counts callbacks and reads the preview spans. Each case is the
+median of seven alternating samples after two warm-up rounds, eight parses per
+sample. Selected Fast results, ms per parse:
+
+| Input / execution | Scalar off → on | Block off → on |
+| --- | ---: | ---: |
+| 5,000 `a[x=1];` statements, unmetered (35,007 bytes) | 0.207 → 0.220 | 0.236 → 0.238 |
+| Same dense input, 4,096-credit resumes | 0.238 → 0.325 | 0.294 → 0.336 |
+| Long Unicode quoted value, 4,096-credit resumes (95,018 bytes) | 0.0396 → 0.0392 | 0.0387 → 0.0391 |
+| Same Unicode value, one-credit resumes | 0.470 → 1.382 | 0.0422 → 0.0687 |
+| Unterminated Unicode value, unmetered (95,015 bytes) | 0.0461 → 0.0456 | 0.0395 → 0.0396 |
+
+Previews cost something even when a pause lands on a token boundary and no
+preview is delivered, because the parser still checks for them.
+Sub-microsecond differences are noise, not speedups.
+
+Unlike early events, the number of previews **depends on the resume budget and
+the scanner**. Every preview update or end is a callback charged one credit; the
+benchmark checks that credits with previews equal ordinary credits plus preview
+callbacks. A one-credit scalar session can deliver an update for each extra
+byte, which adds a lot of time and callbacks. Larger budgets combine updates
+without making credits coarser or weakening cancellation. Use the report to
+pick a resume budget for your UI.
+
+## The graph IR
+
+> **Unreleased.** Not in 0.5.0.
+
+The optional [graph IR](IR.md) (`dot.ir`) is built from a parsed Document.
+Ordinary DOT parsing never runs IR code or allocates IR storage. The words used
+in this section:
+
+- **Lowering** builds the IR from a Document. The IR keeps nodes, scopes,
+  attributes and connections as written: `{a b} -> {c d}` stays one connection
+  rather than four edges (it is kept *symbolic*).
+- **Streaming** visits the expanded edges one at a time, without keeping an
+  array of them.
+- **Materializing** expands the connections into an owned array of edges. With
+  attributes, it also works out each edge's effective attributes once and keeps
+  them (**folded** attributes). The alternative is **compact** reads: asking
+  the IR for an edge's attributes each time.
+- A **session** does the same work in steps: each call gets a work budget in
+  credits and can check for cancellation, like the parser's
+  [step-by-step sessions](#step-by-step-sessions). The ordinary calls without a
+  session are called **direct**.
+
+**How the IR was measured.** All IR numbers come from the same Apple M4 Pro
+with Zig 0.17.0, between 2026-10-21 and 2026-11-01; each subsection names its
+commit. The IR changed a lot in that time. Parsing and building the input are
+outside every IR timing. Unless a table says otherwise, times are medians of
+process medians over several alternating process runs. **Retained** bytes are
+still held when the operation returns; **peak** bytes are the most held at
+once, including temporary scratch and old copies while lists grow. Neither
+includes the source or the Document, and neither is RSS. **Arena capacity** is
+the total an `ArenaAllocator` reserved; it includes unused space, can be much
+larger than the requested bytes, and doesn't move in step with them.
+
+**Not using the IR costs nothing:** when the IR was added (commit `5c36bd3`),
+the Fast machine code of `bench/identifiers.zig` (event-only parsing) and
+`examples/quick_start.zig` (parsing and validating a document) was
+byte-identical with and without it.
+
+### Lowering a Document
+
+Development measurement. Times measured at commit `d875891` (2026-10-24);
+memory at commit `60cc57e` (2026-11-01). Lowering changed in later commits
+(for example `778b958`, `7a5dfd7` and `772b6fe`), and the times haven't been
+re-run since.
+
+`bench-ir` ([`bench/ir.zig`](../bench/ir.zig)): two warm-ups and nine samples
+per process, five alternating processes per build. The inputs:
+
+- **10,000 connections:** `n0->n1; n1->n2; …`
+- **10,000 small sets:** `n0->{a b c}; …`
+- **1,000 reopened scopes:** `subgraph s{n0} -> x; subgraph s{n1} -> x; …`,
+  reopening the same subgraph each time.
+- **Strict reopened scopes:** the same in a `strict digraph`.
+- **10,000 nested scopes:** 10,000 levels of `{` around one node, then one
+  connection.
+- **Symbolic product:** `{n0 … n49999} -> {n50000 … n99999}`.
+
+| Input | Fast, ms | Safe, ms | Small, ms |
+| --- | ---: | ---: | ---: |
+| 10,000 connections | 1.111 | 1.352 | 1.786 |
+| 10,000 small sets | 2.125 | 2.642 | 2.889 |
+| 1,000 reopened scopes | 0.150 | 0.180 | 0.201 |
+| Strict reopened scopes | 0.151 | 0.183 | 0.209 |
+| 10,000 nested scopes | 0.293 | 0.461 | 0.340 |
+| 50,000 × 50,000 symbolic product | 5.441 | 6.861 | 8.090 |
+
+The product keeps 100,000 nodes and **one** connection, not 2.5 billion edges.
+Nothing expands it unless you ask.
+
+Memory, Fast build. "Without attributes" is a profile with
+`.capabilities.attributes = false`, which keeps topology only:
+
+| Lowering input | Retained | Retained, without attributes | Arena capacity | Arena capacity, without attributes |
+| --- | ---: | ---: | ---: | ---: |
+| 10,000 connections | 1,257,404 B | 1,177,404 B | 1,982,156 B | 3,603,728 B |
+| 10,000 nodes with attribute updates | 2,734,680 B | 862,344 B | 7,565,040 B | 1,251,428 B |
+| 50,000 × 50,000 symbolic product | 7,848,888 B | 5,848,880 B | 21,827,544 B | 16,359,814 B |
+
+Turning attributes off lowers the retained bytes. Arena capacity can go either
+way, because allocation order changes how the arena's chunks grow and
+get reused.
+
+**Attributes.** Lowering stores each attribute key once, records the defaults
+in force when each node or edge is created, and folds node and graph updates
+into shared, unchangeable maps. It doesn't expand edge products or copy source
+strings. Measured at commit `57d3674` (2026-10-22), five alternating process
+runs, nine samples after two warm-ups ([`bench/ir_attributes.zig`](../bench/ir_attributes.zig),
+part of `bench-ir`):
+
+| Attribute input | Fast, ms | Safe, ms |
+| --- | ---: | ---: |
+| 64 defaults shared by 10,000 nodes | 0.476 | 0.722 |
+| 10,000 nodes, two keys then one update each | 1.696 | 2.329 |
+| 1,000 reopened scopes with changing defaults | 0.254 | 0.346 |
+| 10,000 nested scopes sharing defaults | 0.319 | 0.509 |
+| 50,000 × 50,000 symbolic product with defaults | 5.228 | 6.512 |
+
+Defaults are shared: at that commit, working out effective attributes added
+only 472 retained bytes to the product with defaults, not 2.5 billion
+attribute records. Repeated updates to the
+same node are the expensive case: each update keeps a copy of the changed part
+of that node's attribute map. Compare the update input's retained bytes with
+and without attributes in the memory table above. The `max_attribute_states`,
+work and allocation limits bound this.
+
+### Attribute queries and value access
+
+Measured at commits `57d3674` and `c41b28e` (2026-10-22), and `a302e58` and
+`4201dba` (2026-10-24), in `bench-ir`.
+
+**One lookup**, repeating the same key so its data is in the CPU cache, without
+name lookup, edge expansion or formatting the value. Lookups allocate nothing:
+
+| Lookup | Fast | Safe | Small | Commit |
+| --- | ---: | ---: | ---: | --- |
+| Node, through a view | 6.5–10.4 ns | 8.9–13.8 ns | — | `c41b28e` |
+| Edge in a non-strict graph | 20–23 ns | 24–28 ns | — | `57d3674` |
+| Strict edge with 1,000 strict updates | 5.097 µs | 4.811 µs | 9.734 µs | `a302e58` |
+| Strict edge with reopened defaults | 7.558 µs | 8.002 µs | 18.916 µs | `a302e58` |
+
+Strict-graph lookups scan the edge's contributions, so asking for every edge's
+attributes one by one is slow on strict graphs. To read them all, materialize
+with [folded attributes](#streaming-and-materializing-edges).
+
+**All attributes of one node or edge.** Includes setting up the iterator,
+reading every entry and cleaning up; doesn't include formatting or edge
+expansion:
+
+| Effective attributes read | Fast | Safe | Peak scratch |
+| --- | ---: | ---: | ---: |
+| Node with 64 defaults | 723.8 ns | 820.9 ns | 0 B |
+| Node with two updated keys | 28 ns | 33 ns | 0 B |
+| Non-strict edge with one written key | 30 ns | 32 ns | 0 B |
+| Strict edge, 1,000 explicit updates, 33 effective keys | 11.73 µs | 12.88 µs | 396 B |
+| One edge of the 50,000 × 50,000 product, two keys | 36 ns | 44 ns | 0 B |
+
+The first row was measured at `4201dba`, the others at `57d3674`. Strict edges
+use 12 bytes of scratch per distinct edge key, not per update or expanded pair.
+The returned entries point into the IR, not into that scratch.
+
+**Values.** Measured at commit `c41b28e` with
+[`bench/ir_values.zig`](../bench/ir_values.zig) (part of `bench-ir`; three
+warm-ups, nine samples). Writing a value's joined text, without the lookup or
+output I/O:
+
+| Joined value | Fast, ns | Safe, ns |
+| --- | ---: | ---: |
+| Bare string | 3.85 | 4.36 |
+| Quoted Unicode | 8.67 | 8.87 |
+| Mixed concatenation | 23.40 | 24.16 |
+| Short markup | 10.87 | 10.63 |
+| 4 KiB quoted value | 1,422 | 1,002 |
+
+- **Kind of a value** (quoted, HTML-like and so on) is worked out when you ask:
+  roughly 3–9 ns for small values in Fast, 1.38 µs when the first part is a
+  4 KiB quoted string, and 2.75 µs for a 4 KiB HTML-like part. The IR keeps no
+  kind cache. A cache tried in the benchmark made later lookups cost about
+  0.2–0.5 ns, but needs the same work up front plus one byte per written value
+  (10,000 bytes for 10,000 values) even if you never look. If you check long
+  values repeatedly, check once and keep the kind.
+- **`toString`** makes two bounded passes and one allocation of the exact size:
+  about 2.98 µs for the 4 KiB quoted value in Fast, against about 1.00 µs to
+  stream the same joined text to a writer. An empty value allocates nothing. The
+  source bytes are never changed.
+- Views of nodes, edges and attributes are returned by value and point into the
+  IR; they add no heap allocation per node or attribute.
+- The endpoint port readers (`tailPort()`, `headPort()` and the helpers that
+  split a port at its first colon) read the value again from start to end,
+  with fixed scratch and no allocation; their bounded `...With` forms keep the
+  work limits and cancellation. They add no stored fields (commit `4e525ac`).
+
+### Streaming and materializing edges
+
+Measured on 2026-10-21 to 2026-10-23, at the commits shown.
+
+**Topology only.** In `bench-ir`, `materialize(.{ .attributes = false })`
+returns an owned edge array and `edgeIterator` streams the same edges:
+
+| Operation | Edges | Fast, ms | Safe, ms | Peak bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Materialize 10,000 connections | 10,000 | 0.075 | 0.141 | 323,072 |
+| Materialize 1,000 reopened scopes | 500,500 | 2.502 ‡ | 4.178 ‡ | 18,672,020 |
+| Stream 10,000 connections | 10,000 | 0.086 | 0.099 | 0 |
+| Stream 10,000 small sets | 30,000 | 0.214 | 0.269 | 40,144 |
+| Stream 1,000 reopened scopes | 500,500 | 3.557 † | 4.124 † | 11,036 |
+| Stream strict reopened scopes | 1,000 | 2.857 ‡ | 2.792 ‡ | 33,564 |
+| Stream the first 1,000 product edges | 1,000 | 0.383 | 0.362 | 1,096,892 |
+
+Times are from commit `57d3674`, except † `c41b28e` and ‡ `9349221`. Peak bytes
+are from commit `08537a9`.
+
+- Streaming avoids the output array; it isn't automatically faster. Each pull
+  and each per-pair limit check takes time.
+- A strict stream still visits every candidate pair (500,500 for the strict
+  reopened input) and keeps keys to remove duplicates for the 1,000 unique
+  edges.
+- The product row stops after 1,000 edges. It lists both endpoint sets but
+  doesn't visit the other 2,499,999,000 pairs.
+- A 2,500 × 2,500 product stays one connection until you expand it. Expanding
+  it returns `PairLimit` under the default limit of four million pairs
+  (`max_pairs`), without returning part of the array.
+- Wrapping streamed edges in views made the benchmark's reopened stream
+  slower: +4.5% (Fast) and +11.4% (Safe) for the 500,500 non-strict edges
+  (commit `c41b28e`). A loop that only adds up endpoint IDs showed about +1.9%
+  and +1.6%, so part of this depends on how the caller's loop is compiled, but
+  the slowdown hasn't been shown to go away.
+
+**Folded attributes versus compact reads.** Measured at commit `4e525ac`
+(2026-10-23) with `bench-ir-materialized`
+([`bench/ir_materialized_attributes.zig`](../bench/ir_materialized_attributes.zig)).
+Five process runs per build; each case takes nine measured rounds after two
+warm-ups, alternating the two routes in each round. Each total covers building
+the result, reading every effective attribute once, and freeing the result; it
+doesn't time formatting. "Compact" is topology materialization plus compact
+attribute reads; "folded" is `materialize(.{})`.
+
+| Input | Edges | Fast, compact / folded (ms) | Safe, compact / folded (ms) |
+| --- | ---: | ---: | ---: |
+| No attributes | 2,000 | 0.0329 / 0.0197 | 0.0468 / 0.0296 |
+| 64 shared defaults | 2,000 | 0.7252 / 0.3585 | 1.1593 / 0.6109 |
+| Eight explicit keys per edge | 2,000 | 0.1014 / 0.1771 | 0.1400 / 0.3380 |
+| 32 overlapping strict products, eight keys | 1,024 | 0.8893 / 1.3273 | 1.2279 / 1.4052 |
+| Reopened named subgraph, 31,375 pair contributions | 250 | 5.5093 / 0.2715 | 5.9959 / 0.3433 |
+| Two endpoint ports per edge | 2,000 | 0.0569 / 0.0582 | 0.0860 / 0.1228 |
+| 3,200 strict contributions with reversed ports and overrides | 100 | 2.3527 / 0.0696 | 2.4744 / 0.0913 |
+
+Later runs (commit `e61761e`) made compact reads faster on the two port inputs:
+0.0512 ms (Fast) and 0.0727 ms (Safe) for two ports per edge, and 0.6560 ms and
+0.7196 ms for the strict port updates. Folded totals for those inputs weren't
+re-measured.
+
+Folding is **not always faster for one pass**. On input with many explicit
+values it pays to build the winning values first, so compact reads can be
+cheaper for a single read. Later reads skip that cost: reading the
+explicit-heavy result again took 0.0169 ms in Fast (0.0840 ms through compact
+reads), and the overlapping strict result 0.0094 ms (0.7592 ms). On the
+reopened subgraph, folding was about 20 times faster in Fast and 17 times in
+Safe. These are particular generated inputs, not a throughput guarantee.
+
+Output memory, topology only against folded, in bytes:
+
+| Input | Retained, topology / folded | Peak, topology / folded |
+| --- | ---: | ---: |
+| No attributes | 38,064 / 38,064 | 63,344 / 63,344 |
+| 64 shared defaults | 38,064 / 38,396 | 63,344 / 63,344 |
+| Eight explicit keys per edge | 38,064 / 484,796 | 63,344 / 759,476 |
+| Overlapping strict products | 16,752 / 312,156 | 36,536 / 514,632 |
+| Reopened subgraph | 4,752 / 13,236 | 11,956 / 21,988 |
+| Two endpoint ports per edge | 38,064 / 177,308 | 63,344 / 263,192 |
+| Strict port updates | 1,952 / 9,988 | 4,176 / 15,632 |
+
+Peaks include pair and endpoint scratch and old copies while lists grow. Each
+folded winning value takes a 24-byte cell, plus key indexes and spare list room.
+Defaults stay shared with the IR; folding keeps only the winning values, not
+all 3,200 updates. Arena capacity for lowering plus output, Fast: the
+eight-key input used 1,443,728 bytes for topology and 3,079,880 for folded,
+while the reopened input used 234,456 bytes on both routes. Folding doesn't
+save arena memory in general.
+
+**Choosing.** `materialize(.{})` folds attributes when the profile has them;
+`materialize(.{ .attributes = false })` returns topology only and runs no
+folding code (the topology-only benchmark's machine code was identical with and
+without folding).
+
+### Optional materialized adjacency
+
+Measured at commits `9026753` and `60cc57e` (2026-11-01). Run
+`zig build bench-ir-adjacency -Doptimize=fast` (also `safe` / `small`).
+
+Adjacency rows let you walk the edges at a node. You choose them when you
+materialize (`.adjacency = .forward`, `.backward` or `.all`); the default is
+`.none`. Parsing and lowering never build rows, and ordinary queries never
+build adjacency or expand sets. The benchmark reports building and walking
+separately, along with retained and peak bytes, arena capacity and session
+work. Each case has three warm-ups and nine measured samples. Parsing,
+lowering and freeing the result are outside timing.
+
+**Building rows**, including topology materialization
+(`.attributes = false, .adjacency = .all`), without walking or freeing, ms.
+Most inputs have 100,000 edge statements; the set product expands to 250,000
+edges:
+
+| Input | Fast | Safe | Small | Fast, no rows |
+| --- | ---: | ---: | ---: | ---: |
+| 100,000-edge directed chain | 1.441 | 1.848 | 2.593 | 1.199 |
+| 100,000 edges mixing `->` and `--` | 1.639 | 1.987 | 2.815 | 0.879 |
+| 500 × 500 set product | 2.826 | 2.924 | 3.621 | 0.853 |
+| 100,000 isolated nodes plus one edge | 0.074 | 0.114 | 0.192 | <0.001 |
+
+The row columns are from `60cc57e` (the average of two process medians per
+build); the "no rows" column is from `9026753`. Forward-only rows haven't been re-measured
+with the current row builder. The isolated input benefits from clearing rows
+in bulk. The set product still pays for its 250,000 requested edges.
+
+**Walking** every node and its incident edges in all directions took
+0.124–1.236 ms in these Fast topology cases (commit `9026753`). A walk
+allocates nothing and doesn't scan rejected edges. For partial input, counts
+keep their uncertainty instead of implying an edge is absent.
+
+**Memory.** Rows use allocations of the exact size. Extra retained bytes for
+`.all`: 1,600,016 (directed chain), 2,000,024 (mixed), 2,008,008 (set product)
+and 800,032 (isolated nodes). Rows add retained memory but don't always raise
+the peak. Fast, excluding the IR and source:
+
+| Output | Retained | Peak | Arena capacity |
+| --- | ---: | ---: | ---: |
+| Chain, no rows | 2,211,776 B | 3,686,192 B | 8,443,256 B |
+| Chain, all rows | 3,811,792 B | 3,811,792 B | 8,443,256 B |
+| Set product, all rows | 6,984,872 B | 8,304,192 B | 19,212,190 B |
+| Isolated nodes, all rows | 800,176 B | 800,176 B | 1,200,724 B |
+
+The set product's peak stays at 8,304,192 bytes while its retained output grows
+from 4,976,864 to 6,984,872 bytes. In Fast, the chain's rows fit in space the
+arena already had; in Safe, the set product's arena grew from 8,599,416 bytes
+without rows to 19,212,190 bytes with all rows.
+
+**Off cost.** With adjacency off, against the version before adjacency existed
+(commit `11471fb`), three alternating pairs of runs, change in time as a
+geometric mean over both attribute choices (the one-edge nesting input, below
+0.01 ms, is left out):
+
+| Adjacency off | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| Default growable materialization, attributes included | +1.4% | 0.0% | -6.4% |
+| Fixed storage, observed sizes | +1.0% | +0.3% | +1.4% |
+| Fixed storage, scanned bounds | +1.3% | -0.9% | +2.9% |
+| Fixed session, budget 4096 | -1.8% | -3.3% | -4.1% |
+| Fixed session, budget 1 | +3.8% | -8.9% | -3.7% |
+
+Small fixed output (observed sizes and scanned bounds) and Fast one-credit
+fixed sessions keep small slowdowns. Retained and peak bytes, edge counts and work totals match the
+version without adjacency.
+
+### Optional query indexes
+
+Measured at commit `11471fb` (2026-10-31).
+
+`.indexes.connections` and `.indexes.scope_memberships` both default to
+`false`. They speed up the existing symbolic queries; neither expands endpoint
+sets or edge pairs. See [query indexes](IR.md#optional-query-indexes).
+
+```sh
+zig build bench-ir-query-indexes -Doptimize=fast
+# Also -Doptimize=safe or -Doptimize=small.
+```
+
+The report compares the default profile with both indexes on. It reports
+lowering time, retained and peak bytes, arena capacity, repeated `hasEdge`,
+single and all-attribute queries, final scope lookup, query credits and inline
+sizes. Query batches mix early and late hits and misses on existing nodes;
+attribute queries use valid edges, including repeated updates. Each process
+warms up, makes each query sample last at least 1 ms, and reports medians; an
+optimizer barrier before every lookup stops repeated reads being folded
+together. Three serial runs per build; query times are averaged over warm
+batches, not single-call latency.
+
+Selected **Fast** results, indexes off → on:
+
+| Input | Lowering, ms | `hasEdge`, µs/query | Extra retained arrays | Extra peak |
+| --- | ---: | ---: | ---: | ---: |
+| 8,000-link chain | 0.991 → 1.120 | 7.004 → 0.005 | 125.0 KiB | 92.7 KiB |
+| 8,000-edge star | 0.905 → 1.063 | 7.860 → 0.005 | 125.0 KiB | 92.7 KiB |
+| 2,000 one-sided sets | 0.490 → 0.513 | 1.746 → 0.013 | 23.5 KiB | 23.5 KiB |
+| 8,000 connections, 5% sets | 0.851 → 1.052 | 7.878 → 1.483 | 128.2 KiB | 98.9 KiB |
+| Reopened subgraph, 1,000 contributions | 0.190 → 0.202 | 129.469 → 42.298 | 7.8 KiB | 7.1 KiB |
+| 50,000 × 50,000 symbolic product | 4.955 → 4.926 | 0.008 → 0.008 | 12 B | 0 B |
+
+- The chain pays back its extra lowering time after roughly 19 queries in this
+  mix. One query may not pay for the index, and inputs with long symbolic
+  histories may gain nothing.
+- On the mixed-set input, `hasEdge` goes from 6.942 to 1.735 µs in Safe and
+  10.230 to 3.820 µs in Small. One attribute query goes from 24.283 to
+  2.922 µs in Fast, and reading all effective attributes from 11.590 to
+  2.364 µs.
+- Final scope lookup across 4,001 scopes goes from 670.86 to 0.64 ns in Fast,
+  for 16,004 retained bytes and about 1 µs more lowering time.
+- **Indexes aren't always faster.** For 4,000 updates to the **same pair**, one
+  attribute query still reads the whole history: 16.014 → 18.133 µs (Fast),
+  17.397 → 19.763 µs (Safe) and 44.872 → 44.077 µs (Small). Leave indexes off
+  when such histories dominate or queries are rare.
+- The product stays one connection, with no connection-index arrays; its 12
+  bytes are three cached scope handles.
+
+**Memory.** Arena capacity didn't change on these inputs because the new arrays
+fit in existing arena space, but their bytes are still real storage. With both
+indexes on, inline state grows by 96 bytes per graph, 120 per lowering session
+and 88 per has-edge or attribute session; nothing grows per node, connection or
+query. None of this exists with the indexes off. Fixed sizing adds five `u32`
+capacity fields; no bounds are reserved automatically.
+
+**Off cost.** With the indexes off, the ordinary lowering, symbolic-query and
+attribute-access benchmark programs (including their session routes) have
+identical machine code in all three builds. Lowering sessions match in Fast
+and Small; in Safe they measured -0.1%. Credits, cancel checks, retained bytes
+and peaks match. **On cost in code:** a consumed `ReleaseSmall` Wasm
+example (caller-buffer parsing and lowering, plus `hasEdge` and final scope
+lookup) grows from 89,034 to 93,447 bytes with both indexes on: **4,413
+bytes**. That is one program, not a library-size estimate.
+
+### Partial IR
+
+Measured at commits `b64a8ba`, `a302e58` and `4201dba` (2026-10-24); object
+sizes rechecked at `60cc57e` (2026-11-01).
+
+[Partial IR](IR.md#partial-graphs-for-editors) is built from a Document that
+stopped at an error. It keeps the valid statements and records each gap, and
+answers say whether they are known or unknown.
+
+**Off cost.** Complete lowering doesn't do any partial-coverage work or
+allocation. When partial support was added, complete retained, peak and arena
+bytes were unchanged, and time changed by +0.2% (Fast), +0.2% (Safe) and -0.3%
+(Small) as a geometric mean over six inputs.
+
+**Lowering.** `zig build bench-ir-partial -Doptimize=fast` warms each path for
+100 ms, then takes two more warm-ups and nine samples. Medians from five
+processes, commit `b64a8ba`:
+
+| Input | Complete lowering (ms) | Partial, complete input (ms) | Partial, with gaps (ms) |
+| --- | ---: | ---: | ---: |
+| 10,000 sparse nodes | 0.545 | 0.535 | 0.536 |
+| 10,000 dense connections | 1.014 | 1.044 | 1.044 |
+| Shared defaults and updates | 1.277 | 1.196 | 1.213 |
+| Port-bearing edges | 1.160 | 1.196 | 1.213 |
+| Reopened scopes | 0.160 | 0.166 | 0.165 |
+| 10,000 nested scopes | 0.356 | 0.342 | 0.342 |
+| 10,000 assignments / 10,000 gaps | 0.830 | 0.810 | 0.935 |
+| 50,000 × 50,000 symbolic product | 6.149 | 6.010 | 6.048 |
+
+The inputs with gaps add one gap after the valid statements, except the nested
+input (a gap on the inside) and the many-gap input (one gap per node). Small
+wins or losses don't mean partial lowering is faster.
+
+**Memory.** On complete input, partial IR keeps exactly the same allocated
+bytes as complete IR. The graph objects are 488 bytes (complete) and 520 bytes
+(partial) in a Fast build, and 504 and 544 bytes in a Safe build, at commit
+`60cc57e`. A partial attribute view is 48 bytes, and
+`Knowledge(?AttributeView)` is 80 bytes. Each gap takes a 32-byte record, in an ordinary growing list (the first
+allocation holds five records, 160 bytes). With 1,000 gaps, the IR keeps
+267,796 bytes against 224,340 without them. Arena growth can add more: two gaps
+added 160 retained bytes but 8,754 bytes of arena capacity on the strict
+overlap input. Queries for candidates and mentions allocate nothing.
+
+**Queries.** On the 10,000-gap input, an attribute lookup that reports known or
+unknown took 23.9 ns, against 5.8 ns without coverage: it searches a gap index,
+not the history. Other such lookups took 4.2–6.9 ns, and listing mentions
+0.7–1.0 ns per kept record. A pair query on the product took about 10 ns;
+pair searches that traversed 10,000 connections took about 10 µs. These are
+input-specific costs, not constant-time guarantees.
+
+**Edges.** `zig build bench-ir-partial-edges -Doptimize=fast` (also `safe` /
+`small`) warms each path for 100 ms and takes nine samples; five serial
+process runs, commit `a302e58`. The inputs with gaps have a gap at the start and
+end of the root body. Each cell is **complete / partial on complete input /
+partial with gaps**:
+
+| Input | Edges | Folded materialization (ms) | Read all attributes (ms) |
+| --- | ---: | ---: | ---: |
+| Plain connections | 2,000 | 0.0205 / 0.0205 / 0.0205 | 0.0010 / 0.0010 / 0.0010 |
+| 64 shared defaults | 2,000 | 0.0204 / 0.0192 / 0.0203 | 0.3740 / 0.4977 / 0.4975 |
+| 8 explicit attributes | 2,000 | 0.1817 / 0.1828 / 0.1831 | 0.0223 / 0.0262 / 0.0258 |
+| Strict overlapping sets | 1,024 | 1.4489 / 1.4349 / 1.4441 | 0.0113 / 0.0137 / 0.0212 |
+| Reopened scopes | 250 | 0.3617 / 0.3612 / 0.3623 | 0.0004 / 0.0007 / 0.0009 |
+| Endpoint ports | 2,000 | 0.0545 / 0.0547 / 0.0547 | 0.0040 / 0.0048 / 0.0055 |
+| Strict port updates | 100 | 0.0689 / 0.0703 / 0.0696 | 0.0002 / 0.0003 / 0.0011 |
+
+- Streaming plain connections took 0.0173 / 0.0172 / 0.0173 ms, and strict
+  overlapping sets 0.1178 / 0.1180 / 0.1178 ms.
+- **Partial attribute reads aren't free,** even on complete input: the
+  shared-default case reads 128,000 values and adds about 0.124 ms (about
+  1 ns per value). Strict winners also check the gap index.
+- Retained output and peak bytes are the same on all three paths, for example
+  484,796 retained and 759,476 peak for the explicit attributes. Streaming edge
+  views are 24 bytes; folded partial edge views are 40 bytes against 32 for
+  complete ones. Views are temporary and allocate nothing.
+- A 2,500 × 2,500 product stays one connection. Every path streams a
+  1,000-edge prefix with 60,040 bytes of iterator scratch; full materialization
+  returns `PairLimit` without allocating the 6.25-million-edge output.
+
+**Node and scope attributes**, commit `4201dba`, Fast, five serial processes.
+Each cell is **complete / partial on complete input / partial with gaps**;
+times include building the view and reading every entry:
+
+| Input | Node values | Node attributes (ms) | Scope attributes (ms) |
+| --- | ---: | ---: | ---: |
+| 1,000 empty nodes and scopes | 0 | 0.0053 / 0.0059 / 0.0059 | 0.0053 / 0.0061 / 0.0060 |
+| 64 shared defaults | 64,000 | 0.7759 / 0.8250 / 0.8173 | 0.7548 / 0.7833 / 0.7865 |
+| 8 explicit node attributes | 8,000 | 0.0933 / 0.0970 / 0.1022 | 0.0284 / 0.0306 / 0.0316 |
+| 1,000 reopened contributions | 2,000 | 0.0217 / 0.0241 / 0.0247 | too short to time |
+| 1,000 nested scopes | 1,000 | 0.0142 / 0.0142 / 0.0148 | 0.0134 / 0.0147 / 0.0147 |
+| 1,000 assignments / gaps | 1,000 | 0.0135 / 0.0144 / 0.0346 | too short to time |
+
+Scope reads include the root: 64,064 values for defaults, 2,002 for explicit
+attributes and 1,001 for nesting. Partial answers are larger (known or unknown)
+and check the gap index for explicit winners. Reading allocates nothing, even
+with an allocation limit of zero. The iterators are 176 bytes (complete) and
+192 bytes (partial). These numbers come from the program's `--attributes-only`
+mode: `zig build bench-ir-partial -Doptimize=fast -- --attributes-only`.
+
+### Resumable sessions
+
+Sessions are opt-in, and **not** as fast as direct calls: use them when you
+need bounded steps or cancellation, and direct calls otherwise. With metering
+and cancellation off, a direct call runs its own fast driver. With either one
+on, the direct lowering calls (`lowerComplete`, `lowerPartial` and their
+fixed-storage forms) run the session machine internally, so they cost about
+what a session does.
+
+Two things count differently when you split the work into smaller budgets:
+
+- **Work credits:** the total is the same however you split the budget. With
+  growable storage, copy credits can vary slightly with the allocator's resize
+  behaviour.
+- **Cancellation checks:** every `advance` checks once when it starts, so many
+  small budgets mean more checks than one large one.
+
+No work unit was made coarser to improve these numbers.
+
+Timings **with a cancel hook** below were measured before commit `c936fd1`,
+which added a second check per credit to hooked lowering, materialization,
+attribute and query sessions. At `c936fd1` that cost +4–9% on hooked lowering
+sessions and +12–21% on hooked one-credit materialization sessions. Sessions
+without a hook are not affected.
+
+#### Lowering sessions
+
+Development measurement at commit `d875891` (2026-10-24). Lowering changed in
+later commits, and these times haven't been re-run since.
+
+`zig build bench-ir-lowering-sessions -Doptimize=fast` compares direct
+lowering with a lowering session on smaller inputs. Each process rotates the
+routes over four warm-ups and eleven measured rounds. Direct lowering frees its
+own scratch before returning, so that is timed; freeing the session isn't. All
+session routes compile cancellation support; only the hook column installs a
+hook, at interval 1.
+
+Fast, median ms:
+
+| Input | Direct | Session `run()` | Budget 4096 | Budget 1 | Budget 4096 + hook |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2,000 connections | 0.2544 | 0.4690 | 0.4452 | 0.8939 | 0.5373 |
+| 2,000 nodes, three attributes each | 0.3067 | 0.8795 | 0.8771 | 1.7309 | 0.9712 |
+| 400 reopened scopes | 0.1123 | 0.2146 | 0.2146 | 0.4275 | 0.2440 |
+| 2,000 nested scopes | 0.0650 | 0.1003 | 0.0998 | 0.1860 | 0.1179 |
+| Concatenated name with a 64 KiB comment between its parts | 0.0173 | 0.1626 | 0.1618 | 0.3221 | 0.1789 |
+| 5,000 × 5,000 symbolic product | 0.5048 | 0.9046 | 0.9002 | 1.8391 | 1.0712 |
+
+Safe and Small, median ms, without a hook:
+
+| Input | Safe direct | Safe 4096 | Safe 1 | Small direct | Small 4096 | Small 1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Connections | 0.2959 | 0.7359 | 1.0097 | 0.3859 | 0.7657 | 1.3949 |
+| Attributes | 0.4877 | 1.3999 | 1.8973 | 0.5280 | 1.5048 | 2.5794 |
+| Reopened | 0.1590 | 0.3608 | 0.4875 | 0.1713 | 0.3755 | 0.6641 |
+| Nested | 0.0977 | 0.1710 | 0.2201 | 0.0813 | 0.1503 | 0.3239 |
+| Long comment | 0.0167 | 0.2628 | 0.3550 | 0.0295 | 0.2621 | 0.5048 |
+| Symbolic product | 0.7053 | 1.5851 | 2.0795 | 0.8943 | 1.4559 | 2.7600 |
+
+Fast budget-4096 sessions take about 1.5–2.9 times as long as direct lowering
+on ordinary inputs, and 9.4 times on the long-comment input (15.7 times in
+Safe): the session counts every byte of the comment instead of skipping it in
+one step that can't be interrupted. Budget 1 adds the cost of pausing and
+resuming.
+
+Heap bytes, direct → session, the same in every build and budget:
+
+| Input | Retained | Peak |
+| --- | ---: | ---: |
+| Connections | 321,828 → 321,828 | 336,424 → 336,424 |
+| Attributes | 766,560 → 678,000 | 1,012,972 → 846,136 |
+| Reopened | 183,228 → 193,428 | 215,756 → 232,696 |
+| Nested | 194,268 → 194,268 | 281,396 → 281,396 |
+| Long comment | 536 → 536 | 1,076 → 1,076 |
+| Symbolic product | 943,184 → 943,184 | 1,050,824 → 1,050,824 |
+
+Sessions reserve room for one attribute-map update before doing it, which
+changes how storage grows, so session memory can be lower **or higher**: the
+reopened input's peak is 7.9% higher. The session object itself is 1,816 bytes
+in Fast and Small, 1,880 in Safe. The symbolic product stays one connection and
+10,000 nodes, not 25 million edges.
+
+#### Materialization sessions
+
+Measured at commit `ac473db` (2026-10-24).
+
+`zig build bench-ir-sessions -Doptimize=fast` (also `safe` / `small`) compares
+direct materialization with sessions. One untimed folding pass warms the
+process, then each route gets 12 warm-ups and 15 samples, rotating the routes.
+Five serial processes per build. Parsing, lowering, reading the output and
+freeing the final output are outside timing; freeing scratch is inside.
+
+Sessions with attributes, **budget 4096, no hook**, median ms:
+
+| Input | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| 2,000 plain edges | 0.0310 | 0.0339 | 0.0355 |
+| 64 shared defaults | 0.0315 | 0.0356 | 0.0355 |
+| 8 explicit attributes | 0.2847 | 0.3624 | 0.4559 |
+| Strict overlapping sets | 2.0265 | 2.5162 | 2.6166 |
+| Reopened scopes | 0.4323 | 0.5162 | 0.9660 |
+| Endpoint ports | 0.0816 | 0.1087 | 0.1132 |
+| Reversed strict port updates | 0.0852 | 0.0895 | 0.1344 |
+
+At commit `0b3c81f`, Fast budget-4096 sessions took 1.25–1.73 times the direct
+time in this harness, and budget 1 took 3.0–4.4 times. Use direct `materialize`
+when you don't need steps.
+
+- **Memory:** heap bytes match direct materialization in every build and
+  budget, retained / peak: plain 38,064 / 63,344; explicit attributes
+  484,796 / 759,476; strict overlap 312,156 / 514,632; reopened 13,236 / 21,988;
+  ports 177,308 / 263,192.
+- The session object is 448 bytes for topology only and 896 bytes with
+  attributes in a Fast build, and 472 and 944 bytes in a Safe build (commit
+  `60cc57e`). Nothing per node or edge is added to the
+  IR or the output.
+- The 2,500 × 2,500 product returns `PairLimit` on every route, without
+  expanding its 6.25 million pairs.
+
+#### Edge streaming sessions
+
+Measured at commits `2a72c90`, `24f8ba0` and `6bfa394` (2026-10-24 and
+2026-10-25).
+
+`zig build bench-ir-edge-sessions -Doptimize=fast` compares the ordinary edge
+iterator with a pull session. Each input warms for at least 50 ms and four
+rotated rounds, then records eleven rounds; medians of five process medians.
+Parsing, lowering, attribute queries and freeing are outside timing; setting up
+the iterator or session and reading every edge are inside. An `advance` returns
+as soon as **one** edge is ready, even if credits remain.
+
+Fast, median ms:
+
+| Input | Direct | Budget 4096 | Budget 1 | Budget 4096 + hook |
+| --- | ---: | ---: | ---: | ---: |
+| 2,000 connections | 0.0138 | 0.0123 | 0.0655 | 0.0399 |
+| 1,000 three-member sets, 3,000 edges ¶ | 0.0173 | 0.0194 | 0.0843 | 0.0511 |
+| 400 overlapping strict products, 10 edges | 0.0241 | 0.0267 | 0.0938 | 0.0424 |
+| 200 reopened scopes, 20,100 edges | 0.0975 | 0.1495 | 0.4777 | 0.3016 |
+| 2,000 port-bearing edges | 0.0133 | 0.0122 | 0.0656 | 0.0368 |
+| First 1,000 edges of a 5,000 × 5,000 product | 0.0449 | 0.0410 | 0.0905 | 0.0536 |
+
+Safe and Small, median ms, without a hook:
+
+| Input | Safe direct | Safe 4096 | Safe 1 | Small direct | Small 4096 | Small 1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Connections | 0.0175 | 0.0126 | 0.0653 | 0.0210 | 0.0124 | 0.0625 |
+| Three-member sets ¶ | — | 0.0213 | 0.0870 | — | 0.0195 | 0.0973 |
+| Strict overlap | 0.0268 | 0.0309 | 0.0978 | 0.0785 | 0.0806 | 0.1525 |
+| Reopened | 0.0886 | 0.1579 | 0.4669 | 0.1638 | 0.1548 | 0.4782 |
+| Ports | 0.0173 | 0.0126 | 0.0652 | 0.0210 | 0.0123 | 0.0636 |
+| Product prefix | 0.0306 | 0.0532 | 0.1004 | 0.0544 | 0.0325 | 0.0892 |
+
+Direct and hook columns are from `2a72c90`, budget columns from `24f8ba0`, and
+rows marked ¶ from `6bfa394`.
+
+- Without a hook, the session takes a combined path for one-to-one connections,
+  for edges between endpoints it has already prepared, and for small
+  non-strict sets in a single body. It charges exactly the same credits. Budget 1, an active hook,
+  strict duplicate removal and scratch growth use the step-by-step path.
+- On the three-member sets, the Fast budget-4096 session takes 1.12 times the
+  direct time. The two-edge nested input is too short to time.
+- **Memory:** direct and session peaks match: 0 bytes for one-to-one and port
+  edges, 4,144 for small sets, 608 for strict overlap, 144 for nested scopes and
+  100,456 for the product prefix. Reopened scopes use 2,516 bytes in Fast and
+  Small, 1,884 in Safe. The session object is 488 bytes in Fast and Small, 512
+  in Safe. Non-strict streams keep no output array; strict streams keep node
+  pairs and a hash table, so they aren't constant-memory.
+
+#### Query sessions
+
+Measured at commit `9cd30d2` (2026-10-25).
+
+`IR.hasEdgeSession` and `IR.containsSession` answer edge-existence and
+membership questions in steps. `zig build bench-ir-query-sessions -Doptimize=fast`
+(also `safe` / `small`) compares direct calls, session `run()`, budgets 1, 64
+and 4096, an active interval-1 hook and run-time settings. Each row is 32
+queries that alternate a miss on an isolated node with a query on the input's
+target, checked against the other routes. Medians of three processes per build; each warms for at
+least four rotated rounds and 50 ms, then measures eleven rotated rounds.
+Times are **ms per 32 queries**, direct → session at budget 4096, no hook:
+
+| Query input | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| 2,000 directed one-to-one connections, existence | 0.0764 → 0.1068 | 0.0795 → 0.13113 | 0.1269 → 0.1275 |
+| 2,000 small-set connections, existence | 0.0749 → 0.1000 | 0.0643 → 0.12575 | 0.1118 → 0.1281 |
+| 2,000 undirected connections, existence | 0.1000 → 0.1709 | 0.1076 → 0.23404 | 0.1790 → 0.2223 |
+| 1,000 reopened scopes, existence | 15.3969 → 30.4107 | 16.94883 → 25.29417 | 62.9452 → 51.2665 |
+| Final reopened membership, contains | 0.0306 → 0.0562 | 0.0423 → 0.05471 | 0.1231 → 0.0887 |
+
+Safe session times, and Safe direct time for reopened existence, come from a
+separate run with the Safe build's batching driver.
+
+- Fast budget-4096 sessions take about 1.3–2.0 times the direct time; Safe 1.49
+  times on reopened existence and about 2.18 times on undirected connections;
+  Small 0.7–1.2 times.
+- Fast `run()` / budget 1, same rows: 0.1069 / 0.1929, 0.1060 / 0.1879,
+  0.1898 / 0.2983, 30.9156 / 55.3299 and 0.0639 / 0.1034 ms.
+- Safe reopened existence: `run()` 26.99279 ms, budget 64 26.98592 ms, budget 1
+  54.66013 ms, active hook 49.22917 ms, run-time settings at budget 4096
+  27.27629 ms. Reopened membership: budget 1 0.08467 ms, active hook
+  0.08363 ms, run-time settings 0.05517 ms.
+- One-to-one membership, deep membership and the single product query are too
+  short to time. The product query checks 2.5 billion possible edges through
+  membership indexes without visiting them.
+- Without the [query indexes](#optional-query-indexes), a session repeats the
+  direct search, so reopened scopes stay expensive. Sessions bound each call;
+  they don't lower the total work.
+- **Memory:** no heap scratch on any route. With fixed settings, metering and
+  complete input, the session state is **72 bytes** for existence and **56
+  bytes** for membership in all three builds. Partial, run-time or cancellable
+  variants can be larger.
+
+#### Attribute sessions
+
+Measured at commit `bb3ae96` (2026-10-25), except the rows marked §, measured
+at `60cc57e` (2026-11-01).
+
+`zig build bench-ir-attribute-sessions -Doptimize=fast` (also `safe` / `small`)
+compares direct calls, session `run()`, budgets 1, 64 and 4096, an active
+interval-1 hook and run-time settings. Building the source, parsing, lowering,
+materializing and finding the handle are outside timing; setting up the
+session, scratch and cleanup are inside. Medians of three processes per build,
+each with at least four rotated warm-ups and 50 ms, then eleven measured
+rounds. Times are **ms per 32 completed operations**; "all" reads the whole
+effective attribute list:
+
+| Operation / input | Fast, direct → budget 4096 | Safe, direct → budget 4096 | Session scratch bytes |
+| --- | ---: | ---: | ---: |
+| All 129 indexed node attributes | 0.05554 → 0.10083 | 0.06342 → 0.11192 | 0 |
+| One attribute, 2 KiB quoted key § | 0.02092 → 0.037 | 0.02175 → 0.033 | 0 |
+| One attribute, 2,000 strict updates | 0.33204 → 0.87483 | 0.34783 → 0.88788 | 0 |
+| All attributes, 2,000 strict updates § | 0.290 → 1.333 | 0.35625 → 1.34171 | 24 |
+| All attributes, 1,000 reversed port updates | 0.17100 → 0.62617 | 0.21121 → 0.63713 | 12 |
+| All attributes, 1,000 reopened subgraph contributions | 0.31754 → 1.28608 | 0.43221 → 1.39608 | 12 |
+| All two already-folded attributes | 0.00025 → 0.00154 | 0.00025 → 0.00158 | 0 |
+
+§: the long-key row's session values and the strict row's Fast values are from
+`60cc57e`; everything else is from `bb3ae96`.
+
+- With fixed settings and no hook, a session compares plain key bytes in
+  batches; the 32 long-key lookups take 66,848 credits. Budget 1 can't batch:
+  Fast stays at about 0.42 ms. With run-time settings it takes about 0.27 ms
+  in Fast. In Small, the long-key session took 0.360 ms.
+- Large edge inputs cost roughly 2.6–4.7 times the direct operations. Strict
+  edges still walk their contributions.
+- Strict-update reads at `bb3ae96`: `run()` 1.35267 / 1.33946 ms (Fast / Safe),
+  budget 1 4.09900 / 4.27033 ms, active hook 1.52563 / 1.77183 ms, run-time
+  settings at budget 4096 1.34883 / 1.44263 ms.
+- Tiny indexed and folded calls are shown for context; their ratios aren't
+  stable.
+- **Memory:** with fixed settings and metering, session state is 624 bytes for
+  one lookup and 696 for reading all attributes; partial versions are 680 and
+  752. One-key lookups allocate nothing, and so does reading all attributes of
+  a node, scope, non-strict edge or folded edge. Strict compact reads use 12
+  bytes per distinct written edge key, as direct reads do. A
+  50,001 × 50,001 symbolic product is queried without expanding it.
+- Ordinary attribute access doesn't use these sessions.
+
+### Fixed storage
+
+Fixed storage lets you hand the IR caller-owned buffers instead of an
+allocator. It is opt-in; ordinary calls do no sizing or reservation. See
+[fixed buffers](IR.md#fixed-buffers-no-allocator).
+
+#### Fixed lowering
+
+Measured at commit `a5ab7f8` (2026-10-25).
+
+`zig build bench-ir-fixed -Doptimize=fast` (or `safe` / `small`). Nine process
+runs per build, each with four warm-ups and eleven samples per rotating route.
+Building the source, parsing, sizing, allocating the caller's buffers and
+cleanup are outside timing. Allocation counts come from a separate untimed run.
+
+`fixed used` reserves exactly what a previous run of the same input used. It
+shows what fixed storage can save when you know the sizes; it isn't a cheap
+sizing pass or a promise for edited input. `fixed bounds` reserves the full
+bounds worked out from counts instead. No route expands the 25-million-pair
+product.
+
+| Input | Direct Fast: growable → fixed used (ms) | Direct Safe: growable → fixed used (ms) | Fixed session `run`: Fast / Safe (ms) |
+| --- | ---: | ---: | ---: |
+| 2,000 one-to-one connections | 0.2343 → 0.2006 | 0.3202 → 0.2212 | 0.3634 / 0.5978 |
+| 2,000 nodes with attributes | 0.3237 → 0.2418 | 0.5583 → 0.3229 | 0.7471 / 1.1880 |
+| 400 reopened-scope statements | 0.1202 → 0.1001 | 0.1991 → 0.1244 | 0.1855 / 0.2924 |
+| 2,000 nested scopes | 0.0735 → 0.0637 | 0.1605 → 0.0685 | 0.0716 / 0.1268 |
+| 64 KiB comment inside a concatenated name | 0.0175 → 0.0173 | 0.0168 → 0.0166 | 0.1645 / 0.2675 |
+| 5,000 × 5,000 symbolic product | 0.5357 → 0.3930 | 1.0112 → 0.4196 | 0.5832 / 0.9953 |
+
+Fixed storage removes copying while lists grow, not name reading or other
+semantic work.
+
+Memory, in bytes. Growable peak is live requested memory; fixed peak is the
+whole graph-plus-scratch reservation, used or not. Fixed routes make no
+allocator calls while building. Inline objects and the borrowed source and
+Document are excluded:
+
+| Input | Fast allocator calls: growable → fixed | Retained: growable → fixed used | Peak: growable → fixed used | Full-bounds peak |
+| --- | ---: | ---: | ---: | ---: |
+| 2,000 one-to-one connections | 33 → 0 | 321828 → 312488 | 336424 → 312776 | 768936 |
+| 2,000 nodes with attributes | 66 → 0 | 766560 → 640624 | 1012972 → 640720 | 5810120 |
+| 400 reopened-scope statements | 58 → 0 | 183228 → 173960 | 215756 → 174272 | 116088008 |
+| 2,000 nested scopes | 44 → 0 | 194268 → 192504 | 281396 → 265112 | 505336 |
+| 64 KiB comment inside a concatenated name | 13 → 0 | 536 → 312 | 1076 → 600 | 600 |
+| 5,000 × 5,000 symbolic product | 57 → 0 | 943184 → 811360 | 1050824 → 811688 | 811800 |
+
+Observed sizes cut the peak by about **6–44%** on these inputs. Full bounds can
+be far larger: the reopened input reserves about **116 MB** with bounds, against
+**174 KB** with observed sizes. Most of that is the safe upper bound for
+attribute history, not live records. That is why bounds are an explicit choice,
+not automatic.
+
+The fixed session object is **2,304 bytes in Fast and 2,368 in Safe** at commit
+`60cc57e`, beside its buffers. Supporting borrowed storage makes the ordinary graph handle 8 bytes
+larger; nothing is added per record.
+
+#### Fixed scratch for streaming and queries
+
+Measured at commit `a484fef` (2026-10-25), except the row marked §, measured
+at `60cc57e`.
+
+The `...In` operations run the existing streaming and query algorithms on
+caller-owned scratch. Ordinary operations don't reserve bounds, track scratch
+high-water marks or check which storage they use, and no graph or record fields
+were added.
+
+`zig build bench-ir-fixed-queries -Doptimize=fast` (also `safe` or `small`)
+compares growable scratch, observed sizes, explicit bounds, and fixed sessions
+at budgets 1 and 4096. Five processes per build; eleven warmed, rotating samples
+per process. Parsing, lowering, sizing and allocating the buffers are untimed;
+setting up, walking and cleanup are timed. `fixed used` reuses a previous run's
+high-water counts, as above.
+
+| Input | Direct Fast: growable → fixed used (ms) | Direct Safe: growable → fixed used (ms) |
+| --- | ---: | ---: |
+| 2,000 one-to-one connections | 0.01321 → 0.01521 | 0.01608 → 0.01733 |
+| 1,000 three-member sets | 0.01717 → 0.01963 | 0.01875 → 0.02350 |
+| 400 overlapping strict products | 0.02292 → 0.02229 | 0.02604 → 0.02521 |
+| 200 reopened-scope connections § | 0.09208 → 0.112 | 0.08688 → 0.120 |
+| First 1,000 edges of a 5,000 × 5,000 product | 0.04254 → 0.02408 | 0.03408 → 0.03925 |
+| 32 reads of all attributes over 2,000 strict updates | 0.47063 → 0.43629 | 0.39963 → 0.38821 |
+
+In the § row the growable values are from `a484fef` and the fixed values from
+`60cc57e` (Small: 0.226 ms).
+
+Fixed scratch is a guarantee about allocation and ownership, **not a speedup**:
+the reopened input is slower with it. Fixed edge sessions at budget 4096 take
+0.00800 / 0.00888 ms for one-to-one connections and 0.10758 / 0.11779 ms for
+reopened scopes (Fast / Safe). Fixed attribute sessions take
+1.26283 / 1.25738 ms at budget 4096 and 4.60138 / 4.86138 ms at budget 1 for the
+32 reads.
+
+Scratch memory, in bytes. Growable peak is live requested memory; fixed is the
+whole reservation, including unused slots, marks and hash tables. Every `In`
+operation makes no allocator calls:
+
+| Input | Growable peak, Fast / Safe | Fixed, observed sizes | Fixed, full bounds |
+| --- | ---: | ---: | ---: |
+| One-to-one connections | 0 / 0 | 0 | 24,012 |
+| Three-member sets | 4,144 / 4,144 | 4,024 | 12,036 |
+| Strict overlap | 608 / 608 | 304 | 304 |
+| Reopened scopes | 2,516 / 1,884 | 1,604 | 2,412 |
+| Product prefix | 100,456 / 100,456 | 80,000 | 120,000 |
+| Strict attribute reads | 192 / 192 | 192 | 192 |
+
+The product stays symbolic: its query holds member lists, not 25 million
+edges. Bounds can waste memory; they don't look for one-to-one-only streams or
+leave out keys that no edge uses.
+
+With metering on and cancellation compiled out, the complete edge iterator is
+280 bytes (growable) or 328 (fixed) in Fast, 304 or 352 in Safe; the edge
+session is 456 or 432 bytes in Fast, 480 or 456 in Safe. The attribute iterator
+is 176 bytes and the attribute session 696 bytes.
+
+#### Fixed materialization
+
+Measured at commit `eda87c7` (2026-10-31).
+
+Caller-owned output and scratch cover complete and partial materialization,
+with and without attributes, direct and in sessions. The input IR stays
+symbolic. Run one report with:
+
+```sh
+zig build bench-ir-fixed-materialization -Doptimize=fast
+# Also -Doptimize=safe or -Doptimize=small.
+```
+
+The report warms each route for 150 ms, then takes three more warm-ups and the
+median of nine samples. Parsing, lowering, allocating the caller's buffers and
+sizing are outside the build timing; sizing time is reported separately.
+Building includes checking the buffer description and setting up tables. The
+output is read and checked against the growable output. Routes: growable,
+observed sizes, scanned bounds, and fixed sessions at budgets 4096 and 1.
+
+Selected Fast results with attributes, **observed sizes**:
+
+| Input | Edges | Growable ms | Fixed ms | Growable peak KiB | Fixed output + scratch KiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| One-to-one connections | 2,000 | 0.02075 | 0.01413 | 61.9 | 31.3 |
+| Eight explicit keys per edge | 2,000 | 0.16371 | 0.11396 | 741.7 | 414.1 |
+| Repeated strict set products | 1,024 | 1.24442 | 1.13642 | 502.6 | 220.5 |
+| Reopened strict subgraphs | 250 | 0.29079 | 0.28288 | 21.5 | 14.7 |
+| Endpoint ports | 2,000 | 0.05517 | 0.03629 | 257.0 | 132.8 |
+
+- Observed sizes cut peak bytes by 31–56% here. Fixed building never allocates
+  or falls back to an allocator, even after running out of room or being
+  cancelled. Defaults stay shared with the IR; the output stores only explicit
+  and derived winning values and its key list.
+- **Bounds aren't sizing advice.** Scanning doesn't remove strict duplicates:
+  the reopened input reserves 1,644,656 bytes with scanned bounds, against
+  15,060 with observed sizes and a 21,988-byte growable peak. Strict overlap
+  reserves 901,664 bytes scanned against 225,824 observed. One-to-one inputs
+  have much tighter bounds. The scan took 0.024 ms on the reopened input and
+  roughly 0.0002–0.0043 ms on the others, with its own work and cancellation
+  allowance. Pass your own upper bounds or previous counts when memory
+  matters.
+- **Off cost:** ordinary lowering's machine code is byte-identical with and
+  without fixed materialization in all three builds, and allocation peaks,
+  credits and graph and session sizes are unchanged. Materialized results keep
+  their size: 56 bytes for topology and 176 bytes with attributes in Fast and
+  Small (200 in Safe). Ordinary routes against the version before (commit
+  `772b6fe`), five alternating runs, change in time as a geometric mean (the
+  one-edge nesting input is left out):
+
+| Build | Attribute materialization | Topology-only materialization | Materialization session `run()` | Edge streaming |
+| --- | ---: | ---: | ---: | ---: |
+| Fast | +0.7% | +2.3% | +0.4% | +0.8% |
+| Safe | -0.5% | +0.6% | -0.1% | +0.9% |
+| Small | -4.2% | +1.8% | +1.5% | -2.7% |
+
+One reopened topology case was +6.6% in Fast in the mixed benchmark program,
+but -3.6% in a separate topology-only program with unchanged loop code.
+
+## Cost of opt-in features
+
+**Partial DOT results** ([editors](EDITORS.md#keep-the-finished-part-of-a-dot-file)).
+The compile-time-settings figures here were measured during 0.5.0 development,
+on the same machine, and weren't re-run for the release:
+
+- **Off:** with compile-time settings, no measurable change (−1.0% to +0.5%
+  across scanners, storage and both builds). Profiles with run-time settings
+  weren't compared with the version before this feature.
+- **On:** parsing is a few percent slower. Scalar scanner, Fast build:
+
+| Input | Fixed buffers | Growing buffers |
+| --- | ---: | ---: |
+| Nodes | −6.0% | −2.5% |
+| Edges | −5.3% | −6.9% |
+| Subgraph edge ends | −7.9% | −8.9% |
+
+- **On, with run-time settings:** 0–2% slower than the same profile with it
+  off (`runtime_partial` against `runtime_baseline` in the
+  [settings tables](#compile-time-and-run-time-settings)).
+- **Memory, on:** fixed buffers use nothing extra. Growing buffers use 104 bytes
+  more at their peak, and keep 26–34% more memory afterwards, because the lists
+  aren't trimmed when parsing ends. Exact size hints or fixed buffers avoid that.
+
+**Keeping label trees** costs memory for every kept tree; how much depends on
+the labels. It hasn't been timed yet.
+
+**Other opt-in features**, in short:
+
+| Feature | When off | When on | Details |
+| --- | --- | --- | --- |
+| Cancellation interval above 1 (unreleased) | Interval 1 is the default | Same credits, fewer cancel checks | [Cancellation intervals](#cancellation-intervals) |
+| Attribute string checks (unreleased) | Same profile type; identical machine code | Each checked value can be read again; no extra allocation | [Attribute string processing](#attribute-string-processing) |
+| Early outline events (unreleased) | Identical machine code; no storage | One credit per extra callback | [Early outline events](#early-outline-events) |
+| Unfinished-token previews (unreleased) | Identical machine code | 16 bytes per event session; callbacks depend on the budget | [Unfinished-token previews](#unfinished-token-previews) |
+| Graph IR (unreleased) | Identical machine code when unused | Lowering time and memory | [Lowering a Document](#lowering-a-document) |
+| Partial IR (unreleased) | No work in complete lowering | 32 bytes per gap; slower known/unknown lookups | [Partial IR](#partial-ir) |
+| Folded attributes (unreleased) | Topology-only output runs no folding code | Builds winning values once; faster repeated reads | [Streaming and materializing edges](#streaming-and-materializing-edges) |
+| Materialized adjacency (unreleased) | Default `.none`; timing changes up to +3.8% | Rows take exact extra memory and build time | [Optional materialized adjacency](#optional-materialized-adjacency) |
+| IR query indexes (unreleased) | Identical machine code | Extra arrays and lowering time; much faster `hasEdge` | [Optional query indexes](#optional-query-indexes) |
+| IR sessions (unreleased) | Direct calls don't use them | Slower than direct; bounded steps and cancellation | [Resumable sessions](#resumable-sessions) |
+| Fixed IR storage (unreleased) | Ordinary calls do no sizing | No allocator calls; reservation can exceed use | [Fixed storage](#fixed-storage) |
+
 ## How these were measured
 
 - **Machine:** Apple M4 Pro, 14 CPU cores, 48 GiB RAM, native aarch64 macOS
-  27.0 (26A428). The CPU was not pinned and its speed was not fixed.
-- **Builds:** Zig 0.16.0, `ReleaseFast` and `ReleaseSafe`.
+  27.0 (26A428). The CPU was not pinned and its speed was not fixed. Every
+  section was measured on this machine.
+- **Builds:** the 0.5.0 sections used Zig 0.16.0, `ReleaseFast` and
+  `ReleaseSafe`. Unreleased sections used Zig 0.16.0 or Zig 0.17.0 as each
+  section says, and often `ReleaseSmall` or `small` too.
 - **Running:** the [benchmark programs](../bench/) were built before timing and
-  ran one at a time, with no builds or other benchmarks running.
-- **Repeats:** each time is the median of five runs, and each run reports the
-  median of its own timed rounds. The order of scanners and builds alternated
-  between repeats, and no runs were thrown away.
+  ran one at a time, with no builds, tests or other benchmarks running.
+- **Repeats:** in the 0.5.0 sections, each time is the median of five runs, and
+  each run reports the median of its own timed rounds. The order of scanners
+  and builds alternated between repeats, and no runs were thrown away.
+  Unreleased sections say how many process runs they used (from two to nine),
+  usually alternating the compared versions.
 - **Rounding:** numbers are rounded as the benchmark programs print them. DOT
-  speeds are worked out from the source size and the time, rather than copied
-  from the programs' MiB/s output.
+  speeds in the 0.5.0 sections are worked out from the source size and the
+  time, rather than copied from the programs' MiB/s output.
 
-| Benchmark | Warm-up rounds per run | Timed rounds | Operations per round |
-| --- | ---: | ---: | ---: |
-| DOT parse and validate, lexer, sessions, subgraphs | 2 | 9 | 1 |
-| Settings | at least 150 ms | 9 | 4 |
-| Markup parsing and validation | 5 | 9 | 16 |
-| DOT with label checking | 3 | 9 | 10 |
+Warm-up and timed rounds per benchmark, as set in the benchmark sources. When a
+round does several operations, the time shown is per operation:
 
-When a round does several operations, the time shown is per operation.
+| Benchmark (step) | Warm-up per case | Timed rounds | Operations per round |
+| --- | --- | ---: | --- |
+| `bench`, `bench-lexer`, `bench-session`, `bench-subgraphs` | 2 rounds | 9 | 1 |
+| `bench-policy` | at least 150 ms | 9 | 4 |
+| `bench-cancellation` | at least 150 ms | 9 | 1 |
+| `bench-markup` | 5 rounds | 9 | 16 |
+| `bench-composition` | 3 rounds | 9 | 10 |
+| `bench-identifiers` | 3 rounds | 9 | 4 |
+| `bench-metering` | 2 rounds | 7 | 4 |
+| `bench-previews` | 2 rounds | 7 | 8 |
+| `bench-string` | 2 batches | 7 | at least 1,000 calls |
+| `bench-string-sessions` | 2 batches | 7 | at least 100 calls |
+| `bench-logical-strings` | 2 batches | 5 | at least 100 calls |
+| `bench-string-integration` | 3 rounds | 9 | 3 |
+| `bench-string-passthrough` | 2 rounds | 9 | at least 128 calls |
+| `bench-ir`: lowering, attributes, bulk attributes | 2 rounds | 9 | 1 |
+| `bench-ir`: values | 3 rounds | 9 | 1 |
+| `bench-ir-partial` | at least 100 ms, then 2 rounds | 9 | 1 |
+| `bench-ir-partial-edges` | at least 100 ms | 9 | 1 |
+| `bench-ir-sessions` | 12 rounds | 15 | 1 |
+| `bench-ir-lowering-sessions`, `bench-ir-fixed` | 4 rounds | 11 | 1 |
+| `bench-ir-edge-sessions`, `bench-ir-fixed-queries` | at least 4 rounds and 50 ms | 11 | 1 |
+| `bench-ir-query-sessions`, `bench-ir-attribute-sessions` | at least 4 rounds and 50 ms | 11 | 32 |
+| `bench-ir-query-indexes` | lowering: at least 100 ms; queries: at least 80 ms | lowering 11, queries 9 | queries: enough for at least 1 ms |
+| `bench-ir-fixed-materialization` | at least 150 ms, then 3 rounds | 9 | 1 |
+| `bench-ir-adjacency` | 3 rounds | 9 | 1 |
+
+The string benchmarks repeat each call many times per batch (more for shorter
+inputs) and report the time per call.
 
 **What isn't timed:** building the test input, reading files, and storing or
 printing diagnostics. Diagnostics are counted but thrown away. Fixed-buffer
 benchmarks also leave out sizing and setting up the buffers.
 
-**What isn't covered:** real-world files, `ReleaseSmall` speed, step-by-step
-markup parsing, the peak memory of markup trees built with an allocator, and
-comparisons with older versions.
+**What isn't covered:** real-world files, `ReleaseSmall` speed in the 0.5.0
+sections, step-by-step markup parsing, the peak memory of markup trees built
+with an allocator, and comparisons with older releases.
 
-**How much runs varied.** The five DOT parse-and-validate runs fell within
-these ranges. They are just the lowest and highest results, not confidence
-intervals:
+**How much runs varied.** The five DOT parse-and-validate runs for 0.5.0 fell
+within these ranges. They are just the lowest and highest results, not
+confidence intervals:
 
 | Build / scanner | Growing (ms) | Hinted (ms) |
 | --- | ---: | ---: |
@@ -1888,1560 +2044,89 @@ intervals:
 Short tests varied more. The `plain` label-checking case ranged from 0.024 to
 0.065 ms in the Fast build, and 1,000 sibling subgraphs from 0.026 to 0.035 ms.
 Some markup cases also moved between runs: plain `text` with the scalar scanner
-in a Safe build ranged from 0.636 to 0.849 ms. Treat small differences between settings or
-builds as noise, not as dependable speedups.
+in a Safe build ranged from 0.636 to 0.849 ms. Even identical machine code can
+time differently from one process to the next, depending on where the code
+lands in memory. Treat small differences between settings or builds as noise,
+not as dependable speedups.
 
 In the settings benchmark, run-time settings are read in a way the compiler
 can't see in advance, so it can't optimize them away. That reading happens
 outside the timer.
 
-## Opt-in partial IR (2026-10-24)
-
-Apple M4 Pro, Zig 0.17.0, baseline `e61761e` versus this increment. Complete
-topology: five alternating processes per side/mode, each reporting nine samples
-after two warmups. No concurrent builds/timed workloads. Positive percentages
-below mean **more time**, not a throughput increase.
-
-| Complete lowering | ReleaseFast before → after (ms) | Time change |
-| --- | ---: | ---: |
-| 10,000 singleton connections | 1.108 → 1.128 | +1.8% |
-| 10,000 small endpoint sets | 2.142 → 2.155 | +0.6% |
-| Reopened scopes | 0.154 → 0.151 | −1.9% |
-| Strict reopened scopes | 0.153 → 0.154 | +0.7% |
-| 10,000 nested scopes | 0.289 → 0.296 | +2.4% |
-| 50,000 × 50,000 symbolic product | 5.515 → 5.388 | −2.3% |
-
-Across these six cases, geometric-mean time changed **+0.2% Fast, +0.2% Safe,
-−0.3% Small**; individual medians stayed between −2.3% and +2.7%. This is
-effectively flat at this measurement scale, not proof that every input is
-identical. Complete retained/requested-peak/arena bytes were unchanged in all
-three modes. Separate ReleaseFast attribute-bearing lowering comparisons ranged
-from −3.6% to +0.9%, also with unchanged retained bytes.
-
-An early version changed the complete builder's automatic field layout and
-slowed deep nesting. The final version keeps its field count/types, and inlines
-the compile-time selection helpers before optimizer heuristics can change the
-complete path. No partial coverage allocation or runtime traversal branch is
-present in complete lowering. Consumed topology-harness binaries changed from
-559,736 to 559,784 bytes (Fast), 711,736 to 711,800 (Safe), and remained 276,752
-(Small); these are **executables**, not standalone library sizes.
-
-The existing `bench-policy` also ran three processes per side (150 ms warmup,
-nine four-parse samples/case). Default fixed scalar times were 0.630 → 0.634 ms
-for nodes, 1.248 → 1.196 ms for edges, and 4.816 → 4.859 ms for scoped endpoints.
-Across scalar/block and fixed/runtime/partial-retention configurations, medians
-ranged from −4.2% to +2.0%. Document/session sizes were unchanged: Document 256,
-fixed session 1,120, runtime session 1,424 bytes. The root-closer fact uses
-existing Document padding; metering credits/cancellation guarantees are unchanged.
-
-### What partial coverage costs
-
-Run `zig build bench-ir-partial -Doptimize=fast`. This new harness warms
-each path for 100 ms, then reports nine samples, allocation payload/peak,
-arena capacity, qualified attribute access, mention iteration and pair queries.
-The following medians are from five processes; parsing is outside timing.
-
-| Fixture | Complete lowering (ms) | Partial on complete input (ms) | Partial with gaps (ms) |
-| --- | ---: | ---: | ---: |
-| 10,000 sparse nodes | 0.545 | 0.535 | 0.536 |
-| 10,000 dense connections | 1.014 | 1.044 | 1.044 |
-| Shared defaults and updates | 1.277 | 1.196 | 1.213 |
-| Port-bearing edges | 1.160 | 1.196 | 1.213 |
-| Reopened scopes | 0.160 | 0.166 | 0.165 |
-| 10,000 nested scopes | 0.356 | 0.342 | 0.342 |
-| 10,000 assignments / 10,000 gaps | 0.830 | 0.810 | 0.935 |
-| 50,000 × 50,000 symbolic product | 6.149 | 6.010 | 6.048 |
-
-The broken variants add a gap after retained contributions, except the deep
-fixture's inner gap and the many-gap fixture's one gap per node. They do not
-discard the measured valid statements. These are separately specialized paths;
-small wins/losses are not a promise that partial processing is always faster.
-
-On complete input the partial-capable graph retains exactly the same allocation
-payload as complete IR. Its owner is 488 rather than 464 bytes. An attribute view
-is 48 bytes; `Knowledge(?AttributeView)` is 80 bytes. Candidates and mentions
-allocate nothing on query. A gap entry plus its semantic-boundary/suffix index
-is 28 bytes, with ordinary list capacity/growth: a single gap retained 140 extra
-bytes here. No second node/value/mention index is built.
-
-Those gap sizes describe the first partial-IR increment. The edge API increment
-below adds a connection-order boundary, making the record 32 bytes instead.
-
-For 10,000 gaps, retained bytes rose from 1,504,028 to 1,794,640; requested peak
-from 1,611,260 to 1,901,872; total arena capacity from 3,524,678 to 6,316,592.
-Arena chunk growth can amplify the coverage payload; it is not hidden by quoting
-only final record sizes. Qualified attribute lookup was 23.9 ns on this case,
-versus 5.8 ns without coverage. The extra work is an indexed gap-boundary search,
-not a history scan. Other qualified attribute cases measured 4.2–6.9 ns and
-mention iteration 0.7–1.0 ns per retained record.
-
-The huge product still has **one symbolic connection**, not 2.5 billion stored
-edges: partial retained payload was 8,900,776 bytes and requested peak 10,312,964.
-Its sampled pair query took about 10 ns; dense/ported pair searches that traversed
-10,000 connections took about 10 µs. These are workload-specific indexed/search
-costs, not constant-time guarantees. Requested/arena bytes exclude source,
-allocator metadata and process RSS. Limits include coverage growth/scratch.
-
-### Partial edge iteration and materialization (2026-10-24)
-
-Baseline `b64a8ba`, Apple M4 Pro, Zig 0.17.0. The complete-only attribute-query
-and materialization harnesses have byte-for-byte identical machine-code
-(`__text`) sections before/after in ReleaseFast, ReleaseSafe and ReleaseSmall.
-Their retained, requested-peak and arena measurements are also unchanged.
-This is evidence for the instantiated complete paths, not a claim about every
-possible consumer binary or parser workload.
-
-Five alternating processes per side/mode reconfirmed direct queries. Selected
-medians in microseconds per lookup (nine samples after two warmups):
-
-| Build | 1,000 strict updates, before → after | Reopened defaults, before → after |
-| --- | ---: | ---: |
-| ReleaseFast | 4.910 → 5.097 | 7.484 → 7.558 |
-| ReleaseSafe | 4.887 → 4.811 | 7.955 → 8.002 |
-| ReleaseSmall | 9.818 → 9.734 | 18.382 → 18.916 |
-
-The timing variation here occurs despite identical machine code; do not read
-these small differences as changes to the algorithm. Shorter queries were
-noisier. An intermediate shared-budget forwarding function did cause a real
-strict-query regression through extra return-value copies. The final code
-specializes budget ownership in the existing query body and restores the
-baseline code generation; lookup and coverage still share one work budget.
-
-Run `zig build bench-ir-partial-edges -Doptimize=fast` for the new focused
-report (Safe/Small are also supported). It parses/lowers outside timing, warms
-each path for 100 ms and takes nine samples. The table below is the median of
-five serial process runs, with no concurrent builds or timed workloads. The
-broken fixtures insert a gap at the beginning and end of the root body.
-
-| Fixture | Retained edges | Folded materialization: complete / partial on complete / partial with gaps (ms) | Read all attributes: same three paths (ms) |
-| --- | ---: | ---: | ---: |
-| Plain connections | 2,000 | 0.0205 / 0.0205 / 0.0205 | 0.0010 / 0.0010 / 0.0010 |
-| 64 shared defaults | 2,000 | 0.0204 / 0.0192 / 0.0203 | 0.3740 / 0.4977 / 0.4975 |
-| 8 explicit attributes | 2,000 | 0.1817 / 0.1828 / 0.1831 | 0.0223 / 0.0262 / 0.0258 |
-| Strict overlapping sets | 1,024 | 1.4489 / 1.4349 / 1.4441 | 0.0113 / 0.0137 / 0.0212 |
-| Reopened scopes | 250 | 0.3617 / 0.3612 / 0.3623 | 0.0004 / 0.0007 / 0.0009 |
-| Endpoint ports | 2,000 | 0.0545 / 0.0547 / 0.0547 | 0.0040 / 0.0048 / 0.0055 |
-| Strict port updates | 100 | 0.0689 / 0.0703 / 0.0696 | 0.0002 / 0.0003 / 0.0011 |
-
-Streaming plain connections took 0.0173 / 0.0172 / 0.0173 ms; strict overlapping
-sets took 0.1178 / 0.1180 / 0.1178 ms. Expansion and folding reuse the same
-engines. **Qualified attribute reads are not free**, including on complete
-input through the partial API: the shared-default case visits 128,000 values
-and adds about 0.124 ms (about 1 ns/value). Strict winners additionally consult
-the gap index; undirected ports preserve orientation uncertainty. The deep
-fixture's one retained edge is below useful timing resolution, not zero work.
-
-Streaming edge views remain 24 bytes; folded partial edge views are 40 bytes
-versus 32 for complete views. These are transient borrowed handles, not a new
-per-edge allocation. Retained output and materialization peak bytes match all
-three paths: for example explicit attributes retain 484,796 bytes with a
-759,476-byte requested peak; strict overlapping sets retain 312,156 with a
-514,632-byte peak. Topology-only output still skips attribute winner maps.
-
-Partial coverage now needs **four more bytes per gap record** than `b64a8ba`,
-not per node/connection/expanded edge. The first five-record capacity is 160
-bytes, up from 140. Two gaps in these fixtures add 160 retained IR bytes over
-complete input. Arena capacity is unchanged in six of the eight materialized
-fixtures, but grows by 8,754 bytes for strict overlap and 400 for reopened
-scopes: arena chunk growth can exceed the record payload. These measurements
-exclude the source, parser storage, allocator metadata and process RSS.
-
-The 2,500 × 2,500 product stays one symbolic connection. Every path streams a
-1,000-edge prefix using 60,040 bytes of iterator scratch; full materialization
-returns `PairLimit` without allocating the 6.25-million-edge output. Resource
-failure never publishes a half-built materialized graph. No parser metering or
-cancellation interval was changed by this increment.
-
-### Partial node/scope attribute iteration (2026-10-24)
-
-Baseline `a302e58`, Apple M4 Pro, Zig 0.17.0. This adds enumeration to partial
-node/scope views without changing the complete iterator, lowering or retained
-layouts. The existing `ir_attributes` harness has byte-identical machine-code
-(`__text`) sections before/after in Fast, Safe and Small. Five alternating
-processes per side in Fast/Safe also confirmed unchanged retained, requested-peak,
-arena and scratch bytes. Shared-default node enumeration measured 720.3 → 723.8
-ns/node in Fast and 818.2 → 820.9 in Safe; this small timing variation does not
-indicate a code-generation change. These checks cover the instantiated IR paths,
-not every possible library configuration.
-
-The focused command is:
-
-```sh
-zig build bench-ir-partial -Doptimize=fast -- --attributes-only
-```
-
-It warms each path for 100 ms and takes nine samples, outside parsing/lowering.
-Timings include checked view construction and enumeration, but no formatting or
-output. Below are medians of five serial Fast processes, with no concurrent
-builds. Each cell lists **complete / partial on complete / partial with gaps**.
-
-| Fixture | Node values | Node enumeration (ms) | Scope enumeration (ms) |
-| --- | ---: | ---: | ---: |
-| 1,000 empty nodes/scopes | 0 | 0.0053 / 0.0059 / 0.0059 | 0.0053 / 0.0061 / 0.0060 |
-| 64 shared defaults | 64,000 | 0.7759 / 0.8250 / 0.8173 | 0.7548 / 0.7833 / 0.7865 |
-| 8 explicit node attributes | 8,000 | 0.0933 / 0.0970 / 0.1022 | 0.0284 / 0.0306 / 0.0316 |
-| 1,000 reopened contributions | 2,000 | 0.0217 / 0.0241 / 0.0247 | below useful resolution |
-| 1,000 nested scopes | 1,000 | 0.0142 / 0.0142 / 0.0148 | 0.0134 / 0.0147 / 0.0147 |
-| 1,000 assignments / gaps | 1,000 | 0.0135 / 0.0144 / 0.0346 | below useful resolution |
-
-Scope enumeration visits the root too: 64,064 values for defaults, 2,002 for
-explicit attributes and 1,001 for nesting. Broken variants insert one tail gap,
-except nesting's innermost gap and the many-gap fixture's gap after each node.
-Qualification is not free: it returns larger known/unknown answers and consults
-the gap index for explicit winners. Inlining the thin wrapper reduced the
-shared-default partial-complete node scan from 0.9718 to 0.8250 ms. It was not
-a universal speedup: the many-gap scan changed from 0.0287 to 0.0346 ms. The final
-table includes that cost rather than presenting only favorable cases.
-
-**No enumeration allocations:** scratch peak is zero for every case, including
-when the allocation limit is zero. Complete/partial iterator objects are
-176/192 bytes; complete/partial graph owners remain 464/488 bytes. No additional
-coverage records, indexes or per-node copies were added. Complete input retains
-the same payload through either route. Existing gap storage still costs memory:
-the many-gap IR retains 267,796 bytes versus 224,340 without gaps. These are
-retained payload bytes, not process RSS or allocator metadata. Work limits remain
-cumulative across lookup and qualification; no parser metering or cancellation
-guarantee changed.
-
-### Resumable IR materialization (2026-10-24)
-
-Baseline `4201dba`, Apple M4 Pro, Zig 0.17.0. Opt-in sessions do not replace
-the direct `materialize` driver. The existing `ir_materialized_attributes`
-benchmark's entire `__text` section is byte-identical before/after in Fast,
-Safe and Small. Retained, requested-peak and arena measurements are unchanged
-in that harness. Five serial, alternating processes per revision produced the
-following median build times (ms, **before → after**):
-
-| Fixture | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| 2,000 plain edges | 0.0220 → 0.0215 | 0.0298 → 0.0317 | 0.0335 → 0.0331 |
-| 2,000 edges, 8 explicit attributes | 0.1670 → 0.1681 | 0.3017 → 0.3021 | 0.4493 → 0.4504 |
-| 32 overlapping 32×32 strict products | 1.3275 → 1.3469 | 1.5227 → 1.5366 | 3.1464 → 3.2658 |
-| 250 reopened-scope contributions | 0.2919 → 0.3038 | 0.3557 → 0.3533 | 0.8797 → 0.8830 |
-| 2,000 port-bearing edges | 0.0540 → 0.0543 | 0.1031 → 0.1046 | 0.1012 → 0.0995 |
-
-These small timing differences exist despite identical generated code; they
-are not evidence of a new default-path operation. The check covers the
-instantiated benchmark paths, not every possible consumer configuration.
-
-Measure the new optional path independently with:
-
-```sh
-zig build bench-ir-sessions -Doptimize=fast
-zig build bench-ir-sessions -Doptimize=safe
-zig build bench-ir-sessions -Doptimize=small
-```
-
-The original harness rotated direct/session modes, took nine samples after two
-warmup rounds, and consumed output outside build timing. Parsing/lowering and final
-result destruction are excluded; internal scratch cleanup is included on both
-paths. Below is one serial Fast process, with no builds or other benchmarks
-running. Compare columns within this harness, not its direct column against a
-different executable's timings above.
-
-| Fixture | Direct (ms) | Session, budget 4096 | Budget 64 | Budget 1 |
-| --- | ---: | ---: | ---: | ---: |
-| Plain edges | 0.0331 | 0.0485 | 0.0514 | 0.1372 |
-| 64 shared defaults | 0.0279 | 0.0366 | 0.0388 | 0.1107 |
-| 8 explicit attributes | 0.1798 | 0.3690 | 0.3973 | 0.8567 |
-| Strict overlapping sets | 1.3389 | 2.3355 | 2.4254 | 5.2028 |
-| Reopened scopes | 0.2992 | 0.7088 | 0.7589 | 1.8297 |
-| Endpoint ports | 0.0554 | 0.0913 | 0.0982 | 0.2294 |
-| Reversed strict port updates | 0.0701 | 0.1135 | 0.1158 | 0.2709 |
-
-Initially, budget 4096 cost roughly 1.3–2.4× direct Fast time on these cases;
-budget one cost 3.9–6.1×. These are the pre-optimization results; see the follow-up
-below. This is **opt-in scheduling overhead**, not a speed
-optimization. `run()` drives the same bounded machine and is not an alias for
-the faster direct driver. Safe direct/session-4096 measured 0.3037/0.4320 ms
-for explicit attributes and 1.5420/2.4930 ms for strict overlap; Small measured
-0.4271/0.6450 and 3.2406/4.7545 ms respectively. Deep nesting with one output
-edge is below useful timing resolution. The 2,500×2,500 product returns
-`PairLimit` on every route, without materializing its 6.25 million pairs.
-
-**Heap payload is unchanged in these fixtures:** session growth follows the
-direct driver's capacity curve. Across all budgets/modes the successful cases
-have the same retained/requested-peak bytes as direct materialization: plain
-38,064/63,344; explicit attributes 484,796/759,476; strict overlap
-312,156/514,632; reopened scopes 13,236/21,988; ports 177,308/263,192. These
-exclude the borrowed IR, allocator internals, process RSS and session state.
-The complete session object is 448 bytes topology-only / 888 with attributes
-in Fast/Small, or 472/936 in Safe. No per-node/edge session metadata is added
-to the IR or returned output. Allocator behavior can still affect in-place
-growth, actual copying, credits and physical arena use; this is not a universal
-RSS or arena-capacity equality promise.
-
-The CSV reports factual total session credits (zero means not applicable for
-the direct route), outcomes and memory. A failure's unavailable peak is `null`,
-not zero. Per-call steps include growth copies, table initialization/rehashing,
-AVL updates and port-key code units. Budget-one, mixed-budget, zero-budget,
-all-allocation-failure and every-cancellation-point tests preserve output and
-terminal reasons. Allocator/cancellation callbacks and destruction remain
-outside wall-time guarantees. Existing parser metering/cancellation is unchanged.
-
-#### Session-driver optimization
-
-Historical checkpoint; the plain-edge and code-size follow-up below supersedes
-the remaining-cost observations for the current implementation.
-
-Follow-up baseline **`fc64630`**, on the same M4 Pro and Zig 0.17.0. Five
-serial processes per revision, alternating order, using the **same expanded
-harness** against both libraries. Each process rotates the scheduling modes
-and takes 15 samples after 12 warmups. No builds or tests ran alongside these
-measurements. Parsing/lowering, output consumption and final output destruction
-remain outside timing; scratch cleanup is included.
-
-The overhead was largely per-transition dispatch and bookkeeping, not larger
-output or more allocations. The driver now uses direct state transitions,
-selects cancellation presence once per resume, computes the available lifetime
-grant once, and keeps counters local when no cancellation callback needs them.
-A one-credit resume saves its successor and exits without dispatching that
-successor just to pause. The thin progress wrapper and the common
-already-has-capacity check are inlined; allocation/copying stays separate.
-There is one transition implementation, not a second materialization algorithm.
-
-Attribute-bearing sessions, **budget 4096, no cancellation token**, median ms
-(before → after):
-
-| Fixture | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| Plain edges | 0.0327 → 0.0338 | 0.0395 → 0.0385 | 0.0765 → 0.0362 |
-| 64 shared defaults | 0.0329 → 0.0342 | 0.0400 → 0.0365 | 0.0767 → 0.0360 |
-| 8 explicit attributes | 0.3454 → 0.2907 | 0.4498 → 0.3708 | 0.7309 → 0.4834 |
-| Strict overlapping sets | 2.3373 → 2.0410 | 2.5187 → 2.5073 | 4.7015 → 2.6241 |
-| Reopened scopes | 0.7466 → 0.4447 | 0.8245 → 0.5270 | 1.8159 → 0.9588 |
-| Endpoint ports | 0.0943 → 0.0822 | 0.1251 → 0.1093 | 0.2123 → 0.1190 |
-| Reversed strict port updates | 0.1126 → 0.0895 | 0.1181 → 0.0939 | 0.2540 → 0.1409 |
-
-Geometric-mean **time changes** across these seven fixtures (negative is faster):
-
-| Build | Budget 4096 | Budget 1 | Cancellation on, 4096 | Cancellation on, 1 |
-| --- | ---: | ---: | ---: | ---: |
-| Fast | −14.8% | −26.6% | −7.7% | −36.4% |
-| Safe | −14.9% | −38.1% | −12.7% | −24.7% |
-| Small | −46.0% | −17.0% | −26.1% | −16.1% |
-
-Topology-only sessions also improved: without cancellation their 4096-credit
-geometric means fell 12.4% / 14.2% / 37.0% (Fast / Safe / Small), and their
-budget-one means fell 33.1% / 31.1% / 8.9%. Enabled-cancellation topology
-routes improved at both budgets too. Budget 64 and `run()` are included in
-the CSV. The tiny deep/one-edge fixture is below useful timing resolution;
-the rejected product still stops with `PairLimit` before expansion.
-
-**Remaining cost:** Fast sessions at budget 4096 now take 1.25–1.73× direct
-time in this harness; budget one still takes 3.0–4.4×. Bounded transitions,
-resumable growth and repeated calls are not free. This is not a universal
-speedup: the plain/shared-default Fast sessions at budget 4096 rose about
-1 μs (3–4%), while Safe strict overlap was essentially flat. Use direct
-`materialize` when intermediate scheduling is not needed.
-
-**No weaker contract:** every defined transition still consumes the same credit;
-copies/initialization remain at most 64 bytes per credit. Entry polls, one poll
-per credit, zero-budget polls and cancellation-before-work-limit precedence are
-unchanged. Across the measured matrix, credits, poll counts, edge counts,
-retained/peak requested bytes, outcomes and session object sizes matched the
-baseline exactly. Tests compare batched progress to single credits, cancel at
-every poll under budgets 1/7/full-run, and exercise allocation failures and
-partial-source output. The complete check passed 789 tests; IR passed all 144
-in Debug, Fast and Safe.
-
-**Default-path gate:** the direct-only benchmark's entire `__text` remains
-byte-identical to `fc64630` in Fast, Safe and Small. Parser metering and
-cancellation are untouched. The optimization adds no per-node/edge metadata
-or heap payload. Specialization does cost opt-in code: the expanded benchmark's
-`__TEXT` segment grew by 32,352 / 35,968 / 20,576 bytes (Fast / Safe / Small).
-That harness includes both output forms, runtime cancellation and all budgets;
-it is not a universal consumer binary-size delta. Default-only code is unchanged.
-Heap figures exclude code pages, temporary call frames, allocator internals and
-process RSS.
-
-#### Plain-edge and code-size follow-up
-
-Baseline **`0b3c81f`**, M4 Pro, Zig 0.17.0. Five serial, alternating processes
-per revision in Fast/Safe/Small, plus a fresh Fast comparison with the original
-**`fc64630`** session implementation. Both sides use the same harness: one
-unreported folding traversal warms the process, then each measured route gets
-12 warmups and 15 samples. Plain/defaults run after the larger fixtures to
-avoid measuring CPU ramp-up. No builds or tests overlap timing.
-
-The retained changes are small: endpoint reads borrow their state, endpoint
-cardinality is cached in the former optional-ID slot (two `u32`s, no larger
-scratch), and all exhausted grants share one poll/limit exit instead of
-duplicating it at each phase. The immutable strict flag is read once for
-multi-credit drives. Single-credit resumes retain their direct return. Merging
-the cancellable/non-cancellable drivers, or removing the single-credit
-specialization, saved more code but caused larger slowdowns and was not kept.
-
-Attribute-bearing sessions, **4096 credits, no cancellation token**, median ms
-(before → after):
-
-| Fixture | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| Plain edges | 0.0337 → 0.0310 | 0.0366 → 0.0339 | 0.0361 → 0.0355 |
-| 64 shared defaults | 0.0335 → 0.0315 | 0.0393 → 0.0356 | 0.0360 → 0.0355 |
-| 8 explicit attributes | 0.2870 → 0.2847 | 0.3620 → 0.3624 | 0.4957 → 0.4559 |
-| Strict overlapping sets | 2.0183 → 2.0265 | 2.5013 → 2.5162 | 2.8520 → 2.6166 |
-| Reopened scopes | 0.4468 → 0.4323 | 0.5183 → 0.5162 | 0.9653 → 0.9660 |
-| Endpoint ports | 0.0818 → 0.0816 | 0.1078 → 0.1087 | 0.1187 → 0.1132 |
-| Reversed strict port updates | 0.0893 → 0.0852 | 0.0933 → 0.0895 | 0.1423 → 0.1344 |
-
-The remaining plain Fast slowdown is recovered: **8.0% faster** than `0b3c81f`.
-The freshly measured original `fc64630` takes 0.0331 ms for plain edges and
-0.0328 ms for shared defaults; the new results are also 6.3% / 4.0% faster
-than those original baselines.
-
-Across the seven fixtures, attribute-session geometric-mean times at budget
-4096 improve 3.3% / 2.9% / 4.3% (Fast / Safe / Small); at budget one they
-improve 3.1% / 5.0% / 0.1%. Enabled-cancellation attribute sessions improve
-at both budgets too. Topology-only 4096-credit means improve in all three
-modes; topology budget-one means range from 3.0% faster to 1.2% slower.
-
-This is **not a universal microbenchmark speedup**. Fast reopened-scope
-attribute sessions at budget one rise 1.3617 → 1.4368 ms (+5.5%); cancellable
-topology-only ports rise 0.0600 → 0.0648 ms (+8.0%). Small cancellable
-topology-only strict ports at budget one rise 0.2271 → 0.2413 ms (+6.3%).
-The Small rejected-product check at budget 4096 rises 0.0188 → 0.0211 ms;
-it still rejects before expansion. Tiny deep/one-edge timings remain below
-useful resolution. No credit or polling guarantee was traded for throughput.
-
-The same all-routes benchmark's Mach-O **`__TEXT` segment** (code and constants)
-shrinks as follows; these are not universal consumer binary-size deltas:
-
-| Mode | Before, bytes | After, bytes | Saved |
-| --- | ---: | ---: | ---: |
-| Fast | 491,512 | 483,016 | 8,496 B (8.30 KiB) |
-| Safe | 576,320 | 567,808 | 8,512 B (8.31 KiB) |
-| Small | 222,576 | 216,816 | 5,760 B (5.63 KiB) |
-
-All measured credits, cancellation polls, outcomes, edge counts and requested
-retained/peak bytes match the baselines. Session objects remain 448/888 bytes
-(topology/attributes) in Fast/Small, 472/936 in Safe. The direct-only benchmark's
-entire `__text` remains byte-identical in all three modes. Tests also cover
-endpoint reuse across singleton/deduplicated/empty sets and cancellation at
-every poll for both output forms, alongside existing partition, allocation
-failure and partial-result checks. No API or parser execution policy changes.
-`zig build check` passes all 789 tests; IR passes all 144 tests in Fast and Safe
-as well as the Debug coverage included in the full check.
-
-### Resumable Document lowering (2026-10-24)
-
-Baseline **`ac473db`**, Apple M4 Pro, Zig 0.17.0. The new, opt-in lowering
-session uses bounded transitions for identity reads, graph construction,
-attribute maps and buffer copies. Ordinary `lowerComplete`/`lowerPartial`
-retain their direct driver; enabling sessions does not route direct calls
-through the resumable machine.
-
-**Direct-path gate:** five serial, alternating processes per revision and mode,
-using the same existing `bench/ir.zig` harness (two warmups, nine samples per
-process). Median lowering times in ms, before → after:
-
-| Fixture | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| 10,000 singleton edges | 1.114 → 1.111 | 1.343 → 1.352 | 1.805 → 1.786 |
-| 10,000 small sets | 2.119 → 2.125 | 2.641 → 2.642 | 2.893 → 2.889 |
-| 1,000 reopened scopes | 0.150 → 0.150 | 0.180 → 0.180 | 0.208 → 0.201 |
-| Strict reopened scopes | 0.150 → 0.151 | 0.184 → 0.183 | 0.208 → 0.209 |
-| 10,000 nested scopes | 0.296 → 0.293 | 0.456 → 0.461 | 0.335 → 0.340 |
-| 50,000 × 50,000 symbolic product | 5.494 → 5.441 | 6.869 → 6.861 | 8.054 → 8.090 |
-
-These measurements show no material direct-path regression. Requested retained
-bytes, peak bytes and arena capacities are identical in every fixture/mode.
-The direct-only benchmark's Mach-O `__text` size is unchanged in Fast/Small
-and 96 bytes smaller in Safe; its code-and-constants `__TEXT` changes by
-+16 / −72 / +16 bytes. This is a harness measurement, not a claim of identical
-binaries or a universal consumer code-size delta.
-
-**Opt-in cost:** `zig build bench-ir-lowering-sessions -Doptimize=fast`
-compares the two drivers on smaller fixtures. Each mode runs four warmups and
-eleven measured rounds, rotating route order within the process. Source
-construction, DOT parsing, output consumption and explicit cleanup are outside
-timing. Direct lowering frees its internal scratch before returning, so that
-cleanup is included in direct times; session destruction is outside timing.
-No builds or tests overlap timing. All session routes compile cancellation
-support; only the cancellation route supplies a hook, at interval one.
-
-Fast median ms:
-
-| Fixture | Direct | Session `run()` | Budget 4096 | Budget 1 | Budget 4096 + hook |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 2,000 edges | 0.2544 | 0.4690 | 0.4452 | 0.8939 | 0.5373 |
-| 2,000 nodes, three attributes each | 0.3067 | 0.8795 | 0.8771 | 1.7309 | 0.9712 |
-| 400 reopened scopes | 0.1123 | 0.2146 | 0.2146 | 0.4275 | 0.2440 |
-| 2,000 nested scopes | 0.0650 | 0.1003 | 0.0998 | 0.1860 | 0.1179 |
-| Concatenated name with 64 KiB glue comment | 0.0173 | 0.1626 | 0.1618 | 0.3221 | 0.1789 |
-| 5,000 × 5,000 symbolic product | 0.5048 | 0.9046 | 0.9002 | 1.8391 | 1.0712 |
-
-Safe and Small median ms, without a hook:
-
-| Fixture | Safe direct | Safe 4096 | Safe 1 | Small direct | Small 4096 | Small 1 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Edges | 0.2959 | 0.7359 | 1.0097 | 0.3859 | 0.7657 | 1.3949 |
-| Attributes | 0.4877 | 1.3999 | 1.8973 | 0.5280 | 1.5048 | 2.5794 |
-| Reopened | 0.1590 | 0.3608 | 0.4875 | 0.1713 | 0.3755 | 0.6641 |
-| Nested | 0.0977 | 0.1710 | 0.2201 | 0.0813 | 0.1503 | 0.3239 |
-| Long glue comment | 0.0167 | 0.2628 | 0.3550 | 0.0295 | 0.2621 | 0.5048 |
-| Symbolic product | 0.7053 | 1.5851 | 2.0795 | 0.8943 | 1.4559 | 2.7600 |
-
-Sessions are not throughput-equivalent to direct lowering: Fast budget-4096
-times are about 1.5–2.9× direct on ordinary fixtures, and 9.4× on the long-glue
-stress case (15.7× in Safe). The resumable name cursor accounts for every glue
-unit instead of skipping the comment in one uninterruptible operation. Budget
-one adds resume/dispatch overhead. These costs are confined to the opt-in
-driver, and remain optimization opportunities; no metering or cancellation
-guarantee was relaxed to improve the numbers.
-
-Requested heap bytes, direct → session, identical across modes and budgets:
-
-| Fixture | Retained bytes | Peak bytes |
-| --- | ---: | ---: |
-| Edges | 321,828 → 321,828 | 336,424 → 336,424 |
-| Attributes | 766,560 → 678,000 | 1,012,972 → 846,136 |
-| Reopened | 183,228 → 193,428 | 215,756 → 232,696 |
-| Nested | 194,268 → 194,268 | 281,396 → 281,396 |
-| Long glue comment | 536 → 536 | 1,076 → 1,076 |
-| Symbolic product | 943,184 → 943,184 | 1,050,824 → 1,050,824 |
-
-Bounded attribute-map updates reserve enough cells for one update before
-executing it, changing capacity growth without changing retained semantic
-records. Consequently session memory can be lower **or higher**: the reopened
-fixture's peak rises 7.9%. This is not a memory-reduction feature. Session
-objects add 1,816 bytes in Fast/Small or 1,880 in Safe for this policy. Heap
-figures exclude those objects, source/Document storage, allocator internals,
-code and process RSS. The symbolic product remains one connection and 10,000
-nodes, not 25 million edges.
-
-The complete check passes **799 tests**, including compile-failure and
-freestanding coverage. New tests compare complete/partial outputs with direct
-lowering, cover native encodings and byte-preserving UTF-8 profiles, allocation
-failures, lifetime limits, zero/one/mixed grants and cancellation checkpoints.
-Partition-invariance tests disable allocator resizing: credits include actual
-copies, so different allocator resize outcomes can legitimately change totals.
-DOT, markup and string metering/cancellation remain unchanged.
-
-## Resumable edge streaming (2026-10-24)
-
-Compared with `d875891` on the same Apple M4 Pro and Zig 0.17.0. Streaming
-sessions are opt-in; ordinary `edgeIterator` calls still use their direct
-driver. No parsing, lowering, attribute queries or explicit destruction are
-included in the new traversal timings. Session/iterator initialization and
-consuming/checksumming the edges are included. All builds finished before
-timing, with no concurrent benchmark or test jobs.
-
-**Default-path gate:** five alternating before/after processes per mode using
-the existing `bench/ir.zig` harness. The direct-only executable's entire
-Mach-O `__text` section is byte-identical before/after in Fast, Safe and Small;
-code-and-constants `__TEXT` sizes also remain 278,976 / 341,672 / 187,896 bytes.
-Retained bytes, peak bytes, arena capacities and iterator scratch are identical
-on all six fixtures. This is stronger evidence of no default code-path change
-than small timing differences. Timings are not perfectly stable: Small's
-singleton iterator median moved from 0.163 to 0.195 ms despite identical code,
-with overlapping process ranges (0.149–0.192 and 0.155–0.221 ms).
-
-The shared-engine refactor initially changed owning sessions' automatic field
-layout and cancellation guard code generation, slowing some Small fixtures.
-Keeping the original owning layout and guard removes those changes: the final
-existing `bench/ir_sessions.zig` executable's entire `__text` section is also
-byte-identical to the baseline in all three modes (273,588 / 322,556 / 174,500
-bytes). Session object sizes and requested output/scratch memory are unchanged.
-The correction does not change the new streaming benchmark's generated code;
-the measurements below use that same code.
-
-**Opt-in cost:** `zig build bench-ir-edge-sessions -Doptimize=fast` compares
-ordinary iteration with the new pull session. Each process rotates route order
-over four warmups and eleven measured rounds. These are medians of five process
-medians. All session routes compile cancellation support; only the final column
-supplies a hook, at interval one. An advance returns when **one** edge is ready,
-even if credits remain; it does not batch 4096 output edges.
-
-Fast median ms:
-
-| Fixture | Direct | Session `run()` | Budget 4096 | Budget 1 | Budget 4096 + hook |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 2,000 edges | 0.0138 | 0.0377 | 0.0351 | 0.0710 | 0.0399 |
-| 1,000 small sets, 3,000 edges | 0.0169 | 0.0350 | 0.0333 | 0.0933 | 0.0516 |
-| 400 overlapping strict products, 10 edges | 0.0241 | 0.0268 | 0.0268 | 0.1088 | 0.0424 |
-| 200 reopened scopes, 20,100 edges | 0.0975 | 0.1998 | 0.1777 | 0.4941 | 0.3016 |
-| 2,000 port-bearing edges | 0.0133 | 0.0361 | 0.0348 | 0.0689 | 0.0368 |
-| First 1,000 edges of a 5,000 × 5,000 product | 0.0449 | 0.0478 | 0.0465 | 0.0948 | 0.0536 |
-
-Safe and Small median ms, without a hook:
-
-| Fixture | Safe direct | Safe 4096 | Safe 1 | Small direct | Small 4096 | Small 1 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Edges | 0.0175 | 0.0358 | 0.0750 | 0.0210 | 0.0293 | 0.0923 |
-| Small sets | 0.0208 | 0.0350 | 0.1004 | 0.0278 | 0.0430 | 0.1263 |
-| Strict overlap | 0.0268 | 0.0311 | 0.1181 | 0.0785 | 0.0947 | 0.1940 |
-| Reopened | 0.0886 | 0.1921 | 0.5283 | 0.1638 | 0.2709 | 0.6968 |
-| Ports | 0.0173 | 0.0345 | 0.0761 | 0.0210 | 0.0318 | 0.1000 |
-| Product prefix | 0.0306 | 0.0581 | 0.1125 | 0.0544 | 0.0387 | 0.1256 |
-
-The 2,000-level nested fixture produces only two edges after lowering; traversal
-is about 0.0001 ms, too short for useful ratios. Sessions do more state dispatch
-and save/resume work: Fast budget-4096 costs about 1.0–2.6× direct on these
-fixtures, and budget one 2.1–5.5×. These are new, opt-in costs, not a slowdown of
-the ordinary iterator. Neither credit granularity nor cancellation guarantees
-were weakened. The Small product-prefix win is fixture-specific, not a general
-session speed advantage.
-
-**Memory:** direct and session requested heap peaks match in every fixture and
-route: 0 bytes for singleton/port edges, 4,144 for small sets, 608 for strict
-overlap, 144 for nested scopes and 100,456 for the product prefix. Reopened
-scopes use 2,516 bytes in Fast/Small or 1,884 in Safe. These allocator-dependent
-growth figures exclude source/IR storage, allocator internals and process RSS.
-The session object additionally occupies 488 bytes in Fast/Small or 512 in Safe
-for the benchmark's policy. Non-strict streams retain no output array; strict
-streams retain canonical node pairs and a hash table. They are not generally
-constant-memory, and the product-prefix fixture stops after 1,000 edges rather
-than pretending to enumerate all 25 million.
-
-The full check passes **807 tests**; the IR suite passes **162 tests** in both
-Fast and Safe. Coverage includes complete/partial views, native encoding,
-strict duplicates, provenance/ports, deep scopes, allocation failures, lifetime
-limits, zero/one/mixed grants, runtime policies and cancellation intervals.
-Credit partition tests disable allocator resizing: actual growth copies are
-charged, so allocator behavior can otherwise change total credits.
-
-### Edge-streaming overhead follow-up (2026-10-25)
-
-Compared with `2a72c90`, on the same Apple M4 Pro and Zig 0.17.0. The previous
-cost was largely per-edge bookkeeping: a plain non-strict edge took nine
-transitions initially and ten thereafter, each checking the grant and updating
-intermediate state. Budget-one calls also crossed an avoidable driver boundary.
-This was not extra parsing, attribute resolution or retained output.
-
-The streaming driver now fuses two allocation-free cases when **no cancellation
-hook is installed**: singleton connection preparation/delivery (9 or 10 credits)
-and delivery from already-prepared endpoints (3 credits). It charges exactly
-those original credits, and only enters when both the grant and lifetime limits
-cover the whole path. A stop inside that path uses the original stepped machine.
-Strict deduplication, scratch growth and active hooks also keep that machine.
-Only the one-credit dispatch is forced inline: forcing all drivers inline made
-Small slower and enlarged code, so that experiment was discarded.
-
-Five alternating process runs per revision/mode, with the same current harness
-on both revisions. Each fixture now warms for at least 50 ms and four complete
-rotated rounds, then records eleven rounds; table entries are medians of process
-medians. No builds/tests overlapped the final measurements. Source construction,
-parsing/lowering, attribute queries and explicit destruction remain outside
-timing. `bench-ir-edge-sessions` produces the per-route CSV in one command.
-
-Budget 4096, no hook, median ms before → after:
-
-| Fixture | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| 2,000 edges | 0.0333 → 0.0123 | 0.0329 → 0.0126 | 0.0280 → 0.0124 |
-| 1,000 small sets, 3,000 edges | 0.0331 → 0.0303 | 0.0345 → 0.0314 | 0.0401 → 0.0317 |
-| 400 overlapping strict products | 0.0269 → 0.0267 | 0.0309 → 0.0309 | 0.0867 → 0.0806 |
-| 200 reopened scopes, 20,100 edges | 0.1755 → 0.1495 | 0.1928 → 0.1579 | 0.2508 → 0.1548 |
-| 2,000 port-bearing edges | 0.0344 → 0.0122 | 0.0314 → 0.0126 | 0.0280 → 0.0123 |
-| First 1,000 edges of a 5,000 × 5,000 product | 0.0412 → 0.0410 | 0.0502 → 0.0532 | 0.0350 → 0.0325 |
-
-Simple edges improve 56–65%; reopened scopes improve 15–38%. The largest Fast
-session/direct ratio in this no-hook, budget-4096 matrix falls from about 2.5×
-to 1.9× (small sets). This does **not** make every resumable operation as fast as
-direct iteration. With only one credit available, dispatch/save/resume remains
-real work; active interval-one hooks still poll at every original checkpoint.
-The two-edge nested fixture remains too short for meaningful timing ratios.
-
-Budget one, no hook, median ms before → after:
-
-| Fixture | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| Edges | 0.0682 → 0.0655 | 0.0753 → 0.0653 | 0.0923 → 0.0625 |
-| Small sets | 0.0929 → 0.0862 | 0.1019 → 0.0875 | 0.1150 → 0.0815 |
-| Strict overlap | 0.1086 → 0.0938 | 0.1170 → 0.0978 | 0.1759 → 0.1525 |
-| Reopened | 0.4923 → 0.4777 | 0.5197 → 0.4669 | 0.6640 → 0.4782 |
-| Ports | 0.0682 → 0.0656 | 0.0719 → 0.0652 | 0.0903 → 0.0636 |
-| Product prefix | 0.0902 → 0.0905 | 0.1101 → 0.1004 | 0.1175 → 0.0892 |
-
-Fast `run()` on plain edges improves from 0.0359 to 0.0170 ms, but reopened
-scopes are approximately flat (0.1892 → 0.1867 ms). Cancellation timings are
-mostly flat. Remaining positive medians above 5% have overlapping process
-ranges: Fast product-prefix `run()` and cancellation, Safe product-prefix 4096,
-and Small small-set/product-prefix cancellation. For example, the Safe product
-case above spans 0.0491–0.0525 ms before and 0.0478–0.0537 ms after. These are
-inconclusive small differences, not a claim that every measured route improved.
-
-**Default and memory gates:** the direct-only `bench/ir.zig` and existing owning
-`bench/ir_sessions.zig` executable `__text` sections remain byte-identical to
-the baseline in Fast, Safe and Small. Their code-and-constants sizes are also
-unchanged. Streaming credits, poll counts, edge counts and requested heap peaks
-match before/after in every measured case/route, and the session remains
-488 bytes in Fast/Small or 512 in Safe. The consumed streaming harness adds
-2,088 / 1,468 / 1,592 bytes of `__text` in Fast/Safe/Small (about 0.5–1.1%);
-this is opt-in harness code, not a per-graph allocation or a universal library
-binary-size figure.
-
-Regression tests compare batched execution with one-credit execution at every
-tested work-limit boundary, plus pair/edge/memory stops, checking returned
-prefixes, phases, counters and peak memory for complete and partial IR. Native
-mixed-kind views cover grants 1/3/9/64; runtime-policy batching and every
-interval-one cancellation checkpoint are covered too. The full check passes
-**809 tests**; Fast and Safe each pass **164 IR tests**.
-
-### Resumable symbolic queries (2026-10-25)
-
-The new `IR.hasEdgeSession` / `IR.containsSession` increment was checked against
-`6bfa394` using Zig 0.17.0 on the same Apple M4 Pro. These are opt-in operations;
-ordinary queries, parsing and lowering retain their existing drivers/layouts.
-
-Run `zig build bench-ir-query-sessions -Doptimize=fast` (also `safe` and `small`).
-The harness generates/lower inputs outside timings, then compares direct calls,
-session `run()`, budgets 1/64/4096, active interval-one cancellation, and runtime
-metering policy. Initialization is included. Each row consumes 32 queries,
-alternating an isolated-node miss with a fixture-specific target, and checks
-answers against the other routes. It includes directed/undirected singletons,
-small sets, 1,000 reopened subgraphs, 2,000 nested scopes, and a symbolic
-50,000 × 50,000 endpoint product. No expanded-edge array is constructed.
-
-Recorded values below are medians of **three independent processes** per mode;
-each process uses at least four rotated warmups/50 ms, then eleven rotated
-measured rounds. Benchmarks ran separately from builds/tests. Times are **ms
-per 32-query batch**, direct → session budget 4096, without a cancellation hook:
-
-| Query fixture | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| 2,000 directed singleton connections, existence | 0.0764 → 0.1068 | 0.0795 → 0.1253 | 0.1269 → 0.1275 |
-| 2,000 small-set connections, existence | 0.0749 → 0.1000 | 0.0643 → 0.1279 | 0.1118 → 0.1281 |
-| 2,000 undirected connections, existence | 0.1000 → 0.1709 | 0.1076 → 0.2316 | 0.1790 → 0.2223 |
-| 1,000 reopened scopes, existence | 15.3969 → 30.4107 | 17.0485 → 48.9577 | 62.9452 → 51.2665 |
-| Final reopened membership, contains | 0.0306 → 0.0562 | 0.0423 → 0.1033 | 0.1231 → 0.0887 |
-
-Fast budget-4096 sessions cost about 1.3–2.0× direct calls in these substantial
-cases; Safe reaches 2.9× on reopened existence. Small ranges from 0.7–1.2×.
-This is **not** a promise that yielding is free: saving/dispatching a membership
-probe costs work, and repeatedly searching reopened versions retains the direct
-algorithm's potentially expensive total complexity. No new adjacency index or
-memoization is introduced. The purpose is bounded advances, not lower total
-query complexity. Singleton membership, deep-but-compact membership and the
-single symbolic-product query finish too quickly for useful timing ratios.
-The latter checks 2.5 billion potential edges through membership indexes,
-without visiting the product.
-
-Fast `run()` / budget 1 times for those same rows are respectively
-0.1069 / 0.1929, 0.1060 / 0.1879, 0.1898 / 0.2983,
-30.9156 / 55.3299, and 0.0639 / 0.1034 ms. Exact credits match across every
-session budget, runtime-policy and active-hook route. Active interval-one hooks
-poll at each credit plus initialization/resume. The synthetic hook increments
-a counter; it does not model application callback cost. Code layout can also
-make an active-hook specialization faster on some fixtures.
-
-**Memory and default-path gates:** every session route uses **zero heap scratch**.
-The fixed-policy, complete-input metered session states are **72 bytes** for
-existence and **56 bytes** for membership in all three modes; this is inline
-per-operation state, not new per-graph storage. Partial/runtime/cancellable
-specializations may have larger state. There is no new allocation, persistent
-index or eager expansion. The consumed direct-only `bench/ir.zig` executable's
-entire `__text` dump is byte-identical before/after in Fast, Safe and Small,
-and code-and-constants sizes are unchanged (278,976 / 341,672 / 187,896 bytes).
-That gate applies to the default path, not binaries opting into the new sessions.
-
-Tests cover direct/session agreement, complete and partial answers, zero/mixed/
-one-credit grants, lifetime-limit boundaries, interval/entry cancellation,
-runtime overrides, invalid handles, generic operators, UTF-8/16/32, nested and
-reopened membership, and an allocator refusing all new allocations. The full
-check passes **818 tests** and **173 IR tests** pass separately in Fast, Safe
-and Small. Effective-edge-attribute query sessions remain a later increment.
-
-### Safe symbolic-query follow-up (2026-10-25)
-
-Compared with the initial query-session implementation above, using the same
-Zig 0.17.0, Apple M4 Pro and `bench-ir-query-sessions` harness. These are medians
-of three alternating before/after process pairs, with no builds or tests
-running alongside them. Each process retains the rotated warmups and eleven
-measured rounds described above. Times are **ms per 32 queries**, not per query.
-
-The old driver redispatched the query and membership state machines for every
-body/probe, rebuilding the posting slice and repeating Safe's bounds checks.
-The bounded set loop now keeps the slice/body local across probes. Empty posting
-lists can account for impossible body visits without reading each body, while
-retaining exactly the original credits and paused cursor. Connection and
-membership transitions share their single-step primitives.
-
-Batching is capped by the remaining grant, lifetime work allowance and next
-cancellation checkpoint. One-credit calls keep an inlined step. Existence
-queries without reopened scopes keep the compact loop; standalone membership
-queries can still batch their probes. Fixed interval-one cancellation profiles
-also retain the compact driver. No safety checks are disabled, work units
-enlarged, polling intervals relaxed, indexes added or edges expanded.
-
-| Safe query, budget 4096 without hook | Before | After | Change |
-| --- | ---: | ---: | ---: |
-| Directed singleton connections | 0.12538 | 0.13113 | +4.6% |
-| Small-set connections | 0.12696 | 0.12575 | −1.0% |
-| Undirected connections | 0.23204 | 0.23404 | +0.9% |
-| Reopened-scope existence | 44.53021 | 25.29417 | **−43.2%** |
-| Reopened-scope membership | 0.10738 | 0.05471 | **−49.1%** |
-
-Direct reopened existence measured 16.94883 ms in the new harness: its session
-is now about **1.49×** direct, versus the earlier roughly 2.9× observation
-(2.60× in this paired baseline). This is not a claim that every session is
-within 1.49×: the undirected workload still costs about 2.18× direct. Tiny
-singleton/deep-compact/product membership calls are too short for useful ratios.
-
-| Safe reopened query / route | Before | After |
-| --- | ---: | ---: |
-| Existence, `run()` | 44.59271 | 26.99279 |
-| Existence, budget 64 | 47.38296 | 26.98592 |
-| Existence, budget 1 | 95.91446 | 54.66013 |
-| Existence, active interval-one hook | 50.70296 | 49.22917 |
-| Existence, runtime-policy budget 4096 | 42.75225 | 27.27629 |
-| Membership, budget 1 | 0.17642 | 0.08467 |
-| Membership, active interval-one hook | 0.07988 | 0.08363 |
-| Membership, runtime-policy budget 4096 | 0.09133 | 0.05517 |
-
-**Remaining tradeoffs:** these are not across-the-board wins. In addition to
-the small increases above, the opt-in runtime-policy undirected route measured
-0.19896 → 0.22746 ms (**+14.3%**); its singleton/small-set routes changed +2.5%
-and −1.3%. Inlining/layout experiments that regressed Fast/Small were not kept:
-both modes retain the original driver, and their complete query benchmark
-`__text` dumps are **byte-identical** to the initial implementation. The larger
-bounded driver is used only in Debug/Safe configurations that permit batching.
-
-**Default and memory gates:** the separate direct-only `bench/ir.zig` executable
-has identical `__text` before/after in Fast, Safe and Small. Session state remains
-72 bytes for existence and 56 bytes for membership (fixed, metered, no hook),
-with **zero heap scratch** and no new per-graph storage. The opt-in Safe query
-harness's code-and-constants section grows 318,424 → 327,424 bytes (+9,000);
-this is executable code, not per-query heap usage. Stack layout is compiler-
-dependent; no claim of identical caller stack frames is made.
-
-All 504 final report rows agree on credits, hook counts, answers and heap
-scratch. An independent one-credit test model compares intermediate cursors,
-every tested lifetime boundary, cancellation checkpoints and stop precedence
-for fixed/runtime policies. Complete/partial answers, native encodings and
-allocation-free operation remain covered. Validation included the full check
-(820 tests), the Safe IR suite (175 tests), and the final nine query tests;
-the query tests also pass in Fast and Small.
-
-### Resumable attribute access (2026-10-25)
-
-Initial implementation against `9cd30d2`, Zig 0.17.0, Apple M4 Pro. Performance
-tuning is deliberately deferred to the final IR pass. Ordinary attribute access
-does not use these session drivers.
-
-Run `zig build bench-ir-attribute-sessions -Doptimize=fast` (also `safe` and
-`small`). The report covers direct calls, session `run()`, budgets 1/64/4096,
-active interval-one cancellation and runtime-policy metering. It checks consumed
-answers and identical session credit totals across routes. Source construction,
-parsing, lowering, materialization and handle lookup are outside timings;
-session initialization, scratch allocation and cleanup are included.
-
-Below: medians of three independent processes per mode, each with at least four
-rotated warmups/50 ms and eleven measured rounds, run separately from compilation
-and tests. Times are **ms per 32 completed operations**. `all` consumes the whole
-effective attribute stream, not just its first entry.
-
-| Operation / fixture | Fast direct → budget 4096 | Safe direct → budget 4096 | Session scratch bytes |
-| --- | ---: | ---: | ---: |
-| All 129 indexed node attributes | 0.05554 → 0.10083 | 0.06342 → 0.11192 | 0 |
-| One attribute, 2 KiB quoted key | 0.02092 → 0.20408 | 0.02175 → 0.25167 | 0 |
-| One attribute, 2,000 strict updates | 0.33204 → 0.87483 | 0.34783 → 0.88788 | 0 |
-| All attributes, 2,000 strict updates | 0.28925 → 1.35446 | 0.35625 → 1.34171 | 24 |
-| All attributes, 1,000 reversed port updates | 0.17100 → 0.62617 | 0.21121 → 0.63713 | 12 |
-| All attributes, 1,000 reopened subgraph contributions | 0.31754 → 1.28608 | 0.43221 → 1.39608 | 12 |
-| All two already-folded attributes | 0.00025 → 0.00154 | 0.00025 → 0.00158 | 0 |
-
-These are **not throughput-equivalence claims**. Large edge workloads above
-cost roughly 2.6–4.7× the direct operations; the source-name comparison for a
-2 KiB key costs 9.8× Fast / 11.6× Safe. Budget one costs more: the long-key row
-takes 0.38729 / 0.44058 ms (Fast / Safe), and strict-update enumeration takes
-4.09900 / 4.27033 ms. The long-key stream is cheap because it enumerates an
-interned key without re-reading its spelling; formatting is not timed.
-Tiny indexed/folded calls are shown for context, not stable relative ratios.
-These opt-in costs are recorded for the final tuning pass, not hidden by changing
-credit units or cancellation guarantees.
-
-For strict-update enumeration, `run()` measured 1.35267 / 1.33946 ms;
-an active interval-one hook measured 1.52563 / 1.77183 ms; runtime-policy
-budget 4096 measured 1.34883 / 1.44263 ms. The report prints hook counts,
-actual credits and requested scratch separately. All 588 measured rows across
-the six processes agree on results, credits, hook counts and scratch for the
-same route.
-
-**Memory:** fixed-policy metered session state is 624 bytes for single lookup,
-696 for enumeration; partial counterparts are 680 / 752 bytes. This is inline
-state, not heap scratch or new per-graph storage. Single-key operations allocate
-nothing. Node/scope/non-strict/folded enumeration also allocates nothing. Strict
-compact enumeration lazily uses 12 bytes per distinct written edge key, matching
-direct iteration in these fixtures; two port winners remain inline. The tests
-query a 50,001 × 50,001 symbolic product without expanding it, with zero lookup
-scratch and 12 bytes for its one-key enumeration, plus 3,000 nested levels and
-2,000 reopened scopes. Allocation failure and scratch limits remain typed stops.
-
-**Default gate:** separate direct-only `bench/ir.zig` Safe binaries before/after
-have identical `__text` and identical stripped file size (420,464 bytes). Parsing,
-direct queries, lowering and retained layouts were not changed. This is a code
-identity check, not a noisy timing claim about every possible application.
-
-**Correctness:** `zig build check` passed; the full Safe IR suite passed 190
-tests. All 15 new tests also passed in Fast and Small. Tests cover complete/
-partial compact/folded answers, native encodings, budget partitions, zero grants,
-lifetime limits, cancellation checkpoints/stop precedence, scratch failures,
-symbolic products and borrowed-key/result lifetimes. Five compile-fail fixtures
-and the runnable example are included. Freestanding Wasm/RISC-V builds consume
-the new sessions. Performance tuning remains open, not the stop/ownership contract.
-
-### Small-set streaming follow-up (2026-10-25)
-
-Compared with `24f8ba0`, using Zig 0.17.0 on the same Apple M4 Pro. The
-remaining small-set cost was endpoint preparation: each membership test and
-ready append still passed through the resumable machine, even when scratch
-capacity was already available. The earlier shortcut only prepared singleton
-endpoints or delivered pairs from endpoints that were already prepared.
-
-Non-strict streaming now also fuses **warm, non-empty, single-body sets** when
-no cancellation hook is installed. Two body headers provide a conservative
-capacity/credit bound; there is no speculative membership scan. The loop then
-deduplicates members in written order using the existing marks and buffers.
-Every original transition is charged, including the distinction between a
-duplicate mention and a unique mention plus append. Short grants/lifetime
-limits, allocation/growth, empty sets, reopened multi-body sets and generation
-rollover use the original stepped path. No session field or allocation was added.
-
-The same expanded `bench-ir-edge-sessions` harness was compiled against both
-revisions: five alternating process runs per mode, at least 50 ms/four rotated
-warmup rounds per fixture, then eleven measured rounds per process. These are
-medians of process medians, in milliseconds. Parsing/lowering, attribute
-queries and explicit destruction are outside timing; no builds or tests ran
-during measurement. Each set fixture below contains 1,000 connections.
-
-Budget 4096, no hook, before → after:
-
-| Set fixture | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| One member, 1,000 edges | 0.0159 → 0.0082 | 0.0161 → 0.0096 | 0.0173 → 0.0084 |
-| Three members, 3,000 edges | 0.0294 → 0.0194 | 0.0316 → 0.0213 | 0.0333 → 0.0195 |
-| Eight members, 8,000 edges | 0.0592 → 0.0440 | 0.0621 → 0.0482 | 0.0656 → 0.0475 |
-| Seven mentions/three unique members, 3,000 edges | 0.0300 → 0.0198 | 0.0334 → 0.0218 | 0.0355 → 0.0216 |
-| Three-by-two sets, 6,000 edges | 0.0509 → 0.0371 | 0.0526 → 0.0386 | 0.0543 → 0.0375 |
-
-The original three-member fixture takes **34% less time in Fast**, 33% less
-in Safe and 41% less in Small. Fast direct iteration is 0.0173 ms in the new
-binary: session/direct is now **1.12×**, versus 1.74× in this comparison and
-about 1.9× in the earlier report. This is traversal only, not an end-to-end
-source-to-IR speedup. Budget 64 gives similar gains; `run()` improves from
-0.0345 to 0.0250 ms in Fast.
-
-Budget one and active hooks do not use the new set path. On the three-member
-fixture, budget one is 0.0850 → 0.0843 ms in Fast, 0.0862 → 0.0870 in Safe,
-and 0.1041 → 0.0973 in Small; active interval-one cancellation is
-0.0511 → 0.0511, 0.0532 → 0.0537, and 0.0746 → 0.0746 ms respectively.
-Inlining is compiler-mode sensitive: forcing set preparation inline helped
-Fast mixed-budget callers but hurt Small's one-credit route. The final version
-forces it only in Fast. A uniform outlining variant that regressed Fast's
-mixed-budget one-credit route was rejected.
-
-This does not claim every route improved. Positive medians above 5% outside
-the set gains have overlapping process ranges: Fast product-prefix budget one
-(0.0835–0.0925 → 0.0841–0.0935 ms), Safe singleton cancellation
-(0.0346–0.0392 → 0.0350–0.0383), and Safe product-prefix budget 4096
-(0.0486–0.0513 → 0.0494–0.0518). The nested two-edge case remains too short
-for useful ratios.
-
-**Memory/default gates:** requested heap peaks and edge counts match in every
-case/route. Three-member sets still peak at **4,144 bytes**, excluding source,
-IR storage, allocator overhead and process RSS; the session remains 488 bytes
-in Fast/Small and 512 in Safe. Work/poll counts match except allocator-dependent
-copy credits in two Safe reopened runs (142,320 versus 142,324 credits, same
-heap peak); forced-no-resize tests verify identical credits and states.
-Direct-only and owning-session benchmark code remains byte-identical to the
-baseline in all three modes. The consumed streaming harness adds 4,508 / 1,456 /
-888 bytes of `__text` in Fast/Safe/Small; unused streaming adds no default-path
-code. These are harness sizes, not universal library binary-size figures.
-
-Tests compare batched execution with one-credit execution at work, pair, edge
-and memory boundaries, including endpoint contents/cursors and marks. Additional
-coverage includes duplicates, warm capacity followed by growth, reopened and
-empty sets, generation rollover, partial IR, native encoding, runtime policies,
-allocation failures and every interval-one cancellation checkpoint. The full
-check passes **811 tests**; the IR suite passes **166 tests** in Fast, Safe and
-Small.
-
-### Fixed-storage Document lowering (2026-10-25)
-
-Baseline **`bb3ae96`**, Apple M4 Pro, Zig 0.17.0, native macOS. Fixed construction
-is opt-in; it specializes the existing builders for caller-owned retained pools
-and separate scratch. No sizing helper or reservation is added to ordinary calls.
-
-**Default-path gate:** nine serial, alternating processes per revision/mode,
-using the same `bench/ir_lowering_sessions.zig` harness. Each process rotates
-routes over four warmups and eleven measured rounds; the table gives the median
-of process medians, in ms, before → after. Compilation was not running during
-measurement.
-
-| Fixture | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| 2,000 singleton edges | 0.2179 → 0.2206 | 0.2688 → 0.2676 | 0.3521 → 0.3574 |
-| 2,000 attribute-bearing nodes | 0.3090 → 0.3097 | 0.5045 → 0.5055 | 0.5533 → 0.5561 |
-| 400 reopened-scope statements | 0.1123 → 0.1132 | 0.1647 → 0.1625 | 0.1759 → 0.1800 |
-| 2,000 nested scopes | 0.0646 → 0.0624 | 0.0992 → 0.1024 | 0.0825 → 0.0821 |
-| 64 KiB name-concatenation comment | 0.0175 → 0.0175 | 0.0168 → 0.0168 | 0.0329 → 0.0330 |
-| 5,000 × 5,000 symbolic product | 0.5318 → 0.5265 | 0.7411 → 0.7248 | 0.9323 → 0.9250 |
-
-Geometric-mean direct-time changes were **−0.4% Fast, −0.1% Safe, +0.6% Small**.
-Individual direct changes ranged from −3.4% to +3.2%; the earlier independent
-Fast/Safe batch also averaged roughly flat. There is no material default-path
-regression demonstrated by these runs. Existing session `run`, budgets 1/4096,
-and cancellable runs also stayed within roughly 3.5%. Every retained/peak byte
-count, work total, cancellation poll count and result count matched baseline.
-
-The existing lowering-session object remains **1,816 B Fast/Small / 1,880 B Safe**.
-Borrowed ownership adds one cold `usize` per graph handle, not per record;
-on this target the handle grows by 8 B. The existing benchmark's Mach-O
-`__TEXT` (code plus constants, not the full file) changes by **+200 B Fast,
-+456 B Safe, +440 B Small**, all below 0.3%. These are harness-specific sizes,
-not a universal application binary delta.
-
-**Opt-in storage comparison:** run `zig build bench-ir-fixed -Doptimize=fast`
-(or `safe` / `small`). Nine process runs per measured mode, each with four
-warmups and eleven measured samples per rotating route. Source construction,
-DOT parsing, sizing, caller-buffer allocation and result cleanup are outside
-timing. Allocation counts come from a separate untimed growable run; the timed
-growable path uses the ordinary allocator directly.
-
-`fixed_used` explicitly uses observed retained counts and a prior fixed run's
-scratch peak. That prior run starts with bounds-derived scratch because a
-growable result has no scratch high-water report. This is a repeat-input sizing
-comparison, **not** a cheap exact-sizing pass or a promise about edited input.
-`fixed_bounds` reserves the full count-derived bounds instead.
-No route expands the 25-million-pair product during lowering.
-
-| Fixture | Direct Fast: growable → fixed used (ms) | Direct Safe: growable → fixed used (ms) | Fixed session `run`: Fast / Safe (ms) |
-| --- | ---: | ---: | ---: |
-| 2,000 singleton edges | 0.2343 → 0.2006 | 0.3202 → 0.2212 | 0.3634 / 0.5978 |
-| 2,000 attribute-bearing nodes | 0.3237 → 0.2418 | 0.5583 → 0.3229 | 0.7471 / 1.1880 |
-| 400 reopened-scope statements | 0.1202 → 0.1001 | 0.1991 → 0.1244 | 0.1855 / 0.2924 |
-| 2,000 nested scopes | 0.0735 → 0.0637 | 0.1605 → 0.0685 | 0.0716 / 0.1268 |
-| 64 KiB name-concatenation comment | 0.0175 → 0.0173 | 0.0168 → 0.0166 | 0.1645 / 0.2675 |
-| 5,000 × 5,000 symbolic product | 0.5357 → 0.3930 | 1.0112 → 0.4196 | 0.5832 / 0.9953 |
-
-The new harness also includes fixed-code specializations and capacity reporting,
-so its absolute growable timings need not match the separate baseline harness.
-Sessions retain bounded steps; fixed storage removes growth-copy work, not name
-reading or semantic work. The new fixed-session object is **2,192 B Fast /
-2,256 B Safe**, reported separately from its pools. Scratch peaks are recorded
-only at growth points, not by scanning scratch counts on every credit.
-
-All numbers below are **bytes**, not RSS. Growable peak is live requested
-allocation payload; fixed peak is the entire bound graph-plus-scratch reservation,
-even when slots are unused. The fixed routes make zero construction allocator
-calls. Inline graph/session objects and borrowed source/Document pools are
-excluded.
-
-| Fixture | Fast allocation calls: growable → fixed | Retained: growable → fixed used | Peak: growable → fixed used | Full-bounds peak |
-| --- | ---: | ---: | ---: | ---: |
-| 2,000 singleton edges | 33 → 0 | 321828 → 312488 | 336424 → 312776 | 768936 |
-| 2,000 attribute-bearing nodes | 66 → 0 | 766560 → 640624 | 1012972 → 640720 | 5810120 |
-| 400 reopened-scope statements | 58 → 0 | 183228 → 173960 | 215756 → 174272 | 116088008 |
-| 2,000 nested scopes | 44 → 0 | 194268 → 192504 | 281396 → 265112 | 505336 |
-| 64 KiB name-concatenation comment | 13 → 0 | 536 → 312 | 1076 → 600 | 600 |
-| 5,000 × 5,000 symbolic product | 57 → 0 | 943184 → 811360 | 1050824 → 811688 | 811800 |
-
-Observed-size fixed storage reduces requested/reserved peak by about **6–44%**
-on these fixtures. Full bounds can be much larger: the reopened fixture reserves
-about **116 MB**, versus **174 KB** with observed sizes. Most of that excess is
-the conservative attribute-history envelope, not live records. Larger intern
-tables can also add clearing work. This is why bounds remain an explicit option,
-not automatic preallocation.
-
-Verification includes complete/partial and native-encoding equivalence, exact
-fits, every pool one short, individual rotation failures, semantic-limit
-precedence, layout/overlap/canary checks, borrowed lifetimes, zero construction
-allocations, missing later-query storage, budget partitions and every cancellation
-checkpoint in the stop fixture. Fixed construction is also compiled for
-freestanding wasm32 and riscv32. Fixed query scratch is covered below;
-fixed materialization output remains later work.
-
-### Fixed streaming/query scratch (2026-10-25)
-
-Baseline **`a5ab7f8`**, Apple M4 Pro, Zig 0.17.0, native macOS. The new `In`
-operations specialize the existing algorithms for caller-owned scratch.
-Ordinary operations do not reserve bounds, collect scratch high-water counts,
-or branch on a runtime storage backend. No retained graph/record fields were
-added. The lowering-helper renames are naming changes only.
-
-**Default-path comparison:** ten serial processes per revision/mode, balanced
-before/after order, using the unchanged `ir_edge_sessions` and
-`ir_attribute_sessions` harnesses. No compilation/tests ran during measurement.
-Each process reports medians of its rotating, warmed routes. Geometric means
-below use the medians across processes; sub-microsecond rows are excluded to
-avoid magnifying the printed timer's quantization. Positive means more time.
-
-| Existing direct operations | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| Edge streaming | −1.8% | −0.6% | +0.6% |
-| Attribute lookup/enumeration | +1.7% | +1.3% | +1.6% |
-
-These aggregates are approximately flat, **not a claim that every microbenchmark
-is unchanged**. The separate binaries showed +7.8% Fast indexed enumeration,
-a bimodal +15.3% Safe long-key lookup, and +6.4% Small three-member sets. A paired
-same-process lookup/enumeration harness put indexed enumeration within roughly
-−3.4% to −0.2% Fast and −1.7% to −1.3% Safe, and Safe long-key lookup within
-0.1–1.4%; that harness instead showed a roughly 9–12% Safe strict single-key
-outlier, which the original harness did not reproduce. Standalone Safe node
-and strict-edge lookup probes emitted identical instruction streams before and
-after. This points to benchmark/code-layout sensitivity rather than additional
-query work, but the case-level differences remain recorded for the final IR
-performance pass. Forcing attribute iteration to inline did not improve both
-modes consistently and was not retained.
-
-Default peak allocations, result counts and inline state sizes are unchanged.
-Session work/poll counts also agree apart from existing allocator-resize-dependent
-variation of four credits in the Safe reopened fixture (about 142,320 total).
-Fixed backends are tested separately for partition-independent work totals.
-The unchanged harnesses' Mach-O `__TEXT` shrank by 16/64/48 bytes for edges and
-5,136/3,824/2,384 bytes for attributes in Fast/Safe/Small respectively. These
-are harness code-plus-constant sizes, not universal application binary deltas.
-
-**Opt-in fixed scratch:** `zig build bench-ir-fixed-queries -Doptimize=fast`
-(also `safe` or `small`) produces one report comparing growable operations,
-explicit observed capacities, explicit bounds, and fixed sessions with grants
-1/4096. Five processes per measured mode; eleven warmed rotating samples per
-process. Parsing/lowering, sizing and caller buffer allocation are untimed;
-operation construction, initialization, traversal and cleanup are timed.
-`fixed_used` is a repeat-input comparison using a prior fixed run's high-water
-counts, not an automatic reservation or an exact sizing pass for edited input.
-
-| Fixture | Direct Fast: growable → fixed used (ms) | Direct Safe: growable → fixed used (ms) |
-| --- | ---: | ---: |
-| 2,000 singleton edges | 0.01321 → 0.01521 | 0.01608 → 0.01733 |
-| 1,000 three-member sets | 0.01717 → 0.01963 | 0.01875 → 0.02350 |
-| 400 overlapping strict products | 0.02292 → 0.02229 | 0.02604 → 0.02521 |
-| 200 reopened-scope connections | 0.09208 → 0.13021 | 0.08688 → 0.13608 |
-| First 1,000 edges of a 5,000 × 5,000 product | 0.04254 → 0.02408 | 0.03408 → 0.03925 |
-| 32 enumerations over 2,000 strict attribute updates | 0.47063 → 0.43629 | 0.39963 → 0.38821 |
-
-Fixed scratch is an allocation/ownership guarantee, **not automatically a speed
-improvement**. In particular, the opt-in direct reopened fixture is slower;
-broader tuning remains for the final IR pass. The 4096-credit fixed edge sessions
-take 0.00800/0.00888 ms for singletons and 0.10758/0.11779 ms for reopened
-connections (Fast/Safe). Fixed attribute sessions take 1.26283/1.25738 ms at
-4096 credits and 4.60138/4.86138 ms at one credit for the 32 enumerations.
-No metering unit or cancellation checkpoint was relaxed.
-
-The following are scratch **bytes**, not RSS or whole-process memory. Growable
-peak is requested live allocation payload; fixed peak is the full bound
-reservation, including unused slots/marks/hash tables. Input graph/source and
-inline objects are excluded. Every `In` operation makes zero allocator calls.
-
-| Fixture | Growable peak Fast / Safe | Fixed used reservation | Explicit full-bounds reservation |
-| --- | ---: | ---: | ---: |
-| Singletons | 0 / 0 | 0 | 24,012 |
-| Three-member sets | 4,144 / 4,144 | 4,024 | 12,036 |
-| Strict overlap | 608 / 608 | 304 | 304 |
-| Reopened scopes | 2,516 / 1,884 | 1,604 | 2,412 |
-| Large-product prefix | 100,456 / 100,456 | 80,000 | 120,000 |
-| Strict attribute enumeration | 192 / 192 | 192 | 192 |
-
-The product stays symbolic in the IR: its query holds member lists, not 25
-million output edges. Bounds can waste memory; they intentionally do not scan
-for singleton-only streams or exclude non-edge keys. No automatic sizing is
-added to either backend.
-
-With metering enabled and cancellation compiled out, complete edge iterator
-state is 280 → 328 B Fast and 304 → 352 B Safe (growable → fixed); edge session
-state is 456 → 432 B Fast and 480 → 456 B Safe. Attribute iterator state remains
-176 B and attribute session state 696 B. Fixed state replaces allocator/growth
-bookkeeping; it does not add fields to the ordinary specialization.
-
-Verification covers exact/short pools, full-pool duplicate skipping, combined
-member capacity, collision-checked pairs, reusable buffers, alias/length/alignment
-checks (including unused retained regions), semantic-limit precedence, partial
-answers, UTF-8/16/32, zero allocator calls, and emitted-prefix survival. Tests
-exercise zero/one/larger grants, runtime policies, cancellation stop points,
-every work-limit stop in the fixtures, and bounded generation rollover. Fixed
-streaming/enumeration are also consumed in freestanding wasm32/riscv32 checks.
-
-### Fixed-storage materialization (2026-10-31)
-
-Zig 0.17.0, macOS arm64, Apple M4 Pro. Caller-owned output/scratch now cover
-complete and partial materialization, with and without attributes, through
-direct calls and sessions. The input IR remains symbolic. Run one report with:
-
-```sh
-zig build bench-ir-fixed-materialization -Doptimize=fast
-# Also -Doptimize=safe or -Doptimize=small.
-```
-
-The report warms each route for 150 ms, then takes the median of nine samples.
-Parsing/lowering, caller buffer allocation and sizing are outside construction
-timings; sizing time is reported separately. Construction includes descriptor
-checks and lazy table initialization. Output is consumed and checked against
-growable output. The routes compare growable construction, replay of observed
-capacities, explicitly scanned bounds and fixed sessions with grants 4096/1.
-These are requested/reserved bytes, not RSS or allocator metadata.
-
-Selected Fast results with attributes, using **observed capacities**:
-
-| Workload | Edges | Growable ms | Fixed ms | Growable peak KiB | Fixed output + scratch KiB |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Singleton edges | 2,000 | 0.02075 | 0.01413 | 61.9 | 31.3 |
-| Eight explicit keys per edge | 2,000 | 0.16371 | 0.11396 | 741.7 | 414.1 |
-| Repeated strict set products | 1,024 | 1.24442 | 1.13642 | 502.6 | 220.5 |
-| Reopened strict subgraphs | 250 | 0.29079 | 0.28288 | 21.5 | 14.7 |
-| Endpoint ports | 2,000 | 0.05517 | 0.03629 | 257.0 | 132.8 |
-
-Observed fixed reservations reduce peak bytes by 31–56% in these cases.
-No allocation or fallback occurs inside fixed construction, including after
-shortfall/cancellation. Ordinary defaults remain shared with the IR; the fixed
-output stores only explicit/derived winner cells and its key catalog.
-
-**Bounds are not automatic reservation advice.** Scanning does not deduplicate
-strict pairs: the reopened case reserves 1,644,656 bytes using scanned bounds,
-versus 15,060 with observed capacities and 21,988 growable peak. Strict overlap
-reserves 901,664 scanned versus 225,824 observed. Singleton inputs have much
-tighter scanned bounds. Metadata-only bounds can be larger still. The scan
-cost 0.024 ms on the reopened fixture and roughly 0.0002–0.0043 ms on the other
-selected fixtures; it has its own work/cancellation allowance. Supply an
-application envelope or previous counts when tighter memory control matters.
-
-#### Ordinary-path comparison
-
-Compared with `772b6fe`, using five alternating before/after runs, the same
-consumer harness and serial timing after all builds/tests finished. Short cases
-were batched to about 2 ms per sample; the single-edge deep-nesting case was
-excluded from geometric means because its construction is below 0.001 ms.
-Positive percentages mean more elapsed time:
-
-| Mode | Attribute materialization | Topology-only materialization | Materialization session `run()` | Edge streaming |
-| --- | ---: | ---: | ---: | ---: |
-| Fast | +0.7% | +2.3% | +0.4% | +0.8% |
-| Safe | −0.5% | +0.6% | −0.1% | +0.9% |
-| Small | −4.2% | +1.8% | +1.5% | −2.7% |
-
-The mixed Fast harness's reopened topology case was +6.6%. An independently
-built topology-only consumer did not reproduce it: −3.6% on that case and
-−0.5% overall across five alternating runs. Its traversal instructions were
-unchanged; the mixed result suggests binary-layout sensitivity rather than
-added per-edge work. Keep that outlier visible rather than claiming identical
-timings for every consumer.
-
-Ordinary lowering's complete machine-code section was byte-identical in all
-three modes. All measured ordinary allocation peaks and session credit totals
-were identical. Graph and session sizes did not grow. Materialized handles
-also retain their previous size: 56 bytes for topology and 176 bytes with
-attributes in Fast/Small (200 with attributes in Safe). Ownership reuses the
-edge-capacity metadata instead of adding a second edge pointer. Attribute
-lookup carries no ownership branch or per-edge ownership tag.
-
-### Optional IR query indexes (2026-10-31)
-
-Both `.indexes.connections` and `.indexes.scope_memberships` default to `false`.
-They accelerate existing symbolic queries; neither expands endpoint sets or
-edge pairs. Run the production comparison with:
-
-```sh
-zig build bench-ir-query-indexes -Doptimize=fast
-# Also -Doptimize=safe or -Doptimize=small.
-```
-
-The report compares the default profile with both indexes enabled. It separates
-lowering time, retained/peak requested bytes, Arena capacity, repeated `hasEdge`,
-single/all-attribute queries, final scope lookup, query credits and inline
-graph/session sizes. Parsing and handle/query preparation are outside timings.
-Query batches mix early/late hits and misses on existing nodes; attribute
-queries use valid edges, including repeated updates. Each process warms up,
-calibrates query samples to at least 1 ms, then reports medians. An optimizer
-barrier before every lookup prevents repeated reads from being hoisted or folded.
-Construction and query costs must be considered together: one query may not recover the
-index build cost, and broad symbolic histories may gain nothing.
-
-Apple M4 Pro, Zig 0.17.0, three serial runs per mode. These are medians of
-process medians; query times are amortized across warm batches, not isolated
-call latency. Selected **Fast** results (off → both indexes enabled):
-
-| Workload | Lowering, ms | `hasEdge`, µs/query | Extra retained arrays | Extra peak requested memory |
-| --- | ---: | ---: | ---: | ---: |
-| 8,000-link chain | 0.991 → 1.120 | 7.004 → 0.005 | 125.0 KiB | 92.7 KiB |
-| 8,000-edge star | 0.905 → 1.063 | 7.860 → 0.005 | 125.0 KiB | 92.7 KiB |
-| 2,000 one-sided sets | 0.490 → 0.513 | 1.746 → 0.013 | 23.5 KiB | 23.5 KiB |
-| 8,000 connections, 5% sets | 0.851 → 1.052 | 7.878 → 1.483 | 128.2 KiB | 98.9 KiB |
-| Reopened subgraph, 1,000 contributions | 0.190 → 0.202 | 129.469 → 42.298 | 7.8 KiB | 7.1 KiB |
-| 50,000 × 50,000 symbolic product | 4.955 → 4.926 | 0.008 → 0.008 | 12 B | 0 B |
-
-The chain recovers its measured construction cost after roughly 19 queries in
-this mix. Mixed-set lookup is 6.942 → 1.735 µs in Safe and 10.230 → 3.820 µs in
-Small. Its single-attribute query improves from 24.283 → 2.922 µs in Fast;
-enumerating all effective attributes improves from 11.590 → 2.364 µs.
-Final scope lookup across 4,001 scopes improves from 670.86 → 0.64 ns in Fast,
-with 16,004 retained bytes and about 1 µs more construction time in this run.
-
-Indexes are not universally faster. For 4,000 updates to the **same pair**, a
-single-attribute query still visits the whole relevant history: 16.014 →
-18.133 µs Fast, 17.397 → 19.763 µs Safe and 44.872 → 44.077 µs Small. Negative
-`hasEdge` queries benefit, but that does not accelerate the attribute history.
-The default scan profile is appropriate when such histories dominate or queries
-are infrequent. The large product remains exactly one connection, with no
-connection-index arrays; its 12 bytes are three cached scope handles.
-
-Arena capacity was unchanged in these fixtures: the new arrays fit existing
-Arena slack. Their requested payload is still real storage, and this result is
-not a promise for other inputs/allocators. With both indexes selected, full
-profile inline state grows by 96 bytes per graph, 120 per lowering session and
-88 per has-edge/attribute session. It does not grow per node, connection or
-query. All of this state is absent when the indexes are disabled.
-
-Default-off comparisons use the same consumers against `eda87c7`, built for
-Fast/Safe/Small and run serially with alternating before/after order. The final
-ordinary lowering, symbolic-query and attribute-access consumers have
-**byte-identical machine-code sections in all three modes**. This includes the
-query/attribute session routes instantiated by those consumers. Default graph
-and session layouts remain unchanged; new index state shares existing cold
-metadata fields to avoid perturbing Zig's automatic layout. Disabled attribute
-traversal retains its original range loop. Metering grants, cancellation
-intervals and limits are unchanged.
-Measured default credit totals, cancellation poll counts, retained bytes and
-allocation peaks also match. Lowering-session Fast/Small machine code matches;
-Safe retains its safety instrumentation, with a measured −0.1% aggregate change.
-Across three alternating runs, ordinary lowering varied −1.5% to +1.6% and
-symbolic/attribute query batches varied −3.3% to +4.2% by mode (geometric means,
-excluding batches below 0.01 ms). Since these consumers' complete machine-code
-sections match, those timing differences are not evidence of added default
-query work. They also show why tiny timing changes alone are an unreliable gate.
-
-A consumed ReleaseSmall Wasm example (caller-buffer parsing/lowering plus
-`hasEdge` and final scope lookup) grows from **89,034 to 93,447 bytes** with both
-indexes enabled: **4,413 bytes** of additional code. This is one consumer,
-not a universal library-size estimate. Fixed sizing envelopes add five `u32`
-capacity fields; selected pools remain explicit and no bounds are reserved
-automatically.
-
-Correctness gates cover complete/partial and full/topology graphs, independent
-index selections, native encodings, exact fixed fits and every new pool's
-shortfall, allocation failures, alias rejection, budget partitions including
-one/zero credits, and cancellation during construction and querying. An
-additional scan-versus-index check over the 60 bundled Graphviz 16.1.0 graphs
-agreed on 24,404 pair queries, 3,023 effective attributes and 206 final scope
-memberships. This small corpus is not a claim about real-world set frequency.
-
-### Optional materialized adjacency (Unreleased, 2026-11-01)
-
-Apple M4 Pro, Zig 0.17.0. Adjacency is selected at materialization time and
-defaults to `.none`; parsing/lowering never build rows. Reproduce the new-path
-measurements with `zig build bench-ir-adjacency -Doptimize=fast` or `safe`.
-The command reports construction and traversal separately, requested retained/
-peak bytes, Arena capacity and session work. Source generation and parsing/
-lowering are outside timing. Result destruction is outside timing; session
-construction includes its final scratch cleanup. Each case has three warmups
-and nine measured samples, with medians reported.
-
-The default-off comparison uses `11471fb` and the same fixed-materialization
-consumer in Fast/Safe/Small, with two runs per build in before/after then
-after/before order. Each case warms for 150 ms. The table gives geometric-mean
-changes in elapsed time across both attribute selections (negative is faster).
-The single-edge deep-nesting case, below 0.01 ms, is excluded from percentages.
-
-| Adjacency disabled | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| Growable direct, both attribute selections | +1.9% | −1.2% | −5.8% |
-| Fixed direct, observed capacities | +1.4% | −1.7% | +2.7% |
-| Fixed direct, scanned bounds | +1.0% | −0.5% | +3.9% |
-| Fixed session, budget 4096 | +2.5% | −0.8% | +3.2% |
-| Fixed session, budget 1 | −1.9% | −11.1% | +0.4% |
-| Default `materialize(.{})` alone (attributes included) | −0.7% | −3.6% | −8.3% |
-
-Retained bytes, requested peaks and fixed-session work totals match the
-baseline exactly in every measured disabled case. Ordinary lowering is +0.3%
-in a separate two-run Fast comparison; its retained/peak/Arena bytes also
-match. These small timing changes are measurements on this machine, not
-universal improvements. In particular, some fixed/session aggregates are up
-to 3.9% slower; the final slice-2 pass below revisits those measurements.
-
-The first candidate had a much larger Fast topology-session slowdown. The hot
-machine had unchanged transitions, but generated error-union temporaries at
-edge-index writes. Keeping the same range checks as explicit branches removes
-those scalar spills; there is no target-specific alignment workaround. Credits,
-error ordering and cancellation checkpoints are unchanged. Full tests, native
-encoding checks, exhaustive small-input cancellation points, allocation failures,
-fixed-pool canaries/shortfalls and grant partitioning cover these paths.
-
-The following new-path results use topology output (`.attributes = false`).
-Most fixtures contain 100,000 edge statements; the set product explicitly
-materializes 250,000 edges, and the isolated-node fixture has 100,000 isolated
-nodes plus one edge. Times include materialization, not only the row pass.
-
-| Input | Fast, no rows | Fast, forward | Fast, all | Safe, all | Additional retained rows for all |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Directed chain | 1.199 ms | 3.831 ms | 3.790 ms | 3.473 ms | 1,600,016 B |
-| Undirected chain | 0.873 ms | 3.652 ms | 2.929 ms | 2.877 ms | 1,200,008 B |
-| Mixed operators | 0.879 ms | 5.525 ms | 5.496 ms | 4.203 ms | 2,000,024 B |
-| Mixed directed/undirected loops | 0.880 ms | 5.414 ms | 4.007 ms | 3.442 ms | 1,200,008 B |
-| 500 × 500 set product | 0.853 ms | 2.627 ms | 3.149 ms | 4.019 ms | 2,008,008 B |
-| Isolated nodes plus one edge | <0.001 ms | 1.630 ms | 1.419 ms | 1.328 ms | 800,032 B |
-
-All-direction traversal of every node/incident edge takes 0.124–1.236 ms in
-these Fast topology cases. A budget-4096 all-direction session takes 4.851 ms
-for the directed chain and 3.475 ms for the set product, with the same retained
-output as direct construction. There is no per-query allocation or scan of
-rejected edges. Partial counts retain uncertainty rather than implying absence.
-
-Rows use exact allocations. They add retained memory, but need not raise the
-operation's previous growth peak: the set product stays at 8,304,192 requested
-peak bytes while retained output grows from 4,976,864 to 6,984,872 bytes.
-The chain's peak rises from 3,686,192 to 3,811,792 bytes. Arena backing capacity
-is allocator-dependent: Fast reused existing slack for those fixtures, while
-Safe's all-direction set product grew from 8,599,416 to 19,212,190 bytes. These
-figures exclude the borrowed input IR/source and are not process RSS.
-
-Adjacency construction is substantial extra work on these inputs. Fast is
-also slower than Safe in several row-building cases, and fewer selected rows
-do not guarantee faster generated code. The final slice-2 pass below improves
-these opt-in paths. Ordinary queries never construct adjacency
-or expand symbolic sets implicitly.
-
-### Final slice-2 performance and memory pass (Unreleased, 2026-11-01)
-
-Apple M4 Pro, Zig 0.17.0; baseline `9026753`. The same 16 consumer harnesses
-were compiled against both revisions in Fast, Safe and Small. Timings ran
-serially after compilation, tests and fuzzing finished, in before/after then
-after/before order. The tables below average the two per-process medians.
-Each harness retains its documented warmups and sample count. Parsing/source
-generation remain outside IR-operation timings.
-
-Three optimizations survive the comparison:
-
-- Adjacency construction batches already-admitted edge/row work, retaining
-  exactly the scalar cursor and writes at every pause. Each edge/u32 still
-  consumes its original credit. Allocations and phase transitions remain
-  separate; an active cancellation callback keeps the stepped path.
-- Fixed-policy, callback-free attribute lookup batches comparison of ordinary
-  key bytes within the remaining grant. Quotes, escapes, concatenation glue
-  and native decoding keep the existing reader. Comparison stops at the first
-  mismatch, so hash collisions cannot introduce uncharged lookahead.
-  Runtime-policy profiles, cancellation profiles, enumeration and Small retain
-  their compact drivers: extending dispatch there slowed short queries.
-- Fixed edge scratch updates its member high-water mark only when it grows.
-  Bounds checks, failure order, reservations and reported peaks are unchanged.
-
-**Adjacency construction, milliseconds**, including topology materialization
-(`.attributes = false, .adjacency = .all`), excluding traversal/destruction:
-
-| Input | Fast before → after | Safe before → after | Small before → after |
-| --- | ---: | ---: | ---: |
-| 100,000-edge directed chain | 4.088 → 1.441 | 3.491 → 1.848 | 5.850 → 2.593 |
-| 100,000 mixed edges | 5.318 → 1.639 | 4.200 → 1.987 | 6.842 → 2.815 |
-| 500 × 500 set product | 3.258 → 2.826 | 3.856 → 2.924 | 6.287 → 3.621 |
-| 100,000 isolated nodes plus one edge | 1.864 → 0.074 | 1.341 → 0.114 | 2.064 → 0.192 |
-
-The isolated case benefits particularly from bulk clearing/prefix/restoration
-of rows. The set product still pays for its explicitly requested 250,000 edges.
-No symbolic connection is expanded during lowering.
-
-| Other operation | Fast before → after | Safe before → after | Small before → after |
-| --- | ---: | ---: | ---: |
-| 32 lookups of a 2-KiB key, fixed policy, grant 4096 | 0.269 → 0.037 ms | 0.288 → 0.033 ms | 0.362 → 0.360 ms |
-| Reopened-subgraph edge stream, fixed observed scratch | 0.129 → 0.112 ms | 0.126 → 0.120 ms | 0.240 → 0.226 ms |
-
-The key workload still consumes **66,848 credits** for 32 lookups. One-credit
-resumes cannot use this batching: Fast remains about 0.42 ms. Runtime-policy
-lookup remains about 0.27 ms in Fast. These are distinct routes, not a claim
-that every metered/cancellable query becomes seven times faster.
-
-**Default path and memory.** The complete machine-code sections are
-byte-identical before/after for nine consumers in all three modes:
-ordinary lowering, attribute lowering/querying, value access, materialized
-attributes, lowering sessions, materialization sessions, edge sessions, query
-sessions and adjacency-disabled fixed materialization. The new paths add no
-instructions to those consumers.
-
-The first broad run showed timing outliers even in those identical executables.
-Three additional alternating pairs of the lowering and bulk-attribute consumers
-did not reproduce them: geometric-mean changes were +0.4/0.0/0.0% for ordinary
-lowering, −0.3/+0.4/0.0% for attribute-heavy lowering, and +0.9/+0.7/+1.1% for
-bulk folding (Fast/Safe/Small). Cases below 0.01 ms are excluded from these
-percentage summaries. This is evidence of timing variability, not added work
-in the default driver.
-
-The deferred pre-adjacency comparison was rerun separately against `11471fb`,
-with three alternating pairs and only the required type-helper spelling
-adaptation in the consumer. The single-edge deep-nesting case is excluded.
-These percentages include both output attribute selections unless stated:
-
-| Adjacency disabled, versus `11471fb` | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| Default growable materialization, attributes included | +1.4% | 0.0% | −6.4% |
-| Fixed direct, observed capacities | +1.0% | +0.3% | +1.4% |
-| Fixed direct, scanned bounds | +1.3% | −0.9% | +2.9% |
-| Fixed session, grant 4096 | −1.8% | −3.3% | −4.1% |
-| Fixed session, grant 1 | +3.8% | −8.9% | −3.7% |
-
-The earlier Small session slowdown did not reproduce in this aggregate.
-Small fixed/scanned output and Fast one-credit fixed sessions retain small
-mixed-consumer slowdowns; this pass does not claim to eliminate every opt-in
-timing difference. Their retained/peak bytes, edge counts and work totals match
-the pre-adjacency build.
-
-Across the full matrix, retained bytes, requested peaks, Arena capacities,
-allocation counts and reported graph/session sizes match. Example Fast
-materialization footprints below exclude the borrowed IR/source; they are
-allocator measurements, not process RSS:
-
-| Output | Retained before = after | Requested peak before = after | Arena capacity before = after |
-| --- | ---: | ---: | ---: |
-| Chain, no rows | 2,211,776 B | 3,686,192 B | 8,443,256 B |
-| Chain, all rows | 3,811,792 B | 3,811,792 B | 8,443,256 B |
-| Set product, all rows | 6,984,872 B | 8,304,192 B | 19,212,190 B |
-| Isolated nodes, all rows | 800,176 B | 800,176 B | 1,200,724 B |
-
-The same topology and attribute-heavy fixtures were also compiled with
-`.capabilities.attributes = false`. Their before/after retained, peak and Arena
-figures match too. Disabling attributes reduces retained IR, but Arena backing
-is not monotonic across profiles because allocation ordering affects chunk
-growth and reuse. These Fast profile differences already occur in the baseline:
-
-| Lowering fixture | Full retained | Attributes-off retained | Full Arena | Attributes-off Arena |
-| --- | ---: | ---: | ---: | ---: |
-| 10,000 singleton edges | 1,257,404 B | 1,177,404 B | 1,982,156 B | 3,603,728 B |
-| 10,000 nodes with attribute updates | 2,734,680 B | 862,344 B | 7,565,040 B | 1,251,428 B |
-| 50,000 × 50,000 symbolic product | 7,848,888 B | 5,848,880 B | 21,827,544 B | 16,359,814 B |
-
-The product remains one connection. Fixed storage remains the option for a
-caller-selected reservation without abandoned growable buffers.
-
-Work and polling totals also agree, apart from the unchanged Safe growable-edge
-benchmark alternating between 142,320 and 142,324 credits. That variation also
-occurs between baseline runs. Growable copying is charged when needed; an
-allocator's in-place resize can avoid copy credits. Fixed storage and controlled
-allocation traces retain exact accounting.
-
-Opted-in consumer code grows modestly; ordinary consumer text sizes are
-unchanged. These are changes to the executable `__text` section, excluding
-debug information and other sections:
-
-| Consumer | Fast | Safe | Small |
-| --- | ---: | ---: | ---: |
-| Attribute sessions | +1,224 B | +1,528 B | +56 B |
-| Fixed query scratch | +40 B | −48 B | +88 B |
-| Adjacency | +3,208 B | +4,464 B | +2,624 B |
-
-**Remaining costs.** Strict-edge attribute enumeration still walks contributions:
-the Fast fixture takes 1.333 ms through a grant-4096 session versus 0.290 ms
-directly, for 32 enumerations. The pass does not eliminate that optional
-session overhead. A Fast query-session batching experiment improved reopened
-scopes but slowed short queries, so it was discarded. Runtime-policy long-key
-optimization and further strict-history/session tuning remain possible follow-ups;
-no polling or work unit was enlarged to improve the numbers.
-
-Validation: the full tests/examples/freestanding/benchmark/tool gate passes
-327 steps and 971 tests; the Safe IR suite passes 306 tests. Internal scalar
-comparison tests check every admitted cursor/write boundary, including name
-escapes, concatenations and collision mismatches. Another **60,000 adversarial
-inputs** passed (30,000 Safe, seed 11; 30,000 Fast, seed 12), covering complete/
-partial, full/topology, fixed/growable, sessions, limits, cancellation and
-adjacency. The partial benchmark's 16-byte argument-storage leak was also fixed.
-
-Reproduce individual measurements with `bench-ir-adjacency`,
-`bench-ir-attribute-sessions` and `bench-ir-fixed-queries`, selecting
-`-Doptimize=fast`, `safe` or `small`. Use serial runs for comparisons.
-
 ## Running the benchmarks
+
+Run one benchmark at a time, with no builds or other heavy work running. Pick
+the build with `-Doptimize=fast`, `safe` or `small`, run each one several times
+(five for the 0.5.0 tables) and take the median.
+
+```sh
+zig build bench -Doptimize=fast -Dlexer=scalar
+zig build bench-markup -Doptimize=fast -- --graphviz-only
+zig build bench-ir -Doptimize=safe
+zig build check-benches  # only checks that they compile
+```
+
+`-Dlexer=scalar`, `block` or `auto` (the default, which means scalar) picks the
+scanner for `bench`, `bench-lexer`, `bench-session` and `bench-subgraphs`.
+The other benchmarks cover both scanners where it matters.
+
+### Every benchmark step
+
+| Step | What it measures | Options after `--` |
+| --- | --- | --- |
+| `bench` | DOT parse and validate, growing and hinted ([throughput.zig](../bench/throughput.zig)) | |
+| `bench-lexer` | The DOT scanner on its own | |
+| `bench-session` | DOT sessions with metering and cancellation | |
+| `bench-subgraphs` | Sibling and nested subgraphs | |
+| `bench-policy` | Compile-time against run-time settings | |
+| `bench-markup` | Markup parsing, memory, execution options and validation | `--rules-only`, `--validation-only`, `--scopes-only`, `--graphviz-only` |
+| `bench-composition` | DOT with markup label checking: time, allocator calls, peak bytes | |
+| `bench-cancellation` (unreleased) | Cancellation intervals for both parsers | |
+| `bench-metering` (unreleased) | DOT and markup parsing: default, tiny and batched budgets, cancellation, run-time settings | |
+| `bench-identifiers` (unreleased) | Checked against parser-recognized names in an event-only index | |
+| `bench-previews` (unreleased) | Unfinished-token previews: time, callbacks, credits, session size | |
+| `bench-string` (unreleased) | Standalone exact, ASCII-insensitive, Unicode and custom checks | `--csv` |
+| `bench-string-sessions` (unreleased) | String metering and cancellation | `--csv` |
+| `bench-logical-strings` (unreleased) | String checks through DOT, markup and plain readers | `--csv` |
+| `bench-string-integration` (unreleased) | Attribute string checks in DOT and markup, with allocator totals | `--csv` |
+| `bench-string-passthrough` (unreleased) | Real DOT quote scanning, then simulated string checks | |
+| `bench-ir` (unreleased) | IR lowering, expansion, attributes, values and bulk attributes (four programs, one after another) | |
+| `bench-ir-materialized` (unreleased) | Folded attributes against compact reads | |
+| `bench-ir-partial` (unreleased) | Partial IR lowering, lookups, mentions and pair queries | |
+| `bench-ir-partial-edges` (unreleased) | Complete against partial edge streaming, folding and memory | |
+| `bench-ir-sessions` (unreleased) | Direct against resumable materialization | |
+| `bench-ir-lowering-sessions` (unreleased) | Direct against resumable lowering | |
+| `bench-ir-edge-sessions` (unreleased) | Direct against resumable edge streaming | |
+| `bench-ir-query-sessions` (unreleased) | Direct against resumable `hasEdge` and membership queries | |
+| `bench-ir-attribute-sessions` (unreleased) | Direct against resumable attribute lookups and reads | |
+| `bench-ir-query-indexes` (unreleased) | Optional query indexes: lowering, memory, repeated queries | |
+| `bench-ir-adjacency` (unreleased) | Optional adjacency: building, walking, memory | |
+| `bench-ir-fixed` (unreleased) | Fixed-storage lowering: sizing, allocator calls, memory, time | |
+| `bench-ir-fixed-queries` (unreleased) | Fixed scratch for streaming and queries | |
+| `bench-ir-fixed-materialization` (unreleased) | Growable against fixed materialization | |
+| `perf-string` (unreleased) | Compares string benchmarks against a Git revision; see below | see below |
+| `string-size-probes` (unreleased) | Installs the Wasm size probes | |
+| `check-wasm` (unreleased) | Runs the Wasm probes and checks which keep the folding table (needs Node) | |
+| `check-benches` | Compiles the benchmarks without running them | |
+
+Without an option, `bench-markup` runs the parsing, memory, execution-option
+and validation measurements, but not the `--scopes-only` and `--graphviz-only`
+runs, which need their option. `--rules-only` runs only the name and reference
+checks; `--validation-only` runs those plus the encoding checks and validation
+with cancel checks. `--csv` prints machine-readable rows.
+`bench-ir-partial -- --attributes-only` runs only the attribute reads. Other
+benchmark steps don't take options: `zig build` doesn't pass arguments to them.
+`-Dstring-default-only=true` compiles only the default paths of
+`bench-string-integration`.
+
+`bench-policy` warms each case for at least 150 ms and averages four parses per
+sample, because two short warm-up parses didn't reliably settle the first case.
 
 ### One-command string comparison
 
-> **Unreleased.**
+> **Unreleased.** Not in 0.5.0.
 
-Use the Zig-native reporter to compare the working tree against a Git revision:
+`perf-string` compares the working tree with a Git revision:
 
 ```sh
 zig build perf-string -- --baseline HEAD
@@ -3449,87 +2134,76 @@ zig build perf-string -- --baseline HEAD --modes fast,safe,small --runs 5
 zig build perf-string -- --baseline HEAD --suites sessions --modes fast
 ```
 
-The default is both `native` and `sessions`, Fast and Safe builds, three process
-runs per side. Each benchmark run uses seven timed batches after two warmups.
-`native` covers UTF-8/16LE/32LE, available comparison modes and built-in/custom
-equality. `sessions` covers UTF-8 default encoding validation, exact equality,
-runtime policies, budgets 1 and 64, cancellation intervals 1 and 64, custom
-stepped/batched validators and membership. `--help` lists the options.
-The optional `logical` suite compares plain/DOT/markup logical readers on
-short, long, Unicode and glue/reference-heavy values, including budgets 1 and
-64 and exact credit/session-size accounting. It uses five timed batches after
-two warmups. `integration` and `host-defaults` use nine after three.
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--baseline REF` | `HEAD` | Git commit or ref to compare with |
+| `--modes LIST` | `fast,safe` | Any of `fast`, `safe`, `small` (not the old `Release*` names) |
+| `--suites LIST` | `native,sessions` | Any of `native`, `sessions`, `logical`, `integration`, `host-defaults` |
+| `--runs N` | `3` | Process runs per side: an odd number from 3 to 31 |
+| `--threshold PERCENT` | `5` | Flag median time increases above this |
+| `--output DIRECTORY` | `zig-out/perf-string/<timestamp>/` | A new report directory; an existing one is refused |
+| `--help` | | List the options |
 
-The runner captures both source trees and the current harness, builds everything
-with the **same compiler**, then executes one benchmark at a time in alternating
-before/after order. It reads Git objects without checking out or changing a
-branch. Both snapshots must support the selected compiler: a pre-migration
-Zig 0.16 snapshot cannot be compared using the 0.17 reporter without porting
-that snapshot first. A baseline predating the required API fails the build explicitly; it is
-not silently treated as passing. Newly supported comparison modes are reported
-as **new**, with no invented baseline or percentage.
+The suites:
 
-Reports go into a new `zig-out/perf-string/<timestamp>/` directory, or a new
-directory specified by `--output`. Existing report directories are refused.
+- `native`: UTF-8, UTF-16LE and UTF-32LE, the available comparison modes, and
+  built-in and custom equality. Seven timed batches after two warm-ups.
+- `sessions`: UTF-8 default encoding validation, exact equality, run-time
+  settings, budgets 1 and 64, cancellation intervals 1 and 64, custom stepped
+  and batched validators, and membership. Seven after two.
+- `logical`: plain, DOT and markup readers on short, long, Unicode and
+  glue- or reference-heavy values, including budgets 1 and 64 and exact
+  credit and session-size accounting. Five after two.
+- `integration` and `host-defaults`: DOT and markup attribute checks, and the
+  default-only programs. Nine after three.
+
+The reporter copies both source trees and the current benchmark harness,
+builds everything with the **same compiler**, then runs one benchmark at a time,
+alternating before and after. It reads Git objects without checking out or
+changing a branch. Both revisions must build with that compiler: revisions that
+still need Zig 0.16.0 can't be compared with Zig 0.17.0 without porting them
+first. A baseline that lacks a required API fails the build; it isn't treated
+as passing. Comparison modes that are new in the working tree are reported as
+**new**, with no made-up baseline or percentage.
+
 Each report includes:
 
-- `summary.md`: group summaries and case-by-case timings and decimal MB/s.
+- `summary.md`: group summaries, and timings and decimal MB/s for every case.
 - `results.csv` and `raw/`: medians, observed ranges, per-run results, session
-  sizes, credit totals and cancellation poll counts.
-- `metadata.txt`, source manifests and captured harness/sources: compiler,
-  architecture/OS, revision, dirty-tree status and exact inputs to reproduce it.
-- `binaries.csv`: consumed benchmark executable sizes, **not library size**.
+  sizes, credit totals and cancellation check counts.
+- `metadata.txt`, source manifests and the captured harness and sources:
+  compiler, architecture and OS, revision, dirty-tree status and the exact
+  inputs needed to reproduce it.
+- `binaries.csv`: sizes of the benchmark programs, **not the library size**.
 
-A time increase above `--threshold` (default 5%) with non-overlapping observed
-run ranges is flagged `slower`. Overlapping ranges crossing the threshold are
-`inconclusive`. Neither this heuristic nor a geometric mean replaces inspecting
-individual cases; `within_threshold` is not a blanket no-regression guarantee.
-The suites use hot buffers and discard diagnostics. Zero processor heap
-allocations in these fixtures do not imply zero process memory, zero stack
-usage, or zero allocations with growable bags/custom callbacks. All builds
-finish before timing; avoid other heavy work while the measurements run.
+A time increase above `--threshold` whose run ranges don't overlap is flagged
+`slower`. An increase above the threshold with overlapping ranges is
+`inconclusive`. Neither this rule nor a geometric mean replaces looking at
+individual cases; `within_threshold` is not a promise of no slowdown. The
+suites use hot buffers and throw diagnostics away. Zero processor heap
+allocations in these inputs don't mean zero process memory, zero stack use, or
+zero allocations with growable bags or your own callbacks. All builds finish
+before timing; avoid other heavy work while the measurements run.
 
-The existing benchmark commands remain useful for individual measurements;
-the two string benchmarks also accept `-- --csv` for machine-readable output.
-The reporter itself is tested by `zig build check-tools` and `zig build test`.
-It does not yet orchestrate DOT/markup suites, RSS sampling or Wasm size checks.
+The reporter is tested by `zig build check-tools` and `zig build test`. It
+doesn't run the DOT or markup parsing benchmarks, sample RSS or check Wasm
+sizes.
 
-### Individual benchmarks
+## Examples
 
-Run one benchmark at a time, with no builds or other heavy work running:
+- [fixed_buffer.zig](../examples/fixed_buffer.zig): the whole pipeline with no
+  allocator, printing the storage size
+- [bounded.zig](../examples/bounded.zig): a work-budget loop, then cancelling a
+  session
+- [policies.zig](../examples/policies.zig): compile-time settings, run-time
+  overrides and sessions bound to settings
+- [resumable_graph.zig](../examples/resumable_graph.zig): lowering a Document
+  into the IR in bounded steps
+- [fixed_graph.zig](../examples/fixed_graph.zig): IR storage you own
+- [fixed_edge_stream.zig](../examples/fixed_edge_stream.zig): streaming edges
+  with scratch you own
+- [graph_adjacency.zig](../examples/graph_adjacency.zig): building adjacency
+  only when you ask for it
 
-```sh
-zig build bench -Doptimize=fast -Dlexer=scalar
-zig build bench-lexer -Doptimize=fast -Dlexer=scalar
-zig build bench-session -Doptimize=fast -Dlexer=scalar
-zig build bench-cancellation -Doptimize=fast
-zig build bench-subgraphs -Doptimize=fast -Dlexer=scalar
-zig build bench-policy -Doptimize=fast
-zig build bench-markup -Doptimize=fast
-zig build bench-markup -Doptimize=fast -- --scopes-only
-zig build bench-markup -Doptimize=fast -- --graphviz-only
-zig build bench-composition -Doptimize=fast
-zig build bench-logical-strings -Doptimize=fast
-zig build bench-ir-partial -Doptimize=fast
-zig build bench-ir-partial -Doptimize=fast -- --attributes-only
-zig build bench-ir-partial-edges -Doptimize=fast
-zig build bench-ir-sessions -Doptimize=fast
-zig build bench-ir-lowering-sessions -Doptimize=fast
-zig build bench-ir-query-indexes -Doptimize=fast
-zig build bench-ir-edge-sessions -Doptimize=fast
-zig build bench-ir-query-sessions -Doptimize=safe
-zig build bench-ir-attribute-sessions -Doptimize=safe
-zig build bench-ir-fixed -Doptimize=fast
-zig build bench-ir-fixed-queries -Doptimize=fast
-zig build bench-ir-fixed-materialization -Doptimize=fast
-zig build bench-ir-adjacency -Doptimize=fast
-zig build check-benches  # only checks that they compile
-```
-
-Repeat everything with `-Doptimize=safe`. Repeat the first four with
-`-Dlexer=block` too; the others already cover both scanners where it matters.
-Run each one five times and take the median. `bench-markup` also accepts
-`-- --rules-only` and `-- --validation-only` for shorter runs.
-
-`bench-policy` warms each case for at least 150 ms and averages four parses per
-sample, because two short warm-up parses didn't reliably settle the first case.
+Run them with `zig build examples`. The programs that produced the numbers on
+this page are in [bench/](../bench/).

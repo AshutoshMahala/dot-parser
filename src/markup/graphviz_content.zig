@@ -180,7 +180,10 @@ pub fn Checker(comptime actual: support.encoding.Actual) type {
                 const span = name orelse Span{ .start = 0, .len = 0 };
                 if (parent_tag == .TABLE or parent_tag == .TR)
                     return context.finding(span, null, if (parent_tag == .TABLE) .expected_rows else .expected_cells);
-                if (parent_tag == null or parent_tag == .FONT or parent_tag == .I or parent_tag == .B or parent_tag == .U or parent_tag == .O or parent_tag == .SUB or parent_tag == .SUP or parent_tag == .S)
+                // Graphviz accepts label=<>, but a nonempty label made only
+                // of ignored comments/control characters still needs text.
+                const empty_label = parent_tag == null and document.source.len == document.source_info.bomBytes();
+                if (!empty_label and (parent_tag == null or parent_tag == .FONT or parent_tag == .I or parent_tag == .B or parent_tag == .U or parent_tag == .O or parent_tag == .SUB or parent_tag == .SUP or parent_tag == .S))
                     return context.finding(span, null, .empty_text);
             }
             return true;

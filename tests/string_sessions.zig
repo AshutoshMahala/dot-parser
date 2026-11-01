@@ -2,6 +2,70 @@ const std = @import("std");
 const s = @import("string_processor");
 const t = std.testing;
 
+test "string hooks may cancel their own session without advancing a stage" {
+    inline for (.{ false, true }) |runtime| inline for (.{ 1, 64 }) |interval| {
+        const P = s.Profile(.{ .runtime_policy = runtime, .policy = .{
+            .execution = .{ .metering = true, .cancellation = true, .cancellation_interval = interval },
+            .validation = .{ .equals = .{ .expected = "some Unicode: café 中文", .severity = .err } },
+        } });
+        const Stop = struct {
+            session: ?*P.Session = null,
+            calls: u32 = 0,
+            at: u32,
+            fn poll(raw: ?*anyopaque) bool {
+                const self: *@This() = @ptrCast(@alignCast(raw.?));
+                self.calls += 1;
+                if (self.calls != self.at) return false;
+                if (self.session) |session| {
+                    _ = session.cancel();
+                    return false;
+                }
+                return true;
+            }
+        };
+        for ([_]u32{ 0, 1, 3, 64 }) |budget| for (1..80) |at| {
+            var expected: ?s.Result = null;
+            var expected_work: u64 = 0;
+            var expected_frontier: u32 = 0;
+            var expected_polls: u32 = 0;
+            for ([_]bool{ false, true }) |self_cancel| {
+                var stop: Stop = .{ .at = @intCast(at) };
+                var session = try P.Session.init(.{ .bytes = "some Unicode: café 中文", .origin = 7 }, P.Sink.discard, .{
+                    .cancellation = .{ .context = &stop, .is_requested = Stop.poll },
+                });
+                defer session.deinit();
+                if (self_cancel) stop.session = &session;
+                var work: u64 = 0;
+                var frontier: u32 = 0;
+                if (budget == 0) {
+                    _ = session.run();
+                } else while (session.result() == null) {
+                    const progress = if (runtime) try session.advance(budget) else session.advance(budget);
+                    try t.expect(progress.work_used <= budget);
+                    work += progress.work_used;
+                    frontier = progress.source_frontier;
+                }
+                const result = session.result().?;
+                if (!self_cancel) {
+                    expected = result;
+                    expected_work = work;
+                    expected_frontier = frontier;
+                    expected_polls = stop.calls;
+                } else {
+                    try t.expectEqualDeep(expected.?, result);
+                    try t.expectEqual(expected_work, work);
+                    try t.expectEqual(expected_frontier, frontier);
+                    try t.expectEqual(expected_polls, stop.calls);
+                    const latched = if (runtime) try session.advance(99) else session.advance(99);
+                    try t.expectEqual(@as(u32, 0), latched.work_used);
+                    _ = session.run();
+                    try t.expectEqual(expected_polls, stop.calls);
+                }
+            }
+        };
+    };
+}
+
 test "all encodings and malformed runs agree under every budget partition" {
     const P = s.Profile(.{ .runtime_policy = true, .source_encodings = &.{ .ascii, .utf8, .utf16, .utf32 }, .unicode_case_folding = true, .policy = .{
         .execution = .{ .metering = true },

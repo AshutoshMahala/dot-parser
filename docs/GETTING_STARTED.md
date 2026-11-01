@@ -12,8 +12,8 @@ zig fetch --save git+https://github.com/AshutoshMahala/dot-parser#main
 ```
 
 This selects the development branch, which these docs follow. For the latest
-tagged release, use `#v0.5.0` with Zig 0.16.0 instead. Anything marked
-**Unreleased**, including the 0.17 migration, isn't in that release.
+tagged release, use `#v0.5.0` with Zig 0.16.0 instead. Anything these docs
+mark as unreleased, including the move to Zig 0.17.0, isn't in that release.
 See the [changelog](../CHANGELOG.md) for breaking changes.
 
 In your `build.zig`, import the `dot_parser` module into your program:
@@ -91,7 +91,9 @@ For `digraph { a -- b }` this prints:
 └─ E1 ─ [dot_parser:E.Validation.Operator.002]
 ```
 
-You can also read each diagnostic's fields yourself (its code, location and
+To print the whole bag to stderr in one call, use `dot.console.printDiagnostics`
+(unreleased); see [printing diagnostics](ERRORS.md#printing-diagnostics). You
+can also read each diagnostic's fields yourself (its code, location and
 suggested fix) to build your own output. See
 [Errors and diagnostics](ERRORS.md).
 
@@ -150,18 +152,6 @@ const value = try document.decodeIdentifier(range, &buffer);
 Or write it straight to a writer, with no buffer:
 `try document.writeIdentifier(range, writer)`.
 
-## Examples
-
-- [quick_start.zig](../examples/quick_start.zig): the program from the README:
-  parse, show problems, list edges
-- [parse_undigraph.zig](../examples/parse_undigraph.zig): parse, validate and
-  print every kind of statement
-- [diagnostics_demo.zig](../examples/diagnostics_demo.zig): print problems with
-  the console renderer, with color when the terminal supports it
-
-Run them with `zig build examples`. Each program is also installed in
-`zig-out/bin/`.
-
 ## Where to go next
 
 - [Reading a parsed graph](READING_DOCUMENTS.md): attributes, ports,
@@ -171,5 +161,23 @@ Run them with `zig build examples`. Each program is also installed in
 - [Memory](MEMORY.md): arenas, fixed buffers, and parsing with no allocator.
 - [Settings](POLICIES.md): lenient parsing, extra checks, and limits for
   untrusted input.
+- [Semantic graph](IR.md) (unreleased): one node per name, edges to subgraphs
+  expanded on request, and the attribute values that defaults and later
+  statements give each node and edge.
 - [README examples table](../README.md#examples): every runnable example and
   what it shows.
+
+## Examples
+
+- [quick_start.zig](../examples/quick_start.zig): the program from the README:
+  parse, show problems, list edges
+- [parse_undigraph.zig](../examples/parse_undigraph.zig): parse, validate and
+  print every kind of statement
+- [diagnostics_demo.zig](../examples/diagnostics_demo.zig): print problems with
+  the console renderer, with color when the terminal supports it
+- [build_graph.zig](../examples/build_graph.zig) (unreleased): parse into a
+  [semantic graph](IR.md), list its unique nodes and its edges, and print
+  problems with `printDiagnostics`
+
+Run them with `zig build examples`. Each program is also installed in
+`zig-out/bin/`.

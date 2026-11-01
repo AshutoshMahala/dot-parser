@@ -66,16 +66,27 @@ You can also run the steps on their own: `dot.parseBorrowed` parses, and
 | `.invalid_syntax` | The text breaks DOT's grammar. | Yes |
 | `.unsupported_feature` | The input uses something your settings turn off, such as HTML-like labels with `markup = .none`. | Not necessarily |
 | `.resource_exhausted` | A limit you set was reached, such as `max_statements`. | Not necessarily |
-| `.storage_failure` | Memory ran out (`.out_of_memory`), or a fixed buffer was too small (`.pool_exhausted`). | Not necessarily |
+| `.storage_failure` | There was no room to store the document. See the reasons below. | Not necessarily |
 | `.diagnostic_stopped` | The diagnostic destination asked to stop *during parsing*, for example because the bag was full. | Unknown |
 | `.cancelled` | You cancelled the operation. | Unknown |
 | `.processor_stopped` | A label checker stopped the run early. See [checking HTML-like labels](LABELS.md). | Unknown |
+
+`.storage_failure` says why:
+
+| Reason | Meaning |
+| --- | --- |
+| `.out_of_memory` | The allocator ran out of memory. |
+| `.pool_exhausted` | A fixed buffer you supplied was too small. |
+| `.statement_index_overflow`, `.attribute_index_overflow`, `.edge_link_index_overflow`, `.ported_reference_index_overflow` | The document has more records than the compact document format can number. |
+| `.internal` | A library bug. Please report it. |
 
 Results also carry a few counts and flags:
 
 - `syntax_errors`: how many syntax errors were found, even if the run stopped
   early for another reason.
 - `warnings`: how many warnings were produced.
+- `accepted_deviations`: how many spellings the lenient settings accepted, such
+  as `-->` or an empty statement.
 - `completion`: `.complete` if the parser reached the end of the input.
   Reaching the end is not the same as the input being valid.
 - `diagnostic_delivery`: `.failed` if your destination failed to accept a
@@ -92,6 +103,15 @@ When chosen labels are
 reports in `result.markup.stop`, `diagnostic_delivery`, `diagnostic_stop` and
 each label's own result. `result.documentValid()` covers both.
 
+### With string checks
+
+> **Unreleased.** Not in 0.5.0.
+
+A profile with [string checks](STRINGS.md#attribute-processing-in-dot-and-markup)
+on returns two parts: `result.host` is the ordinary result described above, and
+`result.string` summarizes the string checks. `result.documentValid()` is true
+only when both are fine.
+
 ## DOT validation results
 
 When parsing succeeds, `result.validation` holds the validation result.
@@ -104,6 +124,9 @@ When parsing succeeds, `result.validation` holds the validation result.
 | `.diagnostic_stopped` | The diagnostic destination asked to stop, for example because the bag was full. |
 | `.insufficient_scratch` | A check needed a scratch array that was too small, so no checks ran. See [optional checks](POLICIES.md#optional-checks). |
 | `.unsupported_encoding` | This validator can't read the document's [encoding](ENCODINGS.md). Validate with a profile that has that reader. A UTF-8 validator can also check documents from an ASCII-only profile. |
+
+Profiles that read [several encodings](ENCODINGS.md) report this outcome too
+(unreleased); in 0.5.0 their `validate` returned `error.UnsupportedEncoding`.
 
 `documentValid()` is true only for `.completed` with `document_valid`, on a
 complete document. In every other case the document is still available, but it
@@ -149,6 +172,8 @@ Diagnostics arrive in a fixed, repeatable order, but not sorted by position:
 - With [label checking during parsing](LABELS.md#check-every-label-while-parsing),
   each label's findings arrive when the parser reaches that label, before any
   DOT validation findings.
+- With [string checks](STRINGS.md#attribute-processing-in-dot-and-markup)
+  (unreleased), string findings come last, after DOT validation.
 
 So a validation error near the top of a file can appear after a syntax warning
 near the bottom. If you want them sorted by position, sort the bag by `span`.
@@ -246,7 +271,14 @@ log line) from the same fields.
 
 ## Printing diagnostics
 
-For a small command-line program, print the bag to stderr:
+The console renderer turns diagnostics into text. You can print a bag straight
+to stderr, or render it to any writer you choose.
+
+### Print a bag to stderr
+
+> **Unreleased.** Not in 0.5.0.
+
+For a small command-line program:
 
 ```zig
 try dot.console.printDiagnostics(init.io, bag.items(), .{
@@ -255,19 +287,27 @@ try dot.console.printDiagnostics(init.io, bag.items(), .{
 });
 ```
 
-This optional helper prints numbered boxes in bag order and flushes before
-returning. It uses a 4 KiB stack buffer, no heap allocation, and the IO you
-provide, including its stderr lock. Empty input performs no IO. Write failures
-return `WriteFailed`; IO cancellation returns `Canceled`. The lock coordinates
-with other writers using the same IO (including progress output); it does not
-synchronize unrelated IO instances. Custom IO must implement stderr locking.
-It does not add a summary, sort findings, detect terminal capabilities or change
-the parse result. The same helper is available on `markup.console`,
-`string_processor.console` and a composed `Parser.console`.
+- It prints each diagnostic as a numbered box, in bag order, then flushes.
+- It uses a 4 KiB buffer on the stack and allocates nothing. An empty list
+  prints nothing.
+- It holds your IO's stderr lock while it prints, so other output through the
+  same IO, such as `std.Progress`, isn't mixed into the boxes. Output through a
+  different IO can still interleave. `std.debug.print`, for example, uses its
+  own IO by default. If you pass your own IO, it must support stderr locking.
+- It returns `error.WriteFailed` if writing fails, and `error.Canceled` if the
+  IO cancels the call.
+- It doesn't add a summary, sort findings, detect color support or change the
+  result.
+- Each box finds its own line numbers. For a large bag, `renderBoxedList`
+  (below) finds them all in one pass over the source.
 
-Source locations are resolved per finding. For large bags, use a list renderer
-below to share one source-position pass. For another destination, use your own
-writer; these rendering functions work without an OS or standard streams:
+The same helper is on `markup.console`, on `string_processor.console` (for
+[string checks](STRINGS.md)) and on a combined `Parser.console`.
+
+### Render to your own writer
+
+These functions write to a writer you provide. They work without an OS or
+standard streams:
 
 | Function | Output |
 | --- | --- |
@@ -297,10 +337,12 @@ Options:
 | Option | Values |
 | --- | --- |
 | `.source` | Your source text. Without it, positions print as byte offsets and no source lines are shown. |
-| `.source_name` | File name to show. |
+| `.source_name` | File name to show. Default `"<input>"`. |
+| `.source_encoding` | The encoding of `.source`, default `.utf8`. Pass `document.source_info.encoding` for [other encodings](ENCODINGS.md#reading-results-and-showing-errors). |
 | `.style` | `.unicode` (default) or `.ascii` box drawing |
 | `.color` | `.none` (default) or `.ansi`. The library never checks if your terminal supports color; that's your decision. |
-| `.verbose` | Also show the code's sequence alias and short id. |
+| `.verbose` | Also show the code's sequence alias and its short id, with the parser's short id in front. |
+| `.rule_width` | Width of the line under the list summary. Default 54. |
 
 The compact style looks like this:
 
@@ -356,13 +398,20 @@ the diagnostic itself.
 
 - `.invalid_syntax` means *the file is wrong*.
 - `.unsupported_feature` means *the file uses something your settings turned
-  off*. Right now that only happens for HTML-like labels when you set
+  off*. In DOT that happens for HTML-like labels when you set
   `markup = .none`.
 
 An unsupported result is never treated as success, and the parser makes no
 claim about the part it skipped. The `diagnostics.unsupported` setting
 chooses whether it is reported as an error (default), a warning, or not at
-all. That only changes the reporting; the outcome stays `.unsupported_feature`.
+all. That only changes the reporting: the outcome stays
+`.unsupported_feature`, or `.invalid_syntax` if the file also has syntax
+errors.
+
+String values can be turned off the same way (unreleased): with a string rule
+of `.none`, each matching value is reported with the same code and setting, and
+counted in `result.string.unsupported`. See
+[string checks](STRINGS.md#attribute-processing-in-dot-and-markup).
 
 ## In the markup parser
 
@@ -387,7 +436,7 @@ Everything above applies to the markup parser too, with these differences:
   `related`, such as the opening tag that a wrong closing tag fails to match.
 - **One bag for both.** When you [check labels during DOT parsing](LABELS.md),
   the profile provides one bag type that holds both kinds of diagnostic, and
-  `Parser.console` prints both.
+  `Parser.console` prints both. String checks (unreleased) work the same way.
 
 ## Error codes
 
@@ -396,12 +445,15 @@ full code includes its parser's name: `dot_parser:E.Syntax.Grammar.003` and
 `markup_parser:E.Syntax.Grammar.003` are different codes. The console renderer
 always prints the full form. Codes may change between 0.x versions.
 
+`E/W` in the tables below means the code is an error or a warning, depending on
+the severity you chose for that check.
+
 ### DOT error codes
 
 | Code | When |
 | --- | --- |
 | `E.Syntax.Byte.003` | A byte that can't start anything in DOT, or a NUL byte inside quotes |
-| `E.Syntax.Operator.003` | A `-` that isn't `--` or `->`, such as `a - b`, `-->` or `---` |
+| `E.Syntax.Operator.003` | A `-` that isn't `--` or `->`, such as `a - b`, `-->` or `a---b`. A number after `---` is negative, as in Graphviz: `a---1` is `a -- -1`. |
 | `W.Syntax.Operator.003` | `-->`, `---` or a lone `-` accepted by the lenient setting |
 | `W.Syntax.Grammar.034` | An empty statement (`;`) accepted by the lenient setting |
 | `E.Syntax.Numeral.001` | `.` or `-.` with no digit |
@@ -415,9 +467,9 @@ always prints the full form. Codes may change between 0.x versions.
 | `E/W.Validation.Operator.002` | The edge operator doesn't match the graph kind |
 | `E/W.Validation.Encoding.003` | Text that isn't valid in the file's encoding (optional check; skips HTML-like labels) |
 | `E/W.Validation.Attribute.035` | The same key twice on one statement (optional check) |
-| `E/W.Validation.Attribute.009` | Unknown DOT Graphviz attribute name (optional check; Unreleased) |
+| `E/W.Validation.Attribute.009` | An attribute name Graphviz doesn't know, an optional check (unreleased) |
 | `E/W.Validation.Restriction.003` | Input uses something you restricted, such as ports or subgraphs (optional check) |
-| `E/W.Profile.Feature.009` | Input uses a feature your settings turned off |
+| `E/W.Profile.Feature.009` | Input uses a feature your settings turned off: an HTML-like label, or a string value whose rule is `.none` (unreleased) |
 | `E.Resource.Capacity.026` | A limit or fixed buffer was full; `details` names which one |
 | `E.Resource.Memory.026` | The allocator ran out of memory |
 
@@ -438,16 +490,31 @@ The full list, with summaries and hints, is in
 | `E/W.Validation.Attribute.006` | The same attribute twice on one element |
 | `E/W.Validation.Encoding.003` | Text that isn't valid in the file's encoding (optional check) |
 | `E/W.Validation.Name.003` | A name that breaks the selected name rule (optional check) |
-| `E/W.Validation.Reference.003` | A reference missing from the selected list, like `&nbsp;` (optional check) |
+| `E/W.Validation.Reference.003` | A named reference missing from the selected list, like `&nbsp;` (optional check). In Graphviz mode, also a reference Graphviz doesn't know, checked by default (unreleased). |
 | `E/W.Validation.Tag.009` | An element Graphviz doesn't know (Graphviz mode) |
 | `E/W.Validation.Attribute.009` | An attribute not allowed on that Graphviz element, like `COLOR` on `<B>` (Graphviz mode) |
-| `E/W.Validation.Content.003` | Content or child placement violates the Graphviz label grammar (Unreleased) |
-| `E/W.Validation.Attribute.003` | Invalid or missing Graphviz attribute value (Unreleased) |
-| `E/W.Profile.Feature.009` | Something the parser doesn't handle, like `<?...?>` or UTF-16 input |
+| `E/W.Validation.Content.003` | In Graphviz mode, content in a place the label rules don't allow, like a `TD` outside a `TR` (unreleased) |
+| `E/W.Validation.Attribute.003` | In Graphviz mode, an attribute value that isn't allowed, or a required attribute that is missing (unreleased) |
+| `E/W.Profile.Feature.009` | Something the parser doesn't handle: `<?...?>`, `<!DOCTYPE>`, a UTF-16 or UTF-32 byte order mark in a profile that only reads UTF-8, or a string value whose rule is `.none` (unreleased) |
 | `E.Resource.Capacity.026` | A limit or fixed buffer was full |
 | `E.Resource.Memory.026` | The allocator ran out of memory |
 
 The full list is in [src/markup/diagnostic.zig](../src/markup/diagnostic.zig).
+
+### String check codes
+
+> **Unreleased.** Not in 0.5.0.
+
+[String checks](STRINGS.md) report under their own name, `string_processor`:
+
+| Code | When |
+| --- | --- |
+| `E.Validation.Encoding.003` | The value's text isn't valid in its encoding. One finding for each run of bad code units. |
+| `E/W.Validation.Equality.003` | The value doesn't equal the expected text (`validation.equals`) |
+| `E/W.Validation.Membership.003` | The value isn't one of the allowed values (`validation.one_of`) |
+| `E/W.Validation.Custom.003` | Your own check rejected the value (`validation.custom`) |
+
+The full list is in [src/string/diagnostic.zig](../src/string/diagnostic.zig).
 
 ## Examples
 
@@ -456,11 +523,15 @@ The full list is in [src/markup/diagnostic.zig](../src/markup/diagnostic.zig).
 - [check_file.zig](../examples/check_file.zig): a command-line checker. Try
   `./zig-out/bin/check_file graph.dot`, with `--compact` for one-line output or
   `--fail-fast` to stop at the first error.
+- [build_graph.zig](../examples/build_graph.zig): print a bag to stderr with
+  `printDiagnostics` (unreleased)
 - [policies.zig](../examples/policies.zig): warnings, lenient mode and counts
 - [markup.zig](../examples/markup.zig): markup diagnostics printed with
   `markup.console`
 - [composed_markup.zig](../examples/composed_markup.zig): DOT and markup
   diagnostics in one bag
+- [string_processor.zig](../examples/string_processor.zig): string checks with
+  DOT, markup and string diagnostics in one bag (unreleased)
 
 Run them with `zig build examples`. Each program is also installed in
 `zig-out/bin/`.

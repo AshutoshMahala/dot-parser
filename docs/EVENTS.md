@@ -1,12 +1,17 @@
 # DOT events
 
-> **Unreleased.**
+> **Unreleased.** Not in 0.5.0.
 
-Use events when you want your own index, outline or graph instead of the
-library's `Document`. The same DOT grammar and policies drive both paths.
-Bind a consumer type at compile time; there is no runtime registry.
-The input is still one contiguous borrowed buffer; events stream output, not
-input chunks.
+Normally the parser builds a `Document` for you. With *events*, it calls your
+code instead, as it reads: "a node statement finished", "a subgraph opened",
+and so on. Use this to build your own index, outline or graph without the
+library's document storage. The same DOT grammar and settings apply either way.
+
+The type that receives the events is your *consumer*. You bind it at compile
+time; there is no run-time registry. The source must still be in one buffer:
+events stream the output, not the input.
+
+## Quick start
 
 ```zig
 const Consumer = struct {
@@ -26,278 +31,456 @@ const Consumer = struct {
 const Streaming = dot.Profile(.{}).Events(Consumer); // or dot.Events(Consumer)
 var consumer: Consumer = .{};
 const result = Streaming.parse(allocator, source, &consumer, bag.sink(), .{});
+if (result.outcome != .success) {
+    // bag holds the diagnostics; result.outcome says why parsing ended.
+}
 ```
 
-The allocator backs temporary nesting frames only. `parseIn(source, scratch,
-&consumer, diagnostics, options)` uses caller-owned `FixedParseScratch` instead,
-with no parser allocation. Neither path allocates document pools or buffers a
-whole statement. Consumer work and allocations remain the consumer's responsibility.
-Unused events add no callbacks or transaction state to ordinary fixed-policy
-parsing with partial retention off.
+- `parse` reads the whole source. The allocator is used only for temporary
+  nesting frames, one per open subgraph.
+- `parseIn` uses storage you provide instead, and the parser allocates nothing:
+
+  ```zig
+  var frames: Streaming.FixedParseScratch(.{ .nesting = 16 }) = .{};
+  const result = Streaming.parseIn(source, frames.storage(), &consumer, bag.sink(), .{});
+  ```
+
+  More open subgraphs than `nesting` ends the parse with `storage_failure`.
+- Neither builds document storage or buffers a whole statement. What your
+  consumer stores, and any allocation it does, is up to you.
+- Diagnostics go to an ordinary DOT diagnostic sink, as with `Document`
+  parsing.
+- On a default profile, `parse` and `parseIn` return the result directly.
+  Runtime-policy profiles, and profiles that compile anything other than UTF-8
+  alone, return an error union ([encodings](#sessions-and-encodings)).
+- Ordinary `Document` parsing (with `retention.partial` off) gets no extra
+  callbacks or statement tracking from this API.
+
+## Writing a consumer
+
+A consumer needs two methods:
+
+| Method | Meaning |
+| --- | --- |
+| `pub fn onEvent(self: *Self, event: dot.events.Event) E!dot.events.Action` | Receives each event. Return `.proceed` to continue or `.stop` to end the parse. `E` is any error set you like; returning an error also ends the parse. |
+| `pub fn onAbort(self: *Self, abort: dot.events.Abort) void` | Tells you to throw away unfinished work. It can't fail. |
+
+It may also declare:
+
+| Declaration | Default | Meaning |
+| --- | --- | --- |
+| `pub const wants_begin_statement = false;` | `true` | Skip `begin_statement` events (one fewer callback per statement) |
+| `pub const recover_statements = false;` | `true` | End your output at the first syntax error: the document aborts. Without this, the parser [recovers](#recovering-from-errors) and keeps delivering later statements. The parser may still collect later diagnostics either way. |
+| `pub const observations: dot.events.Observations = ...;` | `.none` | Extra early events for editors; see [outline while typing](#outline-while-typing) |
+| `ScopeContext`, `suspendScope`, `restoreScope` | none | State saved per subgraph; see [per-scope state](#advanced-per-scope-state) |
+
+- Declarations must be `pub`. A private declaration is invisible to the parser
+  and behaves as if it were missing.
+- `wants_begin_statement` and `recover_statements` must be `bool` constants,
+  and `observations` must have type `dot.events.Observations`; anything else is
+  a compile error.
+- A misspelled name (for example `observation` or `recover_statement`) is
+  ignored silently. Check the spelling.
+- Don't declare anything named `parser_retention`: the library uses that name
+  for its own document builders. Other methods, such as `continuesAfterError`
+  or `retainThrough`, have no effect on events.
+- The `Event` union always has every tag, including the optional ones you don't
+  select. An exhaustive `switch` must handle them all, or use `else => {}`.
 
 ## What arrives
 
 | Event | Meaning |
 | --- | --- |
-| `begin_document` | A complete supported DOT header was recognized |
-| `begin_statement` | A tentative statement starts, with its owner and source span |
-| `attribute`, `edge_link`, `ported_reference` | Completed pieces of that still-tentative statement |
-| `begin_scope`, `end_scope` | A subgraph body opens or its actual closing brace is read |
-| `commit_*` | That statement's own envelope completed, with a typed `.value` (see below) |
-| `skipped` | A failed/unrecognized region was skipped to a synchronization boundary |
-| `comment` | A complete comment, only with `retention.comments` enabled |
-| `identifier`, `statement_head`, `document_name`, `subgraph_name` | Opt-in early observations for outlines; see below |
-| `token_preview`, `token_preview_end` | Independently opt-in raw token prefixes at EOF and metered pauses |
-| `end_document` | Whole-document syntax commit attempt; successful acknowledgment finishes parsing |
+| `begin_document` | A complete DOT header was read, up to its `{` |
+| `begin_statement` | A statement starts. It is *tentative*: it can still be rejected. |
+| `attribute`, `edge_link`, `ported_reference` | Pieces of the still-tentative statement: an `a=b` pair, one more `-> x` step of an edge chain, or a `name:port` reference |
+| `begin_scope`, `end_scope` | A subgraph body opens, or its closing `}` is read |
+| `commit_*` | The statement finished (next table) |
+| `skipped` | After a syntax error, the parser skipped this region to the next statement boundary |
+| `comment` | A complete comment. Only with `retention.comments` on. |
+| `identifier`, `statement_head`, `document_name`, `subgraph_name` | Optional early observations; see [outline while typing](#outline-while-typing) |
+| `token_preview`, `token_preview_end` | Optional raw text of an unfinished token; see [previews](#unfinished-token-previews) |
+| `end_document` | The whole document is about to be accepted. If you return `.proceed`, parsing has succeeded. |
 
-Commit cases are flat event tags, not another tagged union inside an event:
+Each commit is its own event tag, with an `.owner` and a typed `.value`:
 
 | Event | `.value` |
 | --- | --- |
-| `commit_node` | `Node` |
-| `commit_edge`, `commit_edge_chain` | `Edge` (the first edge for a chain) |
-| `commit_subgraph` | `ScopeId` for a standalone subgraph statement |
-| `commit_assignment` | `Attribute` key/value pair |
-| `commit_attribute_statement` | `AttributeStatement` target and keyword |
+| `commit_node` | `Node`: `identifier`, optional `port` |
+| `commit_edge`, `commit_edge_chain` | `Edge`: the first edge of the statement (`a -> b` of `a -> b -> c`; later steps came as `edge_link`) |
+| `commit_subgraph` | The `ScopeId` of a standalone subgraph statement |
+| `commit_assignment` | `Attribute`: the `key` and `value` of `key = value` |
+| `commit_attribute_statement` | `AttributeStatement`: the `target` (`graph`, `node` or `edge`) and its `keyword_span` |
 
-Every commit also carries `.owner`. A consumer interested only in nodes can
-ignore the remaining cases, as in the example.
+The other payloads:
 
-`onAbort` receives either `.statement` (discard that statement's tentative work)
-or `.document` (abandon all still-open work). Abort cannot fail. It does not
-undo external changes or edit the source. Stage changes until the relevant
-commit if atomic output is required. A failing/stopping commit callback is
-followed by abort, not successful acceptance.
-With begin notifications enabled, a statement abort always follows its delivered
-begin. The statement-abort span is only the known failed prefix (possibly zero
-length at terminal cleanup, including syntax failure); it excludes a closing
-brace owned by the enclosing scope. `skipped` supplies the full synchronized
-region later.
+| Event | Payload |
+| --- | --- |
+| `begin_document` | `kind` (`undigraph` or `digraph`), `strict`, `keyword_span`, `name_span` (optional), `retain_comments`, `source_info` |
+| `begin_statement` | `owner`, `start` (the first token) |
+| `attribute` | `owner`, `pair` (`key`, `value`) |
+| `edge_link` | `owner`, `link` (`operator`, `operator_span`, `right`, `right_port`) |
+| `ported_reference` | `owner`, `id`, `reference` (`identifier`, `first`, optional `second`) |
+| `begin_scope` | `id`, `parent`, `statement`, `start`, optional `name`, `role` (`left`, `right` or `link`). For a subgraph used as an edge endpoint, also the `edge` written so far and the chain's `link_operator`. |
+| `end_scope` | `id`, `close` (the `}`) |
+| `skipped` | `span`, `scope` |
+| `comment` | a `dot.Comment` |
+| `end_document` | nothing |
 
-Transactions can nest: an edge statement can contain a subgraph endpoint whose
-body emits its own statements. Child commits survive a later parent-statement
-abort. Conversely, a locally completed surrounding statement can contain skipped
-child syntax; its commit does not certify child completeness or validation.
-Observe scope boundaries and child aborts if you need that distinction.
+`Edge` has `left`, `left_scope`, `left_port`, `operator`, `operator_span`,
+`right`, `right_scope` and `right_port`. An endpoint can be a subgraph, so
+`left` and `right` are plain spans; use `edge.leftName()` and
+`edge.rightName()` to get a name, or null for a subgraph endpoint.
 
-Comments can arrive before the header, after the outer `}`, or during quoted
-concatenation lookahead. They do not belong to statement transactions. A failure
-after pre-header comment delivery can produce document abort without a header.
-No callbacks follow document abort or successful document commit.
+A consumer that only wants nodes can ignore everything else, as in the quick
+start.
 
-With early observations enabled, a complete document name can also arrive
-before `begin_document`. Token previews can likewise arrive before a header,
-even for input that never becomes DOT. Failure after either observation produces
-document abort, even if the opening `{` never arrives.
+## Statements: begin, commit and abort
 
-`onEvent` returns `.proceed` or `.stop`, or a consumer-defined error. The result
-distinguishes `.event_stopped` and `.event_failure` from syntax, diagnostic and
-nesting-storage failures. No consumer error is relabeled as out-of-memory.
+A statement's pieces arrive before the parser knows the statement is good. It
+then ends in one of two ways:
+
+- a `commit_*` event: the statement's own syntax is complete;
+- `onAbort(.{ .statement = ... })`: throw away that statement's pieces.
+
+`onAbort(.{ .document = reason })` means: throw away all still-open work. Abort
+can't fail. It doesn't undo changes you already made elsewhere, and it never
+edits the source. If you need all-or-nothing output, stage changes until the
+matching commit (or until `end_document` for the whole document).
+
+The rules:
+
+- If `onEvent` returns `.stop` or an error, an abort follows. That includes a
+  stop on a commit or on `end_document`: it is never treated as acceptance.
+- With begin notifications on, you only get a statement abort for a statement
+  whose `begin_statement` you received.
+- A statement abort's `span` covers the part of the statement read so far, up to
+  the token that failed. It never includes a `}` that belongs to the enclosing
+  scope. At final cleanup (a stop, cancellation or unrecoverable error), the
+  span is empty. A later `skipped` event gives the whole region that was
+  skipped.
+- Statements nest: an edge can contain a subgraph endpoint whose body has its
+  own statements. Commits inside it stay valid if the outer statement aborts
+  later. And a statement can commit even though a child statement inside it
+  was skipped: its commit says nothing about its children, and it is not
+  validation. Watch scope events and child aborts if you need that difference.
+- Comments are not part of any statement. They can arrive before the header,
+  after the final `}`, or while the parser looks ahead for a `+` after a quoted
+  string.
+- Comments, a `document_name` observation or a token preview can arrive before
+  `begin_document`. If parsing fails after any of them, you get a document abort
+  even though the header (or its `{`) never arrived.
+- Nothing arrives after a document abort or after a successful `end_document`.
+
+| Abort reason | Cause |
+| --- | --- |
+| `invalid_syntax` | A syntax error |
+| `unsupported_feature` | Input the profile rejects as unsupported (such as HTML-like strings with `markup = .none`) |
+| `resource_exhausted` | A configured limit was reached |
+| `cancelled` | Cancellation |
+| `diagnostic_stopped` | The diagnostic sink asked to stop or failed |
+| `sink_stopped`, `sink_failure` | Your `onEvent` returned `.stop` or an error |
+| `scratch_failure` | No room for another nesting frame |
+| `processor_stopped` | Not used by event parsing |
+
+## Recovering from errors
+
+- With `.on_error = .collect` (the default), a recoverable syntax error aborts
+  the current statement, reports a `skipped` region, and then later statements
+  are delivered as usual.
+- `.fail_fast` stops at the first error.
+- An unterminated quote or comment, a limit, or a stop still ends the parse.
+- Recovery never makes rejected input succeed. The document aborts at the end,
+  and the result keeps the real outcome and the true error count.
+- These settings don't turn on the library's partial tree. That is
+  `retention.partial`; see
+  [editor results](EDITORS.md#keep-the-finished-part-of-a-dot-file). With
+  events, you decide which finished work to keep.
+
+### Results
+
+| `events.Result` field | Meaning |
+| --- | --- |
+| `outcome` | Why parsing ended (next table) |
+| `completion` | `.complete` if the parser reached the end of the input (also after recovered errors), otherwise `.incomplete` |
+| `syntax_errors` | Syntax errors found |
+| `accepted_deviations` | Non-standard spellings the policy accepted |
+| `warnings` | Warnings reported |
+| `diagnostic_delivery` | `.failed` if handing a diagnostic to the sink failed |
+| `diagnostic_stop` | Why the diagnostic sink stopped, if it did |
+| `source_info` | The encoding and BOM information used |
+
+| `outcome` | Meaning |
+| --- | --- |
+| `success` | The document parsed and your consumer accepted `end_document` |
+| `invalid_syntax` | Syntax errors, recovered or not |
+| `unsupported_feature` | The profile rejected an unsupported construct |
+| `resource_exhausted` | A configured limit was reached |
+| `cancelled` | Cancelled by a hook or `cancel()` |
+| `diagnostic_stopped` | The diagnostic sink stopped |
+| `event_stopped` | Your `onEvent` returned `.stop` |
+| `event_failure` | Your `onEvent` returned an error (kept as is, whatever its name) |
+| `storage_failure` | Nesting frames ran out: `out_of_memory` or `pool_exhausted` |
+
+Consumer errors are never relabelled as out-of-memory or storage failures.
+
+### Positions and IDs
+
+- All spans and names are byte ranges in the original source, also for UTF-16
+  and UTF-32 input.
+- `Owner` is `{ statement, scope }`: the statement an event belongs to and the
+  scope it is in.
+- A `StatementId` is the byte offset where the statement starts. A `ScopeId`
+  counts subgraph bodies in the order they open, starting at 1; the root is 0
+  (`.root`). A `ReferenceId` counts `name:port` references from 0 in the order
+  they appear.
+- `Node.port`, `Edge.left_port`, `Edge.right_port` and `Link.right_port` hold
+  reference IDs. `Edge.left_scope` and `Edge.right_scope` hold scope IDs.
+- IDs name written occurrences, not unique graph nodes: two statements that
+  mention `a` have different IDs. They belong to one parse (they are not stable
+  across edits), are not renumbered when a statement aborts, and are not
+  indexes into any storage.
+- `dot.ScopeId` and `dot.events.ScopeId` are the same type.
+- Keep the source alive and unchanged for as long as you keep spans or names.
+- `begin_document.source_info` and `result.source_info` carry the encoding and
+  BOM information, so you don't need to infer it from spans.
 
 ## Outline while typing
 
-Declare this on your consumer, using the **same** `onEvent`/`onAbort` interface:
+> **Unreleased.** Not in 0.5.0.
+
+An editor wants an outline while the user is still typing, before statements
+finish. Declare this on your consumer, which keeps the same
+`onEvent`/`onAbort` methods:
 
 ```zig
 pub const observations = dot.events.Observations.early; // default .none
 ```
 
-The declaration must be `pub`: a private declaration is not visible to the
-parser's cross-module contract and behaves like an omitted selection. Removed public
-`wants_early_events` / `wants_token_previews` declarations are compile errors;
-there are no compatibility aliases.
+The parser then also sends *observations*: early, provisional facts about names
+it has completely read. For example, `graph { alpha [label="unfinished`
+delivers `identifier` for `alpha` and a `statement_head` of `.node`, but no
+`commit_node`. An editor can show that as a provisional outline entry while
+still reporting the syntax error. Consumers that don't opt in get none of these
+callbacks.
 
-This exposes recognized names before a statement completes. For example,
-`graph { alpha [label="unfinished` delivers `identifier` for `alpha` and a
-`statement_head` of `.node`, but no `commit_node`. An editor can retain that
-observation as a provisional outline entry while still reporting the syntax
-error. Ordinary consumers receive neither of these extra callbacks.
-The shared `Event` type gains these four early-observation tags and the two
-preview tags below even when the consumer opts out: existing exhaustive switches
-must handle all six or add `else => {}`.
+| `Observations` | Selects |
+| --- | --- |
+| `.none` (default) | nothing |
+| `.early` | `identifier`, `statement_head`, `document_name` and `subgraph_name` |
+| `.previews` | `token_preview` (see [previews](#unfinished-token-previews)) |
+| `.all` | all of the above |
+
+You can also set the fields yourself:
+
+```zig
+pub const observations: dot.events.Observations = .{
+    .identifier = true, .token_preview = true,
+};
+```
+
+The fields are `identifier`, `statement_head`, `document_name`,
+`subgraph_name` and `token_preview`, all `false` by default. The constants are
+just shorthand. The choice is independent of `wants_begin_statement` and
+doesn't change syntax or recovery.
 
 | Event | Payload and timing |
 | --- | --- |
-| `identifier` | `owner`, complete typed `name`, and `role`: `.statement_start`, `.edge_right` or `.edge_link`. Port suffixes are separate existing `ported_reference` events. |
-| `statement_head` | `owner`, first-token `start`, and recognized `kind`: `.node`, `.edge`, `.assignment`, `.graph_attributes`, `.node_attributes`, `.edge_attributes` or `.subgraph`. At most once per statement occurrence. |
-| `document_name` | Complete `name`, `kind`, `strict`, `keyword_span` and `source_info`, before the document's opening brace. |
-| `subgraph_name` | Complete `name`, `keyword_span`, `owner` and endpoint `role`, before its opening brace. No `ScopeId` is allocated until the body opens. |
+| `identifier` | `owner`, complete `name`, and `role`: `.statement_start`, `.edge_right` or `.edge_link`. Port suffixes still come as `ported_reference`. |
+| `statement_head` | `owner`, `start` (the first token) and `kind`: `.node`, `.edge`, `.assignment`, `.graph_attributes`, `.node_attributes`, `.edge_attributes` or `.subgraph`. At most once per statement. |
+| `document_name` | `name`, `kind`, `strict`, `keyword_span` and `source_info`, before the document's `{` |
+| `subgraph_name` | `name`, `keyword_span`, `owner` and endpoint `role`, before the subgraph's `{`. No `ScopeId` exists until the body opens. |
 
-A statement-leading identifier is not yet necessarily a node: `a` can become
-`a = value` or `a -> b`. The head refines its role when syntax establishes it:
-`[` identifies a node, `=` an assignment, and the first edge operator an edge.
-A bare node gets its head at a valid statement boundary. At EOF, `graph { a`
-exposes the identifier but does not guess the statement's eventual kind.
-A named subgraph may later become an edge endpoint; its standalone `.subgraph`
-head is emitted only after its body and non-edge lookahead are recognized.
+How the head is decided:
 
-Correlate observations with later events using `owner` and source spans; do not
-create a second node when the matching commit arrives. Names use original byte
-coordinates and borrow the unchanged input. `document_name.source_info` makes
-encoding available even before `begin_document`. IDs remain local to one parse,
-not stable identities across edits.
+- A name at the start of a statement is not yet a node: `a` can become
+  `a = value` or `a -> b`. The head comes once the syntax shows which: `[` means
+  a node, `=` an assignment, the first edge operator an edge.
+- A bare node gets its head at a valid statement boundary. At the end of input,
+  `graph { a` gives the identifier but no head: the parser doesn't guess.
+- A named subgraph may still turn out to be an edge endpoint. Its `.subgraph`
+  head comes only after its body and the following token show it stands alone.
 
-These are provisional facts, not commits, repairs or a partial document tree.
-Commits still certify completed statements, not observations. Opting into either
-early events or previews also tracks statement ownership when begin notifications
-and statement recovery are disabled, so those consumers can now receive a
-statement abort followed by document abort. An outline may deliberately keep an
-aborted observation marked provisional; an atomic graph/index must discard it.
-Complete lexical names qualify for `identifier.fromName(source, name)`, even when their
-enclosing statement fails. Unfinished input is not guessed into a name. The
-separate preview opt-in below exposes raw prefixes, not trusted identifiers.
+Using observations correctly:
 
-There is no event queue, additional nesting frame or parser-owned outline.
-Enabled callbacks each consume a separate dispatch credit and obey existing
-cancellation polling, including a pause between a head and its commit.
-Callback execution is still consumer work. Metering units and cancellation
-intervals do not change. The opt-in does not enable `retention.partial` or alter
-syntax acceptance/recovery.
+- Match observations with later events by `owner` and spans. Don't create a
+  second node when the commit arrives.
+- Names are original byte ranges that borrow the unchanged input.
+  `document_name.source_info` tells you the encoding before `begin_document`.
+  IDs belong to one parse, not stable across edits.
+- Observations are provisional. They are not commits, repairs or a partial
+  tree. Commits still mean finished statements.
+- Selecting any observation makes the parser track statements even when begin
+  notifications and statement recovery are off, so such consumers can get a
+  statement abort followed by a document abort.
+- An outline may keep an aborted observation, marked provisional. An
+  all-or-nothing graph or index must throw it away.
+- A complete name can be used with `identifier.fromName(source, name)` even when
+  its statement fails. Unfinished input is never guessed into a name. For raw
+  unfinished text, use [previews](#unfinished-token-previews); they are not
+  trusted names.
+
+Costs:
+
+- No event queue, extra nesting frame or parser-owned outline.
+- In a [session](#sessions-and-encodings), each delivered observation costs one
+  credit and is subject to cancellation polling, including the pause
+  between a head and its commit. Unselected kinds cost nothing. Credit units and
+  poll intervals don't change.
+- Time spent in your callbacks is yours.
+- It doesn't turn on `retention.partial`.
 
 ### Unfinished-token previews
 
-For raw prefixes as well as complete names, independently declare:
+> **Unreleased.** Not in 0.5.0.
+
+A *preview* is the raw text of a token the user is still typing, such as
+`"serv` before the closing quote. Select it on its own or together with early
+observations:
 
 ```zig
 pub const observations = dot.events.Observations.previews;
-// Use Observations.all for both early names/heads and previews.
-// Or select individual kinds:
-// pub const observations: dot.events.Observations = .{
-//     .identifier = true, .token_preview = true,
-// };
+// or .all for early observations and previews together
 ```
 
-The same `onEvent` receives these Unreleased events:
+The same `onEvent` receives:
 
-| Event | Meaning |
+| Event | Payload |
 | --- | --- |
-| `token_preview` | `span`, `kind`, `reason` (`pause` or `eof`), known grammar `context`, current `scope`, optional `owner` and `source_info` |
-| `token_preview_end` | Retire the preview at `start`: a lexical `token` completed, or the prefix was `rejected`. Token completion is not grammar acceptance. |
+| `token_preview` | `span`, `kind`, `reason` (`.pause` or `.eof`), `context`, the current `scope`, an optional `owner`, and `source_info` |
+| `token_preview_end` | `start` (of the preview it ends) and `reason`: `.token` (the token finished; that doesn't mean the grammar accepted it) or `.rejected` (the text failed) |
 
-At actual EOF, `graph { "serv` exposes `"serv` with kind `quoted` and context
-`statement_start`, then reports the ordinary unterminated-string failure and
-aborts. Quoted, HTML-like and concatenated expressions are supported at EOF.
-While a session is scanning, previews can additionally describe `word` and
-`numeral` prefixes. A word might become a keyword; even a closed quoted operand
-can still acquire a concatenated suffix. This slice does not preview comments,
-operators or whitespace as separate previews. Concatenation spans include their
-internal glue, but trailing trivia after `+` does not extend a prefix or trigger
-whitespace-only updates. Comment retention remains a separate option.
+| Field | Values |
+| --- | --- |
+| `kind` | `word`, `numeral`, `quoted`, `html` or `concatenation` |
+| `context` | `document_name`, `subgraph_name`, `statement_start`, `edge_right`, `edge_link`, `attribute_key`, `attribute_value`, `assignment_value`, `port`, or `unknown` (the parser can't tell yet, or is recovering from an error) |
 
-Spans include their written delimiters and borrow original bytes. They may end
-inside a UTF-8 scalar or escape; they are **not** valid input for
-`identifier.fromName`: their type is `Span`, not `Name`. No decoding, extra source scan, inferred closing
-delimiter, diagnostic suppression or repaired tree is involved. Native one-shot
-EOF previews keep original UTF-16/32 byte offsets and encoding metadata; native
-sessions remain unavailable.
+When previews arrive:
 
-Contexts include document/subgraph names, statement starts, right/link edge
-endpoints, attribute keys/values, assignment values and ports. Ambiguous
-lookahead and recovery use `unknown`. An owner is absent until an actual
-statement occurrence has begun: a prefix alone does not allocate a statement
-or scope identity. In separator-free DOT, a new statement's prefix does not
-belong to the preceding statement while its commit awaits lookahead. Ownership
-does not require enabling begin notifications or early events. Use the source
-start to correlate updates, not the spelling.
+- At the real end of the input, for an unfinished quoted string, HTML-like
+  string or concatenation, in both `parse` and sessions. For example,
+  `graph { "serv` gives `"serv` with kind `quoted` and context
+  `statement_start`, then the usual unterminated-string error, then the abort.
+- In a metered [session](#sessions-and-encodings), also at a pause: when a call
+  to `advance` runs out of budget in the middle of a token. Pause previews can
+  also show `word` and `numeral` text. A word may still turn out to be a
+  keyword, and a closed quoted string may still get a `+` suffix.
+- Pause previews depend on how you split the budget and on the scanner, so they
+  are not a token stream or a stable outline. `run()` and one-shot `parse` never
+  pause just to produce previews.
+- Comments, operators and whitespace get no previews of their own (comments
+  come as `comment` events when `retention.comments` is on). A concatenation's
+  span includes the glue inside it, but whitespace or comments after a trailing
+  `+` don't extend it or cause updates.
 
-Replace a previous preview at the same start with each update. Retire it on
-`token_preview_end`; a document abort abandons all remaining previews without
-extra end callbacks. An editor may deliberately keep an EOF preview marked
-provisional after abort, just like early name observations. Reset starts a new
-parse identity space. Never merge these observations into committed syntax.
+Using previews:
 
-Each preview/update/end attempt consumes its own dispatch credit. At a metered
-pause, the parser snapshots only already-consumed bytes, **without reading
-ahead**, and queues at most one update. If scanning exhausted the budget, the
-callback waits for the next positive-budget `advance()` before scanning resumes.
-`Progress.phase` is `dispatch` while that update is queued; a one-credit call can
-deliver it. `advance(0)` emits nothing (existing cancellation polling still
-applies). Unchanged prefixes are not repeatedly emitted, and a one-credit
-session always makes progress rather than spending every credit on snapshots.
+- Each update replaces the earlier preview with the same `start`. A
+  `token_preview_end` retires it. A document abort retires all remaining
+  previews, with no end events. An editor may keep an end-of-input preview,
+  marked provisional, after the abort.
+- Never merge previews into committed syntax.
+- Spans include the written delimiters, borrow the original bytes, and may end
+  in the middle of a character or an escape. They are `Span`, not `Name`, so
+  `identifier.fromName` won't take them.
+- Nothing is decoded, scanned again, closed by guessing, hidden from the
+  diagnostics or repaired.
+- UTF-16 and UTF-32 previews at the end of input keep byte offsets and encoding
+  information. (There are no UTF-16/32 event sessions, so no pause previews
+  for them.)
+- `owner` is absent until a statement has actually begun; a preview never
+  creates a statement or scope ID. In DOT without separators (`a b`), the next
+  statement's text doesn't belong to the statement before it, even while that
+  one waits to see the next token before committing. Owners work without begin
+  notifications or early observations.
+- Match updates by `start`, not by the text. `reset()` starts a new parse; IDs
+  don't carry over.
 
-Pause previews depend on budget partition and scanner backend; their sequence
-is not a token stream or a stable outline. A `run()` does not pause to manufacture
-previews. Consumer stop/failure and cancellation keep their existing terminal
-semantics; a queued preview may never be delivered if the operation is stopped.
-Cancellation abandons the observation, not a scanner failure already found:
-that finding is reported first. An unrecoverable failure remains `invalid_syntax`;
-if recovery was possible, cancellation stops it with the finding retained.
-This includes ambiguous-numeral findings held behind a token-end preview.
-An event consumer returning `.stop` is a different boundary: if it stops on an
-EOF preview, the pending syntax finding has not yet been delivered. `reset()`
-and `deinit()` use cancellation cleanup and can deliver a pending finding to
-the old diagnostic sink; keep that sink alive and clear reusable bags after reset.
-Callback work remains caller work. Enabling previews adds fixed-size state and
-callback work, but no parser allocation, source copy or nesting-frame growth.
-Disabled profiles compile that state, scanner-boundary bookkeeping and dispatch
-out. Compare costs with
-`zig build bench-previews -Doptimize=fast`.
+Credits and timing in sessions:
 
-## Recovery and retained output
+- Each preview, update and end costs one credit.
+- At a pause, the parser looks only at bytes it has already read, **without
+  reading ahead**, and queues at most one update. If scanning used up the
+  budget, the update waits for the next `advance` with a positive budget.
+  Meanwhile `Progress.phase` is `.dispatch`, and a 1-credit call delivers it.
+- `advance(0)` delivers nothing (cancellation is still checked).
+- An unchanged prefix is not sent again, and a session with a budget of 1 still
+  makes progress rather than spending every credit on previews.
 
-With `.on_error = .collect`, a recoverable error aborts the current statement,
-reports a skipped range, then delivers later statements. `.fail_fast` stops at
-the first error. An unterminated quote/comment or an operational stop still ends
-the parse. Recovery never makes rejected input successful: the document aborts
-at the end, with the actual syntax outcome and factual error count preserved.
+Stops and cancellation:
 
-These choices do not enable the library's partial tree. That separate opt-in is
-`retention.partial`; see [editor results](EDITORS.md#keep-the-finished-part-of-a-dot-file).
-Event-only consumers decide which completed work to keep themselves.
+- A queued preview may never arrive if the parse stops first.
+- `cancel()`, or a cancellation hook, drops the preview but not a scanner error
+  already found behind it: that finding is reported first. If the error can't
+  be recovered from (such as an unterminated string at the end of input), the
+  outcome stays `invalid_syntax`. If recovery was possible, the outcome is
+  `cancelled` and the finding is kept. This includes an ambiguous-numeral
+  finding waiting behind a `token_preview_end`.
+- Stopping from your consumer is different. If `onEvent` returns `.stop` or an
+  error on a `token_preview` or `token_preview_end`, a finding the scanner has
+  found but not yet reported (such as the unterminated-string error after an
+  end-of-input preview) is not delivered.
+- `reset()` and `deinit()` clean up like `cancel()`, so they can deliver such a
+  pending finding to the **old** diagnostic sink. Keep that sink alive until
+  then, and clear a reused bag after `reset()`.
 
-All spans borrow the original source, in bytes. Event statement/reference IDs
-identify written occurrences, not unique graph nodes: statement IDs are opening
-byte offsets, scope IDs are one-based opening-order occurrences (root is zero),
-and reference IDs are zero-based qualified-reference occurrences. The `port`,
-`left_scope` and `right_scope` integer fields carry the respective occurrence
-IDs. They are not arbitrary array indexes; use the document's checked views to
-access retained storage. `dot.ScopeId` and `dot.events.ScopeId` are the same
-type. IDs are not renumbered when a statement aborts.
-Source must remain alive and unchanged for any retained spans.
-`begin_document.source_info` and the terminal result carry the selected source
-encoding/BOM information, so native consumers need not infer it from spans.
+Costs: previews add fixed-size state and callback work, but no parser
+allocation, source copy or extra nesting frames. Profiles without previews
+compile that state, the scanner bookkeeping and the extra callbacks out.
+Compare with `zig build bench-previews -Doptimize=fast`; measurements are in
+[performance](PERFORMANCE.md#unfinished-token-previews).
 
 ## Indexing recognized names
 
-The raw `identifier.hash`/`eql` helpers check the spelling each time because they
-also accept arbitrary caller input. When an event already identifies a complete
-identifier, a consumer can skip that check without retaining a `Document`:
+> **Unreleased.** Not in 0.5.0.
+
+To build a name index, you hash and compare identifiers. The general helpers
+`dot.identifier.hash` and `dot.identifier.eql` accept any bytes, so they check
+the spelling every time. When an event already hands you a complete
+identifier, you can skip that check without keeping a `Document`:
 
 ```zig
 // Inside a UTF-8 consumer's onEvent:
 .commit_node => |node| {
     const name = dot.identifier.fromName(self.source, node.value.identifier);
-    const hash = name.hash() catch unreachable; // UTF-8 preserves raw bytes.
-    // Store name/hash in your index; use name.eql(other) on hash matches.
+    const hash = name.hash() catch unreachable; // UTF-8 keeps raw bytes; no error.
+    // Store name/hash in your index; use name.eql(other) when hashes match.
 },
 ```
 
-`fromName` accepts a `dot.Name` issued by parsing or `identifier.check`, not
-arbitrary bytes or a `Span`.
-Names have the same eight-byte layout as spans; `.span()` exposes coordinates
-for diagnostics and `.slice(source)` returns original spelling. Events use
-`Name` for `identifier.name`, document/subgraph names, node identifiers,
-attribute keys/values, ports and link identifiers. Edge `left`/`right` can also
-represent scope introducers, so use `edge.leftName()` / `edge.rightName()`;
-they return null for scoped endpoints. Begins, heads, keywords, skipped regions
-and previews remain spans and cannot accidentally enter this API.
+- `dot.Name` is a typed handle for a complete identifier. Events use it for
+  `identifier.name`, document and subgraph names, node identifiers, attribute
+  keys and values, ports and link targets. Begins, heads, keywords, skipped
+  regions and previews stay plain `Span`s, so they can't be passed by mistake.
+  Edge endpoints are spans too; `edge.leftName()` and `edge.rightName()` give a
+  `Name`, or null for a subgraph endpoint.
+- `fromName(source, name)` accepts only a `Name` issued by parsing or by
+  `identifier.check`, never arbitrary bytes or a `Span`. It returns a
+  `dot.identifier.Parsed` with `hash()` and `eql()` that skip re-checking.
+- A `Name` has the same 8-byte layout as a span. `.span()` gives its
+  coordinates for diagnostics, and `.slice(source)` its original spelling.
 
-Keep the producing source unchanged and use its encoding. This is type safety
-against accidental misuse, not protection from deliberate forging or supplying
-another buffer. Zig struct literals and record helpers are not a security
-boundary: constructing a `Name` or `Parsed` manually does not validate it.
-An out-of-source range panics in every build mode; same-sized stale input or a
-wrong encoding cannot be detected from the handle. It represents complete
-identifier spelling, not Unicode validity, statement acceptance or node identity.
-For arbitrary spans, explicitly call
-`try identifier.check(source, span)` to obtain a checked `Name`, or use the
-existing checked byte helpers. For native input,
-select `identifier.ForEncoding(actual)` from the document-begin encoding
-(or `document_name.source_info` for an early header name).
-Those native helpers can reject malformed encoding: propagate `InvalidIdentifier`
-through a fallible callback instead of treating it as unreachable.
+Limits of the guarantee:
 
-When the encoding is selected at runtime, dispatch once on the source metadata:
+- Use the `Name` with the unchanged source that produced it, in its encoding.
+  The type prevents accidents; it doesn't stop deliberate forging or a
+  different buffer. Building a `Name` or `Parsed` by hand doesn't validate it.
+- A `Name` outside the source panics in every build mode. A same-sized changed
+  source, or the wrong encoding, can't be detected.
+- It means "complete identifier spelling". It doesn't mean valid Unicode, an
+  accepted statement or a unique node.
+
+For an arbitrary span, call `try dot.identifier.check(source, span)` to get a
+checked `Name` (or use the checked byte helpers). `check` verifies the spelling
+of one identifier on its own; it says nothing about its role or acceptance in
+the document.
+
+For UTF-16 or UTF-32 input, use `dot.identifier.ForEncoding(actual)`, with
+`actual` taken from `begin_document.source_info.encoding` (or
+`document_name.source_info` for an early header name). Those helpers decode the
+text and can reject malformed encoding, so pass `InvalidIdentifier` on through
+a fallible callback instead of treating it as unreachable. When the encoding is
+chosen at run time, switch on it once:
 
 ```zig
 fn nameHash(source: []const u8, name: dot.Name, actual: dot.InputEncoding) !u64 {
@@ -308,18 +491,20 @@ fn nameHash(source: []const u8, name: dot.Name, actual: dot.InputEncoding) !u64 
 }
 ```
 
-Use `begin_document.source_info.encoding` (or the early document-name metadata)
-for `actual`. `check` verifies a standalone identifier spelling; it does not
-establish the identifier's role or acceptance in the surrounding document.
-No event fields, parser storage or allocations are added; index memory belongs to the consumer.
-Hashing/comparison in callbacks is consumer work, not parser-session credits.
+No event fields, parser storage or allocations are added. The index's memory is
+yours, and hashing and comparing in callbacks is your work, not parser credits.
 
-`zig build bench-identifiers -Doptimize=fast` compares the checked and
-trusted paths in an event-only name index, with source generation and identical
-table reservation outside timing. It reports parse-plus-index time, decimal
-MB/s and index storage. Use `safe` or `small` for those modes.
+`zig build bench-identifiers -Doptimize=fast` compares the checked and trusted
+paths in an event-only name index. Building the source and reserving the table
+happen outside the timing. It reports parse-plus-index time, MB/s (decimal) and
+index storage. Use `-Doptimize=safe` or `small` for those modes. Measurements
+are in [performance](PERFORMANCE.md#names-outline-events-and-previews).
 
 ## Sessions and encodings
+
+A *session* parses in steps: each `advance(budget)` call does at most `budget`
+*credits* of work and returns, so you can interleave parsing with other work.
+Turn on metering in the profile:
 
 ```zig
 const Streaming = dot.Profile(.{ .policy = .{
@@ -331,61 +516,138 @@ defer session.deinit();
 while (session.result() == null) _ = session.advance(4096);
 ```
 
-The consumer and scratch must outlive the session. Callbacks must not reenter
-the active driver, reuse its scratch or mutate source bytes. Normal callbacks
-have separate work credits, just like grammar/scanner work; caller callback
-execution and infallible abort cleanup are not time-metered. Pauses preserve
-event ordering without replaying delivered callbacks. `run`, `cancel`, `result`
-and `reset` follow the document-session lifecycle. Runtime policy is selected
-once at initialization/reset; invalid reset leaves the current session intact.
+| Session method | What it does |
+| --- | --- |
+| `Session.init(source, frames, &consumer, diagnostics, options)` | Prepares a session. Settings are fixed here (runtime profiles return an error union). |
+| `advance(budget)` | At most `budget` credits of work. Needs metering: a compile error on fixed profiles without it, `error.MeteringDisabled` on runtime ones. |
+| `run()` | Runs to the end |
+| `result()` | `null` until finished |
+| `cancel()` | Stops now. If the consumer had received anything, it gets its aborts. |
+| `reset(source, &consumer, diagnostics, options)` | Starts again on the same frames. Invalid new settings leave the current session untouched. |
+| `deinit()` | The same as `cancel()` |
 
-The parser keeps no event list. If your consumer retains complete `Event`
-values, budget `@sizeOf(dot.events.Event)` per entry; an index can instead keep
-only the spans and IDs it needs. Event layouts are not a stable binary ABI.
+| `Progress` field | Meaning |
+| --- | --- |
+| `phase` | `scan`, `grammar`, `dispatch` (an event is waiting to be delivered) or `terminal` |
+| `work_used` | Credits used by this call |
+| `source_frontier` | How far the scanner has read, in bytes |
+| `completed_statements`, `completed_pairs` | Statements and attribute pairs finished so far |
+| `result` | The final result, once there is one |
 
-## The same contract inside the library
+Sessions follow the same lifecycle as document sessions (see
+[parsing in small steps](EXECUTION.md)):
 
-The parser calls `onEvent`/`onAbort` directly for our document builders, the
-sizing sink and your consumer. No adapter translates a private vocabulary into
-the public one. Scope/reference IDs are assigned by the parser, not returned
-as builder-owned pool handles. `begin_scope` includes the suspended edge prefix
-when the scope is an edge endpoint, so a consumer needs no private parser state.
+- The consumer and the frames must outlive the session.
+- Each delivered event costs one credit, like a grammar or scanning step.
+  `onAbort` calls cost none. Credits don't bound the time your callbacks take.
+- Pauses keep event order. Delivered events are never replayed.
 
-Most consumers need only the two callbacks shown above. Advanced consumers may
-declare a private `ScopeContext` type with infallible
-`suspendScope(*Self) ScopeContext` and `restoreScope(*Self, ScopeContext) void`.
-After an accepted scope-begin callback, the parser saves that context in typed
-scratch; after an accepted scope-end callback it restores it. Our builders use
-this for reservations, without exposing them in events or adding a second
-stack. Terminal abort abandons open contexts without synthesizing closes.
-Context is copied saved state, not transferred resource ownership: keep owned
-resources in the consumer so `onAbort` can clean up without scope-close calls.
-Continuation hooks share their scope event's dispatch credit; their execution,
-like `onEvent`, is consumer work outside the parser's metering.
+**Callbacks and re-entry:**
 
-Use the bound profile's `ParseScratch`/`FixedParseScratch` for fixed event
-storage: its frame type includes only that consumer's context. Ordinary
-consumers have no private context, so their nesting frames are smaller than
-tree-builder frames. No extra allocation or identity lookup table is needed.
-Optional compile-time declarations select callback work:
-`wants_begin_statement = false` omits begin notifications, and
-`recover_statements = false` ends output at the first syntax rejection while
-the grammar may continue collecting diagnostics. Both default to true for user
-consumers. `observations: dot.events.Observations` selects optional observations.
-Its fields are `identifier`, `statement_head`, `document_name`, `subgraph_name`
-and `token_preview`; all default to false. Preview retirement is always paired
-with preview delivery. The `.early`, `.previews`, `.all` and `.none` constants
-are convenient selections, not separate machinery. Names, heads and previews
-share one internal scheduling/dispatch continuation and abort-delivery flag;
-only previews need a snapshot. Unselected kinds have no callback or work credit.
-Selection is independent of begin notifications. None changes the
-profile's syntax/recovery policy.
-The `parser_retention` namespace is reserved for internal document bookkeeping,
-not a consumer hook. Unrelated methods named `continuesAfterError` or
-`retainThrough` have no effect on event delivery.
+- `onEvent`, `onAbort`, `suspendScope` and `restoreScope` must not call any
+  method of the session (or parse) that is calling them, not even `cancel()`.
+  They must not reuse its frames or change the source. To stop from `onEvent`,
+  return `.stop` or an error.
+- A cancellation hook may call `cancel()` on its own session. The session then
+  ends as `cancelled`, whichever value the hook returns. The hook must not call
+  `advance`, `run`, `reset` or `deinit`.
 
-One-shot event profiles support compiled native source encodings and original
-byte offsets. Native resumable sessions, event-driven validation, simultaneous
-library-tree plus public-event output, and composed label execution through
-this event-only API are not implemented. Use an outer-only DOT profile here;
-ordinary [composition](LABELS.md) remains separate.
+| Option | When it exists | Meaning |
+| --- | --- | --- |
+| `policy` | `runtime_policy = true` | Settings for this parse or session |
+| `cancellation` | runtime profiles, or when `execution.cancellation` is on | An optional borrowed hook |
+| `encoding` | profiles that compile anything other than UTF-8 alone | The input's encoding. `null` uses a byte-order mark if there is one, otherwise UTF-8 (or ASCII). |
+
+**Encodings.** Profiles that compile only UTF-8 (the default) have `parse`,
+`parseIn` and `Session`. Profiles whose `source_encodings` is anything else
+(including ASCII-only, `&.{}`) have `parse` and `parseIn` only. Those take
+`options.encoding` and return an error union for input encoding errors. A hook
+that already asks to stop gives the `cancelled` outcome before anything is
+read, as it does for UTF-8.
+Events still report original byte offsets. There is no event `Session` for
+these profiles yet.
+
+**Memory.** The parser keeps no event list. If you keep whole `Event` values,
+budget `@sizeOf(dot.events.Event)` per entry; an index can keep just the spans
+and IDs it needs. Event layouts are not a stable binary format.
+
+## Advanced: per-scope state
+
+Most consumers need only `onEvent` and `onAbort`. If you want to save some of
+your own state when a subgraph opens and get it back when it closes, declare:
+
+```zig
+const Depth = struct {
+    depth: u32 = 0,
+
+    pub const ScopeContext = u32; // any type of yours
+    pub fn suspendScope(self: *@This()) ScopeContext {
+        const outer = self.depth;
+        self.depth += 1;
+        return outer;
+    }
+    pub fn restoreScope(self: *@This(), outer: ScopeContext) void {
+        self.depth = outer;
+    }
+
+    pub fn onEvent(_: *@This(), _: dot.events.Event) error{}!dot.events.Action {
+        return .proceed;
+    }
+    pub fn onAbort(_: *@This(), _: dot.events.Abort) void {}
+};
+```
+
+- After your `onEvent` accepts a `begin_scope`, the parser calls
+  `suspendScope` and stores the value in that subgraph's nesting frame. After
+  you accept the matching `end_scope`, it calls `restoreScope` with it. No
+  second stack is used.
+- Both must be infallible.
+- On a document abort, saved values are dropped; no `restoreScope` or
+  `end_scope` is made up.
+- The saved value is a copy, not a handed-over resource. Keep anything you own
+  in the consumer itself, so `onAbort` can clean up without scope-close calls.
+- These calls share their scope event's credit. Their time, like `onEvent`'s,
+  is your work.
+- Use the bound profile's `ParseScratch` / `FixedParseScratch`: its frame size
+  includes only your `ScopeContext`. Consumers without one have smaller frames
+  than the library's own document builder.
+
+The library's document builders use this same event interface, including this
+hook. Scope and reference IDs come from the parser, not from any builder's
+storage, and `begin_scope` already carries the edge written so far, so a
+consumer never needs the parser's private state.
+
+## What events don't do
+
+- **No validation.** Only parsing settings apply: syntax choices, limits,
+  `on_error`, comment retention, `markup` (`.none` or `.passthrough`),
+  `diagnostics`, and the lexical `validation.ambiguous_numeral` check. The checks
+  `parseAndValidate` runs on a finished `Document` don't run on events.
+- **No `Document` at the same time.** You get events or the library's tree,
+  not both from one parse.
+- **No child processors.** Profiles with a markup processor or with active
+  [string routes](STRINGS.md#attribute-processing-in-dot-and-markup) have no
+  `Events`; use a DOT profile without them. [Labels](LABELS.md) work through the
+  ordinary document APIs.
+- **No event sessions for profiles that compile anything other than UTF-8
+  alone**, so no pause previews for UTF-16 or UTF-32 input (see
+  [encodings](#sessions-and-encodings)).
+
+## Examples
+
+There is no example program for events yet. These files contain working
+consumers:
+
+- [bench/identifiers.zig](../bench/identifiers.zig): an event-only parse that
+  builds a name index with `identifier.fromName`, using `parseIn` with fixed
+  frames
+- [bench/previews.zig](../bench/previews.zig): a consumer that selects
+  `.token_preview` and counts previews in sessions with different budgets
+- [tests/events.zig](../tests/events.zig): recovery, aborts, stops, sessions at
+  every budget, native encodings and per-scope state
+- [tests/early_events.zig](../tests/early_events.zig) and
+  [tests/token_previews.zig](../tests/token_previews.zig): observations and
+  previews
+
+For names in a `Document` instead, see
+[identifiers.zig](../examples/identifiers.zig).
