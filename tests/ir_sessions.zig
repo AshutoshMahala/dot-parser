@@ -126,7 +126,7 @@ test "session options keep compile-time attributes and runtime execution configu
     _ = &options;
     var session = try ir.materializationSession(options);
     defer session.deinit();
-    try expect(@TypeOf(session) == dot.ir.Lowering(.{}).Graph.MaterializationSession(true));
+    try expect(@TypeOf(session) == dot.ir.Lowering(.{}).Graph.MaterializationSession(.{ .attributes = true }));
     _ = session.run();
     var graph = try session.takeResult();
     defer graph.deinit();

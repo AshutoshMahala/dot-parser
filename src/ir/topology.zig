@@ -8,6 +8,7 @@ const r = @import("resources.zig");
 const attrs = @import("attributes.zig");
 const ports = @import("ports.zig");
 const query_indexes = @import("query_indexes.zig");
+const materialization = @import("materialization_options.zig");
 pub const Range = support.location.Range;
 pub const NodeId = enum(u32) { _ };
 pub const ScopeId = enum(u32) { root, _ };
@@ -72,33 +73,6 @@ pub const MaterializedTopology = struct {
         return if (self._ownership == .borrowed) self._ownership.borrowed.len else self._ownership.allocated.capacity * @sizeOf(Edge);
     }
 };
-
-// Normalize anonymous option literals without losing field checking/defaults.
-// Typed runtime optionals and explicit null use the same execution contract.
-fn optionalOption(comptime T: type, value: anytype) ?T {
-    if (@TypeOf(value) == T) return value;
-    switch (@typeInfo(@TypeOf(value))) {
-        .null => return null,
-        .optional => return if (value) |payload| optionalOption(T, payload) else null,
-        else => {},
-    }
-    comptime {
-        for (@typeInfo(@TypeOf(value)).@"struct".field_names) |field| {
-            if (!@hasField(T, field)) @compileError("unknown IR materialization option field: " ++ field);
-        }
-    }
-    var result: T = undefined;
-    const fields = @typeInfo(T).@"struct";
-    inline for (fields.field_names, fields.field_types, fields.field_attrs) |name, Field, attr| {
-        @field(result, name) = if (@hasField(@TypeOf(value), name))
-            @field(value, name)
-        else if (attr.default_value_ptr) |ptr|
-            @as(*const Field, @ptrCast(@alignCast(ptr))).*
-        else
-            @compileError("missing IR materialization option field: " ++ name);
-    }
-    return result;
-}
 
 pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
     return GraphWith(rep, false);
@@ -559,38 +533,43 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
         }
 
         pub const Materialized = @import("materialized_attributes.zig").For(Self, caps);
-        pub fn FixedMaterializationResult(comptime attributes: bool) type {
-            return @import("fixed_materialization.zig").Result(Self, attributes);
+        pub fn MaterializedFor(comptime config: anytype) type {
+            materialization.checkSelection(config);
+            return @import("adjacency.zig").Result(Self, materialization.selection(rep.attributes, config));
         }
-        pub fn FixedMaterializationSession(comptime attributes: bool) type {
-            if (attributes) comptime @import("representation.zig").requireAttributes(rep.attributes);
-            return @import("materialization_session.zig").FixedSession(Self, caps, attributes);
+        pub fn FixedMaterializationResult(comptime config: anytype) type {
+            materialization.checkSelection(config);
+            const selected = materialization.selection(rep.attributes, config);
+            if (selected.adjacency != .none) return @import("adjacency_materialization.zig").FixedResult(Self, selected);
+            return @import("fixed_materialization.zig").Result(Self, selected.attributes);
+        }
+        pub fn FixedMaterializationSession(comptime config: anytype) type {
+            materialization.checkSelection(config);
+            const selected = materialization.selection(rep.attributes, config);
+            if (selected.adjacency != .none) return @import("adjacency_materialization.zig").Session(Self, selected, true);
+            return @import("materialization_session.zig").FixedSession(Self, caps, selected.attributes);
         }
         pub inline fn materializeIn(self: *const Self, memory: anytype, options: anytype) FixedMaterializationResult(@import("materialization_storage.zig").selected(@TypeOf(memory))) {
-            const attributes = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
-            return @import("fixed_materialization.zig").direct(Self, attributes, self, memory, @import("materialization_storage.zig").options(attributes, options));
+            const selected = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
+            const execution = materialization.options(selected, options);
+            if (selected.adjacency != .none) return @import("adjacency_materialization.zig").directIn(Self, selected, self, memory, execution);
+            return @import("fixed_materialization.zig").direct(Self, selected.attributes, self, memory, execution);
         }
         pub inline fn materializationSessionIn(self: *const Self, memory: anytype, options: anytype) r.Error!FixedMaterializationSession(@import("materialization_storage.zig").selected(@TypeOf(memory))) {
-            const attributes = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
-            return FixedMaterializationSession(attributes).initIn(self, memory, @import("materialization_storage.zig").options(attributes, options));
+            const selected = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
+            return FixedMaterializationSession(selected).initIn(self, memory, materialization.options(selected, options));
         }
-        pub fn MaterializationSession(comptime attributes: bool) type {
-            if (attributes) comptime @import("representation.zig").requireAttributes(rep.attributes);
-            return @import("materialization_session.zig").Session(Self, caps, attributes);
+        pub fn MaterializationSession(comptime config: anytype) type {
+            materialization.checkSelection(config);
+            const selected = materialization.selection(rep.attributes, config);
+            if (selected.adjacency != .none) return @import("adjacency_materialization.zig").Session(Self, selected, false);
+            return @import("materialization_session.zig").Session(Self, caps, selected.attributes);
         }
         /// Opt-in resumable equivalent of materialize. The same compile-time
         /// attribute selection and runtime options; no hidden preparation pass.
-        pub inline fn materializationSession(self: *const Self, options: anytype) r.Error!MaterializationSession(if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes) {
-            comptime {
-                for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
-                    if (!std.mem.eql(u8, field, "attributes") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation"))
-                        @compileError("unknown IR materialization option: " ++ field);
-                }
-            }
-            return MaterializationSession(comptime if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes).init(self, .{
-                .limits = if (@hasField(@TypeOf(options), "limits")) optionalOption(r.Limits, options.limits) else null,
-                .cancellation = if (@hasField(@TypeOf(options), "cancellation")) optionalOption(r.Cancellation, options.cancellation) else null,
-            });
+        pub inline fn materializationSession(self: *const Self, options: anytype) r.Error!MaterializationSession(.{ .attributes = if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(options), "adjacency")) options.adjacency else .none }) {
+            const selected: materialization.Selection = comptime .{ .attributes = if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(options), "adjacency")) options.adjacency else .none };
+            return MaterializationSession(selected).init(self, materialization.options(selected, options));
         }
 
         /// Owning expansion with effective attributes by default. Set the
@@ -599,18 +578,11 @@ pub fn GraphWith(comptime rep: @import("representation.zig").Identity, comptime 
         /// Attribute results borrow this IR; topology-only records own their array.
         /// All-or-error. No attribute/endpoint-port folding code or state is
         /// instantiated by the topology-only specialization.
-        pub inline fn materialize(self: *const Self, options: anytype) r.Error!(if (if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes) Materialized else MaterializedTopology) {
-            comptime {
-                for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
-                    if (!std.mem.eql(u8, field, "attributes") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation"))
-                        @compileError("unknown IR materialization option: " ++ field);
-                }
-            }
-            const execution: r.Options = .{
-                .limits = if (@hasField(@TypeOf(options), "limits")) optionalOption(r.Limits, options.limits) else null,
-                .cancellation = if (@hasField(@TypeOf(options), "cancellation")) optionalOption(r.Cancellation, options.cancellation) else null,
-            };
-            return self.materializeImpl(comptime if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes, execution);
+        pub inline fn materialize(self: *const Self, options: anytype) r.Error!MaterializedFor(.{ .attributes = if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(options), "adjacency")) options.adjacency else .none }) {
+            const selected: materialization.Selection = comptime .{ .attributes = if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(options), "adjacency")) options.adjacency else .none };
+            const execution = materialization.options(selected, options);
+            if (selected.adjacency != .none) return @import("adjacency_materialization.zig").direct(Self, selected, self, execution);
+            return self.materializeImpl(selected.attributes, execution);
         }
 
         // Keep execution behind one typed boundary regardless of the literal's

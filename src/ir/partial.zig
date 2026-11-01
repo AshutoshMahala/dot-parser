@@ -11,6 +11,7 @@ const names = @import("names.zig");
 const attrs = @import("attributes.zig");
 const Unmetered = @import("../dot/identifier_cursor.zig").Unmetered;
 const scratch = @import("query_storage.zig");
+const materialization = @import("materialization_options.zig");
 
 pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
     const caps = rep.encodings;
@@ -47,26 +48,45 @@ pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
         }
         /// Successful construction retains all snapshot edges, never changes
         /// source coverage. Failure frees all output; values borrow this IR.
-        pub inline fn materialize(self: *const Self, options: anytype) r.Error!(if (if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes) Materialized else MaterializedTopology) {
+        pub fn MaterializedFor(comptime config: anytype) type {
+            materialization.checkSelection(config);
+            return @import("adjacency.zig").Result(Self, materialization.selection(rep.attributes, config));
+        }
+        pub inline fn materialize(self: *const Self, options: anytype) r.Error!MaterializedFor(.{ .attributes = if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(options), "adjacency")) options.adjacency else .none }) {
+            const selected: materialization.Selection = comptime .{ .attributes = if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(options), "adjacency")) options.adjacency else .none };
+            if (selected.adjacency != .none) return @import("adjacency_materialization.zig").direct(Self, selected, self, materialization.options(selected, options));
             const data = try self._data.materialize(options);
             return .{ .graph = self, ._data = data, .edges = data.edges, .peak_bytes = data.peak_bytes };
         }
-        pub fn MaterializationSession(comptime attributes: bool) type {
-            return MaterializationSessionWith(attributes, false);
+        pub fn MaterializationSession(comptime config: anytype) type {
+            materialization.checkSelection(config);
+            const selected = materialization.selection(rep.attributes, config);
+            if (selected.adjacency != .none) return @import("adjacency_materialization.zig").Session(Self, selected, false);
+            return MaterializationSessionWith(selected.attributes, false);
         }
-        pub fn FixedMaterializationSession(comptime attributes: bool) type {
-            return MaterializationSessionWith(attributes, true);
+        pub fn FixedMaterializationSession(comptime config: anytype) type {
+            materialization.checkSelection(config);
+            const selected = materialization.selection(rep.attributes, config);
+            if (selected.adjacency != .none) return @import("adjacency_materialization.zig").Session(Self, selected, true);
+            return MaterializationSessionWith(selected.attributes, true);
         }
-        pub fn FixedMaterializationResult(comptime attributes: bool) type {
-            return @import("fixed_materialization.zig").Result(Self, attributes);
+        pub fn FixedMaterializationResult(comptime config: anytype) type {
+            materialization.checkSelection(config);
+            const selected = materialization.selection(rep.attributes, config);
+            if (selected.adjacency != .none) return @import("adjacency_materialization.zig").FixedResult(Self, selected);
+            return @import("fixed_materialization.zig").Result(Self, selected.attributes);
         }
         pub inline fn materializeIn(self: *const Self, memory: anytype, options: anytype) FixedMaterializationResult(@import("materialization_storage.zig").selected(@TypeOf(memory))) {
-            const attributes = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
-            return @import("fixed_materialization.zig").direct(Self, attributes, self, memory, @import("materialization_storage.zig").options(attributes, options));
+            const selected = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
+            const execution = materialization.options(selected, options);
+            if (selected.adjacency != .none) return @import("adjacency_materialization.zig").directIn(Self, selected, self, memory, execution);
+            return @import("fixed_materialization.zig").direct(Self, selected.attributes, self, memory, execution);
         }
         pub inline fn materializationSessionIn(self: *const Self, memory: anytype, options: anytype) r.Error!FixedMaterializationSession(@import("materialization_storage.zig").selected(@TypeOf(memory))) {
-            const attributes = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
-            return .{ .graph = self, .inner = try Core.FixedMaterializationSession(attributes).initInOwner(&self._data, memory, @import("materialization_storage.zig").options(attributes, options), self) };
+            const selected = comptime @import("materialization_storage.zig").selected(@TypeOf(memory));
+            const execution = materialization.options(selected, options);
+            if (selected.adjacency != .none) return FixedMaterializationSession(selected).initIn(self, memory, execution);
+            return .{ .graph = self, .inner = try Core.FixedMaterializationSession(.{ .attributes = selected.attributes }).initInOwner(&self._data, memory, execution, self) };
         }
         fn MaterializationSessionWith(comptime attributes: bool, comptime fixed: bool) type {
             if (attributes) comptime @import("representation.zig").requireAttributes(rep.attributes);
@@ -74,7 +94,7 @@ pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
                 const Session = @This();
                 pub const Result = if (attributes) Materialized else MaterializedTopology;
                 graph: *const Self,
-                inner: if (fixed) Core.FixedMaterializationSession(attributes) else Core.MaterializationSession(attributes),
+                inner: if (fixed) Core.FixedMaterializationSession(.{ .attributes = attributes }) else Core.MaterializationSession(.{ .attributes = attributes }),
                 pub fn advance(session: *Session, budget: u32) @import("materialization_session.zig").Progress {
                     return session.inner.advance(budget);
                 }
@@ -105,7 +125,9 @@ pub fn Graph(comptime rep: @import("representation.zig").Identity) type {
                 }
             };
         }
-        pub inline fn materializationSession(self: *const Self, options: anytype) r.Error!MaterializationSession(if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes) {
+        pub inline fn materializationSession(self: *const Self, options: anytype) r.Error!MaterializationSession(.{ .attributes = if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(options), "adjacency")) options.adjacency else .none }) {
+            const selected: materialization.Selection = comptime .{ .attributes = if (@hasField(@TypeOf(options), "attributes")) options.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(options), "adjacency")) options.adjacency else .none };
+            if (selected.adjacency != .none) return MaterializationSession(selected).init(self, materialization.options(selected, options));
             return .{ .graph = self, .inner = try self._data.materializationSession(options) };
         }
 

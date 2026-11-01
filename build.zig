@@ -74,6 +74,16 @@ pub fn build(b: *std.Build) void {
     const test_ir = b.step("test-ir", "Test IR semantics, value views and examples");
     const run_ir_tests = b.addRunArtifact(ir_tests);
     test_ir.dependOn(&run_ir_tests.step);
+    const fuzz_ir = b.addExecutable(.{ .name = "fuzz-ir", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/fuzz_ir.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    const run_fuzz_ir = b.addRunArtifact(fuzz_ir);
+    run_fuzz_ir.addPassthruArgs();
+    run_fuzz_ir.has_side_effects = true;
+    b.step("fuzz-ir", "Run deterministic IR/adjacency adversarial differential fuzzing").dependOn(&run_fuzz_ir.step);
     const test_step = b.step("test", "Run unit and public integration tests");
     test_step.dependOn(&run_ir_tests.step);
     for ([_]struct { name: []const u8, message: []const u8 }{
@@ -128,6 +138,10 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ir_materialization_attributes", .message = "materialization attributes must match output storage" },
         .{ .name = "ir_materialization_capability", .message = "IR attributes are disabled; enable .capabilities.attributes for attribute access and effective ports" },
         .{ .name = "ir_materialization_option", .message = "unknown IR materialization option: policy" },
+        .{ .name = "ir_adjacency_direction", .message = "edge direction requires an adjacency selection that supports it" },
+        .{ .name = "ir_adjacency_all", .message = "edge direction requires an adjacency selection that supports it" },
+        .{ .name = "ir_adjacency_storage", .message = "materialization adjacency must match output storage" },
+        .{ .name = "ir_adjacency_topology_attribute", .message = "IR attributes are disabled; enable .capabilities.attributes for attribute access and effective ports" },
         .{ .name = "ir_scratch_bounds_unknown", .message = "unknown IR edge scratch sizing option: max_pair" },
     }) |fixture| {
         const rejected = b.addObject(.{ .name = fixture.name, .root_module = b.createModule(.{
@@ -141,6 +155,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&rejected.step);
     }
     const check_tools = b.step("check-tools", "Test and compile the Zig generators and performance reporter");
+    check_tools.dependOn(&fuzz_ir.step);
     const perf_tool = b.addExecutable(.{ .name = "perf-string", .root_module = b.createModule(.{
         .root_source_file = b.path("tools/perf_string.zig"),
         .target = b.graph.host,
@@ -474,6 +489,7 @@ pub fn build(b: *std.Build) void {
         "graph_attributes",
         "graph_values",
         "materialized_attributes",
+        "graph_adjacency",
         "partial_graph",
         "resumable_edges",
         "resumable_graph",
@@ -488,6 +504,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "graph_attributes", .stderr = @embedFile("tests/fixtures/graph_attributes.txt") },
         .{ .name = "graph_values", .stderr = @embedFile("tests/fixtures/graph_values.txt") },
         .{ .name = "materialized_attributes", .stderr = @embedFile("tests/fixtures/materialized_attributes.txt") },
+        .{ .name = "graph_adjacency", .stderr = @embedFile("tests/fixtures/graph_adjacency.txt") },
         .{ .name = "partial_graph", .stderr = @embedFile("tests/fixtures/partial_graph.txt") },
         .{ .name = "resumable_edges", .stderr = "a -> b: color=red, label=updated\na -> c: color=red, label=\n" },
         .{ .name = "resumable_graph", .stderr = "a: color=blue\nb: color=red\nc: color=red\n" },
@@ -633,6 +650,15 @@ pub fn build(b: *std.Build) void {
     b.step("bench-ir-fixed-queries", "Compare fixed/growable query scratch, explicit bounds and session budgets")
         .dependOn(&b.addRunArtifact(ir_fixed_queries).step);
     check_benches.dependOn(&ir_fixed_queries.step);
+    const ir_adjacency = b.addExecutable(.{ .name = "ir_adjacency_bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_adjacency.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    b.step("bench-ir-adjacency", "Measure opt-in adjacency construction, traversal and memory")
+        .dependOn(&b.addRunArtifact(ir_adjacency).step);
+    check_benches.dependOn(&ir_adjacency.step);
     const ir_fixed_materialization = b.addExecutable(.{ .name = "ir_fixed_materialization_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/ir_fixed_materialization.zig"),
         .target = target,

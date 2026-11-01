@@ -27,7 +27,8 @@ fn members(graph: anytype, handle: t.Membership, work: *r.Work) r.Error!u64 {
     }
     return total;
 }
-pub fn bounds(comptime attributes: bool, input: anytype, options: r.Options, comptime scan: bool) r.Error!s.Bounds {
+pub fn bounds(comptime selection: @import("materialization_options.zig").Selection, input: anytype, options: r.Options, comptime scan: bool) r.Error!s.Bounds {
+    const attributes = selection.attributes;
     const graph = q.data(input);
     if (attributes) comptime @import("representation.zig").requireAttributes(@TypeOf(graph.*).capabilities.attributes);
     const limits = options.limits orelse graph.limits;
@@ -62,6 +63,8 @@ pub fn bounds(comptime attributes: bool, input: anytype, options: r.Options, com
             .edges = try count(edges),
             .attribute_states = if (attributes) try count(@min(cells, mul(edges, keys, limits.max_attribute_states))) else 0,
             .attribute_keys = if (attributes and edges != 0) try count(keys) else 0,
+            .adjacency_offsets = if (selection.adjacency == .none or edges == 0) 0 else try count((n + 1) * @as(u64, if (selection.adjacency == .all) 4 else 3)),
+            .adjacency_entries = if (selection.adjacency == .none) 0 else try count(edges * 2),
         },
         .scratch = .{ .members = try count(scratch_members) },
     };

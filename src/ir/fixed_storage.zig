@@ -52,6 +52,8 @@ pub const Resource = enum {
     materialized_edges,
     materialized_attribute_states,
     materialized_attribute_keys,
+    adjacency_offsets,
+    adjacency_entries,
     left_offsets,
     right_offsets,
     left_entries,

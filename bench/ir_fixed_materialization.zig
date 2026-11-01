@@ -6,7 +6,7 @@ const suite = @import("ir_materialized_attributes.zig");
 const IR = dot.ir.Lowering(.{});
 const Route = enum { growable, fixed_observed, fixed_scanned, session_4096, session_1 };
 const Observation = struct { ns: u64, peak: usize, retained: usize, work: u64 = 0, checksum: u64 };
-fn sample(comptime attributes: bool, comptime route: Route, graph: *const IR.Graph, memory: IR.MaterializationMemory(attributes), io: std.Io) !Observation {
+fn sample(comptime attributes: bool, comptime route: Route, graph: *const IR.Graph, memory: IR.MaterializationMemory(.{ .attributes = attributes }), io: std.Io) !Observation {
     const start = std.Io.Clock.Timestamp.now(io, .awake);
     var work: u64 = 0;
     var result = if (route == .growable) try graph.materialize(.{ .attributes = attributes }) else value: {

@@ -11,7 +11,7 @@ fn Buffers(comptime attributes: bool) type {
     return struct {
         output: []align(16) u8,
         scratch: []align(16) u8,
-        memory: IR.MaterializationMemory(attributes),
+        memory: IR.MaterializationMemory(.{ .attributes = attributes }),
         fn init(graph: anytype, output: dot.ir.MaterializedCapacities, scratch: dot.ir.MaterializationScratchCapacities) !@This() {
             const layout = try IR.materializationLayout(graph, output, scratch, .{ .attributes = attributes });
             const retained = try a.alignedAlloc(u8, .@"16", layout.output_bytes + 16);
@@ -335,7 +335,7 @@ test "inline output helpers infer attributes and omit unused strict tables" {
             var parsed = try IR.parse(a, source, .{});
             defer parsed.deinit();
             const graph = parsed.ir().?;
-            const memory: IR.MaterializationMemory(attributes) = .{ .output = output.storage(), .scratch = scratch.storage() };
+            const memory: IR.MaterializationMemory(.{ .attributes = attributes }) = .{ .output = output.storage(), .scratch = scratch.storage() };
             var direct = graph.materializeIn(memory, .{});
             try eq(dot.ir.MaterializationOutcome.success, direct.outcome);
             direct.materialized.?.deinit();
@@ -344,7 +344,7 @@ test "inline output helpers infer attributes and omit unused strict tables" {
             try eq(dot.ir.MaterializationOutcome.success, operation.run().outcome.?);
             var result = try operation.takeResult();
             defer result.deinit();
-            const small: IR.MaterializationMemory(attributes) = .{ .output = output.storage(), .scratch = compact.storage() };
+            const small: IR.MaterializationMemory(.{ .attributes = attributes }) = .{ .output = output.storage(), .scratch = compact.storage() };
             if (graph.strict) try invalid(graph, small, error.InvalidStorage) else {
                 for (scratch.bytes) |b| try eq(@as(u8, 0xcd), b);
                 try eq(dot.ir.MaterializationOutcome.success, graph.materializeIn(small, .{}).outcome);
@@ -425,7 +425,7 @@ test "fixed input IR reservation and partial coverage cannot be overwritten by m
     const Output = IR.FixedMaterializedStorage(.{ .edges = 8, .attribute_states = 16, .attribute_keys = 8 }, .{});
     var output: Output = .{};
     var temporary: IR.FixedMaterializationScratch(Retained, Output, .{ .members = 32 }, .{}) = .{};
-    const memory: IR.MaterializationMemory(true) = .{ .output = output.storage(), .scratch = temporary.storage() };
+    const memory: IR.MaterializationMemory(.{ .attributes = true }) = .{ .output = output.storage(), .scratch = temporary.storage() };
     var result = graph.materializeIn(memory, .{});
     try eq(dot.ir.MaterializationOutcome.success, result.outcome);
     try eq(graph.state(), result.materialized.?.state());

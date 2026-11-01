@@ -6,9 +6,9 @@ const r = @import("resources.zig");
 const q = @import("query_storage.zig");
 const f = @import("fixed_storage.zig");
 const folded = @import("materialized_attributes.zig");
-const execution = @import("execution_policy.zig");
+const choices = @import("materialization_options.zig");
 
-pub const Capacities = struct { edges: u32 = 0, attribute_states: u32 = 0, attribute_keys: u32 = 0 };
+pub const Capacities = struct { edges: u32 = 0, attribute_states: u32 = 0, attribute_keys: u32 = 0, adjacency_offsets: u32 = 0, adjacency_entries: u32 = 0 };
 pub const ScratchCapacities = struct { members: u32 = 0 };
 pub const Bounds = struct { output: Capacities, scratch: ScratchCapacities };
 /// Only result construction/destruction consults ownership; never edge lookup.
@@ -24,6 +24,7 @@ pub const Ownership = union(enum) {
 pub fn Output(comptime attributes: bool) type {
     return struct {
         pub const with_attributes = attributes;
+        pub const selection: choices.Selection = .{ .attributes = attributes };
         bytes: []u8,
         capacities: Capacities,
     };
@@ -38,20 +39,8 @@ pub const Scratch = struct {
 pub fn Memory(comptime attributes: bool) type {
     return struct { output: Output(attributes), scratch: Scratch };
 }
-pub fn selected(comptime M: type) bool {
-    return @FieldType(M, "output").with_attributes;
-}
-pub fn options(comptime attributes: bool, value: anytype) r.Options {
-    comptime for (@typeInfo(@TypeOf(value)).@"struct".field_names) |field| {
-        if (!std.mem.eql(u8, field, "attributes") and !std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation")) @compileError("unknown IR materialization option: " ++ field);
-    };
-    if (@hasField(@TypeOf(value), "attributes")) {
-        if (comptime value.attributes != attributes) @compileError("materialization attributes must match output storage");
-    }
-    return .{
-        .limits = if (@hasField(@TypeOf(value), "limits")) execution.option(?r.Limits, value.limits) else null,
-        .cancellation = if (@hasField(@TypeOf(value), "cancellation")) execution.option(?r.Cancellation, value.cancellation) else null,
-    };
+pub fn selected(comptime M: type) choices.Selection {
+    return @FieldType(M, "output").selection;
 }
 const OutputLayout = struct {
     bytes: usize,
@@ -60,6 +49,7 @@ const OutputLayout = struct {
     keys: usize,
 };
 fn outputLayout(comptime attributes: bool, counts: Capacities) r.Error!OutputLayout {
+    if (counts.adjacency_offsets != 0 or counts.adjacency_entries != 0) return error.InvalidStorage;
     if (!attributes and (counts.attribute_states != 0 or counts.attribute_keys != 0)) return error.InvalidStorage;
     inline for (comptime @typeInfo(Capacities).@"struct".field_names) |field| _ = try r.index(@field(counts, field));
     var bytes: usize = 0;
@@ -112,32 +102,34 @@ fn layoutFor(comptime attributes: bool, nodes: u32, output: Capacities, scratch:
 }
 pub fn API(comptime rep: @import("representation.zig").Identity) type {
     return struct {
-        inline fn selection(value: anytype) bool {
-            const result = comptime if (@hasField(@TypeOf(value), "attributes")) value.attributes else rep.attributes;
-            if (result) @import("representation.zig").requireAttributes(rep.attributes);
-            return result;
+        inline fn selection(value: anytype) choices.Selection {
+            return choices.selection(rep.attributes, value);
         }
-        pub fn MaterializedStorage(comptime attributes: bool) type {
-            if (attributes) @import("representation.zig").requireAttributes(rep.attributes);
-            return Output(attributes);
+        pub fn MaterializedStorage(comptime config: anytype) type {
+            choices.checkSelection(config);
+            return OutputFor(selection(config));
         }
-        pub const MaterializationScratch = Scratch;
-        pub fn MaterializationMemory(comptime attributes: bool) type {
-            _ = MaterializedStorage(attributes);
-            return Memory(attributes);
+        pub fn MaterializationScratch(comptime config: anytype) type {
+            choices.checkSelection(config);
+            return ScratchFor(selection(config));
+        }
+        pub fn MaterializationMemory(comptime config: anytype) type {
+            choices.checkSelection(config);
+            return MemoryFor(selection(config));
         }
         pub fn FixedMaterializedStorage(comptime capacities: Capacities, comptime config: anytype) type {
             comptime for (@typeInfo(@TypeOf(config)).@"struct".field_names) |field| {
-                if (!std.mem.eql(u8, field, "attributes")) @compileError("unknown fixed materialized storage option: " ++ field);
+                if (!std.mem.eql(u8, field, "attributes") and !std.mem.eql(u8, field, "adjacency")) @compileError("unknown fixed materialized storage option: " ++ field);
             };
-            const attributes = selection(config);
-            const layout = outputLayout(attributes, capacities) catch @compileError("invalid materialized storage capacities");
+            const selected_output = selection(config);
+            const layout = outputLayoutFor(selected_output, capacities) catch @compileError("invalid materialized storage capacities");
             return struct {
-                pub const with_attributes = attributes;
+                pub const with_attributes = selected_output.attributes;
+                pub const selection = selected_output;
                 pub const output_capacities = capacities;
                 pub const byte_size = layout.bytes;
                 bytes: [byte_size]u8 align(q.alignment) = undefined,
-                pub fn storage(self: *@This()) Output(attributes) {
+                pub fn storage(self: *@This()) OutputFor(selected_output) {
                     return .{ .bytes = &self.bytes, .capacities = capacities };
                 }
             };
@@ -151,26 +143,123 @@ pub fn API(comptime rep: @import("representation.zig").Identity) type {
             return struct {
                 pub const byte_size = layout.bytes;
                 bytes: [byte_size]u8 align(q.alignment) = undefined,
-                pub fn storage(self: *@This()) Scratch {
+                pub fn storage(self: *@This()) ScratchFor(OutputStorage.selection) {
                     return .{ .bytes = &self.bytes, .node_capacity = Retained.graph_capacities.nodes, .output_capacities = OutputStorage.output_capacities, .capacities = capacities, .strict = strict };
                 }
             };
         }
-        pub fn materializationLayout(graph: anytype, output: Capacities, scratch: ScratchCapacities, config: anytype) r.Error!Layout(if (@hasField(@TypeOf(config), "attributes")) config.attributes else rep.attributes) {
-            const attributes = selection(config);
-            _ = options(attributes, config); // No cancellation callback.
+        pub inline fn materializationLayout(graph: anytype, output: Capacities, scratch: ScratchCapacities, config: anytype) r.Error!LayoutFor(.{ .attributes = if (@hasField(@TypeOf(config), "attributes")) config.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(config), "adjacency")) config.adjacency else .none }) {
+            const selected_output: choices.Selection = comptime .{ .attributes = if (@hasField(@TypeOf(config), "attributes")) config.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(config), "adjacency")) config.adjacency else .none };
+            _ = choices.options(selected_output, config); // No cancellation callback.
             const g = q.data(graph);
-            if (attributes) comptime @import("representation.zig").requireAttributes(@TypeOf(g.*).capabilities.attributes);
-            return layoutFor(attributes, try r.index(g.nodes.len), output, scratch, g.strict);
+            if (selected_output.attributes) comptime @import("representation.zig").requireAttributes(@TypeOf(g.*).capabilities.attributes);
+            return layoutSelected(selected_output, try r.index(g.nodes.len), output, scratch, g.strict);
         }
-        pub fn materializationBounds(graph: anytype, config: anytype) r.Error!Bounds {
-            const attributes = selection(config);
-            return @import("materialization_bounds.zig").bounds(attributes, graph, options(attributes, config), false);
+        pub inline fn materializationBounds(graph: anytype, config: anytype) r.Error!Bounds {
+            const selected_output: choices.Selection = comptime .{ .attributes = if (@hasField(@TypeOf(config), "attributes")) config.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(config), "adjacency")) config.adjacency else .none };
+            return @import("materialization_bounds.zig").bounds(selected_output, graph, choices.options(selected_output, config), false);
         }
-        pub fn scanMaterializationBounds(graph: anytype, config: anytype) r.Error!Bounds {
-            const attributes = selection(config);
-            return @import("materialization_bounds.zig").bounds(attributes, graph, options(attributes, config), true);
+        pub inline fn scanMaterializationBounds(graph: anytype, config: anytype) r.Error!Bounds {
+            const selected_output: choices.Selection = comptime .{ .attributes = if (@hasField(@TypeOf(config), "attributes")) config.attributes else rep.attributes, .adjacency = if (@hasField(@TypeOf(config), "adjacency")) config.adjacency else .none };
+            return @import("materialization_bounds.zig").bounds(selected_output, graph, choices.options(selected_output, config), true);
         }
+    };
+}
+
+pub fn OutputFor(comptime selected_output: choices.Selection) type {
+    if (selected_output.adjacency == .none) return Output(selected_output.attributes);
+    return struct {
+        pub const with_attributes = selected_output.attributes;
+        pub const selection = selected_output;
+        bytes: []u8,
+        capacities: Capacities,
+    };
+}
+pub fn ScratchFor(comptime selected_output: choices.Selection) type {
+    if (selected_output.adjacency == .none) return Scratch;
+    return struct {
+        pub const selection = selected_output;
+        bytes: []u8,
+        node_capacity: u32,
+        output_capacities: Capacities,
+        capacities: ScratchCapacities,
+        strict: bool,
+    };
+}
+pub fn MemoryFor(comptime selection: choices.Selection) type {
+    if (selection.adjacency == .none) return Memory(selection.attributes);
+    return struct { output: OutputFor(selection), scratch: ScratchFor(selection) };
+}
+fn coreCounts(counts: Capacities) Capacities {
+    var result = counts;
+    result.adjacency_offsets = 0;
+    result.adjacency_entries = 0;
+    return result;
+}
+const AdjacencyOutputLayout = struct { bytes: usize, base: OutputLayout, offsets: usize, entries: usize };
+fn outputLayoutFor(comptime selection: choices.Selection, counts: Capacities) r.Error!AdjacencyOutputLayout {
+    const base = try outputLayout(selection.attributes, if (selection.adjacency == .none) counts else coreCounts(counts));
+    _ = try r.index(counts.adjacency_offsets);
+    _ = try r.index(counts.adjacency_entries);
+    var bytes = base.bytes;
+    const offsets = try q.appendRegion(&bytes, u32, counts.adjacency_offsets);
+    const entries = try q.appendRegion(&bytes, u32, counts.adjacency_entries);
+    return .{ .bytes = bytes, .base = base, .offsets = offsets, .entries = entries };
+}
+pub fn LayoutFor(comptime selection: choices.Selection) type {
+    if (selection.adjacency == .none) return Layout(selection.attributes);
+    return struct {
+        output_bytes: usize,
+        scratch_bytes: usize,
+        alignment: usize = q.alignment,
+        node_capacity: u32,
+        output_capacities: Capacities,
+        scratch_capacities: ScratchCapacities,
+        strict: bool,
+        retained: AdjacencyOutputLayout,
+        temporary: ScratchLayout,
+        pub fn bind(self: @This(), output: []u8, scratch: []u8) r.Error!MemoryFor(selection) {
+            const checked = try layoutSelected(selection, self.node_capacity, self.output_capacities, self.scratch_capacities, self.strict);
+            if (!std.meta.eql(self, checked)) return error.InvalidStorage;
+            const retained = try q.checkedBuffer(output, self.output_bytes);
+            const temporary = try q.checkedBuffer(scratch, self.scratch_bytes);
+            try q.disjoint(retained, temporary);
+            return .{
+                .output = .{ .bytes = retained, .capacities = self.output_capacities },
+                .scratch = .{ .bytes = temporary, .node_capacity = self.node_capacity, .output_capacities = self.output_capacities, .capacities = self.scratch_capacities, .strict = self.strict },
+            };
+        }
+    };
+}
+fn layoutSelected(comptime selection: choices.Selection, nodes: u32, output: Capacities, scratch: ScratchCapacities, strict: bool) r.Error!LayoutFor(selection) {
+    if (selection.adjacency == .none) return layoutFor(selection.attributes, nodes, output, scratch, strict);
+    const retained = try outputLayoutFor(selection, output);
+    const temporary = try scratchLayout(nodes, output, scratch, strict);
+    _ = std.math.add(usize, retained.bytes, temporary.bytes) catch return error.IndexLimit;
+    return .{ .output_bytes = retained.bytes, .scratch_bytes = temporary.bytes, .node_capacity = nodes, .output_capacities = output, .scratch_capacities = scratch, .strict = strict, .retained = retained, .temporary = temporary };
+}
+pub fn Prepared(comptime selection: choices.Selection) type {
+    return struct { core: Memory(selection.attributes), pools: @import("adjacency_rows.zig").Pools, output: []u8, reserved: usize };
+}
+/// Admit the entire reservation and all aliases before expansion writes. The
+/// ordinary engine then receives its prefix with unchanged descriptor/layout.
+pub fn prepare(comptime selection: choices.Selection, memory: MemoryFor(selection), graph: anytype, limits: r.Limits) r.Error!Prepared(selection) {
+    if (!std.meta.eql(memory.output.capacities, memory.scratch.output_capacities)) return error.InvalidStorage;
+    const layout = try layoutSelected(selection, memory.scratch.node_capacity, memory.output.capacities, memory.scratch.capacities, memory.scratch.strict);
+    const bound = try layout.bind(memory.output.bytes, memory.scratch.bytes);
+    try q.checkGraph(bound.output.bytes, graph);
+    try q.checkGraph(bound.scratch.bytes, graph);
+    const reserved = layout.output_bytes + layout.scratch_bytes;
+    if (reserved > limits.max_bytes) return error.MemoryLimit;
+    const counts = coreCounts(bound.output.capacities);
+    return .{
+        .core = .{
+            .output = .{ .bytes = bound.output.bytes[0..layout.retained.base.bytes], .capacities = counts },
+            .scratch = .{ .bytes = bound.scratch.bytes, .node_capacity = bound.scratch.node_capacity, .output_capacities = counts, .capacities = bound.scratch.capacities, .strict = bound.scratch.strict },
+        },
+        .pools = .{ .offsets = q.region(u32, bound.output.bytes, layout.retained.offsets, bound.output.capacities.adjacency_offsets), .entries = q.region(u32, bound.output.bytes, layout.retained.entries, bound.output.capacities.adjacency_entries) },
+        .output = bound.output.bytes,
+        .reserved = reserved,
     };
 }
 

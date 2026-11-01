@@ -215,7 +215,7 @@ const Operation = enum { lowering, materialization, has_edge, attribute, attribu
 fn Session(comptime operation: Operation) type {
     return switch (operation) {
         .lowering => IR.LoweringSession,
-        .materialization => IR.Graph.MaterializationSession(true),
+        .materialization => IR.Graph.MaterializationSession(.{ .attributes = true }),
         .has_edge => IR.HasEdgeSession,
         .attribute => IR.AttributeSession,
         .attributes => IR.AttributesSession,

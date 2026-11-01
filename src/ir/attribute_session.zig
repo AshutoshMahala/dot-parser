@@ -111,6 +111,8 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         entry: if (all) ?Entry else void = if (all) null else {},
 
         pub fn accepts(comptime V: type) bool {
+            if (@typeInfo(V) != .@"struct") return false;
+            if (@hasDecl(V, "attributeSessionView")) return accepts(@typeInfo(@TypeOf(V.attributeSessionView)).@"fn".return_type.?);
             return V == Graph.NodeView or V == Graph.ScopeView or V == Graph.EdgeView or V == Graph.Materialized.EdgeView;
         }
         pub fn init(view: anytype, key: if (all) void else []const u8, options: anytype) !Self {
@@ -121,6 +123,10 @@ fn WithStorage(comptime Graph: type, comptime caps: encoding.Capabilities, compt
         }
         inline fn initWith(view: anytype, key: if (all) void else []const u8, memory: if (fixed_storage) scratch.AttributeScratch else void, options: anytype) !Self {
             const V = @TypeOf(view);
+            if (@typeInfo(V) == .@"struct" and @hasDecl(V, "attributeSessionView")) {
+                if (fixed_storage) try view.checkAttributeScratch(memory);
+                return initWith(view.attributeSessionView(), key, memory, options);
+            }
             if (comptime !accepts(V)) @compileError("attribute sessions require a compatible IR component view");
             comptime if (@TypeOf(options) != Options) for (@typeInfo(@TypeOf(options)).@"struct".field_names) |field| {
                 if (!std.mem.eql(u8, field, "limits") and !std.mem.eql(u8, field, "cancellation") and !(config.runtime_policy and std.mem.eql(u8, field, "policy")))

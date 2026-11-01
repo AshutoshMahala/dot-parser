@@ -1,0 +1,7 @@
+a: 2 incident edges
+  forward to b
+  forward to c
+b: 2 incident edges
+  forward to b
+c: 1 incident edges
+isolated: 0 incident edges

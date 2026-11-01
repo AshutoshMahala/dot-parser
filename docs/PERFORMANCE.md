@@ -3215,6 +3215,81 @@ additional scan-versus-index check over the 60 bundled Graphviz 16.1.0 graphs
 agreed on 24,404 pair queries, 3,023 effective attributes and 206 final scope
 memberships. This small corpus is not a claim about real-world set frequency.
 
+### Optional materialized adjacency (Unreleased, 2026-11-01)
+
+Apple M4 Pro, Zig 0.17.0. Adjacency is selected at materialization time and
+defaults to `.none`; parsing/lowering never build rows. Reproduce the new-path
+measurements with `zig build bench-ir-adjacency -Doptimize=fast` or `safe`.
+The command reports construction and traversal separately, requested retained/
+peak bytes, Arena capacity and session work. Source generation and parsing/
+lowering are outside timing. Result destruction is outside timing; session
+construction includes its final scratch cleanup. Each case has three warmups
+and nine measured samples, with medians reported.
+
+The default-off comparison uses `11471fb` and the same fixed-materialization
+consumer in Fast/Safe/Small, with two runs per build in before/after then
+after/before order. Each case warms for 150 ms. The table gives geometric-mean
+changes in elapsed time across both attribute selections (negative is faster).
+The single-edge deep-nesting case, below 0.01 ms, is excluded from percentages.
+
+| Adjacency disabled | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| Growable direct, both attribute selections | +1.9% | −1.2% | −5.8% |
+| Fixed direct, observed capacities | +1.4% | −1.7% | +2.7% |
+| Fixed direct, scanned bounds | +1.0% | −0.5% | +3.9% |
+| Fixed session, budget 4096 | +2.5% | −0.8% | +3.2% |
+| Fixed session, budget 1 | −1.9% | −11.1% | +0.4% |
+| Default `materialize(.{})` alone (attributes included) | −0.7% | −3.6% | −8.3% |
+
+Retained bytes, requested peaks and fixed-session work totals match the
+baseline exactly in every measured disabled case. Ordinary lowering is +0.3%
+in a separate two-run Fast comparison; its retained/peak/Arena bytes also
+match. These small timing changes are measurements on this machine, not
+universal improvements. In particular, some fixed/session aggregates are up
+to 3.9% slower; those remain visible for the final slice-2 performance pass.
+
+The first candidate had a much larger Fast topology-session slowdown. The hot
+machine had unchanged transitions, but generated error-union temporaries at
+edge-index writes. Keeping the same range checks as explicit branches removes
+those scalar spills; there is no target-specific alignment workaround. Credits,
+error ordering and cancellation checkpoints are unchanged. Full tests, native
+encoding checks, exhaustive small-input cancellation points, allocation failures,
+fixed-pool canaries/shortfalls and grant partitioning cover these paths.
+
+The following new-path results use topology output (`.attributes = false`).
+Most fixtures contain 100,000 edge statements; the set product explicitly
+materializes 250,000 edges, and the isolated-node fixture has 100,000 isolated
+nodes plus one edge. Times include materialization, not only the row pass.
+
+| Input | Fast, no rows | Fast, forward | Fast, all | Safe, all | Additional retained rows for all |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Directed chain | 1.199 ms | 3.831 ms | 3.790 ms | 3.473 ms | 1,600,016 B |
+| Undirected chain | 0.873 ms | 3.652 ms | 2.929 ms | 2.877 ms | 1,200,008 B |
+| Mixed operators | 0.879 ms | 5.525 ms | 5.496 ms | 4.203 ms | 2,000,024 B |
+| Mixed directed/undirected loops | 0.880 ms | 5.414 ms | 4.007 ms | 3.442 ms | 1,200,008 B |
+| 500 × 500 set product | 0.853 ms | 2.627 ms | 3.149 ms | 4.019 ms | 2,008,008 B |
+| Isolated nodes plus one edge | <0.001 ms | 1.630 ms | 1.419 ms | 1.328 ms | 800,032 B |
+
+All-direction traversal of every node/incident edge takes 0.124–1.236 ms in
+these Fast topology cases. A budget-4096 all-direction session takes 4.851 ms
+for the directed chain and 3.475 ms for the set product, with the same retained
+output as direct construction. There is no per-query allocation or scan of
+rejected edges. Partial counts retain uncertainty rather than implying absence.
+
+Rows use exact allocations. They add retained memory, but need not raise the
+operation's previous growth peak: the set product stays at 8,304,192 requested
+peak bytes while retained output grows from 4,976,864 to 6,984,872 bytes.
+The chain's peak rises from 3,686,192 to 3,811,792 bytes. Arena backing capacity
+is allocator-dependent: Fast reused existing slack for those fixtures, while
+Safe's all-direction set product grew from 8,599,416 to 19,212,190 bytes. These
+figures exclude the borrowed input IR/source and are not process RSS.
+
+Adjacency construction is substantial extra work on these inputs. Fast is
+also slower than Safe in several row-building cases, and fewer selected rows
+do not guarantee faster generated code. The final slice-2 performance pass
+still includes these opt-in paths. Ordinary queries never construct adjacency
+or expand symbolic sets implicitly.
+
 ## Running the benchmarks
 
 ### One-command string comparison
@@ -3302,6 +3377,7 @@ zig build bench-ir-attribute-sessions -Doptimize=safe
 zig build bench-ir-fixed -Doptimize=fast
 zig build bench-ir-fixed-queries -Doptimize=fast
 zig build bench-ir-fixed-materialization -Doptimize=fast
+zig build bench-ir-adjacency -Doptimize=fast
 zig build check-benches  # only checks that they compile
 ```
 

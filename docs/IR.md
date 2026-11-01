@@ -133,7 +133,8 @@ a new operation with sufficient storage, not resuming the failed one.
 The capability supports allocator-backed and fixed-storage complete/partial
 lowering, including metered/cancellable execution. Use the topology profile's
 storage types, bounds and `In` calls; they omit attribute pools and use the smaller
-connection and coverage records. Fixed materialization output is still pending.
+connection and coverage records. Fixed materialization output supports the same
+capability selection, including optional adjacency.
 
 `max_attributes` and `max_attribute_states` apply only when attributes are
 retained. Other IR limits still apply. Removing attributes does not make a
@@ -970,8 +971,10 @@ guarantee a proportional drop in Arena capacity or process RSS.
 Lowering, streaming and materialization use the supplied allocator. Name access, `findNode`, `contains`,
 `scopeMembership`, and `hasEdge` allocate nothing. Pair queries currently scan
 symbolic connections; membership uses per-node postings and shared intervals.
-This is not a prebuilt adjacency index. Materialization needs memory
+These compact queries do not build adjacency. Materialization needs memory
 proportional to its output, plus deduplication scratch for strict graphs.
+Per-node traversal is available through explicitly selected materialized
+adjacency, described below.
 `scopeMembership` currently scans occurrence records; asking for every scope's
 membership can therefore be quadratic. No membership cache is implied.
 
@@ -1548,10 +1551,112 @@ It compares default, metered, cancellable and runtime-policy direct calls with
 session execution, including budget one. Direct calls do not expose work totals,
 so their credits column reads `not_reported`; timing, polls and memory are measured.
 
+## Optional materialized adjacency
+
+Request adjacency when you want to walk edges at a node. Ordinary
+`materialize(.{})` keeps adjacency off; parsing and lowering never build it.
+
+```zig
+var graph = try ir.materialize(.{ .adjacency = .all });
+defer graph.deinit(); // Borrows ir's names, values and partial coverage.
+
+var nodes = graph.nodeIterator();
+while (nodes.next()) |node| {
+    var edges = node.edges(.{}); // Every incident edge, once at this node.
+    while (edges.next()) |entry|
+        std.debug.print("{f}: neighbor {f}\n", .{
+            node.name(), entry.neighbor().name(),
+        });
+}
+```
+
+See [graph_adjacency.zig](../examples/graph_adjacency.zig) for a complete example
+with diagnostics. `entry.neighbor()` returns one node view. `entry.edge()`
+returns the existing edge with its stored `from()`/`to()` orientation, attributes
+and ports. `entry.directions()` reports `incoming`, `outgoing` and `undirected`
+booleans relative to the queried node. A directed loop is both incoming and
+outgoing, but appears only once in any one traversal. Parallel edges remain
+separate; neighbors are not deduplicated.
+
+The compile-time `.direction` filter selects which edges are visible:
+
+| `node.edges(.{ .direction = … })` | Includes |
+| --- | --- |
+| `.all` (default) | All incident edges |
+| `.outgoing` | Directed edges leaving this node |
+| `.incoming` | Directed edges entering this node |
+| `.undirected` | Undirected edges touching this node |
+| `.forward` | Outgoing and undirected edges |
+| `.backward` | Incoming and undirected edges |
+
+For an undirected graph, `.forward`, `.backward` and `.all` traverse the same
+edges; directed-only filters are empty. `node.edgeCount(options)` uses these
+same filters and counts a loop once. It is an edge count, not graph-theory degree.
+
+Choose storage for the queries your application needs:
+
+| Materialization selection | Supported filters |
+| --- | --- |
+| `.adjacency = .none` (default) | No adjacency methods; existing result types/layouts |
+| `.adjacency = .forward` | `.outgoing`, `.undirected`, `.forward` |
+| `.adjacency = .backward` | `.incoming`, `.undirected`, `.backward` |
+| `.adjacency = .all` | Every filter |
+
+Unsupported filters fail at compile time, including neutral `.all` on
+forward-only storage. All node views reached from a selected result have the
+same type: `nodeIterator()`, checked `nodeView(id)`, `entry.neighbor()` and
+`edge.from()`/`to()`. For example, `entry.edge().to().edges(.{})` can keep walking
+when `.all` storage was selected. The ordinary no-adjacency types are unchanged.
+`Graph.MaterializedFor(selection)` selects the result type; selecting only
+`.attributes = true` or `false` gives the existing materialized types.
+
+Attribute capabilities and output selection remain independent. With
+`.attributes = false`, adjacency adds no folded attribute maps; attribute
+queries use the existing compact path if the input retains attributes. A
+profile with `.capabilities.attributes = false` still rejects attribute access.
+Attribute sessions accept adjacency views without rebuilding or copying data.
+
+### Costs, partial input and ownership
+
+Construction walks the explicitly materialized edges and builds compact rows
+in O(nodes + edges) work. Queries allocate nothing: initialization, `next()`
+and `edgeCount()` do bounded O(1) work. Iteration preserves materialized-edge
+order, merging at most four disjoint category ranges without scanning rejected
+edges. Compact IR node traversal and attribute predicates remain separate work.
+
+Let N be node count, E edge count, U the number of undirected non-loop edges,
+and L the number of loops. Forward/backward storage has E + U entries;
+all-direction storage has 2E − L. Each entry is a `u32` edge index. Offsets
+occupy C × (N + 1) `u32`s, where C is the number of nonempty selected categories
+(at most three for one direction, four for all). A purely undirected graph
+shares one row table for both directions. No extra port or attribute copy is
+made. Even isolated nodes contribute offsets when a category exists.
+
+Partial adjacency visits retained edges only. `edgeCount()` returns
+`Knowledge(u32)`: unknown counts include the retained count and uncertainty;
+finishing iteration does not prove that unseen edges are absent. Node/edge
+attribute qualifications are unchanged. An interrupted materialization publishes
+no result, even if edge expansion finished before adjacency failed.
+
+The selected result borrows the input IR/source, including when attributes are
+omitted, because node views need names and identity. Keep the result unmoved
+while its views or iterators are alive. Growable results own their row buffers;
+fixed results borrow the complete output reservation. Scratch can be reused
+after construction/session destruction. Existing `max_bytes`, `max_work` and
+cancellation cover expansion and row construction together; `max_pairs` still
+counts expanded pairs, not adjacency entries. No implicit reservation is added.
+
+Use `zig build bench-ir-adjacency -Doptimize=fast` (also `safe`/`small`) to compare
+ordinary output, forward/all adjacency and budgeted construction, including
+traversal time, retained/requested peak memory and Arena capacity.
+Measured costs and the default-off comparison are in
+[Performance](PERFORMANCE.md#optional-materialized-adjacency-unreleased-2026-11-01).
+
 ## Resumable materialization
 
 Keep `materialize(.{})` for a direct call. Opt into a session when your
-application needs control **during** expansion and attribute folding:
+application needs control **during** expansion, attribute folding or selected
+adjacency construction:
 
 ```zig
 var operation = try ir.materializationSession(.{});
@@ -1571,10 +1676,12 @@ dispatch or automatic yielding is introduced. See
 [resumable_edges.zig](../examples/resumable_edges.zig) for a runnable example.
 
 Options have the same form as `materialize`: compile-time `.attributes = false`
-excludes folding; `.limits` and `.cancellation` are runtime values. Omitted
-limits inherit the IR's baseline. Named session types are
-`Graph.MaterializationSession(true/false)` and the corresponding types on
-`PartialGraph`. `takeResult()` returns exactly the existing materialized type.
+excludes folding and `.adjacency` selects rows; `.limits` and `.cancellation`
+are runtime values. Omitted limits inherit the IR's baseline. Named session
+types take selection records, for example
+`Graph.MaterializationSession(.{ .attributes = true, .adjacency = .all })`,
+including on `PartialGraph`. `takeResult()` returns the same selected type as
+the direct call. `edges_created` can be final while row construction is pending.
 A partial source stays partial even when the operation finishes successfully.
 An unfinished operation is a **pause**, not a new partial graph.
 
@@ -1613,6 +1720,7 @@ One credit is one bounded state transition, not one edge and not a byte count:
 | Port-key comparison | One original source code unit, including concatenation glue/comments |
 | Buffer copying/initialization | At most 64 bytes |
 | Storage preparation | One bounded transition with allocation/resize/free calls; no hidden library copy |
+| Selected adjacency | One edge with at most two incidences, one offset, or a bounded phase transition/allocation |
 
 Initial construction only binds the IR/options and polls cancellation; it does
 not scan, allocate, expand or run an unmetered sizing pass. Positive budgets
@@ -1632,7 +1740,7 @@ pair/map limits, allocation failure and cancellation are terminal. A rejected
 product is checked before its expanded edges are allocated. No terminal failure
 publishes a partially materialized graph. Session storage remains owned until
 `deinit`, which is also required after a successful `takeResult` for scratch.
-The transferred result owns its buffers and, when attributes are included,
+The transferred result owns its buffers and, when attributes or adjacency are included,
 continues borrowing the IR and source. Do not copy active sessions or owning
 results; borrowed views do not extend their owners' lifetimes.
 
@@ -1694,8 +1802,11 @@ while (edges.next()) |edge|
 
 The output helper accepts compile-time `.attributes = false` for topology-only
 output, and defaults to the IR profile's capability. Such storage must reserve
-zero attribute cells/keys. Operations infer the selection from the output type;
-an explicitly repeated `.attributes` must agree. An attribute-disabled profile
+zero attribute cells/keys. It also accepts `.adjacency = .forward`, `.backward`
+or `.all`; reserve `adjacency_offsets` and `adjacency_entries` in the output
+capacities. The default `.none` requires both counts to be zero. Operations
+infer the selection from the output type; explicitly repeated `.attributes`
+and `.adjacency` must agree. An attribute-disabled profile
 cannot construct attribute-bearing storage. Topology-only results expose the
 same `.edges` array as ordinary topology-only materialization.
 
@@ -1731,7 +1842,7 @@ serialization format. Descriptor variables need not outlive the operation.
 | Source of capacities | Cost and meaning |
 | --- | --- |
 | Application capacities | Chosen envelope; shortfall is possible. |
-| `materialized.capacities()` | Constant-time used edge, mutable winner-cell and catalog-key counts; sufficient output for replay of the same input/options. Available on ordinary and fixed results. |
+| `materialized.capacities()` | Constant-time used edge, mutable winner-cell, catalog-key and selected adjacency counts; sufficient output for replay of the same input/options. Available on ordinary and fixed results. |
 | `built.scratch_peak` / `session.scratchPeak()` | Observed shared member capacity for replay. |
 | `IR.materializationBounds(graph, options)` | Constant-time conservative arithmetic over graph metadata; no hooks, walks or allocation. |
 | `IR.scanMaterializationBounds(graph, options)` | Explicit allocation-free connection/body-range scan; no pair expansion, mention traversal, name decoding or attribute folding. |
@@ -1745,6 +1856,15 @@ port keys) and the attribute-state limit. They can be much larger than output.
 Scanned bounds use each written connection's endpoint sizes and attribute/port
 contributions. They include endpoint scratch even for empty products. Repeated
 mentions and strict duplicates make these estimates conservative too.
+For adjacency, both helpers bound entries by twice the edge bound and offsets
+by three/four times (node count + 1); an empty edge bound reserves no rows.
+These estimates do not inspect edge kinds. Observed capacities use the actual
+category count and loop sharing. The two adjacency fields are combined pools,
+not separate capacities per direction. Explicit type helpers such as
+`IR.MaterializationMemory(.{ .attributes = true, .adjacency = .all })` and
+`IR.MaterializedStorage(...)` and `IR.MaterializationScratch(...)` take the same
+compile-time selection record. Scratch descriptors therefore agree with the
+selected output type as well as its capacities.
 
 The scan costs one work unit per connection and referenced body-range visit,
 with cancellation at entry, before visits and before return. Reopened subgraphs
@@ -1763,11 +1883,12 @@ inline operation state are excluded. `max_bytes` checks that total up front.
 
 ### Stops, sessions and lifetimes
 
-The direct call returns `FixedMaterializationResult(attributes)` by value:
+The direct call returns `FixedMaterializationResult(.{ .attributes = attributes })` by value:
 `materialized`, `outcome`, optional `shortfall` and `scratch_peak`. It does not
 use an outer error union. A shortfall reports `PoolExhausted` with
 `materialized_edges`, `materialized_attribute_states`,
-`materialized_attribute_keys` or `members`, the supplied capacity and the next
+`materialized_attribute_keys`, `members`, `adjacency_offsets` or
+`adjacency_entries`, the supplied capacity and the next
 required count. Semantic limits take precedence over the corresponding pool
 check; a duplicate strict edge or replacement attribute needs no new slot.
 
@@ -1778,7 +1899,7 @@ partial IR preserves its coverage qualifications and does not certify missing
 input as complete.
 
 `try graph.materializationSessionIn(memory, options)` returns
-`FixedMaterializationSession(attributes)` with the existing `advance`, `run`,
+`FixedMaterializationSession(.{ .attributes = attributes })` with the existing `advance`, `run`,
 `cancel`, `takeResult` and `deinit` contract, plus `shortfall()` and
 `scratchPeak()`. Table clearing, traversal and folding retain the bounded
 transitions described above. Fixed storage avoids growable copy/rehash work;
@@ -1788,7 +1909,7 @@ storage paths accept runtime `.limits` and `.cancellation` as before.
 
 The result is the same materialized type as ordinary construction. `deinit`
 frees growable output; for borrowed output it only invalidates the handle.
-Keep output storage alive while its result/views are used. Attribute-bearing
+Keep output storage alive while its result/views are used. Attribute-bearing or adjacency-selected
 results also borrow the IR/source, and partial results borrow coverage.
 Scratch is reusable after the direct call returns or the session is destroyed,
 including after `takeResult`; results retain no scratch/session pointers.
@@ -2164,7 +2285,33 @@ zig build test-ir -Doptimize=safe
 zig build bench-ir -Doptimize=fast
 zig build bench-ir-edge-sessions -Doptimize=fast
 zig build bench-ir-fixed -Doptimize=fast
+zig build bench-ir-adjacency -Doptimize=fast
+zig build fuzz-ir -Doptimize=safe -- --cases 10000 --seed 1
 ```
+
+`fuzz-ir` is a deterministic grammar-generation and byte-mutation runner, not a
+coverage-guided fuzzer. It exercises complete and partial lowering, fixed storage,
+symbolic edge expansion, adjacency filters, strict merging, query indexes,
+streaming edges and attribute sessions. It compares direct and resumable results
+under random credit grants, checks adjacency against an independent scan of the
+edge array, injects memory/work limits and cancellation, and checks undersized
+pools and allocation leaks. Inputs and operation limits are bounded so the
+campaign itself does not expand arbitrary products without a cap.
+
+Failures print the seed, case number and exact input bytes. Replay one with
+`zig build fuzz-ir -Doptimize=safe -- --seed 1 --start N --cases 1`.
+Run the same command without `-Doptimize` for Debug, or with `fast` to compare
+optimized behavior. The generated source is byte-oriented UTF-8-profile input;
+native encoding coverage remains in the unit tests. The regular IR suite also
+checks large symbolic products, deep nesting and repeated loops. Passing these
+checks is evidence of robustness on those inputs, not a security guarantee.
+
+The 2026-11-01 campaign ran the final harness against 100,000 inputs in
+ReleaseSafe (seed 3), 50,000 in ReleaseFast (seed 4), and 10,000 in Debug
+(seed 5), all starting at case 0. No crashes, leaks, cross-path mismatches or
+budget-accounting failures were found. Earlier harness iterations also passed
+30,000 inputs. These are generated/mutated cases, not a claim of exhaustive
+coverage. No library change was required by this campaign.
 
 The benchmark reports lowering separately from parsing, materialization and
 streaming, including strict deduplication and a 1,000-edge prefix of a

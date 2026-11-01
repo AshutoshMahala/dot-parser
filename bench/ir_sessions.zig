@@ -19,7 +19,7 @@ const Polls = struct {
         return .{ .context = self, .is_requested = requested };
     }
 };
-fn build(comptime attributes: bool, ir: *const Graph, budget: ?u32, cancellation: ?dot.ir.Cancellation, work: *u64) !Graph.MaterializationSession(attributes).Result {
+fn build(comptime attributes: bool, ir: *const Graph, budget: ?u32, cancellation: ?dot.ir.Cancellation, work: *u64) !Graph.MaterializationSession(.{ .attributes = attributes }).Result {
     const amount = budget orelse return ir.materialize(.{ .attributes = attributes, .cancellation = cancellation });
     var session = try ir.materializationSession(.{ .attributes = attributes, .cancellation = cancellation });
     defer session.deinit();
@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.Writer.initStreaming(.stdout(), init.io, &buffer);
     const out = &output.interface;
-    try out.print("session_state_bytes,topology={d},attributes={d}\n", .{ @sizeOf(Graph.MaterializationSession(false)), @sizeOf(Graph.MaterializationSession(true)) });
+    try out.print("session_state_bytes,topology={d},attributes={d}\n", .{ @sizeOf(Graph.MaterializationSession(.{ .attributes = false })), @sizeOf(Graph.MaterializationSession(.{ .attributes = true })) });
     try out.writeAll("case,attributes,cancellation,mode,median_ms,credits,polls,edges,retained_bytes,peak_bytes,outcome\n");
     // One unreported folding traversal warms the process before measuring.
     // Otherwise CPU ramp-up dominates the first fixture, even with per-route

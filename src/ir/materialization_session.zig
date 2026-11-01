@@ -666,7 +666,11 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                         },
                         .insert => {
                             if (self.slots[self.slot] == none) {
-                                self.slots[self.slot] = try r.index(self.stored.items.len);
+                                // Keep the checked scalar in a register. An
+                                // error-union temporary here can spill/reload
+                                // overlapping fields on every appended edge.
+                                if (self.stored.items.len >= none) return error.IndexLimit;
+                                self.slots[self.slot] = @intCast(self.stored.items.len);
                                 continue :machine self.successor(single, .append_edge);
                             } else self.slot = @intCast((@as(usize, self.slot) + 1) & (self.slots.len - 1));
                         },
@@ -675,7 +679,8 @@ fn Engine(comptime Graph: type, comptime caps: encoding.Capabilities, comptime a
                                 if (fixed_storage) {
                                     try self.memory.needPair(self.stored.items.len + 1);
                                 } else if (!try self.edge_growth.step(&self.stored, a)) continue :machine self.successor(single, phase);
-                                self.target = try r.index(self.stored.items.len);
+                                if (self.stored.items.len >= none) return error.IndexLimit;
+                                self.target = @intCast(self.stored.items.len);
                                 self.stored.appendAssumeCapacity(if (streaming) edges.canonical(self.candidate) else self.candidate);
                                 if (fixed_storage and streaming) self.memory.used.strict_pairs = @intCast(self.stored.items.len);
                             }

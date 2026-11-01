@@ -8,6 +8,20 @@ are marked; no compatibility shims are kept.
 
 ### Added
 
+- Reproducible `zig build fuzz-ir` adversarial IR/adjacency checks, including
+  damaged syntax, random session budgets, cancellation, memory limits and fixed
+  pool shortfalls. Targeted tests cover large symbolic products, repeated loops
+  and hostile nesting.
+- Optional materialized adjacency via `.adjacency = .forward/.backward/.all`,
+  off by default. Node views expose `edges`, `edgeCount` and incident entries
+  with `neighbor`, `edge` and relative directions. Compile-time filters preserve
+  edge order, parallel edges, loops and partial uncertainty. Complete/partial,
+  full/topology, growable/fixed and direct/session routes share the existing
+  resource limits, cancellation and bounded work accounting. Fixed output adds
+  explicit adjacency capacities and terminal shortfalls. Includes
+  `graph_adjacency` and `bench-ir-adjacency`. **Breaking (Unreleased):** materialized
+  storage, result and session type helpers now take a selection record instead
+  of an attributes boolean; no compatibility aliases.
 - Fixed IR streaming/query scratch via `edgeIteratorIn`, `edgeSessionIn`,
   `attributesIn` and `attributesSessionIn`, including partial views. Explicit
   bounds/layouts derive node marks and bound strict pairs; no heap fallback.
@@ -22,7 +36,7 @@ are marked; no compatibility shims are kept.
   structured shortfalls; failed lowering publishes no graph. Returned graphs
   borrow retained storage/source, with optional storage for later queries.
   No automatic reservation is added to ordinary lowering. Includes `fixed_graph`
-  and `bench-ir-fixed`; fixed materialization output remains separate work.
+  and `bench-ir-fixed`; fixed materialization output is also available.
 - Policy-bound resumable attribute access via `IR.attributeSession(view, key, options)`
   and `IR.attributesSession(view, options)`, for complete/partial node, scope,
   compact-edge and materialized-edge views. Reuses existing execution policies
