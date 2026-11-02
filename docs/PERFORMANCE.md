@@ -1124,12 +1124,13 @@ in this section:
 
 **How the IR was measured.** All IR numbers come from the same Apple M4 Pro
 with Zig 0.17.0, between 2026-10-21 and 2026-11-01; each subsection names its
-commit. The IR changed a lot in that time. Parsing and building the input are
-outside every IR timing. Unless a table says otherwise, times are medians of
+commit. The IR changed a lot in that time. Except for the whole-route benchmark
+below, parsing and building the input are outside IR timing. Unless a table says otherwise, times are medians of
 process medians over several alternating process runs. **Retained** bytes are
 still held when the operation returns; **peak** bytes are the most held at
 once, including temporary scratch and old copies while lists grow. Neither
-includes the source or the Document, and neither is RSS. **Arena capacity** is
+includes the source or the Document in lowering-only tables; the whole-route
+tables explicitly include the Document. Neither is RSS. **Arena capacity** is
 the total an `ArenaAllocator` reserved; it includes unused space, can be much
 larger than the requested bytes, and doesn't move in step with them.
 
@@ -1137,6 +1138,162 @@ larger than the requested bytes, and doesn't move in step with them.
 the Fast machine code of `bench/identifiers.zig` (event-only parsing) and
 `examples/quick_start.zig` (parsing and validating a document) was
 byte-identical with and without it.
+
+### Whole-route phases and the event-lowering opportunity
+
+Measured 2026-11-01 against library commit `01b0a8e`, Zig 0.17.0, Apple M4 Pro.
+This measures the **existing Document route**, not an event-lowering prototype.
+The defaults are unchanged: full IR attributes, no optional indexes, scalar
+DOT scanner, no child processors, and no metering/cancellation. Edges remain
+symbolic. The 14 synthetic M-corpus files have nominally 100,000 statements;
+six built-in cases test more difficult shapes.
+
+[`bench/ir_pipeline.zig`](../bench/ir_pipeline.zig) provides one CSV report:
+
+```sh
+zig build bench-ir-pipeline -Doptimize=fast -- --corpus /path/to/generated
+```
+
+Also run with `safe` or `small`. Without `--corpus`, it runs the six built-in
+cases only. `--case edge_chains` selects one corpus case; `--case deep_nesting`
+selects one built-in case. Corpus filenames are `<case>_M.dot`; the CSV includes
+source lengths and hashes, graph counts, every phase's time/live/peak bytes,
+allocation/growth counts, Arena capacities and the phase where each peak first
+occurred. No code in the library was changed for this measurement.
+
+**Method.** Three warm-up rounds, nine timed samples, alternating growable
+`std.heap.smp_allocator` and one shared Arena over that allocator. The backing
+allocator is deliberately the same in all build modes: `std.process.Init.gpa`
+can otherwise select SafeAllocator or libc instead. Timing has no tracking
+wrapper. Three separate untimed probes account for memory; the CSV reports
+the largest observed live peak and also the smallest, to expose variation.
+Graph capacities agree with `IR.parse`, and lowering's tracked live/peak bytes
+are checked against the IR's own counters. Cleanup must return logical live
+bytes to zero.
+
+The split route calls `parseBorrowed`, `validate`, `lowerComplete`, then releases
+the Document. Total time ends when the owning IR is available, including
+Document release but excluding IR destruction, Arena destruction, source
+generation/loading and reporting. A separately timed `IR.parse` checks the
+unsplit route: its M-corpus totals were within 2% of the split totals. Medians
+of individual phases need not add up exactly to the median total.
+
+Fast, growable storage, milliseconds:
+
+| M workload | Parse | Validate | Lower | Total, including Document release |
+| --- | ---: | ---: | ---: | ---: |
+| nodes | 2.008 | <0.001 | 5.539 | 7.563 |
+| edges | 3.789 | 0.149 | 11.186 | 15.179 |
+| edge_chains | 16.035 | 0.749 | 60.896 | 77.432 |
+| node_attrs | 11.534 | <0.001 | 16.418 | 27.978 |
+| edge_attrs | 12.739 | 0.149 | 18.098 | 31.016 |
+| attr_stmts | 6.103 | <0.001 | 7.244 | 13.365 |
+| subgraphs_flat | 3.731 | 0.038 | 6.842 | 10.629 |
+| subgraphs_nested | 5.068 | <0.001 | 6.056 | 11.154 |
+| subgraph_endpoints | 3.304 | 0.066 | 6.842 | 10.233 |
+| identifiers | 4.161 | 0.144 | 13.875 | 18.273 |
+| comments | 6.229 | 0.144 | 11.194 | 17.713 |
+| ports | 8.456 | 0.144 | 14.169 | 22.938 |
+| minified | 3.406 | 0.149 | 10.789 | 14.474 |
+| mixed | 10.054 | 0.165 | 16.460 | 26.821 |
+
+Validation uses the default checks; it is not an encoding/duplicate-attribute
+lint profile. It allocates no heap memory here. Document release takes
+0.014–0.147 ms. Lowering accounts for **54–79%** of total time: avoiding the
+Document does not remove name resolution, membership or attribute work.
+
+Memory below is **MiB (1,048,576 bytes)**. Borrowed source, stack state,
+diagnostic storage and allocator metadata/rounding are excluded. Diagnostics
+use the discard sink on accepted inputs. "Lower alone" includes IR output,
+scratch and old/new growth buffers, excluding the still-live Document.
+"Whole peak" is measured across the route, **not a sum of phase peaks**.
+
+| M workload | Document live at lowering | Parse peak | Lower alone peak | Whole peak | IR retained | Document / whole peak |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| nodes | 2.29 | 4.39 | 8.83 | 11.12 | 7.49 | 20.6% |
+| edges | 4.20 | 8.78 | 12.44 | 16.64 | 11.48 | 25.2% |
+| edge_chains | 16.40 | 31.11 | 81.24 | 97.64 | 71.32 | 16.8% |
+| node_attrs | 6.87 | 9.90 | 26.00 | 32.87 | 22.37 | 20.9% |
+| edge_attrs | 8.77 | 13.53 | 20.84 | 29.61 | 19.87 | 29.6% |
+| attr_stmts | 4.35 | 5.85 | 11.58 | 15.93 | 9.86 | 27.3% |
+| subgraphs_flat | 3.24 | 4.31 | 8.69 | 11.93 | 7.79 | 27.2% |
+| subgraphs_nested | 3.24 | 5.33 | 8.69 | 11.94 | 7.06 | 27.2% |
+| subgraph_endpoints | 4.45 | 6.90 | 10.22 | 14.68 | 9.61 | 30.3% |
+| identifiers | 4.20 | 8.78 | 16.61 | 20.81 | 14.97 | 20.2% |
+| comments | 4.20 | 8.78 | 12.44 | 16.64 | 11.48 | 25.2% |
+| ports | 9.54 | 15.89 | 20.42 | 29.96 | 18.78 | 31.8% |
+| minified | 4.20 | 8.78 | 12.44 | 16.64 | 11.48 | 25.2% |
+| mixed | 6.34 | 8.78 | 18.08 | 24.42 | 17.45 | 25.9% |
+
+All 14 reach their live peak **during lowering**. Document used payload equals
+live requested capacity at that boundary: these complete Documents have no
+remaining requested spare capacity. Earlier growth still costs time and peak
+memory. For example, edge chains make 62 parse allocations and 54 lowering
+allocations; confirmed allocate/copy/free growth pairs reach 25.76 MiB and
+34.33 MiB respectively. Those are individual old+new pairs, not additional
+bytes to add to the peaks above. The CSV also distinguishes successful remaps
+and in-place resizes from fresh allocations.
+
+The tracker forwards allocator calls unchanged. A backing allocator can copy
+inside a successful moving `remap`, where its instantaneous overlap is hidden.
+The report therefore also includes a conservative peak bound using old+new
+requested sizes for such calls. That bound equals the observed whole peak for
+every case in this same-allocator run; it is not a claim about process RSS.
+
+Adversarial shapes, Fast/growable; times are parse / validate / lower in ms:
+
+| Shape | Phase times | Document MiB | Parse peak MiB | Whole peak MiB / phase | IR retained MiB |
+| --- | ---: | ---: | ---: | --- | ---: |
+| 50,000 nested scopes around one node | 2.290 / <0.001 / 1.787 | 2.10 | 12.54 | 12.54 / parse | 3.32 |
+| 1,000 reopened subgraph endpoints | 0.090 / 0.003 / 0.133 | 0.13 | 0.19 | 0.29 / lower | 0.17 |
+| Same, strict | 0.090 / 0.003 / 0.133 | 0.13 | 0.19 | 0.29 / lower | 0.17 |
+| One 100,000-node edge chain | 1.690 / 0.175 / 5.580 | 1.91 | 3.39 | 13.93 / lower | 9.39 |
+| One statement with 100,000 attributes | 2.612 / <0.001 / 12.912 | 1.53 | 3.52 | 11.75 / lower | 8.87 |
+| One 50,000 × 50,000 endpoint product | 1.923 / <0.001 / 5.495 | 2.29 | 4.39 | 11.12 / lower | 7.49 |
+
+The last case retains exactly **one connection**, never 2.5 billion edges.
+Deep nesting is a parse-peak case; retaining the active compound statement
+could also consume most of the avoided Document storage. Reopened scopes have
+a larger relative Document share (43%), but only about 129 KiB to remove here.
+
+**Arena is a different cost.** A shared Arena keeps its backing blocks after
+Document release. Selected Fast capacities, MiB; the capacity after lowering
+is unchanged after releasing the Document in every measured case:
+
+| Input | After parse | After lowering / Document release | Backing peak first reached in |
+| --- | ---: | ---: | --- |
+| nodes | 16.94 | 34.27 | lower |
+| edges | 37.81 | 37.81 | parse |
+| edge_chains | 124.76 | 234.87 | lower |
+| node_attrs | 25.36 | 90.10 | lower |
+| subgraph_endpoints | 31.43 | 31.43 | parse |
+| ports | 50.22 | 85.59 | lower |
+| mixed | 28.66 | 90.48 | lower |
+| 50,000 nested scopes | 24.79 | 44.22 | lower |
+
+These capacities include unused room and abandoned allocations, but exclude
+Arena bookkeeping; the CSV's backing peaks include the bookkeeping too.
+Lowering can reuse room in existing blocks, so subtracting the parse capacity
+from the Arena peak would not predict event-route savings.
+
+Safe and Small ran the same 20 shapes and both allocation routes. Selected
+growable whole-route times (ms), with the same backing allocator:
+
+| Input | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| nodes | 7.563 | 8.227 | 9.775 |
+| edges | 15.179 | 16.400 | 21.052 |
+| edge_chains | 77.432 | 83.472 | 104.538 |
+| node_attrs | 27.978 | 30.197 | 39.517 |
+| subgraph_endpoints | 10.233 | 11.342 | 13.404 |
+| mixed | 26.821 | 27.930 | 35.958 |
+
+**Decision for event lowering:** the 17–32% retained Document share on the M
+corpus is a meaningful target for the next implementation. It is an opportunity
+indicator, not a promised reduction or a ceiling. The new route can avoid some
+pool growth and traversal, but must pay for active-statement staging, validation
+and IR construction. Keep the existing route as the baseline and measure actual
+whole-route peaks, including staging and Arena backing, before claiming savings.
 
 ### Lowering a Document
 
@@ -2113,6 +2270,7 @@ round does several operations, the time shown is per operation:
 | `bench-string-passthrough` | 2 rounds | 9 | at least 128 calls |
 | `bench-ir`: lowering, attributes, bulk attributes | 2 rounds | 9 | 1 |
 | `bench-ir`: values | 3 rounds | 9 | 1 |
+| `bench-ir-pipeline` | 3 rounds | 9; 3 separate memory probes | 1 |
 | `bench-ir-partial` | at least 100 ms, then 2 rounds | 9 | 1 |
 | `bench-ir-partial-edges` | at least 100 ms | 9 | 1 |
 | `bench-ir-sessions` | 12 rounds | 15 | 1 |
@@ -2197,6 +2355,7 @@ The other benchmarks cover both scanners where it matters.
 | `bench-string-integration` (unreleased) | Attribute string checks in DOT and markup, with allocator totals | `--csv` |
 | `bench-string-passthrough` (unreleased) | Real DOT quote scanning, then simulated string checks | |
 | `bench-ir` (unreleased) | IR lowering, expansion, attributes, values and bulk attributes (four programs, one after another) | |
+| `bench-ir-pipeline` (unreleased) | Parse/check/lower phase times, whole-route live peaks, growth and Arena capacity; CSV | `--corpus PATH`, `--case NAME` |
 | `bench-ir-materialized` (unreleased) | Folded attributes against compact reads | |
 | `bench-ir-partial` (unreleased) | Partial IR lowering, lookups, mentions and pair queries | `--attributes-only` |
 | `bench-ir-partial-edges` (unreleased) | Complete against partial edge streaming, folding and memory | |

@@ -708,6 +708,25 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "dot_parser", .module = mod }},
     }) });
     const run_ir_bench = b.addRunArtifact(ir_bench);
+    const ir_pipeline = b.addExecutable(.{ .name = "ir_pipeline", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_pipeline.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    const run_ir_pipeline = b.addRunArtifact(ir_pipeline);
+    run_ir_pipeline.addPassthruArgs();
+    run_ir_pipeline.has_side_effects = true;
+    b.step("bench-ir-pipeline", "Measure parse/check/lower time and whole-route peak memory by phase (CSV)").dependOn(&run_ir_pipeline.step);
+    check_benches.dependOn(&ir_pipeline.step);
+    const phase_memory_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/phase_memory.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    const test_phase_memory = b.addRunArtifact(phase_memory_tests);
+    b.step("test-phase-memory", "Check benchmark phase accounting and Arena ownership").dependOn(&test_phase_memory.step);
+    test_step.dependOn(&test_phase_memory.step);
     const ir_attributes_bench = b.addExecutable(.{ .name = "ir_attributes_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/ir_attributes.zig"),
         .target = target,

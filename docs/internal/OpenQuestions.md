@@ -226,6 +226,10 @@ commits' optional spans; the latter adds retained-end/root-closed facts to the
 bound result. Coverage follows the same parser retention points as partial
 Documents. Each delimiter delivery costs one dispatch credit; metadata adds
 none. This completes standalone event prerequisites, not event-based IR lowering.
+The phase-aware existing-route baseline is also measured: Document overlap is
+17–32% of live peak on the M corpus, supporting complete one-shot event lowering
+as the next increment. Actual savings still need measurement with staging and
+Arena backing included; see [whole-route measurements](../PERFORMANCE.md#whole-route-phases-and-the-event-lowering-opportunity).
 Typed `Name` handles distinguish recognized identifiers from raw `Span` previews
 and other syntax ranges. `identifier.fromName(source, name)` avoids re-lexing;
 raw spans use checked `identifier.check`. Builders consume the same typed events,
