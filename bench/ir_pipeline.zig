@@ -9,15 +9,15 @@ const Dot = dot.Profile(.{});
 const IR = dot.ir.Lowering(.{});
 const Phase = memory.Phase;
 const Route = enum { gpa, arena };
-const corpus_cases = [_][]const u8{ "nodes", "edges", "edge_chains", "node_attrs", "edge_attrs", "attr_stmts", "subgraphs_flat", "subgraphs_nested", "subgraph_endpoints", "identifiers", "comments", "ports", "minified", "mixed" };
-const Shape = enum { deep_nesting, reopened, strict_reopened, giant_chain, giant_attributes, symbolic_product };
+pub const corpus_cases = [_][]const u8{ "nodes", "edges", "edge_chains", "node_attrs", "edge_attrs", "attr_stmts", "subgraphs_flat", "subgraphs_nested", "subgraph_endpoints", "identifiers", "comments", "ports", "minified", "mixed" };
+pub const Shape = enum { deep_nesting, reopened, strict_reopened, giant_chain, giant_attributes, symbolic_product };
 const sample_count = 9;
 const warmup_count = 3;
 
-const Options = struct {
+pub const Options = struct {
     corpus: ?[]const u8 = null,
     case: ?[]const u8 = null,
-    fn parse(args: []const []const u8) !@This() {
+    pub fn parse(args: []const []const u8) !@This() {
         var options: @This() = .{};
         var i: usize = 1;
         while (i < args.len) : (i += 2) {
@@ -30,12 +30,12 @@ const Options = struct {
         }
         return options;
     }
-    fn selected(self: @This(), name: []const u8) bool {
+    pub fn selected(self: @This(), name: []const u8) bool {
         return if (self.case) |value| std.mem.eql(u8, value, name) else true;
     }
 };
 
-fn fixture(w: *std.Io.Writer, shape: Shape) !void {
+pub fn fixture(w: *std.Io.Writer, shape: Shape) !void {
     try w.writeAll(if (shape == .strict_reopened) "strict digraph {" else "digraph {");
     switch (shape) {
         .deep_nesting => {
@@ -207,7 +207,7 @@ fn probe(comptime route: Route, allocator: std.mem.Allocator, source: []const u8
     return .{ .stats = logical.stats, .arena_capacities = capacities, .arena_peaks = arena_peaks, .peak = logical.peak, .peak_phase = logical.peak_phase, .peak_bound = logical.peakBound(), .bound_phase = logical.boundPhase(), .arena_peak = backing.peak, .arena_peak_phase = backing.peak_phase, .doc_used = used, .doc_live = live, .ir_retained = retained, .lower_peak = peak, .statements = statements, .root_statements = root_statements, .counts = counts };
 }
 
-fn median(values: []u64) u64 {
+pub fn median(values: []u64) u64 {
     std.mem.sort(u64, values, {}, std.sort.asc(u64));
     return values[values.len / 2];
 }

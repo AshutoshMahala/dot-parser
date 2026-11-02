@@ -9,6 +9,7 @@ const equal = std.testing.expectEqual;
 const IR = dot.ir.Lowering(.{});
 test {
     _ = @import("ir_adversarial.zig");
+    _ = @import("ir_events.zig");
     _ = @import("ir_adjacency.zig");
     _ = @import("ir_capabilities.zig");
     _ = @import("ir_capability_operations.zig");

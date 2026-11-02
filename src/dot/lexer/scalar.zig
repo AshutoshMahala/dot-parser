@@ -44,7 +44,7 @@ pub const Lexer = StandaloneWithEncoding(.utf8, false);
 /// hot scanner functions. Same states and layout, separate code generation;
 /// no extra runtime flags. LLVM otherwise outlines parser work in mixed users.
 pub fn StandaloneWithEncoding(comptime actual: encoding.Actual, comptime comments: bool) type {
-    return ScannerConfigured(actual, false, false, true, comments, false, true);
+    return ScannerConfigured(actual, false, false, true, comments, false, .standalone);
 }
 
 pub fn Scanner(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool) type {
@@ -56,10 +56,17 @@ pub fn ScannerWithComments(comptime metered: bool, comptime audited: bool, compt
 }
 
 pub fn ScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool) type {
-    return ScannerConfigured(actual, metered, audited, numeral_check, comments, false, false);
+    return ScannerConfigured(actual, metered, audited, numeral_check, comments, false, .document);
 }
 
-fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool, comptime preview_boundaries: bool, comptime standalone: bool) type {
+/// Event consumers share states and accounting with Document parsing, while
+/// keeping a separate code-generation identity. No extra fields or flags.
+pub fn EventScannerWithEncoding(comptime actual: encoding.Actual, comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool) type {
+    return ScannerConfigured(actual, metered, audited, numeral_check, comments, false, .events);
+}
+
+const Consumer = enum { document, standalone, events };
+fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool, comptime comments: ?bool, comptime preview_boundaries: bool, comptime consumer: Consumer) type {
     const enc = encoding.Reader(actual);
     return struct {
         const Self = @This();
@@ -68,7 +75,7 @@ fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, c
         /// Internal parser specialization; ordinary lexical callers pay nothing
         /// for the extra boundary retained while a concatenation is unfinished.
         pub fn WithPreviews() type {
-            return ScannerConfigured(actual, metered, audited, numeral_check, comments, true, standalone);
+            return ScannerConfigured(actual, metered, audited, numeral_check, comments, true, consumer);
         }
         const State = enum {
             trivia,
@@ -462,9 +469,9 @@ fn ScannerConfigured(comptime actual: encoding.Actual, comptime metered: bool, c
                             return state;
                         }
                     }
-                    // A standalone caller must not also outline the parser's
-                    // shared keyword classifier in size-optimized builds.
-                    return self.finish(@call(if (standalone) .always_inline else .auto, keywordTag, .{ self.content.keyword, self.cursor - self.anchor }));
+                    // Other consumers must not outline the Document parser's
+                    // keyword classifier in size-optimized builds.
+                    return self.finish(@call(if (consumer != .document) .always_inline else .auto, keywordTag, .{ self.content.keyword, self.cursor - self.anchor }));
                 },
                 .dash => {
                     if (byte) |b| switch (b) {

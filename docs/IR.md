@@ -96,11 +96,84 @@ What `dot.ir.parse` does:
 | Read attribute values, defaults and ports | [Read effective attributes](#read-effective-attributes) |
 | Keep only topology, add indexes, read UTF-16/32 | [Choose what the graph keeps](#choose-what-the-graph-keeps) |
 | Build the graph from a Document I already parsed | [Lower a Document you already have](#lower-a-document-you-already-have) |
+| Build directly from DOT events without a retained Document | [Build from events](#build-from-events) |
 | Show a graph while the user is still typing | [Partial graphs for editors](#partial-graphs-for-editors) |
 | Use fixed buffers and no allocator | [Fixed buffers, no allocator](#fixed-buffers-no-allocator) |
 | Work in small steps, pause, cancel | [Small steps and cancelling](#small-steps-and-cancelling) |
 | Know the limits and what each call costs | [Limits, memory and costs](#limits-memory-and-costs) |
 | Look up a call or option | [Reference](#reference) |
+
+## Build from events
+
+`IR.FromEvents(Dot).parse` is an opt-in, run-to-completion route for complete
+input. It returns the same graph type, views and queries as Document lowering.
+Ordinary `dot.ir.parse` and `IR.parse` keep their Document-based implementation.
+
+```zig
+const Dot = dot.Profile(.{});
+const IR = dot.ir.Lowering(.{});
+const EventIR = IR.FromEvents(Dot);
+
+var result = try EventIR.parse(gpa, source, .{ .diagnostics = bag.sink() });
+defer result.deinit();
+const graph = result.ir() orelse return error.GraphUnavailable;
+var nodes = graph.nodeIterator();
+while (nodes.next()) |node| std.debug.print("node {f}\n", .{node.name()});
+```
+
+The result owns its graph and borrows the unchanged source. It retains no
+Document. Construction stages the active root statement, including nested
+subgraphs, then applies it in the same semantic order as Document lowering.
+After each completed root statement, staging buffers are cleared and reused.
+A giant statement can
+therefore require substantial temporary storage; this route does not promise
+lower memory or faster execution for every input. Edges remain symbolic.
+
+| Option | Meaning |
+| --- | --- |
+| `.diagnostics` | One DOT diagnostic sink, defaulting to discard |
+| `.dot` | The bound DOT event parser's options: runtime policy, cancellation and source encoding when compiled in |
+| `.lowering` | This IR profile's limits and execution options, independently of DOT |
+
+Both policies are verified before work. The IR must have a reader for the
+source encoding selected by DOT; no reader or transcoding is enabled implicitly.
+Full/topology-only IR and optional indexes work with this route. Removing IR
+attributes does not disable DOT attribute validation. Child-processor profiles
+cannot be bound: the event route does not schedule markup or string processors.
+
+`checking` includes the usual parse/validation/delivery summary and a `coverage`
+field with the parser's `retained_end` and `root_closed` facts. These facts do not
+certify graph validity. Syntax rejection never publishes a complete graph.
+Validation rejection or a diagnostic stop also leaves `ir()` null. Construction
+limits, allocation failures, unsupported IR semantics and cancellation use the
+error union; cancellation returns `error.Cancelled` and publishes no result.
+Parser resource/storage failures retain their normal checking outcomes.
+
+There are intentional execution differences:
+
+- Committed attribute, operator and reference checks run during parsing;
+  whole-source encoding and final-kind checks run afterward. Diagnostic order,
+  and the first error under `.fail_fast`, can differ from Document checking.
+  When both complete validation, applicable findings and acceptance agree.
+  A later syntax error may follow validation findings already delivered by this
+  route; a Document-only route without partial retention cannot validate that
+  rejected Document.
+- An early validation error under `.fail_fast` sets `checking.outcome` to
+  `.processor_stopped`, with `.validation.outcome = .error_stopped`. It is not
+  counted as a syntax error. Diagnostic stop/failure preserves the sink reason.
+- IR work and memory limits cover construction, staging, validation scratch and
+  indexes. DOT nesting scratch has its own parser limits. Neither limit is a
+  process-RSS cap. Different allocation schedules and work totals can reach
+  limits at different points.
+- Parser credits are unchanged. Semantic/validation work has independent total
+  accounting and cancellation checkpoints; a callback credit does not pay for
+  arbitrary lowering work. Enabling metering does not make this one-shot call
+  pause. There is no composed event-IR session yet.
+
+Observer forwarding, partial event construction, composed sessions and fixed
+event-construction storage remain separate increments. Use existing Document
+routes for those operations today. Compare both routes with
+`zig build bench-ir-events -Doptimize=fast -- --corpus /path/to/generated`.
 
 ## Nodes, names and subgraphs
 
@@ -1828,6 +1901,8 @@ All IR operations use `dot.ir.Error`:
 Also: `error.InvalidCancellationInterval` (runtime policy with interval 0),
 `error.MeteringDisabled` (`advance` with runtime metering off), and
 `error.NotReady` / `error.AlreadyTaken` from `takeResult()`.
+Event construction's `EventIR.Error` also includes the bound DOT profile's
+source-admission and policy errors.
 
 ### What each operation costs
 
@@ -1900,6 +1975,7 @@ Measured numbers are in [Performance](PERFORMANCE.md).
 | `capabilities`, `Node`, `Connection`, `Graph`, `PartialGraph` | This profile's choices and types |
 | `parse`, `parsePartial`, `ParseOptions`, `ParseResult`, `PartialResult` | One-call parsing with this profile |
 | `lowerComplete`, `lowerPartial` | Lower a Document |
+| `FromEvents(Dot)` | Bind complete one-shot construction to a DOT event profile; see [Build from events](#build-from-events) |
 | `loweringSession`, `partialLoweringSession`, `LoweringSession`, `PartialLoweringSession` | Lower in small steps |
 | `lowerCompleteIn`, `lowerPartialIn`, `FixedLoweringResult`, `FixedPartialLoweringResult` | Fixed-storage lowering |
 | `loweringSessionIn`, `partialLoweringSessionIn`, `FixedLoweringSession`, `FixedPartialLoweringSession` | Fixed-storage lowering in small steps |
@@ -1968,6 +2044,8 @@ Benchmarks (add `-Doptimize=fast`; most also run with `safe` or `small`):
 | Step | Measures |
 | --- | --- |
 | `bench-ir` | Lowering, streaming, materialization, attribute queries and value access |
+| `bench-ir-pipeline` | Document-route time and peak memory by phase |
+| `bench-ir-events` | Whole-route Document/event construction time, live peaks and Arena capacity |
 | `bench-ir-materialized` | Bulk attribute folding against compact edge queries |
 | `bench-ir-sessions` | Direct and step-by-step materialization, budgets and memory |
 | `bench-ir-lowering-sessions` | Direct, metered, cancellable and runtime-policy lowering against sessions; direct calls report no credit counts |
@@ -1986,7 +2064,9 @@ Measured results are in [Performance](PERFORMANCE.md).
 
 ## Not available yet
 
-- Lowering straight from parser events, without a Document
+- Event-route observer forwarding, partial construction, shared-budget sessions
+  and fixed storage; complete one-shot [event construction](#build-from-events)
+  is available
 - Checking that a port name exists in a node's label, or binding it to the label
 - Finding a node by name (`findNode`) in small steps
 - Structured `tailPort()`/`headPort()` and value formatting in small steps

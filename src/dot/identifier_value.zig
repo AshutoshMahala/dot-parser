@@ -16,6 +16,11 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
         /// Internal analysis helpers for identifier spans from a committed Document.
         /// No revalidation, decoded allocations or normalization; callers guarantee validity.
         pub fn hashAssumeValid(raw: []const u8) u64 {
+            // A bare identifier is already one logical chunk. Use the same
+            // hash directly, avoiding a streaming state and its outlined calls
+            // when both Document and event IR consumers are linked.
+            if (raw.len == 0 or (enc.byteAt(raw, 0) != '"' and enc.byteAt(raw, 0) != '<'))
+                return std.hash.Wyhash.hash(0, raw);
             var chunks: Traversal.Chunks = .{ .raw = raw };
             var hash = std.hash.Wyhash.init(0);
             while (chunks.next()) |chunk| hash.update(chunk);
@@ -102,4 +107,15 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
             }
         };
     };
+}
+
+test "single-chunk name hash agrees with streaming at every block boundary" {
+    const std = @import("std");
+    var bytes: [513]u8 = undefined;
+    for (&bytes, 0..) |*byte, i| byte.* = 'a' + @as(u8, @intCast(i % 26));
+    for (0..bytes.len + 1) |len| {
+        var hash = std.hash.Wyhash.init(0);
+        hash.update(bytes[0..len]);
+        try std.testing.expectEqual(hash.final(), hashAssumeValid(bytes[0..len]));
+    }
 }

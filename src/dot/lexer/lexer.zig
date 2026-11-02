@@ -93,6 +93,49 @@ pub fn scannerForEncoding(comptime actual: @import("parser_support").encoding.Ac
 /// Ordinary lexing with the library-default backend.
 pub const Lexer = For(policy.defaults.scanner);
 
+/// The block driver already inlines its hot calls. Scalar event consumers use
+/// the same implementation in a distinct specialization, so linking them does
+/// not change Document scanner inlining decisions.
+pub fn scannerForEvents(comptime actual: @import("parser_support").encoding.Actual, comptime selected: policy.ScannerBackend, comptime comments: ?bool) fn (comptime bool, comptime bool, comptime ?bool) type {
+    if (selected == .block) return scannerForEncoding(actual, selected, comments);
+    return struct {
+        fn scanner(comptime metered: bool, comptime audited: bool, comptime numeral_check: ?bool) type {
+            return scalar.EventScannerWithEncoding(actual, metered, audited, numeral_check, comments);
+        }
+    }.scanner;
+}
+
+test "event scalar specialization preserves layout, tokens and exact credits" {
+    inline for (.{ false, true }) |metered| {
+        const Document = scalar.ScannerWithEncoding(.utf8, metered, true, true, false);
+        const Events = scalar.EventScannerWithEncoding(.utf8, metered, true, true, false);
+        try std.testing.expectEqual(@sizeOf(Document), @sizeOf(Events));
+        for ([_][]const u8{
+            "digraph { a->b[label=\"x\" + <<b>y</b>>]; /* comment */ café; }",
+            "graph { 1e3; a --- b; // line\n c--d }",
+            "digraph { a [label=\"unfinished",
+            "digraph { /* unfinished",
+        }) |source| {
+            var left = Document.init(source);
+            var right = Events.init(source);
+            const grants = [_]usize{ 0, 1, 7, 64 };
+            var i: usize = 0;
+            while (true) : (i += 1) {
+                const budget = grants[i % grants.len];
+                const l = left.drive(true, budget);
+                const rr = right.drive(true, budget);
+                try std.testing.expectEqualDeep(l, rr);
+                try std.testing.expectEqual(left.examinations, right.examinations);
+                try std.testing.expectEqual(left.here(), right.here());
+                if (l.result) |result| switch (result) {
+                    .failure => break,
+                    .token => |token| if (token.tag == .eof) break,
+                };
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests: the two backends are indistinguishable from outside.
 // ---------------------------------------------------------------------------

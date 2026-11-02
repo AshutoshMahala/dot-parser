@@ -91,6 +91,10 @@ pub fn Lowering(comptime config: Config) type {
         /// Parse/check once, lower with this profile, then release Document pools.
         pub const parse = Source.parse;
         pub const parsePartial = Source.parsePartial;
+        /// Opt-in, checked source construction without retained Document pools.
+        pub fn FromEvents(comptime Dot: type) type {
+            return @import("ir/event_lowering.zig").Bound(@This(), config, Dot);
+        }
         const Fixed = @import("ir/fixed_lowering.zig").API(config);
         fn fixedStorage() type {
             return fixed_storage.For(rep);

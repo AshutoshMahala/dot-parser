@@ -719,6 +719,17 @@ pub fn build(b: *std.Build) void {
     run_ir_pipeline.has_side_effects = true;
     b.step("bench-ir-pipeline", "Measure parse/check/lower time and whole-route peak memory by phase (CSV)").dependOn(&run_ir_pipeline.step);
     check_benches.dependOn(&ir_pipeline.step);
+    const ir_events = b.addExecutable(.{ .name = "ir_event_comparison", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_event_comparison.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    const run_ir_events = b.addRunArtifact(ir_events);
+    run_ir_events.addPassthruArgs();
+    run_ir_events.has_side_effects = true;
+    b.step("bench-ir-events", "Compare Document and event IR time, live peaks and Arena capacity (CSV)").dependOn(&run_ir_events.step);
+    check_benches.dependOn(&ir_events.step);
     const phase_memory_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("bench/phase_memory.zig"),
         .target = target,

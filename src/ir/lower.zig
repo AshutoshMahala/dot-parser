@@ -56,6 +56,21 @@ pub fn Builder(comptime actual: encoding.Actual, comptime rep: @import("represen
     return BuilderWith(actual, rep, partial, false);
 }
 pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime fixed_storage: bool) type {
+    return BuilderMode(actual, rep, partial, fixed_storage, false);
+}
+
+/// Header-only input for event construction; no syntax pools or Document.
+pub const Header = struct {
+    source: []const u8,
+    source_info: encoding.Info,
+    kind: syntax.GraphKind,
+    strict: bool,
+    name: ?t.Range,
+};
+pub fn EventBuilder(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity) type {
+    return BuilderMode(actual, rep, false, false, true);
+}
+fn BuilderMode(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime fixed_storage: bool, comptime streamed: bool) type {
     const Node = t.NodeFor(rep.attributes);
     const Connection = t.ConnectionFor(rep.attributes);
     return struct {
@@ -66,7 +81,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
         const EdgeFrame = Records.EdgeFrame;
         const Pending = Records.Pending;
         a: if (fixed_storage) *pools.For(rep).Context else std.mem.Allocator,
-        doc: *const syntax.Document,
+        doc: *const (if (streamed) Header else syntax.Document),
         interpretation: InterpretationFor(partial),
         limits: r.Limits,
         work: r.Work,
@@ -140,7 +155,10 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
                 self.attribute_data.deinit(a);
             }
             if (comptime rep.indexes.any()) indexes.release(a, self.queryIndexes());
-            @import("topology_storage.zig").release(a, self);
+            if (streamed) {
+                a.free(self.connections);
+                a.free(self.endpoint_ports);
+            } else @import("topology_storage.zig").release(a, self);
             inline for (.{ "occurrences", "bodies", "mentions", "attributes", "offsets", "positions" }) |field| {
                 if (@FieldType(Self, field) != void) a.free(@field(self, field));
             }
@@ -152,8 +170,8 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
         pub fn hashFor(self: *Self, id: u32) u64 {
             return self.nodes.items[id].hash;
         }
-        fn node(self: *Self, reference: syntax.NodeReference, occurrence: u32, retain_port: bool) r.Error!t.Endpoint {
-            const view = self.doc.nodeReference(reference) orelse return error.InvalidDocument;
+        pub fn node(self: *Self, reference: if (streamed) syntax.NodeReferenceView else syntax.NodeReference, occurrence: u32, retain_port: bool) r.Error!t.Endpoint {
+            const view = if (streamed) reference else self.doc.nodeReference(reference) orelse return error.InvalidDocument;
             if (comptime encoding.Reader(actual).width != 1) if (view.port) |port| {
                 // Native derived formatting is infallible after admission.
                 _ = try names.hash(actual, try self.raw(port.first), &self.work);
@@ -244,6 +262,7 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
         /// Each remaining mention can introduce at most one new node. This
         /// bounds growth without assuming that all mentions have distinct names.
         pub fn nodeCapacityBound(self: *const Self) r.Error!usize {
+            if (streamed) return self.limits.max_nodes;
             if (self.mention_count >= self.mentions.len) return error.InvalidDocument;
             return @min(self.limits.max_nodes, self.nodes.items.len + (self.mentions.len - self.mention_count));
         }
@@ -442,11 +461,11 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
             }
             return @fromBackingInt(self.connection_count);
         }
-        fn declaration(self: *Self, target: @FieldType(t.Declaration, "target"), occurrence: u32, range: syntax.AttributeRange) r.Error!void {
+        pub fn declaration(self: *Self, target: @FieldType(t.Declaration, "target"), occurrence: u32, range: syntax.AttributeRange) r.Error!void {
             if (!rep.attributes) return;
             const id = try r.index(self.declarations.items.len);
             const record: t.Declaration = .{ .target = target, .occurrence = @fromBackingInt(occurrence), .attributes = range };
-            if (fixed_storage) {
+            if (fixed_storage or streamed) {
                 try mem.append(self.a, &self.declarations, record, "declarations");
             } else {
                 if (self.declarations.items.len >= self.declarations.capacity) return error.InvalidDocument;

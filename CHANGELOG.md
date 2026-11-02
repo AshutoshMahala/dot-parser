@@ -30,6 +30,13 @@ statements after an error, too.
   `dot.ir.parse` parses, checks and builds the graph in one call; ordinary
   parsing doesn't run or allocate any of it. See
   [Semantic graph](docs/IR.md).
+  - **Construction from events.** `IR.FromEvents(Dot).parse` checks and builds a
+    complete graph without retaining a Document. It binds the DOT profile,
+    stages active statements and shares IR semantics, limits and cancellation.
+    The existing Document route stays the default. Diagnostic order can differ;
+    staging and growable output can cost more on giant statements. Observer
+    forwarding, partial construction, composed sessions and fixed event storage
+    are not included in this increment.
   - **Reading the graph.** Node, subgraph and edge views; `findNode`,
     `hasEdge` and membership queries; attribute lookup and listing; value views
     that keep the original spelling and print the joined value with `{f}`; edge

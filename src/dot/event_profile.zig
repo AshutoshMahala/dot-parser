@@ -11,7 +11,7 @@ const Variant = @import("execution_variant.zig").Variant;
 
 fn Core(comptime actual: support.encoding.Actual, comptime Sink: type, comptime fixed: ?policy.ParseSettings, comptime variant: Variant) type {
     const Scratch = scratch.For(events.Context(Sink));
-    const Machine = parser.MachineWithProcessor(*Sink, variant.metered(), false, variant.cancellable(), lexer.scannerForEncoding(actual, variant.backend(), if (fixed) |s| s.retention.comments else null), fixed, void, variant.singlePoll(), true);
+    const Machine = parser.MachineWithProcessor(*Sink, variant.metered(), false, variant.cancellable(), lexer.scannerForEvents(actual, variant.backend(), if (fixed) |s| s.retention.comments else null), fixed, void, variant.singlePoll(), true);
     return struct {
         const Self = @This();
         const coverage = @hasDecl(Sink, "coverage") and Sink.coverage;

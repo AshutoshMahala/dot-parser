@@ -504,3 +504,15 @@ fn adjacencyCount(graph: anytype) u32 {
     }
     return total;
 }
+
+// Event construction also works with a caller's allocator on freestanding
+// targets; this is not the future per-pool fixed event API.
+export fn event_ir(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    const Dot = dot.Profile(.{});
+    const IR = dot.ir.Lowering(.{ .indexes = .{ .connections = true, .scope_memberships = true } });
+    var buffer = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
+    var result = IR.FromEvents(Dot).parse(buffer.allocator(), source[0..length], .{}) catch return 0;
+    defer result.deinit();
+    const graph = result.ir() orelse return 0;
+    return @intCast(graph.nodes.len);
+}

@@ -50,6 +50,11 @@ The markup parser follows the same shape under `src/markup/`.
 
 > **Unreleased.** Not in 0.5.0.
 
+The optional `IR.FromEvents(Dot).parse` route uses the same event contract to
+build a complete graph without retaining a Document. It stages the active
+statement, validates committed groups and replays them through shared IR
+semantics. The ordinary Document route remains the default.
+
 Building the graph from a `Document` is called *lowering* in the code and the
 API (`lowerComplete`, `loweringSession`). `src/ir.zig` defines
 `dot.ir.Lowering(config)`, which fixes the representation at compile time:
@@ -198,6 +203,9 @@ encodings are read.
 | File | Purpose |
 | --- | --- |
 | `lower.zig` | Builds the graph from an accepted `Document` in one call |
+| `event_lowering.zig` | Opt-in `IR.FromEvents(Dot).parse`, policy admission, diagnostics and ownership |
+| `event_builder.zig` | Active-statement staging and replay through shared semantic primitives |
+| `event_validation.zig` | Bounded committed-group and source checks without a Document |
 | `lowering_session.zig` | Builds it in small steps |
 | `lowering_primitives.zig` | Small bounded steps used by lowering sessions |
 | `lowering_types.zig` | State records shared by the direct and step-by-step builders |
@@ -268,7 +276,7 @@ for the commands.
 - DOT and markup never import each other. During composition, DOT receives the
   markup and string processors as compile-time parameters from the user.
 - The graph layer (`src/ir/`) sits above DOT: it imports DOT's `Document`,
-  policy and name helpers. DOT's parser, document and validation never import
+  events, policy, validation rules and name helpers. DOT's parser, document and validation never import
   it; only `src/root.zig` exports it.
 - Inside each parser, imports point one way: lexer → parser → builders and
   drivers → document → validation.

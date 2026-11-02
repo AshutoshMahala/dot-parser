@@ -14,7 +14,6 @@ const none = std.math.maxInt(u32);
 /// following subgraph endpoints. Merge these two pools without an owner index,
 /// extra scratch, or a statement-order traversal that could reorder findings.
 pub fn CatalogForEncoding(comptime actual: @import("parser_support").encoding.Actual) type {
-    const enc = @import("parser_support").encoding.Reader(actual);
     return struct {
         document: *const syntax.Document,
         severity: policy.RuleSeverity,
@@ -30,28 +29,34 @@ pub fn CatalogForEncoding(comptime actual: @import("parser_support").encoding.Ac
                 const key = if (take_attribute) self.document.attributes[self.attribute].key else self.document.assignments[self.assignment].key;
                 if (take_attribute) self.attribute += 1 else self.assignment += 1;
                 if (key.endOffset() > self.document.source.len) continue;
-                var chunks: identifier.ForEncoding(actual).Chunks = .{ .raw = key.slice(self.document.source) };
-                var name: [18]u8 = undefined;
-                var len: usize = 0;
-                var valid = true;
-                outer: while (chunks.next()) |chunk| {
-                    var offset: usize = 0;
-                    while (offset < chunk.len) : (offset += enc.width) {
-                        const unit = enc.unit(chunk, offset);
-                        if (len == name.len or unit > 127) {
-                            valid = false;
-                            break :outer;
-                        }
-                        name[len] = @intCast(unit);
-                        len += 1;
-                    }
-                }
-                if (valid and @import("attribute_catalog.zig").lookup(name[0..len]) != null) continue;
-                return .{ .code = severityCode(self.severity, .validation_unknown_attribute, .validation_unknown_attribute_tolerated), .span = key };
+                if (catalogFinding(actual, self.document.source, key, self.severity)) |finding| return finding;
             }
             return null;
         }
     };
+}
+
+/// Shared rule over one recognized attribute key.
+pub fn catalogFinding(comptime actual: @import("parser_support").encoding.Actual, source: []const u8, key: location.Span, severity: policy.RuleSeverity) ?D {
+    const enc = @import("parser_support").encoding.Reader(actual);
+    var chunks: identifier.ForEncoding(actual).Chunks = .{ .raw = key.slice(source) };
+    var name: [18]u8 = undefined;
+    var len: usize = 0;
+    var valid = true;
+    outer: while (chunks.next()) |chunk| {
+        var offset: usize = 0;
+        while (offset < chunk.len) : (offset += enc.width) {
+            const unit = enc.unit(chunk, offset);
+            if (len == name.len or unit > 127) {
+                valid = false;
+                break :outer;
+            }
+            name[len] = @intCast(unit);
+            len += 1;
+        }
+    }
+    if (valid and @import("attribute_catalog.zig").lookup(name[0..len]) != null) return null;
+    return .{ .code = severityCode(severity, .validation_unknown_attribute, .validation_unknown_attribute_tolerated), .span = key };
 }
 
 /// Temporary only. Contents are unspecified after validation and may be reused.
@@ -168,27 +173,41 @@ pub const Operators = struct {
         const expected: syntax.EdgeOperator = if (self.document.kind == .digraph or self.treatment == .digraph) .directed else .undirected;
         while (self.edges.next()) |edge| {
             if (edge.operator == expected) continue;
-            return .{
-                .code = severityCode(self.operators.operator_mismatch, .validation_operator_mismatch, .validation_operator_tolerated),
-                .span = edge.operator_range,
-                .details = .{ .operator_mismatch = .{
-                    .expected = operatorDetail(expected),
-                    .found = operatorDetail(edge.operator),
-                    .declaration = self.document.keyword,
-                    .reading = if (self.operators.operator_reading == .as_written) .as_written else .conform_to_kind,
-                    .kind_overridden = self.document.kind == .undigraph and self.treatment == .digraph,
-                    .suggest_header_change = self.treatment != .digraph,
-                } },
-                .fix = .{
-                    .span = edge.operator_range,
-                    .edit = .{ .replace = if (expected == .directed) .directed_operator else .undirected_operator },
-                    .applicability = if (self.operators.operator_reading == .conform_to_kind) .machine_applicable else .maybe,
-                },
-            };
+            return operatorMismatch(self.document.kind, self.document.keyword, self.treatment, self.operators, expected, edge.operator, edge.operator_range);
         }
         return null;
     }
 };
+
+pub fn operatorFinding(declared: syntax.GraphKind, keyword: location.Span, settings: Settings, written: syntax.EdgeOperator, span: location.Span) ?D {
+    const operators = if (declared == .digraph) settings.digraph else settings.graph.operators;
+    if (operators.operator_mismatch == .off or (declared != .digraph and (settings.graph.treated_as == .auto or settings.graph.treated_as == .generic))) return null;
+    const expected: syntax.EdgeOperator = if (declared == .digraph or settings.graph.treated_as == .digraph) .directed else .undirected;
+    if (written == expected) return null;
+    return operatorMismatch(declared, keyword, settings.graph.treated_as, operators, expected, written, span);
+}
+
+// The retained cursor already resolved its policy and compared the operator.
+// Share diagnostic construction without repeating those checks per finding.
+inline fn operatorMismatch(declared: syntax.GraphKind, keyword: location.Span, treatment: policy.GraphTreatment, operators: Settings.Operators, expected: syntax.EdgeOperator, written: syntax.EdgeOperator, span: location.Span) D {
+    return .{
+        .code = severityCode(operators.operator_mismatch, .validation_operator_mismatch, .validation_operator_tolerated),
+        .span = span,
+        .details = .{ .operator_mismatch = .{
+            .expected = operatorDetail(expected),
+            .found = operatorDetail(written),
+            .declaration = keyword,
+            .reading = if (operators.operator_reading == .as_written) .as_written else .conform_to_kind,
+            .kind_overridden = declared == .undigraph and treatment == .digraph,
+            .suggest_header_change = treatment != .digraph,
+        } },
+        .fix = .{
+            .span = span,
+            .edit = .{ .replace = if (expected == .directed) .directed_operator else .undirected_operator },
+            .applicability = if (operators.operator_reading == .conform_to_kind) .machine_applicable else .maybe,
+        },
+    };
+}
 
 /// Encoding checks own DOT bytes, never the bodies of HTML-like operands.
 /// A lexical cursor establishes boundaries without an index/allocation and also
@@ -496,14 +515,14 @@ pub fn kindFor(document: *const syntax.Document, treatment: policy.GraphTreatmen
     };
 }
 
-fn severityCode(severity: policy.RuleSeverity, err: diagnostic.Code, warning: diagnostic.Code) diagnostic.Code {
+pub fn severityCode(severity: policy.RuleSeverity, err: diagnostic.Code, warning: diagnostic.Code) diagnostic.Code {
     return switch (severity) {
         .err => err,
         .warning => warning,
         .off => unreachable,
     };
 }
-fn restricted(severity: policy.RuleSeverity, span: location.Span, kind: @FieldType(diagnostic.Details, "restriction")) D {
+pub fn restricted(severity: policy.RuleSeverity, span: location.Span, kind: @FieldType(diagnostic.Details, "restriction")) D {
     return .{ .code = severityCode(severity, .validation_restriction, .validation_restriction_tolerated), .span = span, .details = .{ .restriction = kind } };
 }
 fn operatorDetail(operator: syntax.EdgeOperator) diagnostic.OperatorMismatch.Operator {
