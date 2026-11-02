@@ -89,6 +89,7 @@ test "observation kinds share dispatch but are independently selected and charge
                         .document_name => selected.document_name,
                         .subgraph_name => selected.subgraph_name,
                         .token_preview, .token_preview_end => selected.token_preview,
+                        .delimiter => selected.delimiter,
                         else => false,
                     } else false;
                     if (selected_event) {

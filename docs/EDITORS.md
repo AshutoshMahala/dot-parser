@@ -11,6 +11,7 @@ This page collects the opt-in features for that:
 
 - [converting byte positions to editor lines and columns](#editor-position-conversion) (unreleased)
 - [seeing complete names before their statement is finished](EVENTS.md#outline-while-typing) (unreleased)
+- [observing delimiters and completed declaration ranges](EVENTS.md#delimiters-and-completed-declaration-ranges) without a tree (unreleased)
 - keeping the finished part of a DOT file, or of markup
 - keeping the trees of HTML-like labels, and checking chosen labels later
 - keeping comments
@@ -77,7 +78,7 @@ document: set `Consumer.observations = dot.events.Observations.early`. Your
 consumer then hears about each complete name as soon as it is read, even if
 its statement never finishes, and the library builds no tree. To also see a
 name that is still being typed, use `dot.events.Observations.previews`, or
-`.all` for both. [Token previews](EVENTS.md#unfinished-token-previews) report
+`.all` for names, previews and delimiters. [Token previews](EVENTS.md#unfinished-token-previews) report
 the unfinished name at the end of the input or when a session pauses, and tell
 you when it is finished or rejected. A preview is only raw text; it isn't a
 checked name or part of the document.

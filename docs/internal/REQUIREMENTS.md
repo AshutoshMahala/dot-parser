@@ -611,12 +611,23 @@ ordinary scanners and retained document layouts stay unchanged. Paused event
 sequences depend on scanner/backend and budget, not merely the source text.
 
 `events.Observations` selects identifier, statement-head, document-name,
-subgraph-name and token-preview delivery independently at compile time; preview
+subgraph-name, token-preview and delimiter delivery independently at compile time; preview
 retirement follows its preview selection. Presets `.early`, `.previews`, `.all`
 and `.none` are only values of that selection. Internally all selected kinds
 use the same pending action, dispatch credit and delivered-observation cleanup
 flag. There is no second preview queue or duplicated metered driver. Disabled
 kinds schedule nothing; the default action range and storage stay specialized.
+
+Unreleased delimiter observations report braces and brackets with original byte
+spans, open/close side, recognized scope and skipped status. Actual recognized
+recovery closers remain recognized; skipped tokens invent no scopes or pairing.
+Selecting delimiters alone must not enable statement tracking. Independent
+`statement_extents` and `coverage` consumer bools default false. Extents are
+optional fields on existing commit payloads, start at the statement ID and
+exclude trailing trivia/terminators. Coverage adds retained-end/root-closed facts
+to the bound result, using the same retention points as partial Documents.
+Metadata adds no dispatch credits; every delimiter callback has its own charged,
+cancellable dispatch step. None of these selections changes syntax acceptance.
 
 Recognized identifier event fields carry a distinct span-sized `Name`; previews,
 keywords and general syntax ranges remain `Span`. Scope-capable edge endpoints

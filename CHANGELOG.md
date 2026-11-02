@@ -16,6 +16,12 @@ statements after an error, too.
 
 ### Added
 
+- **DOT event boundaries.** Opt-in `observations.delimiter` reports brace and
+  bracket tokens, including recovery boundaries; `statement_extents` fills
+  commit spans, and `coverage` adds retained-end/root-closed facts to the bound
+  result. `Observations.all` now includes delimiter callbacks. Extents and
+  coverage remain independent opt-ins; ordinary parsing is unchanged.
+  `zig build bench-event-boundaries -Doptimize=fast` reports their costs.
 - **Semantic graph layer, `dot.ir`.** It turns an accepted DOT document into a
   graph: one node per name (`a` and `"a"` are the same node), subgraph
   membership, and the effective attributes of each node, edge and graph after

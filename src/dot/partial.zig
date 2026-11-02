@@ -83,7 +83,6 @@ pub fn Builder(comptime Base: type) type {
                 self.failure_info = self.base.failure_info;
                 return err;
             };
-            if (value == .skipped) self.retainThrough(@intCast(value.skipped.span.endOffset()));
             return action;
         }
         pub fn suspendScope(self: *Self) ScopeContext {

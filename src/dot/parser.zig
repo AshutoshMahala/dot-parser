@@ -166,6 +166,9 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
     const Sink = @typeInfo(EventsPtr).pointer.child;
     const observations: event_types.Observations = if (@hasDecl(Sink, "observations")) Sink.observations else .none;
     const preview_notifications = observations.token_preview;
+    const delimiters = observations.delimiter;
+    const extents = @hasDecl(Sink, "statement_extents") and Sink.statement_extents;
+    const coverage = @hasDecl(Sink, "coverage") and Sink.coverage;
     const BaseScanner = ScannerOf(metered, audited, if (fixed) |v| v.ambiguous_numeral != .off else null);
     const Scanner = if (preview_notifications) BaseScanner.WithPreviews() else BaseScanner;
     const actual = if (@hasDecl(Scanner, "source_encoding")) Scanner.source_encoding else @import("parser_support").encoding.Actual.utf8;
@@ -186,7 +189,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
 
         // Preserve commit's original ordinal before optional comment dispatch.
         // This order affects generated hot-path code; benchmark before changing it.
-        const AllAction = enum { begin, begin_subgraph, end_subgraph, subgraph_statement, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit, comment, begin_statement, skipped, name_left, name_right, name_link, document_name, subgraph_name, head_node, head_edge, head_assignment, head_attributes, head_node_commit, head_subgraph_commit, preview_pause, preview_eof, preview_end_token, preview_end_failure };
+        const AllAction = enum { begin, begin_subgraph, end_subgraph, subgraph_statement, node, edge, edge_chain, edge_link, ported_reference, attribute_statement, assignment, attribute, commit, comment, begin_statement, skipped, name_left, name_right, name_link, document_name, subgraph_name, head_node, head_edge, head_assignment, head_attributes, head_node_commit, head_subgraph_commit, delimiter, preview_pause, preview_eof, preview_end_token, preview_end_failure };
         const CoreAction = blk: {
             // Keep the disabled driver's original tag range/bit width. Merely
             // unreachable extra switch arms change Zig/LLVM's hot-loop code.
@@ -214,6 +217,13 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             recovery_start: if (transactional) u32 else void = if (transactional) no_statement else {},
             rejected: if (transactional) bool else void = if (transactional) false else {},
             observation_delivered: if (observing) bool else void = if (observing) false else {},
+            extent: if (extents) struct { previous: u32 = 0, current: u32 = 0 } else void = if (extents) .{} else {},
+            coverage: if (coverage) event_types.Coverage else void = if (coverage) .{} else {},
+            delimiter: if (delimiters) struct {
+                value: event_types.Delimiter = undefined,
+                pending: bool = false,
+                following: ?Action = null,
+            } else void = if (delimiters) .{} else {},
             preview: if (preview_notifications) struct {
                 snapshot: previews.Snapshot = undefined,
                 active: bool = false,
@@ -226,7 +236,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         cancellation: if (cancellable) ?execution.Cancellation else void = if (cancellable) null else {},
         // Reuse the optional control slot: even adding top-level void fields
         // reorders Zig's auto-layout and changes disabled-profile codegen.
-        control: if (audited or transactional or source_metadata) Control else void = if (audited or transactional or source_metadata) .{} else {},
+        control: if (audited or transactional or source_metadata or extents or coverage) Control else void = if (audited or transactional or source_metadata or extents or coverage) .{} else {},
         events: EventsPtr,
         diagnostics: diagnostic.Sink,
         settings: if (fixed == null) policy.ParseSettings else void = if (fixed == null) .{} else {},
@@ -493,8 +503,13 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     break :blk self.operatorCandidate(d) orelse return self.fail(d);
                 },
             };
+            if (extents) self.noteToken(token);
             if (self.forwardWarning()) return self.done();
             if (self.processIdentifier(token)) |result| return result;
+            if (delimiters) {
+                if (self.transition(token)) |result| return result;
+                return self.flushDelimiter(token);
+            }
             return self.transition(token);
         }
 
@@ -617,6 +632,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         if (comptime cancellable and fixed_interval != 1) polling.spend(scanned.work_used);
                         if (scanned.result) |result| switch (result) {
                             .token => |token| {
+                                if (extents) self.noteToken(token);
                                 if (preview_notifications and self.control.preview.active and token.comment() == null) {
                                     self.work.token = token;
                                     _ = self.schedule(.preview_end_token, token);
@@ -634,6 +650,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                                 if (preview_notifications and self.previewFailure()) continue;
                                 const d = self.tokens.failureDiagnostic();
                                 if (self.operatorCandidate(d)) |token| {
+                                    if (extents) self.noteToken(token);
                                     self.work.token = token;
                                     self.work.phase = .grammar;
                                 } else _ = self.fail(d);
@@ -646,6 +663,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         self.work.phase = .scan;
                         self.work.replay = false;
                         _ = self.transition(self.work.token);
+                        if (delimiters) _ = self.flushDelimiter(self.work.token);
                     },
                     .dispatch => {
                         if (bounded) remaining -= 1;
@@ -656,6 +674,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             // resumes grammar. Each callback has its own credit.
                             self.work.phase = if (self.work.replay) .grammar else .scan;
                             _ = self.dispatch(self.work.action, self.work.token);
+                            if (delimiters) _ = self.flushDelimiter(self.work.token);
                         } else {
                             _ = self.dispatch(self.work.action, self.work.token);
                             if (self.terminal == null)
@@ -707,7 +726,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn tracksStatements(self: *const Self) bool {
-            return begin_notifications or observing or self.continuesAfterError();
+            return begin_notifications or observations.statementTracking() or self.continuesAfterError();
         }
 
         fn currentScope(self: *const Self) event_types.ScopeId {
@@ -966,7 +985,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         self.openAttributes(token);
                     },
                     .attribute_key_or_close => switch (token.tag) {
-                        .right_bracket => self.closeAttributes(),
+                        .right_bracket => self.closeAttributes(token),
                         .identifier => return self.beginAttribute(token),
                         else => return self.unexpected(.{ .identifier = true, .right_bracket = true }, .attribute_key, token),
                     },
@@ -985,7 +1004,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                             @call(.auto, schedule, .{ self, .attribute, token });
                     },
                     .attribute_after_value => switch (token.tag) {
-                        .right_bracket => self.closeAttributes(),
+                        .right_bracket => self.closeAttributes(token),
                         .comma, .semicolon => self.state = .attribute_key_or_close,
                         .identifier => return self.beginAttribute(token),
                         else => return self.unexpected(.{
@@ -1041,14 +1060,18 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 .semicolon => if (self.skip_depth == 0) {
                     self.state = .statement;
                 },
-                .left_brace => self.skip_depth += 1,
+                .left_brace => {
+                    if (delimiters) self.queueDelimiter(token, self.currentScope(), true);
+                    self.skip_depth += 1;
+                },
                 .right_brace => {
+                    if (delimiters) self.queueDelimiter(token, self.currentScope(), self.skip_depth > 0);
                     if (self.skip_depth > 0) {
                         self.skip_depth -= 1;
                     } else if (self.nestingDepth() == 0) {
                         self.state = .epilogue;
-                        if (@hasDecl(Sink, "parser_retention")) Sink.parser_retention.closeRoot(self.events);
-                        if (transactional and !self.aborted) self.retainThrough(@intCast(token.span.endOffset()));
+                        self.closeRoot();
+                        if ((transactional or coverage) and !self.aborted) self.retainThrough(@intCast(token.span.endOffset()));
                     } else {
                         if (transactional and !self.aborted) {
                             self.state = .after_subgraph;
@@ -1063,6 +1086,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     self.abortEvents(if (self.syntaxErrors() != 0) .invalid_syntax else .unsupported_feature);
                     return self.finish(self.recoveredOutcome());
                 },
+                .left_bracket, .right_bracket => if (delimiters) self.queueDelimiter(token, self.currentScope(), true),
                 else => {},
             }
             return null;
@@ -1141,10 +1165,11 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     return self.schedule(.name_left, token);
                 },
                 .right_brace => {
+                    if (delimiters) self.queueDelimiter(token, self.currentScope(), false);
                     if (self.nestingDepth() == 0) {
                         self.state = .epilogue;
-                        if (@hasDecl(Sink, "parser_retention")) Sink.parser_retention.closeRoot(self.events);
-                        if (transactional and !self.aborted) self.retainThrough(@intCast(token.span.endOffset()));
+                        self.closeRoot();
+                        if ((transactional or coverage) and !self.aborted) self.retainThrough(@intCast(token.span.endOffset()));
                     } else {
                         self.state = .after_subgraph;
                         return if (metered or cancellable or fixed == null)
@@ -1305,8 +1330,21 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 self.work.replay = true;
                 return self.schedule(action, token);
             }
+            if (comptime @import("builtin").mode == .small and fixed != null and !observing) {
+                // Keep the common node commit out of Small's shared dispatcher:
+                // its larger edge payloads otherwise increase spill/copy costs.
+                // Controlled parsing above still uses the same replay credits.
+                if (action == .node) {
+                    if (@call(.never_inline, commitNode, .{ self, token })) |result| return result;
+                    return self.continueAfterStatement(token);
+                }
+            }
             if (if (fixed == null) self.schedule(action, token) else @call(.auto, schedule, .{ self, action, token })) |result| return result;
             return self.continueAfterStatement(token);
+        }
+
+        fn commitNode(self: *Self, token: lex.Token) Done {
+            return @call(.always_inline, dispatch, .{ self, .node, token });
         }
 
         fn continueAfterStatement(self: *Self, token: lex.Token) Done {
@@ -1323,11 +1361,49 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         fn openAttributes(self: *Self, token: lex.Token) void {
             self.open_bracket_span = token.span;
             self.state = .attribute_key_or_close;
+            if (delimiters) self.queueDelimiter(token, self.currentScope(), false);
         }
 
-        fn closeAttributes(self: *Self) void {
+        fn closeAttributes(self: *Self, token: lex.Token) void {
             self.open_bracket_span = null;
             self.state = .after_attributes;
+            if (delimiters) self.queueDelimiter(token, self.currentScope(), false);
+        }
+
+        fn noteToken(self: *Self, token: lex.Token) void {
+            if (!extents) unreachable;
+            if (token.comment() != null) return;
+            self.control.extent.previous = self.control.extent.current;
+            self.control.extent.current = @intCast(token.span.endOffset());
+        }
+
+        fn statementExtent(self: *const Self, current: bool) ?location.Span {
+            if (!extents) return null;
+            const end = if (current) self.control.extent.current else self.control.extent.previous;
+            return .{ .start = self.left.start, .len = end - self.left.start };
+        }
+
+        fn queueDelimiter(self: *Self, token: lex.Token, scope: event_types.ScopeId, skipped: bool) void {
+            if (!delimiters) unreachable;
+            if (self.aborted) return;
+            const value = &self.control.delimiter;
+            std.debug.assert(!value.pending);
+            value.value = .{
+                .span = token.span,
+                .kind = if (token.tag == .left_brace or token.tag == .right_brace) .brace else .bracket,
+                .side = if (token.tag == .left_brace or token.tag == .left_bracket) .open else .close,
+                .scope = scope,
+                .skipped = skipped,
+            };
+            value.pending = true;
+        }
+
+        fn flushDelimiter(self: *Self, token: lex.Token) Done {
+            if (!delimiters) unreachable;
+            if (self.terminal != null or self.aborted or !self.control.delimiter.pending) return self.done();
+            if (metered or cancellable) if (self.work.phase == .dispatch) return null;
+            self.control.delimiter.pending = false;
+            return self.schedule(.delimiter, token);
         }
 
         fn countAttribute(self: *Self, at: location.Span) Done {
@@ -1348,6 +1424,16 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn schedule(self: *Self, action: Action, token: lex.Token) Done {
+            if (delimiters and self.control.delimiter.pending) {
+                self.control.delimiter.pending = false;
+                if (metered or cancellable) {
+                    self.control.delimiter.following = action;
+                    self.work.action = .delimiter;
+                    self.work.phase = .dispatch;
+                    return null;
+                }
+                if (self.dispatch(.delimiter, token)) |result| return result;
+            }
             if (metered or cancellable) {
                 if (preview_notifications and @backingInt(action) >= @backingInt(Action.preview_pause)) std.debug.assert(!self.work.replay);
                 self.work.action = action;
@@ -1397,6 +1483,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     const start = self.control.recovery_start;
                     const end = if (token.tag == .semicolon) token.span.endOffset() else token.span.start;
                     if (self.publish(.skipped, .{ .span = .{ .start = start, .len = @intCast(end - start) }, .scope = self.currentScope() })) |result| return result;
+                    self.retainThrough(@intCast(end));
                     self.control.recovery_start = no_statement;
                 },
                 .comment => {
@@ -1419,6 +1506,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         .name_span = if (self.name_span) |v| recognizedName(v) else null,
                         .source_info = if (source_metadata) self.control.source_info else enc.sourceInfo(self.tokens.source),
                     })) |result| return result;
+                    if (delimiters) self.queueDelimiter(token, .root, false);
                 },
                 .begin_subgraph => {
                     const stack = self.scratch.?;
@@ -1449,6 +1537,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     frame.id = id;
                     if (comptime @hasDecl(Sink, "ScopeContext")) frame.context = self.events.suspendScope();
                     if (transactional) self.control.active_statement = no_statement;
+                    if (delimiters) self.queueDelimiter(token, id, false);
                 },
                 .end_subgraph => {
                     const stack = self.scratch.?;
@@ -1460,13 +1549,13 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     self.leaveScope(frame);
                 },
                 .subgraph_statement => {
-                    if (self.publish(.commit_subgraph, .{ .owner = self.owner(), .value = @fromBackingInt(@intCast(self.left_scope.?)) })) |result| return result;
+                    if (self.publish(.commit_subgraph, .{ .owner = self.owner(), .extent = self.statementExtent(false), .value = @fromBackingInt(@intCast(self.left_scope.?)) })) |result| return result;
                 },
                 .node => {
-                    if (self.publish(.commit_node, .{ .owner = self.owner(), .value = .{ .identifier = recognizedName(self.left), .port = self.left_port } })) |result| return result;
+                    if (self.publish(.commit_node, .{ .owner = self.owner(), .extent = self.statementExtent(false), .value = .{ .identifier = recognizedName(self.left), .port = self.left_port } })) |result| return result;
                 },
                 .edge => {
-                    if (self.publish(.commit_edge, .{ .owner = self.owner(), .value = .{
+                    if (self.publish(.commit_edge, .{ .owner = self.owner(), .extent = self.statementExtent(false), .value = .{
                         .left = self.left,
                         .left_port = self.left_port,
                         .left_scope = self.left_scope,
@@ -1505,7 +1594,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     } })) |result| return result;
                 },
                 .edge_chain => {
-                    if (self.publish(.commit_edge_chain, .{ .owner = self.owner(), .value = .{
+                    if (self.publish(.commit_edge_chain, .{ .owner = self.owner(), .extent = self.statementExtent(false), .value = .{
                         .left = self.left,
                         .left_port = self.left_port,
                         .left_scope = self.left_scope,
@@ -1517,13 +1606,13 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     } })) |result| return result;
                 },
                 .attribute_statement => {
-                    if (self.publish(.commit_attribute_statement, .{ .owner = self.owner(), .value = .{
+                    if (self.publish(.commit_attribute_statement, .{ .owner = self.owner(), .extent = self.statementExtent(false), .value = .{
                         .target = self.attribute_target,
                         .keyword_span = self.left,
                     } })) |result| return result;
                 },
                 .assignment => {
-                    if (self.publish(.commit_assignment, .{ .owner = self.owner(), .value = .{ .key = recognizedName(self.left), .value = recognizedName(token.span) } })) |result| return result;
+                    if (self.publish(.commit_assignment, .{ .owner = self.owner(), .extent = self.statementExtent(true), .value = .{ .key = recognizedName(self.left), .value = recognizedName(token.span) } })) |result| return result;
                 },
                 .attribute => {
                     if (self.publish(.attribute, .{ .owner = self.owner(), .pair = .{ .key = recognizedName(self.attribute_key), .value = recognizedName(token.span) } })) |result| return result;
@@ -1535,6 +1624,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                         return self.finishComplete(self.recoveredOutcome());
                     }
                     if (self.publish(.end_document, {})) |result| return result;
+                    if (coverage) self.retainThrough(@intCast(self.tokens.source.len));
                     return self.finish(.success);
                 },
             }
@@ -1542,7 +1632,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                 .node, .edge, .edge_chain, .assignment, .attribute_statement, .subgraph_statement => self.control.active_statement = no_statement,
                 else => {},
             };
-            if (comptime @hasDecl(Sink, "parser_retention")) {
+            if (comptime @hasDecl(Sink, "parser_retention") or coverage) {
                 // Statement callbacks use lookahead; it must not become part of
                 // the represented prefix before its own grammar action runs.
                 const end = switch (action) {
@@ -1556,7 +1646,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     .comment => 0,
                     else => 0,
                 };
-                Sink.parser_retention.retainThrough(self.events, @intCast(end));
+                self.retainThrough(@intCast(end));
             }
             if (metered) switch (action) {
                 .node, .edge, .edge_chain, .attribute_statement, .subgraph_statement => self.work.completed_statements += 1,
@@ -1576,6 +1666,17 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             if (!observing) unreachable;
             self.control.observation_delivered = true;
             switch (action) {
+                .delimiter => {
+                    if (!delimiters) unreachable;
+                    if (self.publish(.delimiter, self.control.delimiter.value)) |result| return result;
+                    if (metered or cancellable) {
+                        if (self.control.delimiter.following) |following| {
+                            self.control.delimiter.following = null;
+                            return self.schedule(following, token);
+                        }
+                    }
+                    return null;
+                },
                 .name_left, .name_right, .name_link => {
                     if (!observations.identifier) unreachable;
                     return self.publish(.identifier, .{
@@ -1705,6 +1806,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             if (pending == .preview_eof or pending == .preview_end_failure) {
                 const d = self.tokens.failureDiagnostic();
                 if (self.operatorCandidate(d)) |token| {
+                    if (extents) self.noteToken(token);
                     if (metered or cancellable) {
                         self.work.token = token;
                         self.work.phase = .grammar;
@@ -1717,7 +1819,13 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
         }
 
         fn retainThrough(self: *Self, end: u32) void {
+            if (coverage and !self.aborted) self.control.coverage.retained_end = @max(self.control.coverage.retained_end, end);
             if (@hasDecl(Sink, "parser_retention")) Sink.parser_retention.retainThrough(self.events, end);
+        }
+
+        fn closeRoot(self: *Self) void {
+            if (coverage and !self.aborted) self.control.coverage.root_closed = true;
+            if (@hasDecl(Sink, "parser_retention")) Sink.parser_retention.closeRoot(self.events);
         }
 
         /// Closing-brace hints must not depend on the output consumer.

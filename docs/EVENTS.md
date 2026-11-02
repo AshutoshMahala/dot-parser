@@ -71,12 +71,15 @@ It may also declare:
 | --- | --- | --- |
 | `pub const wants_begin_statement = false;` | `true` | Skip `begin_statement` events (one fewer callback per statement) |
 | `pub const recover_statements = false;` | `true` | End your output at the first syntax error: the document aborts. Without this, the parser [recovers](#recovering-from-errors) and keeps delivering later statements. The parser may still collect later diagnostics either way. |
-| `pub const observations: dot.events.Observations = ...;` | `.none` | Extra early events for editors; see [outline while typing](#outline-while-typing) |
+| `pub const observations: dot.events.Observations = ...;` | `.none` | Extra names, previews or delimiter events for editors; see [outline while typing](#outline-while-typing) |
+| `pub const statement_extents = true;` | `false` | Fill `commit_*.extent` with the completed statement's byte span |
+| `pub const coverage = true;` | `false` | Add `coverage` to the bound result type |
 | `ScopeContext`, `suspendScope`, `restoreScope` | none | State saved per subgraph; see [per-scope state](#advanced-per-scope-state) |
 
 - Declarations must be `pub`. A private declaration is invisible to the parser
   and behaves as if it were missing.
-- `wants_begin_statement` and `recover_statements` must be `bool` constants,
+- `wants_begin_statement`, `recover_statements`, `statement_extents` and
+  `coverage` must be `bool` constants,
   and `observations` must have type `dot.events.Observations`; anything else is
   a compile error.
 - A misspelled name (for example `observation` or `recover_statement`) is
@@ -98,11 +101,13 @@ It may also declare:
 | `commit_*` | The statement finished (next table) |
 | `skipped` | After a syntax error, the parser skipped this region to the next statement boundary |
 | `comment` | A complete comment. Only with `retention.comments` on. |
+| `delimiter` | An actual brace or bracket, recognized or skipped during recovery. Only with `observations.delimiter` on. |
 | `identifier`, `statement_head`, `document_name`, `subgraph_name` | Optional early observations; see [outline while typing](#outline-while-typing) |
 | `token_preview`, `token_preview_end` | Optional raw text of an unfinished token; see [previews](#unfinished-token-previews) |
 | `end_document` | The whole document is about to be accepted. If you return `.proceed`, parsing has succeeded. |
 
-Each commit is its own event tag, with an `.owner` and a typed `.value`:
+Each commit is its own event tag, with an `.owner`, a typed `.value` and an
+optional `.extent` (null unless `statement_extents` is selected):
 
 | Event | `.value` |
 | --- | --- |
@@ -125,6 +130,7 @@ The other payloads:
 | `end_scope` | `id`, `close` (the `}`) |
 | `skipped` | `span`, `scope` |
 | `comment` | a `dot.Comment` |
+| `delimiter` | `span`, `kind`, `side`, `scope`, `skipped` |
 | `end_document` | nothing |
 
 `Edge` has `left`, `left_scope`, `left_port`, `operator`, `operator_span`,
@@ -199,7 +205,7 @@ The rules:
 
 ### Results
 
-| `events.Result` field | Meaning |
+| Bound `Streaming.Result` field | Meaning |
 | --- | --- |
 | `outcome` | Why parsing ended (next table) |
 | `completion` | `.complete` if the parser reached the end of the input (also after recovered errors), otherwise `.incomplete` |
@@ -209,6 +215,20 @@ The rules:
 | `diagnostic_delivery` | `.failed` if handing a diagnostic to the sink failed |
 | `diagnostic_stop` | Why the diagnostic sink stopped, if it did |
 | `source_info` | The encoding and BOM information used |
+| `coverage` | Only with `Consumer.coverage = true`: `retained_end` and `root_closed` (see below) |
+
+Without the coverage selection, `Streaming.Result` is `dot.events.Result` and
+has no `coverage` field. Sessions use the same selected result type, including
+`Streaming.Progress.result`.
+
+`coverage.retained_end` is the end of the source region accounted for by
+accepted syntax and reported skips, using the same retention boundaries as a
+partial `Document`. It is **not** the scanner's lookahead position. Successful
+parsing covers `source.len`; recovery can also reach that end while reporting
+invalid syntax. Inside an unfinished statement the boundary can stop earlier,
+even after attribute or identifier events. `root_closed` records whether the
+grammar accepted the root's actual `}`. Neither field claims validity. Both
+start at zero/false and stop updating after the consumer's document abort.
 
 | `outcome` | Meaning |
 | --- | --- |
@@ -269,7 +289,7 @@ callbacks.
 | `.none` (default) | nothing |
 | `.early` | `identifier`, `statement_head`, `document_name` and `subgraph_name` |
 | `.previews` | `token_preview` (see [previews](#unfinished-token-previews)) |
-| `.all` | all of the above |
+| `.all` | all of the above, plus `delimiter` |
 
 You can also set the fields yourself:
 
@@ -280,7 +300,7 @@ pub const observations: dot.events.Observations = .{
 ```
 
 The fields are `identifier`, `statement_head`, `document_name`,
-`subgraph_name` and `token_preview`, all `false` by default. The constants are
+`subgraph_name`, `token_preview` and `delimiter`, all `false` by default. The constants are
 just shorthand. The choice is independent of `wants_begin_statement` and
 doesn't change syntax or recovery.
 
@@ -310,9 +330,10 @@ Using observations correctly:
   IDs belong to one parse, not stable across edits.
 - Observations are provisional. They are not commits, repairs or a partial
   tree. Commits still mean finished statements.
-- Selecting any observation makes the parser track statements even when begin
+- Selecting an early-name or preview observation makes the parser track statements even when begin
   notifications and statement recovery are off, so such consumers can get a
-  statement abort followed by a document abort.
+  statement abort followed by a document abort. Delimiters alone don't enable
+  statement tracking; neither do extent or coverage selections.
 - An outline may keep an aborted observation, marked provisional. An
   all-or-nothing graph or index must throw it away.
 - A complete name can be used with `identifier.fromName(source, name)` even when
@@ -330,6 +351,55 @@ Costs:
 - Time spent in your callbacks is yours.
 - It doesn't turn on `retention.partial`.
 
+### Delimiters and completed declaration ranges
+
+For folding and symbol ranges, select the facts you need:
+
+```zig
+pub const observations: dot.events.Observations = .{
+    .identifier = true, .delimiter = true,
+};
+pub const statement_extents = true;
+pub const coverage = true;
+```
+
+`delimiter` carries `span`, `kind` (`.brace` or `.bracket`), `side` (`.open` or
+`.close`), `scope` and `skipped`:
+
+| Role | `scope` | `skipped` |
+| --- | --- | --- |
+| Recognized `{` or `}`, including a closer used during recovery | The opened/closed scope; the root is `.root` | `false` |
+| Recognized attribute-list `[` or `]` | Enclosing graph/subgraph | `false` |
+| Brace/bracket passed over as skipped syntax | Enclosing recognized scope; no pairing is promised | `true` |
+
+Opening braces follow `begin_document`/`begin_scope`; closing braces precede
+`end_scope`. Root closers are reported even when errors prevent `end_document`.
+These are two views of one boundary: don't count a delimiter and `end_scope` as
+two closures. Attribute lists don't acquire scope IDs. Empty and repeated lists
+each report their brackets.
+
+Each reported delimiter is an actual token, with no duplicate replay. Punctuation inside comments,
+strings or HTML-like identifiers is not a DOT delimiter. An accepted `[` stays
+accepted if a later attribute is malformed, but a `]` skipped after abandoning
+that list has `skipped = true`. No closing token is invented at EOF. Fail-fast,
+cancellation and sink stops still stop delivery. To observe later boundaries
+after syntax errors, keep `recover_statements = true` and use `on_error = .collect`.
+
+Every `commit_*` has `extent: ?Span`. It is null unless `statement_extents` is
+selected. A populated extent starts at `@backingInt(commit.owner.statement)` and
+ends just after the last statement token. It includes ports, all attribute
+lists and interior trivia, but excludes trailing trivia, the optional semicolon
+and the containing scope's `}`. A standalone subgraph's own `}` is included.
+For `a:p [] /* gap */ [x=y];`, the extent is `a:p [] /* gap */ [x=y]`.
+Rejected statements have no commit or completed extent; early names can still
+support a provisional outline entry.
+
+All spans use bytes in the original encoding. These selections add fixed-size
+state, with no source rescan, event queue or extra nesting storage. Each
+delimiter callback costs one dispatch credit. Extents and coverage add no
+callbacks or credits. Disabled selections compile out independently. `.all`
+selects delimiters too, but does not enable extents or coverage.
+
 ### Unfinished-token previews
 
 > **Unreleased.** Not in 0.5.0.
@@ -340,7 +410,7 @@ observations:
 
 ```zig
 pub const observations = dot.events.Observations.previews;
-// or .all for early observations and previews together
+// or .all for early observations, previews and delimiters together
 ```
 
 The same `onEvent` receives:
@@ -643,11 +713,16 @@ consumers:
   frames
 - [bench/previews.zig](../bench/previews.zig): a consumer that selects
   `.token_preview` and counts previews in sessions with different budgets
+- [bench/event_boundaries.zig](../bench/event_boundaries.zig): delimiter and
+  commit-metadata consumers, with credit totals and session sizes;
+  run `zig build bench-event-boundaries -Doptimize=fast` for a CSV comparison
 - [tests/events.zig](../tests/events.zig): recovery, aborts, stops, sessions at
   every budget, native encodings and per-scope state
 - [tests/early_events.zig](../tests/early_events.zig) and
   [tests/token_previews.zig](../tests/token_previews.zig): observations and
   previews
+- [tests/event_boundaries.zig](../tests/event_boundaries.zig): exact extents,
+  recognized/skipped delimiters, retained coverage and stop boundaries
 
 For names in a `Document` instead, see
 [identifiers.zig](../examples/identifiers.zig).

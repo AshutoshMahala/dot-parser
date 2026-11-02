@@ -20,13 +20,19 @@ pub const Observations = struct {
     document_name: bool = false,
     subgraph_name: bool = false,
     token_preview: bool = false,
+    delimiter: bool = false,
 
     pub const none: Observations = .{};
     pub const early: Observations = .{ .identifier = true, .statement_head = true, .document_name = true, .subgraph_name = true };
     pub const previews: Observations = .{ .token_preview = true };
-    pub const all: Observations = .{ .identifier = true, .statement_head = true, .document_name = true, .subgraph_name = true, .token_preview = true };
+    pub const all: Observations = .{ .identifier = true, .statement_head = true, .document_name = true, .subgraph_name = true, .token_preview = true, .delimiter = true };
 
     pub fn enabled(self: Observations) bool {
+        return self.statementTracking() or self.delimiter;
+    }
+
+    /// Delimiter-only consumers need scope context, not statement transactions.
+    pub fn statementTracking(self: Observations) bool {
         return self.identifier or self.statement_head or self.document_name or self.subgraph_name or self.token_preview;
     }
 };
@@ -85,8 +91,32 @@ pub const AttributeTarget = enum { graph, node, edge };
 pub const AttributeStatement = struct { target: AttributeTarget, keyword_span: location.Span };
 pub const Owner = struct { statement: StatementId, scope: ScopeId };
 pub fn Committed(comptime Value: type) type {
-    return struct { owner: Owner, value: Value };
+    return struct {
+        // Keep the payload first. Field order affects LLVM's aggregate copies
+        // even when the consumer discards the optional envelope metadata.
+        value: Value,
+        owner: Owner,
+        /// Populated only with Consumer.statement_extents. Starts at the owner
+        /// statement ID; excludes trailing trivia and the optional semicolon.
+        extent: ?location.Span = null,
+    };
 }
+pub const Delimiter = struct {
+    span: location.Span,
+    kind: enum { brace, bracket },
+    side: enum { open, close },
+    /// Recognized brace: its scope. Bracket or skipped token: enclosing scope.
+    scope: ScopeId,
+    /// A skipped token has no recognized boundary role or claimed pairing.
+    /// A closer that recovers an established scope is not skipped.
+    skipped: bool,
+};
+pub const Coverage = struct {
+    /// End of the retained source region, not scanner lookahead. Success covers
+    /// the full source; rejection may still cover it after statement recovery.
+    retained_end: u32 = 0,
+    root_closed: bool = false,
+};
 pub const Skipped = struct { span: location.Span, scope: ScopeId };
 pub const BeginDocument = struct {
     kind: GraphKind,
@@ -176,6 +206,7 @@ pub const Event = union(enum) {
     /// a document abort retires every remaining preview.
     token_preview: TokenPreview,
     token_preview_end: TokenPreviewEnd,
+    delimiter: Delimiter,
 };
 
 /// All output consumers implement this same contract, including the library's
@@ -188,7 +219,7 @@ pub fn assertSink(comptime Sink: type) void {
         for (.{ "wants_early_events", "wants_token_previews" }) |name| {
             if (@hasDecl(Sink, name)) @compileError(name ++ " was removed; use pub const observations: dot.events.Observations");
         }
-        for (.{ "wants_begin_statement", "recover_statements" }) |name| {
+        for (.{ "wants_begin_statement", "recover_statements", "statement_extents", "coverage" }) |name| {
             if (@hasDecl(Sink, name) and @TypeOf(@field(Sink, name)) != bool)
                 @compileError(name ++ " must be a comptime bool");
         }
@@ -256,14 +287,35 @@ pub const Result = struct {
     diagnostic_delivery: diagnostic.Delivery = .complete,
     diagnostic_stop: ?diagnostic.StopReason = null,
 };
-pub const Progress = struct {
-    phase: @import("parser.zig").Phase,
-    work_used: usize,
-    source_frontier: usize,
-    completed_statements: usize,
-    completed_pairs: usize,
-    result: ?Result,
-};
+/// Default results retain their existing type/layout and have no coverage field.
+pub fn ResultFor(comptime coverage: bool) type {
+    if (!coverage) return Result;
+    const fields = @typeInfo(Result).@"struct";
+    const count = fields.field_names.len;
+    var names: [count + 1][:0]const u8 = undefined;
+    var types: [count + 1]type = undefined;
+    var attrs: [count + 1]std.lang.Type.Struct.FieldAttributes = undefined;
+    for (fields.field_names, fields.field_types, fields.field_attrs, 0..) |name, T, attr, i| {
+        names[i] = name;
+        types[i] = T;
+        attrs[i] = .{ .default_value_ptr = attr.default_value_ptr };
+    }
+    names[count] = "coverage";
+    types[count] = Coverage;
+    attrs[count] = .{ .default_value_ptr = &@as(Coverage, .{}) };
+    return @Struct(.auto, null, &names, &types, &attrs);
+}
+pub const Progress = ProgressFor(false);
+pub fn ProgressFor(comptime coverage: bool) type {
+    return struct {
+        phase: @import("parser.zig").Phase,
+        work_used: usize,
+        source_frontier: usize,
+        completed_statements: usize,
+        completed_pairs: usize,
+        result: ?ResultFor(coverage),
+    };
+}
 
 test "edge operator lexemes match written source forms" {
     try std.testing.expectEqualStrings("--", EdgeOperator.undirected.lexeme());

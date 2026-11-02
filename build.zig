@@ -346,6 +346,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "markup_processor_required", .message = "error: invalid policy: markup_processor_required" },
         .{ .name = "fixed_parse_override", .message = "tests/compile_fail/fixed_parse_override.zig:3:41: error: no field named 'policy' in struct /?/" },
         .{ .name = "unmetered_advance", .message = "error: metering is disabled; use run()" },
+        .{ .name = "events_extent_type", .message = "error: statement_extents must be a comptime bool" },
+        .{ .name = "events_coverage_type", .message = "error: coverage must be a comptime bool" },
         .{ .name = "events_observations_type", .message = "error: observations must be dot.events.Observations" },
         .{ .name = "events_legacy_early", .message = "wants_early_events was removed; use pub const observations: dot.events.Observations" },
         .{ .name = "events_legacy_preview", .message = "wants_token_previews was removed; use pub const observations: dot.events.Observations" },
@@ -632,6 +634,14 @@ pub fn build(b: *std.Build) void {
         .dependOn(&b.addRunArtifact(policy_bench).step);
     const check_benches = b.step("check-benches", "Compile benchmarks without updating or running baselines");
     const linking_step = b.step("bench-linking", "Compare default parsing with different lexical/name helpers linked (CSV)");
+    const boundary_bench = b.addExecutable(.{ .name = "event_boundaries", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/event_boundaries.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    check_benches.dependOn(&boundary_bench.step);
+    b.step("bench-event-boundaries", "Compare opt-in DOT delimiters, extents and coverage (CSV)").dependOn(&b.addRunArtifact(boundary_bench).step);
     const LinkConsumer = enum { parser_only, scalar_lexer, block_lexer, checked_identifier, checked_document, trusted_name };
     var link_compiles: [std.enums.values(LinkConsumer).len]*std.Build.Step = undefined;
     var previous_link_run: ?*std.Build.Step = null;

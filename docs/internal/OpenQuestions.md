@@ -35,7 +35,7 @@ has been discussed.
 | Policies — Q35/Q36 | Typed baselines/overrides, verification, settings migration, initial lenient syntax and optional checks | Keyword-as-name contexts, optional deviation history, semantic rules and performance gates |
 | Markup — Q40 | Structural parsing/checks, local scopes, Graphviz vocabulary/case matching, bounded typo recovery and partial-prefix retention; Unreleased Graphviz placement/value/reference checks | Extended dialects, custom catalogs, summaries and gap-aware partial trees |
 | Processors — Q40 | Custom compile-time bindings, delayed/one-shot integration, retained-attribute string routing, workspace reuse and owned label retention | No-tree string execution, fixed/resumable composition and broader profile API |
-| Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps and public event-only output | Markup recovered regions, incremental edits and a language-server layer |
+| Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps, public events, delimiter observations, commit extents and terminal coverage | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
 | Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization, optional connection/scope indexes and materialized adjacency; slice-2 verification/performance pass complete | Label-port binding, markup-result association, event lowering, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide; remaining optional performance costs are recorded in the performance report |
@@ -214,10 +214,18 @@ update consumes its own credit on resume before scanning continues. Same-start
 updates replace prior observations, lexical completion/rejection retires them,
 and document abort abandons remaining previews. These are not trusted names or
 syntax commits. Comments/operators and native sessions are outside this slice.
-All five selectable observation kinds now share one internal action scheduler,
+All selectable observation kinds share one internal action scheduler,
 charged dispatch continuation and delivered-output cleanup flag. Previews only
 add their snapshot; there is no parallel preview queue. `.none` is the default,
 with `.early`, `.previews` and `.all` convenience selections.
+`observations.delimiter` reports actual brace/bracket tokens with scope, side
+and skipped status, including recognized recovery closers. It is included in
+`.all` and does not itself enable statement tracking. Independent consumer bools
+`statement_extents` and `coverage` default false: the former fills existing
+commits' optional spans; the latter adds retained-end/root-closed facts to the
+bound result. Coverage follows the same parser retention points as partial
+Documents. Each delimiter delivery costs one dispatch credit; metadata adds
+none. This completes standalone event prerequisites, not event-based IR lowering.
 Typed `Name` handles distinguish recognized identifiers from raw `Span` previews
 and other syntax ranges. `identifier.fromName(source, name)` avoids re-lexing;
 raw spans use checked `identifier.check`. Builders consume the same typed events,

@@ -1020,6 +1020,86 @@ byte, which adds a lot of time and callbacks. Larger budgets combine updates
 without making credits coarser or weakening cancellation. Use the report to
 pick a resume budget for your UI.
 
+### Delimiter events, commit extents and coverage
+
+Measured on 2026-11-01 with Zig 0.17.0 on Apple M4 Pro, comparing `cac4049`
+with the slice-3a working tree. The new selections are off by default. The gate
+used identical benchmark sources, built before timing, with five alternating
+before/after runs in each build mode. Values below are medians of the runs'
+medians; source construction and compilation are outside timing.
+
+Ordinary parsing, with no new selections, ms before → after:
+
+| Workload | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| Mixed parse + validate, growing pools, 2,733,345 bytes | 5.64 → 5.73 | 6.65 → 6.75 | 9.26 → 8.82 |
+| Same input, capacity hints | 4.84 → 4.85 | 5.27 → 5.33 | 8.31 → 7.85 |
+| Plain fixed session, 200,000 node statements | 2.20 → 2.19 | 2.61 → 2.61 | 4.71 → 4.61 |
+| Metered fixed session, 256-credit grants | 3.58 → 3.60 | 3.78 → 3.79 | 6.50 → 6.49 |
+| Metered + cancellable fixed session | 4.13 → 4.17 | 4.42 → 4.33 | 7.56 → 7.65 |
+| 100,000 sibling subgraphs | 2.433 → 2.411 | 3.008 → 2.854 | 3.929 → 3.811 |
+| 100,000 nested subgraphs | 2.540 → 2.569 | 3.097 → 3.095 | 3.521 → 3.376 |
+
+Small session measurements use a longer warm-up (40 parses, then 15 timed
+parses per run) because two warm-up parses gave unstable comparisons. A Small
+node-commit specialization removed a repeatable plain-session slowdown found
+during development. The payload-first commit layout also avoids a Fast
+regression from copying the enlarged commit envelope. Neither changes credit
+accounting or cancellation polling. The roughly 1–2% changes in the main
+Fast/Safe cases are within the observed run-to-run spread.
+
+The linked-lexer gate also checks ordinary parsing when public lexer helpers
+are present in the binary. Longer-warm-up follow-ups put Fast parser-only
+nodes/quoted edges at +0.05% / −0.91% and Safe with the scalar lexer linked at
++0.21% / +1.68%. Small's corresponding short-run cases ranged from −11.7% to
++0.2%; no default allocations or source passes were added.
+
+Default memory is unchanged. The mixed workload retains 6,800,000 bytes;
+Arena backing capacity is 37,620,470 bytes with growing pools or 8,400,148 with
+hints, before and after. Plain fixed sessions stay 1,120 bytes in Fast/Small
+and 1,128 in Safe. Cancellation poll counts are identical: 1,400,016 for the
+cancellable fixture and 1,405,484 when also metered.
+
+For the opt-in costs, run:
+
+```sh
+zig build bench-event-boundaries -Doptimize=fast
+```
+
+The CSV compares no selections, metadata (extents + coverage), and metadata
+plus delimiters, for scalar/block scanning and plain, one-credit and
+4,096-credit execution. It reports time, decimal MB/s, callbacks, exact credits
+and session sizes. Each variant runs in alternating order; its consumer only
+counts events and reads spans. Application work in the callback is extra.
+
+Five runs of that report gave these Fast medians, ms per parse:
+
+| Input / scanner / execution | Off | Metadata | Metadata + delimiters |
+| --- | ---: | ---: | ---: |
+| 5,000 nodes, scalar, plain (15,009 bytes) | 0.0642 | 0.0664 | 0.0704 |
+| Same nodes, block, plain | 0.0814 | 0.0895 | 0.0883 |
+| Attributes + scopes, scalar, plain (215,009 bytes) | 0.817 | 0.827 | 0.851 |
+| Same attributes + scopes, block, plain | 0.990 | 1.033 | 1.064 |
+| Same attributes + scopes, scalar, one-credit resumes | 2.541 | 2.596 | 2.878 |
+| Same attributes + scopes, scalar, 4,096-credit resumes | 1.063 | 1.117 | 1.336 |
+
+These are separate compiled profiles; code layout and measurement variation can
+make a more capable profile slightly faster in a small case. The extra
+callbacks still have a cost, particularly when there are many attribute lists.
+
+Metadata costs no callbacks or credits. Each delivered delimiter adds exactly
+one dispatch credit. For the 215,009-byte attribute/subgraph fixture, callbacks
+rise from 55,002 to 95,004, and credits rise by exactly 40,002 for either
+scanner and either grant size. There is no coarsening of the scanner's credits
+or cancellation interval.
+
+On this target, plain Fast scalar event sessions are 448 bytes with neither
+selection, 472 with metadata, and 488 with metadata plus delimiters. Metered
+sessions are 488 / 512 / 528 bytes; block sessions add 96 bytes to each.
+`Event` remains 116 bytes. These options add no parser allocations, source
+copies, event queue or per-nesting-frame storage; retained output belongs to
+the consumer.
+
 ## The graph IR
 
 > **Unreleased.** Not in 0.5.0.
@@ -2110,6 +2190,7 @@ The other benchmarks cover both scanners where it matters.
 | `bench-identifiers` (unreleased) | Checked against parser-recognized names in an event-only index | |
 | `bench-linking` (unreleased) | Default parsing with lexer/name helpers linked, each in a separate program; CSV | |
 | `bench-previews` (unreleased) | Unfinished-token previews: time, callbacks, credits, session size | |
+| `bench-event-boundaries` (unreleased) | DOT delimiters, commit extents and coverage: time, callbacks, credits and session size; CSV | |
 | `bench-string` (unreleased) | Standalone exact, ASCII-insensitive, Unicode and custom checks | `--csv` |
 | `bench-string-sessions` (unreleased) | String metering and cancellation | `--csv` |
 | `bench-logical-strings` (unreleased) | String checks through DOT, markup and plain readers | `--csv` |

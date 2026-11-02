@@ -6,6 +6,7 @@ const discard = dot.diagnostic.discard;
 test {
     _ = @import("early_events.zig");
     _ = @import("token_previews.zig");
+    _ = @import("event_boundaries.zig");
 }
 const Record = union(enum) { event: dot.events.Event, abort: dot.events.Abort };
 const Recorder = struct {

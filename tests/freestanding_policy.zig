@@ -33,10 +33,13 @@ export fn event_node_count(source: [*]const u8, len: usize) u32 {
 
 const Outline = struct {
     pub const observations = dot.events.Observations.all;
+    pub const statement_extents = true;
+    pub const coverage = true;
     names: u32 = 0,
     pub fn onEvent(self: *@This(), event: dot.events.Event) error{}!dot.events.Action {
         switch (event) {
-            .identifier, .document_name, .subgraph_name, .token_preview => self.names += 1,
+            .identifier, .document_name, .subgraph_name, .token_preview, .delimiter => self.names += 1,
+            .commit_node => |value| self.names +%= value.extent.?.len,
             else => {},
         }
         return .proceed;
@@ -52,7 +55,7 @@ export fn early_outline_names(source: [*]const u8, len: usize) u32 {
     var session = P.Session.init(source[0..len], frames.storage(), &outline, dot.diagnostic.discard, .{});
     defer session.deinit();
     while (session.result() == null) _ = session.advance(1);
-    return outline.names;
+    return outline.names +% session.result().?.coverage.retained_end;
 }
 
 export fn partial_scope_count(source: [*]const u8, len: usize, choice: u8) u32 {

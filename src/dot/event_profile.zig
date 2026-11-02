@@ -14,6 +14,9 @@ fn Core(comptime actual: support.encoding.Actual, comptime Sink: type, comptime 
     const Machine = parser.MachineWithProcessor(*Sink, variant.metered(), false, variant.cancellable(), lexer.scannerForEncoding(actual, variant.backend(), if (fixed) |s| s.retention.comments else null), fixed, void, variant.singlePoll(), true);
     return struct {
         const Self = @This();
+        const coverage = @hasDecl(Sink, "coverage") and Sink.coverage;
+        pub const Result = events.ResultFor(coverage);
+        pub const Progress = events.ProgressFor(coverage);
         pub const Options = struct {
             parsing: if (fixed == null) policy.ParseSettings else void,
             cancellation: if (variant.cancellable()) ?support.execution.Cancellation else void,
@@ -21,7 +24,7 @@ fn Core(comptime actual: support.encoding.Actual, comptime Sink: type, comptime 
         };
         stack: Scratch.Stack,
         machine: Machine,
-        terminal: ?events.Result = null,
+        terminal: ?Result = null,
 
         fn init(source: []const u8, frames: Scratch.Storage, sink: *Sink, diagnostics: @import("diagnostic.zig").Sink, options: Options) Self {
             return .{
@@ -56,20 +59,21 @@ fn Core(comptime actual: support.encoding.Actual, comptime Sink: type, comptime 
                 .diagnostic_delivery = result.diagnostic_delivery,
                 .diagnostic_stop = result.diagnostic_stop,
             };
+            if (coverage) self.terminal.?.coverage = self.machine.control.coverage;
         }
-        fn run(self: *Self) events.Result {
+        fn run(self: *Self) Result {
             self.bind();
             _ = self.machine.runToCompletion();
             self.settle();
             return self.terminal.?;
         }
-        fn cancel(self: *Self) events.Result {
+        fn cancel(self: *Self) Result {
             self.bind();
             _ = self.machine.cancel();
             self.settle();
             return self.terminal.?;
         }
-        fn advance(self: *Self, budget: usize) events.Progress {
+        fn advance(self: *Self, budget: usize) Progress {
             self.bind();
             const progress = self.machine.advance(budget);
             self.settle();
@@ -88,6 +92,9 @@ pub fn Bound(comptime actual: support.encoding.Actual, comptime api: type, compt
     const Hook = if (runtime or baseline.execution.cancellation) ?api.Cancellation else void;
     const default_hook: Hook = if (Hook == void) {} else null;
     return struct {
+        const coverage = @hasDecl(Sink, "coverage") and Sink.coverage;
+        pub const Result = events.ResultFor(coverage);
+        pub const Progress = events.ProgressFor(coverage);
         pub const ParseScratch = Scratch.Storage;
         pub const FixedParseScratch = Scratch.Fixed;
         pub const Options = if (runtime) struct { policy: policy.Policy = .{}, cancellation: Hook = default_hook } else struct { cancellation: Hook = default_hook };
@@ -108,7 +115,7 @@ pub fn Bound(comptime actual: support.encoding.Actual, comptime api: type, compt
         fn coreOptions(comptime variant: Variant, prepared: Binding.State, options: Options) Driver(variant).Options {
             return .{ .parsing = if (runtime) prepared.parsing else {}, .cancellation = if (comptime variant.cancellable()) options.cancellation else {} };
         }
-        fn run(source: []const u8, stack: *Scratch.Stack, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options, prepared: Binding.State, info: ?support.encoding.Info) events.Result {
+        fn run(source: []const u8, stack: *Scratch.Stack, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options, prepared: Binding.State, info: ?support.encoding.Info) Result {
             if (runtime) switch (Variant.from(prepared)) {
                 inline else => |variant| {
                     var selected = coreOptions(variant, prepared, options);
@@ -130,20 +137,20 @@ pub fn Bound(comptime actual: support.encoding.Actual, comptime api: type, compt
         }
         /// Allocator backs nesting scratch only. Output ownership belongs to
         /// the consumer; the parser has no hidden statement/event buffer.
-        pub fn parse(allocator: std.mem.Allocator, source: []const u8, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options) Checked(events.Result) {
+        pub fn parse(allocator: std.mem.Allocator, source: []const u8, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options) Checked(Result) {
             return parseSelected(allocator, source, sink, diagnostics, options, null);
         }
-        fn parseSelected(allocator: std.mem.Allocator, source: []const u8, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options, info: ?support.encoding.Info) Checked(events.Result) {
+        fn parseSelected(allocator: std.mem.Allocator, source: []const u8, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options, info: ?support.encoding.Info) Checked(Result) {
             const prepared = if (runtime) try prepare(options) else prepare(options);
             var stack: Scratch.Stack = .{ .allocator = allocator };
             defer stack.deinit();
             return run(source, &stack, sink, diagnostics, options, prepared, info);
         }
         /// No allocations by the parser. Scratch must cover active nesting.
-        pub fn parseIn(source: []const u8, frames: ParseScratch, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options) Checked(events.Result) {
+        pub fn parseIn(source: []const u8, frames: ParseScratch, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options) Checked(Result) {
             return parseInSelected(source, frames, sink, diagnostics, options, null);
         }
-        fn parseInSelected(source: []const u8, frames: ParseScratch, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options, info: ?support.encoding.Info) Checked(events.Result) {
+        fn parseInSelected(source: []const u8, frames: ParseScratch, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options, info: ?support.encoding.Info) Checked(Result) {
             const prepared = if (runtime) try prepare(options) else prepare(options);
             var stack: Scratch.Stack = .{ .frames = frames.frames };
             return run(source, &stack, sink, diagnostics, options, prepared, info);
@@ -171,26 +178,26 @@ pub fn Bound(comptime actual: support.encoding.Actual, comptime api: type, compt
                     inline else => |variant| @unionInit(Drivers, @tagName(variant), Driver(variant).init(source, frames, sink, diagnostics, coreOptions(variant, prepared, options))),
                 } else Fixed.init(source, frames, sink, diagnostics, coreOptions(Variant.from(baseline), prepared, options)) };
             }
-            pub fn advance(self: *Self, budget: usize) (if (runtime) error{MeteringDisabled}!events.Progress else events.Progress) {
+            pub fn advance(self: *Self, budget: usize) (if (runtime) error{MeteringDisabled}!Progress else Progress) {
                 if (runtime) return switch (self.driver) {
                     inline else => |*driver, variant| if (comptime variant.metered()) driver.advance(budget) else error.MeteringDisabled,
                 };
                 if (!baseline.execution.metering) @compileError("metering is disabled; use run()");
                 return self.driver.advance(budget);
             }
-            pub fn run(self: *Self) events.Result {
+            pub fn run(self: *Self) Result {
                 if (runtime) return switch (self.driver) {
                     inline else => |*driver| driver.run(),
                 };
                 return self.driver.run();
             }
-            pub fn cancel(self: *Self) events.Result {
+            pub fn cancel(self: *Self) Result {
                 if (runtime) return switch (self.driver) {
                     inline else => |*driver| driver.cancel(),
                 };
                 return self.driver.cancel();
             }
-            pub fn result(self: *const Self) ?events.Result {
+            pub fn result(self: *const Self) ?Result {
                 if (runtime) return switch (self.driver) {
                     inline else => |*driver| driver.terminal,
                 };
@@ -218,13 +225,15 @@ pub fn Source(comptime api: type, comptime config: policy.Config, comptime caps:
     const Base = Bound(.utf8, api, config, Sink);
     const dispatch = support.source_dispatch;
     return struct {
+        pub const Result = Base.Result;
+        pub const Progress = Base.Progress;
         pub const ParseScratch = Base.ParseScratch;
         pub const FixedParseScratch = Base.FixedParseScratch;
         pub const Options = dispatch.Options(Base.Options);
         pub const ParseOptions = Options;
         pub const FixedParseOptions = Options;
         pub const Error = support.encoding.InputError || (if (config.runtime_policy) policy.Error else error{});
-        fn call(comptime method: []const u8, source: []const u8, arguments: anytype, options: Options) Error!events.Result {
+        fn call(comptime method: []const u8, source: []const u8, arguments: anytype, options: Options) Error!Result {
             const prepared = if (config.runtime_policy) try Base.Policies.prepare(.{ .policy = options.policy }) else {};
             const cancellation = if (config.runtime_policy) (if (prepared.execution.cancellation) options.cancellation else null) else options.cancellation;
             const info = try support.encoding.select(caps, source, options.encoding);
@@ -238,10 +247,10 @@ pub fn Source(comptime api: type, comptime config: policy.Config, comptime caps:
                 } else return error.UnsupportedEncoding,
             }
         }
-        pub fn parse(allocator: std.mem.Allocator, source: []const u8, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options) Error!events.Result {
+        pub fn parse(allocator: std.mem.Allocator, source: []const u8, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options) Error!Result {
             return call("parse", source, .{ allocator, source, sink, diagnostics }, options);
         }
-        pub fn parseIn(source: []const u8, frames: ParseScratch, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options) Error!events.Result {
+        pub fn parseIn(source: []const u8, frames: ParseScratch, sink: *Sink, diagnostics: api.DiagnosticSink, options: Options) Error!Result {
             return call("parseIn", source, .{ source, frames, sink, diagnostics }, options);
         }
     };
