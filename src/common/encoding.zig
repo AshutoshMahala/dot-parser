@@ -111,7 +111,8 @@ pub const AdmissionError = error{
     SourceTooLarge,
     TruncatedCodeUnit,
 };
-pub const InputError = AdmissionError || error{Cancelled};
+/// Cancellation is an execution outcome, never a source-admission error.
+pub const InputError = AdmissionError;
 
 /// Admission failures are not content-validation findings. A span identifies
 /// original physical bytes when there are offending bytes: an unsupported BOM

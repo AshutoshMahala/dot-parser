@@ -892,28 +892,52 @@ checked hashing of long quoted names 14–20% slower per byte in Fast builds and
 about 20% faster in Small builds, so the "checked" column above is optimistic
 for long quoted names in Fast.
 
-**Linking a checked helper.** Measured at commit `c936fd1` with Zig 0.17.0,
-Fast build, 50,000-node and 50,000-edge inputs, three process runs. The helper
-is linked into the program but runs outside the timed loop:
+**Linking lexer and name helpers (F5 fixed, unreleased).** Measured on
+2026-11-01, Apple M4 Pro, Zig 0.17.0: commit `08e1df2` against the working-tree
+fix. Linking the public scalar lexer or a checked-name helper previously made
+the compiler move scanner functions out of the parser's hot loop. Standalone
+callers now have a separate compile-time specialization of the same scanner
+implementation, so they no longer change the parser's inlining decisions.
 
-| Linked helper | Nodes, ms | Edges, ms |
-| --- | ---: | ---: |
-| None | 0.600 | 2.299 |
-| `Document.hashIdentifier` | 0.604 | 2.399 |
-| `identifier.check` + `fromName` | 0.604 | 2.287 |
-| `Document.decodeIdentifier` | 0.605 | 2.408 |
+Each program links one helper, called **outside** the timed loop. The input
+contains 50,000 quoted edge statements with attributes (1,450,008 bytes).
+Times include `parseBorrowed`, allocation and teardown, but not validation or
+source construction. These are medians of three alternating process runs;
+each run takes 15 timed samples of four parses after three warm-up samples.
 
-So in Fast builds, linking a checked helper makes little difference to
-ordinary parsing. Two linking costs remain, measured with a separate probe at
-the same commit:
+| Build | Linked helper | Before, ms | After, ms | Less time |
+| --- | --- | ---: | ---: | ---: |
+| Fast | Public scalar lexer | 2.799 | 2.369 | 15% |
+| Safe | Public scalar lexer | 3.618 | 2.992 | 17% |
+| Small | Public scalar lexer | 4.978 | 2.963 | 40% |
+| Small | `identifier.hash` | 3.906 | 2.834 | 27% |
+| Small | `Document.hashIdentifier` | 3.812 | 2.976 | 22% |
 
-- **Small builds:** linking a checked helper such as `identifier.hash` or
-  `Document.hashIdentifier` makes ordinary parsing 26–31% slower on edge-heavy
-  input and 10–13% slower on node input. Two small parser helpers then have a
-  second caller, and Small builds don't inline them.
-- **Fast builds:** linking the public `dot.lexer.Lexer.next()` makes ordinary
-  parsing 20–23% slower, because the parser's scanner then gets an out-of-line
-  copy.
+**Default and execution checks:** parser-only programs compiled to identical
+machine code before and after in Fast, Safe and Small. The
+[metering benchmark](../bench/metering.zig) also compiled to identical machine
+code in all three modes. Its 288 before/after cases kept exactly the same work
+credits, cancellation-poll counts and session sizes: both DOT and markup,
+both scanners, default and run-time settings, and tiny and batched budgets.
+
+There are no added scanner fields or allocations. The mixed public-lexer
+programs add about 0.7–1 KiB of machine code; parser-only code size is unchanged.
+This fixes the cost of **linking** helpers, not the separate cost of checking
+each name's spelling described above.
+
+Use the [linked-consumer benchmark](../bench/linking.zig) to check this on your
+compiler and machine:
+
+```sh
+zig build bench-linking -Doptimize=small
+```
+
+Use `fast` or `safe` for the other modes. One command builds separate programs
+for parser-only, scalar and block lexers, checked identifier and document
+helpers, and trusted names. It runs them sequentially after all builds finish
+and writes CSV with timings and decimal MB/s for node and quoted-edge inputs.
+Helpers run outside timing. It compares consumers in the current tree; for a
+before/after comparison, run the same harness against both source revisions.
 
 ### Early outline events
 
@@ -2084,6 +2108,7 @@ The other benchmarks cover both scanners where it matters.
 | `bench-cancellation` (unreleased) | Cancellation intervals for both parsers | |
 | `bench-metering` (unreleased) | DOT and markup parsing: default, tiny and batched budgets, cancellation, run-time settings | |
 | `bench-identifiers` (unreleased) | Checked against parser-recognized names in an event-only index | |
+| `bench-linking` (unreleased) | Default parsing with lexer/name helpers linked, each in a separate program; CSV | |
 | `bench-previews` (unreleased) | Unfinished-token previews: time, callbacks, credits, session size | |
 | `bench-string` (unreleased) | Standalone exact, ASCII-insensitive, Unicode and custom checks | `--csv` |
 | `bench-string-sessions` (unreleased) | String metering and cancellation | `--csv` |
@@ -2092,7 +2117,7 @@ The other benchmarks cover both scanners where it matters.
 | `bench-string-passthrough` (unreleased) | Real DOT quote scanning, then simulated string checks | |
 | `bench-ir` (unreleased) | IR lowering, expansion, attributes, values and bulk attributes (four programs, one after another) | |
 | `bench-ir-materialized` (unreleased) | Folded attributes against compact reads | |
-| `bench-ir-partial` (unreleased) | Partial IR lowering, lookups, mentions and pair queries | |
+| `bench-ir-partial` (unreleased) | Partial IR lowering, lookups, mentions and pair queries | `--attributes-only` |
 | `bench-ir-partial-edges` (unreleased) | Complete against partial edge streaming, folding and memory | |
 | `bench-ir-sessions` (unreleased) | Direct against resumable materialization | |
 | `bench-ir-lowering-sessions` (unreleased) | Direct against resumable lowering | |

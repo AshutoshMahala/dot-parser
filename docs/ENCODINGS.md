@@ -90,12 +90,15 @@ nothing:
 | `error.TruncatedCodeUnit` | A UTF-16 or UTF-32 file ends partway through a code unit: its length isn't a whole number of 2- or 4-byte units |
 | `error.UnsupportedEncoding` | The file needs a reader that isn't compiled in |
 | `error.SourceTooLarge` | The file is 4 GiB or larger |
+
 These come before any diagnostic or document, so they never leave a partial
 document. If cancellation is on and already requested, nothing is read and you
 get the ordinary cancelled result (`outcome == .cancelled`, or
 `completion == .cancelled` from markup validation), the same for every
-encoding. In 0.5.0, UTF-16, UTF-32 and ASCII input returned `error.Cancelled`
-instead. Whether the text itself is valid is a separate check, described
+encoding. `encoding.InputError` contains only the four admission errors above;
+it no longer includes `Cancelled` (unreleased). In 0.5.0, UTF-16, UTF-32 and
+ASCII input returned `error.Cancelled` instead. Whether the text itself is
+valid is a separate check, described
 [below](#checking-that-the-text-is-valid). No setting turns these checks off.
 
 ### Check the encoding yourself

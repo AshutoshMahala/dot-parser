@@ -179,8 +179,9 @@ While your cancel check, diagnostic sink or event callback runs, the session
 is in the middle of a step. So there are rules for what that code may do:
 
 - (unreleased) A cancel check may call its own session's `cancel()` and then
-  return `false`. The session still stops as cancelled, just as if the check
-  had returned `true`. This works for DOT and markup sessions, and for
+  return `false`. The session stops as cancelled before another work step or
+  credit is spent, just as if the check had returned `true`. This works for
+  DOT and markup sessions, and for
   [IR](IR.md#small-steps-and-cancelling) and [string](STRINGS.md) sessions.
 - No callback may call `advance`, `run`, `reset` or `deinit` on the session
   that is running.

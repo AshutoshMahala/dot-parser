@@ -631,6 +631,30 @@ pub fn build(b: *std.Build) void {
     b.step("bench-policy", "Compare fixed/runtime policy costs on the standard benchmark machine")
         .dependOn(&b.addRunArtifact(policy_bench).step);
     const check_benches = b.step("check-benches", "Compile benchmarks without updating or running baselines");
+    const linking_step = b.step("bench-linking", "Compare default parsing with different lexical/name helpers linked (CSV)");
+    const LinkConsumer = enum { parser_only, scalar_lexer, block_lexer, checked_identifier, checked_document, trusted_name };
+    var link_compiles: [std.enums.values(LinkConsumer).len]*std.Build.Step = undefined;
+    var previous_link_run: ?*std.Build.Step = null;
+    for (std.enums.values(LinkConsumer), 0..) |consumer, i| {
+        const link_options = b.addOptions();
+        link_options.addOption(LinkConsumer, "consumer", consumer);
+        const linked = b.addExecutable(.{ .name = b.fmt("linked_{t}", .{consumer}), .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/linking.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "dot_parser", .module = mod }, .{ .name = "link_options", .module = link_options.createModule() } },
+        }) });
+        link_compiles[i] = &linked.step;
+        check_benches.dependOn(&linked.step);
+        // Compile everything first, then run without competing benchmark/build jobs.
+        const run = b.addRunArtifact(linked);
+        run.has_side_effects = true;
+        if (previous_link_run) |previous| run.step.dependOn(previous);
+        previous_link_run = &run.step;
+        linking_step.dependOn(&run.step);
+    }
+    // All compilation must finish before the first timed run starts.
+    for (linking_step.dependencies.items) |run| for (link_compiles) |compiled| run.dependOn(compiled);
     const ir_fixed_bench = b.addExecutable(.{ .name = "ir_fixed_storage_bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/ir_fixed_storage.zig"),
         .target = target,

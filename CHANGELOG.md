@@ -73,7 +73,8 @@ statements after an error, too.
   elements may contain which, attribute values and required attributes, and
   HTML 4 named references such as `&nbsp;`. Each check has its own setting:
   `validation.graphviz.invalid_content`, `invalid_value` and
-  `unknown_reference`. See
+  `unknown_reference`. Empty labels (`label=<>`) pass the content check;
+  labels containing only line breaks or comments do not. See
   [Graphviz vocabulary](docs/MARKUP.md#graphviz-vocabulary), and the breaking
   change below.
 - **Graphviz attribute names in DOT.** `validation.graphviz.unknown_attribute`
@@ -96,7 +97,7 @@ statements after an error, too.
   and no allocation.
 - **Build steps:** `check` (all tests, examples and build checks), `test-ir`,
   `test-string`, `test-logical`, `fuzz-ir`, `check-tools`, `check-unicode`,
-  `check-wasm`, `perf-string`, `generate-console-widths`,
+  `check-wasm`, `perf-string`, `bench-linking`, `generate-console-widths`,
   `generate-string-casefold`, and benchmarks for the new features. The Unicode
   table generators are Zig programs now, so regenerating tables no longer
   needs Python.
@@ -134,14 +135,21 @@ statements after an error, too.
   that 0.5.0 missed, and fewer follow-on errors: `digraph { a -> { b -> } -> c; }`
   reports one error, not two.
 - A cancellation hook may now call its own session's `cancel()`, in DOT and
-  markup sessions (and the new IR and string sessions). Any other call back
-  into the session from a hook is still not allowed.
+  markup sessions (and the new IR and string sessions). The session stops
+  before another work step, even if the hook then returns `false`. Any other
+  call back into the session from a hook is still not allowed.
 - **Breaking:** with UTF-16, UTF-32 or ASCII input, a cancel requested before
   parsing starts now gives the usual `cancelled` result, as UTF-8 input does,
-  instead of `error.Cancelled`. `validate` on a profile that reads several
-  encodings now reports `.unsupported_encoding` (markup:
+  instead of `error.Cancelled`, which is no longer in `encoding.InputError`.
+  `validate` on a profile that reads several encodings now reports
+  `.unsupported_encoding` (markup:
   `completion.unsupported_encoding`) instead of returning
   `error.UnsupportedEncoding`.
+- Linking the public scalar lexer or checked-name helpers no longer slows
+  ordinary parsing through shared scanner code generation (F5). Parser-only
+  machine code and metering/cancellation accounting are unchanged in the
+  measured Fast, Safe and Small builds. See the
+  [measurements](docs/PERFORMANCE.md#parser-recognized-names).
 
 ### Fixed
 

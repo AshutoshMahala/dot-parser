@@ -127,6 +127,8 @@ When parsing succeeds, `result.validation` holds the validation result.
 
 Profiles that read [several encodings](ENCODINGS.md) report this outcome too
 (unreleased); in 0.5.0 their `validate` returned `error.UnsupportedEncoding`.
+This is validation of an existing document. Source admission before parsing
+can still return `error.UnsupportedEncoding` when the reader is unavailable.
 
 `documentValid()` is true only for `.completed` with `document_valid`, on a
 complete document. In every other case the document is still available, but it

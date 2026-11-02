@@ -50,14 +50,20 @@ pub fn scannerFor(comptime selected: policy.ScannerBackend) fn (comptime bool, c
 
 /// Low-level fixed-backend scanner; retained parsing selects through Policy.
 pub fn For(comptime selected: policy.ScannerBackend) type {
-    return scannerFor(selected)(false, false, true);
+    return switch (selected) {
+        .scalar => scalar.Lexer,
+        .block => block.Lexer,
+    };
 }
 
 /// Includes comment tokens without splitting concatenated identifiers.
 /// Comments are reported once as encountered, possibly before an enclosing
 /// identifier finishes; token spans may overlap and need not be start-ordered.
 pub fn WithComments(comptime selected: policy.ScannerBackend) type {
-    return scannerForComments(selected, true)(false, false, true);
+    return switch (selected) {
+        .scalar => scalar.StandaloneWithEncoding(.utf8, true),
+        .block => block.ScannerWithComments(false, false, true, true),
+    };
 }
 
 pub fn scannerForComments(comptime selected: policy.ScannerBackend, comptime comments: ?bool) fn (comptime bool, comptime bool, comptime ?bool) type {
@@ -106,26 +112,73 @@ test {
 fn expectEquivalent(source: []const u8) !void {
     var a = scalar.Lexer.init(source);
     var b = block.Lexer.init(source);
+    var internal = scalar.Scanner(false, false, true).init(source);
     while (true) {
         const ra = a.next();
         const rb = b.next();
         try expectEqualDeep(ra, rb);
-        try expectEqualDeep(a.takeWarning(), b.takeWarning());
+        try expectEqualDeep(ra, internal.next());
+        const warning = a.takeWarning();
+        try expectEqualDeep(warning, b.takeWarning());
+        try expectEqualDeep(warning, internal.takeWarning());
+        try expectEqual(a.here(), internal.here());
         if (ra == .failure) {
             try expectEqualDeep(a.failureDiagnostic(), b.failureDiagnostic());
+            try expectEqualDeep(a.failureDiagnostic(), internal.failureDiagnostic());
             try expectEqual(a.terminal, b.terminal);
+            try expectEqual(a.terminal, internal.terminal);
             switch (a.terminal) {
                 .oversize, .none, .eof => return,
                 else => {
                     a.resumeAfterFailure();
                     b.resumeAfterFailure();
+                    internal.resumeAfterFailure();
                     try expectEqual(a.here(), b.here());
+                    try expectEqual(a.here(), internal.here());
                 },
             }
             continue;
         }
         if (ra.token.tag == .eof) return;
     }
+}
+
+test "standalone scalar scanners preserve internal tokens warnings and recovery across encodings" {
+    const encoding = @import("parser_support").encoding;
+    inline for (.{ .ascii, .utf8, .utf16le, .utf16be, .utf32le, .utf32be }) |actual| inline for (.{ false, true }) |comments| {
+        const E = encoding.Reader(actual);
+        const Public = scalar.StandaloneWithEncoding(actual, comments);
+        const Internal = scalar.ScannerWithEncoding(actual, false, false, true, comments);
+        try expectEqual(@sizeOf(Internal), @sizeOf(Public));
+        try expectEqual(@alignOf(Internal), @alignOf(Public));
+        for (fixtures) |fixture| {
+            var buffer: [2048]u8 = undefined;
+            // Widen each byte to exercise code-unit boundaries, including raw
+            // high bytes and malformed syntax. Both paths see identical input.
+            for (fixture, 0..) |byte, i|
+                std.mem.writeInt(@Int(.unsigned, E.width * 8), buffer[i * E.width ..][0..E.width], byte, E.endian);
+            const source = buffer[0 .. fixture.len * E.width];
+            var public = Public.init(source);
+            var internal = Internal.init(source);
+            var calls: usize = 0;
+            while (true) {
+                calls += 1;
+                try expect(calls <= 4 * (source.len + 1));
+                const token = public.next();
+                try expectEqualDeep(token, internal.next());
+                try expectEqualDeep(public.takeWarning(), internal.takeWarning());
+                try expectEqual(public.here(), internal.here());
+                try expectEqual(public.terminal, internal.terminal);
+                if (token == .failure) {
+                    try expectEqualDeep(public.failureDiagnostic(), internal.failureDiagnostic());
+                    if (public.terminal == .oversize) break;
+                    public.resumeAfterFailure();
+                    internal.resumeAfterFailure();
+                    try expectEqual(public.here(), internal.here());
+                } else if (token.token.tag == .eof) break;
+            }
+        }
+    };
 }
 
 const fixtures = [_][]const u8{

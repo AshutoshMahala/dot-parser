@@ -251,6 +251,8 @@ guessed. Spelling, order, values and duplicates are still kept as written.
 | Spaces around a table | Allowed around a bare table, and inside its wrapper, but not outside the wrapper: ` <B><TABLE>...</TABLE></B>` is reported. |
 
 Characters below space, such as tabs and line breaks, are ignored in content.
+For standalone markup, an empty label is an empty fragment. The enclosing
+`<` and `>` in DOT's `label=<>` belong to DOT and aren't part of that fragment.
 
 `invalid_value` checks attribute values, ignoring ASCII case:
 

@@ -127,8 +127,8 @@ pub fn check(source: []const u8, span: @import("parser_support").location.Span) 
 
 fn validate(raw: []const u8) error{InvalidIdentifier}!lex.Token {
     var lexer = lex.Lexer.initRaw(raw);
-    // Keep standalone checking from forcing the parser's shared scanner into
-    // an out-of-line call merely because both entry points are linked.
+    // Keep this one-token check in its caller. The standalone scanner also
+    // has a separate specialization so linking it cannot outline parser work.
     const result = @call(.always_inline, lex.Lexer.drive, .{ &lexer, false, 0 }).result.?;
     if (result != .token or result.token.tag != .identifier or
         result.token.span.start != 0 or result.token.span.len != raw.len)
@@ -167,7 +167,7 @@ pub fn ForEncoding(comptime actual: encoding.Actual) type {
         }
         fn checked(raw: []const u8) error{InvalidIdentifier}!lex.Token {
             if (raw.len % E.width != 0) return error.InvalidIdentifier;
-            var scanner = lex.scalar.ScannerWithEncoding(actual, false, false, true, false).initRaw(raw);
+            var scanner = lex.scalar.StandaloneWithEncoding(actual, false).initRaw(raw);
             const result = @call(.always_inline, @TypeOf(scanner).drive, .{ &scanner, false, 0 }).result.?;
             if (result != .token or result.token.tag != .identifier or result.token.span.start != 0 or result.token.span.len != raw.len)
                 return error.InvalidIdentifier;

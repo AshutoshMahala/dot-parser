@@ -501,7 +501,8 @@ const result = session.result().?;
 - Sessions can be moved between calls. Don't drive one from two threads at once.
   A sink or validator must not call any method of the session that is running
   it. A cancellation hook may call that session's `cancel()` and return
-  `false`; the session still ends as `cancelled`. It must not call any other
+  `false`; the session still ends as `cancelled`, without running another
+  validation step or spending another credit. It must not call any other
   session method.
 
 ### Credit and cancellation guarantees
