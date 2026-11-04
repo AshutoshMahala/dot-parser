@@ -12,6 +12,7 @@ const names = @import("names.zig");
 const attrs = @import("attributes.zig");
 const v = @import("event_validation.zig");
 const indexes = @import("query_indexes.zig");
+const storage = @import("event_storage.zig");
 const none = std.math.maxInt(u32);
 const Span = @import("parser_support").location.Span;
 const Endpoint = union(enum) { node: syntax.NodeReferenceView, scope: u32 };
@@ -22,7 +23,7 @@ const Statement = struct {
     attributes: syntax.AttributeRange = .{},
     first_link: u32 = none,
     last_link: u32 = none,
-    value: union(enum) { pending, node: e.Node, edge: e.Edge, scope: u32, assignment: syntax.Attribute, defaults: syntax.AttributeTarget } = .pending,
+    value: union(enum) { pending, node: e.Node, edge: e.Edge, scoped_edge: e.Edge, scope: u32, assignment: syntax.Attribute, defaults: syntax.AttributeTarget } = .pending,
 };
 const Scope = struct { occurrence: u32, first: u32 = none, last: u32 = none, active: u32 = none, parent: u32 = 0 };
 const Replay = union(enum) {
@@ -48,6 +49,8 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         stage_links: std.ArrayList(Link) = .empty,
         stage_ports: std.ArrayList(syntax.NodeReferenceView) = .empty,
         replay: std.ArrayList(Replay) = .empty,
+        mention_pages: storage.Pages(t.Mention) = .{},
+        connection_pages: storage.Pages(t.ConnectionFor(rep.attributes)) = .{},
         current: u32 = 0,
         scope_base: u32 = 1,
         reference_base: u32 = 0,
@@ -56,35 +59,46 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         aborted: bool = false,
         failure: ?Error = null,
         semantic_failure: ?r.Error = null,
+        mention_bound: u32 = std.math.maxInt(u32),
+        connection_bound: u32 = std.math.maxInt(u32),
+        attribute_bound: u32 = std.math.maxInt(u32),
 
         pub fn init(a: std.mem.Allocator, source: []const u8, info: enc.Info, limits: r.Limits, hook: ?r.Cancellation, settings: policy.ValidationSettings, sink: @import("../dot/diagnostic.zig").Sink) r.Error!Self {
             return .{ .header = .{ .source = source, .source_info = info, .kind = .digraph, .strict = false, .name = null }, .b = .{ .a = a, .doc = undefined, .limits = limits, .interpretation = undefined, .work = try r.Work.init(limits, hook) }, .checker = .{ .source = source, .runtime_settings = if (fixed == null) settings else {}, .sink = sink } };
         }
         pub fn deinit(self: *Self) void {
             self.checker.deinit(self.b.a);
+            self.mention_pages.deinit(self.b.a);
+            self.connection_pages.deinit(self.b.a);
             inline for (.{ "statements", "stage_scopes", "stage_attributes", "stage_links", "stage_ports", "replay" }) |field| @field(self, field).deinit(self.b.a);
             self.b.deinit();
         }
+        inline fn spend(self: *Self, count: u64) r.Error!void {
+            return @call(.always_inline, r.Work.spend, .{ &self.b.work, count });
+        }
         fn append(self: *Self, list: anytype, value: std.meta.Elem(@TypeOf(list.items))) r.Error!u32 {
-            try self.b.work.spend(1);
+            try self.spend(1);
             const id = try r.index(list.items.len);
-            if (list.items.len == list.capacity) try self.b.work.spend(list.items.len);
+            if (list.items.len == list.capacity) try self.spend(list.items.len);
             try list.append(self.b.a, value);
             return id;
         }
         /// Slices store their allocation lengths during construction. Counters
         /// bound initialized records; publication compacts them to exact slices.
-        fn reserve(self: *Self, comptime T: type, slice: *[]T, need: usize, maximum: usize) r.Error!void {
+        inline fn reserve(self: *Self, comptime T: type, slice: *[]T, need: usize, maximum: usize) r.Error!void {
             if (need <= slice.len) return;
+            return self.grow(T, slice, need, maximum);
+        }
+        noinline fn grow(self: *Self, comptime T: type, slice: *[]T, need: usize, maximum: usize) r.Error!void {
             if (need > maximum) return error.IndexLimit;
             const old = slice.len;
             const capacity = @min(maximum, std.ArrayList(T).growCapacity(need));
-            try self.b.work.spend(old);
+            try self.spend(old);
             slice.* = try self.b.a.realloc(slice.*, capacity);
         }
         fn compact(self: *Self, comptime T: type, slice: *[]T, count: usize) r.Error!void {
             if (slice.len == count) return;
-            try self.b.work.spend(count);
+            try self.spend(count);
             slice.* = try self.b.a.realloc(slice.*, count);
         }
         fn resetStage(self: *Self) void {
@@ -93,7 +107,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             self.scope_base = self.occurrence_count;
             self.reference_base = self.next_reference;
         }
-        pub fn onEvent(self: *Self, event: e.Event) Error!e.Action {
+        pub inline fn onEvent(self: *Self, event: e.Event) Error!e.Action {
             self.b.doc = &self.header;
             return self.consume(event) catch |err| {
                 self.failure = err;
@@ -107,7 +121,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         }
         fn consume(self: *Self, event: e.Event) Error!e.Action {
             if (self.aborted) return .proceed;
-            try self.b.work.spend(1);
+            try self.spend(1);
             switch (event) {
                 .begin_document => |d| {
                     self.header = .{ .source = self.header.source, .source_info = d.source_info, .kind = if (d.kind == .digraph) .digraph else .undigraph, .strict = d.strict, .name = if (d.name_span) |name| name.span() else null };
@@ -120,6 +134,19 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                     self.b.bodies[0] = .{ .start = 0, .end = 0, .first = 0 };
                 },
                 .begin_statement => |d| {
+                    if (self.current == 0) {
+                        // Every further mention, connection and attribute needs
+                        // at least one written code unit. Include the entire
+                        // active root statement: nested replay is not ordered
+                        // by source offset. Tightening only the growth ceiling
+                        // avoids a large final growth step near EOF, without a
+                        // sizing pass or guessing from the earlier statements.
+                        const remaining = (self.header.source.len - @backingInt(d.owner.statement)) / enc.Reader(actual).width;
+                        self.header.node_capacity_bound = growthBound(self.b.nodes.items.len, remaining);
+                        self.mention_bound = growthBound(self.b.mention_count, remaining);
+                        self.connection_bound = growthBound(self.b.connection_count, remaining);
+                        if (rep.attributes) self.attribute_bound = growthBound(self.b.attribute_count, remaining);
+                    }
                     if (self.stage_scopes.items.len == 0) _ = try self.append(&self.stage_scopes, .{ .occurrence = 0 });
                     const id = try self.append(&self.statements, .{ .occurrence = @backingInt(d.owner.scope) });
                     const scope = &self.stage_scopes.items[self.current];
@@ -183,7 +210,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             }
             return .proceed;
         }
-        fn active(self: *Self) u32 {
+        inline fn active(self: *Self) u32 {
             return self.stage_scopes.items[self.current].active;
         }
         fn link(self: *Self, right: Endpoint, op: syntax.EdgeOperator, span: Span) r.Error!void {
@@ -192,7 +219,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             if (statement.last_link != none) self.stage_links.items[statement.last_link].next = id else statement.first_link = id;
             statement.last_link = id;
         }
-        fn reference(self: *Self, identifier: Span, port: ?u32) r.Error!syntax.NodeReferenceView {
+        inline fn reference(self: *Self, identifier: Span, port: ?u32) r.Error!syntax.NodeReferenceView {
             if (port) |id| {
                 if (id < self.reference_base or id - self.reference_base >= self.stage_ports.items.len) return error.InvalidDocument;
                 return self.stage_ports.items[id - self.reference_base];
@@ -213,17 +240,20 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                 .edge => |edge| {
                     const left = try self.endpoint(edge, true);
                     const right = try self.endpoint(edge, false);
+                    var scoped = left == .scope or right == .scope;
                     if (left == .node) try self.checkReference(left.node);
                     if (right == .node) try self.checkReference(right.node);
                     try self.checkOperator(convertOperator(edge.operator), edge.operator_span);
                     var link_id = statement.first_link;
                     while (link_id != none) {
-                        try self.b.work.spend(1);
+                        try self.spend(1);
                         const l = self.stage_links.items[link_id];
+                        scoped = scoped or l.right == .scope;
                         if (l.right == .node) try self.checkReference(l.right.node);
                         try self.checkOperator(l.operator, l.span);
                         link_id = l.next;
                     }
+                    if (scoped) self.statements.items[self.active()].value = .{ .scoped_edge = edge };
                 },
                 else => {},
             }
@@ -236,13 +266,13 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                 self.resetStage();
             }
         }
-        fn checkReference(self: *Self, view: syntax.NodeReferenceView) v.Stop!void {
+        inline fn checkReference(self: *Self, view: syntax.NodeReferenceView) v.Stop!void {
             if (view.port) |port| {
                 const last = port.second orelse port.first;
                 try self.checker.restriction(self.checker.settings().restrictions.ports, .{ .start = port.first.start, .len = last.start + last.len - port.first.start }, .port);
             }
         }
-        fn checkOperator(self: *Self, op: syntax.EdgeOperator, span: Span) v.Stop!void {
+        inline fn checkOperator(self: *Self, op: syntax.EdgeOperator, span: Span) v.Stop!void {
             try self.checker.operator(self.header.kind, self.keyword, op, span);
             if (op == .directed and self.header.kind == .undigraph and self.checker.settings().graph.treated_as == .auto) self.b.interpretation.kind = .generic;
         }
@@ -261,7 +291,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                 if (self.b.scope_table.slots.len != 0) {
                     var at: usize = @intCast(hash & (self.b.scope_table.slots.len - 1));
                     while (self.b.scope_table.slots[at] != none) : (at = (at + 1) & (self.b.scope_table.slots.len - 1)) {
-                        try self.b.work.spend(1);
+                        try self.spend(1);
                         const id = self.b.scope_table.slots[at];
                         const existing = self.b.scopes.items[id];
                         if (self.semantic_failure == null and existing.hash == hash and existing.parent == parent and try names.eql(actual, existing.name.?.slice(self.header.source), name.?.slice(self.header.source), &self.b.work)) {
@@ -320,7 +350,8 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         }
         fn takeNode(self: *Self, view: syntax.NodeReferenceView, occurrence: u32, retain_port: bool) Error!t.Endpoint {
             if (self.b.mention_count >= self.b.limits.max_mentions) return error.MentionLimit;
-            try self.reserve(t.Mention, &self.b.mentions, self.b.mention_count + 1, self.b.limits.max_mentions);
+            try self.mention_pages.ensure(self.b.a, &self.b.work, &self.b.mentions, self.b.mention_count, @min(self.b.limits.max_mentions, self.mention_bound));
+            self.header.mention_base = self.mention_pages.base;
             if (view.port != null) {
                 if (retain_port) try self.reserve(syntax.PortSyntax, &self.b.endpoint_ports, self.b.port_count + 1, self.b.limits.max_mentions);
             }
@@ -344,22 +375,22 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             if (group.len > self.b.limits.max_attributes - start) return error.AttributeLimit;
             const end = start + @as(u32, @intCast(group.len));
             if (end >= @import("ports.zig").right) return error.IndexLimit;
-            try self.reserve(syntax.Attribute, &self.b.attributes, end, self.b.limits.max_attributes);
-            try self.reserve(attrs.Meta, &self.b.attribute_data.meta, end, self.b.limits.max_attributes);
+            try self.reserve(syntax.Attribute, &self.b.attributes, end, @min(self.b.limits.max_attributes, self.attribute_bound));
+            try self.reserve(attrs.Meta, &self.b.attribute_data.meta, end, @min(self.b.limits.max_attributes, self.attribute_bound));
             if (self.b.attribute_data.scopes.len == 0) {
                 try self.reserve(attrs.Scope, &self.b.attribute_data.scopes, self.b.scopes.items.len, self.b.limits.max_scopes);
                 for (self.b.attribute_data.scopes) |*scope| {
-                    try self.b.work.spend(1);
+                    try self.spend(1);
                     scope.* = .{};
                 }
                 try self.reserve(u32, &self.b.attribute_data.connection_defaults, self.b.connection_count, self.b.limits.max_connections);
                 for (self.b.attribute_data.connection_defaults) |*value| {
-                    try self.b.work.spend(1);
+                    try self.spend(1);
                     value.* = attrs.none;
                 }
             }
             for (group, start..) |value, i| {
-                try self.b.work.spend(1);
+                try self.spend(1);
                 self.b.attributes[i] = value;
                 self.b.attribute_data.meta[i] = .{};
             }
@@ -368,7 +399,8 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         }
         fn connect(self: *Self, op: syntax.EdgeOperator, span: Span, occurrence: u32, left: @import("lowering_types.zig").Pending, right: @import("lowering_types.zig").Pending, range: syntax.AttributeRange) Error!void {
             if (self.b.connection_count >= self.b.limits.max_connections) return error.ConnectionLimit;
-            try self.reserve(t.ConnectionFor(rep.attributes), &self.b.connections, self.b.connection_count + 1, self.b.limits.max_connections);
+            try self.connection_pages.ensure(self.b.a, &self.b.work, &self.b.connections, self.b.connection_count, @min(self.b.limits.max_connections, self.connection_bound));
+            self.header.connection_base = self.connection_pages.base;
             const with_attributes = rep.attributes and self.b.attribute_data.scopes.len != 0;
             if (with_attributes) try self.reserve(u32, &self.b.attribute_data.connection_defaults, self.b.connection_count + 1, self.b.limits.max_connections);
             // Validation errors reject the input through checking, not an IR
@@ -384,9 +416,16 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             self.b.connection_count += 1;
         }
         fn walk(self: *Self, root: u32) Error!void {
+            switch (self.statements.items[root].value) {
+                .scope, .scoped_edge => {},
+                else => {
+                    try self.spend(1);
+                    return @call(leaf_call, leaf, .{ self, &self.statements.items[root] });
+                },
+            }
             _ = try self.append(&self.replay, .{ .statement = root });
             while (self.replay.items.len != 0) {
-                try self.b.work.spend(1);
+                try self.spend(1);
                 const top = self.replay.items.len - 1;
                 switch (self.replay.items[top]) {
                     .scope => |frame| {
@@ -401,25 +440,18 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                     },
                     .statement => |id| {
                         _ = self.replay.pop();
-                        const s = self.statements.items[id];
-                        const group = self.stage_attributes.items[s.attributes.start..][0..s.attributes.len];
+                        const s = &self.statements.items[id];
                         switch (s.value) {
-                            .pending => return error.InvalidDocument,
-                            .node => |n| {
-                                const node = try self.takeNode(try self.reference(n.identifier.span(), n.port), s.occurrence, false);
-                                try self.b.declaration(.{ .node = @fromBackingInt(@backingInt(node.members) & ~t.node_bit) }, s.occurrence, try self.copyAttributes(group));
-                            },
-                            .defaults => |target| try self.b.declaration(.{ .defaults = target }, s.occurrence, try self.copyAttributes(group)),
-                            .assignment => |value| try self.b.declaration(.graph_assignment, s.occurrence, try self.copyAttributes(&.{value})),
                             .scope => |scope| try self.enter(scope),
-                            .edge => {
+                            .scoped_edge => {
                                 _ = try self.append(&self.replay, .{ .edge = .{ .statement = id, .link = s.first_link, .pending = try r.index(self.b.pending.items.len) } });
                             },
+                            else => try @call(leaf_call, leaf, .{ self, s }),
                         }
                     },
                     .edge => |frame| {
                         const s = self.statements.items[frame.statement];
-                        const edge = s.value.edge;
+                        const edge = s.value.scoped_edge;
                         if (frame.phase < 2) {
                             self.replay.items[top].edge.phase += 1;
                             try self.takeEndpoint(if (frame.phase == 0) try self.endpoint(edge, true) else try self.endpoint(edge, false), s.occurrence);
@@ -445,6 +477,41 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                 }
             }
         }
+        /// Flat statements cannot change scope membership or defaults while
+        /// their endpoints are resolved. They need no replay continuation or
+        /// pending endpoint array. Scoped chains keep the two-pass traversal:
+        /// all endpoint bodies must execute before any membership is frozen.
+        // Speed modes fold leaf dispatch into the caller. Small keeps one copy
+        // of the larger helper; scoped statements never call it speculatively.
+        const leaf_call: std.builtin.CallModifier = if (@import("builtin").mode == .fast or @import("builtin").mode == .safe) .always_inline else .auto;
+        fn leaf(self: *Self, s: *const Statement) Error!void {
+            const group = self.stage_attributes.items[s.attributes.start..][0..s.attributes.len];
+            switch (s.value) {
+                .pending => return error.InvalidDocument,
+                .scope, .scoped_edge => return error.InvalidDocument,
+                .node => |n| {
+                    const node = try self.takeNode(try self.reference(n.identifier.span(), n.port), s.occurrence, false);
+                    try self.b.declaration(.{ .node = @fromBackingInt(@backingInt(node.members) & ~t.node_bit) }, s.occurrence, try self.copyAttributes(group));
+                },
+                .defaults => |target| try self.b.declaration(.{ .defaults = target }, s.occurrence, try self.copyAttributes(group)),
+                .assignment => |value| try self.b.declaration(.graph_assignment, s.occurrence, try self.copyAttributes(&.{value})),
+                .edge => |edge| {
+                    const range = try self.copyAttributes(group);
+                    var left = try self.takeNode(try self.reference(edge.left, edge.left_port), s.occurrence, true);
+                    var right = try self.takeNode(try self.reference(edge.right, edge.right_port), s.occurrence, true);
+                    try self.connect(convertOperator(edge.operator), edge.operator_span, s.occurrence, .{ .node = left }, .{ .node = right }, range);
+                    var link_id = s.first_link;
+                    while (link_id != none) {
+                        try self.spend(1);
+                        const l = self.stage_links.items[link_id];
+                        left = right;
+                        right = try self.takeNode(l.right.node, s.occurrence, true);
+                        try self.connect(l.operator, l.span, s.occurrence, .{ .node = left }, .{ .node = right }, range);
+                        link_id = l.next;
+                    }
+                },
+            }
+        }
         pub fn finishChecks(self: *Self) Error!void {
             try self.checker.graphKind(self.b.interpretation.kind, self.keyword);
             try self.checker.encoding(&self.b.work);
@@ -452,24 +519,34 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         pub fn finish(self: *Self) r.Error!t.Graph(rep) {
             if (self.semantic_failure) |err| return err;
             const b = &self.b;
+            // No transaction or validation scratch is needed after acceptance.
+            // Release it before compaction/postings introduce their own peaks.
+            inline for (.{ "statements", "stage_scopes", "stage_attributes", "stage_links", "stage_ports", "replay" }) |field| {
+                @field(self, field).deinit(b.a);
+                @field(self, field) = .empty;
+            }
+            b.pending.deinit(b.a);
+            b.pending = .empty;
+            self.checker.entries.deinit(b.a);
+            self.checker.entries = .empty;
             inline for (.{ "nodes", "scopes", "declarations" }) |field| if (@FieldType(@TypeOf(b.*), field) != void) {
                 const list = &@field(b, field);
-                try b.work.spend(list.items.len);
+                try self.spend(list.items.len);
                 const items = try list.toOwnedSlice(b.a);
                 list.items = items;
                 list.capacity = items.len;
             };
+            try self.mention_pages.finish(b.a, &b.work, &b.mentions, b.mention_count);
+            try self.connection_pages.finish(b.a, &b.work, &b.connections, b.connection_count);
             if (self.header.strict) {
                 if (b.interpretation.kind == .generic) return error.UnsupportedSemantics;
                 for (b.connections[0..b.connection_count]) |c| {
-                    try b.work.spend(1);
+                    try self.spend(1);
                     if ((b.interpretation.kind == .digraph) != (c.effective_operator == .directed)) return error.UnsupportedSemantics;
                 }
             }
             try self.compact(t.Occurrence, &b.occurrences, self.occurrence_count);
             try self.compact(t.Body, &b.bodies, self.occurrence_count);
-            try self.compact(t.Mention, &b.mentions, b.mention_count);
-            try self.compact(t.ConnectionFor(rep.attributes), &b.connections, b.connection_count);
             try self.compact(syntax.PortSyntax, &b.endpoint_ports, b.port_count);
             if (rep.attributes) {
                 try self.compact(syntax.Attribute, &b.attributes, b.attribute_count);
@@ -481,72 +558,81 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             }
             // Group body versions by semantic scope, matching the compact range
             // membership representation. Connections refer to frozen versions.
-            for (b.cursors[0..b.scopes.items.len]) |*cursor| {
-                try b.work.spend(1);
-                cursor.next = 0;
-            }
-            for (b.occurrences) |o| {
-                try b.work.spend(1);
-                b.cursors[@backingInt(o.scope)].next += 1;
-            }
-            var base: u32 = 0;
-            for (b.cursors[0..b.scopes.items.len]) |*c| {
-                try b.work.spend(1);
-                const count = c.next;
-                c.first = base;
-                c.next = base;
-                base += count;
-            }
-            var grouped = try b.a.alloc(t.Body, self.occurrence_count);
-            errdefer b.a.free(grouped);
-            for (b.occurrences) |*o| {
-                try b.work.spend(1);
-                const c = &b.cursors[@backingInt(o.scope)];
-                grouped[c.next] = b.bodies[@backingInt(o.membership)];
-                grouped[c.next].first = c.first;
-                o.membership = @fromBackingInt(c.next);
-                c.next += 1;
-            }
-            b.a.free(b.bodies);
-            b.bodies = grouped;
-            grouped = &.{};
-            for (b.connections) |*c| {
-                try b.work.spend(1);
-                inline for (.{ "left", "right" }) |side| {
-                    const id = @backingInt(@field(c, side).members);
-                    if (id & t.node_bit == 0) @field(c, side).members = b.occurrences[id].membership;
+            if (self.occurrence_count == b.scopes.items.len) {
+                // No scope was reopened: occurrence order is already grouped,
+                // and every frozen membership already has its final ID.
+                for (b.bodies, 0..) |*body, id| {
+                    try self.spend(1);
+                    body.first = @intCast(id);
+                }
+            } else {
+                for (b.cursors[0..b.scopes.items.len]) |*cursor| {
+                    try self.spend(1);
+                    cursor.next = 0;
+                }
+                for (b.occurrences) |o| {
+                    try self.spend(1);
+                    b.cursors[@backingInt(o.scope)].next += 1;
+                }
+                var base: u32 = 0;
+                for (b.cursors[0..b.scopes.items.len]) |*c| {
+                    try self.spend(1);
+                    const count = c.next;
+                    c.first = base;
+                    c.next = base;
+                    base += count;
+                }
+                var grouped = try b.a.alloc(t.Body, self.occurrence_count);
+                errdefer b.a.free(grouped);
+                for (b.occurrences) |*o| {
+                    try self.spend(1);
+                    const c = &b.cursors[@backingInt(o.scope)];
+                    grouped[c.next] = b.bodies[@backingInt(o.membership)];
+                    grouped[c.next].first = c.first;
+                    o.membership = @fromBackingInt(c.next);
+                    c.next += 1;
+                }
+                b.a.free(b.bodies);
+                b.bodies = grouped;
+                grouped = &.{};
+                for (b.connections) |*c| {
+                    try self.spend(1);
+                    inline for (.{ "left", "right" }) |side| {
+                        const id = @backingInt(@field(c, side).members);
+                        if (id & t.node_bit == 0) @field(c, side).members = b.occurrences[id].membership;
+                    }
                 }
             }
             b.offsets = try b.a.alloc(u32, b.nodes.items.len + 1);
             b.positions = try b.a.alloc(u32, b.mention_count);
             for (b.offsets) |*offset| {
-                try b.work.spend(1);
+                try self.spend(1);
                 offset.* = 0;
             }
             for (b.mentions) |mention| {
-                try b.work.spend(1);
+                try self.spend(1);
                 b.offsets[@backingInt(mention.node) + 1] += 1;
             }
             for (1..b.offsets.len) |i| {
-                try b.work.spend(1);
+                try self.spend(1);
                 b.offsets[i] += b.offsets[i - 1];
             }
             for (b.mentions, 0..) |mention, position| {
-                try b.work.spend(1);
+                try self.spend(1);
                 const cursor = &b.offsets[@backingInt(mention.node)];
                 b.positions[cursor.*] = @intCast(position);
                 cursor.* += 1;
             }
             var i = b.offsets.len - 1;
             while (i > 0) : (i -= 1) {
-                try b.work.spend(1);
+                try self.spend(1);
                 b.offsets[i] = b.offsets[i - 1];
             }
             b.offsets[0] = 0;
             if (comptime rep.indexes.any()) {
                 var indexer: indexes.Builder(rep.indexes) = .{};
                 while (true) {
-                    try b.work.spend(1);
+                    try self.spend(1);
                     if (try indexer.step(b, false)) break;
                 }
             }
@@ -556,11 +642,11 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                 const joined = try @import("topology_storage.zig").allocate(t.ConnectionFor(rep.attributes), b.a, b.connection_count, b.port_count, false);
                 errdefer @import("topology_storage.zig").release(b.a, joined);
                 for (b.connections, joined.connections) |source, *dest| {
-                    try b.work.spend(1);
+                    try self.spend(1);
                     dest.* = source;
                 }
                 for (b.endpoint_ports, joined.endpoint_ports) |source, *dest| {
-                    try b.work.spend(1);
+                    try self.spend(1);
                     dest.* = source;
                 }
                 b.a.free(b.connections);
@@ -571,6 +657,9 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             return b.publish();
         }
     };
+}
+fn growthBound(written: usize, remaining_units: usize) u32 {
+    return @intCast(@min(std.math.maxInt(u32), @as(u64, written) + remaining_units));
 }
 fn attr(value: e.Attribute) syntax.Attribute {
     return .{ .key = value.key.span(), .value = value.value.span() };

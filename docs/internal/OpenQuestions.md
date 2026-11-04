@@ -233,7 +233,9 @@ semantics and independent work/memory/cancellation accounting. It stages only
 the active root statement and returns the existing graph type. The Document
 route remains the default. Staging and output growth can increase costs for
 large compound statements; live peaks and Arena backing must be compared
-separately. See [whole-route measurements](../PERFORMANCE.md#whole-route-phases-and-the-event-lowering-opportunity).
+separately. Node-only chains now avoid scope replay; large mention/connection
+pools use private pages and checked final copying. Published layouts and
+parser credit units are unchanged. See [event-route measurements](../PERFORMANCE.md#event-construction-versus-document-construction).
 Typed `Name` handles distinguish recognized identifiers from raw `Span` previews
 and other syntax ranges. `identifier.fromName(source, name)` avoids re-lexing;
 raw spans use checked `identifier.check`. Builders consume the same typed events,

@@ -1297,122 +1297,156 @@ whole-route peaks, including staging and Arena backing, before claiming savings.
 
 ### Event construction versus Document construction
 
-Measured 2026-11-01, `ec3b1c1` plus the slice-3c changes, Zig 0.17.0,
-Apple M4 Pro. `IR.FromEvents(Dot).parse` is opt-in; `IR.parse` still uses the
-Document route. Both return the same graph type and keep connections symbolic.
+Measured 2026-11-03, baseline `38442d2` versus the working-tree event-lowering
+optimizations, Zig 0.17.0, Apple M4 Pro. Both routes produce the same graph type
+and keep connections symbolic. The Document route remains the default.
 
 ```sh
 zig build bench-ir-events -Doptimize=fast -- --corpus /path/to/generated
 ```
 
-The [comparison harness](../bench/ir_event_comparison.zig) reuses the 3b
-workloads and runs both routes in alternating order: three warmups, nine timed
-samples, 14 M files and six built-in adversarial shapes, growable and shared
-Arena storage. Run `safe` and `small` too. `--case` selects a shape; omitting
-`--corpus` runs the built-in shapes. Source length/hash and graph counts are
-included in the CSV.
+The [comparison harness](../bench/ir_event_comparison.zig) uses the 14 M files
+and six adversarial shapes from the phase benchmark above. Run `safe` and
+`small` too; `--case` selects a shape, and omitting `--corpus` runs the built-in
+shapes. The CSV includes source length/hash, graph counts and allocation counts.
 
-Timing covers parsing, default validation and graph construction, including
-Document release on that route; it excludes IR/Arena destruction. No tracking
-allocator is used during timing. Three separate memory probes report the
-largest observed live peak and verify retained-byte accounting and cleanup.
-Peaks include parser scratch, active-statement staging, validation scratch,
-growth buffers and IR output. The same source, default policies, discard sink
-and `std.heap.smp_allocator` backing are used on both routes. These are live
-requested bytes, **not RSS**, and exclude source and stack state. The event
-route interleaves parsing and construction, so its total is not presented as
-artificially separate parse/lower phases.
+Each process alternates Document and event construction, with three warmups
+and nine timed samples. Two process rounds reverse baseline/candidate order
+per shape; the figures below average the two process medians. Timing covers
+parsing, default validation and graph construction, including Document release
+on that route, but excludes source loading and result destruction. Timing uses
+unwrapped `std.heap.smp_allocator`, with growable and shared-Arena routes.
 
-Fast, growable storage; time in ms and memory in MiB. The last six rows use the
-same adversarial shapes defined in the phase benchmark above.
+Three separate memory probes per process include parser scratch, active-statement
+staging, validation scratch, growth, publication and IR output. They verify
+retained-byte accounting and cleanup. Peaks below are the largest observed
+**live requested bytes**, excluding source, stack state and allocator metadata;
+they are not RSS. Arena capacity is reported separately. Final retained IR bytes
+are unchanged on every input, in every mode.
 
-| Input | Document ms | Events ms | Time change | Document peak MiB | Events peak MiB | Peak change |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| nodes | 6.903 | 8.483 | +22.9% | 11.12 | 10.42 | -6.3% |
-| edges | 13.961 | 15.870 | +13.7% | 16.64 | 16.12 | -3.1% |
-| edge_chains | 71.414 | 87.409 | +22.4% | 97.64 | 113.66 | +16.4% |
-| node_attrs | 24.739 | 28.901 | +16.8% | 32.87 | 29.15 | -11.3% |
-| edge_attrs | 28.249 | 32.369 | +14.6% | 29.61 | 27.30 | -7.8% |
-| attr_stmts | 12.490 | 14.472 | +15.9% | 15.93 | 11.90 | -25.3% |
-| subgraphs_flat | 10.277 | 12.006 | +16.8% | 11.93 | 10.02 | -16.0% |
-| subgraphs_nested | 10.774 | 13.303 | +23.5% | 11.94 | 9.99 | -16.3% |
-| subgraph_endpoints | 10.274 | 11.764 | +14.5% | 14.68 | 11.72 | -20.2% |
-| identifiers | 18.961 | 19.955 | +5.2% | 20.81 | 18.70 | -10.1% |
-| comments | 16.644 | 18.242 | +9.6% | 16.64 | 16.12 | -3.1% |
-| ports | 21.506 | 24.665 | +14.7% | 29.96 | 26.41 | -11.8% |
-| minified | 13.456 | 15.865 | +17.9% | 16.64 | 16.12 | -3.1% |
-| mixed | 24.532 | 27.801 | +13.3% | 24.42 | 22.40 | -8.3% |
-| deep_nesting | 4.115 | 6.528 | +58.7% | 12.54 | 21.71 | +73.1% |
-| reopened | 0.207 | 0.224 | +7.9% | 0.29 | 0.19 | -34.2% |
-| strict_reopened | 0.216 | 0.225 | +4.6% | 0.29 | 0.19 | -34.2% |
-| giant_chain | 6.594 | 8.843 | +34.1% | 13.93 | 21.64 | +55.3% |
-| giant_attributes | 14.990 | 15.225 | +1.6% | 11.75 | 13.67 | +16.3% |
-| symbolic_product | 6.959 | 9.356 | +34.5% | 11.12 | 19.37 | +74.2% |
+Geometric means across the 14 M files, growable storage. The last column is
+event time relative to Document time within each revision, not a throughput
+percentage:
 
-On the ordinary M corpus, event construction reduces live peaks on 13 of 14
-files by **3–25%**, while taking **5–24% more time** in Fast. Edge chains use
-**16% more peak memory**. Across the 14 cases, the geometric-mean time increase
-is **15.7% Fast, 17.7% Safe and 39.1% Small**; the respective per-case ranges
-are 5–24%, 4–31% and 29–49%.
+| Mode | Event time change | Event overhead before → after |
+| --- | ---: | ---: |
+| fast | -5.6% | +14.8% → +9.0% |
+| safe | -6.7% | +18.3% → +11.1% |
+| small | -15.9% | +38.6% → +16.5% |
 
-Staging and growable output explain why removing the Document is not a
-universal saving. A giant enclosing statement keeps its children until it
-commits, while the Document route has counts for exact IR pools. Deep nesting,
-the giant chain and the symbolic product therefore use substantially more
-peak memory on the event route. The product still represents 50,000 × 50,000
-possible edges as **one connection**, with no implicit expansion. Published
-IR storage is the same or smaller, because event construction trims spare
-capacity before publication; the extra peak is construction storage.
+The main causes and changes were:
 
-A shared Arena changes the result again. Selected Fast Arena capacities,
-including unused space and abandoned buffers, in MiB:
+- Flat chains used the nested-scope replay machine and a pending endpoint array.
+  They now resolve and connect through the shared primitives directly. Scoped
+  chains still execute all endpoint bodies before freezing their connections.
+- Growth repeatedly copied large pool prefixes. In the old chain case, a pool
+  with 699,904 connection slots grew to 1,049,860 to store 700,000 connections.
+  Spare growth is now capped by a conservative remaining-source bound. Large
+  mention and connection pools use private pages of at most 16,384 records and
+  copy once into ordinary contiguous output. This can increase allocation count
+  while reducing copied bytes and retained Arena buffers.
+- Scratch survived into publication, and every graph regrouped its scope bodies
+  and remapped connections. Scratch is released earlier; graphs without reopened
+  scopes already have the required membership order and skip that regrouping.
+- Small builds outlined tiny accounting and check helpers. Those calls are
+  inlined without disabling the checks; allocation growth stays outside the hot
+  path. Speed builds also inline the flat-statement helper, and scoped statements
+  no longer call it speculatively.
 
-| Input | Document Arena MiB | Events Arena MiB | Change |
+Parser credit units are unchanged. Construction still charges work and checks
+cancellation, including each record in the new final copies. Semantic totals
+reflect the changed amount of actual work; removing unnecessary replay and
+copies does not imply identical totals between revisions. No API, retained
+layout, safety check or cancellation interval changed.
+
+The edge-chain input has 800,000 nodes and 700,000 symbolic connections:
+
+| Mode | Edge-chain events ms before → after | Change |
+| --- | ---: | ---: |
+| fast | 85.324 → 70.009 | -17.9% |
+| safe | 89.492 → 76.132 | -14.9% |
+| small | 127.727 → 95.912 | -24.9% |
+
+
+Its live peak falls **19.0%**, from **113.66 to 92.10 MiB**; the Document route
+uses 97.64 MiB. Its allocation count rises from 109 to 185 with growable storage.
+Arena capacity falls **27.7%**, from **424.33 to 306.68 MiB**, which is still
+above the Document route's 234.87 MiB.
+
+Fast, growable storage; time in ms and peaks in MiB. The last six rows are
+adversarial shapes, kept separate from the 14-file aggregate:
+
+| Input | Document ms | Events ms before → after | Event time change | Document peak MiB | Events peak MiB before → after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| nodes | 6.867 | 8.590 → 8.467 | -1.4% | 11.12 | 10.42 → 9.81 |
+| edges | 13.898 | 15.567 → 13.691 | -12.1% | 16.64 | 16.12 → 14.53 |
+| edge_chains | 67.397 | 85.324 → 70.009 | -17.9% | 97.64 | 113.66 → 92.10 |
+| node_attrs | 25.029 | 28.344 → 29.359 | +3.6% | 32.87 | 29.15 → 28.54 |
+| edge_attrs | 27.675 | 31.012 → 29.588 | -4.6% | 29.61 | 27.30 → 25.90 |
+| attr_stmts | 12.056 | 14.445 → 14.557 | +0.8% | 15.93 | 11.90 → 12.12 |
+| subgraphs_flat | 9.719 | 11.431 → 11.129 | -2.6% | 11.93 | 10.02 → 9.62 |
+| subgraphs_nested | 10.547 | 12.804 → 12.761 | -0.3% | 11.94 | 9.99 → 10.06 |
+| subgraph_endpoints | 9.524 | 11.122 → 11.681 | +5.0% | 14.68 | 11.72 → 11.77 |
+| identifiers | 17.460 | 18.538 → 16.398 | -11.5% | 20.81 | 18.70 → 17.82 |
+| comments | 16.410 | 17.623 → 16.067 | -8.8% | 16.64 | 16.12 → 14.53 |
+| ports | 20.640 | 24.387 → 21.479 | -11.9% | 29.96 | 26.41 → 26.41 |
+| minified | 13.713 | 15.286 → 13.920 | -8.9% | 16.64 | 16.12 → 14.53 |
+| mixed | 24.830 | 27.508 → 26.368 | -4.1% | 24.42 | 22.40 → 20.24 |
+| deep_nesting | 4.205 | 6.373 → 6.249 | -1.9% | 12.54 | 21.71 → 21.71 |
+| reopened | 0.223 | 0.236 → 0.262 | +10.9% | 0.29 | 0.19 → 0.20 |
+| strict_reopened | 0.222 | 0.235 → 0.259 | +10.1% | 0.29 | 0.19 → 0.20 |
+| giant_chain | 6.775 | 8.968 → 7.856 | -12.4% | 13.93 | 21.64 → 16.82 |
+| giant_attributes | 14.965 | 15.651 → 15.526 | -0.8% | 11.75 | 13.67 → 13.67 |
+| symbolic_product | 6.929 | 9.302 → 9.644 | +3.7% | 11.12 | 19.37 → 18.76 |
+
+The improvement is not uniform. Fast node attributes take 3.6% more time,
+subgraph endpoints 5.0% more, and the two reopened-scope probes about 10–11%
+more (roughly 0.02–0.03 ms). The largest increase on the ordinary Safe corpus is
+5.7%; all 14 Small cases improve by 6–25%. These remaining event-route costs
+are recorded rather than hidden in an aggregate.
+
+Giant enclosing statements still retain their children until semantic replay.
+Deep nesting and the symbolic product can therefore use substantially more
+memory than Document construction. The 50,000 × 50,000 product remains one
+connection, with no implicit edge expansion.
+
+Selected Fast Arena capacities, including unused space and abandoned buffers:
+
+| Input | Document Arena MiB | Events Arena MiB before → after | Change |
 | --- | ---: | ---: | ---: |
-| nodes | 34.27 | 31.44 | -8.2% |
-| edges | 37.81 | 51.25 | +35.6% |
-| edge_chains | 234.87 | 424.33 | +80.7% |
-| node_attrs | 90.10 | 82.16 | -8.8% |
-| attr_stmts | 44.56 | 52.88 | +18.7% |
-| subgraph_endpoints | 31.43 | 44.08 | +40.2% |
-| ports | 85.59 | 82.25 | -3.9% |
-| mixed | 90.48 | 68.21 | -24.6% |
-| deep_nesting | 44.22 | 71.62 | +62.0% |
-| reopened | 1.18 | 0.55 | -52.8% |
-| giant_chain | 45.79 | 56.26 | +22.9% |
-| giant_attributes | 32.27 | 23.75 | -26.4% |
-| symbolic_product | 23.19 | 59.54 | +156.7% |
+| nodes | 34.27 | 31.44 → 24.86 | -20.9% |
+| edges | 37.81 | 51.25 → 51.90 | +1.3% |
+| edge_chains | 234.87 | 424.33 → 306.68 | -27.7% |
+| node_attrs | 90.10 | 82.16 → 81.66 | -0.6% |
+| edge_attrs | 94.47 | 96.23 → 103.56 | +7.6% |
+| subgraph_endpoints | 31.43 | 44.08 → 42.08 | -4.5% |
+| mixed | 90.48 | 68.21 → 69.14 | +1.4% |
+| deep_nesting | 44.22 | 71.62 → 71.62 | +0.0% |
+| giant_chain | 45.79 | 56.26 → 52.45 | -6.8% |
+| symbolic_product | 23.19 | 59.54 → 61.23 | +2.8% |
 
-Do not infer Arena savings from live-byte savings. For example, ordinary edges
-use 3% fewer live bytes but reserve 36% more Arena capacity; edge chains reserve
-81% more. This route remains an explicit option for consumers avoiding a syntax
-Document, not a replacement justified by universal time or memory improvements.
+Lower live peaks do not guarantee lower Arena capacity: edge-attribute capacity
+increases 7.6%, for example. Pages reduce repeated copies on long chains but
+change allocation order and fragmentation elsewhere. Compare both routes with
+the allocator and shapes the application uses.
 
-**Default-path gate.** The same 3b harness was compiled against `ec3b1c1`
-and the final changes, then run in two alternating process rounds for all 14 M
-files in each mode (three warmups/nine samples per process). Its unsplit
-`IR.parse` timings improve by a geometric mean of **6.7% Fast, 7.2% Safe and
-6.3% Small**. Per-case changes are −11.8 to −3.9%, −9.6 to −1.8% and −10.2 to
-+0.5%, respectively. Retained storage and whole-route peak memory are unchanged.
-The gain comes from hashing bare names directly with the same hash, instead
-of building a streaming hash for a single chunk. Block-boundary tests verify
-identical hash values. This also avoids extra hash calls in mixed consumers.
+**Default-path gate.** The standalone 3b `IR.parse` benchmark's `__TEXT,__text`
+bytes are identical before/after in Fast, Safe and Small, and its retained layout
+is unchanged. The earlier bare-name hashing gains are preserved. In the
+comparison program, with event code also linked, ordinary Document time changes
+by −0.6%, −0.6% and +0.04% respectively (geometric means). Per-case ranges are
+−5.4 to +2.9%, −1.9 to +1.0% and −3.2 to +3.9%; mixed-program timing and compiler
+layout remain sensitive to the linked consumers.
 
-The initial mixed program exposed scanner outlining when event and Document
-consumers were linked together. The scalar scanner now gives events a separate
-compile-time identity using the same states and credit accounting, like the
-existing standalone lexer specialization. Disabled event-validation checks
-also compile out on fixed-policy profiles. Neither change adds scanner fields
-or changes the controlled drivers' credit units or cancellation checkpoints.
+The comparison executable's code section grows from 418,320 to 426,208 B Fast,
+486,888 to 496,260 B Safe and 187,864 to 193,476 B Small (+1.9%, +1.9%, +3.0%).
+The standalone default code section is unchanged; these costs belong to the
+optional event route.
 
-A separate program linking event construction and the public lexer, while timing
-only Document construction, checked nodes, edge chains and mixed input. Compared
-with the final Document-only program, its time changes were −3.1 to −1.9% Fast,
-−1.3 to −0.3% Safe, and −1.3 to +3.2% Small. The Small mixed-program cost remains
-visible; those three linked cases are still faster than the pre-change baseline.
-Linking additional consumers is compiler-sensitive, so this is a measured gate,
-not a guarantee for every binary. The default-only harness's text section changes
-by +52 B Fast, +80 B Safe and +60 B Small; event code is absent when unused.
+Verification: library/IR tests, freestanding and benchmark compilation, 14
+focused event tests in Safe (including 180 generated semantic comparisons and
+large page-boundary cases), allocation-failure cleanup, and exact copy-credit
+and cancellation tests all pass.
 
 ### Lowering a Document
 

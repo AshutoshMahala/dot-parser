@@ -13,6 +13,44 @@ test "event IR lowers without Document storage" {
     try std.testing.expect(result.checking.validation.?.documentValid());
 }
 
+test "event IR page boundaries preserve ports, attributes and reopened memberships" {
+    var source: std.Io.Writer.Allocating = .init(a);
+    defer source.deinit();
+    try source.writer.writeAll("digraph { node[color=red]; edge[weight=2]; ");
+    for (0..16 * 1024 + 7) |i| try source.writer.print("n{d}:p -> n{d} [label=x];", .{ i, i + 1 });
+    try source.writer.writeAll("subgraph s{x}; a -> subgraph s{b} -> subgraph s{c}; }");
+    try pair(.{}, dot.Profile(.{}), source.written());
+    try pair(.{ .capabilities = .{ .attributes = false }, .indexes = .{ .connections = true, .scope_memberships = true } }, dot.Profile(.{}), source.written());
+}
+
+test "event IR cancellation during publication of construction pages frees every pool" {
+    var source: std.Io.Writer.Allocating = .init(a);
+    defer source.deinit();
+    try source.writer.writeAll("digraph {");
+    for (0..16 * 1024 + 7) |i| try source.writer.print("n{d}->n{d};", .{ i, i + 1 });
+    try source.writer.writeAll("}");
+    const E = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .cancellation = true } } }).FromEvents(dot.Profile(.{}));
+    const Counter = struct {
+        calls: usize = 0,
+        stop: usize = std.math.maxInt(usize),
+        fn check(raw: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            self.calls += 1;
+            return self.calls == self.stop;
+        }
+    };
+    var counter: Counter = .{};
+    const hook: dot.Cancellation = .{ .context = &counter, .is_requested = Counter.check };
+    var result = try E.parse(a, source.written(), .{ .lowering = .{ .cancellation = hook } });
+    result.deinit();
+    const total = counter.calls;
+    for ([_]usize{ total / 2, total - 30_000, total - 1, total }) |stop| {
+        counter = .{ .stop = stop };
+        try std.testing.expectError(error.Cancelled, E.parse(a, source.written(), .{ .lowering = .{ .cancellation = hook } }));
+        try std.testing.expectEqual(stop, counter.calls);
+    }
+}
+
 const a = std.testing.allocator;
 fn sameAttribute(left: anytype, right: @TypeOf(left)) !void {
     try std.testing.expectEqual(left == null, right == null);

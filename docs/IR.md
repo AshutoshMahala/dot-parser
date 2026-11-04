@@ -129,6 +129,13 @@ A giant statement can
 therefore require substantial temporary storage; this route does not promise
 lower memory or faster execution for every input. Edges remain symbolic.
 
+Node-only chains avoid the nested-scope replay machinery. Large mention and
+connection pools grow in pages, then copy into the ordinary contiguous graph
+storage before returning; that final copy counts against work and memory limits
+and checks cancellation. Growth ceilings use the remaining source length,
+without another scan. These choices reduce copying but do not guarantee lower
+Arena capacity on every input. See the [measured costs](PERFORMANCE.md#event-construction-versus-document-construction).
+
 | Option | Meaning |
 | --- | --- |
 | `.diagnostics` | One DOT diagnostic sink, defaulting to discard |

@@ -37,6 +37,8 @@ statements after an error, too.
     staging and growable output can cost more on giant statements. Observer
     forwarding, partial construction, composed sessions and fixed event storage
     are not included in this increment.
+    Node-only chains use a direct construction path; large construction pools
+    use pages to reduce repeated copying, with final storage unchanged.
   - **Reading the graph.** Node, subgraph and edge views; `findNode`,
     `hasEdge` and membership queries; attribute lookup and listing; value views
     that keep the original spelling and print the joined value with `{f}`; edge

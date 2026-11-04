@@ -56,10 +56,10 @@ pub fn Checker(comptime actual: enc.Actual, comptime fixed: ?policy.ValidationSe
                 .diagnostic_stop = self.stop,
             };
         }
-        pub fn operator(self: *Self, declared: syntax.GraphKind, keyword: Span, written: syntax.EdgeOperator, span: Span) Stop!void {
+        pub inline fn operator(self: *Self, declared: syntax.GraphKind, keyword: Span, written: syntax.EdgeOperator, span: Span) Stop!void {
             if (checks.operatorFinding(declared, keyword, self.settings(), written, span)) |d| try self.emit(d);
         }
-        pub fn restriction(self: *Self, severity: policy.RuleSeverity, span: Span, kind: @FieldType(diagnostic.Details, "restriction")) Stop!void {
+        pub inline fn restriction(self: *Self, severity: policy.RuleSeverity, span: Span, kind: @FieldType(diagnostic.Details, "restriction")) Stop!void {
             if (severity != .off) try self.emit(checks.restricted(severity, span, kind));
         }
         pub fn graphKind(self: *Self, kind: policy.GraphKind, span: Span) Stop!void {

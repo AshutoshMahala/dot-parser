@@ -59,13 +59,18 @@ pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("repr
     return BuilderMode(actual, rep, partial, fixed_storage, false);
 }
 
-/// Header-only input for event construction; no syntax pools or Document.
+/// Header and construction cursors for event input; no syntax pools or Document.
 pub const Header = struct {
     source: []const u8,
     source_info: encoding.Info,
     kind: syntax.GraphKind,
     strict: bool,
     name: ?t.Range,
+    // Event construction can bound further nodes from the unread source at
+    // each root statement. This is a growth ceiling, not a reservation.
+    node_capacity_bound: usize = std.math.maxInt(u32),
+    mention_base: u32 = 0,
+    connection_base: u32 = 0,
 };
 pub fn EventBuilder(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity) type {
     return BuilderMode(actual, rep, false, false, true);
@@ -221,8 +226,9 @@ fn BuilderMode(comptime actual: encoding.Actual, comptime rep: @import("represen
                 } else try self.node_table.insert(hash, id, &self.work);
                 break :blk id;
             };
-            if (self.mention_count >= self.mentions.len) return error.InvalidDocument;
-            self.mentions[self.mention_count] = .{ .node = @fromBackingInt(id), .source = view.identifier, .occurrence = @fromBackingInt(occurrence) };
+            const mention_index = if (streamed) self.mention_count - self.doc.mention_base else self.mention_count;
+            if (mention_index >= self.mentions.len) return error.InvalidDocument;
+            self.mentions[mention_index] = .{ .node = @fromBackingInt(id), .source = view.identifier, .occurrence = @fromBackingInt(occurrence) };
             self.mention_count += 1;
             return .{ .members = @fromBackingInt(t.node_bit | id), .port = if (retain_port) try self.storePort(view.port) else .none };
         }
@@ -262,7 +268,7 @@ fn BuilderMode(comptime actual: encoding.Actual, comptime rep: @import("represen
         /// Each remaining mention can introduce at most one new node. This
         /// bounds growth without assuming that all mentions have distinct names.
         pub fn nodeCapacityBound(self: *const Self) r.Error!usize {
-            if (streamed) return self.limits.max_nodes;
+            if (streamed) return @min(self.limits.max_nodes, self.doc.node_capacity_bound);
             if (self.mention_count >= self.mentions.len) return error.InvalidDocument;
             return @min(self.limits.max_nodes, self.nodes.items.len + (self.mentions.len - self.mention_count));
         }
@@ -442,10 +448,11 @@ fn BuilderMode(comptime actual: encoding.Actual, comptime rep: @import("represen
         // The driver snapshots with_attributes once for storage and binding,
         // avoiding an alias-sensitive reload after writing the defaults pool.
         pub fn storeConnection(self: *Self, operator: @FieldType(syntax.EdgeView, "operator"), operator_range: @FieldType(syntax.EdgeView, "operator_range"), occurrence: u32, left: Pending, right: Pending, attributes: syntax.AttributeRange, with_attributes: bool) r.Error!t.ConnectionId {
-            if (self.connection_count >= self.connections.len) return error.InvalidDocument;
+            const connection_index = if (streamed) self.connection_count - self.doc.connection_base else self.connection_count;
+            if (connection_index >= self.connections.len) return error.InvalidDocument;
             const effective = self.interpretation.operator(operator);
             if (self.doc.strict and ((self.interpretation.kind == .digraph and effective != .directed) or (self.interpretation.kind == .undigraph and effective != .undirected))) return error.UnsupportedSemantics;
-            self.connections[self.connection_count] = .{
+            self.connections[connection_index] = .{
                 .left = try self.resolved(left),
                 .right = try self.resolved(right),
                 .written_operator = operator,

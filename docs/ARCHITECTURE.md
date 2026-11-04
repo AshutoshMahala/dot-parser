@@ -205,6 +205,7 @@ encodings are read.
 | `lower.zig` | Builds the graph from an accepted `Document` in one call |
 | `event_lowering.zig` | Opt-in `IR.FromEvents(Dot).parse`, policy admission, diagnostics and ownership |
 | `event_builder.zig` | Active-statement staging and replay through shared semantic primitives |
+| `event_storage.zig` | Private construction pages and checked copying into ordinary contiguous IR pools |
 | `event_validation.zig` | Bounded committed-group and source checks without a Document |
 | `lowering_session.zig` | Builds it in small steps |
 | `lowering_primitives.zig` | Small bounded steps used by lowering sessions |

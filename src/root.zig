@@ -395,4 +395,5 @@ test {
     _ = @import("dot/policy.zig");
     _ = @import("ir/adjacency_rows.zig");
     _ = @import("ir/attribute_primitives.zig");
+    _ = @import("ir/event_storage.zig");
 }
