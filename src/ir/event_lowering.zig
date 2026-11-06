@@ -7,18 +7,33 @@ const enc = @import("parser_support").encoding;
 const r = @import("resources.zig");
 const execution = @import("execution_policy.zig");
 const builders = @import("event_builder.zig");
+const forwarding = @import("event_observer.zig");
 
 pub fn Bound(comptime IR: type, comptime config: ir.Config, comptime Dot: type) type {
+    return Observed(IR, config, Dot, null);
+}
+
+fn Observed(comptime IR: type, comptime config: ir.Config, comptime Dot: type, comptime Observer: ?type) type {
     const rep = @import("representation.zig").Identity.from(config);
     const fixed = if (Dot.runtime_policy) null else Dot.baseline.validation;
-    const Probe = builders.Builder(.utf8, rep, fixed);
+    const Probe = forwarding.Consumer(builders.Builder(.utf8, rep, fixed), Observer);
     const Events = Dot.Events(Probe); // Also enforces the child-processor boundary.
     const Return = @typeInfo(@TypeOf(Events.parse)).@"fn".return_type.?;
     const Admission = if (@typeInfo(Return) == .error_union) @typeInfo(Return).error_union.error_set else error{};
     return struct {
         const Self = @This();
-        pub const Error = r.Error || Admission || (if (config.runtime_policy) execution.ValidationError else error{});
-        pub const Options = struct {
+        pub fn Observe(comptime Consumer: type) type {
+            comptime dot.events.assertSink(Consumer);
+            return Observed(IR, config, Dot, Consumer);
+        }
+        pub const Error = r.Error || Admission || (if (config.runtime_policy) execution.ValidationError else error{}) ||
+            (if (Observer) |O| forwarding.Errors(O) || error{ObserverStopped} else error{});
+        pub const Options = if (Observer) |O| struct {
+            observer: *O,
+            diagnostics: dot.DiagnosticSink = dot.diagnostic.discard,
+            dot: Events.ParseOptions = .{},
+            lowering: execution.OptionsFor(config) = .{},
+        } else struct {
             diagnostics: dot.DiagnosticSink = dot.diagnostic.discard,
             dot: Events.ParseOptions = .{},
             lowering: execution.OptionsFor(config) = .{},
@@ -78,9 +93,19 @@ pub fn Bound(comptime IR: type, comptime config: ir.Config, comptime Dot: type) 
             var memory: r.Memory = .{ .backing = allocator, .limit = limits.max_bytes };
             var builder = try builders.Builder(actual, rep, fixed).init(memory.allocator(), source, info, limits, hook, settings, options.diagnostics);
             defer builder.deinit();
-            const Driver = Dot.Events(@TypeOf(builder));
-            const call = Driver.parse(allocator, source, &builder, options.diagnostics, options.dot);
+            const Consumer = forwarding.Consumer(@TypeOf(builder), Observer);
+            var consumer: if (Observer != null) Consumer else void = if (Observer != null)
+                .{ .builder = &builder, .observer = options.observer }
+            else {};
+            const Driver = Dot.Events(Consumer);
+            const call = Driver.parse(allocator, source, if (Observer != null) &consumer else &builder, options.diagnostics, options.dot);
             const parsed = if (@typeInfo(@TypeOf(call)) == .error_union) try call else call;
+            // Capture observer failures at their producer. An observer may use
+            // names such as OutOfMemory or ValidationStopped for its own errors.
+            if (Observer != null) {
+                if (consumer.failure) |err| return err;
+                if (consumer.stopped) return error.ObserverStopped;
+            }
             if (builder.failure) |failure| switch (failure) {
                 error.ValidationStopped => {},
                 else => |err| return memory.failure(err),

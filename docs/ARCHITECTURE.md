@@ -54,6 +54,9 @@ The optional `IR.FromEvents(Dot).parse` route uses the same event contract to
 build a complete graph without retaining a Document. It stages the active
 statement, validates committed groups and replays them through shared IR
 semantics. The ordinary Document route remains the default.
+`Observe(Consumer)` forwards selected events before their IR work, using the
+same event interface and caller-owned observer. Coverage stays in `checking`
+for both bindings; typed observer failures are captured at the callback.
 
 Building the graph from a `Document` is called *lowering* in the code and the
 API (`lowerComplete`, `loweringSession`). `src/ir.zig` defines
@@ -205,6 +208,7 @@ encodings are read.
 | `lower.zig` | Builds the graph from an accepted `Document` in one call |
 | `event_lowering.zig` | Opt-in `IR.FromEvents(Dot).parse`, policy admission, diagnostics and ownership |
 | `event_builder.zig` | Active-statement staging and replay through shared semantic primitives |
+| `event_observer.zig` | Optional typed forwarding, subscription filtering and observer lifecycle |
 | `event_storage.zig` | Private construction pages and checked copying into ordinary contiguous IR pools |
 | `event_validation.zig` | Bounded committed-group and source checks without a Document |
 | `lowering_session.zig` | Builds it in small steps |

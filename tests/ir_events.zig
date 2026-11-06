@@ -2,6 +2,9 @@ const std = @import("std");
 const dot = @import("dot_parser");
 const IR = dot.ir.Lowering(.{});
 const EventIR = IR.FromEvents(dot.Profile(.{}));
+test {
+    _ = @import("ir_event_observer.zig");
+}
 
 test "event IR lowers without Document storage" {
     const source = "digraph G { a -> { b c }; \"a\" -> d; subgraph s { x } }";
@@ -11,6 +14,29 @@ test "event IR lowers without Document storage" {
     try std.testing.expectEqual(@as(usize, 5), graph.nodes.len);
     try std.testing.expectEqual(@as(usize, 2), graph.connections.len);
     try std.testing.expect(result.checking.validation.?.documentValid());
+}
+
+test "event IR observing preserves full and topology graph semantics" {
+    const Observer = struct {
+        pub const observations = dot.events.Observations.all;
+        pub const statement_extents = true;
+        pub fn onEvent(_: *@This(), _: dot.events.Event) error{}!dot.events.Action {
+            return .proceed;
+        }
+        pub fn onAbort(_: *@This(), _: dot.events.Abort) void {}
+    };
+    const source = "strict graph {node[color=red];edge[weight=2];a:p--subgraph s{b;c};subgraph s{d};b:q--a:r[label=x];a[label=\"x\"+\"y\"]}";
+    inline for (.{ true, false }) |attributes| {
+        const L = dot.ir.Lowering(.{ .capabilities = .{ .attributes = attributes }, .indexes = .{ .connections = true, .scope_memberships = true } });
+        const E = L.FromEvents(dot.Profile(.{}));
+        var base = try E.parse(a, source, .{});
+        defer base.deinit();
+        var observer: Observer = .{};
+        var observed = try E.Observe(Observer).parse(a, source, .{ .observer = &observer });
+        defer observed.deinit();
+        try sameGraphs(base.ir().?, observed.ir().?);
+        try std.testing.expectEqualDeep(base.checking, observed.checking);
+    }
 }
 
 test "event IR page boundaries preserve ports, attributes and reopened memberships" {

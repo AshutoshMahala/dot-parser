@@ -1448,6 +1448,47 @@ focused event tests in Safe (including 180 generated semantic comparisons and
 large page-boundary cases), allocation-failure cleanup, and exact copy-credit
 and cancellation tests all pass.
 
+### Observer forwarding
+
+Measured 2026-11-05 against `37f7dee`, with the working slice-3d implementation,
+Zig 0.17.0 and Apple M4 Pro. The same comparison harness ran all 14 M workloads
+in two opposite-order process rounds, with three warmups and nine samples per
+process. Builds and tests finished before timing. Times below are geometric-mean
+changes with growable storage and the observer disabled.
+
+| Mode | Document route | Event route |
+| --- | ---: | ---: |
+| fast | +0.14% | +0.35% |
+| safe | +0.18% | -0.13% |
+| small | +0.51% | +0.55% |
+
+Fast and Safe executable code sections are byte-identical before and after.
+Small retains the same code-section size with different placement of LLVM
+outlined helpers. Its first ports sample was 5.0% slower; four additional
+alternating rounds on ports, node attributes, mixed and plain edges reduced the
+ports difference to +0.66%. Across those repeated cases, the Document route
+changed by -0.13% and the event route by +0.23%. The repeats support treating
+the initial outlier as timing variation. Growable and Arena probes match
+exactly in retained bytes, live requested peaks, Arena capacity and allocation
+counts on every default-route workload.
+
+A separate Fast cost sample binds a counting observer selecting identifiers,
+statement heads, delimiters and commit extents. It retains no outline entries.
+
+| Workload | Event route ms | With observer ms |
+| --- | ---: | ---: |
+| nodes | 8.399 | 9.240 |
+| edges | 13.772 | 14.741 |
+| edge chains | 67.286 | 69.546 |
+| node attributes | 28.527 | 31.230 |
+| subgraph endpoints | 11.652 | 12.870 |
+
+This selection adds 3–10% time with equal live requested peaks. Application
+outline storage and heavier callbacks have their own costs. Each forwarded
+callback has an additional charged IR work unit and cancellation check;
+the parser's metering rules are preserved. The unobserved binding selects the
+ordinary builder at compile time.
+
 ### Lowering a Document
 
 Development measurement. Times measured at commit `d875891` (2026-10-24);

@@ -38,7 +38,7 @@ has been discussed.
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps, public events, delimiter observations, commit extents and terminal coverage | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, complete one-shot event lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization, optional connection/scope indexes and materialized adjacency; slice-2 verification/performance pass complete | Label-port binding, markup-result association, event observer forwarding/partial/session/fixed construction, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide; remaining optional performance costs are recorded in the performance report |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, complete one-shot event lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization, optional connection/scope indexes and materialized adjacency; slice-2 verification/performance pass complete | Label-port binding, markup-result association, event partial/session/fixed construction, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide; remaining optional performance costs are recorded in the performance report |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and
@@ -241,7 +241,12 @@ and other syntax ranges. `identifier.fromName(source, name)` avoids re-lexing;
 raw spans use checked `identifier.check`. Builders consume the same typed events,
 and retained views derive handles without extra storage. This is an accidental
 misuse guard, not unforgeability or a source-identity/Unicode certificate.
-Observer forwarding, partial event construction, composed resumable execution,
+Observer forwarding is implemented through `IR.FromEvents(Dot).Observe(Consumer)`.
+The required observer receives events before their IR work, with standalone
+subscriptions and abort behavior. Coverage is available with or without an
+observer. Typed observer failures and `ObserverStopped` end construction while
+preserving caller-owned observations and diagnostics.
+Partial event construction, composed resumable execution,
 fixed event-construction storage, combined tree/event output and public pull events remain
 unfinished. *(Embodied: `src/dot/events.zig`, `event_profile.zig`,
 `tests/events.zig`, [public contract](../EVENTS.md).)*

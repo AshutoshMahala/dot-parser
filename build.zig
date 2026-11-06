@@ -86,6 +86,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit and public integration tests");
     test_step.dependOn(&run_ir_tests.step);
     for ([_]struct { name: []const u8, message: []const u8 }{
+        .{ .name = "ir_event_observer_required", .message = "missing struct field: observer" },
         .{ .name = "ir_topology_attribute", .message = "IR attributes are disabled; enable .capabilities.attributes for attribute access and effective ports" },
         .{ .name = "ir_topology_ports", .message = "IR attributes are disabled; enable .capabilities.attributes for attribute access and effective ports" },
         .{ .name = "ir_topology_attribute_session", .message = "IR attributes are disabled; enable .capabilities.attributes for attribute access and effective ports" },

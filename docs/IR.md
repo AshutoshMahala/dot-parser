@@ -177,10 +177,60 @@ There are intentional execution differences:
   arbitrary lowering work. Enabling metering does not make this one-shot call
   pause. There is no composed event-IR session yet.
 
-Observer forwarding, partial event construction, composed sessions and fixed
-event-construction storage remain separate increments. Use existing Document
-routes for those operations today. Compare both routes with
+Compare both routes with
 `zig build bench-ir-events -Doptimize=fast -- --corpus /path/to/generated`.
+
+### Build an outline alongside the graph
+
+Bind an existing [DOT event consumer](EVENTS.md#writing-a-consumer) at compile
+time, then pass its instance with the required `observer` option.
+
+```zig
+const EditorIR = IR.FromEvents(Dot).Observe(Outline);
+var outline = Outline{};
+var result = try EditorIR.parse(gpa, source, .{
+    .observer = &outline,
+    .diagnostics = bag.sink(),
+});
+defer result.deinit();
+```
+
+The consumer uses the same `onEvent` and `onAbort` methods and declarations as
+standalone DOT events. Its observation selection, commit extents, begin
+notifications, output recovery and optional scope context apply. Events arrive
+before IR work for that event. An editor can retain a provisional node name
+from a rejected statement and receive later commits when recovery continues.
+Syntax errors still leave `result.ir()` null on this complete-construction route.
+
+`result.checking.coverage` is always available, with or without `Observe` and
+independently of the consumer's `coverage` declaration. Standalone DOT events
+still require that declaration to expose their result coverage.
+
+The caller owns the observer and its allocations. Keep it alive and unmoved
+through `parse`; retained spans and names borrow the original source. Forwarding
+adds no event log. Each forwarded delivery charges one additional IR work unit
+and checks cancellation before calling the observer. Callback bodies retain the
+standalone caller-owned work contract. The unobserved route uses its ordinary
+builder directly.
+
+- Returning `.stop` ends the operation with `error.ObserverStopped`.
+- An observer error is returned unchanged. Its declared or inferred error set
+  is included in this binding's error set.
+- Either stop discards construction storage. The observer keeps what it saw,
+  and the diagnostic bag keeps delivered findings.
+- A failure while the event stream is active follows the ordinary abort
+  lifecycle. A successful `end_document` ends that stream; later IR checking or
+  publication failure is reported by `parse`. Consult the operation result
+  before claiming whole-pipeline success.
+
+With matching subscriptions and parsing settings, the delivered event and abort
+sequence matches standalone DOT events up to any composition-specific stop.
+IR limits and validation can stop construction earlier than standalone parsing.
+The IR builder also consumes statement-begin dispatches internally even when
+the observer disables them; parser credit totals can therefore differ.
+
+Partial event construction, composed sessions and fixed event-construction
+storage remain planned. Their existing Document routes are available today.
 
 ## Nodes, names and subgraphs
 
@@ -2071,7 +2121,7 @@ Measured results are in [Performance](PERFORMANCE.md).
 
 ## Not available yet
 
-- Event-route observer forwarding, partial construction, shared-budget sessions
+- Event-route partial construction, shared-budget sessions
   and fixed storage; complete one-shot [event construction](#build-from-events)
   is available
 - Checking that a port name exists in a node's label, or binding it to the label

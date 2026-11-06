@@ -11,6 +11,11 @@ The type that receives the events is your *consumer*. You bind it at compile
 time; there is no run-time registry. The source must still be in one buffer:
 events stream the output, not the input.
 
+To receive these events while building the library's semantic graph, use
+`IR.FromEvents(Dot).Observe(Consumer)` with a required `.observer` instance.
+The [IR guide](IR.md#build-an-outline-alongside-the-graph) describes its ownership,
+coverage, work accounting and typed stop/error behavior.
+
 ## Quick start
 
 ```zig
