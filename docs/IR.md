@@ -105,8 +105,9 @@ What `dot.ir.parse` does:
 
 ## Build from events
 
-`IR.FromEvents(Dot).parse` is an opt-in, run-to-completion route for complete
-input. It returns the same graph type, views and queries as Document lowering.
+`IR.FromEvents(Dot)` is an opt-in, run-to-completion route. `parse` returns a
+complete graph; `parsePartial` can retain facts from broken input. Both return
+the same graph types, views and queries as Document lowering.
 Ordinary `dot.ir.parse` and `IR.parse` keep their Document-based implementation.
 
 ```zig
@@ -151,10 +152,45 @@ cannot be bound: the event route does not schedule markup or string processors.
 `checking` includes the usual parse/validation/delivery summary and a `coverage`
 field with the parser's `retained_end` and `root_closed` facts. These facts do not
 certify graph validity. Syntax rejection never publishes a complete graph.
-Validation rejection or a diagnostic stop also leaves `ir()` null. Construction
-limits, allocation failures, unsupported IR semantics and cancellation use the
-error union; cancellation returns `error.Cancelled` and publishes no result.
-Parser resource/storage failures retain their normal checking outcomes.
+On the complete route, validation rejection or a diagnostic stop also leaves
+`ir()` null. Construction limits, allocation failures, unsupported IR semantics
+and cancellation use the error union; cancellation returns `error.Cancelled`
+and publishes no result. Parser resource/storage failures retain their normal
+checking outcomes.
+
+### Keep partial graph facts from events
+
+```zig
+var result = try EventIR.parsePartial(gpa, source, .{ .diagnostics = bag.sink() });
+defer result.deinit();
+const graph = result.ir() orelse return error.GraphUnavailable;
+const answer = try graph.findNode("b"); // known or unknown, just like partial Document lowering
+```
+
+Calling `parsePartial` selects partial retention; no DOT `retention.partial`
+setting is required. DOT's `on_error` still controls whether parsing continues.
+Under `.collect`, committed later statements survive, as do committed children
+of an abandoned parent statement. That parent contributes no invented node,
+edge or attributes. Skipped ranges and unfinished input become the same gaps
+and qualified query answers as [partial Document lowering](#partial-graphs-for-editors).
+On complete input this still returns a `PartialGraph`, with complete coverage
+and known answers.
+Partial construction adds bookkeeping for staged statements/scopes and retained
+gaps. That bookkeeping is compiled out of the complete `parse` route.
+
+An unfinished string or comment can stop parsing; only certified earlier facts
+are retained. A rejected graph header may leave no graph at all. Cancellation,
+work/memory limits, allocation failure and diagnostic delivery stops never
+publish a graph from unfinished construction. Non-strict retained facts may
+still have validation errors; strict admission follows the Document route.
+
+Checks also cover certified prefixes of abandoned scoped edges, without turning
+them into graph connections. Validation reports incomplete coverage for broken
+input and checks encoding only through the retained frontier. The Document
+`parseAndValidate` convenience can skip its validation pass after a fail-fast
+syntax error; the event route has already checked earlier contributions.
+
+### Execution and accounting
 
 There are intentional execution differences:
 
@@ -201,6 +237,14 @@ notifications, output recovery and optional scope context apply. Events arrive
 before IR work for that event. An editor can retain a provisional node name
 from a rejected statement and receive later commits when recovery continues.
 Syntax errors still leave `result.ir()` null on this complete-construction route.
+Use `EditorIR.parsePartial` to retain qualified graph facts alongside the outline.
+Its internal retention is independent of the observer's `recover_statements`:
+`false` gives that observer its standalone terminal abort at the first syntax
+failure, while IR construction can continue under DOT `.collect`. No later
+events or scope-context callbacks reach the terminated observer. Explicit
+observer `.stop` or an observer error still ends the whole operation without a
+published result. Coverage describes IR retention, even after observer delivery
+has ended.
 
 `result.checking.coverage` is always available, with or without `Observe` and
 independently of the consumer's `coverage` declaration. Standalone DOT events
@@ -2032,7 +2076,7 @@ Measured numbers are in [Performance](PERFORMANCE.md).
 | `capabilities`, `Node`, `Connection`, `Graph`, `PartialGraph` | This profile's choices and types |
 | `parse`, `parsePartial`, `ParseOptions`, `ParseResult`, `PartialResult` | One-call parsing with this profile |
 | `lowerComplete`, `lowerPartial` | Lower a Document |
-| `FromEvents(Dot)` | Bind complete one-shot construction to a DOT event profile; see [Build from events](#build-from-events) |
+| `FromEvents(Dot)` | Bind complete/partial one-shot construction to a DOT event profile; see [Build from events](#build-from-events) |
 | `loweringSession`, `partialLoweringSession`, `LoweringSession`, `PartialLoweringSession` | Lower in small steps |
 | `lowerCompleteIn`, `lowerPartialIn`, `FixedLoweringResult`, `FixedPartialLoweringResult` | Fixed-storage lowering |
 | `loweringSessionIn`, `partialLoweringSessionIn`, `FixedLoweringSession`, `FixedPartialLoweringSession` | Fixed-storage lowering in small steps |
@@ -2121,9 +2165,8 @@ Measured results are in [Performance](PERFORMANCE.md).
 
 ## Not available yet
 
-- Event-route partial construction, shared-budget sessions
-  and fixed storage; complete one-shot [event construction](#build-from-events)
-  is available
+- Event-route shared-budget sessions and fixed storage; complete/partial
+  one-shot [event construction](#build-from-events) and observers are available
 - Checking that a port name exists in a node's label, or binding it to the label
 - Finding a node by name (`findNode`) in small steps
 - Structured `tailPort()`/`headPort()` and value formatting in small steps

@@ -31,16 +31,43 @@ const Replay = union(enum) {
     statement: u32,
     edge: struct { statement: u32, phase: u32 = 0, link: u32, pending: u32 },
 };
+const PartialState = struct {
+    const StatementState = struct {
+        first_child: u32 = none,
+        last_child: u32 = none,
+        gap: ?Span = null,
+        // Promoted scoped-edge prefixes survive in a partial Document for
+        // validation only. They never become graph connections or mentions.
+        prefix: bool = false,
+        committed: bool = false,
+        certified_end: u32 = 0,
+    };
+    const ScopeState = struct { next: u32 = none, closed: bool = false };
+    statements: std.ArrayList(StatementState) = .empty,
+    scopes: std.ArrayList(ScopeState) = .empty,
 
-pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representation.zig").Identity, comptime fixed: ?policy.ValidationSettings) type {
+    fn reset(self: *@This()) void {
+        self.statements.clearRetainingCapacity();
+        self.scopes.clearRetainingCapacity();
+    }
+    fn deinit(self: *@This(), a: std.mem.Allocator) void {
+        self.statements.deinit(a);
+        self.scopes.deinit(a);
+        self.* = .{};
+    }
+};
+
+pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representation.zig").Identity, comptime fixed: ?policy.ValidationSettings, comptime partial: bool) type {
     return struct {
         const Self = @This();
+        pub const retains_partial = partial;
         pub const wants_begin_statement = true;
         pub const recover_statements = true;
         pub const coverage = true;
         pub const Error = r.Error || v.Stop;
+        const ReplayError = if (partial) Error else r.Error;
         header: lower.Header,
-        b: lower.EventBuilder(actual, rep),
+        b: lower.EventBuilder(actual, rep, partial),
         checker: v.Checker(actual, fixed),
         keyword: Span = .{ .start = 0, .len = 0 },
         statements: std.ArrayList(Statement) = .empty,
@@ -56,7 +83,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         reference_base: u32 = 0,
         next_reference: u32 = 0,
         occurrence_count: u32 = 0,
-        aborted: bool = false,
+        aborted: if (partial) PartialState else bool = if (partial) .{} else false,
         failure: ?Error = null,
         semantic_failure: ?r.Error = null,
         mention_bound: u32 = std.math.maxInt(u32),
@@ -67,6 +94,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             return .{ .header = .{ .source = source, .source_info = info, .kind = .digraph, .strict = false, .name = null }, .b = .{ .a = a, .doc = undefined, .limits = limits, .interpretation = undefined, .work = try r.Work.init(limits, hook) }, .checker = .{ .source = source, .runtime_settings = if (fixed == null) settings else {}, .sink = sink } };
         }
         pub fn deinit(self: *Self) void {
+            if (partial) self.aborted.deinit(self.b.a);
             self.checker.deinit(self.b.a);
             self.mention_pages.deinit(self.b.a);
             self.connection_pages.deinit(self.b.a);
@@ -102,6 +130,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             slice.* = try self.b.a.realloc(slice.*, count);
         }
         fn resetStage(self: *Self) void {
+            if (partial) self.aborted.reset();
             inline for (.{ "statements", "stage_scopes", "stage_attributes", "stage_links", "stage_ports", "replay" }) |field| @field(self, field).clearRetainingCapacity();
             self.current = 0;
             self.scope_base = self.occurrence_count;
@@ -117,16 +146,17 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         pub fn onAbort(self: *Self, _: e.Abort) void {
             // Complete-only construction never publishes recovered syntax as a
             // complete graph. The parser may continue delivering diagnostics.
-            self.aborted = true;
+            if (!partial) self.aborted = true;
         }
         fn consume(self: *Self, event: e.Event) Error!e.Action {
-            if (self.aborted) return .proceed;
+            if (!partial and self.aborted) return .proceed;
             try self.spend(1);
             switch (event) {
                 .begin_document => |d| {
                     self.header = .{ .source = self.header.source, .source_info = d.source_info, .kind = if (d.kind == .digraph) .digraph else .undigraph, .strict = d.strict, .name = if (d.name_span) |name| name.span() else null };
                     self.keyword = d.keyword_span;
-                    self.b.interpretation = interpretation(self.header.kind, self.checker.settings(), false);
+                    const reading = interpretation(self.header.kind, self.checker.settings(), false);
+                    self.b.interpretation = .{ .kind = reading.kind, .directed = reading.directed, .undirected = reading.undirected };
                     if (enc.Reader(actual).width != 1) if (self.header.name) |name| {
                         _ = try self.scopeHash(name);
                     };
@@ -147,23 +177,32 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                         self.connection_bound = growthBound(self.b.connection_count, remaining);
                         if (rep.attributes) self.attribute_bound = growthBound(self.b.attribute_count, remaining);
                     }
-                    if (self.stage_scopes.items.len == 0) _ = try self.append(&self.stage_scopes, .{ .occurrence = 0 });
-                    const id = try self.append(&self.statements, .{ .occurrence = @backingInt(d.owner.scope) });
-                    const scope = &self.stage_scopes.items[self.current];
-                    if (scope.last != none) self.statements.items[scope.last].next = id else scope.first = id;
-                    scope.last = id;
-                    scope.active = id;
+                    _ = try self.beginStatement(@backingInt(d.owner.scope));
                 },
                 .begin_scope => |d| {
                     const occurrence = try self.addScope(@backingInt(d.parent), d.id, if (d.name) |name| name.span() else null, d.start);
                     if (d.role == .link) try self.link(.{ .scope = occurrence }, convertOperator(d.link_operator.?), d.link_operator_span.?);
-                    self.current = try self.append(&self.stage_scopes, .{ .occurrence = occurrence, .parent = self.current });
+                    const child = try self.append(&self.stage_scopes, .{ .occurrence = occurrence, .parent = self.current });
+                    if (partial) {
+                        _ = try self.append(&self.aborted.scopes, .{});
+                        const owner = &self.aborted.statements.items[self.active()];
+                        if (!owner.prefix) if (d.edge) |prefix| {
+                            self.statements.items[self.active()].value = .{ .edge = prefix };
+                            owner.prefix = true;
+                        };
+                        owner.certified_end = @intCast(d.start.endOffset());
+                        if (owner.last_child != none) self.aborted.scopes.items[owner.last_child].next = child else owner.first_child = child;
+                        owner.last_child = child;
+                    }
+                    self.current = child;
                     try self.checker.restriction(self.checker.settings().restrictions.subgraphs, d.start, .subgraph);
                 },
                 .end_scope => |d| {
                     const id = @backingInt(d.id);
                     self.b.occurrences[id].source.len = d.close.start + d.close.len - self.b.occurrences[id].source.start;
+                    if (partial) self.aborted.scopes.items[self.current].closed = true;
                     self.current = self.stage_scopes.items[self.current].parent;
+                    if (partial) self.aborted.statements.items[self.active()].certified_end = @intCast(d.close.endOffset());
                 },
                 .attribute => |d| {
                     const index = try self.append(&self.stage_attributes, attr(d.pair));
@@ -205,13 +244,33 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                     self.b.bodies[0].end = self.b.mention_count;
                     self.b.cursors[0].head = 0;
                 },
-                .skipped => self.aborted = true,
+                .skipped => |d| if (partial) {
+                    const id = if (self.stage_scopes.items.len != 0 and self.active() != none) self.active() else try self.beginStatement(@backingInt(d.scope));
+                    self.aborted.statements.items[id].gap = d.span;
+                    self.stage_scopes.items[self.current].active = none;
+                    if (self.current == 0) try self.flush(id);
+                } else {
+                    self.aborted = true;
+                },
                 else => {},
             }
             return .proceed;
         }
         inline fn active(self: *Self) u32 {
             return self.stage_scopes.items[self.current].active;
+        }
+        inline fn beginStatement(self: *Self, occurrence: u32) r.Error!u32 {
+            if (self.stage_scopes.items.len == 0) {
+                _ = try self.append(&self.stage_scopes, .{ .occurrence = 0 });
+                if (partial) _ = try self.append(&self.aborted.scopes, .{});
+            }
+            const id = try self.append(&self.statements, .{ .occurrence = occurrence });
+            if (partial) _ = try self.append(&self.aborted.statements, .{});
+            const scope = &self.stage_scopes.items[self.current];
+            if (scope.last != none) self.statements.items[scope.last].next = id else scope.first = id;
+            scope.last = id;
+            scope.active = id;
+            return id;
         }
         fn link(self: *Self, right: Endpoint, op: syntax.EdgeOperator, span: Span) r.Error!void {
             const id = try self.append(&self.stage_links, .{ .right = right, .operator = op, .span = span });
@@ -257,14 +316,18 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                 },
                 else => {},
             }
+            if (partial) self.aborted.statements.items[self.active()].committed = true;
             // A root transaction is complete; replay its nested records once.
             if (self.current == 0) {
-                if (self.semantic_failure == null) self.walk(self.active()) catch |err| switch (err) {
-                    error.InvalidIdentifier => self.semantic_failure = error.InvalidIdentifier,
-                    else => return err,
-                };
-                self.resetStage();
-            }
+                try self.flush(self.active());
+            } else if (partial) self.stage_scopes.items[self.current].active = none;
+        }
+        inline fn flush(self: *Self, id: u32) ReplayError!void {
+            if (self.semantic_failure == null) self.walk(id) catch |err| switch (err) {
+                error.InvalidIdentifier => self.semantic_failure = error.InvalidIdentifier,
+                else => return err,
+            };
+            self.resetStage();
         }
         inline fn checkReference(self: *Self, view: syntax.NodeReferenceView) v.Stop!void {
             if (view.port) |port| {
@@ -348,7 +411,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             self.b.bodies[occurrence].start = self.b.mention_count;
             _ = try self.append(&self.replay, .{ .scope = .{ .scope = occurrence, .statement = self.stage_scopes.items[local].first } });
         }
-        fn takeNode(self: *Self, view: syntax.NodeReferenceView, occurrence: u32, retain_port: bool) Error!t.Endpoint {
+        fn takeNode(self: *Self, view: syntax.NodeReferenceView, occurrence: u32, retain_port: bool) r.Error!t.Endpoint {
             if (self.b.mention_count >= self.b.limits.max_mentions) return error.MentionLimit;
             try self.mention_pages.ensure(self.b.a, &self.b.work, &self.b.mentions, self.b.mention_count, @min(self.b.limits.max_mentions, self.mention_bound));
             self.header.mention_base = self.mention_pages.base;
@@ -357,7 +420,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             }
             return self.b.node(view, occurrence, retain_port);
         }
-        fn takeEndpoint(self: *Self, value: Endpoint, occurrence: u32) Error!void {
+        fn takeEndpoint(self: *Self, value: Endpoint, occurrence: u32) r.Error!void {
             switch (value) {
                 .node => |node| {
                     const result = try self.takeNode(node, occurrence, true);
@@ -397,7 +460,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             self.b.attribute_count = end;
             return .{ .start = start, .len = @intCast(group.len) };
         }
-        fn connect(self: *Self, op: syntax.EdgeOperator, span: Span, occurrence: u32, left: @import("lowering_types.zig").Pending, right: @import("lowering_types.zig").Pending, range: syntax.AttributeRange) Error!void {
+        fn connect(self: *Self, op: syntax.EdgeOperator, span: Span, occurrence: u32, left: @import("lowering_types.zig").Pending, right: @import("lowering_types.zig").Pending, range: syntax.AttributeRange) r.Error!void {
             if (self.b.connection_count >= self.b.limits.max_connections) return error.ConnectionLimit;
             try self.connection_pages.ensure(self.b.a, &self.b.work, &self.b.connections, self.b.connection_count, @min(self.b.limits.max_connections, self.connection_bound));
             self.header.connection_base = self.connection_pages.base;
@@ -415,14 +478,14 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             if (with_attributes) try self.b.attribute_data.bind(actual, self.b.a, self.header.source, self.b.attributes, range, .edge, .{ .connection = id }, &self.b.work);
             self.b.connection_count += 1;
         }
-        fn walk(self: *Self, root: u32) Error!void {
-            switch (self.statements.items[root].value) {
+        fn walk(self: *Self, root: u32) ReplayError!void {
+            if (!(partial and !self.aborted.statements.items[root].committed)) switch (self.statements.items[root].value) {
                 .scope, .scoped_edge => {},
                 else => {
                     try self.spend(1);
                     return @call(leaf_call, leaf, .{ self, &self.statements.items[root] });
                 },
-            }
+            };
             _ = try self.append(&self.replay, .{ .statement = root });
             while (self.replay.items.len != 0) {
                 try self.spend(1);
@@ -439,6 +502,24 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                         }
                     },
                     .statement => |id| {
+                        // Failed owners contribute no endpoints or attributes.
+                        // Replay their children once, then their recovery gap.
+                        if (partial and !self.aborted.statements.items[id].committed) {
+                            const state = &self.aborted.statements.items[id];
+                            if (state.prefix) {
+                                try self.checkPrefix(id, self.statements.items[id].value.edge, state.certified_end);
+                                state.prefix = false;
+                            }
+                            if (state.first_child != none) {
+                                const child = state.first_child;
+                                state.first_child = self.aborted.scopes.items[child].next;
+                                try self.enter(self.stage_scopes.items[child].occurrence);
+                            } else {
+                                if (state.gap) |gap| try self.addGap(.skipped_input, gap, @fromBackingInt(self.statements.items[id].occurrence));
+                                _ = self.replay.pop();
+                            }
+                            continue;
+                        }
                         _ = self.replay.pop();
                         const s = &self.statements.items[id];
                         switch (s.value) {
@@ -484,7 +565,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         // Speed modes fold leaf dispatch into the caller. Small keeps one copy
         // of the larger helper; scoped statements never call it speculatively.
         const leaf_call: std.builtin.CallModifier = if (@import("builtin").mode == .fast or @import("builtin").mode == .safe) .always_inline else .auto;
-        fn leaf(self: *Self, s: *const Statement) Error!void {
+        fn leaf(self: *Self, s: *const Statement) r.Error!void {
             const group = self.stage_attributes.items[s.attributes.start..][0..s.attributes.len];
             switch (s.value) {
                 .pending => return error.InvalidDocument,
@@ -513,12 +594,78 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             }
         }
         pub fn finishChecks(self: *Self) Error!void {
-            try self.checker.graphKind(self.b.interpretation.kind, self.keyword);
+            if (partial) {
+                if (self.b.interpretation.kind) |kind| try self.checker.graphKind(kind, self.keyword);
+            } else try self.checker.graphKind(self.b.interpretation.kind, self.keyword);
             try self.checker.encoding(&self.b.work);
         }
-        pub fn finish(self: *Self) r.Error!t.Graph(rep) {
+        fn checkPrefix(self: *Self, id: u32, prefix: e.Edge, end: u32) Error!void {
+            inline for (.{ true, false }) |left| {
+                const value = try self.endpoint(prefix, left);
+                if (value == .node) try self.checkPrefixReference(value.node, end);
+            }
+            if (prefix.operator_span.endOffset() <= end)
+                try self.checker.operator(self.header.kind, self.keyword, convertOperator(prefix.operator), prefix.operator_span);
+            var link_id = self.statements.items[id].first_link;
+            while (link_id != none) {
+                try self.spend(1);
+                const value = self.stage_links.items[link_id];
+                if (value.right == .node) try self.checkPrefixReference(value.right.node, end);
+                if (value.span.endOffset() <= end) try self.checker.operator(self.header.kind, self.keyword, value.operator, value.span);
+                link_id = value.next;
+            }
+        }
+        fn checkPrefixReference(self: *Self, value: syntax.NodeReferenceView, end: u32) v.Stop!void {
+            const last = if (value.port) |port| port.second orelse port.first else value.identifier;
+            if (last.endOffset() <= end) try self.checkReference(value);
+        }
+        fn addGap(self: *Self, reason: @FieldType(@import("coverage.zig").Gap, "reason"), span: Span, occurrence: ?t.OccurrenceId) r.Error!void {
+            try self.b.publicationState().coverage_data.add(self.b.a, .{ .reason = reason, .range = span, .occurrence = occurrence }, if (rep.attributes) self.b.declarations.items.len else 0, self.b.connection_count, &self.b.work);
+        }
+        /// Called only after admissible syntax termination. Abort itself is
+        /// constant-time, infallible cleanup; salvage remains bounded IR work.
+        pub fn finishPartial(self: *Self, facts: e.Coverage, complete: bool) Error!void {
+            comptime std.debug.assert(partial);
+            var unfinished: ?t.OccurrenceId = if (facts.root_closed) null else .root;
+            for (self.stage_scopes.items, self.aborted.scopes.items, 0..) |scope, state, i| {
+                try self.spend(1);
+                if (i != 0 and !state.closed) {
+                    const occurrence = &self.b.occurrences[scope.occurrence];
+                    occurrence.source.len = facts.retained_end - occurrence.source.start;
+                    unfinished = @fromBackingInt(scope.occurrence);
+                }
+            }
+            if (self.stage_scopes.items.len != 0) {
+                const first = self.stage_scopes.items[0].first;
+                if (first != none) try self.flush(first);
+            }
+            self.b.bodies[0].end = self.b.mention_count;
+            self.b.cursors[0].head = 0;
+            const gaps = &self.b.publicationState().coverage_data;
+            if (facts.retained_end < self.header.source.len or unfinished != null or (!complete and gaps.entries.items.len == 0))
+                try self.addGap(.unfinished_input, .{ .start = facts.retained_end, .len = try r.index(self.header.source.len - facts.retained_end) }, unfinished);
+            try gaps.finish(&self.b.work);
+            if (!complete and self.header.kind == .undigraph and self.checker.settings().graph.treated_as == .auto and self.b.interpretation.kind != .generic)
+                self.b.interpretation.kind = null;
+            // Match the Document validator's retained source frontier. It may
+            // include skipped syntax, but never the unexamined terminal tail.
+            if (!complete) self.checker.source = self.header.source[0..facts.retained_end];
+        }
+        pub fn validation(self: *Self, complete: bool, retained_end: u32) @import("../dot/validate.zig").Result {
+            var result = self.checker.result();
+            if (partial and !complete) {
+                var first = retained_end;
+                const entries = self.b.publicationState().coverage_data.entries.items;
+                if (entries.len != 0) first = @min(first, entries[entries[0].suffix_first].gap.range.start);
+                result.coverage = .{ .incomplete = first };
+                if (result.outcome == .completed) result.outcome.completed.document_valid = false;
+            }
+            return result;
+        }
+        pub fn finish(self: *Self) r.Error!lower.Output(rep, partial) {
             if (self.semantic_failure) |err| return err;
             const b = &self.b;
+            if (partial) self.aborted.deinit(b.a);
             // No transaction or validation scratch is needed after acceptance.
             // Release it before compaction/postings introduce their own peaks.
             inline for (.{ "statements", "stage_scopes", "stage_attributes", "stage_links", "stage_ports", "replay" }) |field| {
@@ -539,7 +686,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             try self.mention_pages.finish(b.a, &b.work, &b.mentions, b.mention_count);
             try self.connection_pages.finish(b.a, &b.work, &b.connections, b.connection_count);
             if (self.header.strict) {
-                if (b.interpretation.kind == .generic) return error.UnsupportedSemantics;
+                if (b.interpretation.kind == .generic or (partial and b.interpretation.kind == null)) return error.UnsupportedSemantics;
                 for (b.connections[0..b.connection_count]) |c| {
                     try self.spend(1);
                     if ((b.interpretation.kind == .digraph) != (c.effective_operator == .directed)) return error.UnsupportedSemantics;

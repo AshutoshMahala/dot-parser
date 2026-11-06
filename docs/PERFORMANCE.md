@@ -1489,6 +1489,53 @@ callback has an additional charged IR work unit and cancellation check;
 the parser's metering rules are preserved. The unobserved binding selects the
 ordinary builder at compile time.
 
+### Partial event construction: existing-route gate
+
+Measured 2026-11-05 against `dc6f4f4`, with the working slice-3e implementation,
+Zig 0.17.0 and Apple M4 Pro. `bench-ir-events` compared all 14 M workloads in
+two opposite-order process rounds, with three warmups and nine samples per
+process. Builds and tests finished before timing. This gate measures the
+existing complete routes, without observers; it does not measure the cost of
+opting into partial retention.
+
+Geometric-mean time changes (positive means slower):
+
+| Mode | Growable Document | Growable events | Arena Document | Arena events |
+| --- | ---: | ---: | ---: | ---: |
+| fast | +0.57% | +0.84% | +0.24% | +1.46% |
+| safe | -1.21% | -2.08% | -0.76% | -1.94% |
+| small | -0.57% | +0.32% | -0.57% | -0.05% |
+
+The initial timing outliers also affected the unchanged Document route. Four
+additional alternating rounds on node attributes, minified input, edge chains,
+mixed input and comments gave these geometric means:
+
+| Mode | Growable Document | Growable events | Arena Document | Arena events |
+| --- | ---: | ---: | ---: | ---: |
+| fast | -0.79% | +0.88% | -0.27% | +0.46% |
+| small | -0.28% | +0.79% | -0.26% | +0.63% |
+
+There is no repeatable ordinary Document-route slowdown in these runs. The
+complete event route is not unchanged in every case: Fast mixed/comments
+remain +2.44%/+4.00% with growable storage and +3.20%/+3.27% with an Arena in
+the repeat set. Small's largest repeated growable difference is +1.59% on
+minified input. These are measurements of the combined comparison executable,
+not a claim that arbitrary linked consumers have identical timings.
+
+Retained bytes, live requested peaks, Arena capacity/backing peaks and allocation
+counts match exactly on every existing-route workload and configuration. The
+comparison executable's code section grows by 24 B Fast, 84 B Safe and 156 B
+Small (under 0.1%). Partial staging and coverage bookkeeping compile out of
+complete construction. The entry points bind the retention choice at compile
+time, without an extra runtime wrapper or forced inlining.
+
+Verification includes partial Document/event parity over malformed mutations,
+every-byte prefixes, native encodings, nested salvage, qualified queries and
+attributes; standalone observer trace parity with independent recovery;
+allocation-failure cleanup, deep scopes, page boundaries and cancellation at
+every accounted checkpoint. Parser credits and cancellation guarantees are
+unchanged. One-shot event construction still has no shared resumable grant.
+
 ### Lowering a Document
 
 Development measurement. Times measured at commit `d875891` (2026-10-24);

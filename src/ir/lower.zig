@@ -72,8 +72,8 @@ pub const Header = struct {
     mention_base: u32 = 0,
     connection_base: u32 = 0,
 };
-pub fn EventBuilder(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity) type {
-    return BuilderMode(actual, rep, false, false, true);
+pub fn EventBuilder(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity, comptime partial: bool) type {
+    return BuilderMode(actual, rep, partial, false, true);
 }
 fn BuilderMode(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime fixed_storage: bool, comptime streamed: bool) type {
     const Node = t.NodeFor(rep.attributes);
@@ -461,7 +461,7 @@ fn BuilderMode(comptime actual: encoding.Actual, comptime rep: @import("represen
                 .occurrence = @fromBackingInt(occurrence),
                 .attributes = if (rep.attributes) attributes else {},
             };
-            if (partial) self.publicationState().coverage_data.observeConnection(self.connection_count, self.connections[self.connection_count]);
+            if (partial) self.publicationState().coverage_data.observeConnection(self.connection_count, self.connections[connection_index]);
             if (rep.attributes and with_attributes) {
                 const scope = @backingInt(self.occurrences[occurrence].scope);
                 self.attribute_data.connection_defaults[self.connection_count] = self.attribute_data.scopes[scope].edge;

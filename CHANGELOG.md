@@ -42,6 +42,12 @@ statements after an error, too.
     owns its outline; subscriptions, extents, recovery and scope context follow
     standalone events. Callback errors retain their type, and `.stop` returns
     `ObserverStopped`. `checking.coverage` is available in both bindings.
+  - **Partial construction from events.** `EventIR.parsePartial` returns the
+    existing `PartialGraph`, retaining committed later statements and nested
+    children of abandoned statements, with gaps and qualified query answers.
+    Observer recovery is independent: ending an observer's delivery after a
+    syntax error does not disable IR retention. Explicit observer stops/errors
+    and operational failures still prevent publication.
   - **Reading the graph.** Node, subgraph and edge views; `findNode`,
     `hasEdge` and membership queries; attribute lookup and listing; value views
     that keep the original spelling and print the joined value with `{f}`; edge

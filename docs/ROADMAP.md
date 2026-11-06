@@ -28,9 +28,9 @@ optional indexes and adjacency. Still to do:
 - **Label ports.** Checking that a port such as `a:p` exists in the node's
   label, and linking the port to that part of the label. Today a port is only
   a value (`tailport`, `headport`).
-- **More event-based graph construction.** Complete one-shot
-  `IR.FromEvents(Dot).parse` is available without a retained Document. Observer
-  forwarding, partial construction, composed sessions and fixed storage remain.
+- **More event-based graph construction.** `IR.FromEvents(Dot).parse` and
+  `parsePartial` are available without a retained Document, with optional
+  observer forwarding. Composed sessions and fixed storage remain.
 - **One budget for parsing and building the graph.** Today each has its own
   limits and its own steps.
 - **More in small steps:** finding a node by name (`findNode`), structured

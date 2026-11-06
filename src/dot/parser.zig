@@ -1936,6 +1936,17 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             if (recovery_enabled and reason == .invalid_syntax) self.syntax_errors += 1;
             if (recovery_enabled and (reason == .invalid_syntax or reason == .unsupported_feature) and recoverable) {
                 if (stop) |requested| return self.stopDiagnostics(requested);
+                // Private composed consumers may end one observer's lifecycle
+                // while retaining syntax for another. Notify before recovery,
+                // including failures with no active statement. Ordinary sinks
+                // have no hook or additional work here.
+                if (@hasDecl(Sink, "parser_recovery")) if (@hasDecl(Sink.parser_recovery, "rejecting")) {
+                    const active: ?event_types.Owner = if (self.control.active_statement == no_statement) null else .{
+                        .statement = @fromBackingInt(@intCast(self.control.active_statement)),
+                        .scope = self.currentScope(),
+                    };
+                    Sink.parser_recovery.rejecting(self.events, reason, active);
+                };
                 const already_skipping = self.state == .recovering;
                 if (transactional and !self.aborted and self.continuesAfterError()) {
                     self.control.rejected = true;

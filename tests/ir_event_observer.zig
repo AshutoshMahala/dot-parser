@@ -309,3 +309,89 @@ test "event IR inferred and broad observer errors are preserved without classifi
         try std.testing.expectError(error.ApplicationFailure, E.parse(a, "digraph{}", .{ .observer = &observer }));
     }
 }
+
+fn partialParity(comptime P: type, comptime R: type, source: []const u8) !void {
+    errdefer std.debug.print("partial observer input: {s}\n", .{source});
+    var standalone: R = .{};
+    var observed: R = .{};
+    const call = P.Events(R).parse(a, source, &standalone, dot.diagnostic.discard, .{});
+    _ = if (@typeInfo(@TypeOf(call)) == .error_union) try call else call;
+    var expected = try IR.FromEvents(P).parsePartial(a, source, .{});
+    defer expected.deinit();
+    var result = try IR.FromEvents(P).Observe(R).parsePartial(a, source, .{ .observer = &observed });
+    defer result.deinit();
+    try deep(standalone.items(), observed.items());
+    try deep(expected.checking, result.checking);
+    try equal(expected.ir() == null, result.ir() == null);
+    if (expected.ir()) |graph| {
+        try equal(graph.nodeCount(), result.ir().?.nodeCount());
+        try deep(graph._coverage.entries.items, result.ir().?._coverage.entries.items);
+        try deep(graph._data.connections, result.ir().?._data.connections);
+    }
+}
+test "partial event IR observer recovery is independent of retained facts" {
+    const inputs = [_][]const u8{
+        "digraph G{a[label=;b;}",
+        "digraph {; a;}",
+        "digraph {; {a;} b;}",
+        "digraph {a; bad@ {x} b;}",
+        "digraph {a->subgraph s{b;bad[x=];c}->{d};e;}",
+        "digraph {a->{b} ->; subgraph s{d} e;}",
+        "digraph {a; b[label=\"unfinished",
+        "digraph {a; /*unfinished",
+        "digraph {a; b->}",
+        "// before\ndigraph G{/*inside*/a;#line\nb[x=]; c;}//after",
+        "digraph",
+        "digraph \"unfinished",
+        "",
+    };
+    inline for (.{ .scalar, .block }) |scanner| inline for (.{ .collect, .fail_fast }) |on_error| {
+        const P = dot.Profile(.{ .policy = .{ .scanner = scanner, .on_error = on_error, .retention = .{ .comments = true } } });
+        inline for (.{ Selection{}, Selection{ .begin = false }, Selection{ .recovery = false }, Selection{ .begin = false, .recovery = false, .observations = .{ .delimiter = true } }, Selection{ .begin = false, .recovery = false, .observations = .none, .extents = false } }) |selection| {
+            for (inputs) |source| try partialParity(P, Recorder(selection), source);
+        }
+    };
+    const source = "digraph G{a:p->{b;bad[x=];c}->{d}[label=\"x\"];e}";
+    for (0..source.len + 1) |end| try partialParity(Dot, Recorder(.{ .recovery = false }), source[0..end]);
+    inline for (.{ .silent, .warning, .err }) |unsupported| {
+        const P = dot.Profile(.{ .policy = .{ .markup = .none, .diagnostics = .{ .unsupported = unsupported } } });
+        try partialParity(P, Recorder(.{ .recovery = false }), "digraph {a;<b>;c;}");
+    }
+}
+test "partial event IR explicit observer stop and failure still stop construction" {
+    const R = Recorder(.{ .recovery = false });
+    const E = IR.FromEvents(Dot).Observe(R);
+    const source = "digraph {a;bad[x=];b;}";
+    var observer: R = .{ .stop_at = 4 };
+    try std.testing.expectError(error.ObserverStopped, E.parsePartial(a, source, .{ .observer = &observer }));
+    observer = .{ .fail_at = 4, .failure = error.Cancelled };
+    try std.testing.expectError(error.Cancelled, E.parsePartial(a, source, .{ .observer = &observer }));
+    observer = .{};
+    var result = try E.parsePartial(a, source, .{ .observer = &observer });
+    defer result.deinit();
+    try expect((try result.ir().?.findNode("b")) == .known);
+    try equal(dot.events.AbortReason.invalid_syntax, observer.items()[observer.len - 1].abort.document);
+}
+
+test "partial event IR later work failures never revive a terminated observer" {
+    const R = Recorder(.{ .recovery = false });
+    const E = IR.FromEvents(Dot).Observe(R);
+    var success = false;
+    for (0..512) |budget| {
+        var observer: R = .{};
+        var result = E.parsePartial(a, "digraph{a;bad[x=];b->c;}", .{ .observer = &observer, .lowering = .{ .limits = .{ .max_work = budget } } }) catch |err| {
+            try equal(error.WorkLimit, err);
+            var terminal = false;
+            for (observer.items()) |record| {
+                try expect(!terminal);
+                if (record == .abort and record.abort == .document) terminal = true;
+            }
+            continue;
+        };
+        defer result.deinit();
+        try expect(result.ir() != null);
+        success = true;
+        break;
+    }
+    try expect(success);
+}

@@ -38,7 +38,7 @@ has been discussed.
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps, public events, delimiter observations, commit extents and terminal coverage | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, complete one-shot event lowering, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization, optional connection/scope indexes and materialized adjacency; slice-2 verification/performance pass complete | Label-port binding, markup-result association, event partial/session/fixed construction, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide; remaining optional performance costs are recorded in the performance report |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, complete/partial one-shot event lowering with observers, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization, optional connection/scope indexes and materialized adjacency; slice-2 verification/performance pass complete | Label-port binding, markup-result association, event session/fixed construction, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide; remaining optional performance costs are recorded in the performance report |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and
@@ -246,7 +246,13 @@ The required observer receives events before their IR work, with standalone
 subscriptions and abort behavior. Coverage is available with or without an
 observer. Typed observer failures and `ObserverStopped` end construction while
 preserving caller-owned observations and diagnostics.
-Partial event construction, composed resumable execution,
+Partial event construction is implemented with `parsePartial`, using public
+event coverage and committed nested contributions. It returns the existing
+`PartialGraph` and matches Document gaps, interpretation, retained validation
+and qualified queries. Abandoned scoped-edge prefixes remain validation facts,
+not graph connections. Observer recovery is independent of IR retention;
+explicit observer stops/errors still stop construction. Operational failure
+never publishes a partial-input graph. Composed resumable execution,
 fixed event-construction storage, combined tree/event output and public pull events remain
 unfinished. *(Embodied: `src/dot/events.zig`, `event_profile.zig`,
 `tests/events.zig`, [public contract](../EVENTS.md).)*
@@ -320,8 +326,8 @@ endpoint structure (`syntax()`) separate from the opt-in first-colon Graphviz
 reading (`graphvizParts()`). Lone compass-like identifiers remain ambiguous;
 unknown suffix text is preserved, and origins name written sides rather than
 stored orientation. No additional retained storage is needed. Label-port
-existence/binding remains; complete event lowering is implemented, with observer,
-partial, session and fixed event construction still pending. Fixed-storage Document
+existence/binding remains; complete/partial event lowering and observer forwarding
+are implemented, with session and fixed event construction still pending. Fixed-storage Document
 construction now shares direct/session lowering with explicit capacity bounds,
 checked bindings, reusable scratch and terminal shortfalls, without automatic
 reservation or a construction heap fallback.
@@ -1333,8 +1339,8 @@ Bounds remain explicit and metadata-only (pair-universe caps and total interned
 keys). A terminal shortfall preserves already emitted entries but never certifies
 exhaustion; retries start a new stream. Lowering helpers are named `loweringLayout`,
 `loweringBounds` and `partialLoweringBounds` without legacy aliases.
-Complete one-shot event lowering is now available; its observer, partial,
-resumable and fixed-storage routes remain. This does not complete the
+Complete/partial one-shot event lowering and observers are now available;
+resumable and fixed-storage event routes remain. This does not complete the
 entire semantic-layer slice. *(Embodied:
 `src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*
 
